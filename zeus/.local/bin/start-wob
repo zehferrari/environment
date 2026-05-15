@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PIPE="/tmp/wobpipe"
+CFG="$HOME/.config/wob/wob.ini"
+LOG="$HOME/.local/state/wob.log"
+
+mkdir -p "$(dirname "$LOG")"
+
+# Ensure we can connect to Wayland even when the launcher is invoked from a shell
+# that doesn't have the graphical session env.
+XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export XDG_RUNTIME_DIR
+
+if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+  for sock in "$XDG_RUNTIME_DIR"/wayland-*; do
+    if [[ -S "$sock" ]]; then
+      export WAYLAND_DISPLAY="$(basename "$sock")"
+      break
+    fi
+  done
+fi
+
+# Restart wob cleanly.
+pkill -x wob 2>/dev/null || true
+
+rm -f "$PIPE"
+mkfifo -m 600 "$PIPE"
+
+# Detach so Hyprland exec-once (and manual runs) won't block.
+# Log errors to help debug when nothing is displayed.
+setsid -f sh -c "exec tail -f '$PIPE' | wob -c '$CFG'" >>"$LOG" 2>&1 || true

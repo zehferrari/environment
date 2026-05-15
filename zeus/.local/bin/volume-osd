@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PIPE="/tmp/wobpipe"
+
+case "${1:-}" in
+  up)
+    # Many Bluetooth devices can come up muted; unmute on volume change.
+    wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 || true
+    wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 2.5%+
+    ;;
+  down)
+    wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 || true
+    wpctl set-volume @DEFAULT_AUDIO_SINK@ 2.5%-
+    ;;
+  mute)
+    wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle
+    ;;
+  *)
+    echo "usage: $0 {up|down|mute}" >&2
+    exit 2
+    ;;
+esac
+
+out="$(wpctl get-volume @DEFAULT_AUDIO_SINK@)"
+
+# wpctl output looks like: "Volume: 0.58" or "Volume: 0.58 [MUTED]"
+pct="$(awk '{print int($2*100+0.5)}' <<<"$out")"
+if grep -qi "\[MUTED\]" <<<"$out"; then
+  pct=0
+fi
+
+# Don't block if wob isn't running (FIFO has no reader).
+if [[ -p "$PIPE" ]]; then
+  timeout 0.05 sh -c 'printf "%s\n" "$1" > "$2"' sh "$pct" "$PIPE" 2>/dev/null || true
+fi

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Lock the session using hyprlock, then turn off all monitors after 10 seconds
+# *while the lock is active*, and restore DPMS on unlock.
+
+command -v hyprctl >/dev/null 2>&1 || exit 0
+command -v hyprlock >/dev/null 2>&1 || exit 0
+
+# Always try to restore DPMS if this script exits for any reason.
+cleanup() {
+  hyprctl dispatch dpms on >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+# If we're already locked (hyprlock running), don't start a second instance.
+if pgrep -x hyprlock >/dev/null 2>&1; then
+  ( sleep 10; pgrep -x hyprlock >/dev/null 2>&1 && hyprctl dispatch dpms off >/dev/null 2>&1 || true ) &
+  exit 0
+fi
+
+# Start the lock.
+hyprlock >/dev/null 2>&1 &
+
+# Turn off monitors after 10s only if still locked.
+(
+  sleep 10
+  if pgrep -x hyprlock >/dev/null 2>&1; then
+    hyprctl dispatch dpms off >/dev/null 2>&1 || true
+  fi
+) &
+
+# Wait until unlock.
+while pgrep -x hyprlock >/dev/null 2>&1; do
+  sleep 0.2
+done
+
+# cleanup trap will restore DPMS

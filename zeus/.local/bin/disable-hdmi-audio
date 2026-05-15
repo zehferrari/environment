@@ -1,0 +1,27 @@
+#!/bin/bash
+# Disable HDMI audio to fix flickering on motherboard HDMI monitor
+# This addresses AMD GPU HDMI audio handshake issues causing display flickering
+
+# Find the motherboard HDMI audio sink (AMD Radeon - pci-0000_73_00.1)
+HDMI_SINK=$(pactl list short sinks | grep "alsa_output.pci-0000_73_00.1" | awk '{print $1}')
+
+if [ -z "$HDMI_SINK" ]; then
+    echo "Error: Motherboard HDMI audio sink not found"
+    exit 1
+fi
+
+# Mute the HDMI sink
+echo "Muting motherboard HDMI audio sink (ID: $HDMI_SINK)..."
+pactl set-sink-mute "$HDMI_SINK" true
+
+# Find Blue Yeti Nano or another suitable sink as default
+DEFAULT_SINK=$(pactl list short sinks | grep -v hdmi | head -1 | awk '{print $1}')
+
+if [ -n "$DEFAULT_SINK" ]; then
+    echo "Setting default audio sink to: $DEFAULT_SINK"
+    pactl set-default-sink "$DEFAULT_SINK"
+else
+    echo "Warning: Could not find alternative audio sink"
+fi
+
+echo "Done. HDMI audio disabled."

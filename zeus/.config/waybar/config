@@ -1,0 +1,102 @@
+{
+    // Waybar configuration - Dell monitor only (DP-6). If connector names shuffle, Hyprland autostart uses launch-waybar.sh.
+    "output": "DP-6",
+    "layer": "overlay",
+    "position": "top",
+    "height": 48,
+    "spacing": 2,
+    
+    "modules-left": [],
+    
+    "modules-center": [
+        "clock"
+    ],
+    
+    "modules-right": [
+        "group/hardware"
+    ],
+
+
+    "group/hardware": {
+        "orientation": "horizontal",
+        "modules": [
+            "custom/displays",
+            "network",
+            "bluetooth",
+            "pulseaudio",
+            "custom/power"
+        ]
+    },
+
+    "pulseaudio": {
+        "format": "{icon} {volume}%",
+        "format-muted": "",
+        "format-icons": {
+            "headphone": "",
+            "hands-free": "",
+            "headset": "",
+            "phone": "",
+            "portable": "",
+            "car": "",
+            "default": ["", "", ""]
+        },
+        "on-click": "bash -c 'XDG_CURRENT_DESKTOP=GNOME gnome-control-center sound'"
+    },
+
+    // Module configurations
+    "clock": {
+        "format": "{:%H:%M:%S • %A %d/%m}",
+        "tooltip-format": "<tt><small>{calendar}</small></tt>",
+        "on-click": "bash -c 'ADW_DEBUG_COLOR_SCHEME=prefer-light gnome-calendar'",
+        "interval": 1,
+        "calendar": {
+            "mode": "month",
+            "mode-mon-col": 3,
+            "weeks-pos": "right",
+            "on-scroll": 1,
+            "on-click-right": "mode",
+            "format": {
+                "months": "<span color='#ffead3'><b>{}</b></span>",
+                "days": "<span color='#ecc6d9'><b>{}</b></span>",
+                "weeks": "<span color='#99ffdd'><b>W{}</b></span>",
+                "weekdays": "<span color='#ffcc66'><b>{}</b></span>",
+                "today": "<span color='#ff6699'><b><u>{}</u></b></span>"
+            }
+        }
+    },
+
+    "network": {
+        "format-wifi": "",
+        "format-ethernet": "",
+        "format-disconnected": "",
+        "tooltip-format-wifi": "WiFi: {essid} ({signalStrength}%)\n{ipaddr}/{cidr}",
+        "tooltip-format-ethernet": "Ethernet: {ifname}\n{ipaddr}/{cidr}",
+        "tooltip-format-disconnected": "Network Disconnected",
+        "on-click": "bash -c 'XDG_CURRENT_DESKTOP=GNOME gnome-control-center wifi'"
+    },
+
+    "bluetooth": {
+        "format": "",
+        "format-disabled": "",
+        "format-off": "",
+        "format-on": "",
+        "format-connected": "",
+        "tooltip-format": "Bluetooth: {status}\n{controller_alias}",
+        "tooltip-format-connected": "Bluetooth: Connected\n{device_alias}\n{controller_alias}",
+        "tooltip-format-enumerate-connected": "{device_alias}",
+        "tooltip-format-enumerate-connected-battery": "{device_alias} - {device_battery_percentage}%",
+        "on-click": "bash -c 'XDG_CURRENT_DESKTOP=GNOME gnome-control-center bluetooth'"
+    },
+
+    "custom/displays": {
+        "format": "",
+        "tooltip-format": "Display Settings",
+        "on-click": "wdisplays"
+    },
+
+    "custom/power": {
+        "format": "",
+        "tooltip-format": "Power Menu",
+        "on-click": "/home/zeh/.config/waybar/power-menu.sh"
+    }
+}
