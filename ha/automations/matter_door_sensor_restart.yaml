@@ -1,0 +1,33 @@
+# Matter Door Sensor Recovery Automation
+# When door sensor goes offline, restart Matter Server to force reconnection
+# HOMELAB-1: https://zeh-ferrari.atlassian.net/browse/HOMELAB-1
+
+alias: Matter Door Sensor Recovery
+description: Restart Matter Server when door sensor goes unavailable for too long
+mode: single
+trigger:
+  - platform: state
+    entity_id:
+      - binary_sensor.door_sensor_door
+    to: unavailable
+    for:
+      hours: 0
+      minutes: 10
+      seconds: 0
+condition: []
+action:
+  - service: system_log.write
+    data:
+      message: Matter Door Sensor Recovery: Door sensor unavailable for 10 min, restarting Matter Server
+      level: warning
+  - service: hassio.addon_restart
+    data:
+      addon: core_matter_server
+  - wait_template: '{{ is_state("binary_sensor.door_sensor_door", "on") or is_state("binary_sensor.door_sensor_door", "off") }}'
+    timeout: 00:05:00
+    continue_on_timeout: true
+  - service: system_log.write
+    data:
+      message: >-
+        Matter Door Sensor Recovery: Door sensor state after restart: {{ states('binary_sensor.door_sensor_door') }}
+      level: info

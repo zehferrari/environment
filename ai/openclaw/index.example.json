@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "description": "Example registry — copy this to /srv/agents/index.json, edit, restart agent-dashboard.service. Live edits (e.g. dashboard capability/integration toggles) write back to /srv/agents/index.json directly; this template stays in git as the single-record reference.",
+  "sharedKnowledgeDir": "/srv/agents/shared",
+  "webhookRoutedUsers": ["example"],
+  "agents": [
+    {
+      "user": "example",
+      "uid": 9999,
+      "name": "Example Agent",
+      "enabled": false,
+      "monitor": false,
+      "role": "developer",
+      "coding": true,
+      "home": "/home/example",
+      "workspace": "/home/example/workspace",
+      "email": "example@zeh.me",
+      "jira_account_id": "712020:00000000-0000-0000-0000-000000000000",
+      "avatar": "/srv/agents/Pictures/Example/avatar.png",
+      "telegram": {
+        "enabled": false,
+        "bot": "@example_bot"
+      },
+      "integrations": {
+        "webhook": false,
+        "gmail": false,
+        "jira": false,
+        "bitbucket": false,
+        "openaiAuth": false,
+        "wdt": false
+      },
+      "capabilities": {
+        "can_modify_code": false,
+        "can_jira": false,
+        "can_send_email": false,
+        "can_send_telegram_alerts": false,
+        "can_restart_agents": false,
+        "can_wake_agents": false,
+        "can_triage_incidents": false
+      },
+      "services": [
+        "openclaw-gateway.service",
+        "openclaw-gmail-listener.service",
+        "openclaw-webhook-receiver.service",
+        "wdt-example.service"
+      ],
+      "listeners": [
+        { "host": "127.0.0.1", "port": 18900, "owner": "example openclaw-gateway", "expected": true },
+        { "host": "127.0.0.1", "port": 3019, "owner": "example openclaw-webhook-receiver", "expected": true },
+        { "host": "127.0.0.1", "port": 3009, "owner": "example wdt", "expected": true }
+      ]
+    }
+  ]
+}

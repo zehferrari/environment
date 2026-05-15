@@ -1,0 +1,470 @@
+work_has_started:
+  alias: Work has started
+  sequence:
+  - metadata: {}
+    data: {}
+    target:
+      entity_id:
+      - input_boolean.zswitch
+    action: input_boolean.turn_on
+  - if:
+    - condition: device
+      device_id: 352a95e84f6bb59952ffba38de387115
+      domain: lock
+      entity_id: a1afd45a6fb16a5fc43cce7b4dacf9db
+      type: is_locked
+    then:
+    - device_id: 352a95e84f6bb59952ffba38de387115
+      domain: lock
+      entity_id: a1afd45a6fb16a5fc43cce7b4dacf9db
+      type: unlock
+  mode: single
+work_is_done:
+  alias: Work is done
+  sequence:
+  - metadata: {}
+    data: {}
+    target:
+      entity_id:
+      - input_boolean.zswitch
+    action: input_boolean.turn_off
+    enabled: true
+  - wait_for_trigger:
+    - type: opened
+      device_id: 0207362bb7c803dcda2597432c7599a1
+      entity_id: binary_sensor.door_sensor_door
+      domain: binary_sensor
+      trigger: device
+      for:
+        hours: 0
+        minutes: 1
+        seconds: 0
+    enabled: true
+  - action: switch.turn_on
+    metadata: {}
+    data: {}
+    target:
+      entity_id:
+      - switch.lights_office_bathroom_switch_2
+  - type: turn_off
+    device_id: 6b39e9b0500d6474235755957729bdbf
+    entity_id: d8e4dbf98f2e6c43afb51661257b42c1
+    domain: switch
+    enabled: false
+  - wait_for_trigger:
+    - type: not_opened
+      device_id: 0207362bb7c803dcda2597432c7599a1
+      entity_id: binary_sensor.door_sensor_door
+      domain: binary_sensor
+      trigger: device
+      for:
+        hours: 0
+        minutes: 1
+        seconds: 0
+  - device_id: 352a95e84f6bb59952ffba38de387115
+    domain: lock
+    entity_id: a1afd45a6fb16a5fc43cce7b4dacf9db
+    type: lock
+  mode: single
+  description: ''
+fan_auto_speed:
+  alias: Fan Auto Speed
+  sequence:
+  - delay:
+      seconds: 1
+  - target:
+      entity_id: '{{ fan_entity_id }}'
+    data:
+      percentage: "{% set temp = state_attr('climate.floor_fan', 'current_temperature')
+        | default(0) | float %} {% set humid = state_attr('climate.floor_fan', 'current_humidity')
+        | default(0) | float %} {% set hour = now().hour %} {% set current_speed =
+        state_attr(fan_entity_id, 'percentage') | default(0) | float %}\n{# Define
+        configuration parameters #} {% set hysteresis = 5 %}\n{# Handle sensor failure
+        #} {% if temp == 0 or humid == 0 %}\n  33  {# Default to low speed if sensors
+        fail #}\n{% else %}\n  {# Calculate target speed based on tropical climate
+        conditions #}\n  {% set target_speed = namespace(value=0) %}\n  \n  {# Adjusted
+        thresholds for tropical climate #}\n  {% if temp >= 29 or humid >= 80 or (temp
+        >= 27 and humid >= 75) %}\n    {% set target_speed.value = 100 %}  {# High
+        speed - very hot or very humid #}\n  {% elif temp >= 25 or humid >= 70 or
+        (temp >= 23 and humid >= 65) %}\n    {% set target_speed.value = 66 %}   {#
+        Medium speed - warm and humid #}\n  {% else %}\n    {% set target_speed.value
+        = 33 %}   {# Low speed - relatively comfortable #}\n  {% endif %}\n  \n  {#
+        Apply hysteresis to prevent oscillation #}\n  {% if (target_speed.value -
+        current_speed) | abs <= hysteresis %}\n    {{ current_speed }}\n  {% else
+        %}\n    {{ target_speed.value }}\n  {% endif %}\n{% endif %}\n"
+    action: fan.set_percentage
+  fields:
+    fan_entity_id:
+      name: Fan Entity ID
+      description: The entity ID of the fan to control
+      example: fan.living_room
+      selector:
+        entity:
+          domain: fan
+  mode: parallel
+laundry:
+  alias: Laundry
+  sequence:
+  - service: dreame_vacuum.vacuum_clean_segment
+    target:
+      entity_id: vacuum.l10s_ultra
+    data:
+      segments: 9
+      repeats: 1
+      suction_level: 1
+      water_volume: 1
+  mode: single
+restart_motion_sensor_automations:
+  alias: Restart Motion Sensor Automations
+  sequence:
+  - delay:
+      hours: 0
+      minutes: 30
+      seconds: 0
+      milliseconds: 0
+  - service: automation.turn_on
+    target:
+      entity_id: '{{ automation_entity_id }}'
+  fields:
+    automation_entity_id:
+      name: Automation Entity ID
+      description: The entity ID of the automation to restart
+      example: automation.motion_sensor_automation
+      selector:
+        entity:
+          domain: automation
+  mode: parallel
+  description: ''
+cast_dashboard:
+  alias: Cast Dashboard
+  sequence:
+  - service: cast.show_lovelace_view
+    data:
+      dashboard_path: lovelace
+      view_path: '0'
+      entity_id: media_player.lounge_display
+  description: ''
+cast_dashboard_office:
+  alias: Cast Dashboard  Office
+  sequence:
+  - service: cast.show_lovelace_view
+    data:
+      dashboard_path: lovelace
+      entity_id: media_player.office_display
+      view_path: '0'
+  description: ''
+off_if_not_occupied:
+  alias: Off if not occupied
+  sequence:
+  - repeat:
+      count: 2
+      sequence:
+      - if:
+        - type: is_no_motion
+          condition: device
+          device_id: 3343a9881e106373f580e6b1b7585aec
+          entity_id: 641b6b91130ee5bcaab93f3da0d476b6
+          domain: binary_sensor
+        then:
+        - type: turn_off
+          device_id: 1ffae105a29c2321b24d9488e769397e
+          entity_id: c5f49682886ed7603920c7e18dba93f8
+          domain: light
+      - if:
+        - type: is_no_motion
+          condition: device
+          device_id: d2c7191de3fefb2f0ccf7f815c0de6e1
+          entity_id: eacf339d2aff62c085d328415e56cee9
+          domain: binary_sensor
+        then:
+        - type: turn_off
+          device_id: e084f5a984057215ce7bea9c0626a8b7
+          entity_id: d130c2c64106952e44d9873821278731
+          domain: switch
+      - if:
+        - type: is_no_motion
+          condition: device
+          device_id: befee2934c1f80554500e176f00f5e52
+          entity_id: fd8b24ad46e15401c3497172f54b4d7a
+          domain: binary_sensor
+        then:
+        - type: turn_off
+          device_id: f9e7dbc956a8451405044e922ade4ece
+          entity_id: 48f1fe9c257d0149d52360bd7e45a413
+          domain: switch
+        - type: turn_off
+          device_id: 82679c4dec44fa7aa25597f327915e77
+          entity_id: 2ba94879b282a03b882665ab2f0da0b2
+          domain: light
+      - if:
+        - condition: state
+          entity_id: binary_sensor.mb
+          state: 'off'
+        then:
+        - type: turn_off
+          device_id: ce5f983ccf0d7648fd090b7784b5e8e7
+          entity_id: bd6323b281c22cefc0f3046a8a9cfdb7
+          domain: light
+        - type: turn_off
+          device_id: f08847fbe9cbe95dd8da19d54be352b7
+          entity_id: daf9119cb12d087739cbf07814843186
+          domain: switch
+        - action: light.turn_off
+          metadata: {}
+          data: {}
+          target:
+            entity_id: light.lamps_mb
+      - if:
+        - condition: state
+          entity_id: binary_sensor.sensors_fb
+          state: 'off'
+        then:
+        - metadata: {}
+          data: {}
+          target:
+            device_id:
+            - ab5f4e53a180832f47b09942c305a032
+            - c35fe53aabce6bf6e196b871f9167d3f
+          action: light.turn_off
+        - type: turn_off
+          device_id: 321eba43c5eccd04ebf19e5405182031
+          entity_id: b3da1a38a82c86944f5d559106d293c7
+          domain: switch
+      - if:
+        - type: is_not_occupied
+          condition: device
+          device_id: 2038009f9a0f75da5e2d2ae3e955c2ac
+          entity_id: 12873371ed7059c80f4cb894c1170b48
+          domain: binary_sensor
+        then:
+        - type: turn_off
+          device_id: 658be22637b62f4f8c0959d482191040
+          entity_id: 91f1fac9695e437219c1a744aaaad232
+          domain: light
+        - type: turn_off
+          device_id: 2f884457f685656742552d4091d26cce
+          entity_id: 264d99552b3b8956b8ce18aab78eb0cf
+          domain: switch
+        enabled: false
+      - if:
+        - condition: state
+          entity_id: binary_sensor.food_area
+          state: 'off'
+        then:
+        - type: turn_off
+          device_id: bdb573a60665e8e482c01da5d303a2e0
+          entity_id: 0c6b16a3b2b145d323c4f6ee2b66f54d
+          domain: switch
+        - type: turn_off
+          device_id: 37a9fe3346460b3469fb644cbad8d2cb
+          entity_id: f70e9520f0ca7161d53e819f7a74b7f1
+          domain: switch
+        - type: turn_off
+          device_id: 37a9fe3346460b3469fb644cbad8d2cb
+          entity_id: 1ea74b0e7d2bd214314ed1573b312924
+          domain: switch
+        - type: turn_off
+          device_id: 37a9fe3346460b3469fb644cbad8d2cb
+          entity_id: 2c7e818f7101e7c8a649d656eb1a30b3
+          domain: switch
+        - metadata: {}
+          data: {}
+          target:
+            device_id:
+            - a0e8ba7c413878317ed2e076cc057ece
+            - 1ed40d2084ee803742052103ede13aaa
+          action: light.turn_off
+        - type: turn_off
+          device_id: 4275e0ef8338c83e8c56874529cc082a
+          entity_id: 910255b3e8f61f7bd9d9767882f69fda
+          domain: switch
+        - type: turn_off
+          device_id: 4275e0ef8338c83e8c56874529cc082a
+          entity_id: 552e0ef635af7b383b60d57769faf4c5
+          domain: switch
+        - type: turn_off
+          device_id: 4bf5adc3276f8b12db07287070446ce1
+          entity_id: fa3bfa23a985d65eec7296028b9dce4f
+          domain: switch
+        - type: turn_off
+          device_id: 4bf5adc3276f8b12db07287070446ce1
+          entity_id: f9fc6e4935b56edb6dbe40b418738880
+          domain: switch
+        - type: turn_off
+          device_id: 4bf5adc3276f8b12db07287070446ce1
+          entity_id: 8a91fb88f51bbb631fc313ab45dcbc42
+          domain: switch
+      - if:
+        - condition: state
+          entity_id: binary_sensor.vitrola
+          state: 'off'
+        then:
+        - type: turn_off
+          device_id: 23a4a8d1fab58500076f02ac67454738
+          entity_id: a5510418b1467f8e3a55420e16c95079
+          domain: light
+        - type: turn_off
+          device_id: 62a372ad7df1e6406f41d5affbb51dba
+          entity_id: afef41ae1c982814e4d2fad12e5b4c2e
+          domain: light
+      - if:
+        - condition: state
+          entity_id: binary_sensor.rattan
+          state: 'off'
+        then:
+        - type: turn_off
+          device_id: 80367ed1c1432d5df3bf63868b320285
+          entity_id: ae9bdeb9615e77a8566504ad81d04f24
+          domain: light
+      - if:
+        - condition: state
+          entity_id: binary_sensor.sofa
+          state: 'off'
+        then:
+        - type: turn_off
+          device_id: 9be2b7adfc890a40c4b8637e5c9c4a64
+          entity_id: c5b15d9ada47623148f19cb6836c2ad6
+          domain: light
+      - if:
+        - condition: state
+          entity_id: binary_sensor.loungeon
+          state: 'off'
+        then:
+        - type: turn_off
+          device_id: 628c67c449fbde854689189bb3854518
+          entity_id: f95d48ea825e746ad79435b9a31724f2
+          domain: switch
+        - type: turn_off
+          device_id: 7e8b38a5066d10924e876be286904f90
+          entity_id: dd7662e526ec5f4673b10accca58cc95
+          domain: switch
+        - type: turn_off
+          device_id: f12f6d973ca31ba4a630c596f84ec562
+          entity_id: 4130680c87ee6553197cf5939eb2cfc2
+          domain: switch
+        - type: turn_off
+          device_id: 549230fabae6a2ca12a0b96e4a7a90bd
+          entity_id: 28b01cdf41032d981c116f909c886934
+          domain: switch
+        - type: turn_off
+          device_id: 62a372ad7df1e6406f41d5affbb51dba
+          entity_id: afef41ae1c982814e4d2fad12e5b4c2e
+          domain: light
+      - if:
+        - condition: state
+          entity_id: binary_sensor.presence_sensor_fp2_115e_presence_sensor_2
+          state:
+          - 'off'
+        then:
+        - metadata: {}
+          data: {}
+          target:
+            device_id:
+            - d275bb3a89259e055486294a9467a191
+            - d0b971a4e4bc01b1428632e68860e23a
+          action: light.turn_off
+        - type: turn_off
+          device_id: b370afc3c39ded32b67f5a171c01a982
+          entity_id: 4ed555d62e08cb5ef763c4477da6ee7b
+          domain: switch
+        - type: turn_off
+          device_id: 2434b7a05799c78549a5ab690ef1e907
+          entity_id: f07f07672bbdb031687dd78f3ec3864f
+          domain: light
+      - if:
+        - type: is_not_occupied
+          condition: device
+          device_id: 189bf0a3f507097f71231825aa6dc8b4
+          entity_id: 85d7638a48b5f1f3d82066dc654f51f1
+          domain: binary_sensor
+        then:
+        - type: turn_off
+          device_id: 11de946aa551eb88c1e3589a10fa4228
+          entity_id: dea06ea40f2e623d503474d4980aa500
+          domain: switch
+        - type: turn_off
+          device_id: 39de6b9b3d0f28ed2e860250cc60fb5e
+          entity_id: 141d807b36bfc8356570d8040143fdd3
+          domain: switch
+      - type: turn_off
+        device_id: ce5f983ccf0d7648fd090b7784b5e8e7
+        entity_id: bd6323b281c22cefc0f3046a8a9cfdb7
+        domain: light
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: '{{ repeat.index < repeat.count }}'
+          sequence:
+          - delay:
+              hours: 0
+              minutes: 0
+              seconds: 15
+              milliseconds: 0
+  description: ''
+house_off:
+  alias: House Off
+  sequence:
+  - action: light.turn_off
+    metadata: {}
+    data: {}
+    target:
+      area_id:
+      - bathroom
+      - dinning
+      - front_bedroom
+      - hall
+      - kids_bedroom
+      - kitchen
+      - lounge
+      - bedroom
+      - office
+  - action: fan.turn_off
+    metadata: {}
+    data: {}
+    target:
+      device_id:
+      - bdb573a60665e8e482c01da5d303a2e0
+      - 321eba43c5eccd04ebf19e5405182031
+      - 2f884457f685656742552d4091d26cce
+      - 628c67c449fbde854689189bb3854518
+      - f08847fbe9cbe95dd8da19d54be352b7
+      - b370afc3c39ded32b67f5a171c01a982
+  description: ''
+zeh_desk_on:
+  alias: Zeh Desk On
+  sequence:
+  - metadata: {}
+    data: {}
+    target:
+      entity_id:
+      - light.light_office_zeh
+    action: light.turn_on
+  - if:
+    - condition: device
+      device_id: b370afc3c39ded32b67f5a171c01a982
+      domain: fan
+      entity_id: 2a29e5c20075c0bd4a8ba47f96332178
+      type: is_off
+    - condition: numeric_state
+      entity_id: climate.floor_fan
+      attribute: current_temperature
+      above: 21
+    then:
+    - metadata: {}
+      data:
+        percentage: 33
+      target:
+        entity_id:
+        - fan.fan_light_office
+      action: fan.turn_on
+  - if:
+    - condition: state
+      entity_id: lock.office_door
+      state: locked
+    then:
+    - metadata: {}
+      data: {}
+      target:
+        entity_id: lock.office_door
+      action: lock.unlock
+  description: ''

@@ -1,0 +1,190 @@
+title: Asdrubal View
+views:
+  - title: Home
+    path: home
+    icon: mdi:home-analytics
+    theme: Mushroom Shadow
+    cards:
+      - type: vertical-stack
+        cards:
+          - type: markdown
+            content: >
+              # Asdrubal View
+
+              A calmer, more actionable dashboard built around presence,
+              security, room control, and system health.
+          - type: horizontal-stack
+            cards:
+              - type: tile
+                entity: weather.jubilee_pocket
+                name: Weather
+                features_position: bottom
+              - type: tile
+                entity: alarm_control_panel.home_alarm
+                name: Alarm
+              - type: tile
+                entity: lock.office_door
+                name: Office Lock
+      - type: markdown
+        content: '**Quick Actions**'
+      - type: grid
+        columns: 4
+        square: false
+        cards:
+          - type: tile
+            entity: script.house_off
+            name: House Off
+          - type: tile
+            entity: script.off_if_not_occupied
+            name: Sleep / Away Cleanup
+          - type: tile
+            entity: switch.water_pump
+            name: Water Pump
+          - type: tile
+            entity: switch.dishwasher_power
+            name: Dishwasher
+      - type: markdown
+        content: '**Presence and Security**'
+      - type: grid
+        columns: 4
+        square: false
+        cards:
+          - type: tile
+            entity: binary_sensor.front_door_opening
+            name: Front Door
+          - type: tile
+            entity: binary_sensor.door_laundry_opening
+            name: Laundry Door
+          - type: tile
+            entity: binary_sensor.door_garage_opening
+            name: Garage Door
+          - type: tile
+            entity: binary_sensor.presence_sensor_fp2_f6f1_presence_sensor_1
+            name: Master Bedroom Presence
+          - type: tile
+            entity: binary_sensor.presence_sensor_fp2_a584_presence_sensor_1
+            name: Lounge Presence
+          - type: tile
+            entity: binary_sensor.presence_sensor_fp2_4061_presence_sensor_1
+            name: Dining Presence
+          - type: tile
+            entity: binary_sensor.presence_sensor_fp2_115e_presence_sensor_2
+            name: Office Presence
+          - type: tile
+            entity: binary_sensor.kitchen
+            name: Kitchen Motion
+      - type: markdown
+        content: '**Core Rooms**'
+      - type: grid
+        columns: 2
+        square: false
+        cards:
+          - type: entities
+            title: Lounge
+            show_header_toggle: false
+            entities:
+              - light.fan_light_lounge
+              - light.light_lounge_sofa
+              - light.light_lounge_rattan
+              - light.light_lounge_woodcraft
+              - light.light_lounge_vitrola_floor
+              - media_player.lounge_soundbar
+          - type: entities
+            title: Master Bedroom
+            show_header_toggle: false
+            entities:
+              - climate.master_bedroom_aircon
+              - sensor.master_bedroom_aircon_temperature
+              - sensor.master_bedroom_aircon_humidity
+              - light.fan_light_master_bedroom
+              - light.light_master_bedroom_zeh
+              - light.light_master_bedroom_rachael
+          - type: entities
+            title: Office
+            show_header_toggle: false
+            entities:
+              - switch.smart_wi_fi_power_board_c0768_outlet1
+              - switch.smart_wi_fi_power_board_c0768_outlet2
+              - switch.smart_wi_fi_power_board_c0768_outlet3
+              - switch.smart_wi_fi_power_board_c0768_outlet4
+              - light.light_office_zeh
+              - light.light_office_rachael
+              - light.light_office_path
+          - type: entities
+            title: Kitchen and Utility
+            show_header_toggle: false
+            entities:
+              - switch.lights_dinning_kitchen
+              - switch.lights_dinning_sink
+              - light.lamps_sink
+              - switch.dishwasher_power
+              - select.dishwasher_active_program
+              - sensor.dishwasher_operation_state
+      - type: markdown
+        content: '**Cameras and Activity**'
+      - type: horizontal-stack
+        cards:
+          - type: picture-glance
+            title: Front Door
+            camera_image: camera.front
+            camera_view: live
+            entities: []
+          - type: picture-glance
+            title: Garden
+            camera_image: camera.garden
+            camera_view: live
+            entities: []
+          - type: picture-glance
+            title: Office
+            camera_image: camera.office
+            camera_view: live
+            entities: []
+      - type: horizontal-stack
+        cards:
+          - type: history-graph
+            title: MB Temperature 24h
+            hours_to_show: 24
+            entities:
+              - sensor.master_bedroom_aircon_temperature
+          - type: logbook
+            title: Security Activity
+            hours_to_show: 12
+            entities:
+              - binary_sensor.front_door_opening
+              - lock.office_door
+              - binary_sensor.door_garage_opening
+  - title: Systems
+    path: systems
+    icon: mdi:server
+    theme: Mushroom Shadow
+    cards:
+      - type: markdown
+        content: >
+          ## Systems View
+
+          Quick maintenance and high-signal checks.
+      - type: entities
+        title: Batteries and Device Health
+        show_header_toggle: false
+        entities:
+          - sensor.front_battery
+          - sensor.garden_battery
+          - sensor.office_battery
+          - sensor.side_battery
+      - type: entities
+        title: Key Utility and Automation Controls
+        show_header_toggle: false
+        entities:
+          - automation.sensor_mb
+          - switch.water_pump
+          - switch.smart_wi_fi_plug_cc084
+      - type: entities
+        title: Energy and Appliance State
+        show_header_toggle: false
+        entities:
+          - sensor.master_bedroom_aircon_power
+          - sensor.master_bedroom_aircon_energy
+          - sensor.dishwasher_operation_state
+      - type: tile
+        entity: weather.jubilee_pocket
+        name: Outdoor Conditions

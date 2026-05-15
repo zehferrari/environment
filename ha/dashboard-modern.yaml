@@ -1,0 +1,515 @@
+title: SmouzaCastle Modern
+views:
+  - title: Home
+    icon: mdi:home-automation
+    path: home
+    theme: Mushroom Shadow
+    cards:
+      # Header - Status & Quick Actions
+      - type: custom:mushroom-chips-card
+        chips:
+          - type: weather
+            entity: weather.home
+            show_conditions: true
+            show_temperature: true
+          - type: template
+            icon: mdi:lightbulb-group
+            icon_color: amber
+            content: |
+              {% set lights = states.light | selectattr('state', 'eq', 'on') | list | length %}
+              {% set switches = states.switch | selectattr('state', 'eq', 'on') | list | length %}
+              {{ lights + switches }} on
+            tap_action:
+              action: navigate
+              navigation_path: /dashboard-modern/lights
+          - type: entity
+            entity: alarm_control_panel.home_alarm
+            icon_color: red
+            content_info: name
+        card_mod:
+          style: |
+            ha-card {
+              --chip-background: rgba(var(--rgb-primary-color), 0.1);
+            }
+
+      # Quick Scenes
+      - type: grid
+        square: true
+        columns: 4
+        cards:
+          - type: custom:button-card
+            entity: scene.all_off
+            name: All Off
+            icon: mdi:power-off
+            tap_action:
+              action: call-service
+              service: script.off_if_not_occupied
+            state:
+              - value: 'on'
+                styles:
+                  icon:
+                    - color: var(--state-icon-active-color)
+                  card:
+                    - background: rgba(var(--rgb-primary-color), 0.2)
+            styles:
+              card:
+                - border-radius: 12px
+                - padding: 8px
+              icon:
+                - width: 24px
+                - height: 24px
+              name:
+                - font-size: 12px
+          - type: custom:button-card
+            entity: input_boolean.movie_mode
+            name: Movie
+            icon: mdi:movie-open
+            tap_action:
+              action: toggle
+            styles:
+              card:
+                - border-radius: 12px
+                - padding: 8px
+              icon:
+                - width: 24px
+              name:
+                - font-size: 12px
+          - type: custom:button-card
+            entity: input_boolean.sleep_mode
+            name: Sleep
+            icon: mdi:weather-night
+            tap_action:
+              action: toggle
+            styles:
+              card:
+                - border-radius: 12px
+                - padding: 8px
+              icon:
+                - width: 24px
+              name:
+                - font-size: 12px
+          - type: custom:button-card
+            entity: input_boolean.away_mode
+            name: Away
+            icon: mdi:home-export-outline
+            tap_action:
+              action: toggle
+            styles:
+              card:
+                - border-radius: 12px
+                - padding: 8px
+              icon:
+                - width: 24px
+              name:
+                - font-size: 12px
+
+      # Room Swipe Navigation
+      - type: custom:swipe-card
+        card_mod:
+          style: |
+            .swiper-pagination {
+              margin-top: 8px;
+            }
+            .swiper-pagination-bullet {
+              background: var(--primary-color);
+              opacity: 0.3;
+            }
+            .swiper-pagination-bullet-active {
+              opacity: 1;
+            }
+        parameters:
+          pagination:
+            type: bullets
+            clickable: true
+          spaceBetween: 16
+          slidesPerView: 1
+          slidesPerGroup: 1
+        cards:
+          # Common Area Card
+          - type: vertical-stack
+            cards:
+              - type: custom:mushroom-title-card
+                title: Common Area
+                subtitle: Living & Dining
+              - type: grid
+                square: false
+                columns: 3
+                cards:
+                  - type: custom:mushroom-light-card
+                    entity: light.fan_light_lounge
+                    name: Lounge
+                    layout: horizontal
+                    use_light_color: true
+                    show_brightness_control: true
+                    collapsible_controls: true
+                  - type: custom:mushroom-light-card
+                    entity: light.fan_light_dinning
+                    name: Dining
+                    layout: horizontal
+                    use_light_color: true
+                    show_brightness_control: true
+                    collapsible_controls: true
+                  - type: custom:mushroom-fan-card
+                    entity: fan.fans_common_area
+                    name: Fans
+                    layout: horizontal
+                    icon_animation: true
+                    show_percentage_control: true
+              - type: custom:mushroom-chips-card
+                chips:
+                  - type: light
+                    entity: light.lamps_common_area_relax
+                    icon: mdi:lamps
+                    use_light_color: true
+                  - type: light
+                    entity: light.light_lounge_plant
+                    icon: mdi:flower
+                    use_light_color: true
+                  - type: light
+                    entity: light.light_lounge_woodcraft
+                    icon: mdi:table-furniture
+                    use_light_color: true
+
+          # Kitchen Card
+          - type: vertical-stack
+            cards:
+              - type: custom:mushroom-title-card
+                title: Kitchen
+                subtitle: Cooking & Sink
+              - type: grid
+                square: false
+                columns: 2
+                cards:
+                  - type: custom:mushroom-light-card
+                    entity: switch.lights_dinning_kitchen
+                    name: Main
+                    layout: horizontal
+                    show_brightness_control: true
+                  - type: custom:mushroom-light-card
+                    entity: switch.lights_dinning_sink
+                    name: Sink
+                    layout: horizontal
+                    show_brightness_control: true
+              - type: custom:mushroom-chips-card
+                chips:
+                  - type: entity
+                    entity: binary_sensor.kitchen
+                    icon: mdi:motion-sensor
+                    icon_color: blue
+                    content_info: state
+                  - type: light
+                    entity: light.lamps_sink
+                    icon: mdi:track-light
+                    use_light_color: true
+
+          # Master Bedroom Card
+          - type: vertical-stack
+            cards:
+              - type: custom:mushroom-title-card
+                title: Master Bedroom
+                subtitle: Zeh & Rachael
+              - type: grid
+                square: false
+                columns: 2
+                cards:
+                  - type: custom:mushroom-light-card
+                    entity: light.fan_light_master_bedroom
+                    name: Ceiling
+                    layout: horizontal
+                    use_light_color: true
+                    show_brightness_control: true
+                  - type: custom:mushroom-fan-card
+                    entity: fan.fan_light_master_bedroom
+                    name: Fan
+                    layout: horizontal
+                    icon_animation: true
+              - type: grid
+                square: false
+                columns: 2
+                cards:
+                  - type: custom:mushroom-light-card
+                    entity: light.light_master_bedroom_zeh
+                    name: Zeh
+                    layout: vertical
+                    use_light_color: true
+                  - type: custom:mushroom-light-card
+                    entity: light.light_master_bedroom_rachael
+                    name: Rachael
+                    layout: vertical
+                    use_light_color: true
+              - type: custom:mushroom-chips-card
+                chips:
+                  - type: entity
+                    entity: automation.sensor_mb
+                    icon: mdi:motion-sensor
+                    icon_color: blue
+                  - type: light
+                    entity: light.light_mb_wall
+                    icon: mdi:led-strip
+                    use_light_color: true
+
+          # Front Bedroom Card
+          - type: vertical-stack
+            cards:
+              - type: custom:mushroom-title-card
+                title: Front Bedroom
+              - type: grid
+                square: false
+                columns: 2
+                cards:
+                  - type: custom:mushroom-light-card
+                    entity: light.fan_light_front_bedroom
+                    name: Ceiling
+                    layout: horizontal
+                  - type: custom:mushroom-fan-card
+                    entity: fan.fan_light_front_bedroom
+                    name: Fan
+                    layout: horizontal
+                    icon_animation: true
+              - type: grid
+                square: false
+                columns: 2
+                cards:
+                  - type: custom:mushroom-light-card
+                    entity: light.light_front_bedroom_wall
+                    name: Wall
+                    layout: vertical
+                    use_light_color: true
+                  - type: custom:mushroom-light-card
+                    entity: light.light_front_bedroom_window
+                    name: Window
+                    layout: vertical
+                    use_light_color: true
+              - type: custom:mushroom-chips-card
+                chips:
+                  - type: entity
+                    entity: cover.project_screen_none
+                    icon: mdi:projector
+
+          # Office Card
+          - type: vertical-stack
+            cards:
+              - type: custom:mushroom-title-card
+                title: Office
+                subtitle: Workspace
+              - type: grid
+                square: false
+                columns: 3
+                cards:
+                  - type: custom:mushroom-light-card
+                    entity: light.fan_light_office
+                    name: Ceiling
+                    layout: vertical
+                  - type: custom:mushroom-light-card
+                    entity: light.light_office_zeh
+                    name: Zeh
+                    layout: vertical
+                    use_light_color: true
+                  - type: custom:mushroom-light-card
+                    entity: light.light_office_rachael
+                    name: Rachael
+                    layout: vertical
+                    use_light_color: true
+              - type: grid
+                square: false
+                columns: 2
+                cards:
+                  - type: custom:mushroom-fan-card
+                    entity: fan.fan_light_office
+                    name: Fan
+                    layout: horizontal
+                    icon_animation: true
+                  - type: custom:mushroom-fan-card
+                    entity: switch.lights_office_bathroom_switch_2
+                    name: Exhaust
+                    layout: horizontal
+                    icon: mdi:fan
+                    icon_animation: true
+              - type: custom:mushroom-chips-card
+                chips:
+                  - type: entity
+                    entity: lock.office_door
+                    icon: mdi:door-closed-lock
+                    icon_color: red
+                  - type: entity
+                    entity: binary_sensor.door_sensor_door
+                    icon: mdi:door
+                  - type: light
+                    entity: switch.my_computer
+                    icon: mdi:desktop-tower
+
+          # Outdoor Card
+          - type: vertical-stack
+            cards:
+              - type: custom:mushroom-title-card
+                title: Outdoor
+                subtitle: Backyard & Entry
+              - type: grid
+                square: false
+                columns: 2
+                cards:
+                  - type: custom:mushroom-light-card
+                    entity: switch.light_front_door
+                    name: Entry
+                    layout: horizontal
+                  - type: custom:mushroom-light-card
+                    entity: switch.light_garage
+                    name: Garage
+                    layout: horizontal
+                  - type: custom:mushroom-light-card
+                    entity: switch.lights_dinning_outside
+                    name: Dining Out
+                    layout: horizontal
+                  - type: custom:mushroom-light-card
+                    entity: switch.light_laundry_outside
+                    name: Laundry Out
+                    layout: horizontal
+                  - type: custom:mushroom-light-card
+                    entity: switch.lights_dinning_garden
+                    name: Garden
+                    layout: horizontal
+                  - type: custom:mushroom-light-card
+                    entity: light.light_office_path
+                    name: Office Path
+                    layout: horizontal
+
+      # Live Cameras - Compact Grid
+      - type: vertical-stack
+        cards:
+          - type: custom:mushroom-title-card
+            title: Cameras
+            subtitle: Live View
+          - type: grid
+            square: false
+            columns: 2
+            cards:
+              - type: picture-entity
+                entity: camera.front
+                camera_image: camera.front
+                camera_view: auto
+                show_name: false
+                show_state: false
+                aspect_ratio: '16:9'
+                tap_action:
+                  action: more-info
+              - type: picture-entity
+                entity: camera.office
+                camera_image: camera.office
+                camera_view: auto
+                show_name: false
+                show_state: false
+                aspect_ratio: '16:9'
+                tap_action:
+                  action: more-info
+              - type: picture-entity
+                entity: camera.garden
+                camera_image: camera.garden
+                camera_view: auto
+                show_name: false
+                show_state: false
+                aspect_ratio: '16:9'
+                tap_action:
+                  action: more-info
+              - type: picture-entity
+                entity: camera.side
+                camera_image: camera.side
+                camera_view: auto
+                show_name: false
+                show_state: false
+                aspect_ratio: '16:9'
+                tap_action:
+                  action: more-info
+
+      # Currently On - Dynamic
+      - type: vertical-stack
+        cards:
+          - type: custom:mushroom-title-card
+            title: Currently On
+            subtitle: Active Lights & Fans
+          - type: custom:auto-entities
+            card:
+              type: entities
+              show_header_toggle: false
+            filter:
+              include:
+                - domain: light
+                  state: 'on'
+                  options:
+                    secondary_info: brightness
+                - domain: fan
+                  state: 'on'
+                  options:
+                    secondary_info: percentage
+                - domain: switch
+                  state: 'on'
+                  entity_id: 'switch.light_*'
+            sort:
+              method: friendly_name
+            show_empty: false
+
+      # Security Status
+      - type: vertical-stack
+        cards:
+          - type: custom:mushroom-title-card
+            title: Security
+            subtitle: Sensors & Doors
+          - type: grid
+            square: false
+            columns: 4
+            cards:
+              - type: custom:mushroom-entity-card
+                entity: binary_sensor.front_door_opening
+                name: Front
+                layout: vertical
+              - type: custom:mushroom-entity-card
+                entity: binary_sensor.door_laundry_opening
+                name: Laundry
+                layout: vertical
+              - type: custom:mushroom-entity-card
+                entity: binary_sensor.door_garage_opening
+                name: Garage
+                layout: vertical
+              - type: custom:mushroom-entity-card
+                entity: binary_sensor.door_sensor_door
+                name: Office
+                layout: vertical
+          - type: custom:mushroom-chips-card
+            chips:
+              - type: entity
+                entity: sensor.front_battery
+                icon: mdi:battery
+              - type: entity
+                entity: sensor.office_battery
+                icon: mdi:battery
+              - type: entity
+                entity: sensor.garden_battery
+                icon: mdi:battery
+              - type: entity
+                entity: sensor.side_battery
+                icon: mdi:battery
+
+  - title: All Lights
+    icon: mdi:lightbulb-group
+    path: lights
+    theme: Mushroom Shadow
+    cards:
+      - type: custom:auto-entities
+        card:
+          type: entities
+          title: All Lights
+          show_header_toggle: true
+        filter:
+          include:
+            - domain: light
+        sort:
+          method: friendly_name
+      - type: custom:auto-entities
+        card:
+          type: entities
+          title: Switches
+        filter:
+          include:
+            - domain: switch
+              entity_id: 'switch.light_*'
+        sort:
+          method: friendly_name

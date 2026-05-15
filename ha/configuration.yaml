@@ -1,0 +1,76 @@
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
+  # extra_module_url: []
+
+python_script:
+
+rest_command:
+  remote_shutdown:
+    url: "https://home.zeh.me/shutdown"
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+bluetooth:
+zeroconf:
+
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - "127.0.0.1"
+    - "10.0.0.10"
+    - "10.152.0.2"
+    - "100.89.57.126"
+    - "100.98.125.88"
+    - "100.104.5.96"
+    - "139.99.135.134"
+
+logger:
+  default: info
+  logs:
+    tuya_ot: debug
+
+homeassistant:
+  name: Home
+  latitude: -20.284921443527516
+  longitude: 148.72656295154704
+  elevation: 12
+  unit_system: metric
+  currency: AUD
+  country: AU
+  time_zone: "Australia/Brisbane"
+  external_url: "https://home.zeh.me"
+  internal_url: "https://moonlight.zeh.me"
+  customize_glob:
+    sensor.gosungrow_*_name:
+      state_class: none
+    sensor.gosungrow_*_sn:
+      state_class: none
+    sensor.gosungrow_*_location:
+      state_class: none
+    sensor.gosungrow_*_model_code:
+      state_class: none
+    sensor.gosungrow_*_timezone:
+      state_class: none
+    sensor.gosungrow_*_holder:
+      state_class: none
+
+recorder:
+  db_url: mysql://homeassistant:ha_mig_2026_secure!@core-mariadb/homeassistant?charset=utf8mb4
+  exclude:
+    entity_globs:
+      - sensor.everything_presence_*_target_*
+      - sensor.everything_presence_*_x
+      - sensor.everything_presence_*_y
+      - sensor.everything_presence_*_speed
+      - sensor.everything_presence_*_resolution
+      - sensor.everything_presence_*_fps
+      - sensor.sensor_presence_*_target_*
+      - sensor.kitchen_hps_distance
+
+template: !include templates.yaml

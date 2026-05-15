@@ -1,0 +1,11 @@
+modern_v3:
+  title: Modern Home V3
+  icon: mdi:home-modern
+  mode: yaml
+  filename: dashboard-v3-modern.yaml
+
+asdrubal_view:
+  title: Asdrubal View
+  icon: mdi:robot-love-outline
+  mode: yaml
+  filename: asdrubal-view.yaml

@@ -1,0 +1,213 @@
+title: Modern Home V3
+theme: default
+views:
+  - title: Home Overview
+    icon: mdi:home
+    path: home
+    badges:
+      - entity: weather.jubilee_pocket
+      - entity: binary_sensor.front_door_opening
+      - entity: lock.office_door
+    cards:
+      # Weather Section
+      - type: horizontal-stack
+        cards:
+          - type: weather-forecast
+            entity: weather.jubilee_pocket
+            name: Jubilee Pocket
+            show_forecast: true
+          - type: glance
+            title: Weather Details
+            entities:
+              - entity: sensor.jubilee_pocket_temp_min_0
+                name: Min
+              - entity: sensor.jubilee_pocket_temp_max_0
+                name: Max
+              - entity: sensor.jubilee_pocket_rain_chance_0
+                name: Rain
+      # Quick Scenes
+      - type: entities
+        title: Quick Scenes
+        show_header_toggle: false
+        entities:
+          - entity: script.work_has_started
+            name: Work Started
+            icon: mdi:briefcase
+          - entity: script.work_is_done
+            name: Work Done
+            icon: mdi:home
+          - entity: script.house_off
+            name: House Off
+            icon: mdi:power
+          - entity: script.off_if_not_occupied
+            name: Sleep Mode
+            icon: mdi:bed
+      # Climate Control
+      - type: vertical-stack
+        cards:
+          - type: thermostat
+            entity: climate.master_bedroom_aircon
+            name: Master Bedroom AC
+          - type: glance
+            title: Climate Status
+            entities:
+              - entity: sensor.master_bedroom_aircon_temperature
+                name: Room
+              - entity: sensor.master_bedroom_aircon_humidity
+                name: Humidity
+              - entity: sensor.master_bedroom_aircon_power
+                name: Power
+              - entity: sensor.master_bedroom_aircon_energy
+                name: Energy
+      # Lighting Control
+      - type: entities
+        title: Lighting
+        show_header_toggle: true
+        entities:
+          - type: section
+            label: Living Area
+          - entity: light.light_lounge_vitrola_floor
+            name: Vitrola Floor
+            icon: mdi:floor-lamp
+            type: light
+          - entity: light.light_lounge_sofa
+            name: Sofa
+            icon: mdi:sofa
+            type: light
+          - entity: light.light_lounge_woodcraft
+            name: Woodcraft
+            icon: mdi:table-furniture
+            type: light
+          - entity: light.light_lounge_rattan
+            name: Rattan
+            icon: mdi:lamp
+            type: light
+          - entity: switch.light_garden
+            name: Garden
+            icon: mdi:light-flood-down
+          - type: section
+            label: Office
+          - entity: switch.smart_wi_fi_power_board_c0768_outlet1
+            name: Ultra-wide Monitor
+            icon: mdi:monitor-screenshot
+          - entity: switch.smart_wi_fi_power_board_c0768_outlet2
+            name: Vertical Monitor
+            icon: mdi:monitor-vertical
+          - entity: switch.smart_wi_fi_power_board_c0768_outlet3
+            name: Main Monitor
+            icon: mdi:monitor
+          - entity: switch.smart_wi_fi_power_board_c0768_outlet4
+            name: Soundbar
+            icon: mdi:soundbar
+      # Media Control
+      - type: vertical-stack
+        cards:
+          - type: media-control
+            entity: media_player.lounge_soundbar
+            name: Lounge Soundbar
+          - type: media-control
+            entity: media_player.fb_soundbar_2
+            name: Front Bedroom Soundbar
+      # Security Cameras
+      - type: horizontal-stack
+        cards:
+          - type: picture-glance
+            camera_view: live
+            camera_image: camera.garden_live_view
+            name: Garden
+          - type: picture-glance
+            camera_view: live
+            camera_image: camera.front_live_view
+            name: Front Door
+          - type: picture-glance
+            camera_view: live
+            camera_image: camera.office_live_view
+            name: Office
+      # Security Sensors
+      - type: glance
+        title: Security Status
+        columns: 4
+        entities:
+          - entity: binary_sensor.front_door_opening
+            name: Front Door
+            icon: mdi:door
+          - entity: binary_sensor.door_laundry_opening
+            name: Laundry
+            icon: mdi:door-closed
+          - entity: binary_sensor.door_garage_opening
+            name: Garage
+            icon: mdi:garage
+          - entity: lock.office_door
+            name: Office
+            icon: mdi:lock
+      # Motion Sensors
+      - type: glance
+        title: Motion Detection
+        columns: 4
+        entities:
+          - entity: binary_sensor.presence_sensor_fp2_f6f1_presence_sensor_1
+            name: MB
+            icon: mdi:motion-sensor
+          - entity: binary_sensor.presence_sensor_fp2_4061_presence_sensor_1
+            name: Dining
+            icon: mdi:motion-sensor
+          - entity: binary_sensor.presence_sensor_fp2_a584_presence_sensor_1
+            name: Lounge
+            icon: mdi:motion-sensor
+          - entity: binary_sensor.presence_sensor_fp2_115e_presence_sensor_2
+            name: Office
+            icon: mdi:motion-sensor
+      # Camera Battery Status
+      - type: glance
+        title: Camera Batteries
+        columns: 4
+        entities:
+          - entity: sensor.garden_battery
+            name: Garden
+            icon: mdi:battery
+          - entity: sensor.office_battery
+            name: Office
+            icon: mdi:battery
+          - entity: sensor.front_battery
+            name: Front
+            icon: mdi:battery
+          - entity: sensor.side_battery
+            name: Side
+            icon: mdi:battery
+      # Appliances
+      - type: entities
+        title: Appliances
+        show_header_toggle: false
+        entities:
+          - entity: switch.dishwasher_power
+            name: Dishwasher
+            icon: mdi:dishwasher
+          - entity: select.dishwasher_active_program
+            name: Program
+            icon: mdi:tune
+          - entity: sensor.dishwasher_operation_state
+            name: Status
+            icon: mdi:information
+          - entity: switch.smart_wi_fi_plug_cc084
+            name: Laundry Charger
+            icon: mdi:battery-charging
+          - entity: switch.water_pump
+            name: Water Pump
+            icon: mdi:water-pump
+      # Temperature History
+      - type: history-graph
+        title: Temperature History (24h)
+        hours_to_show: 24
+        entities:
+          - entity: weather.jubilee_pocket
+            name: Outside
+          - entity: sensor.master_bedroom_aircon_temperature
+            name: MB Room
+      # Activity Log
+      - type: logbook
+        title: Recent Activity
+        hours_to_show: 8
+        entities:
+          - entity: binary_sensor.front_door_opening
+          - entity: lock.office_door
+          - entity: binary_sensor.presence_sensor_fp2_f6f1_presence_sensor_1

@@ -1,0 +1,9 @@
+- binary_sensor:
+    - name: Front Bedroom Occupied
+      device_class: occupancy
+      delay_off: "00:02:00"
+      state: >
+        {{ is_state('binary_sensor.front_bedroom_sensor_motion', 'on')
+           or is_state('binary_sensor.sensors_fb', 'on')
+           or is_state('media_player.front_bedroom_tv', 'on')
+           or is_state('media_player.front_bedroom_tv', 'playing') }}

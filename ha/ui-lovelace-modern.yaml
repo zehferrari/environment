@@ -1,0 +1,90 @@
+title: Modern Home
+views:
+  - title: Home Overview
+    path: home
+    icon: mdi:home
+    badges:
+      - entity: weather.jubilee_pocket
+      - entity: binary_sensor.front_door_opening
+      - entity: lock.office_door
+    cards:
+      - type: weather-forecast
+        entity: weather.jubilee_pocket
+        name: Jubilee Pocket
+      - type: entities
+        title: Quick Scenes
+        entities:
+          - script.work_has_started
+          - script.work_is_done
+          - script.house_off
+          - script.off_if_not_occupied
+      - type: thermostat
+        entity: climate.master_bedroom_aircon
+      - type: glance
+        title: Status
+        columns: 4
+        entities:
+          - sensor.master_bedroom_aircon_temperature
+          - sensor.master_bedroom_aircon_humidity
+          - sensor.master_bedroom_aircon_power
+          - sensor.master_bedroom_aircon_energy
+      - type: entities
+        title: Lights
+        show_header_toggle: true
+        entities:
+          - light.light_lounge_vitrola_floor
+          - light.light_lounge_sofa
+          - light.light_lounge_woodcraft
+          - light.light_lounge_rattan
+          - switch.light_garden
+          - switch.smart_wi_fi_power_board_c0768_outlet1
+          - switch.smart_wi_fi_power_board_c0768_outlet2
+          - switch.smart_wi_fi_power_board_c0768_outlet3
+          - switch.smart_wi_fi_power_board_c0768_outlet4
+      - type: media-control
+        entity: media_player.lounge_soundbar
+      - type: picture-glance
+        camera_view: live
+        camera_image: camera.garden_live_view
+        name: Garden
+      - type: picture-glance
+        camera_view: live
+        camera_image: camera.front_live_view
+        name: Front Door
+      - type: picture-glance
+        camera_view: live
+        camera_image: camera.office_live_view
+        name: Office
+      - type: glance
+        title: Security
+        columns: 4
+        entities:
+          - binary_sensor.front_door_opening
+          - binary_sensor.door_laundry_opening
+          - binary_sensor.door_garage_opening
+          - lock.office_door
+      - type: entities
+        title: Motion Sensors
+        entities:
+          - binary_sensor.presence_sensor_fp2_f6f1_presence_sensor_1
+          - binary_sensor.presence_sensor_fp2_4061_presence_sensor_1
+          - binary_sensor.presence_sensor_fp2_a584_presence_sensor_1
+          - binary_sensor.presence_sensor_fp2_115e_presence_sensor_2
+      - type: entities
+        title: Dishwasher
+        entities:
+          - switch.dishwasher_power
+          - select.dishwasher_active_program
+          - sensor.dishwasher_operation_state
+      - type: history-graph
+        title: Temperature
+        hours_to_show: 24
+        entities:
+          - weather.jubilee_pocket
+          - sensor.master_bedroom_aircon_temperature
+      - type: logbook
+        title: Activity
+        hours_to_show: 8
+        entities:
+          - binary_sensor.front_door_opening
+          - lock.office_door

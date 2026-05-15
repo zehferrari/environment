@@ -1,0 +1,98 @@
+# Automation: Stop Grid Charging When Not Needed
+# File: /config/automations/battery_stop_grid_charging.yaml
+# Status: DISABLED by default - enable when ready
+
+alias: "Stop Grid Charging - Battery Full or Sunny"
+description: |
+  Stop grid charging when:
+  - Battery SOC is high (> 85%)
+  - OR weather is sunny (no longer cloudy)
+  - OR solar generation is sufficient
+  This saves money by avoiding unnecessary grid power.
+
+id: "stop_grid_charging_when_not_needed"
+
+# Start DISABLED - enable manually when ready
+enabled: false
+
+# Triggers: Check every 15 minutes during charging hours
+trigger:
+  - platform: time
+    at: "14:00:00"
+    id: "check_afternoon"
+  - platform: time
+    at: "15:00:00"
+    id: "check_afternoon_2"
+  - platform: time
+    at: "16:00:00"
+    id: "check_afternoon_3"
+  - platform: time
+    at: "17:00:00"
+    id: "check_afternoon_4"
+  - platform: time
+    at: "18:00:00"
+    id: "check_evening"
+  - platform: time
+    at: "19:00:00"
+    id: "check_evening_2"
+  - platform: time
+    at: "20:00:00"
+    id: "check_evening_3"
+
+# Alternative: Trigger when battery reaches high SOC
+#  - platform: numeric_state
+#    entity_id: sensor.gosungrow_battery_soc
+#    above: 85
+
+# Conditions: Stop charging if battery is good OR weather improved
+condition:
+  - condition: or
+    conditions:
+      # Condition 1: Battery SOC is high (> 85%)
+      - condition: numeric_state
+        entity_id: sensor.gosungrow_battery_soc
+        above: 85
+
+      # Condition 2: Weather is sunny/clear (solar will be good)
+      - condition: or
+          conditions:
+            - condition: state
+              entity_id: sensor.weather_condition
+              state: "sunny"
+            - condition: state
+              entity_id: sensor.weather_condition
+              state: "clear"
+            - condition: state
+              entity_id: sensor.weather_condition
+              state: "partlycloudy"
+
+      # Condition 3: Solar generation is high (> 1000W)
+      - condition: numeric_state
+        entity_id: sensor.gosungrow_solar_power  # Adjust to your solar sensor
+        above: 1000
+
+# Actions: Disable grid charging
+action:
+  # Action 1: Turn off grid charging
+  - action: switch.turn_off
+    entity_id: switch.gosungrow_grid_charging  # Adjust to your grid charge switch
+
+  # Action 2: Send notification (optional)
+  - action: notify.notify
+    data:
+      title: "Grid Charging Stopped"
+      message: |
+        Battery SOC: {{ states('sensor.gosungrow_battery_soc') }}%
+        Weather: {{ states('sensor.weather_condition') }}
+        Solar: {{ states('sensor.gosungrow_solar_power') }}W
+        Grid charging stopped - battery/weather conditions improved.
+
+  # Action 3: Log to HA logger
+  - action: system_log.write
+    data:
+      message: "Grid charging stopped: SOC={{ states('sensor.gosungrow_battery_soc') }}%, Weather={{ states('sensor.weather_condition') }}, Solar={{ states('sensor.gosungrow_solar_power') }}W"
+      logger: logger.automation_battery
+      level: info
+
+mode: single
+max_exceeded: 4

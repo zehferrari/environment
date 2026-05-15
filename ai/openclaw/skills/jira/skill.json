@@ -1,0 +1,23 @@
+{
+  "name": "jira",
+  "description": "Access Jira to manage issues, add comments, and update ticket status. Token is read securely from local file.",
+  "tools": [
+    {
+      "name": "list_my_issues",
+      "description": "List issues assigned to me that are not done/closed.",
+      "script": "jira-my-issues.js"
+    },
+    {
+      "name": "add_comment",
+      "description": "Add a comment to a Jira issue.",
+      "script": "jira-comment.js",
+      "args": ["issueKey", "comment"]
+    },
+    {
+      "name": "transition_issue",
+      "description": "Change the status of a Jira issue (e.g., To Do -> In Progress -> In Review -> Done).",
+      "script": "jira-transition.js",
+      "args": ["issueKey", "newStatus"]
+    }
+  ]
+}

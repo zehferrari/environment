@@ -1,0 +1,2353 @@
+- id: '1691142461301'
+  alias: OnOff-CommonArea
+  description: ''
+  triggers:
+  - type: turned_on
+    device_id: bdb573a60665e8e482c01da5d303a2e0
+    entity_id: 9cf08a7d2710ee59a35b18411de3a1d3
+    domain: light
+    trigger: device
+    id: In
+  - type: turned_off
+    device_id: bdb573a60665e8e482c01da5d303a2e0
+    entity_id: 9cf08a7d2710ee59a35b18411de3a1d3
+    domain: light
+    trigger: device
+    id: Out
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 0
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - In
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id:
+          - light.lamps_dinning
+        action: light.turn_on
+      - type: turn_on
+        device_id: 37a9fe3346460b3469fb644cbad8d2cb
+        entity_id: 2c7e818f7101e7c8a649d656eb1a30b3
+        domain: switch
+    - conditions:
+      - condition: trigger
+        id:
+        - Out
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id:
+          - light.lamps_dinning
+        action: light.turn_off
+      - type: turn_off
+        device_id: 37a9fe3346460b3469fb644cbad8d2cb
+        entity_id: 2c7e818f7101e7c8a649d656eb1a30b3
+        domain: switch
+  mode: single
+- id: '1691288220994'
+  alias: OnOff-Lounge
+  description: ''
+  triggers:
+  - type: turned_on
+    device_id: 628c67c449fbde854689189bb3854518
+    entity_id: ee6a3acbf8446683a58aae638fdd8cd5
+    domain: light
+    trigger: device
+    id: In
+  - type: turned_off
+    device_id: 628c67c449fbde854689189bb3854518
+    entity_id: ee6a3acbf8446683a58aae638fdd8cd5
+    domain: light
+    trigger: device
+    id: Out
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - In
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id: light.lamps_lounge
+        action: light.turn_on
+    - conditions:
+      - condition: trigger
+        id:
+        - Out
+      sequence:
+      - action: light.turn_off
+        metadata: {}
+        target:
+          entity_id: light.lamps_lounge
+        data: {}
+  mode: single
+- id: '1694231701625'
+  alias: Webhook - Work Is Done
+  description: ''
+  trigger:
+  - platform: webhook
+    allowed_methods:
+    - GET
+    - POST
+    - HEAD
+    - PUT
+    local_only: false
+    webhook_id: -O2pY5uyaM_dfw9-pHnLngnur
+  condition: []
+  action:
+  - service: script.work_is_done
+    data: {}
+  mode: single
+- id: '1694319065160'
+  alias: Webhook - Work has started
+  description: ''
+  triggers:
+  - allowed_methods:
+    - GET
+    local_only: true
+    webhook_id: -RUvXLFknODdBscfW9OqkbM5n
+    trigger: webhook
+  conditions: []
+  actions:
+  - data: {}
+    action: script.work_has_started
+  mode: single
+- id: '1707608471947'
+  alias: OnOff-Exhaust
+  description: ''
+  trigger:
+  - platform: device
+    type: turned_on
+    device_id: f9e7dbc956a8451405044e922ade4ece
+    entity_id: b28400bc36874784ce158ca8d995737f
+    domain: switch
+  condition: []
+  action:
+  - type: turn_off
+    device_id: f9e7dbc956a8451405044e922ade4ece
+    entity_id: b28400bc36874784ce158ca8d995737f
+    domain: switch
+  - if:
+    - condition: state
+      entity_id: light.light_bathroom_lamp
+      state: 'on'
+    then:
+    - service: light.turn_off
+      metadata: {}
+      data: {}
+      target:
+        entity_id: light.light_bathroom_lamp
+    else:
+    - service: automation.turn_off
+      metadata: {}
+      data:
+        stop_actions: true
+      target:
+        entity_id: automation.toilet_on
+    - service: light.turn_on
+      metadata: {}
+      data: {}
+      target:
+        entity_id: light.light_bathroom_lamp
+    - service: automation.turn_on
+      target:
+        entity_id:
+        - automation.toilet_on
+      data: {}
+  mode: single
+- id: '1708139770183'
+  alias: Water Pump On
+  description: ''
+  triggers:
+  - at: 09:00:00
+    trigger: time
+  conditions: []
+  actions:
+  - metadata: {}
+    data: {}
+    target:
+      entity_id: switch.water_pump
+    action: switch.turn_on
+- id: '1708141045605'
+  alias: Water Pump Off
+  description: ''
+  triggers:
+  - at: '16:00:00'
+    trigger: time
+  conditions: []
+  actions:
+  - metadata: {}
+    data: {}
+    target:
+      entity_id: switch.water_pump
+    action: switch.turn_off
+  mode: single
+- id: '1708151214794'
+  alias: zFold3 Battery Down
+  description: ''
+  trigger:
+  - platform: numeric_state
+    entity_id:
+    - sensor.zehbedside_battery_level
+    below: 10
+  condition:
+  - condition: state
+    entity_id: switch.smart_wi_fi_plug_cbae0
+    state: 'off'
+  action:
+  - service: switch.turn_on
+    metadata: {}
+    data: {}
+    target:
+      entity_id: switch.smart_wi_fi_plug_cbae0
+  mode: single
+- id: '1709992759392'
+  alias: OnOff-Toilet
+  description: ''
+  triggers:
+  - type: changed_states
+    device_id: e084f5a984057215ce7bea9c0626a8b7
+    entity_id: d130c2c64106952e44d9873821278731
+    domain: switch
+    trigger: device
+  conditions: []
+  actions:
+  - if:
+    - condition: state
+      entity_id: switch.light_toilet
+      state: 'on'
+    then:
+    - delay:
+        hours: 0
+        minutes: 5
+        seconds: 0
+        milliseconds: 0
+    - type: turn_off
+      device_id: e084f5a984057215ce7bea9c0626a8b7
+      entity_id: d130c2c64106952e44d9873821278731
+      domain: switch
+    else:
+    - if:
+      - condition: state
+        entity_id: light.light_bathroom_lamp
+        state: 'off'
+      then:
+      - type: turn_on
+        device_id: 82679c4dec44fa7aa25597f327915e77
+        entity_id: 2ba94879b282a03b882665ab2f0da0b2
+        domain: light
+      - delay:
+          hours: 0
+          minutes: 1
+          seconds: 45
+          milliseconds: 0
+      - type: turn_off
+        device_id: 82679c4dec44fa7aa25597f327915e77
+        entity_id: 2ba94879b282a03b882665ab2f0da0b2
+        domain: light
+  mode: restart
+- id: '1710291913121'
+  alias: OnOff-zSwitch
+  description: ''
+  triggers:
+  - entity_id:
+    - input_boolean.zswitch
+    trigger: state
+    to:
+    - 'on'
+    id: 'On'
+  - entity_id:
+    - input_boolean.zswitch
+    trigger: state
+    to:
+    - 'off'
+    id: 'Off'
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - 'On'
+      sequence:
+      - target:
+          device_id:
+          - 0178c734714f1f38f9228cadc8ae9f95
+        data: {}
+        action: switch.turn_on
+    - conditions:
+      - condition: trigger
+        id:
+        - 'Off'
+      sequence:
+      - target:
+          device_id:
+          - 0178c734714f1f38f9228cadc8ae9f95
+        data: {}
+        action: switch.turn_off
+  mode: single
+- id: '1713346457533'
+  alias: Door Laundry Opened
+  description: ''
+  triggers:
+  - type: opened
+    device_id: 7d470f38fcf1bfe4a10bffa4e9657d03
+    entity_id: 9639fb95500758b995f5f07d680f6de5
+    domain: binary_sensor
+    id: Open
+    trigger: device
+  conditions: []
+  actions:
+  - if:
+    - condition: device
+      type: is_on
+      device_id: 11de946aa551eb88c1e3589a10fa4228
+      entity_id: dea06ea40f2e623d503474d4980aa500
+      domain: switch
+    then:
+    - if:
+      - condition: sun
+        before: sunrise
+        after: sunset
+      then:
+      - type: turn_on
+        device_id: 39de6b9b3d0f28ed2e860250cc60fb5e
+        entity_id: 141d807b36bfc8356570d8040143fdd3
+        domain: switch
+      - type: turn_on
+        device_id: 4275e0ef8338c83e8c56874529cc082a
+        entity_id: 910255b3e8f61f7bd9d9767882f69fda
+        domain: switch
+    else:
+    - metadata: {}
+      data: {}
+      target:
+        entity_id:
+        - switch.light_laundry
+        - switch.lights_dinning_sink
+      action: switch.turn_on
+    - if:
+      - condition: time
+        after: 08:00:00
+        before: '20:30:00'
+      then:
+      - type: turn_on
+        device_id: 37a9fe3346460b3469fb644cbad8d2cb
+        entity_id: 1ea74b0e7d2bd214314ed1573b312924
+        domain: switch
+    - type: turn_off
+      device_id: 39de6b9b3d0f28ed2e860250cc60fb5e
+      entity_id: 141d807b36bfc8356570d8040143fdd3
+      domain: switch
+    - type: turn_off
+      device_id: 4275e0ef8338c83e8c56874529cc082a
+      entity_id: 910255b3e8f61f7bd9d9767882f69fda
+      domain: switch
+  mode: single
+- id: '1714216972231'
+  alias: On-LaundryCharger
+  description: ''
+  trigger:
+  - platform: state
+    entity_id:
+    - switch.smart_wi_fi_plug_cc084
+    to: 'on'
+  condition: []
+  action:
+  - delay:
+      hours: 2
+      minutes: 0
+      seconds: 0
+      milliseconds: 0
+  - service: switch.turn_off
+    metadata: {}
+    data: {}
+    target:
+      entity_id: switch.smart_wi_fi_plug_cc084
+  mode: single
+- id: '1715496766195'
+  alias: Fan Auto Speed
+  description: ''
+  trigger:
+  - platform: state
+    entity_id:
+    - fan.fan_light_office
+    - fan.fan_light_dinning
+    - fan.fan_light_lounge
+    - fan.fan_light_front_bedroom
+    - fan.fan_light_kids_bedroom
+    - fan.fan_light_master_bedroom
+    to: 'on'
+    from: 'off'
+  condition: []
+  action:
+  - service: script.fan_auto_speed
+    metadata: {}
+    data:
+      fan_entity_id: '{{ trigger.entity_id }}'
+  mode: single
+- id: '1716820085756'
+  alias: zFold3 Battery Up
+  description: ''
+  trigger:
+  - platform: numeric_state
+    entity_id:
+    - sensor.zehbedside_battery_level
+    above: 95
+  condition:
+  - condition: state
+    entity_id: switch.smart_wi_fi_plug_cbae0
+    state: 'on'
+  action:
+  - service: switch.turn_off
+    target:
+      entity_id:
+      - switch.smart_wi_fi_plug_cbae0
+    data: {}
+  mode: single
+- id: '1718026169100'
+  alias: Sensor Sofa
+  description: ''
+  triggers:
+  - entity_id:
+    - binary_sensor.sofa
+    to: 'on'
+    id: In
+    trigger: state
+  - entity_id:
+    - binary_sensor.sofa
+    to: 'off'
+    id: Out
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+    trigger: state
+    enabled: true
+  conditions:
+  - condition: time
+    before: 07:00:00
+  - condition: state
+    entity_id: light.fan_light_lounge
+    state:
+    - 'off'
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - In
+      - condition: device
+        type: is_off
+        device_id: 9be2b7adfc890a40c4b8637e5c9c4a64
+        entity_id: c5b15d9ada47623148f19cb6836c2ad6
+        domain: light
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id:
+          - light.light_lounge_sofa
+        action: light.turn_on
+    - conditions:
+      - condition: trigger
+        id:
+        - Out
+      - condition: device
+        type: is_on
+        device_id: 9be2b7adfc890a40c4b8637e5c9c4a64
+        entity_id: c5b15d9ada47623148f19cb6836c2ad6
+        domain: light
+      sequence:
+      - data: {}
+        target:
+          entity_id: light.light_lounge_sofa
+        action: light.turn_off
+  mode: restart
+- id: '1718026390601'
+  alias: Sensor Kitchen
+  description: ''
+  triggers:
+  - entity_id:
+    - binary_sensor.kitchen
+    to: 'on'
+    id: In
+    trigger: state
+  - entity_id:
+    - binary_sensor.kitchen
+    to: 'off'
+    id: Out
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+    trigger: state
+  conditions:
+  - condition: state
+    entity_id: light.fan_light_dinning
+    state:
+    - 'off'
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - In
+      sequence:
+      - type: turn_on
+        device_id: 37a9fe3346460b3469fb644cbad8d2cb
+        entity_id: 2c7e818f7101e7c8a649d656eb1a30b3
+        domain: switch
+      - if:
+        - condition: time
+          after: 07:00:00
+          before: '19:00:00'
+        then:
+        - type: turn_on
+          device_id: 37a9fe3346460b3469fb644cbad8d2cb
+          entity_id: 1ea74b0e7d2bd214314ed1573b312924
+          domain: switch
+    - conditions:
+      - condition: trigger
+        id:
+        - Out
+      sequence:
+      - type: turn_off
+        device_id: 37a9fe3346460b3469fb644cbad8d2cb
+        entity_id: 2c7e818f7101e7c8a649d656eb1a30b3
+        domain: switch
+      - type: turn_off
+        device_id: 37a9fe3346460b3469fb644cbad8d2cb
+        entity_id: 1ea74b0e7d2bd214314ed1573b312924
+        domain: switch
+  mode: single
+- id: '1718257852462'
+  alias: 'Sensor Front Bedroom '
+  description: 'Occupancy-based lighting: Only turns ON if room was empty. Turns OFF
+    when empty.'
+  triggers:
+  - entity_id: binary_sensor.front_bedroom_occupied
+    to: 'on'
+    id: Occupied
+    trigger: state
+  - entity_id: binary_sensor.front_bedroom_occupied
+    to: 'off'
+    id: Clear
+    trigger: state
+  conditions:
+  - condition: device
+    type: is_off
+    device_id: 4bf5adc3276f8b12db07287070446ce1
+    entity_id: 673c45c3cdf3a9df423e1239ee40e4d5
+    domain: switch
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: Occupied
+      sequence:
+      - target:
+          entity_id: light.lamps_fb
+        action: light.turn_on
+        data: {}
+      - if:
+        - condition: time
+          after: 09:00:00
+          before: '21:00:00'
+        then:
+        - target:
+            entity_id: light.fan_light_front_bedroom
+          action: light.turn_on
+    - conditions:
+      - condition: trigger
+        id: Clear
+      sequence:
+      - target:
+          entity_id:
+          - light.lamps_fb
+          - light.fan_light_front_bedroom
+        action: light.turn_off
+  mode: single
+- id: '1718268571236'
+  alias: OnOff-ButtonMB
+  description: ''
+  triggers:
+  - device_id: 4cf63254c4bdd70e445590f8a0de26eb
+    domain: zha
+    type: remote_button_short_press
+    subtype: button_1
+    id: Single
+    trigger: device
+  - device_id: 4cf63254c4bdd70e445590f8a0de26eb
+    domain: zha
+    type: remote_button_double_press
+    subtype: button_1
+    id: Double
+    trigger: device
+  - device_id: 4cf63254c4bdd70e445590f8a0de26eb
+    domain: zha
+    type: remote_button_long_press
+    subtype: button_1
+    id: Long
+    trigger: device
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Single
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id: light.lamps_mb
+        action: light.toggle
+    - conditions:
+      - condition: trigger
+        id:
+        - Double
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id: fan.fan_light_master_bedroom
+        action: fan.toggle
+    - conditions:
+      - condition: trigger
+        id:
+        - Long
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id:
+          - light.light_corridor
+        action: light.turn_off
+      - metadata: {}
+        data: {}
+        target:
+          entity_id:
+          - switch.light_toilet
+        action: switch.turn_off
+      - delay:
+          hours: 0
+          minutes: 0
+          seconds: 1
+          milliseconds: 0
+      - type: turn_off
+        device_id: 82679c4dec44fa7aa25597f327915e77
+        entity_id: 2ba94879b282a03b882665ab2f0da0b2
+        domain: light
+      - metadata: {}
+        data: {}
+        action: script.off_if_not_occupied
+  mode: single
+- id: '1718290596866'
+  alias: Sensor Dining
+  triggers:
+  - entity_id:
+    - binary_sensor.presence_sensor_fp2_4061_presence_sensor_2
+    - binary_sensor.presence_sensor_fp2_4061_presence_sensor_5
+    to:
+    - 'on'
+    id: motion_on
+    trigger: state
+  - entity_id: binary_sensor.presence_sensor_fp2_4061_presence_sensor_2
+    to: 'off'
+    for: 00:00:30
+    id: motion_off
+    trigger: state
+  conditions:
+  - condition: state
+    entity_id: light.fan_light_dinning
+    state:
+    - 'off'
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: motion_on
+      sequence:
+      - choose:
+        - conditions:
+          - condition: time
+            after: 07:00:00
+            before: '19:00:00'
+          - condition: device
+            type: is_off
+            device_id: 37a9fe3346460b3469fb644cbad8d2cb
+            entity_id: f70e9520f0ca7161d53e819f7a74b7f1
+            domain: switch
+          sequence:
+          - target:
+              entity_id: switch.lights_dinning_table
+            action: switch.turn_on
+        - conditions:
+          - condition: state
+            entity_id: light.lamps_dinning
+            state:
+            - 'off'
+          sequence:
+          - target:
+              entity_id: light.lamps_dinning
+            action: light.turn_on
+    - conditions:
+      - condition: trigger
+        id: motion_off
+      sequence:
+      - target:
+          entity_id: switch.lights_dinning_table
+        action: switch.turn_off
+      - target:
+          entity_id: light.lamps_dinning
+        action: light.turn_off
+  mode: restart
+- id: '1718355814476'
+  alias: Sensor Garage
+  description: ''
+  triggers:
+  - entity_id:
+    - binary_sensor.garage_sensor_motion
+    id: Start
+    to: 'on'
+    from: 'off'
+    trigger: state
+  - entity_id:
+    - binary_sensor.garage_sensor_motion
+    id: Stop
+    to: 'off'
+    from: 'on'
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+    trigger: state
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Start
+      - condition: sun
+        after: sunset
+        before: sunrise
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          device_id:
+          - 549230fabae6a2ca12a0b96e4a7a90bd
+        action: switch.turn_on
+    - conditions:
+      - condition: trigger
+        id:
+        - Stop
+      - condition: state
+        entity_id: switch.light_garage
+        state: 'on'
+      sequence:
+      - target:
+          device_id:
+          - 549230fabae6a2ca12a0b96e4a7a90bd
+        data: {}
+        action: switch.turn_off
+  mode: single
+- id: '1718436688077'
+  alias: Sensor Office Light
+  description: ''
+  triggers:
+  - trigger: state
+    entity_id:
+    - binary_sensor.presence_sensor_fp2_115e_presence_sensor_2
+    from:
+    - 'off'
+    to:
+    - 'on'
+    id: In
+  - trigger: state
+    entity_id:
+    - binary_sensor.presence_sensor_fp2_115e_presence_sensor_2
+    id: Out
+    from:
+    - 'on'
+    to:
+    - 'off'
+    for:
+      hours: 0
+      minutes: 2
+      seconds: 0
+  conditions:
+  - condition: device
+    device_id: 352a95e84f6bb59952ffba38de387115
+    domain: lock
+    entity_id: a1afd45a6fb16a5fc43cce7b4dacf9db
+    type: is_unlocked
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - In
+      - condition: state
+        entity_id: light.lamps_office
+        state:
+        - 'off'
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id: light.lamps_office
+        action: light.turn_on
+    - conditions:
+      - condition: trigger
+        id:
+        - Out
+      - condition: state
+        entity_id: light.lamps_office
+        state:
+        - 'on'
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id:
+          - light.lamps_office
+          - light.fan_light_office
+        action: light.turn_off
+  mode: single
+- id: '1718449922493'
+  alias: Sensor Office Auto Lock
+  description: ''
+  triggers:
+  - trigger: state
+    entity_id:
+    - binary_sensor.presence_sensor_fp2_115e_presence_sensor_2
+    from:
+    - 'on'
+    to:
+    - 'off'
+    for:
+      hours: 0
+      minutes: 30
+      seconds: 0
+  conditions: []
+  actions:
+  - type: turn_off
+    device_id: b370afc3c39ded32b67f5a171c01a982
+    entity_id: 2a29e5c20075c0bd4a8ba47f96332178
+    domain: fan
+  - action: light.turn_off
+    metadata: {}
+    data: {}
+    target:
+      entity_id:
+      - light.lamps_office
+      - light.fan_light_office
+  - action: switch.turn_off
+    metadata: {}
+    data: {}
+    target:
+      entity_id:
+      - switch.lights_office_bathroom_switch_1
+      - switch.lights_office_bathroom_switch_2
+  - if:
+    - type: is_not_open
+      condition: device
+      device_id: 0207362bb7c803dcda2597432c7599a1
+      entity_id: binary_sensor.door_sensor_door
+      domain: binary_sensor
+    then:
+    - metadata: {}
+      data: {}
+      target:
+        entity_id: lock.office_door
+      action: lock.lock
+  mode: single
+- id: '1718686189937'
+  alias: Sensor Kids
+  description: ''
+  triggers:
+  - entity_id:
+    - binary_sensor.kids_sensor_motion
+    id: MotionStart
+    to:
+    - 'on'
+    trigger: state
+  - entity_id:
+    - binary_sensor.kids
+    id: MotionStop
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+    to:
+    - 'off'
+    trigger: state
+    enabled: true
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - MotionStart
+      - type: is_not_occupied
+        condition: device
+        device_id: 2038009f9a0f75da5e2d2ae3e955c2ac
+        entity_id: 12873371ed7059c80f4cb894c1170b48
+        domain: binary_sensor
+        for:
+          hours: 0
+          minutes: 1
+          seconds: 0
+        enabled: false
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id:
+          - light.light_kids_bedroom_abat_jour
+        action: light.turn_on
+      - if:
+        - condition: time
+          before: '19:00:00'
+          after: 08:00:00
+        then:
+        - type: turn_on
+          device_id: 2f884457f685656742552d4091d26cce
+          entity_id: bf3817ac2075cd98e0cce4cd8bacc5a2
+          domain: light
+    - conditions:
+      - condition: trigger
+        id:
+        - MotionStop
+      sequence:
+      - data: {}
+        target:
+          entity_id:
+          - light.light_kids_bedroom_abat_jour
+          - light.fan_light_kids_bedroom
+        action: light.turn_off
+  mode: single
+- id: '1718716615388'
+  alias: Daily Restart
+  description: 'Restart Home Assistant daily at 4:20 AM '
+  trigger:
+  - platform: time
+    at: 04:20:00
+  condition: []
+  action:
+  - service: homeassistant.restart
+    data: {}
+  mode: single
+- id: '1719233269132'
+  alias: Garage
+  description: ''
+  trigger:
+  - type: opened
+    platform: device
+    device_id: e43a3e08626c06ed0766104a67a42618
+    entity_id: 1139ec6815dd8014762040d561acb972
+    domain: binary_sensor
+    id: open
+  - type: not_opened
+    platform: device
+    device_id: e43a3e08626c06ed0766104a67a42618
+    entity_id: 1139ec6815dd8014762040d561acb972
+    domain: binary_sensor
+    id: close
+  condition: []
+  action:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - open
+      sequence:
+      - service: switch.turn_on
+        target:
+          entity_id: switch.light_garage
+        data: {}
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - close
+      sequence:
+      - delay:
+          hours: 0
+          minutes: 0
+          seconds: 15
+          milliseconds: 0
+      - service: switch.turn_off
+        target:
+          entity_id:
+          - switch.light_garage
+        data: {}
+  mode: single
+- id: '1719238620166'
+  alias: CA Lights
+  description: ''
+  trigger:
+  - platform: device
+    type: changed_states
+    device_id: 4bf5adc3276f8b12db07287070446ce1
+    entity_id: fa3bfa23a985d65eec7296028b9dce4f
+    domain: switch
+  condition: []
+  action:
+  - if:
+    - condition: device
+      type: is_on
+      device_id: 4bf5adc3276f8b12db07287070446ce1
+      entity_id: fa3bfa23a985d65eec7296028b9dce4f
+      domain: switch
+    then:
+    - service: switch.turn_on
+      metadata: {}
+      data: {}
+      target:
+        entity_id:
+        - switch.lights_dinning_table
+        - switch.lights_dinning_kitchen
+        - switch.light_lounge
+    else:
+    - service: switch.turn_off
+      target:
+        entity_id:
+        - switch.lights_dinning_table
+        - switch.lights_dinning_kitchen
+        - switch.light_lounge
+      data: {}
+  mode: single
+- id: '1719238919190'
+  alias: CA Fans
+  description: ''
+  trigger:
+  - platform: device
+    type: changed_states
+    device_id: 4bf5adc3276f8b12db07287070446ce1
+    entity_id: f9fc6e4935b56edb6dbe40b418738880
+    domain: switch
+  condition: []
+  action:
+  - if:
+    - condition: device
+      type: is_on
+      device_id: 4bf5adc3276f8b12db07287070446ce1
+      entity_id: f9fc6e4935b56edb6dbe40b418738880
+      domain: switch
+    then:
+    - service: fan.turn_on
+      metadata: {}
+      data: {}
+      target:
+        entity_id:
+        - fan.fan_light_dinning
+        - fan.fan_light_lounge
+    else:
+    - service: fan.turn_off
+      target:
+        entity_id:
+        - fan.fan_light_dinning
+        - fan.fan_light_lounge
+      data: {}
+  mode: single
+- id: '1719559540669'
+  alias: Restart of Motion Sensor Automations
+  description: ''
+  triggers:
+  - entity_id:
+    - automation.sensor_dinning
+    - automation.sensor_kitchen
+    - automation.sensor_ratan
+    - automation.sensor_sofa
+    - automation.sensor_vitrola
+    - automation.sensor_bathroom
+    from: 'on'
+    to: 'off'
+    trigger: state
+  conditions: []
+  actions:
+  - metadata: {}
+    data:
+      automation_entity_id: '{{ trigger.entity_id }}'
+    action: script.restart_motion_sensor_automations
+  mode: parallel
+- id: '1720318198151'
+  alias: OnOff-Garden
+  description: ''
+  triggers:
+  - type: turned_on
+    device_id: 4275e0ef8338c83e8c56874529cc082a
+    entity_id: 910255b3e8f61f7bd9d9767882f69fda
+    domain: switch
+    trigger: device
+    id: 'On'
+  - type: turned_off
+    device_id: 4275e0ef8338c83e8c56874529cc082a
+    entity_id: 910255b3e8f61f7bd9d9767882f69fda
+    domain: switch
+    trigger: device
+    id: 'Off'
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - 'On'
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id: switch.light_garden
+        action: switch.turn_on
+      - type: turn_on
+        device_id: 2434b7a05799c78549a5ab690ef1e907
+        entity_id: f07f07672bbdb031687dd78f3ec3864f
+        domain: light
+    - conditions:
+      - condition: trigger
+        id:
+        - 'Off'
+      sequence:
+      - type: turn_off
+        device_id: 073b4da551694d0799bf0e9d41697052
+        entity_id: f9129454b4fba37becc79933b6923d11
+        domain: switch
+      - type: turn_off
+        device_id: 2434b7a05799c78549a5ab690ef1e907
+        entity_id: f07f07672bbdb031687dd78f3ec3864f
+        domain: light
+  mode: single
+- id: '1720857492690'
+  alias: Sensor Laundry
+  description: ''
+  triggers:
+  - trigger: state
+    entity_id:
+    - binary_sensor.laundry
+    to: 'on'
+    id: Start
+  - trigger: state
+    entity_id:
+    - binary_sensor.laundry
+    to: 'off'
+    id: Stop
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Start
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          device_id:
+          - 11de946aa551eb88c1e3589a10fa4228
+        action: switch.turn_on
+    - conditions:
+      - condition: trigger
+        id:
+        - Stop
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          device_id:
+          - 11de946aa551eb88c1e3589a10fa4228
+        action: switch.turn_off
+  mode: single
+- id: '1721082369717'
+  alias: Sensor MB
+  description: ''
+  triggers:
+  - entity_id:
+    - binary_sensor.mb
+    enabled: true
+    id: In
+    trigger: state
+    to:
+    - 'on'
+  - entity_id:
+    - binary_sensor.mb
+    id: Out
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+    trigger: state
+    to:
+    - 'off'
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - In
+      - condition: state
+        entity_id: binary_sensor.corridor
+        state: 'on'
+        enabled: true
+      - condition: state
+        entity_id: light.lamps_mb
+        state:
+        - 'off'
+      sequence:
+      - choose:
+        - conditions:
+          - condition: time
+            after: '22:00:00'
+            before: 07:00:00
+          sequence:
+          - action: light.turn_on
+            metadata: {}
+            data:
+              rgb_color:
+              - 99
+              - 69
+              - 44
+              brightness_pct: '{{ 30 if now().hour >= 22 else 1 }}'
+            target:
+              device_id: ce5f983ccf0d7648fd090b7784b5e8e7
+          - wait_for_trigger:
+            - trigger: state
+              entity_id:
+              - binary_sensor.underbed
+              for:
+                hours: 0
+                minutes: 0
+                seconds: 5
+              from:
+              - 'on'
+              to:
+              - 'off'
+            timeout:
+              hours: 0
+              minutes: 0
+              seconds: 10
+              milliseconds: 0
+            enabled: true
+          - parallel:
+            - target:
+                entity_id:
+                - switch.light_toilet
+                - switch.lights_bathroom_light
+              action: switch.turn_off
+              data: {}
+            - target:
+                entity_id: light.light_corridor
+              action: light.turn_off
+              data: {}
+          - action: light.turn_off
+            metadata: {}
+            data: {}
+            target:
+              entity_id:
+              - light.light_bathroom_lamp
+              - light.light_mb_wall
+        - conditions:
+          - condition: state
+            entity_id: binary_sensor.presence_sensor_fp2_f6f1_presence_sensor_3
+            state:
+            - 'off'
+            enabled: true
+          sequence:
+          - target:
+              entity_id: light.lamps_mb
+            action: light.turn_on
+            data: {}
+          - if:
+            - condition: time
+              before: '21:00:00'
+              after: 09:00:00
+            then:
+            - target:
+                device_id: f08847fbe9cbe95dd8da19d54be352b7
+              action: light.turn_on
+              data: {}
+    - conditions:
+      - condition: trigger
+        id:
+        - Out
+      sequence:
+      - target:
+          entity_id:
+          - light.lamps_mb
+          - light.fan_light_master_bedroom
+          - light.light_mb_wall
+        data: {}
+        action: light.turn_off
+  mode: restart
+- id: '1721106849303'
+  alias: Sensor Ratan
+  description: ''
+  triggers:
+  - entity_id:
+    - binary_sensor.rattan
+    to: 'on'
+    id: Start
+    trigger: state
+  - entity_id:
+    - binary_sensor.rattan
+    to: 'off'
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+    id: Stop
+    trigger: state
+    enabled: true
+  conditions:
+  - condition: time
+    before: 07:00:00
+  - condition: state
+    entity_id: light.fan_light_lounge
+    state:
+    - 'off'
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Start
+      - condition: device
+        type: is_off
+        device_id: 80367ed1c1432d5df3bf63868b320285
+        entity_id: ae9bdeb9615e77a8566504ad81d04f24
+        domain: light
+      sequence:
+      - action: light.turn_on
+        metadata: {}
+        data: {}
+        target:
+          entity_id:
+          - light.light_lounge_rattan
+          - light.bamboo_rattan
+    - conditions:
+      - condition: trigger
+        id:
+        - Stop
+      - condition: device
+        type: is_on
+        device_id: 80367ed1c1432d5df3bf63868b320285
+        entity_id: ae9bdeb9615e77a8566504ad81d04f24
+        domain: light
+      sequence:
+      - action: light.turn_off
+        metadata: {}
+        data: {}
+        target:
+          entity_id:
+          - light.light_lounge_rattan
+          - light.bamboo_rattan
+  mode: single
+- id: '1721107511745'
+  alias: Sensor Corridor
+  description: ''
+  triggers:
+  - entity_id:
+    - binary_sensor.corridor
+    to:
+    - 'on'
+    trigger: state
+    id: In
+  - entity_id:
+    - binary_sensor.corridor
+    trigger: state
+    id: Out
+    from:
+    - 'on'
+    to:
+    - 'off'
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - In
+      sequence:
+      - if:
+        - condition: time
+          after: '22:00:00'
+          before: 06:00:00
+        then:
+        - if:
+          - condition: device
+            type: is_off
+            device_id: 82679c4dec44fa7aa25597f327915e77
+            entity_id: 2ba94879b282a03b882665ab2f0da0b2
+            domain: light
+          - condition: device
+            type: is_off
+            device_id: f9e7dbc956a8451405044e922ade4ece
+            entity_id: 48f1fe9c257d0149d52360bd7e45a413
+            domain: switch
+          then:
+          - action: switch.turn_on
+            metadata: {}
+            target:
+              device_id: e084f5a984057215ce7bea9c0626a8b7
+            data: {}
+        else:
+        - target:
+            entity_id:
+            - light.light_corridor
+          data: {}
+          action: light.turn_on
+      - if:
+        - condition: sun
+          before: sunrise
+          after: sunset
+        - condition: state
+          entity_id: light.light_dinning_big_lamp
+          state:
+          - 'off'
+        then:
+        - type: turn_on
+          device_id: 1ed40d2084ee803742052103ede13aaa
+          entity_id: edc8e8e8563d7e0f1a4c413aa4d4c237
+          domain: light
+          brightness_pct: 1
+    - conditions:
+      - condition: trigger
+        id:
+        - Out
+      sequence:
+      - target:
+          entity_id:
+          - light.light_corridor
+        data: {}
+        action: light.turn_off
+      - if:
+        - condition: state
+          entity_id: light.light_dinning_big_lamp
+          state:
+          - 'off'
+        then:
+        - type: turn_off
+          device_id: 1ed40d2084ee803742052103ede13aaa
+          entity_id: edc8e8e8563d7e0f1a4c413aa4d4c237
+          domain: light
+  mode: restart
+- id: '1721189488719'
+  alias: Sensor Lounge
+  description: ''
+  triggers:
+  - entity_id:
+    - binary_sensor.loungeon
+    to: 'on'
+    id: In
+    trigger: state
+  - entity_id:
+    - binary_sensor.loungeon
+    to: 'off'
+    id: Out
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+    trigger: state
+  conditions:
+  - condition: state
+    state:
+    - 'off'
+    entity_id: light.fan_light_lounge
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - In
+      sequence:
+      - choose:
+        - conditions:
+          - condition: time
+            after: 07:00:00
+            before: '19:00:00'
+          sequence:
+          - type: turn_on
+            device_id: 7e8b38a5066d10924e876be286904f90
+            entity_id: dd7662e526ec5f4673b10accca58cc95
+            domain: switch
+        - conditions:
+          - condition: time
+            after: '19:00:00'
+          sequence:
+          - action: light.turn_on
+            metadata: {}
+            target:
+              entity_id: light.lamps_lounge
+            data: {}
+    - conditions:
+      - condition: trigger
+        id:
+        - Out
+      sequence:
+      - type: turn_off
+        device_id: 7e8b38a5066d10924e876be286904f90
+        entity_id: dd7662e526ec5f4673b10accca58cc95
+        domain: switch
+      - action: light.turn_off
+        metadata: {}
+        target:
+          entity_id: light.lamps_lounge
+        data: {}
+  - type: turn_off
+    device_id: 62a372ad7df1e6406f41d5affbb51dba
+    entity_id: afef41ae1c982814e4d2fad12e5b4c2e
+    domain: light
+  mode: restart
+- id: '1721922071592'
+  alias: Sensor Entry
+  description: ''
+  triggers:
+  - entity_id:
+    - binary_sensor.main_entry_sensor_motion
+    id: In
+    to: 'on'
+    trigger: state
+  - entity_id:
+    - binary_sensor.main_entry_sensor_motion
+    to: 'off'
+    id: Out
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+    trigger: state
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - In
+      sequence:
+      - type: turn_on
+        device_id: 4bf5adc3276f8b12db07287070446ce1
+        entity_id: 8a91fb88f51bbb631fc313ab45dcbc42
+        domain: switch
+    - conditions:
+      - condition: trigger
+        id:
+        - Out
+      sequence:
+      - type: turn_off
+        device_id: 4bf5adc3276f8b12db07287070446ce1
+        entity_id: 8a91fb88f51bbb631fc313ab45dcbc42
+        domain: switch
+  mode: single
+- id: '1724670416344'
+  alias: Sensor Bathroom
+  description: ''
+  triggers:
+  - type: motion
+    device_id: befee2934c1f80554500e176f00f5e52
+    entity_id: fd8b24ad46e15401c3497172f54b4d7a
+    domain: binary_sensor
+    id: Start
+    trigger: device
+  - trigger: state
+    entity_id:
+    - binary_sensor.bathroom
+    to: 'off'
+    for:
+      hours: 0
+      minutes: 2
+      seconds: 30
+    id: Stop
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Start
+      sequence:
+      - action: light.turn_on
+        data: {}
+        target:
+          device_id: 82679c4dec44fa7aa25597f327915e77
+    - conditions:
+      - condition: trigger
+        id:
+        - Stop
+      sequence:
+      - action: light.turn_off
+        data: {}
+        target:
+          device_id: 82679c4dec44fa7aa25597f327915e77
+      - type: turn_off
+        device_id: f9e7dbc956a8451405044e922ade4ece
+        entity_id: 48f1fe9c257d0149d52360bd7e45a413
+        domain: switch
+      - if:
+        - type: is_not_occupied
+          condition: device
+          device_id: d2c7191de3fefb2f0ccf7f815c0de6e1
+          entity_id: a0e8d7907deef2b9d93107439469b49a
+          domain: binary_sensor
+        - condition: device
+          type: is_on
+          device_id: e084f5a984057215ce7bea9c0626a8b7
+          entity_id: d130c2c64106952e44d9873821278731
+          domain: switch
+        then:
+        - action: switch.turn_off
+          metadata: {}
+          target:
+            device_id: e084f5a984057215ce7bea9c0626a8b7
+          data: {}
+  mode: restart
+- id: '1724670439561'
+  alias: Sensor Toilet
+  description: ''
+  triggers:
+  - type: motion
+    device_id: d2c7191de3fefb2f0ccf7f815c0de6e1
+    entity_id: eacf339d2aff62c085d328415e56cee9
+    domain: binary_sensor
+    id: Start
+    trigger: device
+  - type: no_motion
+    device_id: d2c7191de3fefb2f0ccf7f815c0de6e1
+    entity_id: eacf339d2aff62c085d328415e56cee9
+    domain: binary_sensor
+    id: Stop
+    for:
+      hours: 0
+      minutes: 3
+      seconds: 0
+    trigger: device
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Start
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          device_id:
+          - e084f5a984057215ce7bea9c0626a8b7
+        action: switch.turn_on
+    - conditions:
+      - condition: trigger
+        id:
+        - Stop
+      sequence:
+      - data: {}
+        action: switch.turn_off
+        target:
+          device_id: e084f5a984057215ce7bea9c0626a8b7
+  mode: single
+- id: '1724670664439'
+  alias: Sensor Front Door
+  description: ''
+  triggers:
+  - type: motion
+    device_id: f0eb97ac1deba8a9463958126baf1467
+    entity_id: a7fb1766b507b17ed93dbac5bce6a39a
+    domain: binary_sensor
+    id: Start
+    trigger: device
+  - type: no_motion
+    device_id: f0eb97ac1deba8a9463958126baf1467
+    entity_id: a7fb1766b507b17ed93dbac5bce6a39a
+    domain: binary_sensor
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+    id: Stop
+    trigger: device
+    enabled: true
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Start
+      - condition: sun
+        before: sunrise
+        after: sunset
+      sequence:
+      - type: turn_on
+        device_id: f12f6d973ca31ba4a630c596f84ec562
+        entity_id: 4130680c87ee6553197cf5939eb2cfc2
+        domain: switch
+    - conditions:
+      - condition: trigger
+        id:
+        - Stop
+      - condition: sun
+        before: sunrise
+        after: sunset
+      - type: is_not_open
+        condition: device
+        device_id: 0c6d2c413a9dc38d81c51ed43f558df9
+        entity_id: 68df3501c2215fb672d242267b28c644
+        domain: binary_sensor
+      sequence:
+      - data: {}
+        action: switch.turn_off
+        target:
+          entity_id:
+          - switch.lights_dinning_4_switch_4
+          - switch.light_front_door
+  mode: single
+- id: '1724670898651'
+  alias: Sensor Dinning Outside
+  description: ''
+  triggers:
+  - type: motion
+    device_id: d02f2a56f3f56fa0cd88f4d15a85cd54
+    entity_id: 228fdbaa9fcdca867b72aeae75d514a9
+    domain: binary_sensor
+    trigger: device
+    id: Start
+  - type: no_motion
+    device_id: d02f2a56f3f56fa0cd88f4d15a85cd54
+    entity_id: 228fdbaa9fcdca867b72aeae75d514a9
+    domain: binary_sensor
+    trigger: device
+    id: Stop
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Start
+      - condition: sun
+        before: sunrise
+        after: sunset
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id: switch.lights_dinning_outside
+        action: switch.turn_on
+      - if:
+        - condition: device
+          type: is_on
+          device_id: 4275e0ef8338c83e8c56874529cc082a
+          entity_id: 910255b3e8f61f7bd9d9767882f69fda
+          domain: switch
+        then: []
+    - conditions:
+      - condition: trigger
+        id:
+        - Stop
+      - condition: state
+        entity_id: switch.lights_dinning_outside
+        state: 'on'
+      - condition: state
+        entity_id: switch.lights_dinning_garden
+        state: 'off'
+      sequence:
+      - data: {}
+        action: switch.turn_off
+        target:
+          entity_id: switch.lights_dinning_outside
+  mode: single
+- id: '1732525336627'
+  alias: Screen Projector
+  description: ''
+  triggers:
+  - type: turned_on
+    device_id: 4bf5adc3276f8b12db07287070446ce1
+    entity_id: 673c45c3cdf3a9df423e1239ee40e4d5
+    domain: switch
+    trigger: device
+    id: Open
+  - type: turned_off
+    device_id: 4bf5adc3276f8b12db07287070446ce1
+    entity_id: 673c45c3cdf3a9df423e1239ee40e4d5
+    domain: switch
+    trigger: device
+    id: Close
+  conditions: []
+  actions:
+  - action: adaptive_lighting.set_manual_control
+    metadata: {}
+    data:
+      manual_control: true
+      lights:
+      - light.lamps_fb
+  - action: light.turn_on
+    metadata: {}
+    data:
+      brightness_pct: 1
+      color_name: orange
+    target:
+      entity_id: light.lamps_fb
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Open
+      sequence:
+      - device_id: 7710f9904439f913af909d113e6905d6
+        domain: cover
+        entity_id: b181e34e1283bc26eff8d91b06829272
+        type: open
+      - type: turn_on
+        device_id: a82fdaeb893c57a9cde517ca852c023c
+        entity_id: 67b0f78b3e9aeb8905727e8fb0b1cf87
+        domain: switch
+      - action: fan.turn_on
+        metadata: {}
+        data: {}
+        target:
+          entity_id: fan.fan_light_front_bedroom
+      - type: turn_off
+        device_id: 321eba43c5eccd04ebf19e5405182031
+        entity_id: d9f1d00ce7ace69b447a7d766b7de12c
+        domain: light
+      - delay:
+          hours: 0
+          minutes: 0
+          seconds: 17
+          milliseconds: 0
+      - action: light.turn_off
+        metadata: {}
+        data: {}
+        target:
+          entity_id: light.lamps_fb
+    - conditions:
+      - condition: trigger
+        id:
+        - Close
+      sequence:
+      - device_id: 7710f9904439f913af909d113e6905d6
+        domain: cover
+        entity_id: b181e34e1283bc26eff8d91b06829272
+        type: close
+      - type: turn_off
+        device_id: a82fdaeb893c57a9cde517ca852c023c
+        entity_id: 67b0f78b3e9aeb8905727e8fb0b1cf87
+        domain: switch
+      - wait_for_trigger:
+        - trigger: state
+          entity_id:
+          - binary_sensor.front_bedroom_sensor_motion
+          to: 'off'
+          for:
+            hours: 0
+            minutes: 0
+            seconds: 30
+      - action: light.turn_off
+        metadata: {}
+        data: {}
+        target:
+          entity_id: light.lamps_fb
+      - action: fan.turn_off
+        metadata: {}
+        data: {}
+        target:
+          entity_id: fan.fan_light_front_bedroom
+  mode: single
+- id: '1735118152986'
+  alias: Under the Bed MB
+  description: ''
+  triggers:
+  - trigger: state
+    entity_id:
+    - binary_sensor.underbed
+    to: 'on'
+    id: Start
+    from: 'off'
+  - trigger: state
+    entity_id:
+    - binary_sensor.underbed
+    to: 'off'
+    id: Finish
+    from: 'on'
+  conditions:
+  - condition: time
+    after: '22:00:00'
+    before: 06:00:00
+  - condition: device
+    type: is_off
+    device_id: f08847fbe9cbe95dd8da19d54be352b7
+    entity_id: 835de92a664420d7c050bc821b917665
+    domain: light
+  - condition: state
+    entity_id: light.lamps_mb
+    state: 'off'
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Start
+      - condition: device
+        type: is_off
+        device_id: ce5f983ccf0d7648fd090b7784b5e8e7
+        entity_id: bd6323b281c22cefc0f3046a8a9cfdb7
+        domain: light
+      sequence:
+      - action: light.turn_on
+        metadata: {}
+        data:
+          rgb_color:
+          - 99
+          - 69
+          - 44
+          brightness_step_pct: 1
+        target:
+          device_id: ce5f983ccf0d7648fd090b7784b5e8e7
+    - conditions:
+      - condition: trigger
+        id:
+        - Finish
+      - condition: device
+        type: is_on
+        device_id: ce5f983ccf0d7648fd090b7784b5e8e7
+        entity_id: bd6323b281c22cefc0f3046a8a9cfdb7
+        domain: light
+      sequence:
+      - type: turn_off
+        device_id: ce5f983ccf0d7648fd090b7784b5e8e7
+        entity_id: bd6323b281c22cefc0f3046a8a9cfdb7
+        domain: light
+  mode: single
+- id: '1739071141305'
+  alias: Main Entry
+  description: ''
+  triggers:
+  - type: opened
+    device_id: 0c6d2c413a9dc38d81c51ed43f558df9
+    entity_id: 1dee2e973ba797d0ba6ab5d89afbf549
+    domain: binary_sensor
+    trigger: device
+    id: Open
+  - type: not_opened
+    device_id: 0c6d2c413a9dc38d81c51ed43f558df9
+    entity_id: 1dee2e973ba797d0ba6ab5d89afbf549
+    domain: binary_sensor
+    trigger: device
+    id: Close
+  conditions:
+  - condition: sun
+    before: sunrise
+    after: sunset
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Open
+      sequence:
+      - type: turn_on
+        device_id: f12f6d973ca31ba4a630c596f84ec562
+        entity_id: 4130680c87ee6553197cf5939eb2cfc2
+        domain: switch
+    - conditions:
+      - condition: trigger
+        id:
+        - Close
+      sequence:
+      - wait_for_trigger:
+        - trigger: state
+          entity_id:
+          - binary_sensor.front_door_sensor_motion
+          to: 'off'
+          for:
+            hours: 0
+            minutes: 0
+            seconds: 5
+      - type: turn_off
+        device_id: f12f6d973ca31ba4a630c596f84ec562
+        entity_id: 4130680c87ee6553197cf5939eb2cfc2
+        domain: switch
+  mode: single
+- id: '1752378858272'
+  alias: Office
+  description: ''
+  triggers:
+  - type: opened
+    device_id: 0207362bb7c803dcda2597432c7599a1
+    entity_id: binary_sensor.door_sensor_door
+    domain: binary_sensor
+    trigger: device
+  conditions: []
+  actions:
+  - action: light.turn_on
+    metadata: {}
+    target:
+      entity_id:
+      - light.light_office_zeh
+      - light.light_office_rachael
+    data: {}
+  - if:
+    - condition: sun
+      before: sunrise
+      after: sunset
+    then:
+    - type: turn_off
+      device_id: 11de946aa551eb88c1e3589a10fa4228
+      entity_id: dea06ea40f2e623d503474d4980aa500
+      domain: switch
+    - if:
+      - condition: device
+        type: is_off
+        device_id: 4275e0ef8338c83e8c56874529cc082a
+        entity_id: 910255b3e8f61f7bd9d9767882f69fda
+        domain: switch
+      then:
+      - type: turn_on
+        device_id: 39de6b9b3d0f28ed2e860250cc60fb5e
+        entity_id: 141d807b36bfc8356570d8040143fdd3
+        domain: switch
+      - type: turn_on
+        device_id: 4275e0ef8338c83e8c56874529cc082a
+        entity_id: 910255b3e8f61f7bd9d9767882f69fda
+        domain: switch
+      else:
+      - type: turn_off
+        device_id: 4275e0ef8338c83e8c56874529cc082a
+        entity_id: 910255b3e8f61f7bd9d9767882f69fda
+        domain: switch
+      - type: turn_off
+        device_id: 39de6b9b3d0f28ed2e860250cc60fb5e
+        entity_id: 141d807b36bfc8356570d8040143fdd3
+        domain: switch
+  mode: single
+- id: '1763881912980'
+  alias: Sensor Entry
+  description: ''
+  triggers:
+  - type: occupied
+    device_id: bfe8f5c38568aeda53ac5b5a09c678e4
+    entity_id: 94f061f9a0b3743498439ffa131228e2
+    domain: binary_sensor
+    metadata:
+      secondary: false
+    trigger: device
+    id: Start
+  - type: not_occupied
+    device_id: bfe8f5c38568aeda53ac5b5a09c678e4
+    entity_id: 94f061f9a0b3743498439ffa131228e2
+    domain: binary_sensor
+    trigger: device
+    id: Stop
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 15
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Start
+      sequence:
+      - type: turn_on
+        device_id: 4bf5adc3276f8b12db07287070446ce1
+        entity_id: 8a91fb88f51bbb631fc313ab45dcbc42
+        domain: switch
+    - conditions:
+      - condition: trigger
+        id:
+        - Stop
+      sequence:
+      - type: turn_off
+        device_id: 4bf5adc3276f8b12db07287070446ce1
+        entity_id: 8a91fb88f51bbb631fc313ab45dcbc42
+        domain: switch
+  mode: single
+- id: '1765101680839'
+  alias: Office Bathroom Exauster On
+  description: ''
+  triggers:
+  - type: turned_on
+    device_id: 649e5d6f40e060d1b2bb01bf6c348af7
+    entity_id: 60ebf66e8a7caa628fb7b939fe96aa29
+    domain: switch
+    trigger: device
+  conditions: []
+  actions:
+  - delay:
+      hours: 0
+      minutes: 3
+      seconds: 0
+      milliseconds: 0
+  - type: turn_off
+    device_id: 649e5d6f40e060d1b2bb01bf6c348af7
+    entity_id: 60ebf66e8a7caa628fb7b939fe96aa29
+    domain: switch
+  mode: single
+- id: '1765101758862'
+  alias: Sensor Office Bathroom
+  description: ''
+  triggers:
+  - type: motion
+    device_id: c28e886bf2d50b502e50153ffa527b7f
+    entity_id: 032264e876cea32619d5898884921d74
+    domain: binary_sensor
+    trigger: device
+    id: Start
+  - type: motion
+    device_id: c28e886bf2d50b502e50153ffa527b7f
+    entity_id: 032264e876cea32619d5898884921d74
+    domain: binary_sensor
+    trigger: device
+    id: StartExaust
+    for:
+      hours: 0
+      minutes: 2
+      seconds: 30
+  - type: no_motion
+    device_id: c28e886bf2d50b502e50153ffa527b7f
+    entity_id: 032264e876cea32619d5898884921d74
+    domain: binary_sensor
+    trigger: device
+    id: Stop
+    for:
+      hours: 0
+      minutes: 5
+      seconds: 0
+  conditions: []
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - Start
+      sequence:
+      - type: turn_on
+        device_id: 649e5d6f40e060d1b2bb01bf6c348af7
+        entity_id: d2b8475acaf84ff6bf3b79b65211f3c3
+        domain: switch
+    - conditions:
+      - condition: trigger
+        id:
+        - StartExaust
+      sequence:
+      - type: turn_on
+        device_id: 649e5d6f40e060d1b2bb01bf6c348af7
+        entity_id: 60ebf66e8a7caa628fb7b939fe96aa29
+        domain: switch
+    - conditions:
+      - condition: trigger
+        id:
+        - Stop
+      sequence:
+      - type: turn_off
+        device_id: 649e5d6f40e060d1b2bb01bf6c348af7
+        entity_id: d2b8475acaf84ff6bf3b79b65211f3c3
+        domain: switch
+  mode: single
+- id: '1765813713664'
+  alias: Sensor Vitrola
+  description: ''
+  triggers:
+  - entity_id:
+    - binary_sensor.vitrola
+    to:
+    - 'on'
+    id: In
+    trigger: state
+  - entity_id:
+    - binary_sensor.vitrola
+    to:
+    - 'off'
+    id: Out
+    for:
+      hours: 0
+      minutes: 0
+      seconds: 30
+    trigger: state
+    enabled: true
+  conditions:
+  - condition: time
+    before: 07:00:00
+  - condition: state
+    entity_id: light.fan_light_lounge
+    state:
+    - 'off'
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id:
+        - In
+      - condition: state
+        entity_id: light.lamps_vitrola
+        state:
+        - 'off'
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id:
+          - light.lamps_vitrola
+        action: light.turn_on
+    - conditions:
+      - condition: trigger
+        id:
+        - Out
+      - condition: state
+        entity_id: light.lamps_vitrola
+        state:
+        - 'on'
+      sequence:
+      - metadata: {}
+        data: {}
+        target:
+          entity_id:
+          - light.lamps_vitrola
+        action: light.turn_off
+  mode: restart
+- id: '1766635855722'
+  alias: Nobody in Food Area
+  description: ''
+  triggers:
+  - trigger: state
+    entity_id:
+    - binary_sensor.food_area
+    to:
+    - 'off'
+    for:
+      hours: 0
+      minutes: 7
+      seconds: 0
+  conditions:
+  - condition: state
+    entity_id: light.fan_light_dinning
+    state:
+    - 'on'
+  actions:
+  - action: light.turn_off
+    metadata: {}
+    target:
+      entity_id: light.fan_light_dinning
+    data: {}
+  mode: single
+- id: '1766637648313'
+  alias: Nobody Lounge
+  description: ''
+  triggers:
+  - trigger: state
+    entity_id:
+    - binary_sensor.loungeon
+    to:
+    - 'off'
+    for:
+      hours: 0
+      minutes: 7
+      seconds: 0
+  conditions:
+  - condition: state
+    entity_id: light.fan_light_lounge
+    state:
+    - 'on'
+  actions:
+  - action: switch.turn_off
+    metadata: {}
+    target:
+      entity_id: switch.fan_light_lounge_master
+    data: {}
+  mode: single
+- id: '1768257862359'
+  alias: On Computer
+  description: ''
+  triggers:
+  - type: turned_on
+    device_id: 6b39e9b0500d6474235755957729bdbf
+    entity_id: d8e4dbf98f2e6c43afb51661257b42c1
+    domain: switch
+    trigger: device
+  conditions: []
+  actions:
+  - if:
+    - condition: device
+      device_id: 352a95e84f6bb59952ffba38de387115
+      domain: lock
+      entity_id: a1afd45a6fb16a5fc43cce7b4dacf9db
+      type: is_locked
+    then:
+    - device_id: 352a95e84f6bb59952ffba38de387115
+      domain: lock
+      entity_id: a1afd45a6fb16a5fc43cce7b4dacf9db
+      type: unlock
+  - if:
+    - type: is_not_occupied
+      condition: device
+      device_id: f6f1e720f53833c3ddd783a752089007
+      entity_id: 885077075208ad8b86166f3ea4beb7d1
+      domain: binary_sensor
+    then:
+    - type: turn_on
+      device_id: b370afc3c39ded32b67f5a171c01a982
+      entity_id: 2a29e5c20075c0bd4a8ba47f96332178
+      domain: fan
+    - type: turn_on
+      device_id: 649e5d6f40e060d1b2bb01bf6c348af7
+      entity_id: 60ebf66e8a7caa628fb7b939fe96aa29
+      domain: switch
+  mode: single
+- id: '1776328354499'
+  alias: On-OfficeLight_NightTime
+  description: ''
+  triggers:
+  - type: turned_on
+    device_id: b370afc3c39ded32b67f5a171c01a982
+    entity_id: b493680f568651c9d444cd0a7bc93c2b
+    domain: light
+    trigger: device
+  conditions:
+  - condition: sun
+    before: sunrise
+    after: sunset
+  - condition: state
+    entity_id: light.lamps_office
+    state:
+    - 'on'
+  actions:
+  - type: toggle
+    device_id: 4275e0ef8338c83e8c56874529cc082a
+    entity_id: 910255b3e8f61f7bd9d9767882f69fda
+    domain: switch
+  - type: turn_off
+    device_id: b370afc3c39ded32b67f5a171c01a982
+    entity_id: b493680f568651c9d444cd0a7bc93c2b
+    domain: light
+  mode: single

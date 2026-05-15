@@ -1,0 +1,51 @@
+{
+  "name": "google-workspace",
+  "description": "Access Gmail, Calendar, Drive, and Photos for the agent.",
+  "tools": [
+    {
+      "name": "check_email",
+      "description": "Check for unread emails in Gmail.",
+      "script": "gmail-check-unread.js"
+    },
+    {
+      "name": "read_email",
+      "description": "Get the text of a specific email.",
+      "script": "gmail-get-text.js",
+      "args": ["messageId"]
+    },
+    {
+      "name": "send_email",
+      "description": "Send an email.",
+      "script": "gmail-send.js",
+      "args": ["to", "subject", "body"]
+    },
+    {
+      "name": "create_event",
+      "description": "Create a new event in Google Calendar.",
+      "script": "calendar-create-event.js",
+      "args": ["summary", "start", "end"]
+    },
+    {
+      "name": "list_photos",
+      "description": "List photos from Google Photos.",
+      "script": "photos-list.js"
+    },
+    {
+      "name": "upload_photo",
+      "description": "Upload a photo to Google Photos.",
+      "script": "photos-upload.js",
+      "args": ["path"]
+    },
+    {
+      "name": "create_doc",
+      "description": "Create a new Google Doc.",
+      "script": "drive-create-doc.js",
+      "args": ["title", "content"]
+    },
+    {
+      "name": "list_docs",
+      "description": "List Google Docs in Drive.",
+      "script": "drive-list-docs.js"
+    }
+  ]
+}

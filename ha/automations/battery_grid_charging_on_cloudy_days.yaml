@@ -1,0 +1,127 @@
+# Automation: Charge Battery from Grid on Cloudy Days
+# File: /config/automations/battery_grid_charging_on_cloudy_days.yaml
+# Status: DISABLED by default - enable when ready
+
+alias: "Battery Grid Charging - Cloudy Day Peak"
+description: |
+  Charge battery from grid during peak hours when:
+  - Battery SOC is low (< 40%)
+  - Weather is cloudy
+  - Solar generation is insufficient
+  This prevents running out of battery when solar won't cover usage.
+
+id: "battery_grid_charging_cloudy_peak"
+
+# Start DISABLED - enable manually when ready
+enabled: false
+
+# Triggers: Check every 15 minutes during peak hours
+trigger:
+  - platform: time
+    at: "14:00:00"
+    id: "check_afternoon"
+  - platform: time
+    at: "15:00:00"
+    id: "check_afternoon_2"
+  - platform: time
+    at: "16:00:00"
+    id: "check_afternoon_3"
+  - platform: time
+    at: "17:00:00"
+    id: "check_afternoon_4"
+  - platform: time
+    at: "18:00:00"
+    id: "check_evening"
+  - platform: time
+    at: "19:00:00"
+    id: "check_evening_2"
+  - platform: time
+    at: "20:00:00"
+    id: "check_evening_3"
+
+# OR use numeric_state trigger for continuous monitoring (alternative)
+#  - platform: numeric_state
+#    entity_id: sensor.gosungrow_battery_soc
+#    below: 40
+#    for:
+#      hours:
+#        - 14
+#        - 15
+#        - 16
+#        - 17
+#        - 18
+#        - 19
+#        - 20
+
+# Conditions: Only charge if battery is low AND weather is bad
+condition:
+  # Condition 1: Battery SOC is below 40%
+  - condition: numeric_state
+    entity_id: sensor.gosungrow_battery_soc
+    below: 40
+
+  # Condition 2: Weather is cloudy or rainy
+  - condition: or
+    conditions:
+      - condition: state
+        entity_id: sensor.weather_forecast
+        attribute: condition
+        state: "cloudy"
+      - condition: state
+        entity_id: sensor.weather_forecast
+        attribute: condition
+        state: "rainy"
+      - condition: state
+        entity_id: sensor.weather_condition
+        state: "cloudy"
+      - condition: state
+        entity_id: sensor.weather_condition
+        state: "rainy"
+
+  # Condition 3: Solar generation is low (not charging battery)
+  - condition: numeric_state
+    entity_id: sensor.gosungrow_solar_power  # Adjust to your actual solar power sensor
+    below: 500  # Less than 500W solar = cloudy/low generation
+
+  # Condition 4: During peak hours (afternoon/evening)
+  - condition: time
+    after: "14:00:00"
+    before: "21:00:00"
+    weekday:
+      - mon
+      - tue
+      - wed
+      - thu
+      - fri
+
+# Actions: Enable grid charging
+action:
+  # Action 1: Turn on grid charging (if switch exists)
+  - action: switch.turn_on
+    entity_id: switch.gosungrow_grid_charging  # Adjust to your actual grid charge switch
+
+  # OR Action 2: Use service call if switch doesn't exist
+  # - action: service.turn_on
+  #   service: switch.turn_on
+  #   service_data:
+  #     entity_id: switch.gosungrow_grid_charging
+
+  # Action 3: Send notification (optional)
+  - action: notify.notify
+    data:
+      title: "Grid Charging Enabled"
+      message: |
+        Battery SOC: {{ states('sensor.gosungrow_battery_soc') }}%
+        Weather: {{ states('sensor.weather_condition') }}
+        Solar: {{ states('sensor.gosungrow_solar_power') }}W
+        Grid charging enabled for cloudy day peak coverage.
+
+  # Action 4: Log to HA logger
+  - action: system_log.write
+    data:
+      message: "Grid charging enabled: SOC={{ states('sensor.gosungrow_battery_soc') }}%, Weather={{ states('sensor.weather_condition') }}, Solar={{ states('sensor.gosungrow_solar_power') }}W"
+      logger: logger.automation_battery
+      level: info
+
+mode: single
+max_exceeded: 4
