@@ -1,0 +1,11 @@
+[Icon Theme]
+Name=Hicolor
+Comment=Local hicolor icon theme entries managed by the p16s environment mirror
+Directories=scalable/apps
+
+[scalable/apps]
+Size=48
+Context=Applications
+Type=Scalable
+MinSize=1
+MaxSize=512

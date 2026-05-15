@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=PhpStorm 2026.1.1
+Exec="/home/zeh/.local/share/JetBrains/Toolbox/apps/phpstorm/bin/phpstorm" %u
+Version=1.0
+Type=Application
+Categories=Development;IDE;
+Terminal=false
+Icon=jetbrains-phpstorm
+X-Icon-Path=/home/zeh/.local/share/icons/hicolor/scalable/apps/jetbrains-phpstorm.svg
+X-Installed-Icon-Cache-Path=/home/zeh/.local/share/icons/hicolor
+X-Icon-Name-Before-Sanitization=jetbrains-phpstorm-af6432a8-7b27-49fa-b63a-fee1cba88ef6.desktop.icon.svg
+Comment=A smart IDE for PHP and Web
+StartupWMClass=jetbrains-phpstorm
+StartupNotify=true

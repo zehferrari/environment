@@ -1,0 +1,277 @@
+/* Waybar Style - GNOME-like */
+
+* {
+    border: none;
+    border-radius: 0;
+    font-family: "JetBrains Mono", "Font Awesome 6 Free", "Noto Sans", sans-serif;
+    font-size: 14px;
+    min-height: 0;
+}
+
+window#waybar {
+    background-color: rgba(0, 0, 0, 0); /* Transparent, modules have background */
+    color: #cdd6f4;
+    transition-property: background-color;
+    transition-duration: 0.5s;
+}
+
+window#waybar.hidden {
+    opacity: 0.2;
+}
+
+/* --- Clock --- */
+#clock {
+    margin: 5px 0;
+    padding: 5px 15px;
+    background-color: rgba(30, 30, 46, 0.8);
+    color: #cdd6f4;
+    border-radius: 20px;
+    font-weight: bold;
+}
+
+#clock:hover {
+    background-color: rgba(30, 30, 46, 1.0);
+}
+
+#clock,
+#workspaces,
+#custom-displays,
+#cpu,
+#memory,
+#temperature,
+#network,
+#bluetooth,
+#pulseaudio,
+#battery,
+#custom-power {
+    font-size: 14px;
+}
+
+/* --- Workspace Navigator --- */
+#workspaces {
+    background-color: rgba(30, 30, 46, 0.8);
+    margin: 5px 10px 5px 2px;
+    padding: 3px;
+    border-radius: 20px;
+}
+
+#workspaces:hover {
+    background-color: rgba(30, 30, 46, 1.0);
+}
+
+#workspaces button {
+    min-width: 26px;
+    margin: 0 1px;
+    padding: 0;
+    color: #6c7086;
+    background-color: transparent;
+    border-radius: 16px;
+    font-weight: 800;
+    transition: all 180ms ease;
+}
+
+#workspaces button.empty {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    color: #45475a;
+    background-color: transparent;
+    opacity: 0;
+}
+
+#workspaces button.persistent {
+    color: #7f849c;
+}
+
+#workspaces button.visible,
+#workspaces button.active,
+#workspaces button.urgent,
+#workspaces button.special {
+    min-width: 26px;
+    margin: 0 1px;
+    padding: 2px 7px;
+    opacity: 1;
+}
+
+#workspaces button.visible {
+    color: #89b4fa;
+    background-color: transparent;
+}
+
+#workspaces button.hosting-monitor {
+    box-shadow: inset 0 -2px rgba(137, 180, 250, 0.55);
+}
+
+#workspaces button.active {
+    color: #11111b;
+    background-color: transparent;
+    box-shadow: 0 0 14px rgba(137, 180, 250, 0.45);
+}
+
+#workspaces button.urgent {
+    color: #11111b;
+    background-color: transparent;
+}
+
+#workspaces button.special {
+    color: #11111b;
+    background-color: transparent;
+}
+
+#workspaces button:hover {
+    color: #cdd6f4;
+    background-color: transparent;
+}
+
+#workspaces .workspace-label {
+    padding: 0;
+}
+
+#workspaces .taskbar-window {
+    padding: 2px 7px;
+    margin: 0;
+    background-color: #ffffff;
+    border-radius: 16px;
+}
+
+#workspaces .taskbar-window.active {
+    background-color: #ffffff;
+    border-radius: 16px;
+}
+
+#workspaces .taskbar-window image {
+    margin: 0 1px;
+}
+
+/* --- Displays (Inside Group) --- */
+#custom-displays {
+    color: #cba6f7;
+}
+
+/* --- Right Side Groups --- */
+#performance,
+#hardware {
+    background-color: rgba(30, 30, 46, 0.8);
+    padding: 0 5px;
+    border-radius: 20px;
+}
+
+#performance {
+    margin: 5px 2px 5px 10px;
+    padding-right: 9px;
+}
+
+#hardware {
+    margin: 5px 10px 5px 2px;
+}
+
+#performance:hover,
+#hardware:hover {
+    background-color: rgba(30, 30, 46, 1.0);
+}
+
+/* Common style for modules inside the group */
+#custom-displays,
+#cpu,
+#memory,
+#temperature,
+#network,
+#bluetooth,
+#pulseaudio,
+#battery,
+#custom-power {
+    background-color: transparent;
+    color: #cdd6f4;
+    padding: 5px 10px;
+    margin: 0;
+    border-radius: 0;
+}
+
+/* Remove hover effects on individual modules since group handles it */
+#custom-displays:hover,
+#cpu:hover,
+#memory:hover,
+#temperature:hover,
+#network:hover,
+#bluetooth:hover,
+#pulseaudio:hover,
+#battery:hover,
+#custom-power:hover {
+    background-color: transparent;
+}
+
+/* Specific Colors */
+#network {
+    color: #94e2d5;
+}
+#network.disconnected {
+    color: #f38ba8;
+}
+
+#cpu {
+    color: #fab387;
+}
+
+#memory {
+    color: #a6e3a1;
+}
+
+#temperature {
+    color: #f9e2af;
+}
+#temperature.critical {
+    color: #f38ba8;
+}
+
+#temperature {
+    padding-right: 4px;
+}
+
+#network {
+    padding-left: 4px;
+    padding-right: 10px;
+    margin-right: 4px;
+}
+
+#bluetooth {
+    color: #89b4fa;
+}
+#bluetooth.disabled, #bluetooth.off {
+    color: #6c7086;
+}
+
+#pulseaudio {
+    color: #f9e2af;
+}
+#pulseaudio.muted {
+    color: #6c7086;
+}
+
+#battery {
+    color: #a6e3a1;
+}
+#battery.warning {
+    color: #f9e2af;
+}
+#battery.critical {
+    color: #f38ba8;
+}
+
+#custom-power {
+    color: #f38ba8;
+    padding-right: 10px; /* Standard padding */
+    border-radius: 0;
+}
+
+/* Tooltip styling - BIGGER for calendar */
+tooltip {
+    background: rgba(30, 30, 46, 0.95);
+    border: 1px solid rgba(137, 180, 250, 0.5);
+    border-radius: 12px;
+}
+
+tooltip label {
+    color: #cdd6f4;
+    padding: 5px;
+    font-size: 24px; /* Increased size (roughly 2x, can go bigger if needed) */
+}
