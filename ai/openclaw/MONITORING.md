@@ -76,6 +76,117 @@ Telegram bot, secrets, and chat allowlist are per-agent — see the registry
 (`telegram.bot` for the `karen` user), `~/.config/openclaw/openclaw-secrets.env`,
 and `~/.openclaw/credentials/telegram-allowFrom.json`.
 
+### Tier framework — try twice, telegram on the third
+
+Every alert key gets up to **3 attempts** before zeh is paged. Configured
+under `karen_triage.escalation_ladder` in `/etc/ai-monitor/config.json`
+(`max_attempts: 3`, `confirmation_window_s: 300`). Two execution paths:
+
+- **Bypass-Karen kinds** (default `agent-idle-with-queue`):
+  T1 = `wake-agent`, T2 = `restart-and-wake`, T3 = telegram with attempt history.
+  ai-monitor runs the actions itself; Karen is never involved.
+- **Karen-bound kinds** (everything else): incident payload now includes
+  an `escalation_context` block (`{attempt, max_attempts, is_final,
+  prior_attempts, guidance}`). On T1/T2 Karen is told to act and
+  `suppress` with `telegram_sent: false`. On T3 Karen is told this is
+  the final attempt — act and send Telegram. If Karen punts on T3,
+  ai-monitor falls back to telegramming the attempt history itself.
+
+Between tiers, ai-monitor sets `next_attempt_after = now + 300 s` on the
+event. New alerts for the same key are silently skipped during the
+confirmation window. Recovery (issue stops appearing in next probe sweep)
+clears the event silently via `missed_runs` eviction. Per-event state
+(`attempts`, `attempt_history`, `next_attempt_after`) is in
+`/var/lib/ai-monitor/state.json`.
+
+Karen's playbook (which kind → which fix on which tier) lives at
+`INCIDENT_HANDLING.md`. Karen now also has `systemctl restart` permission
+for `ollama`, `nginx`, `mariadb`, `php-fpm`, `agent-dashboard`, and
+`openclaw-typing-keepalive` (sudoers: `/etc/sudoers.d/karen-openclaw-control`).
+
+### Monitor agent heartbeat hygiene
+
+`openclaw system event --mode now` (the wake mechanism ai-monitor uses to
+hand the monitor agent an incident) marks her `agent:main:main` entry's
+`pendingFinalDelivery: true` after each turn — openclaw is trying to
+deliver the response back to the invoking channel. ai-monitor invokes
+via CLI and exits, so there's no channel; openclaw retries ~40 times
+then leaves the flag stuck. Subsequent wakes queue behind it and never
+start a new turn. (Symptom: the monitor looks "dead" for hours/days —
+every incident times out and falls back to direct telegram.)
+
+ai-monitor now clears `pendingFinalDelivery*` fields on the monitor
+agent's `agent:main:main` entry at the **start** of every handoff
+(`pre-clear`, catches leftover from the prior tick — openclaw flips the
+flag ~3-8 s AFTER the monitor finishes, racing with our post-clear) AND
+best-effort at the end. Atomic write preserves the agent's owner/mode.
+The skip-if-running guard prevents stomping on an in-flight turn. The
+monitor agent is identified by `role: "monitor"` in the registry — no
+hardcoded user name. To manually clear if needed:
+`sudo /usr/local/sbin/openclaw-control restart-and-wake <monitor-user>
+"<reason>"` (the user is whatever the registry says — `karen` here).
+
+### Transient kinds (probe failures bypass the monitor)
+
+Network/API flakes (curl timeouts, transient Jira slowness, Pub/Sub timeouts)
+are not actionable by the monitor agent — restarting a service won't fix
+the upstream API hiccup. These kinds skip the monitor entirely and require
+**N consecutive ticks**
+of the same key being seen before they emit a single rolled-up telegram, then
+enter a cooldown window before they can re-fire. Configured under
+`karen_triage`:
+
+- `transient_kinds`: list of kinds bypassed (default includes
+  `jira-probe-failed`, `agent-queue-probe-failed`,
+  `pending-mentions-probe-failed`, `gmail-pubsub-timeout`,
+  `gmail-pubsub-failing`, `telegram-network-unreachable`,
+  `telegram-unreachable`, `telegram-connection-failing`, `judge-failed`).
+- `transient_consecutive_threshold`: minimum consecutive ticks (default 5,
+  ≈ 10 min on a 2-min tick) before a transient issue telegrams.
+- `transient_cooldown_s`: after telegram, suppress this key for at least
+  this many seconds (default 3600 = 1 h) regardless of continued presence.
+
+The counter (`consecutive_seen` per event in `state.json`) increments on every
+tick the key is seen and resets when the key is absent (silent eviction). Issue
+payloads gain `_transient: true` and `_consecutive_seen` when graduated.
+
+### Self-healing scheduled tasks (no triage needed)
+
+Some "alerts" are predictable token expiries that should be auto-renewed
+by cron, not handed to Karen:
+
+- **Gmail watch tokens** expire every 7 days. Renewed daily at 04:00 by
+  `gmail-watch-renew.timer` → `gmail-watch-renew.service` →
+  `/usr/local/sbin/gmail-watch-renew-all`. The script reads
+  `/etc/openclaw/agents.json` and renews for every agent where
+  `enabled=true AND integrations.gmail=true`, pulling topic+labels from
+  that agent's `~/.openclaw/workspace/google/watch-state.json`. Non-Gmail
+  agents (`integrations.gmail=false`) are silently skipped. If this timer
+  is healthy you should never see `gmail-watch-expiring` in ai-monitor.
+
+- **Pending @-mentions auto-clear on Done.** `_agent_replied_since` checks
+  `statusCategory.key == "done"` (workflow-agnostic across custom Done /
+  Closed / Resolved / Shipped names) on every probe; closed tickets drop
+  their pending-mention markers immediately. There's also a 7-day max-age
+  safety net (`pending_mentions.max_age_hours`, default 168) so a stuck
+  marker on a deleted-without-being-closed issue can't keep alerting forever.
+
+### Busy vs stalled
+
+ai-monitor's `probe_busy_state(user, home)` distinguishes "mid-turn,
+doing real work" from "idle/wedged" via three OR'd signals: (1) any
+`agent:main:*` key in `sessions.json` with `status='running'` and
+`updatedAt` within the last 30 min (excludes leaked status from old
+crashed subagents); (2) claude-cli's own jsonl mtime within the last
+60 s (covers non-streaming claude-cli turns); (3) aggregate CPU% across
+the agent's `openclaw|claude` pids over a 1 s sample > 5 %. Both
+`task-stalled-no-agent` and `agent-idle-with-queue` skip firing when
+`is_busy=true`. `task-stalled-no-progress` (active session but no Jira
+update — heartbeat-loop pattern) is unaffected by design. Dashboard
+runs the cheap version (signals 1+2) and surfaces a `⚙ busy` chip on
+agent cards. Karen's `INCIDENT_HANDLING.md` Step 2 also re-checks busy
+before acting.
+
 ## Dashboard
 
 Read-only, real-time, basic-auth-gated:
