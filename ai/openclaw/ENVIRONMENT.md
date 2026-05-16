@@ -28,5 +28,5 @@ inventory itself, see [`../../README.md`](../../README.md).
   hardcode email/displayName/accountId.
 - **`Backlog` Jira tickets are ignored** unless zeh explicitly overrides for
   that specific ticket.
-- **Edits go through git.** Edit a file in `/srv/agents/shared/`, commit,
+- **Edits go through git.** Edit a file in `/srv/Code/environment/ai/openclaw/`, commit,
   push. Every agent picks up the change on next read.

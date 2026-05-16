@@ -1,7 +1,7 @@
 {
   "version": 1,
   "description": "Example registry — copy this to /srv/agents/index.json, edit, restart agent-dashboard.service. Live edits (e.g. dashboard capability/integration toggles) write back to /srv/agents/index.json directly; this template stays in git as the single-record reference.",
-  "sharedKnowledgeDir": "/srv/agents/shared",
+  "sharedKnowledgeDir": "/srv/Code/environment/ai/openclaw",
   "webhookRoutedUsers": ["example"],
   "agents": [
     {

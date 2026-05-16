@@ -2,7 +2,7 @@
 
 Single source of truth for OpenClaw agent operating rules and shared skill helpers. Lives under [`environment/ai/openclaw/`](../../) in the unified `environment` repo.
 
-The contents of this folder are cloned to **`/srv/agents/shared/`** on x1. Every agent reads from it through symlinks; every edit goes through git.
+The contents of this folder are cloned to **`/srv/Code/environment/ai/openclaw/`** on x1. Every agent reads from it through symlinks; every edit goes through git.
 
 For broader context:
 - Host inventory (x1 / moonlight / thinkpad) → [`../../README.md`](../../README.md)
@@ -37,18 +37,18 @@ unique source per concern: identity baseline (`AGENTS.md`), role behaviour
 
 ## How agents see this repo
 
-Per-agent symlinks point into `/srv/agents/shared/`:
+Per-agent symlinks point into `/srv/Code/environment/ai/openclaw/`:
 
 | Agent path | → target |
 |---|---|
-| `/home/<user>/workspace/AGENTS.md` | `/srv/agents/shared/AGENTS.md` (single shared file for every agent) |
+| `/home/<user>/workspace/AGENTS.md` | `/srv/Code/environment/ai/openclaw/AGENTS.md` (single shared file for every agent) |
 | `/home/<user>/.openclaw/workspace/AGENTS.md` | same |
-| `/home/<user>/workspace/ROLES.md` | `/srv/agents/shared/ROLES.md` |
+| `/home/<user>/workspace/ROLES.md` | `/srv/Code/environment/ai/openclaw/ROLES.md` |
 | `/home/<user>/.openclaw/workspace/ROLES.md` | same |
-| `/home/<user>/workspace/TEAM_WORKFLOW.md` | `/srv/agents/shared/TEAM_WORKFLOW.md` |
+| `/home/<user>/workspace/TEAM_WORKFLOW.md` | `/srv/Code/environment/ai/openclaw/TEAM_WORKFLOW.md` |
 | `/home/<user>/.openclaw/workspace/TEAM_WORKFLOW.md` | same |
-| `/home/<user>/.openclaw/workspace/jira/*.js` | `/srv/agents/shared/skills/jira/` |
-| `/home/<user>/.openclaw/skills/google-workspace/*.js` | `/srv/agents/shared/skills/google-workspace/` |
+| `/home/<user>/.openclaw/workspace/jira/*.js` | `/srv/Code/environment/ai/openclaw/skills/jira/` |
+| `/home/<user>/.openclaw/skills/google-workspace/*.js` | `/srv/Code/environment/ai/openclaw/skills/google-workspace/` |
 | `/etc/openclaw/agents.json` | `/srv/agents/index.json` (live runtime registry, NOT in this repo — edited by the dashboard's POST /agents/registry/toggle; see [`index.example.json`](./index.example.json) for the template) |
 
 Note: the `monitoring` agent (Linux user `karen`) has only the
@@ -59,15 +59,15 @@ Per-agent **state**, **identity**, **tokens**, and **memory** are NOT symlinked 
 
 ## Editing
 
-Edit any file under `/srv/agents/shared/`, commit, push. Every agent picks up the new content on the next read.
+Edit any file under `/srv/Code/environment/ai/openclaw/`, commit, push. Every agent picks up the new content on the next read.
 
 The working tree is owned by a single configured user (the **git owner**) so git operations don't need sudo for that user. Files are world-readable so all consumers (root, the monitoring agent, every coding agent) can read.
 
 ```bash
 # Resolve the git owner dynamically from the working tree's ownership:
-OWNER=$(stat -c %U /srv/agents/shared)
+OWNER=$(stat -c %U /srv/Code/environment/ai/openclaw)
 
-cd /srv/agents/shared
+cd /srv/Code/environment/ai/openclaw
 sudo -u "$OWNER" git pull
 # edit files
 sudo -u "$OWNER" git commit -am "<message>"

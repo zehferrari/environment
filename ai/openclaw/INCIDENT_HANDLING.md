@@ -78,7 +78,7 @@ These are predictable, time-driven, and **should be auto-renewed by cron** — n
 
 | Kind | What it really is | Action |
 |---|---|---|
-| `gmail-watch-expiring` | Gmail watch tokens expire every 7 days. Renewal is `node /srv/agents/shared/skills/google-workspace/gmail-watch.js <topic> [labels]` run as the affected agent. | Tier 1: `sudo -u <agent> node /srv/agents/shared/skills/google-workspace/gmail-watch.js <topic> <labels>`. Suppress on success. **Also**: leave a one-line note in the decision `reason` saying "no auto-renew cron in place — recommend zeh add a daily timer". This is infrastructure debt, not a real incident. |
+| `gmail-watch-expiring` | Gmail watch tokens expire every 7 days. Renewal is `node /srv/Code/environment/ai/openclaw/skills/google-workspace/gmail-watch.js <topic> [labels]` run as the affected agent. | Tier 1: `sudo -u <agent> node /srv/Code/environment/ai/openclaw/skills/google-workspace/gmail-watch.js <topic> <labels>`. Suppress on success. **Also**: leave a one-line note in the decision `reason` saying "no auto-renew cron in place — recommend zeh add a daily timer". This is infrastructure debt, not a real incident. |
 
 ### Resource / observe-only kinds
 

@@ -1,0 +1,1616 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x1 — Agent Dashboard</title>
+<style>
+  /* ─── Theme ─────────────────────────────────────────────────────────── */
+  :root[data-theme="dark"] {
+    --bg:           #0b1020;
+    --bg-elev:     rgba(255,255,255,0.02);
+    --panel:        #131a2c;
+    --panel-soft:   #182039;
+    --line:         #243153;
+    --line-strong:  #324875;
+    --text:         #e2e8f0;
+    --text-muted:   #94a3b8;
+    --text-dim:     #64748b;
+    --accent:       #38bdf8;
+    --accent-soft:  rgba(56,189,248,0.12);
+    --ok:           #4ade80;
+    --warn:         #fbbf24;
+    --crit:         #f87171;
+    --idle:         #64748b;
+    --code-bg:      #0a0f1f;
+    --shadow:       0 4px 18px rgba(0,0,0,0.45);
+    --role-manager:   #a78bfa;
+    --role-developer: #22d3ee;
+    --role-monitor:   #fbbf24;
+  }
+  :root[data-theme="light"] {
+    --bg:           #f5f7fb;
+    --bg-elev:     rgba(0,0,0,0.02);
+    --panel:        #ffffff;
+    --panel-soft:   #f1f5f9;
+    --line:         #e2e8f0;
+    --line-strong:  #cbd5e1;
+    --text:         #0f172a;
+    --text-muted:   #475569;
+    --text-dim:     #94a3b8;
+    --accent:       #0284c7;
+    --accent-soft:  rgba(2,132,199,0.10);
+    --ok:           #16a34a;
+    --warn:         #d97706;
+    --crit:         #dc2626;
+    --idle:         #94a3b8;
+    --code-bg:      #f8fafc;
+    --shadow:       0 4px 18px rgba(15,23,42,0.10);
+    --role-manager:   #7c3aed;
+    --role-developer: #0891b2;
+    --role-monitor:   #d97706;
+  }
+
+  /* ─── Reset + base ──────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+    transition: background 0.18s ease, color 0.18s ease;
+  }
+  code, .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  /* ─── Top bar ───────────────────────────────────────────────────────── */
+  header.topbar {
+    position: sticky; top: 0; z-index: 40;
+    backdrop-filter: blur(8px);
+    background: color-mix(in srgb, var(--bg) 80%, transparent);
+    border-bottom: 1px solid var(--line);
+    padding: 12px 24px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: 0.3px; }
+  .brand .logo { width: 24px; height: 24px; background: linear-gradient(135deg, var(--accent), var(--role-manager)); border-radius: 6px; display: grid; place-items: center; font-size: 13px; }
+  .brand h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  .brand small { color: var(--text-muted); font-weight: 400; font-size: 12px; }
+  .topbar .meta { display: flex; align-items: center; gap: 14px; font-size: 12.5px; color: var(--text-muted); }
+  .conn-status { display: inline-flex; align-items: center; gap: 6px; }
+  .conn-status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--idle); transition: background 0.2s; }
+  .conn-status[data-status="connected"] .dot { background: var(--ok); box-shadow: 0 0 0 4px rgba(74,222,128,0.18); }
+  .conn-status[data-status="error"] .dot { background: var(--crit); animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.4; } }
+  .icon-btn { background: transparent; border: 1px solid var(--line); color: var(--text-muted); padding: 5px 9px; border-radius: 6px; cursor: pointer; font-size: 13px; line-height: 1; transition: all 0.15s; }
+  .icon-btn:hover { color: var(--text); border-color: var(--line-strong); background: var(--bg-elev); }
+
+  /* ─── Layout ────────────────────────────────────────────────────────── */
+  main { padding: 20px 24px 40px; max-width: 1500px; margin: 0 auto; }
+  .summary-bar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px; }
+  .stat-pill { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .stat-pill .num { font-weight: 600; color: var(--text); }
+  .stat-pill .lbl { color: var(--text-muted); }
+  .stat-pill .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .stat-pill .dot.ok { background: var(--ok); }
+  .stat-pill .dot.warn { background: var(--warn); }
+  .stat-pill .dot.crit { background: var(--crit); }
+  .stat-pill .dot.idle { background: var(--idle); }
+
+  .section-title { display: flex; align-items: baseline; gap: 10px; margin: 24px 0 12px; padding: 0 4px; }
+  .section-title h2 { margin: 0; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); }
+  .section-title .hint { color: var(--text-dim); font-size: 12px; }
+
+  /* ─── Agent grid + cards ────────────────────────────────────────────── */
+  .agents-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; }
+
+  .agent-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    transition: border-color 0.15s, transform 0.15s;
+    display: flex; flex-direction: column;
+  }
+  .agent-card:hover { border-color: var(--line-strong); }
+  .agent-card[data-role="manager"]   { --accent-role: var(--role-manager); }
+  .agent-card[data-role="developer"] { --accent-role: var(--role-developer); }
+  .agent-card[data-role="monitor"]   { --accent-role: var(--role-monitor); }
+  .agent-card[data-role=""]          { --accent-role: var(--accent); }
+
+  .agent-head {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+    background: linear-gradient(135deg, color-mix(in srgb, var(--accent-role) 8%, var(--panel)) 0%, var(--panel) 100%);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .agent-avatar {
+    width: 56px; height: 56px; border-radius: 50%;
+    background: var(--bg-elev);
+    border: 2px solid var(--accent-role);
+    display: grid; place-items: center;
+    font-size: 26px;
+    flex: 0 0 auto;
+    overflow: hidden;
+    position: relative;
+    box-shadow:
+      0 0 0 4px color-mix(in srgb, var(--accent-role) 14%, transparent),
+      0 4px 12px color-mix(in srgb, var(--accent-role) 22%, transparent);
+    transition: transform 0.18s ease, box-shadow 0.18s ease;
+  }
+  .agent-card:hover .agent-avatar {
+    transform: translateY(-1px);
+    box-shadow:
+      0 0 0 5px color-mix(in srgb, var(--accent-role) 18%, transparent),
+      0 6px 16px color-mix(in srgb, var(--accent-role) 28%, transparent);
+  }
+  .agent-avatar img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .agent-avatar.has-image { background: var(--bg-elev); }
+  /* When the agent is fresh (idle < 30s) — subtle pulse on the avatar ring */
+  .agent-card[data-idle="ok"] .agent-avatar {
+    animation: avatar-pulse 2.2s ease-in-out infinite;
+  }
+  @keyframes avatar-pulse {
+    0%, 100% { box-shadow:
+      0 0 0 4px color-mix(in srgb, var(--accent-role) 14%, transparent),
+      0 4px 12px color-mix(in srgb, var(--accent-role) 22%, transparent); }
+    50%      { box-shadow:
+      0 0 0 6px color-mix(in srgb, var(--accent-role) 24%, transparent),
+      0 4px 14px color-mix(in srgb, var(--accent-role) 32%, transparent); }
+  }
+  .agent-name-block { flex: 1; min-width: 0; }
+  .agent-name { font-weight: 600; font-size: 14.5px; display: flex; align-items: center; gap: 8px; }
+  .agent-name .username { color: var(--text-muted); font-weight: 400; font-size: 12px; }
+  .agent-meta-row { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+  .role-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 500; letter-spacing: 0.3px;
+    background: color-mix(in srgb, var(--accent-role) 16%, transparent);
+    color: var(--accent-role);
+    border: 1px solid color-mix(in srgb, var(--accent-role) 30%, transparent);
+  }
+  .role-chip::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--accent-role); }
+  .status-pip { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+  .status-pip.ok { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+  .status-pip.warn { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 25%, transparent); }
+  .status-pip.crit { background: var(--crit); box-shadow: 0 0 0 3px color-mix(in srgb, var(--crit) 25%, transparent); }
+  .status-pip.idle { background: var(--idle); }
+  .status-pip.disabled { background: transparent; border: 1px dashed var(--text-dim); }
+
+  .idle-chip { font-size: 11px; color: var(--text-muted); margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  .agent-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; flex: 1; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+  .field-label .count { color: var(--text-dim); font-weight: 500; }
+  .field-value { font-size: 13px; }
+  .field-value.dim { color: var(--text-dim); }
+
+  .task-row { display: flex; gap: 8px; align-items: baseline; }
+  .ticket-key {
+    display: inline-block; padding: 2px 7px; border-radius: 4px;
+    background: var(--accent-soft); color: var(--accent);
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11.5px; font-weight: 600; letter-spacing: 0.3px;
+    flex: 0 0 auto;
+  }
+  .ticket-summary { color: var(--text); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .ticket-status { font-size: 11px; color: var(--text-muted); padding: 1px 6px; border-radius: 3px; flex: 0 0 auto; }
+  .ticket-status.in-progress { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+  .ticket-status.in-review,
+  .ticket-status.wait-for-review { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+  .ticket-status.selected-for-development,
+  .ticket-status.to-do { color: var(--text-muted); background: var(--bg-elev); }
+  .ticket-status.done,
+  .ticket-status.resolved { color: var(--text-dim); background: var(--bg-elev); }
+
+  ul.tickets { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+  ul.tickets li { padding: 4px 6px; border-radius: 5px; transition: background 0.1s; }
+  ul.tickets li:hover { background: var(--bg-elev); }
+
+  .activity-log { display: flex; flex-direction: column; gap: 6px; }
+  .activity-item {
+    background: var(--code-bg);
+    border-left: 3px solid var(--text-dim);
+    border-radius: 0 6px 6px 0;
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+  .activity-item.text { border-left-color: var(--accent); }
+  .activity-item.tool_call { border-left-color: var(--role-manager); }
+  .activity-item.tool_result { border-left-color: var(--ok); }
+  .activity-item.error { border-left-color: var(--crit); }
+  .activity-meta { display: flex; gap: 8px; align-items: baseline; margin-bottom: 3px; font-size: 11px; }
+  .activity-when { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .activity-kind { color: var(--text-muted); font-weight: 500; }
+  .activity-preview { color: var(--text); white-space: pre-wrap; word-break: break-word; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; line-height: 1.5; }
+
+  .badges { display: flex; flex-wrap: wrap; gap: 5px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 8px; border-radius: 5px;
+    font-size: 11px; font-weight: 500;
+    background: var(--bg-elev); color: var(--text-muted);
+    border: 1px solid var(--line);
+  }
+  /* Per-agent currently-running model. Distinct accent so it pops out from
+     role/integration chips. Hover for the full provider/model string. */
+  .badge.model-chip { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); font-variant-numeric: tabular-nums; cursor: help; }
+  .badge.cap-on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+  .badge.cap-off { color: var(--text-dim); opacity: 0.55; }
+  .badge.cap-off::before { content: '✗ '; }
+  .badge.cap-on::before { content: '✓ '; }
+  .badge.toggleable { cursor: pointer; user-select: none; transition: transform 0.1s ease, box-shadow 0.1s ease, opacity 0.1s ease; }
+  .badge.toggleable:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.28); filter: brightness(1.1); }
+  .badge.toggleable:active { transform: translateY(0); }
+  .badge.busy { opacity: 0.4; pointer-events: none; }
+
+  /* Inline action button at the right end of a badge (gear / restart icon).
+     Sits next to the label inside the same badge; click stops propagation
+     so the parent badge's toggle/select handler is not triggered. */
+  .badge .badge-action {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; margin-left: 6px; padding: 0;
+    border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+    background: color-mix(in srgb, var(--text) 6%, transparent);
+    cursor: pointer; color: var(--text); font-size: 14px; line-height: 1;
+    border-radius: 5px; transition: color 0.1s ease, background 0.1s ease, transform 0.1s ease;
+  }
+  .badge .badge-action:hover {
+    color: var(--text); transform: scale(1.08);
+    background: color-mix(in srgb, var(--text) 18%, transparent);
+    border-color: color-mix(in srgb, var(--text) 30%, transparent);
+  }
+  .badge .badge-action:disabled { opacity: 0.4; cursor: wait; transform: none; }
+
+  /* ─── Modal (credentials editor + action confirmer) ───────────────────── */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.78);
+    backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+    display: none; align-items: center; justify-content: center;
+    z-index: 1000; padding: 20px;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal-card {
+    /* Use --panel (solid: #131a2c dark / #ffffff light) instead of
+       --bg-elev which is rgba(...,0.02) — near-transparent and useless
+       as a modal card background. */
+    background: var(--panel); border: 1px solid var(--line-strong);
+    border-radius: 10px; box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+    width: 100%; max-width: 440px; padding: 20px 22px;
+    color: var(--text);
+  }
+  .modal-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; }
+  .modal-title { font-size: 14px; font-weight: 600; color: var(--text); }
+  .modal-close {
+    border: none; background: none; color: var(--text-dim);
+    font-size: 20px; line-height: 1; cursor: pointer; padding: 0 4px;
+  }
+  .modal-close:hover { color: var(--text); }
+  .modal-form { display: flex; flex-direction: column; gap: 10px; }
+  .modal-form label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-muted); }
+  .modal-form input {
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 4px;
+    padding: 6px 8px; font-size: 13px; font-family: inherit;
+  }
+  .modal-form input:focus { outline: none; border-color: color-mix(in srgb, var(--accent-role) 60%, var(--line)); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+  .modal-actions button {
+    padding: 6px 12px; border-radius: 4px; font-size: 12px;
+    cursor: pointer; font-family: inherit;
+  }
+  .modal-cancel { background: none; border: 1px solid var(--line); color: var(--text-muted); }
+  .modal-cancel:hover { color: var(--text); border-color: var(--line-strong); }
+  /* Fallback to --accent because the modal renders outside any
+     .agent-card scope — --accent-role is unset there and the button
+     ends up invisible (transparent bg, transparent text). */
+  .modal-save {
+    background: var(--accent-role, var(--accent));
+    border: 1px solid var(--accent-role, var(--accent));
+    color: #fff; font-weight: 600;
+  }
+  .modal-save:hover { filter: brightness(1.1); }
+  .modal-save:disabled { opacity: 0.5; cursor: wait; }
+  .modal-error { color: var(--crit); font-size: 11px; min-height: 14px; }
+  .modal-note { color: var(--text-dim); font-size: 11px; margin-bottom: 4px; }
+  .modal-instructions {
+    background: color-mix(in srgb, var(--accent-role, var(--accent)) 8%, transparent);
+    border-left: 3px solid color-mix(in srgb, var(--accent-role, var(--accent)) 60%, transparent);
+    border-radius: 0 6px 6px 0;
+    padding: 8px 11px; margin: 8px 0 4px;
+    font-size: 11.5px; color: var(--text-muted); line-height: 1.5;
+  }
+  .modal-instructions a { color: var(--accent-role, var(--accent)); text-decoration: none; }
+  .modal-instructions a:hover { text-decoration: underline; }
+  .modal-instructions code {
+    background: var(--code-bg); padding: 1px 5px;
+    border-radius: 3px; font-size: 11px;
+    color: var(--text);
+  }
+  .modal-oauth {
+    margin: 6px 0 4px; padding: 7px 10px;
+    background: color-mix(in srgb, var(--text) 4%, transparent);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    font-size: 11.5px; color: var(--text-muted); line-height: 1.5;
+  }
+  .modal-oauth code {
+    background: var(--code-bg); padding: 1px 5px;
+    border-radius: 3px; font-size: 11px; color: var(--text);
+  }
+  .modal-oauth .oauth-pip {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; margin-right: 6px; vertical-align: 1px;
+  }
+  .modal-oauth .oauth-pip.ok  { background: var(--ok); }
+  .modal-oauth .oauth-pip.off { background: var(--idle); }
+  .modal-oauth .oauth-hint { color: var(--text-dim); font-size: 10.5px; }
+  .modal-body { font-size: 13px; color: var(--text); margin-bottom: 14px; line-height: 1.5; min-height: 20px; }
+  .modal-body .ok { color: var(--ok); }
+  .modal-body .err { color: var(--crit); }
+  .modal-body .working {
+    display: inline-flex; align-items: center; gap: 8px; color: var(--text-muted);
+  }
+  .modal-spinner {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid var(--line-strong);
+    border-top-color: var(--accent-role);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* — Services row — separate from integrations, grouped by service-family
+        prefix replaced with a clear label. */
+  .svc-rows { display: flex; flex-direction: row; flex-wrap: nowrap; gap: 18px; align-items: flex-start; }
+  .svc-row { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; flex: 0 1 auto; min-width: 0; }
+  .svc-row-label {
+    font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.8px;
+    color: color-mix(in srgb, var(--accent-role) 90%, var(--text));
+    padding: 0; background: none; border: none;
+  }
+  /* Badges stack vertically within each group so two groups fit
+     side-by-side on a narrow agent card without wrapping. */
+  .svc-row-items { display: flex; flex-direction: column; gap: 5px; }
+  .badge.svc { gap: 6px; }
+  .badge.svc .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .badge.svc .dot.ok { background: var(--ok); }
+  .badge.svc .dot.crit { background: var(--crit); }
+  .badge.svc .dot.idle { background: var(--idle); }
+  /* Restart in flight: blink yellow until SSE pushes is_active=active. */
+  .badge.svc .dot.pending {
+    background: var(--warn);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 40%, transparent);
+    animation: svc-pending-blink 1s ease-in-out infinite;
+  }
+  @keyframes svc-pending-blink {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.25; }
+  }
+  .badge.integ { color: var(--text); border-color: var(--line-strong); }
+
+  /* ─── Lower panels ──────────────────────────────────────────────────── */
+  .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
+  @media (max-width: 900px) { .panels { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .panel-head {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 10px;
+    background: var(--panel-soft);
+  }
+  .panel-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
+  .panel-head .meta { color: var(--text-muted); font-size: 12px; margin-left: auto; }
+  .panel-body { padding: 14px 16px; }
+
+  /* AI Monitor panel */
+  .monitor-line { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 13px; }
+  .monitor-line .label { color: var(--text-muted); font-size: 11.5px; min-width: 80px; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 500; }
+  .decisions-list { display: flex; flex-direction: column; gap: 6px; max-height: 250px; overflow-y: auto; padding-right: 4px; }
+  .decisions-list::-webkit-scrollbar { width: 6px; }
+  .decisions-list::-webkit-scrollbar-track { background: transparent; }
+  .decisions-list::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+  .decision {
+    background: var(--code-bg);
+    border-left: 3px solid var(--ok);
+    border-radius: 0 6px 6px 0;
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+  .decision.escalate { border-left-color: var(--crit); }
+  .decision.error { border-left-color: var(--warn); }
+  .decision-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 3px; }
+  .decision-tag { font-size: 10.5px; padding: 1px 6px; border-radius: 3px; background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); font-weight: 500; }
+  .decision.escalate .decision-tag { background: color-mix(in srgb, var(--crit) 18%, transparent); color: var(--crit); }
+  .decision-when { color: var(--text-dim); font-size: 11px; }
+  .decision-reason { color: var(--text-muted); font-size: 11.5px; line-height: 1.4; }
+  .decision-actions { color: var(--text-dim); font-size: 11px; margin-top: 2px; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+  /* System panel */
+  .svc-group { margin-bottom: 14px; }
+  .svc-group:last-child { margin-bottom: 0; }
+  .svc-group-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; padding: 0 2px; }
+  .svc-group-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600; color: var(--text-muted); }
+  .svc-group-count { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .services-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 6px; }
+  .service-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 8px; border-radius: 5px;
+    background: var(--bg-elev); border: 1px solid var(--line);
+    font-size: 11.5px;
+  }
+  .service-row .name { font-family: 'JetBrains Mono', ui-monospace, monospace; color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+  /* Footer */
+  .dash-footer { color: var(--text-dim); font-size: 11px; padding: 24px 0 0; text-align: center; }
+  .dash-footer code { background: var(--bg-elev); padding: 1px 5px; border-radius: 3px; }
+
+  /* Empty/loading states */
+  .empty { color: var(--text-dim); font-size: 12px; padding: 4px 0; }
+
+  /* Responsive */
+  @media (max-width: 640px) {
+    main { padding: 14px 14px 30px; }
+    header.topbar { padding: 10px 14px; }
+    .agents-grid { grid-template-columns: 1fr; gap: 12px; }
+    .panels { grid-template-columns: 1fr; }
+    .topbar .meta { font-size: 11px; gap: 8px; }
+    .brand h1 { font-size: 13.5px; }
+  }
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">x1</span>
+    <div>
+      <h1>Agent Dashboard</h1>
+      <small id="brand-subtitle">loading registry…</small>
+    </div>
+  </div>
+  <div class="meta">
+    <span class="conn-status" id="conn-status" data-status="idle"><span class="dot"></span><span id="conn-text">connecting…</span></span>
+    <span title="last event">last event <span id="last-event-ago">—</span></span>
+    <span title="total events received">· <span id="event-count">0</span> events</span>
+    <button class="icon-btn" id="theme-toggle" title="Toggle theme">◐</button>
+  </div>
+</header>
+<main>
+  <div class="summary-bar" id="summary-bar"></div>
+
+  <div class="section-title"><h2>Agents</h2><span class="hint" id="agents-hint"></span></div>
+  <div id="agents-grid" class="agents-grid"></div>
+
+  <div class="panels">
+    <div class="panel" id="monitor-panel">
+      <div class="panel-head">
+        <h3>AI Monitor</h3>
+        <span class="meta" id="monitor-meta">waiting…</span>
+      </div>
+      <div class="panel-body" id="monitor-body">
+        <div class="monitor-line"><span class="label">tick</span><span id="monitor-tick">—</span></div>
+        <div class="monitor-line"><span class="label">issues</span><span id="monitor-issues">—</span></div>
+        <div class="monitor-line"><span class="label">open events</span><span id="monitor-open">—</span></div>
+        <div class="section-title" style="margin: 12px 0 6px"><h2 style="font-size:11px">Recent decisions</h2><span class="hint" id="decisions-count"></span></div>
+        <div class="decisions-list" id="decisions-list"><div class="empty">no decisions yet</div></div>
+      </div>
+    </div>
+
+    <div class="panel" id="system-panel">
+      <div class="panel-head">
+        <h3>System Services</h3>
+        <span class="meta" id="system-meta">—</span>
+      </div>
+      <div class="panel-body">
+        <div class="services-grid" id="system-services"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="dash-footer">
+    SSE <code>/agents/events</code> · registry <code>/agents/registry.json</code> · auto-reconnect on disconnect
+  </div>
+</main>
+
+<!-- Generic action confirmation modal — used by the service restart
+     button. Three states: prompt → processing → result (success/error). -->
+<div class="modal-overlay" id="action-modal">
+  <div class="modal-card">
+    <div class="modal-header">
+      <span class="modal-title" id="action-modal-title">Action</span>
+      <button type="button" class="modal-close" id="action-modal-close" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" id="action-modal-body"></div>
+    <div class="modal-actions">
+      <button type="button" class="modal-cancel" id="action-modal-cancel">Cancel</button>
+      <button type="button" class="modal-save" id="action-modal-confirm">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Credentials editor modal — opened from the gear icon on integration badges. -->
+<div class="modal-overlay" id="cred-modal">
+  <div class="modal-card">
+    <div class="modal-header">
+      <span class="modal-title" id="cred-modal-title">Credentials</span>
+      <button type="button" class="modal-close" id="cred-modal-close" aria-label="Close">×</button>
+    </div>
+    <div class="modal-note" id="cred-modal-note"></div>
+    <div class="modal-instructions" id="cred-modal-instructions"></div>
+    <div class="modal-oauth" id="cred-modal-oauth"></div>
+    <form class="modal-form" id="cred-modal-form" autocomplete="off">
+      <div id="cred-modal-fields"></div>
+      <div class="modal-error" id="cred-modal-error"></div>
+      <div class="modal-actions">
+        <button type="button" class="modal-cancel" id="cred-modal-cancel">Cancel</button>
+        <button type="submit" class="modal-save" id="cred-modal-save">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ─── State ────────────────────────────────────────────────────────────────
+const state = {
+  registry: null,                  // raw agents.json (loaded once, refreshed periodically)
+  agents: {},                       // SSE-merged per-agent live state
+  agentsActivity: {},               // per-agent last-activity items
+  system: {},                       // service -> { is_active }
+  monitor: { last_tick: null, open_events: [], last_decision: null, recent_decisions: [] },
+  // Services with an in-flight restart. Keys match the systemctl-poll keys
+  // emitted by the backend (`${user}/${svc}` for per-user, bare `${svc}`
+  // for system). The badge renders a blinking yellow pip while present;
+  // it's cleared when SSE pushes is_active=active for that service.
+  pendingServices: new Set(),
+  conn: 'idle',
+  totalEvents: 0,
+  lastEventTs: 0,
+};
+
+// ─── DOM helpers ──────────────────────────────────────────────────────────
+const $ = (sel, root = document) => root.querySelector(sel);
+function el(tag, cls, text) {
+  const x = document.createElement(tag);
+  if (cls) x.className = cls;
+  if (text !== undefined && text !== null) x.textContent = text;
+  return x;
+}
+function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+// Defensive HTML escape for the few places we splice user-derived strings
+// (emails, usernames) into innerHTML alongside trusted static markup.
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+// ─── Formatting ───────────────────────────────────────────────────────────
+function fmtAgo(tsMs) {
+  if (!tsMs) return '—';
+  const s = Math.max(0, Math.floor((Date.now() - tsMs) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ${s % 60}s ago`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m ago`;
+  return `${Math.floor(s/86400)}d ${Math.floor((s%86400)/3600)}h ago`;
+}
+function fmtIdle(s) {
+  if (s == null) return '—';
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s/60)}m ${s%60}s`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`;
+  return `${Math.floor(s/86400)}d`;
+}
+function statusClass(name) { return (name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); }
+
+function idlePip(idleS) {
+  if (idleS == null) return 'idle';
+  if (idleS < 30) return 'ok';
+  if (idleS < 300) return 'warn';
+  return 'crit';
+}
+
+// Compact display for "<provider>/<model>" — drops verbose prefixes the
+// human already knows (claude-, gpt-, etc.) so the chip stays tile-sized.
+// The full string is kept on the chip's title attribute.
+function shortModel(s) {
+  if (!s) return '';
+  const slash = s.indexOf('/');
+  const provider = slash >= 0 ? s.slice(0, slash) : '';
+  let model = slash >= 0 ? s.slice(slash + 1) : s;
+  if (provider === 'claude-cli') model = model.replace(/^claude-/, '');     // claude-opus-4-7 → opus-4-7
+  else if (provider === 'openai-codex') return model;                        // gpt-5.5 already terse
+  else if (provider === 'ollama') model = model.replace(/:cloud$/, '');      // kimi-k2.6:cloud → kimi-k2.6
+  else if (provider === 'openrouter') model = model.split('/').pop() || model;
+  return provider ? `${provider}/${model}` : model;
+}
+
+// Pretty labels for capability/integration keys
+const CAP_LABELS = {
+  can_modify_code: 'code',
+  can_jira: 'jira',
+  can_send_email: 'email',
+  can_send_telegram_alerts: 'telegram',
+  can_restart_agents: 'restart',
+  can_wake_agents: 'wake',
+  can_triage_incidents: 'triage',
+};
+const INTEG_LABELS = {
+  webhook: 'Webhook',
+  gmail: 'Gmail',
+  jira: 'Jira',
+  bitbucket: 'Bitbucket',
+  openaiAuth: 'OpenAI',
+  wdt: 'WDT',
+};
+
+// ─── Theme ────────────────────────────────────────────────────────────────
+function initTheme() {
+  const saved = localStorage.getItem('x1-theme');
+  if (saved === 'light' || saved === 'dark') {
+    document.documentElement.setAttribute('data-theme', saved);
+  }
+  $('#theme-toggle').addEventListener('click', () => {
+    const cur = document.documentElement.getAttribute('data-theme');
+    const next = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('x1-theme', next);
+  });
+}
+
+// ─── Registry ─────────────────────────────────────────────────────────────
+async function loadRegistry() {
+  try {
+    const res = await fetch('/agents/registry.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    state.registry = await res.json();
+    const count = (state.registry.agents || []).length;
+    $('#brand-subtitle').textContent = `${count} agents · live`;
+    renderAll();
+  } catch (e) {
+    $('#brand-subtitle').textContent = `registry load failed: ${e.message}`;
+  }
+}
+
+function applySnapshot(d) {
+  Object.assign(state.agents, d.agents || {});
+  Object.assign(state.system, d.system || {});
+  state.monitor = d.monitor || state.monitor;
+  renderAll();
+}
+
+async function loadSnapshot() {
+  try {
+    const res = await fetch('/agents/snapshot', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    applySnapshot(await res.json());
+  } catch (e) {
+    setConn('error', `snapshot failed: ${e.message}`);
+  }
+}
+
+function regAgent(user) { return (state.registry?.agents || []).find(a => a.user === user); }
+function regOrder() {
+  // monitoring agent last; coding agents alphabetical by user
+  const list = [...(state.registry?.agents || [])];
+  list.sort((a, b) => {
+    if (a.coding !== b.coding) return a.coding ? -1 : 1;
+    return (a.user || '').localeCompare(b.user || '');
+  });
+  return list;
+}
+
+// ─── Render: agent card ───────────────────────────────────────────────────
+function renderAgent(reg, live) {
+  const live_ = live || {};
+  const idleS = live_.session_idle_s;
+  const card = el('div', 'agent-card');
+  card.dataset.role = reg.role || '';
+  card.dataset.user = reg.user;
+  // Drives the avatar ring pulse when an agent is fresh (< 30s idle)
+  card.dataset.idle = idlePip(idleS);
+
+  // Head: avatar + name + role chip + idle pip
+  const head = el('div', 'agent-head');
+  const avatarEl = el('div', 'agent-avatar');
+  const fallbackEmoji = live_.avatar || (reg.role === 'monitor' ? '👁️' : reg.role === 'manager' ? '👔' : '🛠️');
+  // Avatar URL: prefer SSE snapshot value; else derive directly from the
+  // registry (so the avatar renders as soon as the page loads, no need to
+  // wait for the SSE snapshot to arrive).
+  const firstName = (reg.name || reg.user || '').split(/\s+/)[0] || reg.user;
+  const avatarUrl = live_.avatar_url
+    || (reg.avatar ? `/agents/avatars/${encodeURIComponent(firstName)}` : null);
+  if (avatarUrl) {
+    const img = document.createElement('img');
+    img.src = avatarUrl;
+    img.alt = reg.name || reg.user;
+    img.loading = 'eager';
+    img.referrerPolicy = 'same-origin';
+    img.onload = () => avatarEl.classList.add('has-image');
+    img.onerror = () => {
+      avatarEl.classList.remove('has-image');
+      avatarEl.replaceChildren();
+      avatarEl.textContent = fallbackEmoji;
+    };
+    avatarEl.append(img);
+  } else {
+    avatarEl.textContent = fallbackEmoji;
+  }
+  head.append(avatarEl);
+  const nameBlock = el('div', 'agent-name-block');
+  const nameLine = el('div', 'agent-name');
+  nameLine.append(document.createTextNode(reg.name || reg.user));
+  nameLine.append(el('span', 'username', '@' + reg.user));
+  nameBlock.append(nameLine);
+  const metaRow = el('div', 'agent-meta-row');
+  if (reg.role) metaRow.append(el('span', 'role-chip', reg.role));
+  if (reg.telegram?.bot) {
+    const tb = el('span', 'badge integ', reg.telegram.bot);
+    tb.title = 'Telegram bot';
+    metaRow.append(tb);
+  }
+  // Model chip — what the agent is *actually* running right now
+  // (provider/model from sessions.json bookkeeping; reflects fallbacks).
+  if (live_.model_primary) {
+    const m = el('span', 'badge model-chip', shortModel(live_.model_primary));
+    m.title = live_.model_primary;
+    metaRow.append(m);
+  }
+  nameBlock.append(metaRow);
+  head.append(nameBlock);
+  head.append(el('span', `status-pip ${idlePip(idleS)}`));
+  if (idleS != null) head.append(el('span', 'idle-chip', `idle ${fmtIdle(idleS)}`));
+  card.append(head);
+
+  // Body sections
+  const body = el('div', 'agent-body');
+
+  // — Current task
+  const inProgress = (live_.jira_tickets || []).filter(t => /in.progress/i.test(t.status || ''));
+  inProgress.sort((a, b) => String(b.updated || '').localeCompare(String(a.updated || '')));
+  const cur = inProgress[0];
+  const taskField = el('div', 'field');
+  taskField.append(el('div', 'field-label', '◆ Current task'));
+  if (cur) {
+    const row = el('div', 'task-row');
+    row.append(el('span', 'ticket-key', cur.key));
+    row.append(el('span', 'ticket-summary', cur.summary || ''));
+    row.append(el('span', `ticket-status ${statusClass(cur.status)}`, cur.status));
+    taskField.append(row);
+  } else if (reg.coding) {
+    taskField.append(el('div', 'field-value dim', 'no in-progress ticket'));
+  } else {
+    taskField.append(el('div', 'field-value dim', 'not a coding agent'));
+  }
+  body.append(taskField);
+
+  // — Last activity (top 2 items)
+  const lastAct = state.agentsActivity[reg.user];
+  const actField = el('div', 'field');
+  const actLabel = el('div', 'field-label');
+  actLabel.append(document.createTextNode('● Activity'));
+  if (lastAct?.ts) actLabel.append(el('span', 'count', `· ${fmtAgo(lastAct.ts)}`));
+  actField.append(actLabel);
+  if (lastAct?.items?.length) {
+    const log = el('div', 'activity-log');
+    for (const it of lastAct.items.slice(-2)) {
+      const item = el('div', `activity-item ${it.kind || 'text'}${lastAct.error ? ' error' : ''}`);
+      const meta = el('div', 'activity-meta');
+      const kindLabel =
+        it.kind === 'tool_call' ? `tool ${it.name || ''}` :
+        it.kind === 'tool_result' ? `← ${it.name || ''}` :
+        lastAct.role || 'message';
+      meta.append(el('span', 'activity-kind', kindLabel));
+      item.append(meta);
+      if (it.preview) {
+        const prev = el('div', 'activity-preview', String(it.preview).slice(0, 220));
+        item.append(prev);
+      }
+      log.append(item);
+    }
+    actField.append(log);
+  } else {
+    actField.append(el('div', 'field-value dim', 'no activity captured yet'));
+  }
+  body.append(actField);
+
+  // — Open Jira tickets (coding agents only)
+  if (reg.coding) {
+    const tickets = live_.jira_tickets || [];
+    const jiraField = el('div', 'field');
+    const jl = el('div', 'field-label');
+    jl.append(document.createTextNode('🎫 Open Jira'));
+    jl.append(el('span', 'count', `· ${tickets.length}`));
+    jiraField.append(jl);
+    if (tickets.length) {
+      const ul = el('ul', 'tickets');
+      for (const t of tickets.slice(0, 6)) {
+        const li = el('li', 'task-row');
+        li.append(el('span', 'ticket-key', t.key));
+        li.append(el('span', 'ticket-summary', t.summary || ''));
+        li.append(el('span', `ticket-status ${statusClass(t.status)}`, t.status));
+        ul.append(li);
+      }
+      jiraField.append(ul);
+    } else {
+      jiraField.append(el('div', 'field-value dim', '—'));
+    }
+    body.append(jiraField);
+  }
+
+  // — Capabilities (toggleable)
+  if (reg.capabilities) {
+    const capField = el('div', 'field');
+    capField.append(el('div', 'field-label', '⚙ Capabilities'));
+    const badges = el('div', 'badges');
+    for (const [key, val] of Object.entries(reg.capabilities)) {
+      const lbl = CAP_LABELS[key] || key.replace(/^can_/, '').replace(/_/g, ' ');
+      const b = el('span', `badge toggleable ${val ? 'cap-on' : 'cap-off'}`, lbl);
+      b.title = `Click to ${val ? 'disable' : 'enable'} ${key} for ${reg.user}`;
+      b.addEventListener('click', () => toggleFlag(b, reg.user, 'capabilities', key, !val));
+      badges.append(b);
+    }
+    capField.append(badges);
+    body.append(capField);
+  }
+
+  // — Integrations (toggleable). Services on a separate row below.
+  if (reg.integrations) {
+    const integField = el('div', 'field');
+    integField.append(el('div', 'field-label', '🔌 Integrations'));
+    const badges = el('div', 'badges');
+    for (const [key, val] of Object.entries(reg.integrations)) {
+      const lbl = INTEG_LABELS[key] || key;
+      const b = el('span', `badge integ toggleable ${val ? 'cap-on' : 'cap-off'}`, lbl);
+      b.title = `Click to ${val ? 'disable' : 'enable'} ${key} for ${reg.user}`;
+      b.addEventListener('click', () => toggleFlag(b, reg.user, 'integrations', key, !val));
+      // Gear → opens the credentials modal for this integration. Only shown
+      // when a schema is defined; click is isolated from the parent toggle.
+      if (INTEG_CRED_SCHEMAS[key]) {
+        const gear = document.createElement('button');
+        gear.type = 'button';
+        gear.className = 'badge-action';
+        gear.textContent = '⚙';
+        gear.title = `Edit ${key} credentials for ${reg.user}`;
+        gear.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openCredentialsModal(reg.user, key);
+        });
+        b.append(gear);
+      }
+      badges.append(b);
+    }
+    if (!badges.children.length) badges.append(el('span', 'badge', 'none'));
+    integField.append(badges);
+    body.append(integField);
+  }
+
+  // — Services (read-only, grouped by prefix)
+  if (reg.services?.length) {
+    const svcField = el('div', 'field');
+    svcField.append(el('div', 'field-label', '🛠 Services'));
+    const groups = groupAgentServices(reg.services);
+    const wrap = el('div', 'svc-rows');
+    for (const g of groups) {
+      const row = el('div', 'svc-row');
+      row.append(el('span', 'svc-row-label', g.label));
+      const items = el('div', 'svc-row-items');
+      for (const item of g.items) {
+        const sysKey = `${reg.user}/${item.full}`;
+        const st = state.system[sysKey] || state.system[item.full];
+        // Pending mark wins over the polled state — we know the service
+        // is mid-restart and want to communicate that to the operator
+        // even if a stale `active` lingered in state.system from before.
+        const isPending = state.pendingServices.has(sysKey) || state.pendingServices.has(item.full);
+        const dot = isPending ? 'pending'
+          : (st?.is_active === 'active' ? 'ok' : st?.is_active ? 'crit' : 'idle');
+        const b = el('span', 'badge svc');
+        b.append(el('span', `dot ${dot}`));
+        b.append(document.createTextNode(item.short));
+        b.title = `${item.full}: ${st?.is_active || 'unknown'}`;
+        const restart = document.createElement('button');
+        restart.type = 'button';
+        restart.className = 'badge-action';
+        restart.textContent = '↻';
+        restart.title = `Restart ${item.full} for ${reg.user}`;
+        restart.addEventListener('click', (e) => {
+          e.stopPropagation();
+          restartServiceAction(restart, reg.user, item.full);
+        });
+        b.append(restart);
+        items.append(b);
+      }
+      row.append(items);
+      wrap.append(row);
+    }
+    svcField.append(wrap);
+    body.append(svcField);
+  }
+
+  card.append(body);
+  return card;
+}
+
+// Group an agent's services by name prefix and rename to user-facing labels.
+// Returns [{ label, items: [{full, short}, ...] }, ...].
+// OpenClaw services get role-named aliases (gateway → telegram, gmail-listener
+// → gmail, webhook-receiver → webhook); the WDT (Next.js standalone) service
+// is grouped under Server.js with the username stripped — every agent only
+// has one wdt service so the `<user>` suffix added no signal.
+const OC_SVC_LABELS = {
+  'gateway': 'telegram',
+  'gmail-listener': 'gmail',
+  'webhook-receiver': 'webhook',
+};
+function groupAgentServices(services) {
+  const oc = [], wdt = [], other = [];
+  for (const s of services) {
+    const noExt = s.replace(/\.service$/, '');
+    if (/^openclaw-/.test(s)) {
+      const stripped = noExt.replace(/^openclaw-/, '');
+      oc.push({ full: s, short: OC_SVC_LABELS[stripped] || stripped });
+    }
+    else if (/^wdt-/.test(s)) wdt.push({ full: s, short: 'wdt' });
+    else other.push({ full: s, short: noExt });
+  }
+  const out = [];
+  if (oc.length) out.push({ label: 'OpenClaw', items: oc });
+  if (wdt.length) out.push({ label: 'Server.js', items: wdt });
+  if (other.length) out.push({ label: 'Other', items: other });
+  return out;
+}
+
+// Toggle a registry flag (capability or integration) via the dashboard's
+// POST endpoint. Optimistic UI: badge greys out while in-flight; on success
+// we reload the registry so every dependent rendering is up-to-date; on
+// failure we surface the error.
+async function toggleFlag(elem, user, kind, key, newValue) {
+  if (elem.classList.contains('busy')) return;
+  const action = newValue ? 'enable' : 'disable';
+  if (!window.confirm(`${action} ${key} for ${user}?`)) return;
+  elem.classList.add('busy');
+  try {
+    const res = await fetch('/agents/registry/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user, kind, key, value: newValue }),
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+    }
+    await loadRegistry();
+  } catch (e) {
+    window.alert(`Toggle failed: ${e.message}`);
+  } finally {
+    elem.classList.remove('busy');
+  }
+}
+
+// Integration credential field schemas. Keys must match the ones in
+// agents.json -> integrations. Each entry has `fields` (input list) and
+// `instructions` (HTML string shown above the form so the operator
+// remembers where to obtain the credentials). `instructions` strings
+// are static markup we control here — no untrusted user input flows in.
+const INTEG_CRED_SCHEMAS = {
+  jira: {
+    fields: [
+      { name: 'email', label: 'Atlassian email', type: 'text', placeholder: 'a@zeh.me' },
+      { name: 'api_token', label: 'API token', type: 'password' },
+    ],
+    instructions:
+      'Generate an API token at <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noopener">id.atlassian.com → Manage account → Security → API tokens</a>. ' +
+      'Use your Atlassian login email plus the generated token.',
+  },
+  bitbucket: {
+    fields: [
+      { name: 'username', label: 'Username', type: 'text' },
+      { name: 'app_password', label: 'App password', type: 'password' },
+    ],
+    instructions:
+      'Create an App Password at <a href="https://bitbucket.org/account/settings/app-passwords/" target="_blank" rel="noopener">Bitbucket → Personal settings → App passwords</a>. ' +
+      'Required scopes: Repositories (read+write), Pull requests (read+write).',
+  },
+  gmail: {
+    fields: [
+      { name: 'client_id', label: 'OAuth client_id', type: 'text' },
+      { name: 'client_secret', label: 'OAuth client_secret', type: 'password' },
+      { name: 'refresh_token', label: 'OAuth refresh_token', type: 'password' },
+    ],
+    instructions:
+      'In <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console → APIs &amp; Services → Credentials</a>, ' +
+      'create an OAuth 2.0 Client ID (Desktop app type). Use <a href="https://developers.google.com/oauthplayground" target="_blank" rel="noopener">OAuth Playground</a> ' +
+      'with scope <code>https://mail.google.com/</code> to obtain the refresh_token (gear → "Use your own OAuth credentials").',
+  },
+  openaiAuth: {
+    fields: [
+      { name: 'api_key', label: 'API key', type: 'password' },
+    ],
+    instructions:
+      'Two ways to authenticate — <strong>API key</strong> (pay-per-token, below) or <strong>OAuth</strong> (ChatGPT subscriber). ' +
+      'API key: <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com → API keys → Create new secret key</a>. ' +
+      'OAuth: run <code>sudo -u &lt;user&gt; codex login</code> on x1 (browser flow) — token is written to <code>~/.openclaw/agents/main/agent/auth-profiles.json</code> automatically.',
+  },
+  webhook: {
+    fields: [
+      { name: 'secret', label: 'Shared secret', type: 'password' },
+    ],
+    instructions:
+      'A long random string used to authenticate inbound webhooks. ' +
+      'Generate with <code>openssl rand -hex 32</code> and configure the same value in the upstream service that posts to the webhook.',
+  },
+};
+
+// Open the credentials modal pre-loaded with the schema for the given
+// integration. The form is rebuilt on every open so switching between
+// integrations doesn't leak the previous integration's field values.
+// If a credentials file already exists for this user/integration, its
+// values are fetched and pre-filled so the operator can see what's
+// currently configured (and edit instead of re-typing from scratch).
+async function openCredentialsModal(user, integration) {
+  const schema = INTEG_CRED_SCHEMAS[integration];
+  if (!schema) {
+    window.alert(`No credential schema defined for "${integration}".`);
+    return;
+  }
+  const overlay = $('#cred-modal');
+  $('#cred-modal-title').textContent = `${integration} credentials — ${user}`;
+  $('#cred-modal-note').textContent =
+    'Saved to /etc/openclaw/credentials/' + user + '/' + integration + '.json (mode 0600).' +
+    (integration === 'jira' ? ' Token also written to /home/' + user + '/.ssh/jiraToken.txt for the existing consumer.' : '');
+  $('#cred-modal-error').textContent = '';
+
+  // Render the instructions block (static markup we control — safe to
+  // inject as HTML so links and <code> tags render).
+  const instr = $('#cred-modal-instructions');
+  if (schema.instructions) {
+    instr.innerHTML = schema.instructions;
+    instr.style.display = '';
+  } else {
+    instr.innerHTML = '';
+    instr.style.display = 'none';
+  }
+
+  // OAuth status panel — only populated for integrations that support
+  // a parallel OAuth path. Hidden for everything else.
+  const oauthBox = $('#cred-modal-oauth');
+  oauthBox.innerHTML = '';
+  oauthBox.style.display = 'none';
+
+  const fields = $('#cred-modal-fields');
+  clear(fields);
+  for (const f of schema.fields) {
+    const lbl = el('label', '', f.label);
+    const inp = document.createElement('input');
+    inp.name = f.name;
+    inp.type = f.type === 'password' ? 'password' : 'text';
+    if (f.placeholder) inp.placeholder = f.placeholder;
+    inp.autocomplete = 'off';
+    lbl.append(inp);
+    fields.append(lbl);
+  }
+  overlay.dataset.user = user;
+  overlay.dataset.integration = integration;
+  overlay.classList.add('open');
+
+  // Pre-fill any saved values so the operator sees the current state.
+  // Endpoint returns {} if no file exists yet.
+  try {
+    const url = `/agents/integrations/credentials?user=${encodeURIComponent(user)}&integration=${encodeURIComponent(integration)}`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json();
+      const saved = (data && data.fields) || {};
+      for (const [k, v] of Object.entries(saved)) {
+        const inp = fields.querySelector(`input[name="${CSS.escape(k)}"]`);
+        if (inp && typeof v === 'string') inp.value = v;
+      }
+      const meta = (data && data.meta) || {};
+      if (integration === 'openaiAuth' && meta.oauth) {
+        const o = meta.oauth;
+        oauthBox.style.display = '';
+        if (o.connected) {
+          const who = o.email || '(account)';
+          const plan = o.plan ? ` · plan ${o.plan}` : '';
+          oauthBox.innerHTML =
+            '<span class="oauth-pip ok"></span> OAuth connected as <strong>' +
+            escapeHtml(who) + '</strong>' + escapeHtml(plan) +
+            ' <span class="oauth-hint">— leave API key blank to keep using OAuth</span>';
+        } else {
+          oauthBox.innerHTML =
+            '<span class="oauth-pip off"></span> OAuth not connected. ' +
+            'Run <code>sudo -u ' + escapeHtml(user) + ' codex login</code> on x1 to authenticate, ' +
+            'or set an API key below.';
+        }
+      }
+    }
+  } catch (_e) { /* fresh-form fallback is fine */ }
+
+  // Focus the first empty field, or the first field if everything is filled.
+  const inputs = Array.from(fields.querySelectorAll('input'));
+  const firstEmpty = inputs.find(i => !i.value) || inputs[0];
+  if (firstEmpty) firstEmpty.focus();
+}
+
+function closeCredentialsModal() {
+  const overlay = $('#cred-modal');
+  overlay.classList.remove('open');
+  delete overlay.dataset.user;
+  delete overlay.dataset.integration;
+  $('#cred-modal-form').reset();
+  $('#cred-modal-error').textContent = '';
+}
+
+async function submitCredentials(evt) {
+  evt.preventDefault();
+  const overlay = $('#cred-modal');
+  const user = overlay.dataset.user;
+  const integration = overlay.dataset.integration;
+  if (!user || !integration) return;
+  const form = $('#cred-modal-form');
+  const saveBtn = $('#cred-modal-save');
+  const errEl = $('#cred-modal-error');
+  errEl.textContent = '';
+  const fields = {};
+  for (const inp of form.querySelectorAll('input[name]')) {
+    if (inp.value) fields[inp.name] = inp.value;
+  }
+  if (Object.keys(fields).length === 0) {
+    errEl.textContent = 'Enter at least one field.';
+    return;
+  }
+  saveBtn.disabled = true;
+  try {
+    const res = await fetch('/agents/integrations/credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user, integration, fields }),
+      cache: 'no-store',
+    });
+    const txt = await res.text();
+    if (!res.ok) {
+      errEl.textContent = `HTTP ${res.status}: ${txt.slice(0, 200)}`;
+      return;
+    }
+    closeCredentialsModal();
+  } catch (e) {
+    errEl.textContent = `Save failed: ${e.message}`;
+  } finally {
+    saveBtn.disabled = false;
+  }
+}
+
+// Generic confirm-then-do modal. Shows the prompt, runs an async
+// action on confirm, and updates the modal's body to reflect
+// processing → success/error. State machine:
+//   prompt   — title + prompt + Cancel/Confirm
+//   working  — spinner + "Working…", buttons disabled
+//   done     — success text + Close (only)
+//   failed   — error text + Close (only)
+function actionModal(opts) {
+  const overlay = $('#action-modal');
+  const title = $('#action-modal-title');
+  const body = $('#action-modal-body');
+  const closeBtn = $('#action-modal-close');
+  const cancelBtn = $('#action-modal-cancel');
+  const confirmBtn = $('#action-modal-confirm');
+
+  const close = () => {
+    overlay.classList.remove('open');
+    closeBtn.onclick = null;
+    cancelBtn.onclick = null;
+    confirmBtn.onclick = null;
+  };
+
+  title.textContent = opts.title;
+  body.textContent = opts.prompt;
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.disabled = false;
+  cancelBtn.style.display = '';
+  confirmBtn.textContent = opts.confirmLabel || 'Confirm';
+  confirmBtn.disabled = false;
+  confirmBtn.style.display = '';
+  overlay.classList.add('open');
+
+  closeBtn.onclick = close;
+  cancelBtn.onclick = close;
+  confirmBtn.onclick = async () => {
+    // → working
+    clear(body);
+    const w = el('span', 'working');
+    w.append(el('span', 'modal-spinner'));
+    w.append(document.createTextNode(' ' + (opts.processingText || 'Working…')));
+    body.append(w);
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    try {
+      const result = await opts.run();
+      // → done
+      clear(body);
+      const s = el('span', 'ok', opts.successText || 'Done.');
+      body.append(s);
+      if (result && result.detail) {
+        body.append(document.createElement('br'));
+        body.append(el('span', 'modal-note', result.detail));
+      }
+      confirmBtn.style.display = 'none';
+      cancelBtn.textContent = 'Close';
+      cancelBtn.disabled = false;
+    } catch (e) {
+      // → failed
+      clear(body);
+      body.append(el('span', 'err', `Failed: ${e.message}`));
+      confirmBtn.style.display = 'none';
+      cancelBtn.textContent = 'Close';
+      cancelBtn.disabled = false;
+    }
+  };
+}
+
+// Restart a per-agent or system service via the dashboard's POST endpoint.
+// Uses the action modal for confirmation + processing + result feedback.
+// systemctl re-poll happens server-side ~800 ms after the call returns;
+// the badge's status pip flips on the SSE channel without a manual reload.
+//
+// Visual contract: between confirm-click and the next "active" SSE
+// update, the service's badge pip blinks yellow (state.pendingServices).
+// A 60 s safety timer clears the mark even if no SSE arrives, so a
+// hung restart doesn't leave the pip blinking forever.
+function restartServiceAction(elem, user, service) {
+  const sysKey = `${user}/${service}`;
+  if (state.pendingServices.has(sysKey)) return;
+  actionModal({
+    title: `Restart ${service}`,
+    prompt: `Restart ${service} for ${user}? This will momentarily interrupt the running service.`,
+    confirmLabel: 'Restart',
+    processingText: `Restarting ${service}…`,
+    successText: `${service} restarted.`,
+    run: async () => {
+      state.pendingServices.add(sysKey);
+      renderAgents();
+      const safety = setTimeout(() => {
+        if (state.pendingServices.delete(sysKey)) renderAgents();
+      }, 60_000);
+      try {
+        const res = await fetch('/agents/services/restart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user, service }),
+          cache: 'no-store',
+        });
+        const text = await res.text();
+        if (!res.ok) {
+          // Restart never happened — drop the pending mark immediately
+          // so the pip reflects current state instead of misleading.
+          clearTimeout(safety);
+          state.pendingServices.delete(sysKey);
+          renderAgents();
+          throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+        }
+        return { detail: 'Pip will turn green when the service is back up.' };
+      } catch (e) {
+        clearTimeout(safety);
+        state.pendingServices.delete(sysKey);
+        renderAgents();
+        throw e;
+      }
+    },
+  });
+}
+
+// ─── Render: summary stats bar ────────────────────────────────────────────
+function renderSummary() {
+  const bar = $('#summary-bar');
+  clear(bar);
+  const agents = (state.registry?.agents || []);
+  const active = agents.filter(a => {
+    const liv = state.agents[a.user];
+    return liv && liv.session_idle_s != null && liv.session_idle_s < 30;
+  }).length;
+  const idle = agents.filter(a => {
+    const liv = state.agents[a.user];
+    return liv && liv.session_idle_s != null && liv.session_idle_s >= 30 && liv.session_idle_s < 300;
+  }).length;
+  const stale = agents.filter(a => {
+    const liv = state.agents[a.user];
+    return liv && liv.session_idle_s != null && liv.session_idle_s >= 300;
+  }).length;
+  const sysOk = Object.values(state.system).filter(s => s?.is_active === 'active').length;
+  const sysAll = Object.keys(state.system).length;
+  const issues = state.monitor.last_tick?.issues ?? '—';
+  const verdict = state.monitor.last_tick?.healthy === false ? 'crit' :
+                  state.monitor.last_tick?.healthy === true  ? 'ok' : 'idle';
+
+  const pillData = [
+    { dot: 'ok',   num: active,   lbl: 'active' },
+    { dot: 'warn', num: idle,     lbl: 'idle' },
+    { dot: 'crit', num: stale,    lbl: 'stale' },
+    { dot: 'ok',   num: `${sysOk}/${sysAll || 0}`, lbl: 'system services' },
+    { dot: verdict, num: issues, lbl: 'monitor issues' },
+  ];
+  for (const p of pillData) {
+    const pill = el('div', 'stat-pill');
+    pill.append(el('span', `dot ${p.dot}`));
+    pill.append(el('span', 'num', String(p.num)));
+    pill.append(el('span', 'lbl', p.lbl));
+    bar.append(pill);
+  }
+}
+
+// ─── Render: agents grid ──────────────────────────────────────────────────
+function renderAgents() {
+  const grid = $('#agents-grid');
+  clear(grid);
+  const order = regOrder();
+  if (!order.length) {
+    grid.append(el('div', 'empty', 'no agents in registry'));
+    return;
+  }
+  for (const reg of order) {
+    grid.append(renderAgent(reg, state.agents[reg.user]));
+  }
+  $('#agents-hint').textContent = `${order.length} registered`;
+}
+
+// ─── Render: AI monitor panel ─────────────────────────────────────────────
+function renderMonitor() {
+  const t = state.monitor.last_tick;
+  $('#monitor-meta').textContent = t ? `${t.healthy ? '✓ healthy' : '✗ unhealthy'} · ${t.summary}` : 'waiting for tick';
+  $('#monitor-tick').textContent = t ? `${fmtAgo(t.ts * 1000)}` + (t.model ? ` · model=${t.model}` : '') : '—';
+  $('#monitor-issues').textContent = t?.issues != null ? String(t.issues) : '—';
+  $('#monitor-open').textContent  = String((state.monitor.open_events || []).length);
+
+  const list = $('#decisions-list');
+  clear(list);
+  const decisions = state.monitor.recent_decisions || [];
+  $('#decisions-count').textContent = decisions.length ? `· ${decisions.length}` : '';
+  if (!decisions.length) {
+    list.append(el('div', 'empty', 'no decisions yet'));
+    return;
+  }
+  for (const d of decisions.slice(0, 12)) {
+    const div = el('div', `decision ${d.decision === 'escalate' ? 'escalate' : ''}`);
+    const head = el('div', 'decision-head');
+    head.append(el('span', 'decision-tag', d.decision || '?'));
+    if (d.timestamp) head.append(el('span', 'decision-when', d.timestamp));
+    div.append(head);
+    if (d.reason) div.append(el('div', 'decision-reason', String(d.reason).slice(0, 200)));
+    if (d.actions_taken?.length) div.append(el('div', 'decision-actions', '↳ ' + d.actions_taken.join(' · ')));
+    list.append(div);
+  }
+}
+
+// ─── Render: system services panel ────────────────────────────────────────
+//
+// Services are partitioned into:
+//   - Infrastructure: host services not tied to any agent (sshd, nginx, …)
+//   - Monitoring: system-wide watcher timers (ai-monitor, openclaw-integrity)
+// Per-agent services are intentionally NOT shown here — they're already on
+// each agent card under "Integrations & Services".
+const SERVICE_GROUPS = [
+  {
+    title: 'Infrastructure',
+    classify: name => /^(sshd|nginx|mariadb|mysql|php-fpm|ollama|systemd-resolved|cups)\.service$/.test(name),
+  },
+  {
+    title: 'Monitoring',
+    classify: name => /^(ai-monitor|openclaw-integrity|openclaw-backup)\.timer$/.test(name)
+                    || /^(ai-monitor|openclaw-integrity|openclaw-backup)\.service$/.test(name),
+  },
+];
+
+function classifyService(name) {
+  // Per-agent services are namespaced as "<user>/<service>" — skip in the system tile.
+  if (name.includes('/')) return null;
+  for (const g of SERVICE_GROUPS) if (g.classify(name)) return g.title;
+  return 'Other';
+}
+
+function renderSystem() {
+  const root = $('#system-services');
+  clear(root);
+
+  const entries = Object.entries(state.system);
+  const grouped = {};   // title -> [[name, st], …]
+  let hostOk = 0, hostTot = 0;
+  for (const [name, st] of entries) {
+    const group = classifyService(name);
+    if (!group) continue;  // per-agent service: skip
+    (grouped[group] = grouped[group] || []).push([name, st]);
+    hostTot++;
+    if (st?.is_active === 'active') hostOk++;
+  }
+
+  $('#system-meta').textContent = hostTot ? `${hostOk}/${hostTot} active` : '—';
+  if (!hostTot) {
+    root.append(el('div', 'empty', 'no host service data'));
+    return;
+  }
+
+  // Render each group in display order, skipping empties
+  const order = [...SERVICE_GROUPS.map(g => g.title), 'Other'];
+  for (const title of order) {
+    const list = grouped[title];
+    if (!list || !list.length) continue;
+    list.sort();
+
+    const groupEl = el('div', 'svc-group');
+    const headEl = el('div', 'svc-group-head');
+    headEl.append(el('span', 'svc-group-title', title));
+    const okN = list.filter(([_, s]) => s?.is_active === 'active').length;
+    headEl.append(el('span', 'svc-group-count', `${okN}/${list.length}`));
+    groupEl.append(headEl);
+
+    const grid = el('div', 'services-grid');
+    for (const [name, st] of list) {
+      const dot = st?.is_active === 'active' ? 'ok' : 'crit';
+      const row = el('div', 'service-row');
+      row.append(el('span', `status-pip ${dot}`));
+      const display = name.replace(/\.service$/, '').replace(/\.timer$/, ' ⏱');
+      const nameEl = el('span', 'name', display);
+      nameEl.title = `${name}: ${st?.is_active || 'unknown'}`;
+      row.append(nameEl);
+      grid.append(row);
+    }
+    groupEl.append(grid);
+    root.append(groupEl);
+  }
+}
+
+// ─── Master render ────────────────────────────────────────────────────────
+function renderAll() {
+  renderSummary();
+  renderAgents();
+  renderMonitor();
+  renderSystem();
+}
+
+// ─── SSE ──────────────────────────────────────────────────────────────────
+function setConn(status, text) {
+  state.conn = status;
+  const el = $('#conn-status');
+  el.dataset.status = status;
+  $('#conn-text').textContent = text;
+}
+
+function connect() {
+  const ev = new EventSource('/agents/events');
+  ev.onopen = () => setConn('connected', 'live');
+  ev.onerror = () => setConn('error', 'reconnecting…');
+  ev.onmessage = (m) => {
+    state.totalEvents++;
+    state.lastEventTs = Date.now();
+    let d;
+    try { d = JSON.parse(m.data); } catch { return; }
+    handleEvent(d);
+    $('#event-count').textContent = String(state.totalEvents);
+  };
+}
+
+function handleEvent(d) {
+  switch (d.type) {
+    case 'snapshot':
+      applySnapshot(d);
+      return;
+    case 'agent_activity':
+      // model_change events carry a `model` field but no `items` / `role` —
+      // just patch state and re-render.
+      if (d.event === 'model_change' && d.model) {
+        if (state.agents[d.agent]) state.agents[d.agent].model_primary = d.model;
+        renderAgents();
+        return;
+      }
+      state.agentsActivity[d.agent] = { ts: d.ts, role: d.role, items: d.items, error: d.error };
+      if (state.agents[d.agent]) {
+        state.agents[d.agent].last_activity = state.agentsActivity[d.agent];
+        state.agents[d.agent].session_idle_s = 0;
+      }
+      renderAll();
+      return;
+    case 'agent_jira':
+      if (state.agents[d.agent]) state.agents[d.agent].jira_tickets = d.tickets;
+      renderSummary(); renderAgents();
+      return;
+    case 'agent_task_change':
+      if (state.agents[d.agent]) state.agents[d.agent].current_task = d.task;
+      renderAgents();
+      return;
+    case 'session_idle_tick':
+      // bump rendering with current "ago" labels
+      renderSummary(); renderAgents();
+      return;
+    case 'system_state':
+      state.system[d.service] = { is_active: d.is_active };
+      // Clear the "restart pending" mark once systemctl confirms the
+      // service is back up. Any other state (activating, failed) keeps
+      // the yellow pip blinking so the operator can see it isn't done.
+      if (state.pendingServices.has(d.service) && d.is_active === 'active') {
+        state.pendingServices.delete(d.service);
+      }
+      renderSummary(); renderSystem(); renderAgents();  // agent service pips depend on this
+      return;
+    case 'ai_monitor_tick':
+      state.monitor.last_tick = d.tick;
+      renderSummary(); renderMonitor();
+      return;
+    case 'ai_monitor_state':
+      state.monitor.open_events = d.open_events;
+      renderSummary(); renderMonitor();
+      return;
+    case 'karen_decision':
+      // Wire-format event name kept verbatim — payload is the monitoring agent's decision.
+      state.monitor.last_decision = d.decision;
+      state.monitor.recent_decisions = [d.decision].concat((state.monitor.recent_decisions || []).slice(0, 11));
+      renderMonitor();
+      return;
+    case 'registry_updated':
+      // Another browser (or a local toggle) modified agents.json. Refetch
+      // and re-render so this page reflects the new capabilities/integrations.
+      loadRegistry();
+      return;
+  }
+}
+
+// ─── Heartbeat: keep "ago" labels fresh ───────────────────────────────────
+setInterval(() => {
+  $('#last-event-ago').textContent = state.lastEventTs ? fmtAgo(state.lastEventTs) : '—';
+  // Light refresh: only the parts that show relative time
+  renderSummary();
+  renderAgents();
+  renderMonitor();
+}, 1000);
+
+// ─── Periodic registry refresh ────────────────────────────────────────────
+setInterval(loadRegistry, 5 * 60 * 1000);  // every 5 min, in case agents.json changes
+
+// ─── Wire modal events (once at boot) ─────────────────────────────────────
+$('#cred-modal-close').addEventListener('click', closeCredentialsModal);
+$('#cred-modal-cancel').addEventListener('click', closeCredentialsModal);
+$('#cred-modal-form').addEventListener('submit', submitCredentials);
+$('#cred-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'cred-modal') closeCredentialsModal();
+});
+$('#action-modal').addEventListener('click', (e) => {
+  // Backdrop click closes only when not in the working state. We treat
+  // confirmBtn.disabled as the marker — buttons are disabled while
+  // an action is in flight, and we don't want the user accidentally
+  // closing the dialog mid-restart.
+  if (e.target.id === 'action-modal' && !$('#action-modal-confirm').disabled) {
+    $('#action-modal').classList.remove('open');
+  }
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if ($('#cred-modal').classList.contains('open')) closeCredentialsModal();
+  else if ($('#action-modal').classList.contains('open') && !$('#action-modal-confirm').disabled) {
+    $('#action-modal').classList.remove('open');
+  }
+});
+
+// ─── Boot ─────────────────────────────────────────────────────────────────
+initTheme();
+(async function boot() {
+  await loadSnapshot();
+  loadRegistry();
+  connect();
+})();
+</script>
+</body>
+</html>

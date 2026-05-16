@@ -462,10 +462,10 @@ The exact port numbers per registered user live in `agents.json` (`listeners[].h
 - Secrets stay out of `openclaw.json`; use env/token files only.
 - `karen` runs the monitoring agent's OpenClaw gateway on `127.0.0.1:18793`.
 - `karen` also receives webhooks, updates `/home/<user>/tasks/current.md`, and wakes the target agent via `/usr/local/sbin/openclaw-control`.
-- Shared operational knowledge lives in `/srv/agents/shared`.
+- Shared operational knowledge lives in `/srv/Code/environment/ai/openclaw`.
 - Active monitored-agent registry lives at `/etc/openclaw/agents.json`; `` points to the same file.
 - `/home/karen/webhooks/users.json` is webhook routing only, not the full monitoring roster.
-- The shared docs (`AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`) are canonical at `/srv/agents/shared/` (deployed from `environment/ai/openclaw/` in the unified `environment` repo). Each coding agent's home has two symlinks per file (one in `~/workspace/`, one in `~/.openclaw/workspace/`) pointing at the canonical file in the repo, so both the user-facing and OpenClaw internal workspaces see the same content. The monitoring agent (`karen`) has only `~/.openclaw/workspace/`, with one symlink per file.
+- The shared docs (`AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`) are canonical at `/srv/Code/environment/ai/openclaw/` (deployed from `environment/ai/openclaw/` in the unified `environment` repo). Each coding agent's home has two symlinks per file (one in `~/workspace/`, one in `~/.openclaw/workspace/`) pointing at the canonical file in the repo, so both the user-facing and OpenClaw internal workspaces see the same content. The monitoring agent (`karen`) has only `~/.openclaw/workspace/`, with one symlink per file.
 - Per-agent files (`SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `MEMORY.md`, `HEARTBEAT.md`) are **content-per-agent** but **single-canonical in location**: each lives at `~/workspace/<file>` and `~/.openclaw/workspace/<file>` is a symlink to it.
 - `AGENTS.md` defines the operating baseline (always-on rules + memory/safety/group-chats/heartbeats/tools). `ROLES.md` defines role-specific behaviour. `TEAM_WORKFLOW.md` is the action-indexed playbook for tasks. `SOUL.md` and `IDENTITY.md` define per-agent persona only.
 - Jira tickets in `Backlog` are not actionable. Agents and dispatchers must completely ignore them: do not queue, wake, send Telegram, comment, transition, or start work unless zeh explicitly overrides Backlog for that specific ticket.
@@ -618,7 +618,7 @@ sudo -u karen XDG_RUNTIME_DIR=/run/user/1003 DBUS_SESSION_BUS_ADDRESS=unix:path=
 
 #### Backup scope
 
-`openclaw-backup` backs up small but high-value state only: `/etc/openclaw`, `/etc/ai-monitor/config.json`, `/srv/agents/shared`, agent `.openclaw` and `.config/openclaw` directories, key workspace instruction files, webhook routing, and Ollama cloud identity keys. It excludes large caches, `node_modules`, browser data, git directories, and local model blobs. The archive and manifest are mode `0600` under `/var/backups/openclaw`.
+openclaw-backup backs up small but high-value state only: /etc/openclaw, /etc/ai-monitor/config.json, /srv/Code/environment/ai/openclaw, /srv/Code/environment/ai/web, agent .openclaw and .config/openclaw directories, key workspace instruction files, webhook routing, and Ollama cloud identity keys. It excludes large caches, node_modules, browser data, git directories, and local model blobs. The archive and manifest are mode 0600 under /var/backups/openclaw.
 
 This is a local safety net. Off-host copies should live on `moonlight` under `/srv/backups/openclaw/x1`; the first manual copy was written there on 2026-05-08. Future automation should sync the latest archive and matching `.manifest.json` there after each local backup.
 
@@ -638,11 +638,13 @@ Added 2026-05-08. A read-only single-page dashboard at `https://dev.vixi.au/agen
 | Path | Purpose |
 |---|---|
 | `/usr/local/bin/agent-dashboard` | Node server (~530 lines). Stdlib `http`, `fs`, `child_process`. Listens on 127.0.0.1:3013. |
-| `/srv/agents/shared/web/agents.html` | Single-file frontend (~810 lines including CSS + JS), redesigned 2026-05-10: modern dark/light themes (toggle persisted in `localStorage`), role-coded cards (`manager`/`developer`/`monitor` accent colors), capability + integration + service badges per agent, SVG-free icons. Hydrates per-agent metadata from `/agents/registry.json` (auth-gated nginx alias to `/srv/agents/index.json` — the live runtime registry, NOT in the repo); live state still flows via the SSE stream. Tracked in `environment/ai/web/agents.html`. Served by **nginx** directly via `alias`; SELinux context `httpd_sys_content_t`. The legacy path `/usr/local/share/agent-dashboard/agents.html` is now a symlink to this file so the Node fallback path still works for loopback-direct fetches. |
+| `/srv/Code/environment/ai/web/agents.html` | Single-file frontend (~810 lines including CSS + JS), redesigned 2026-05-10: modern dark/light themes (toggle persisted in `localStorage`), role-coded cards (`manager`/`developer`/`monitor` accent colors), capability + integration + service badges per agent, SVG-free icons. Hydrates per-agent metadata from `/agents/registry.json` (auth-gated nginx alias to `/srv/agents/index.json` — the live runtime registry, NOT in the repo); live state still flows via the SSE stream. Tracked in `environment/ai/web/agents.html`. Served by **nginx** directly via `alias`; SELinux context `httpd_sys_content_t`. The legacy path `/usr/local/share/agent-dashboard/agents.html` is now a symlink to this file so the Node fallback path still works for loopback-direct fetches. |
 | `/etc/agent-dashboard/config.json` | Bind address/port, `agents_registry` path, jira host, `system_services` list, poll intervals. |
 | `/etc/systemd/system/agent-dashboard.service` | `Type=simple`, `Restart=always`, runs as root, depends on `network-online.target` and `ai-monitor.timer`. |
 
-#### Data sources (how it stays live)
+| /srv/Code/environment/ai/web/agents.html | Main dashboard frontend, served at /agents.html. |
+| /srv/Code/environment/ai/web/agents-asdrubal.html | Independent copy of agents.html for Asdrubal dashboard experiments, served at /agents-asdrubal.html. |
+| /srv/Code/environment/ai/web/agents-barekbaal.html | Independent copy of agents.html for Barekbaal dashboard experiments, served at /agents-barekbaal.html. |
 
 | Source | Mechanism | Used for |
 |---|---|---|
@@ -659,16 +661,13 @@ The dashboard reads `/etc/openclaw/agents.json` on startup to know which agents 
 
 #### SSE event types (broadcast to all connected browsers)
 
-`snapshot` (initial state on connect), `agent_activity` (jsonl line emitted), `agent_task_change` (current.md changed), `agent_jira` (Jira poll completed), `system_state` (service flipped state), `ai_monitor_tick`, `ai_monitor_state`, `karen_decision` (monitoring-agent decision; wire-format name kept verbatim for code compatibility — both backend and frontend reference the literal `karen_decision`), `session_idle_tick` (heartbeat).
-
-#### nginx wiring
-
-Three location blocks added to `/etc/nginx/vhosts.d/dev-migrated.conf`:
-
-- `location = /agents.html` — `auth_basic` + `alias /srv/agents/shared/web/agents.html` (served directly by nginx as of 2026-05-10; was a `proxy_pass` to the Node service before).
-- `location = /agents/registry.json` — `auth_basic` + `alias /srv/agents/index.json` (added 2026-05-10 to let the dashboard hydrate per-agent metadata: capabilities, integrations, services, listeners, telegram bot — all the fields the SSE snapshot doesn't emit). Same auth as the HTML.
-- `location = /agents/events` — same auth, plus `proxy_buffering off; proxy_cache off; proxy_read_timeout 24h; chunked_transfer_encoding off;` so the persistent SSE connection isn't broken by buffering.
-- `location = /agents/health` — no auth, simple proxy.
+Dashboard location blocks live in /etc/nginx/vhosts.d/dev.conf:
+- /agents.html: auth_basic + alias /srv/Code/environment/ai/web/agents.html.
+- /agents-asdrubal.html: auth_basic + alias /srv/Code/environment/ai/web/agents-asdrubal.html.
+- /agents-barekbaal.html: auth_basic + alias /srv/Code/environment/ai/web/agents-barekbaal.html.
+- /agents/registry.json: auth_basic + alias /srv/agents/index.json.
+- /agents/events: authenticated SSE proxy to agent-dashboard on 127.0.0.1:3013.
+- /agents/health: unauthenticated health proxy.
 
 #### Operational
 
@@ -722,12 +721,11 @@ A consolidated note of decisions and changes since the last full rewrite of this
 ### Recent changes (2026-05-10)
 
 Second consolidated note covering changes since the 2026-05-08 entry. Each bullet names current paths.
+- **Shared docs + skills now live in the unified environment repo** (bitbucket.org:zehferrari/environment.git, working tree /srv/Code/environment). OpenClaw shared files are under /srv/Code/environment/ai/openclaw/; dashboard HTML is under /srv/Code/environment/ai/web/. Agent workspace files and shared skills symlink directly to those paths, and edits land through the environment repo root.
 
-- **Shared docs + skills moved to a git repo** (`bitbucket.org:zehferrari/zagents`, cloned at `/srv/agents/shared/`, working tree owned by a single configured "git owner" user — resolve dynamically with `stat -c %U /srv/agents/shared`). Replaces the manual-file model; edits land via `sudo -u <git-owner> git -C /srv/agents/shared {pull,commit,push}`. Per-repo `core.sshCommand` is set in `.git/config` to use the git-owner's own ed25519 key (the agents' default `bbZeh` SSH key authenticates as a personal account that may lack explicit write on this repo). Repo includes `README.md`, `AGENT_FILES.md` (per-agent file inventory with descriptions), `index.example.json` (single-record registry template — live registry is `/srv/agents/index.json`, NOT in the repo), all the existing shared docs, and `skills/`. All `*.bak*` files were nuked across the host (260 files) — git history is the backup.
+- **`/etc/openclaw/agents.json` is now a symlink** → `/srv/agents/index.json` (the live runtime registry, kept *outside* the git working tree at `/srv/Code/environment/ai/openclaw/` so dashboard toggle writes don't pollute `git diff`). ai-monitor, the dashboard, registry-check and the webhook receiver all read through the symlink transparently. The single-record template `/srv/Code/environment/ai/openclaw/index.example.json` stays in git as the in-repo reference; copy it to `/srv/agents/index.json` and edit when bootstrapping a new host. nginx alias for `/agents/registry.json` and the dashboard's `setRegistryFlag()` write target both point at the live file directly.
 
-- **`/etc/openclaw/agents.json` is now a symlink** → `/srv/agents/index.json` (the live runtime registry, kept *outside* the git working tree at `/srv/agents/shared/` so dashboard toggle writes don't pollute `git diff`). ai-monitor, the dashboard, registry-check and the webhook receiver all read through the symlink transparently. The single-record template `/srv/agents/shared/index.example.json` stays in git as the in-repo reference; copy it to `/srv/agents/index.json` and edit when bootstrapping a new host. nginx alias for `/agents/registry.json` and the dashboard's `setRegistryFlag()` write target both point at the live file directly.
-
-- **Dashboard HTML moved into the repo** (`/srv/agents/shared/web/agents.html`). nginx serves it directly via `alias` from `/etc/nginx/vhosts.d/dev-migrated.conf` (was previously `proxy_pass http://127.0.0.1:3013/agents.html`). The Node service still handles `/agents/events` (SSE) and `/agents/health`. Legacy `/usr/local/share/agent-dashboard/agents.html` is a symlink for backwards compatibility.
+- **Dashboard HTML lives in the environment repo** (/srv/Code/environment/ai/web/). nginx serves agents.html, agents-asdrubal.html, and agents-barekbaal.html directly via alias from /etc/nginx/vhosts.d/dev.conf. The Node service still handles /agents/events, /agents/snapshot, registry toggles, service restarts, and /agents/health.
 
 - **Webhook @-mention routing** (`/home/karen/webhooks/webhook-receiver.js` + `users.json`). `comment_*` events are parsed for both ADF and wiki-markup mentions (`[~accountid:712020:...]`). Jira Cloud delivers webhook `comment.body` as a wiki-markup string (not ADF — the REST API does ADF, webhooks do not), so `extractWikiMentions()` is the path that fires in practice. Mentioned agents are routed by `jiraAccountId` lookup (per-user map built at startup from `users.json`); the wake message gets a "You were @-mentioned in <KEY> by <Mentioner>" prefix invoking the new TEAM_WORKFLOW.md "Responding to @-mentions" rule. Comment author is excluded (no self-wake). Falls back to assignee match, then broadcast.
 
@@ -735,16 +733,16 @@ Second consolidated note covering changes since the 2026-05-08 entry. Each bulle
 
 - **`jira-probe-failed` / `pending-mentions-probe-failed` axes** (`/usr/local/bin/ai-monitor`). Errors that previously hid in `stalled_tasks.errors` and `pending_mentions.errors` now surface as deterministic issues. Catches token expiry, rate-limit, and network breakage that would otherwise silently disable the alerts.
 
-- **TEAM_WORKFLOW.md consolidated** (`/srv/agents/shared/TEAM_WORKFLOW.md`). Each coding agent's two paths (`/home/<user>/workspace/TEAM_WORKFLOW.md` and `/home/<user>/.openclaw/workspace/TEAM_WORKFLOW.md`) are now symlinks to the canonical shared file — single source of truth, edits land in one place, every agent picks up the change on next read.
+- **TEAM_WORKFLOW.md consolidated** (`/srv/Code/environment/ai/openclaw/TEAM_WORKFLOW.md`). Each coding agent's two paths (`/home/<user>/workspace/TEAM_WORKFLOW.md` and `/home/<user>/.openclaw/workspace/TEAM_WORKFLOW.md`) are now symlinks to the canonical shared file — single source of truth, edits land in one place, every agent picks up the change on next read.
 
 - **New / updated TEAM_WORKFLOW.md sections**:
   - `Responding to @-mentions` — agents must reply on the ticket if @-mentioned, even if the ticket isn't theirs. Backed by the `mention-awaiting-reply` axis.
   - `Reply Formatting` — Jira/email replies must be proper markdown (blank-line-separated paragraphs, bullet/numbered lists, ATX headings, fenced code blocks, inline code, pipe tables). Walls of one-paragraph text are unacceptable. Telegram stays terse, no markdown decoration, no signature.
   - Updated `Outbound Signature Rule` — signature is now `--` / `<First Name>` / `<provider>/<model>` (no `Model:` prefix, first name only). Helpers render the provider/model line subdued (smaller, grey). Mandatory for Jira/email; forbidden in Telegram.
 
-- **Shared skills tree** (`/srv/agents/shared/skills/`). Agent identity now flows from `/etc/openclaw/agents.json` (resolved by `os.userInfo().username`) through a small `agent-self.js` module, eliminating per-agent forks of helper code. Layout:
+- **Shared skills tree** (`/srv/Code/environment/ai/openclaw/skills/`). Agent identity now flows from `/etc/openclaw/agents.json` (resolved by `os.userInfo().username`) through a small `agent-self.js` module, eliminating per-agent forks of helper code. Layout:
   ```
-  /srv/agents/shared/skills/
+  /srv/Code/environment/ai/openclaw/skills/
     agent-self.js              # registry-driven identity resolver
     jira/                      # 9 files (lib.js reads email from agents.json)
       jira-comment.js, lib.js, jira-transition.js, jira-my-issues.js, ...
@@ -753,9 +751,9 @@ Second consolidated note covering changes since the 2026-05-08 entry. Each bulle
   ```
   Per-agent `~/.openclaw/workspace/jira/*.js` and `~/.openclaw/skills/google-workspace/*.js` are now symlinks. Per-agent **state** files stay real per-agent (state.json, *-state.json, _comments.json, _docs.json, auto-reply-policy.json) — each agent maintains its own gmail/drive state. Pre-symlink originals saved as `*.bak-symlink-20260510T1100`.
 
-- **`jira-comment.js` markdown → ADF** (`/srv/agents/shared/skills/jira/jira-comment.js`). Was a single-paragraph passthrough that crammed everything into one ADF text node; now parses markdown into a proper ADF doc — paragraphs, ATX headings (1–3), bullet/numbered lists, fenced code blocks, pipe tables, inline `**bold**` / `*italic*` / `` `code` `` / `[text](url)`. A trailing `--` / `<first name>` / `<provider>/<model>` signature is detected and the provider/model line gets ADF marks `subsup{type:sub}` + `textColor{#999999}` for a subdued render.
+- **`jira-comment.js` markdown → ADF** (`/srv/Code/environment/ai/openclaw/skills/jira/jira-comment.js`). Was a single-paragraph passthrough that crammed everything into one ADF text node; now parses markdown into a proper ADF doc — paragraphs, ATX headings (1–3), bullet/numbered lists, fenced code blocks, pipe tables, inline `**bold**` / `*italic*` / `` `code` `` / `[text](url)`. A trailing `--` / `<first name>` / `<provider>/<model>` signature is detected and the provider/model line gets ADF marks `subsup{type:sub}` + `textColor{#999999}` for a subdued render.
 
-- **`mime.js textToHtml` signature styling** (`/srv/agents/shared/skills/google-workspace/mime.js`). Detects the trailing `--/Name/Provider/Model` paragraph and renders the provider/model line as `<span style="color:#888;font-size:smaller;font-style:italic;">…</span>` in the HTML email part. Plain-text part unchanged.
+- **`mime.js textToHtml` signature styling** (`/srv/Code/environment/ai/openclaw/skills/google-workspace/mime.js`). Detects the trailing `--/Name/Provider/Model` paragraph and renders the provider/model line as `<span style="color:#888;font-size:smaller;font-style:italic;">…</span>` in the HTML email part. Plain-text part unchanged.
 
 - **Roles renamed** in `agents.json` and every doc/per-agent file: `manager-worker` → `manager`, `cost-efficient implementer` → `developer`, `monitor` unchanged. No code did literal string-matching on these (verified by grep across `/usr/local/bin`, `/usr/local/sbin`, `/etc/ai-monitor`, `/etc/agent-dashboard`, `/home/karen/webhooks`, `skills/`), so the rename is data-only. Reframed the model-tier language: each role uses a model **tuned for that kind of work**, not arranged on a cheap-vs-expensive ladder. An "escalation" between roles is a fresh perspective from a different model — not an admission that the other model is inferior.
 
@@ -813,4 +811,4 @@ Known follow-ups:
 - Gmail watch renewal remains operationally critical because Gmail watches expire. Keep `/usr/local/bin/openclaw-integrity-check` and dashboard status green.
 - The monitoring agent runs on the host it monitors. Self-incidents must continue to bypass the monitoring agent and go directly to Telegram fallback.
 - Secrets are split by Linux user for least privilege, which is correct, but audits should use `/usr/local/bin/openclaw-backup --inventory` plus `/usr/local/bin/openclaw-registry-check`.
-- Future changes should go through `/etc/openclaw/agents.json` and `/srv/agents/shared`; hand-editing dependent configs without running the validator can reintroduce drift.
+- Future changes should go through `/etc/openclaw/agents.json` and `/srv/Code/environment/ai/openclaw`; hand-editing dependent configs without running the validator can reintroduce drift.

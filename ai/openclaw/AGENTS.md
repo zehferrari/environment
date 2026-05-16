@@ -61,7 +61,7 @@ when timing matters precisely.
 
 **Tools.** Skill helpers under `~/.openclaw/skills/` and
 `~/.openclaw/workspace/jira/` are symlinks into
-`/srv/agents/shared/skills/`. Identity resolves at runtime via
+`/srv/Code/environment/ai/openclaw/skills/`. Identity resolves at runtime via
 `agent-self.js`. Local quirks (host SSH aliases, camera names, voice
 prefs) go in `TOOLS.md`. Platform-formatting nuances (Discord/WhatsApp)
 are in `TEAM_WORKFLOW.md` → *Reply Formatting*.
