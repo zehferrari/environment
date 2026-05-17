@@ -43,10 +43,11 @@ Dovecot IMAP remains available for normal mail clients, but OpenClaw does not re
 
 ## Telegram
 
-Ada and Claudia follow the x1 config shape: a single top-level `channels.telegram` block, not per-account `channels.telegram.accounts.*` entries. Tokens live only in per-user files:
+Ada, Claudia, and Emery follow the x1 config shape: a single top-level `channels.telegram` block, not per-account `channels.telegram.accounts.*` entries. Tokens live only in per-user files:
 
 - `/home/ada/.config/openclaw/telegram-token`
 - `/home/claudia/.config/openclaw/telegram-token`
+- `/home/emery/.config/openclaw/telegram-token`
 
 Token files are mode `0600` and owned by the agent user. The config shape is:
 
