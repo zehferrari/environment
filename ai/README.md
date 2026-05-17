@@ -629,7 +629,7 @@ Added 2026-05-08. A read-only single-page dashboard at `https://dev.vixi.au/agen
 #### URL and auth
 
 - **Public**: `https://dev.vixi.au/agents.html` — terminates TLS at moonlight, proxies to x1's nginx, then to `127.0.0.1:3013`.
-- **OpenClaw Control UIs**: `https://dev.vixi.au/asdrubal/` proxies to Asdrubal's OpenClaw gateway dashboard on `10.0.0.108:18789`; `https://dev.vixi.au/barekbaal/` proxies to Barekbaal's dashboard on `10.0.0.108:18790`. `/openclaw` and `/openclaw/` are legacy redirects to `/asdrubal/`. Both routes are nginx basic-auth protected and pass `X-Forwarded-User: $remote_user` into OpenClaw trusted-proxy auth, so there is no second OpenClaw token login after nginx auth. The gateway ports bind to LAN for trusted-proxy source detection, but firewalld does not open 18789/18790 to the network.
+- **OpenClaw Control UIs**: x1 exposes the coding-agent gateway dashboards through nginx role-based routes backed by ports `18789` and `18790`. The routes are nginx basic-auth protected and pass `X-Forwarded-User: $remote_user` into OpenClaw trusted-proxy auth, so there is no second OpenClaw token login after nginx auth. The gateway ports bind to LAN for trusted-proxy source detection, but firewalld does not open 18789/18790 to the network.
 - **Auth**: HTTP basic auth at the x1 nginx layer, `auth_basic_user_file /etc/nginx/.htpasswd` (same `admin` user that protects per-agent `*.vixi.au` vhosts).
 - **Health probe**: `https://dev.vixi.au/agents/health` is unauthenticated by design — returns `{ok, agents, clients}` as JSON for cheap external uptime checks.
 
@@ -643,8 +643,8 @@ Added 2026-05-08. A read-only single-page dashboard at `https://dev.vixi.au/agen
 | `/etc/systemd/system/agent-dashboard.service` | `Type=simple`, `Restart=always`, runs as root, depends on `network-online.target` and `ai-monitor.timer`. |
 
 | /srv/Code/environment/ai/web/agents.html | Main dashboard frontend, served at /agents.html. |
-| /srv/Code/environment/ai/web/agents-asdrubal.html | Independent copy of agents.html for Asdrubal dashboard experiments, served at /agents-asdrubal.html. |
-| /srv/Code/environment/ai/web/agents-barekbaal.html | Independent copy of agents.html for Barekbaal dashboard experiments, served at /agents-barekbaal.html. |
+| Dashboard experiment copy A | Independent copy of agents.html for frontend experiments. |
+| Dashboard experiment copy B | Independent copy of agents.html for frontend experiments. |
 
 | Source | Mechanism | Used for |
 |---|---|---|
@@ -663,8 +663,7 @@ The dashboard reads `/etc/openclaw/agents.json` on startup to know which agents 
 
 Dashboard location blocks live in /etc/nginx/vhosts.d/dev.conf:
 - /agents.html: auth_basic + alias /srv/Code/environment/ai/web/agents.html.
-- /agents-asdrubal.html: auth_basic + alias /srv/Code/environment/ai/web/agents-asdrubal.html.
-- /agents-barekbaal.html: auth_basic + alias /srv/Code/environment/ai/web/agents-barekbaal.html.
+- Dashboard experiment pages: auth_basic + alias to the matching tracked HTML copy.
 - /agents/registry.json: auth_basic + alias /srv/agents/index.json.
 - /agents/events: authenticated SSE proxy to agent-dashboard on 127.0.0.1:3013.
 - /agents/health: unauthenticated health proxy.
@@ -725,7 +724,7 @@ Second consolidated note covering changes since the 2026-05-08 entry. Each bulle
 
 - **`/etc/openclaw/agents.json` is now a symlink** → `/srv/agents/index.json` (the live runtime registry, kept *outside* the git working tree at `/srv/Code/environment/ai/openclaw/` so dashboard toggle writes don't pollute `git diff`). ai-monitor, the dashboard, registry-check and the webhook receiver all read through the symlink transparently. The single-record template `/srv/Code/environment/ai/openclaw/index.example.json` stays in git as the in-repo reference; copy it to `/srv/agents/index.json` and edit when bootstrapping a new host. nginx alias for `/agents/registry.json` and the dashboard's `setRegistryFlag()` write target both point at the live file directly.
 
-- **Dashboard HTML lives in the environment repo** (/srv/Code/environment/ai/web/). nginx serves agents.html, agents-asdrubal.html, and agents-barekbaal.html directly via alias from /etc/nginx/vhosts.d/dev.conf. The Node service still handles /agents/events, /agents/snapshot, registry toggles, service restarts, and /agents/health.
+- **Dashboard HTML lives in the environment repo** (/srv/Code/environment/ai/web/). nginx serves the main dashboard and experiment HTML copies directly via alias from /etc/nginx/vhosts.d/dev.conf. The Node service still handles /agents/events, /agents/snapshot, registry toggles, service restarts, and /agents/health.
 
 - **Webhook @-mention routing** (`/home/karen/webhooks/webhook-receiver.js` + `users.json`). `comment_*` events are parsed for both ADF and wiki-markup mentions (`[~accountid:712020:...]`). Jira Cloud delivers webhook `comment.body` as a wiki-markup string (not ADF — the REST API does ADF, webhooks do not), so `extractWikiMentions()` is the path that fires in practice. Mentioned agents are routed by `jiraAccountId` lookup (per-user map built at startup from `users.json`); the wake message gets a "You were @-mentioned in <KEY> by <Mentioner>" prefix invoking the new TEAM_WORKFLOW.md "Responding to @-mentions" rule. Comment author is excluded (no self-wake). Falls back to assignee match, then broadcast.
 
@@ -817,18 +816,18 @@ Known follow-ups:
 
 ## 21. Duplicating the OpenClaw Agent Instance on a New Computer
 
-This chapter captures the yoga510 migration pattern for bringing up a new local agent host from the existing x1 setup.
+This chapter captures the yoga510 migration pattern for bringing up a new local agent host that shares selected operating behaviour with x1 without treating the new agents as continuations, replacements, or clones of previous agents.
 
 ### 21.1 Decide the user mapping first
 
-Create the target Linux users before installing OpenClaw. Keep a written mapping from the current x1 users to the target users, including role intent:
+Create the target Linux users before installing OpenClaw. Keep a written role map for the target users, including which x1 behaviour profile each role should follow:
 
-| Source role | x1 example | Target example from yoga510 |
-|---|---|---|
-| Owner/admin | `zeh` | `rachael` |
-| Primary code agent | `asdrubal` | `ada` |
-| Secondary code agent | `barekbaal` | `claudia` |
-| Monitor agent | `karen` | `emery` |
+| Source behaviour | Target example from yoga510 |
+|---|---|
+| Owner/admin | `rachael` |
+| Primary code-agent behaviour | `ada` |
+| Secondary code-agent behaviour | `claudia` |
+| Monitoring-agent behaviour | `emery` |
 
 Use the target names everywhere in runtime paths: `/home/<target>`, `/home/<target>/workspace`, `/home/<target>/.openclaw`, systemd user services, Maildir ownership, and `/etc/openclaw/agents.json`.
 
@@ -913,7 +912,7 @@ For the monitor user, create a narrow sudoers file modelled after `karen-opencla
 
 ### 21.6 Web dashboard and protection
 
-The dashboard source pages stay in the checkout at /home/<owner>/Code/environment/ai/web/ on yoga510 (x1 legacy path: /srv/Code/environment/ai/web/). On yoga510 nginx serves a deployment copy from /srv/www so the public web root is separate from the git checkout. Copy agents.html, agents-asdrubal.html, and agents-barekbaal.html from the repo to /srv/www, then proxy the dashboard API routes to the local dashboard service:
+The dashboard source pages stay in the checkout at /home/<owner>/Code/environment/ai/web/ on yoga510 (x1 legacy path: /srv/Code/environment/ai/web/). On yoga510 nginx serves a deployment copy from /srv/www so the public web root is separate from the git checkout. Copy the agent dashboard HTML pages from the repo to /srv/www, then proxy the dashboard API routes to the local dashboard service:
 
 ~~~nginx
 server {
@@ -929,8 +928,7 @@ server {
 
     location = / { try_files /agents.html =404; }
     location = /agents.html { try_files /agents.html =404; }
-    location = /agents-asdrubal.html { try_files /agents-asdrubal.html =404; }
-    location = /agents-barekbaal.html { try_files /agents-barekbaal.html =404; }
+    # Add any dashboard experiment pages here with explicit try_files entries.
 
     location = /agents/registry.json {
         alias /etc/openclaw/agents.json;

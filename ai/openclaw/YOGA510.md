@@ -2,14 +2,16 @@
 
 Installed on 2026-05-17 for host `mail.eurekafiles.com` / `yoga510`.
 
-## User Mapping
+## Local Users
 
-| x1 user | yoga510 user | Role |
-|---|---|---|
-| zeh | rachael | owner/admin |
-| asdrubal | ada | code agent |
-| barekbaal | claudia | code agent |
-| karen | emery | monitor agent |
+Yoga510 is a new agent instance. It shares selected operating behaviour with x1, but its agents are not continuations, replacements, or clones of previous agents.
+
+| yoga510 user | Role |
+|---|---|
+| rachael | owner/admin |
+| ada | code agent |
+| claudia | code agent |
+| emery | monitor agent |
 
 ## Runtime Layout
 
@@ -19,7 +21,7 @@ Installed on 2026-05-17 for host `mail.eurekafiles.com` / `yoga510`.
 - Agent registry: `/etc/openclaw/agents.json`.
 - Dashboard config: `/etc/agent-dashboard/config.json`.
 - Dashboard source files: `/home/rachael/Code/environment/ai/web/agents*.html`.
-- Nginx web root: `/srv/www`, with `agents.html`, `agents-asdrubal.html`, and `agents-barekbaal.html` copied from the repo.
+- Nginx web root: `/srv/www`, with the agent dashboard HTML pages copied from the repo.
 - Agent workspaces: `/home/{ada,claudia,emery}/workspace`.
 - Agent state: `/home/{ada,claudia,emery}/.openclaw`.
 
@@ -36,9 +38,9 @@ Dovecot IMAP remains available for normal mail clients, but OpenClaw does not re
 
 ## Models and Providers
 
-- Ada maps to x1 asdrubal and uses `openai-codex/gpt-5.5` with the x1 fallback order.
-- Claudia maps to x1 barekbaal and uses Claude CLI OAuth through the normalized `anthropic/claude-opus-4-7` provider, with x1 fallback order.
-- Emery maps to x1 karen and uses the Ollama cloud fallback stack.
+- Ada uses `openai-codex/gpt-5.5` with the x1 primary code-agent fallback order.
+- Claudia uses Claude CLI OAuth through the normalized `anthropic/claude-opus-4-7` provider, with the x1 secondary code-agent fallback order.
+- Emery uses the x1 monitoring-agent Ollama cloud fallback stack.
 - All Ollama cloud entries use `https://ollama.zeh.me`.
 
 ## Telegram

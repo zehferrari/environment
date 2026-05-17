@@ -117,7 +117,7 @@ Always write `/var/lib/ai-monitor/decisions/<id>.json` (it's the audit trail and
 ```
 
 Notes:
-- `actions_taken` should list the actual shell commands you ran (e.g. `"sudo systemctl restart ollama.service"`, `"sudo /usr/local/sbin/openclaw-control wake-agent barekbaal 'HOMELAB-40 reminder'"`). This is the audit trail for the next tier.
+- `actions_taken` should list the actual shell commands you ran (e.g. `"sudo systemctl restart ollama.service"`, `"sudo /usr/local/sbin/openclaw-control wake-agent <agent> 'HOMELAB-40 reminder'"`). This is the audit trail for the next tier.
 - If the tier framework says you should suppress (tier 1 or 2) but the issue belongs to a kind you can't fix safely, escalate early with `telegram_sent: true` and a clear `reason`.
 
 ## Telegram message style
