@@ -1,0 +1,12 @@
+{
+  "name": "local-mail",
+  "description": "Read and reply to local Maildir email through Postfix sendmail.",
+  "tools": [
+    { "name": "check_email", "description": "Check unread local Maildir email.", "script": "mail-check-unread.js" },
+    { "name": "list_inbox", "description": "List recent local Maildir messages.", "script": "mail-list-inbox.js", "args": ["limit"] },
+    { "name": "read_email", "description": "Read a local Maildir message by id.", "script": "mail-get-text.js", "args": ["messageId"] },
+    { "name": "mark_read", "description": "Mark a local Maildir message as read.", "script": "mail-mark-read.js", "args": ["messageId"] },
+    { "name": "send_email", "description": "Send email through local Postfix sendmail.", "script": "mail-send.js", "args": ["to", "subject", "body"] },
+    { "name": "reply_email", "description": "Reply to a local Maildir message.", "script": "mail-reply.js", "args": ["messageId", "body"] }
+  ]
+}

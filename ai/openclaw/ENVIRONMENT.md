@@ -13,6 +13,7 @@ inventory itself, see [`../../README.md`](../../README.md).
 | **Role-specific behaviour** (manager / developer / monitor) | [`ROLES.md`](./ROLES.md) |
 | **Shared skill helpers** (Jira, Gmail/Drive, agent-self) | [`skills/`](./skills/) |
 | **Host topology, services, network, monitoring detail, recent changes** | [`../README.md`](../README.md) |
+| **yoga510 agent install** (Maildir/Postfix agent host mapping and validation) | [`YOGA510.md`](./YOGA510.md) |
 | **Service catalog** | [`SERVICES.md`](./SERVICES.md) |
 | **Monitoring topology** | [`MONITORING.md`](./MONITORING.md) |
 | **Per-agent files (NOT in this repo)** | [`AGENT_FILES.md`](./AGENT_FILES.md) |

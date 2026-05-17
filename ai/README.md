@@ -812,3 +812,171 @@ Known follow-ups:
 - The monitoring agent runs on the host it monitors. Self-incidents must continue to bypass the monitoring agent and go directly to Telegram fallback.
 - Secrets are split by Linux user for least privilege, which is correct, but audits should use `/usr/local/bin/openclaw-backup --inventory` plus `/usr/local/bin/openclaw-registry-check`.
 - Future changes should go through `/etc/openclaw/agents.json` and `/srv/Code/environment/ai/openclaw`; hand-editing dependent configs without running the validator can reintroduce drift.
+
+---
+
+## 21. Duplicating the OpenClaw Agent Instance on a New Computer
+
+This chapter captures the yoga510 migration pattern for bringing up a new local agent host from the existing x1 setup.
+
+### 21.1 Decide the user mapping first
+
+Create the target Linux users before installing OpenClaw. Keep a written mapping from the current x1 users to the target users, including role intent:
+
+| Source role | x1 example | Target example from yoga510 |
+|---|---|---|
+| Owner/admin | `zeh` | `rachael` |
+| Primary code agent | `asdrubal` | `ada` |
+| Secondary code agent | `barekbaal` | `claudia` |
+| Monitor agent | `karen` | `emery` |
+
+Use the target names everywhere in runtime paths: `/home/<target>`, `/home/<target>/workspace`, `/home/<target>/.openclaw`, systemd user services, Maildir ownership, and `/etc/openclaw/agents.json`.
+
+### 21.2 Install the shared runtime
+
+On a fresh Debian-like target, install the base packages, Node 24, and the same OpenClaw release used by x1:
+
+```bash
+apt-get update
+apt-get install -y git curl ca-certificates gnupg sudo rsync unzip tar gcc g++ make python3 python3-pip inotify-tools jq
+curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource_setup_24.sh
+bash /tmp/nodesource_setup_24.sh
+apt-get install -y nodejs
+npm install -g openclaw@2026.5.7
+printf "%s\n" "#!/bin/sh" "exec /usr/bin/node \"\$@\"" > /usr/bin/node-24
+chmod 0755 /usr/bin/node-24
+```
+
+Create a shared group for agent-readable repo files, then clone the environment repo as the owner/admin user:
+
+```bash
+groupadd -f code-agents
+usermod -aG code-agents <owner> <code-agent-1> <code-agent-2> <monitor-agent>
+install -d -m 2770 -o <owner> -g code-agents /srv/Code
+sudo -u <owner> git clone git@bitbucket.org:zehferrari/environment.git /srv/Code/environment
+chgrp -R code-agents /srv/Code/environment
+find /srv/Code/environment -type d -exec chmod g+rws {} +
+find /srv/Code/environment -type f -exec chmod g+rw {} +
+```
+
+If root/admin validation commands use Git in that checkout, add `/srv/Code/environment` as a safe directory for that account.
+
+### 21.3 Build each agent home
+
+For every target agent:
+
+- Create `~/.openclaw`, `~/.openclaw/workspace`, `~/.openclaw/agents/main`, `~/.config/openclaw`, `~/.config/systemd/user`, `~/workspace`, and `~/Maildir/{new,cur,tmp}`.
+- Symlink shared documents from `/srv/Code/environment/ai/openclaw` into both `~/workspace` and `~/.openclaw/workspace`: `AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`; add `INCIDENT_HANDLING.md`, `MONITORING.md`, and `SERVICES.md` for the monitor agent.
+- Keep persona/runtime files per-user: `SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `MEMORY.md`, `HEARTBEAT.md`.
+- Set `~/Code -> /srv/Code` for users that should work with the shared repository tree.
+- Generate new local secrets; do not copy Telegram, model provider, OAuth, or webhook secrets from x1 unless that is explicitly intended.
+
+Create `/etc/openclaw/agents.json` as the host-level runtime registry. It should contain one record per enabled agent with `user`, `role`, `home`, `workspace`, `gatewayPort`, `services`, and integration flags. The dashboard and integrity tooling read this file as the live source of truth.
+
+### 21.4 Prefer Maildir for local mail hosts
+
+When the new host already delivers mail locally through Postfix/Dovecot, OpenClaw does not need Gmail or IMAP credentials. The yoga510 pattern is:
+
+- Postfix delivers incoming mail to `~/Maildir`.
+- Dovecot remains available for human IMAP clients.
+- Agents read `~/Maildir/new` and `~/Maildir/cur` directly.
+- Replies and new outgoing mail go through `/usr/sbin/sendmail -oi -t`.
+- Read state is Maildir-native: move messages from `new/` to `cur/` with `:2,S`.
+- A listener service watches `~/Maildir/new` and writes events to `~/.openclaw/mail/events.jsonl`.
+
+The reusable skill lives at `/srv/Code/environment/ai/openclaw/skills/local-mail`. Link it into each agent as `~/workspace/mail`, `~/.openclaw/workspace/mail`, and `~/.openclaw/skills/local-mail`.
+
+### 21.5 Services to enable
+
+Enable linger for each agent so user services survive logout:
+
+```bash
+loginctl enable-linger <agent>
+systemctl start user@$(id -u <agent>).service
+```
+
+Each agent should normally have these user services:
+
+- `openclaw-gateway.service`
+- `openclaw-mail-listener.service` when using local Maildir
+- `openclaw-webhook-receiver.service` if webhooks are required
+
+Host-level services/timers to install:
+
+- `agent-dashboard.service` on `127.0.0.1:3013`
+- `openclaw-typing-keepalive.service` if Telegram/long-turn typing support is required; on Telegram-disabled hosts it can be a harmless registry watcher
+- `openclaw-backup.timer`
+- `openclaw-integrity.timer`
+
+For the monitor user, create a narrow sudoers file modelled after `karen-openclaw-control`, but scoped to the target users and target host services only.
+
+### 21.6 Web dashboard and protection
+
+The dashboard page should stay in the repo at `/srv/Code/environment/ai/web/agents.html`. On the target host, nginx should serve that file and proxy the dashboard API routes to the local dashboard service:
+
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+    server_name agents.example.com;
+
+    root /srv/Code/environment/ai/web;
+    index agents.html;
+
+    auth_basic "Agents";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    location = / { try_files /agents.html =404; }
+    location = /agents.html { try_files /agents.html =404; }
+
+    location = /agents/registry.json {
+        alias /etc/openclaw/agents.json;
+        default_type application/json;
+    }
+
+    location /agents/ {
+        proxy_pass http://127.0.0.1:3013;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+    }
+}
+```
+
+For private dashboards, copy the existing nginx password file from x1:
+
+```bash
+scp x1:/etc/nginx/.htpasswd /etc/nginx/.htpasswd
+chown root:root /etc/nginx/.htpasswd
+chmod 0644 /etc/nginx/.htpasswd
+nginx -t && systemctl reload nginx
+```
+
+Unauthenticated checks for `/`, `/agents.html`, `/agents/registry.json`, `/agents/snapshot`, and `/agents/events` should all return `401`.
+
+### 21.7 Validation checklist
+
+Run these before considering the clone complete:
+
+```bash
+node --version
+node-24 --version
+npm --version
+openclaw --version
+git -C /srv/Code/environment status --short
+/usr/local/bin/openclaw-integrity-check
+```
+
+Also verify:
+
+- `openclaw config validate` passes as every agent user.
+- `systemctl --user is-active` reports active for each agent service.
+- Local mail delivery works for every agent: send a message, list it, read it, mark it read, and reply through Postfix.
+- `agent-dashboard.service`, `nginx`, `postfix`, and `dovecot` are active where applicable.
+- Gateway ports are listening as intended: code agents may bind LAN, monitor agents should usually bind loopback.
+- A backup archive exists under `/var/backups/openclaw/`.
