@@ -60,8 +60,7 @@ nothing changed, or if you checked &lt;30 min ago. Use **cron** instead
 when timing matters precisely.
 
 **Tools.** Skill helpers under `~/.openclaw/skills/` and
-`~/.openclaw/workspace/jira/` are symlinks into
-`/srv/Code/environment/ai/openclaw/skills/`. Identity resolves at runtime via
+`~/.openclaw/workspace/jira/` are symlinks into the host checkout (x1: `/srv/Code/environment/ai/openclaw/skills/`; yoga510: `/home/rachael/Code/environment/ai/openclaw/skills/`). Identity resolves at runtime via
 `agent-self.js`. Local quirks (host SSH aliases, camera names, voice
 prefs) go in `TOOLS.md`. Platform-formatting nuances (Discord/WhatsApp)
 are in `TEAM_WORKFLOW.md` → *Reply Formatting*.

@@ -8,9 +8,9 @@ These files stay separate for each registered coding agent. Each lives under `/h
 
 | File | Source of truth | Purpose |
 |---|---|---|
-| `AGENTS.md` | `/srv/Code/environment/ai/openclaw/AGENTS.md` (this repo) | **Shared baseline for every agent.** Both `~/workspace/AGENTS.md` and `~/.openclaw/workspace/AGENTS.md` symlink to the repo file. |
-| `ROLES.md` | `/srv/Code/environment/ai/openclaw/ROLES.md` (this repo) | Role-specific behaviour (`## Manager`, `## Developer`, `## Monitor`). Agent identifies its role from `agents.json` and reads the matching section. Same symlink pattern as `AGENTS.md`. |
-| `TEAM_WORKFLOW.md` | `/srv/Code/environment/ai/openclaw/TEAM_WORKFLOW.md` (this repo) | Action-indexed workflow playbook. Same symlink pattern. |
+| `AGENTS.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/AGENTS.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/AGENTS.md`) | **Shared baseline for every agent.** Both `~/workspace/AGENTS.md` and `~/.openclaw/workspace/AGENTS.md` symlink to the repo file. |
+| `ROLES.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/ROLES.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/ROLES.md`) | Role-specific behaviour (`## Manager`, `## Developer`, `## Monitor`). Agent identifies its role from `agents.json` and reads the matching section. Same symlink pattern as `AGENTS.md`. |
+| `TEAM_WORKFLOW.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/TEAM_WORKFLOW.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/TEAM_WORKFLOW.md`) | Action-indexed workflow playbook. Same symlink pattern. |
 | `SOUL.md` | `~/workspace/SOUL.md` (per-agent, not in this repo) | Personality, tone, decision-making heuristics. Free-form, agent-specific. |
 | `IDENTITY.md` | `~/workspace/IDENTITY.md` (per-agent) | Core "who am I" preamble loaded on every session start. |
 | `USER.md` | `~/workspace/USER.md` (per-agent) | What the agent knows about zeh from the agent's own perspective. |

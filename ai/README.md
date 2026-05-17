@@ -847,29 +847,30 @@ printf "%s\n" "#!/bin/sh" "exec /usr/bin/node \"\$@\"" > /usr/bin/node-24
 chmod 0755 /usr/bin/node-24
 ```
 
-Create a shared group for agent-readable repo files, then clone the environment repo as the owner/admin user:
+Create a shared group for agent-readable repo files, then clone the environment repo as the owner/admin user. On yoga510 the checkout lives under the owner home, not under `/srv`, so it stays outside the samba-backed tree while remaining readable by agents:
 
 ```bash
 groupadd -f code-agents
 usermod -aG code-agents <owner> <code-agent-1> <code-agent-2> <monitor-agent>
-install -d -m 2770 -o <owner> -g code-agents /srv/Code
-sudo -u <owner> git clone git@bitbucket.org:zehferrari/environment.git /srv/Code/environment
-chgrp -R code-agents /srv/Code/environment
-find /srv/Code/environment -type d -exec chmod g+rws {} +
-find /srv/Code/environment -type f -exec chmod g+rw {} +
+install -d -m 2775 -o <owner> -g code-agents /home/<owner>/Code
+sudo -u <owner> git clone git@bitbucket.org:zehferrari/environment.git /home/<owner>/Code/environment
+chgrp -R code-agents /home/<owner>/Code/environment
+find /home/<owner>/Code/environment -type d -exec chmod g+rws {} +
+find /home/<owner>/Code/environment -type f -exec chmod g+rw {} +
 ```
 
-If root/admin validation commands use Git in that checkout, add `/srv/Code/environment` as a safe directory for that account.
+If root/admin validation commands use Git in that checkout, add `/home/<owner>/Code/environment` as a safe directory for that account. x1 is the legacy exception that still uses `/srv/Code/environment`.
 
 ### 21.3 Build each agent home
 
 For every target agent:
 
 - Create `~/.openclaw`, `~/.openclaw/workspace`, `~/.openclaw/agents/main`, `~/.config/openclaw`, `~/.config/systemd/user`, `~/workspace`, and `~/Maildir/{new,cur,tmp}`.
-- Symlink shared documents from `/srv/Code/environment/ai/openclaw` into both `~/workspace` and `~/.openclaw/workspace`: `AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`; add `INCIDENT_HANDLING.md`, `MONITORING.md`, and `SERVICES.md` for the monitor agent.
+- Symlink shared documents from the host checkout (`/home/<owner>/Code/environment/ai/openclaw` on yoga510, `/srv/Code/environment/ai/openclaw` on x1) into both `~/workspace` and `~/.openclaw/workspace`: `AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`; add `INCIDENT_HANDLING.md`, `MONITORING.md`, and `SERVICES.md` for the monitor agent.
 - Keep persona/runtime files per-user: `SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `MEMORY.md`, `HEARTBEAT.md`.
-- Set `~/Code -> /srv/Code` for users that should work with the shared repository tree.
+- Set `~/Code -> /home/<owner>/Code` for users that should work with the shared repository tree on yoga510.
 - Generate new local secrets; do not copy Telegram, model provider, OAuth, or webhook secrets from x1 unless that is explicitly intended.
+- For Telegram, keep the x1-compatible single-account shape under `channels.telegram` with `enabled`, `dmPolicy: pairing`, `groupPolicy: allowlist`, `streaming.mode: partial`, and `tokenFile: /home/<agent>/.config/openclaw/telegram-token`. Do not use `channels.telegram.accounts.*` unless intentionally changing the host convention. Token files must be owned by the agent and mode `0600`.
 
 Create `/etc/openclaw/agents.json` as the host-level runtime registry. It should contain one record per enabled agent with `user`, `role`, `home`, `workspace`, `gatewayPort`, `services`, and integration flags. The dashboard and integrity tooling read this file as the live source of truth.
 
@@ -884,7 +885,7 @@ When the new host already delivers mail locally through Postfix/Dovecot, OpenCla
 - Read state is Maildir-native: move messages from `new/` to `cur/` with `:2,S`.
 - A listener service watches `~/Maildir/new` and writes events to `~/.openclaw/mail/events.jsonl`.
 
-The reusable skill lives at `/srv/Code/environment/ai/openclaw/skills/local-mail`. Link it into each agent as `~/workspace/mail`, `~/.openclaw/workspace/mail`, and `~/.openclaw/skills/local-mail`.
+The reusable skill lives at `/home/<owner>/Code/environment/ai/openclaw/skills/local-mail` on yoga510 (`/srv/Code/environment/ai/openclaw/skills/local-mail` on x1). Link it into each agent as `~/workspace/mail`, `~/.openclaw/workspace/mail`, and `~/.openclaw/skills/local-mail`.
 
 ### 21.5 Services to enable
 
@@ -912,15 +913,15 @@ For the monitor user, create a narrow sudoers file modelled after `karen-opencla
 
 ### 21.6 Web dashboard and protection
 
-The dashboard page should stay in the repo at `/srv/Code/environment/ai/web/agents.html`. On the target host, nginx should serve that file and proxy the dashboard API routes to the local dashboard service:
+The dashboard source pages stay in the checkout at /home/<owner>/Code/environment/ai/web/ on yoga510 (x1 legacy path: /srv/Code/environment/ai/web/). On yoga510 nginx serves a deployment copy from /srv/www so the public web root is separate from the git checkout. Copy agents.html, agents-asdrubal.html, and agents-barekbaal.html from the repo to /srv/www, then proxy the dashboard API routes to the local dashboard service:
 
-```nginx
+~~~nginx
 server {
     listen 80;
     listen [::]:80;
     server_name agents.example.com;
 
-    root /srv/Code/environment/ai/web;
+    root /srv/www;
     index agents.html;
 
     auth_basic "Agents";
@@ -928,6 +929,8 @@ server {
 
     location = / { try_files /agents.html =404; }
     location = /agents.html { try_files /agents.html =404; }
+    location = /agents-asdrubal.html { try_files /agents-asdrubal.html =404; }
+    location = /agents-barekbaal.html { try_files /agents-barekbaal.html =404; }
 
     location = /agents/registry.json {
         alias /etc/openclaw/agents.json;
@@ -946,7 +949,7 @@ server {
         proxy_read_timeout 1h;
     }
 }
-```
+~~~
 
 For private dashboards, copy the existing nginx password file from x1:
 
@@ -968,7 +971,7 @@ node --version
 node-24 --version
 npm --version
 openclaw --version
-git -C /srv/Code/environment status --short
+git -C /home/<owner>/Code/environment status --short
 /usr/local/bin/openclaw-integrity-check
 ```
 
