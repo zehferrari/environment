@@ -20,8 +20,9 @@ Yoga510 is a new agent instance. It shares selected operating behaviour with x1,
 - Agent users access the repo through group/ACL permissions on `/home/rachael/Code`; each agent has `~/Code -> /home/rachael/Code`.
 - Agent registry: `/etc/openclaw/agents.json` -> `/srv/agents/index.json`. The live file uses the same registry schema as x1 (`version`, `description`, `sharedKnowledgeDir`, `webhookRoutedUsers`, `agents`), with yoga510 users and paths.
 - Dashboard config: `/etc/agent-dashboard/config.json`.
-- Dashboard source files: `/home/rachael/Code/environment/ai/web/agents*.html`.
-- Nginx web root: `/srv/www`, with the agent dashboard HTML pages copied from the repo.
+- Dashboard source files and nginx web root: `/home/rachael/Code/environment/ai/web`.
+- Nginx serves `agents.html` directly from the repo checkout; stale `/srv/www/agents*.html` deployment copies are not used on yoga510.
+- Agent avatars are served by nginx from `/srv/agents/Pictures/<Name>/avatar.png` through `/agents/avatars/<Name>`.
 - Agent workspaces: `/home/{ada,claudia,emery}/workspace`.
 - Agent state: `/home/{ada,claudia,emery}/.openclaw`.
 

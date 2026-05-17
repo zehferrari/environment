@@ -912,7 +912,7 @@ For the monitor user, create a narrow sudoers file modelled after `karen-opencla
 
 ### 21.6 Web dashboard and protection
 
-The dashboard source pages stay in the checkout at /home/<owner>/Code/environment/ai/web/ on yoga510 (x1 legacy path: /srv/Code/environment/ai/web/). On yoga510 nginx serves a deployment copy from /srv/www so the public web root is separate from the git checkout. Copy the agent dashboard HTML pages from the repo to /srv/www, then proxy the dashboard API routes to the local dashboard service:
+The dashboard source pages stay in the checkout at `/home/<owner>/Code/environment/ai/web/` on yoga510 (x1 legacy path: `/srv/Code/environment/ai/web/`). On yoga510 nginx serves `agents.html` directly from that checkout as the web root, proxies dashboard API routes to the local dashboard service, and maps `/agents/avatars/<Name>` to `/srv/agents/Pictures/<Name>/avatar.png`:
 
 ~~~nginx
 server {
@@ -920,7 +920,7 @@ server {
     listen [::]:80;
     server_name agents.example.com;
 
-    root /srv/www;
+    root /home/<owner>/Code/environment/ai/web;
     index agents.html;
 
     auth_basic "Agents";
@@ -928,7 +928,11 @@ server {
 
     location = / { try_files /agents.html =404; }
     location = /agents.html { try_files /agents.html =404; }
-    # Add any dashboard experiment pages here with explicit try_files entries.
+    location ~ ^/agents/avatars/([^/]+)$ {
+        alias /srv/agents/Pictures/$1/avatar.png;
+        default_type image/png;
+        add_header Cache-Control "public, max-age=300";
+    }
 
     location = /agents/registry.json {
         alias /etc/openclaw/agents.json;
