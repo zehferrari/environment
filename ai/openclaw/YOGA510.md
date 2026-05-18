@@ -33,10 +33,11 @@ Yoga510 does not use Gmail/Google watchers. Agent email is local-first:
 - Incoming mail: `~/Maildir` via Postfix local delivery.
 - Reading/listing/replying: `~/workspace/mail`, symlinked to `skills/local-mail`.
 - Outgoing mail: local Postfix through `/usr/sbin/sendmail -oi -t`.
-- Listener service: `openclaw-mail-listener.service` writes events to `~/.openclaw/mail/events.jsonl`.
+- Listener service: `openclaw-mail-listener.service` writes events to `~/.openclaw/mail/events.jsonl` and wakes the agent for unread allowlisted mail.
 - Action/reply allowlist: `skills/local-mail/auto-reply-policy.json`.
   `mail-list-inbox.js` and `mail-get-text.js` report allowlist status for senders,
   while `mail-send.js` and `mail-reply.js` refuse recipients outside the policy.
+- Dispatch state is stored in `~/.openclaw/mail/dispatch-state.json`. Successful dispatches are recorded once; failed dispatches are retried after the cooldown, and stale in-flight dispatches are retried after the timeout.
 
 Dovecot IMAP remains available for normal mail clients, but OpenClaw does not require IMAP credentials.
 
@@ -83,6 +84,19 @@ Token files are mode `0600` and owned by the agent user. The config shape is:
 ```
 
 Validate with `openclaw channels list` as each user, then restart `openclaw-gateway.service`, `openclaw-mail-listener.service`, and `openclaw-webhook-receiver.service`.
+
+## Jira and Webhooks
+
+Yoga510 now uses the x1-style monitor-owned webhook dispatcher for Jira routing:
+
+- Main local receiver: `/home/emery/webhooks/webhook-receiver.js` on `127.0.0.1:3010`.
+- Routing config: `/home/emery/webhooks/users.json`.
+- Routed coding users: `ada` and `claudia`.
+- Task queues: `/home/ada/tasks/current.md` and `/home/claudia/tasks/current.md`.
+- The monitor user has ACL write access to those task queues so incoming Jira events can be queued and agents can be woken through `/usr/local/sbin/openclaw-control`.
+- Jira helpers are linked as `~/workspace/jira` and `~/.openclaw/workspace/jira` for Ada and Claudia.
+
+Current blocker for full Jira action/reply parity: no per-agent Jira API tokens or Jira account IDs are installed on yoga510 yet. Keep `integrations.jira` and `capabilities.can_jira` false in `/srv/agents/index.json` until each coding agent has `~/.ssh/jiraToken.txt`, the registry has the correct `jira_account_id`, and the webhook secret is configured. Do not expose the Jira webhook publicly with an empty secret.
 
 ## Services
 

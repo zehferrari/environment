@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const HOME = os.homedir();
 const USER = os.userInfo().username;
@@ -13,6 +13,7 @@ const DOMAIN = process.env.MAIL_DOMAIN || 'eurekafiles.com';
 const MAILDIR = process.env.MAILDIR || path.join(HOME, 'Maildir');
 const STATE_DIR = path.join(HOME, '.openclaw', 'mail');
 const EVENTS = path.join(STATE_DIR, 'events.jsonl');
+const DISPATCH_STATE = path.join(STATE_DIR, 'dispatch-state.json');
 const POLICY_PATH = process.env.LOCAL_MAIL_POLICY || path.join(__dirname, 'auto-reply-policy.json');
 
 function ensureMaildir() {
@@ -105,6 +106,19 @@ function assertAllowedRecipients(headerValue, action) {
   if (blocked.length) {
     throw new Error(`${action}: recipient outside local-mail allowlist: ${blocked.join(', ')}`);
   }
+}
+
+function readJsonFile(file, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonFile(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function parseHeaders(raw) {
@@ -269,19 +283,140 @@ function appendEvent(ev) {
   fs.appendFileSync(EVENTS, `${JSON.stringify({ ts: new Date().toISOString(), ...ev })}\n`);
 }
 
+function loadDispatchState() {
+  const state = readJsonFile(DISPATCH_STATE, { dispatched: {}, inflight: {}, failed: {} });
+  state.dispatched ??= {};
+  state.inflight ??= {};
+  state.failed ??= {};
+  return state;
+}
+
+function saveDispatchState(state) {
+  const entries = Object.entries(state.dispatched || {})
+    .sort((a, b) => (b[1].ts || '').localeCompare(a[1].ts || ''))
+    .slice(0, 500);
+  const inflight = Object.entries(state.inflight || {})
+    .sort((a, b) => (b[1].ts || '').localeCompare(a[1].ts || ''))
+    .slice(0, 100);
+  const failed = Object.entries(state.failed || {})
+    .sort((a, b) => (b[1].ts || '').localeCompare(a[1].ts || ''))
+    .slice(0, 100);
+  writeJsonFile(DISPATCH_STATE, {
+    dispatched: Object.fromEntries(entries),
+    inflight: Object.fromEntries(inflight),
+    failed: Object.fromEntries(failed)
+  });
+}
+
+function agentPrompt(message) {
+  const full = readMessage(message.id);
+  const body = full.text.slice(0, 12000);
+  return [
+    `Local email received for ${USER}.`,
+    '',
+    `Message ID: ${message.id}`,
+    `From: ${full.headers.from || ''}`,
+    `To: ${full.headers.to || ''}`,
+    `Subject: ${full.headers.subject || ''}`,
+    `Date: ${full.headers.date || ''}`,
+    `Allowlisted sender: ${full.allowlist.from.allowed ? 'yes' : 'no'}`,
+    '',
+    'Body:',
+    body,
+    '',
+    'If the sender is allowlisted and the email asks for a response or action, handle it now.',
+    'Run local mail helper commands from ~/workspace/mail.',
+    'To reply: cd ~/workspace/mail && node mail-reply.js <Message ID> <body>',
+    'After replying or deciding no reply is needed: cd ~/workspace/mail && node mail-mark-read.js <Message ID>',
+    'Do not send to recipients outside auto-reply-policy.json.'
+  ].join('\n');
+}
+
+function dispatchToAgent(message) {
+  const prompt = agentPrompt(message);
+  appendEvent({ type: 'dispatch-start', message });
+  const child = spawn('openclaw', [
+    'agent',
+    '--agent',
+    'main',
+    '--message',
+    prompt,
+    '--timeout',
+    String(process.env.LOCAL_MAIL_AGENT_TIMEOUT || 600)
+  ], {
+    cwd: path.dirname(POLICY_PATH),
+    env: { ...process.env, HOME },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+  child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+  child.on('close', code => {
+    const state = loadDispatchState();
+    delete state.inflight[message.id];
+    if (code === 0) {
+      state.dispatched[message.id] = { ts: new Date().toISOString(), subject: message.subject };
+      delete state.failed[message.id];
+    } else {
+      const previous = state.failed[message.id] || {};
+      state.failed[message.id] = {
+        ts: new Date().toISOString(),
+        subject: message.subject,
+        attempts: (previous.attempts || 0) + 1,
+        stderr: stderr.slice(-1000)
+      };
+    }
+    saveDispatchState(state);
+    appendEvent({
+      type: code === 0 ? 'dispatch-complete' : 'dispatch-failed',
+      message,
+      code,
+      stdout: stdout.slice(-4000),
+      stderr: stderr.slice(-4000)
+    });
+  });
+}
+
 async function watch() {
   ensureMaildir();
   console.log(JSON.stringify({ ok: true, watching: path.join(MAILDIR, 'new'), events: EVENTS }));
-  let seen = new Set(listMessages(500).map(m => m.id));
   function scan() {
+    const state = loadDispatchState();
+    const retryAfterMs = Number(process.env.LOCAL_MAIL_RETRY_AFTER_SECONDS || 300) * 1000;
+    const inflightTimeoutMs = Number(process.env.LOCAL_MAIL_INFLIGHT_TIMEOUT_SECONDS || 900) * 1000;
+    const now = Date.now();
     const msgs = listMessages(500).filter(m => m.unread);
     for (const m of msgs) {
-      if (seen.has(m.id)) continue;
-      seen.add(m.id);
+      if (state.dispatched[m.id]) continue;
+      const inflightAt = state.inflight[m.id]?.ts ? Date.parse(state.inflight[m.id].ts) : 0;
+      if (inflightAt && now - inflightAt < inflightTimeoutMs) continue;
+      if (inflightAt) {
+        appendEvent({ type: 'dispatch-stale', message: m, inflight: state.inflight[m.id] });
+        delete state.inflight[m.id];
+      }
+      const failedAt = state.failed[m.id]?.ts ? Date.parse(state.failed[m.id].ts) : 0;
+      if (failedAt && now - failedAt < retryAfterMs) continue;
+      state.inflight[m.id] = { ts: new Date().toISOString(), subject: m.subject };
+      saveDispatchState(state);
       appendEvent({ type: 'new-mail', message: m });
       console.log(JSON.stringify({ type: 'new-mail', message: m }));
+      if (m.allowlist?.from?.allowed) {
+        dispatchToAgent(m);
+      } else {
+        delete state.inflight[m.id];
+        state.dispatched[m.id] = {
+          ts: new Date().toISOString(),
+          subject: m.subject,
+          skipped: 'sender-not-allowlisted'
+        };
+        saveDispatchState(state);
+        appendEvent({ type: 'dispatch-skipped', reason: 'sender-not-allowlisted', message: m });
+      }
     }
   }
+  scan();
   fs.watch(path.join(MAILDIR, 'new'), { persistent: true }, () => setTimeout(scan, 200));
   setInterval(scan, 30000);
 }
@@ -300,7 +435,7 @@ async function main() {
   }
   if (cmd === 'get') {
     const m = readMessage(args[0]);
-    console.log(JSON.stringify({ id: m.id, rel: m.rel, unread: m.unread, headers: m.headers, text: m.text }, null, 2));
+    console.log(JSON.stringify({ id: m.id, rel: m.rel, unread: m.unread, headers: m.headers, allowlist: m.allowlist, text: m.text }, null, 2));
     return;
   }
   if (cmd === 'mark-read') {
