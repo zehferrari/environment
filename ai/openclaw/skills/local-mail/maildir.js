@@ -108,6 +108,20 @@ function assertAllowedRecipients(headerValue, action) {
   }
 }
 
+function assertSignedBody(body, action) {
+  if (process.env.LOCAL_MAIL_ALLOW_UNSIGNED === '1') return;
+  const normalized = unescapeNewlines(body).replace(/\s+$/g, '');
+  const lines = normalized.split('\n').map(line => line.trim());
+  const last = lines.slice(-3);
+  const valid = last.length === 3 &&
+    last[0] === '--' &&
+    /^[A-Z][A-Za-z0-9._ -]{0,60}$/.test(last[1]) &&
+    /^[a-z0-9._-]+\/[A-Za-z0-9._:-]+$/.test(last[2]);
+  if (!valid) {
+    throw new Error(`${action}: outbound email must end with signature lines: -- / <First name> / <provider>/<model>`);
+  }
+}
+
 function readJsonFile(file, fallback) {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -251,6 +265,7 @@ function listMessages(limit = 20) {
 
 function sendMail({ to, subject, body, extraHeaders = {} }) {
   assertAllowedRecipients(to, 'send');
+  assertSignedBody(body, 'send');
   const from = process.env.LOCAL_MAIL_FROM || `${USER}@${DOMAIN}`;
   const msgId = `<${Date.now()}.${crypto.randomBytes(6).toString('hex')}@${os.hostname()}>`;
   const headers = [
@@ -326,6 +341,12 @@ function agentPrompt(message) {
     '',
     'If the sender is allowlisted and the email asks for a response or action, handle it now.',
     'Run local mail helper commands from ~/workspace/mail.',
+    'Before replying, check your current runtime model with openclaw status or openclaw models list.',
+    'Every outbound email must end with the shared signature format from TEAM_WORKFLOW.md:',
+    '--',
+    '<First name>',
+    '<provider>/<model>',
+    'Do not use a "Model:" prefix. Do not omit the signature.',
     'To reply: cd ~/workspace/mail && node mail-reply.js <Message ID> <body>',
     'After replying or deciding no reply is needed: cd ~/workspace/mail && node mail-mark-read.js <Message ID>',
     'Do not send to recipients outside auto-reply-policy.json.'

@@ -38,6 +38,7 @@ Yoga510 does not use Gmail/Google watchers. Agent email is local-first:
   `mail-list-inbox.js` and `mail-get-text.js` report allowlist status for senders,
   while `mail-send.js` and `mail-reply.js` refuse recipients outside the policy.
 - Dispatch state is stored in `~/.openclaw/mail/dispatch-state.json`. Successful dispatches are recorded once; failed dispatches are retried after the cooldown, and stale in-flight dispatches are retried after the timeout.
+- Outbound email is signature-enforced by the local-mail helper. Email bodies must end with `--`, `<First name>`, and `<provider>/<model>` as defined in `TEAM_WORKFLOW.md`; unsigned sends/replies are rejected.
 
 Dovecot IMAP remains available for normal mail clients, but OpenClaw does not require IMAP credentials.
 
@@ -55,6 +56,11 @@ All local agents with mail access must remain whitelisted so they can act on and
 reply to tasks sent by another local agent. If the registry gains a new
 mail-capable local agent, add that agent's email to
 `skills/local-mail/auto-reply-policy.json`.
+
+Emery is allowed to send local email on yoga510 because this host uses local
+Maildir for all agents and the user expects every agent to answer direct mail.
+This differs from the stricter x1 monitor capability but keeps the same
+signature and allowlist controls.
 
 ## Models and Providers
 
