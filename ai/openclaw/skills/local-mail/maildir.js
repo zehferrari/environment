@@ -13,6 +13,7 @@ const DOMAIN = process.env.MAIL_DOMAIN || 'eurekafiles.com';
 const MAILDIR = process.env.MAILDIR || path.join(HOME, 'Maildir');
 const STATE_DIR = path.join(HOME, '.openclaw', 'mail');
 const EVENTS = path.join(STATE_DIR, 'events.jsonl');
+const POLICY_PATH = process.env.LOCAL_MAIL_POLICY || path.join(__dirname, 'auto-reply-policy.json');
 
 function ensureMaildir() {
   for (const d of ['', 'new', 'cur', 'tmp']) {
@@ -35,6 +36,75 @@ function safeHeader(s) {
 
 function unescapeNewlines(s) {
   return String(s || '').replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+}
+
+function normalizeEmail(s) {
+  return String(s || '').trim().toLowerCase();
+}
+
+function extractEmails(s) {
+  return Array.from(new Set(String(s || '')
+    .match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []
+  )).map(normalizeEmail);
+}
+
+function loadPolicy() {
+  const fallback = {
+    self: { ignoreIfSenderIsSelf: true },
+    reply: {
+      autoReplyEmails: [],
+      autoReplyDomains: [],
+      neverReplyDomains: []
+    }
+  };
+  try {
+    return { ...fallback, ...JSON.parse(fs.readFileSync(POLICY_PATH, 'utf8')) };
+  } catch {
+    return fallback;
+  }
+}
+
+function localFromAddress() {
+  return normalizeEmail(process.env.LOCAL_MAIL_FROM || `${USER}@${DOMAIN}`);
+}
+
+function policyEmails(policy) {
+  return new Set((policy.reply?.autoReplyEmails || []).map(normalizeEmail));
+}
+
+function policyDomains(policy, key) {
+  return new Set((policy.reply?.[key] || []).map(normalizeEmail));
+}
+
+function emailDomain(email) {
+  return normalizeEmail(email).split('@')[1] || '';
+}
+
+function isAllowedEmail(email, policy = loadPolicy()) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return false;
+  if (policy.self?.ignoreIfSenderIsSelf !== false && normalized === localFromAddress()) return false;
+  const domain = emailDomain(normalized);
+  if (policyDomains(policy, 'neverReplyDomains').has(domain)) return false;
+  return policyEmails(policy).has(normalized) || policyDomains(policy, 'autoReplyDomains').has(domain);
+}
+
+function allowlistStatus(headerValue, policy = loadPolicy()) {
+  const emails = extractEmails(headerValue);
+  return {
+    emails,
+    allowed: emails.some(email => isAllowedEmail(email, policy))
+  };
+}
+
+function assertAllowedRecipients(headerValue, action) {
+  const policy = loadPolicy();
+  const emails = extractEmails(headerValue);
+  if (!emails.length) throw new Error(`${action}: no recipient email address found`);
+  const blocked = emails.filter(email => !isAllowedEmail(email, policy));
+  if (blocked.length) {
+    throw new Error(`${action}: recipient outside local-mail allowlist: ${blocked.join(', ')}`);
+  }
 }
 
 function parseHeaders(raw) {
@@ -107,7 +177,20 @@ function readMessage(id) {
   const raw = fs.readFileSync(full, 'utf8');
   const { headerRaw } = splitMessage(raw);
   const headers = parseHeaders(headerRaw);
-  return { id, rel, full, raw, headers, text: extractText(raw), unread: rel.startsWith('new/') };
+  const policy = loadPolicy();
+  return {
+    id,
+    rel,
+    full,
+    raw,
+    headers,
+    text: extractText(raw),
+    unread: rel.startsWith('new/'),
+    allowlist: {
+      from: allowlistStatus(headers.from || '', policy),
+      replyTo: allowlistStatus(headers['reply-to'] || headers.from || '', policy)
+    }
+  };
 }
 
 function listMessages(limit = 20) {
@@ -140,7 +223,11 @@ function listMessages(limit = 20) {
         subject: headers.subject || '(no subject)',
         date: headers.date || '',
         messageId: headers['message-id'] || '',
-        mtimeMs: st.mtimeMs
+        mtimeMs: st.mtimeMs,
+        allowlist: {
+          from: allowlistStatus(headers.from || ''),
+          replyTo: allowlistStatus(headers['reply-to'] || headers.from || '')
+        }
       });
     }
   }
@@ -149,6 +236,7 @@ function listMessages(limit = 20) {
 }
 
 function sendMail({ to, subject, body, extraHeaders = {} }) {
+  assertAllowedRecipients(to, 'send');
   const from = process.env.LOCAL_MAIL_FROM || `${USER}@${DOMAIN}`;
   const msgId = `<${Date.now()}.${crypto.randomBytes(6).toString('hex')}@${os.hostname()}>`;
   const headers = [

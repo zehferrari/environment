@@ -26,7 +26,8 @@ For broader context:
 └── skills/
     ├── agent-self.js      registry-driven identity resolver (reads /etc/openclaw/agents.json by os.userInfo().username)
     ├── jira/              Jira API helpers (jira-comment.js, jira-transition.js, lib.js, …)
-    └── google-workspace/  Gmail/Drive/Docs/Calendar/Photos helpers (gmail-send.js, mime.js, …)
+    ├── google-workspace/  Gmail/Drive/Docs/Calendar/Photos helpers (gmail-send.js, mime.js, …)
+    └── local-mail/        yoga510 Maildir/Postfix helpers and allowlist policy
 ```
 
 The split between `AGENTS.md` and `ROLES.md` is deliberate: every agent reads the
@@ -49,6 +50,7 @@ Per-agent symlinks point into the host-specific OpenClaw checkout. Use `/srv/Cod
 | `/home/<user>/.openclaw/workspace/TEAM_WORKFLOW.md` | same |
 | `/home/<user>/.openclaw/workspace/jira/*.js` | `<openclaw-root>/skills/jira/` |
 | `/home/<user>/.openclaw/skills/google-workspace/*.js` | `<openclaw-root>/skills/google-workspace/` |
+| `/home/<user>/workspace/mail/*.js` | `<openclaw-root>/skills/local-mail/` on yoga510 |
 | `/etc/openclaw/agents.json` | `/srv/agents/index.json` (live runtime registry, NOT in this repo — edited by the dashboard's POST /agents/registry/toggle; see [`index.example.json`](./index.example.json) for the template) |
 
 Note: the `monitoring` agent (Linux user `karen`) has only the
@@ -56,6 +58,10 @@ Note: the `monitoring` agent (Linux user `karen`) has only the
 for that role, so AGENTS/ROLES/TEAM_WORKFLOW are symlinked once each there.
 
 Per-agent **state**, **identity**, **tokens**, and **memory** are NOT symlinked and NOT in this repo — see [`AGENT_FILES.md`](./AGENT_FILES.md).
+
+On yoga510, local-mail is shared code and policy. The allowlist lives at
+`skills/local-mail/auto-reply-policy.json`; list/read helpers expose allowlist
+status, and send/reply helpers block recipients outside that policy.
 
 ## Editing
 

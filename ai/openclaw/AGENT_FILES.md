@@ -48,6 +48,13 @@ These files are read AND written by each agent's gmail/drive/docs flows. Sharing
 | `_comments.json`, `_docs.json` | Cached resource lookups. |
 | `auto-reply-policy.json` | Per-agent auto-reply policy (which senders, what tone). |
 
+On yoga510, local Maildir email does not use the Google workspace state path.
+Its shared allowlist policy is versioned in the repo at
+`skills/local-mail/auto-reply-policy.json` and is used by every local-mail
+symlink (`/home/{ada,claudia,emery}/workspace/mail`). All local agents with
+email access should be present in that allowlist so they can action and reply to
+mail sent by another local agent.
+
 ## Sessions, logs, and task state — `~/.openclaw/agents/`, `~/tasks/`
 
 | Path | Purpose |

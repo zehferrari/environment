@@ -2,6 +2,8 @@
 
 Use this skill on `yoga510` for agent email. Incoming mail is delivered by Postfix to `~/Maildir`; outgoing mail is sent through local Postfix using `/usr/sbin/sendmail`.
 
+Before acting on or replying to mail, check the `allowlist` field returned by the list/get helpers. The allowlist lives in `auto-reply-policy.json`; `mail-send.js` and `mail-reply.js` refuse recipients outside that policy.
+
 Commands:
 
 - `node mail-check-unread.js` - count unread messages in `~/Maildir/new`.

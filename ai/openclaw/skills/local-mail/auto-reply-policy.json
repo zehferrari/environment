@@ -1,0 +1,27 @@
+{
+  "mode": "immediate",
+  "self": {
+    "ignoreIfSenderIsSelf": true
+  },
+  "reply": {
+    "autoReplyEmails": [
+      "e@zeh.me",
+      "contact@rachaelsmith.net.au",
+      "rachael@eurekafiles.com",
+      "smithr6804@gmail.com",
+      "ada@eurekafiles.com",
+      "claudia@eurekafiles.com",
+      "emery@eurekafiles.com"
+    ],
+    "autoReplyDomains": [],
+    "neverReplyDomains": [],
+    "rule": "Process mail from allowlisted senders and local agents. Auto-reply only when the reply adds meaningful information or a clear next action. Never send to recipients outside this allowlist. Ask Zeh before replying-all if any recipient is not allowlisted. Ignore mail sent by the current agent."
+  },
+  "notify": {
+    "progress": true
+  },
+  "style": {
+    "format": "plain text through local Postfix sendmail",
+    "asciiOnly": true
+  }
+}

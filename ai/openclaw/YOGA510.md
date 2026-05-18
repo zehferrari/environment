@@ -34,8 +34,26 @@ Yoga510 does not use Gmail/Google watchers. Agent email is local-first:
 - Reading/listing/replying: `~/workspace/mail`, symlinked to `skills/local-mail`.
 - Outgoing mail: local Postfix through `/usr/sbin/sendmail -oi -t`.
 - Listener service: `openclaw-mail-listener.service` writes events to `~/.openclaw/mail/events.jsonl`.
+- Action/reply allowlist: `skills/local-mail/auto-reply-policy.json`.
+  `mail-list-inbox.js` and `mail-get-text.js` report allowlist status for senders,
+  while `mail-send.js` and `mail-reply.js` refuse recipients outside the policy.
 
 Dovecot IMAP remains available for normal mail clients, but OpenClaw does not require IMAP credentials.
+
+Current local-mail allowlist:
+
+- `e@zeh.me`
+- `contact@rachaelsmith.net.au`
+- `rachael@eurekafiles.com`
+- `smithr6804@gmail.com`
+- `ada@eurekafiles.com`
+- `claudia@eurekafiles.com`
+- `emery@eurekafiles.com`
+
+All local agents with mail access must remain whitelisted so they can act on and
+reply to tasks sent by another local agent. If the registry gains a new
+mail-capable local agent, add that agent's email to
+`skills/local-mail/auto-reply-policy.json`.
 
 ## Models and Providers
 
