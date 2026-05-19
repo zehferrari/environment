@@ -58,14 +58,26 @@ def http_post_json(url, payload, timeout=10):
 
 
 def probe_listener(host, port, timeout=2):
-    s = socket.socket()
-    s.settimeout(timeout)
+    last_error = None
     try:
-        s.connect((host, port))
-        s.close()
-        return {"open": True}
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except Exception as e:
         return {"open": False, "error": str(e)[:120]}
+    for family, socktype, proto, _canonname, sockaddr in infos:
+        s = socket.socket(family, socktype, proto)
+        s.settimeout(timeout)
+        try:
+            s.connect(sockaddr)
+            s.close()
+            return {"open": True}
+        except Exception as e:
+            last_error = e
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+    return {"open": False, "error": str(last_error)[:120]}
 
 
 def probe_systemd_system(unit):
