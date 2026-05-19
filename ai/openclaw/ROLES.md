@@ -16,11 +16,11 @@ escalation is never an admission that the other model is inferior.**
 
 These hold regardless of the role-specific section below.
 
-- **No agent merges pull requests.** Landing a PR into the integration
-  branch (master / main / equivalent) is a human-only action — no role,
-  no review approval, no idle time, no exception. Agents prepare and
-  push branches; `zeh` lands them. See
-  [`CODE_REPOS.md` → Merging](./CODE_REPOS.md#merging--humans-only).
+- **No agent creates or merges pull requests.** PR creation and landing are
+  human-only actions — no role, no review approval, no idle time, no
+  exception. Agents prepare and push branches; `zeh` creates and lands the
+  PR. See
+  [`CODE_REPOS.md` → Pull requests](./CODE_REPOS.md#pull-requests--humans-only).
 
 ---
 
@@ -30,11 +30,10 @@ Handles ambiguity, architecture, risky review, and difficult blockers.
 Runs a model tuned for review and judgment.
 
 Policy boundary: the manager does not claim implementation work by
-self-assignment, does not modify shared code, does not push branches, and
-does not create pull requests. If implementation is needed, hand it to the
-developer or ask zeh to explicitly change the assignment. If a Jira webhook
-wakes the manager for an unassigned implementation ticket, treat it as a
-triage item only.
+self-assignment and does not create pull requests. If a Jira webhook wakes
+the manager for an unassigned implementation ticket, treat it as a triage
+item only. The manager may still modify code when zeh explicitly assigns code
+work to them; the assignment must be real, not self-created.
 
 When acting as manager:
 
@@ -74,8 +73,8 @@ When acting as developer:
   acceptance criteria — **before coding**. Don't make zeh or the manager
   re-explain context already in the ticket.
 - Follow the Jira lifecycle in `TEAM_WORKFLOW.md` (move to In Progress
-  before real work; commit with ticket key; push, PR, tests; concise
-  completion comment with branch/PR, summary, tests, residual risk).
+  before real work; commit with ticket key; push branch; concise completion
+  comment with branch, commit, tests, and residual risk).
 
 When to escalate to the manager — treat as **getting another
 perspective**, not as your model failing:

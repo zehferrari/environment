@@ -4,13 +4,14 @@ These files stay separate for each registered coding agent. Each lives under `/h
 
 ## Identity & persona — `~/workspace/*.md`
 
-`AGENTS.md`, `ROLES.md`, and `TEAM_WORKFLOW.md` are **shared by every agent** and live in this repo. The remaining files (`SOUL`, `IDENTITY`, `USER`, `TOOLS`, `MEMORY`, `HEARTBEAT`) are **per-agent in content** but **single-canonical in location**: each lives once at `~/workspace/<file>` and `~/.openclaw/workspace/<file>` is a symlink to it, so no matter which workspace path the runtime reads, it sees the same file.
+`AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`, and `CODE_REPOS.md` are **shared by every agent** and live in this repo. The remaining files (`SOUL`, `IDENTITY`, `USER`, `TOOLS`, `MEMORY`, `HEARTBEAT`) are **per-agent in content** but **single-canonical in location**: each lives once at `~/workspace/<file>` and `~/.openclaw/workspace/<file>` is a symlink to it, so no matter which workspace path the runtime reads, it sees the same file.
 
 | File | Source of truth | Purpose |
 |---|---|---|
 | `AGENTS.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/AGENTS.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/AGENTS.md`) | **Shared baseline for every agent.** Both `~/workspace/AGENTS.md` and `~/.openclaw/workspace/AGENTS.md` symlink to the repo file. |
 | `ROLES.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/ROLES.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/ROLES.md`) | Role-specific behaviour (`## Manager`, `## Developer`, `## Monitor`). Agent identifies its role from `agents.json` and reads the matching section. Same symlink pattern as `AGENTS.md`. |
 | `TEAM_WORKFLOW.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/TEAM_WORKFLOW.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/TEAM_WORKFLOW.md`) | Action-indexed workflow playbook. Same symlink pattern. |
+| `CODE_REPOS.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/CODE_REPOS.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/CODE_REPOS.md`) | Shared-code workflow for `/srv/Code`, `claim-branch`, git identity, and the human-only PR boundary. Same symlink pattern. |
 | `SOUL.md` | `~/workspace/SOUL.md` (per-agent, not in this repo) | Personality, tone, decision-making heuristics. Free-form, agent-specific. |
 | `IDENTITY.md` | `~/workspace/IDENTITY.md` (per-agent) | Core "who am I" preamble loaded on every session start. |
 | `USER.md` | `~/workspace/USER.md` (per-agent) | What the agent knows about zeh from the agent's own perspective. |

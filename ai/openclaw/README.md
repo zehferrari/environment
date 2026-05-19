@@ -48,6 +48,8 @@ Per-agent symlinks point into the host-specific OpenClaw checkout. Use `/srv/Cod
 | `/home/<user>/.openclaw/workspace/ROLES.md` | same |
 | `/home/<user>/workspace/TEAM_WORKFLOW.md` | `<openclaw-root>/TEAM_WORKFLOW.md` |
 | `/home/<user>/.openclaw/workspace/TEAM_WORKFLOW.md` | same |
+| `/home/<user>/workspace/CODE_REPOS.md` | `<openclaw-root>/CODE_REPOS.md` |
+| `/home/<user>/.openclaw/workspace/CODE_REPOS.md` | same |
 | `/home/<user>/.openclaw/workspace/jira/*.js` | `<openclaw-root>/skills/jira/` |
 | `/home/<user>/.openclaw/skills/google-workspace/*.js` | `<openclaw-root>/skills/google-workspace/` |
 | `/home/<user>/workspace/mail/*.js` | `<openclaw-root>/skills/local-mail/` on yoga510 |

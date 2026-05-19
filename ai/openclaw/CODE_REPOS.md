@@ -38,11 +38,7 @@ should never carry feature commits directly. All ticket work happens
 in a per-branch worktree under `/srv/Code/<repo>.worktrees/<branch>/`,
 created via `claim-branch`.
 
-The implementer flow is for developer-role implementers. Manager-role agents
-do not modify shared code, push branches, or create pull requests; they
-review, plan, and delegate instead.
-
-The developer implementer flow is:
+The implementer flow is:
 
 1. Read the Jira ticket, note the designated branch (e.g. `feature/HOMELAB-12-foo`).
 2. `claim-branch <repo> <branch>` — checks the branch exists on origin,
@@ -55,28 +51,29 @@ The developer implementer flow is:
    For a brand-new branch from `--from`, the helper has already done
    the initial `git push -u origin <branch>` for you. Auth resolves
    as zeh via `bbZeh` — no flags or env needed.
-6. Open the PR on Bitbucket. This step is developer-only; managers do not
-   create PRs.
-7. After the PR merges, `claim-branch --release <repo> <branch>` to
-   tear down the worktree. The remote branch is cleaned up on
-   Bitbucket separately by whoever merges the PR.
+6. Stop. Do **not** create a pull request. Report the branch, commit, tests,
+   and residual risk in the source channel so zeh can create the PR.
+7. After zeh confirms the PR has landed, `claim-branch --release <repo>
+   <branch>` to tear down the worktree. The remote branch is cleaned up on
+   Bitbucket separately by whoever lands the PR.
 
-> Pushing is **not optional**. Until the branch is pushed, no one
-> else can review it (a reviewer's `claim-branch <repo> <branch>` only
-> sees what's on origin). Push as often as you'd commit on a normal
-> machine — at minimum once per logical step before opening the PR,
-> and again after every fix-up that responds to review feedback.
+> Pushing is **not optional**. Until the branch is pushed, no one else can
+> review it (a reviewer's `claim-branch <repo> <branch>` only sees what's on
+> origin). Push as often as you'd commit on a normal machine — at minimum once
+> per logical step before reporting the branch ready, and again after every
+> fix-up that responds to review feedback.
 
 ## Review flow — sequential or concurrent
 
 A different agent reviews the changes. Pick one:
 
 **Sequential** (the default — implementer is done iterating):
-1. Implementer pushes, opens the PR, runs `claim-branch --release <repo> <branch>`.
+1. Implementer pushes, reports the branch ready, and runs
+   `claim-branch --release <repo> <branch>`.
 2. Reviewer runs `claim-branch <repo> <branch>` — same command. The
    helper fetches origin first and lands the reviewer on the latest
    pushed tip.
-3. Reviewer reads code, runs tests, comments on the PR, then
+3. Reviewer reads code, runs tests, reports findings in Jira/email, then
    `claim-branch --release <repo> <branch>`.
 
 **Concurrent** (implementer is still iterating, reviewer wants to read in parallel):
@@ -95,21 +92,23 @@ no shared branch ref:
    The helper already did the initial `git push -u origin` for the new
    branch on creation, so the branch exists on Bitbucket immediately.
    Subsequent commits still need an explicit `git push` to land on
-   origin where the implementer (and Bitbucket's PR diff) can see them.
+   origin where the implementer and zeh can see them.
    Detached HEAD itself doesn't accept commits without checking out
    a branch first — that's the point.
 4. When done, `claim-branch --release <repo> <branch> --review`.
 
-## Merging — humans only
+## Pull Requests — Humans Only
 
-Agents do **not** merge pull requests. Ever. Regardless of role
-(manager, developer, monitor), regardless of how clean the diff
-looks, regardless of whether a review has signed off, regardless of
-how long the PR has been open. Landing a feature into the integration
-branch is reserved exclusively for the human operator (`zeh`).
+Agents do **not** create or merge pull requests. Ever. Regardless of role
+(manager, developer, monitor), regardless of how clean the diff looks,
+regardless of whether a review has signed off, regardless of how long the
+branch has been ready. PR creation and landing are reserved exclusively for
+the human operator (`zeh`).
 
 This applies to every form of merge that lands the PR:
 
+- Bitbucket REST API calls that create PRs (`/pullrequests`).
+- The "Create pull request" button on Bitbucket.
 - The "Merge pull request" button on Bitbucket.
 - `git push origin master` / `git push origin main` (or any other
   integration branch).
@@ -124,14 +123,14 @@ Agents **may** freely:
   feature-branch worktree, then push the feature branch). This is
   preparing the change, not landing it.
 - Push and force-push to their own feature branch.
-- Comment on the PR, transition the Jira ticket to `Wait for Review` /
-  `In Review`, request review, react, etc.
+- Comment on Jira, transition the Jira ticket to `Wait for Review` /
+  `In Review`, and report that the branch is ready.
 
-If a PR appears stuck and a merge feels overdue, the agent's only
-move is to flag it (PR comment, Telegram to zeh) and wait. Do not
-attempt to "help" by merging — even if the agent has the technical
-permission to do so via `bbZeh`. The rule is a policy boundary, not
-a permission boundary.
+If a branch appears ready and a PR feels overdue, the agent's only move is to
+flag it in the source channel and wait. Do not attempt to "help" by creating
+or merging a PR — even if the agent has the technical permission to do so via
+`bbZeh` or an API token. The rule is a policy boundary, not a permission
+boundary.
 
 ## `claim-branch` reference
 
@@ -150,7 +149,7 @@ claim-branch <repo> <branch> --review
 # list every worktree currently attached to the repo
 claim-branch --list <repo>
 
-# tear down a worktree after the PR lands / review is done
+# tear down a worktree after zeh lands the PR / review is done
 claim-branch --release <repo> <branch>            # implementer worktree
 claim-branch --release <repo> <branch> --review   # reviewer worktree
 ```

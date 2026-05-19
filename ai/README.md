@@ -465,7 +465,7 @@ The exact port numbers per registered user live in `agents.json` (`listeners[].h
 - Shared operational knowledge lives in `/srv/Code/environment/ai/openclaw`.
 - Active monitored-agent registry lives at `/etc/openclaw/agents.json`; `` points to the same file.
 - `/home/karen/webhooks/users.json` is webhook routing only, not the full monitoring roster.
-- The shared docs (`AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`) are canonical at `/srv/Code/environment/ai/openclaw/` (deployed from `environment/ai/openclaw/` in the unified `environment` repo). Each coding agent's home has two symlinks per file (one in `~/workspace/`, one in `~/.openclaw/workspace/`) pointing at the canonical file in the repo, so both the user-facing and OpenClaw internal workspaces see the same content. The monitoring agent (`karen`) has only `~/.openclaw/workspace/`, with one symlink per file.
+- The shared docs (`AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`, `CODE_REPOS.md`) are canonical at `/srv/Code/environment/ai/openclaw/` (deployed from `environment/ai/openclaw/` in the unified `environment` repo). Each coding agent's home has two symlinks per file (one in `~/workspace/`, one in `~/.openclaw/workspace/`) pointing at the canonical file in the repo, so both the user-facing and OpenClaw internal workspaces see the same content. The monitoring agent (`karen`) has only `~/.openclaw/workspace/`, with one symlink per file.
 - Per-agent files (`SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `MEMORY.md`, `HEARTBEAT.md`) are **content-per-agent** but **single-canonical in location**: each lives at `~/workspace/<file>` and `~/.openclaw/workspace/<file>` is a symlink to it.
 - `AGENTS.md` defines the operating baseline (always-on rules + memory/safety/group-chats/heartbeats/tools). `ROLES.md` defines role-specific behaviour. `TEAM_WORKFLOW.md` is the action-indexed playbook for tasks. `SOUL.md` and `IDENTITY.md` define per-agent persona only.
 - Jira tickets in `Backlog` are not actionable. Agents and dispatchers must completely ignore them: do not queue, wake, send Telegram, comment, transition, or start work unless zeh explicitly overrides Backlog for that specific ticket.
@@ -481,11 +481,10 @@ Current model posture by role. Each role uses a model **tuned for that kind of w
 | `developer` | Focused execution of well-scoped tasks | `ollama/kimi-k2.6:cloud` | `ollama/deepseek-v4-pro:cloud`, `ollama/glm-5.1:cloud`, `ollama/deepseek-v4-flash:cloud` |
 | `monitor` (user `karen`) | Triage, host probing, terse Telegram alerts | `ollama/deepseek-v4-pro:cloud` | `ollama/kimi-k2.6:cloud`, `ollama/glm-5.1:cloud`, `ollama/deepseek-v4-flash:cloud` |
 
-Manager-role agents are review/triage/delegation agents, not implementers.
-They must not self-assign Jira work, modify shared code, push branches, or
-create pull requests. The live registry reflects this with
-`capabilities.can_modify_code=false` and `integrations.bitbucket=false` for
-`asdrubal`.
+Manager-role agents are review/triage/delegation agents by default, but can
+modify code when zeh explicitly assigns the ticket to them. They must never
+self-assign Jira work. No agent creates or merges pull requests; agents push
+branches and report readiness, and zeh creates/lands PRs.
 
 Live per-user defaults are in each agent's own `~/.openclaw/openclaw.json`, **not** in the shared registry — model preference is persona, not host topology.
 
@@ -518,6 +517,8 @@ Webhook and integration facts:
 - Telegram bots: one per agent, recorded in `/etc/openclaw/agents.json` under each agent's `telegram.bot` field.
 - Jira host: `zeh-ferrari.atlassian.net`.
 - Bitbucket workspace/repo: `zehferrari` / `whitsunday-discovery-trail`.
+- Agents may push ticket branches but must not create or merge Bitbucket pull
+  requests. PR creation and landing are human-only.
 - Jira issue keys are not WDT-only. Gmail/Jira automation must accept generic `PROJECT-123` keys such as `HOMELAB-3`.
 - If an agent gets a Jira "not found/no access" result but a webhook or email clearly names the ticket, the agent must re-check with workspace Jira helpers before telling zeh no action is needed.
 - Jira webhook receivers and Gmail Jira fallback ignore issues whose live/current status is `Backlog`.
@@ -873,7 +874,7 @@ If root/admin validation commands use Git in that checkout, add `/home/<owner>/C
 For every target agent:
 
 - Create `~/.openclaw`, `~/.openclaw/workspace`, `~/.openclaw/agents/main`, `~/.config/openclaw`, `~/.config/systemd/user`, `~/workspace`, and `~/Maildir/{new,cur,tmp}`.
-- Symlink shared documents from the host checkout (`/home/<owner>/Code/environment/ai/openclaw` on yoga510, `/srv/Code/environment/ai/openclaw` on x1) into both `~/workspace` and `~/.openclaw/workspace`: `AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`; add `INCIDENT_HANDLING.md`, `MONITORING.md`, and `SERVICES.md` for the monitor agent.
+- Symlink shared documents from the host checkout (`/home/<owner>/Code/environment/ai/openclaw` on yoga510, `/srv/Code/environment/ai/openclaw` on x1) into both `~/workspace` and `~/.openclaw/workspace`: `AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`, `CODE_REPOS.md`; add `INCIDENT_HANDLING.md`, `MONITORING.md`, and `SERVICES.md` for the monitor agent.
 - Keep persona/runtime files per-user: `SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `MEMORY.md`, `HEARTBEAT.md`.
 - Set `~/Code -> /home/<owner>/Code` for users that should work with the shared repository tree on yoga510.
 - Generate new local secrets; do not copy Telegram, model provider, OAuth, or webhook secrets from x1 unless that is explicitly intended.

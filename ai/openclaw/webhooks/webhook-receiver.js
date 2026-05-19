@@ -308,14 +308,14 @@ async function queueJiraTask(userCfg, event) {
     const isManager = userCfg.role === 'manager';
     const nextSteps = isManager
       ? [
-          '- [ ] Check why this manager-role agent was assigned',
-          '- [ ] Do not move to In Progress, modify code, push, or create a PR',
-          '- [ ] Triage, review, delegate to the developer, or ask zeh for clarification'
+          '- [ ] Check assignee and source of assignment',
+          '- [ ] Confirm this was not self-assigned',
+          '- [ ] If assigned by zeh or a valid handoff, work normally; do not create a PR'
         ]
       : [
           '- [ ] Check assignee and source of assignment',
           '- [ ] Move ticket to "In Progress"',
-          '- [ ] Start executing work'
+          '- [ ] Start executing work; do not create a PR'
         ];
     const entry = `
 ---
@@ -329,7 +329,7 @@ ${nextSteps.join('\n')}
 
 ### Progress log
 - ${timestamp} — Assigned to me by ${assigneeChange?.fromString || 'unknown'}
-- ${timestamp} — Action required: ${isManager ? 'manager triage/review only; no implementation or PR' : 'start work immediately'}
+- ${timestamp} — Action required: start only if assignment is valid; PR creation is forbidden
 
 ### Webhook payload
 \`\`\`json
@@ -463,8 +463,8 @@ function wakeAgent(userCfg, reason = 'webhook-event', extraContext = '') {
 
   const prefix = extraContext ? `${extraContext}\n\n` : '';
   const rolePolicy = userCfg.role === 'manager'
-    ? 'You are the manager role: do not self-assign, do not move implementation tickets to In Progress, do not modify code, do not push branches, and do not create PRs. Triage, review, delegate to the developer, or ask zeh for clarification.'
-    : 'You are the developer role: only start implementation when the ticket is assigned to you by zeh or the manager and is not blocked.';
+    ? 'You are the manager role: do not self-assign and do not create PRs. If the ticket is explicitly assigned to you by zeh or a valid handoff, you may work it; otherwise triage, review, delegate to the developer, or ask zeh for clarification.'
+    : 'You are the developer role: only start implementation when the ticket is assigned to you by zeh or the manager and is not blocked. Do not create PRs.';
   const text = `${prefix}New Jira webhook event received (${reason}). Process ${userCfg.tasksFile} now. ${rolePolicy} Send exactly one concise Telegram start notice to zeh if this creates actionable work, then keep all task communication in Jira. Do not send Telegram progress, completion, or blocker messages for this Jira task unless zeh explicitly redirects the conversation. Fill Next steps and follow SOUL.md, ROLES.md, and TEAM_WORKFLOW.md. Sign every outbound Jira comment/update with the current runtime model using the Outbound Signature Rule. Update ${userCfg.logFile}.`;
 
   try {
@@ -482,142 +482,6 @@ function wakeAgent(userCfg, reason = 'webhook-event', extraContext = '') {
       return false;
     }
   }
-}
-
-async function autoCreatePR(userCfg, issueKey, issueSummary) {
-  const token = fs.readFileSync(userCfg.bitbucketTokenFile, 'utf8').trim();
-  const auth = Buffer.from(`${userCfg.bitbucketEmail}:${token}`).toString('base64');
-
-  async function findBranchForIssue(issueKey) {
-    return new Promise((resolve) => {
-      const q = encodeURIComponent(`name~"${issueKey}"`);
-      const options = {
-        hostname: 'api.bitbucket.org',
-        path: `/2.0/repositories/${config.bitbucketWorkspace}/${config.bitbucketRepo}/refs/branches?q=${q}&pagelen=50`,
-        method: 'GET',
-        headers: {
-          'Authorization': `Basic ${auth}`,
-          'Accept': 'application/json'
-        }
-      };
-      const req = https.request(options, (res) => {
-        let body = '';
-        res.on('data', (c) => (body += c));
-        res.on('end', () => {
-          try {
-            const data = JSON.parse(body || '{}');
-            const values = data.values || [];
-            const key = String(issueKey || '').toLowerCase();
-            const candidates = values
-              .map((b) => ({ name: b.name, date: b.target?.date ? new Date(b.target.date).getTime() : 0 }))
-              .filter((b) => b.name && !['main', 'master', 'develop'].includes(String(b.name).toLowerCase()))
-              .filter((b) => String(b.name).toLowerCase().includes(key));
-            if (!candidates.length) return resolve(null);
-            const starts = candidates.filter((b) => String(b.name).toLowerCase().startsWith(key));
-            const pool = starts.length ? starts : candidates;
-            pool.sort((a, b) => (b.date || 0) - (a.date || 0));
-            resolve(pool[0].name);
-          } catch { resolve(null); }
-        });
-      });
-      req.on('error', () => resolve(null));
-      req.end();
-    });
-  }
-
-  const branchName = (await findBranchForIssue(issueKey)) || `${issueKey.toLowerCase()}-deployment`;
-
-  const data = JSON.stringify({
-    title: `${issueKey} ${issueSummary}`,
-    description: `Auto-created PR for ${issueKey}\n\nJira: https://${config.jiraHost}/browse/${issueKey}`,
-    source: { branch: { name: branchName } },
-    destination: { branch: { name: 'main' } }
-  });
-
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: 'api.bitbucket.org',
-      path: `/2.0/repositories/${config.bitbucketWorkspace}/${config.bitbucketRepo}/pullrequests`,
-      method: 'POST',
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/json',
-        'Content-Length': data.length
-      }
-    };
-    const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
-      res.on('end', () => {
-        const result = JSON.parse(body);
-        if (res.statusCode === 201) {
-          userLog(userCfg, `Auto-created PR for ${issueKey}: ${result.links?.html?.href}`);
-          resolve(result);
-        } else {
-          userLog(userCfg, `Failed to create PR: ${result.error?.message}`);
-          reject(new Error(result.error?.message));
-        }
-      });
-    });
-    req.on('error', (e) => { userLog(userCfg, `PR creation error: ${e.message}`); reject(e); });
-    req.write(data);
-    req.end();
-  });
-}
-
-async function autoTransitionToInReview(userCfg, issueKey) {
-  const token = fs.readFileSync(userCfg.jiraTokenFile, 'utf8').trim();
-
-  const transitions = await new Promise((resolve, reject) => {
-    const options = {
-      hostname: config.jiraHost,
-      path: `/rest/api/3/issue/${issueKey}/transitions`,
-      method: 'GET',
-      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
-    };
-    const req = https.request(options, (res) => {
-      let body = '';
-      res.on('data', chunk => body += chunk);
-      res.on('end', () => resolve(JSON.parse(body)));
-    });
-    req.on('error', reject);
-    req.end();
-  });
-
-  const inReviewTransition = transitions.transitions?.find(t =>
-    t.name === 'In Review' || t.to?.name === 'In Review'
-  );
-
-  if (!inReviewTransition) {
-    userLog(userCfg, `No "In Review" transition found for ${issueKey}`);
-    return;
-  }
-
-  const data = JSON.stringify({ transition: { id: inReviewTransition.id } });
-
-  await new Promise((resolve, reject) => {
-    const options = {
-      hostname: config.jiraHost,
-      path: `/rest/api/3/issue/${issueKey}/transitions`,
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'Content-Length': data.length
-      }
-    };
-    const req = https.request(options, (res) => {
-      if (res.statusCode === 204) {
-        userLog(userCfg, `Auto-transitioned ${issueKey} to In Review`);
-        resolve();
-      } else {
-        reject(new Error(`Transition failed: ${res.statusCode}`));
-      }
-    });
-    req.on('error', reject);
-    req.write(data);
-    req.end();
-  });
 }
 
 // ─── HTTP Server ────────────────────────────────────────────────────────────

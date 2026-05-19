@@ -17,6 +17,7 @@ the whole file every session.
 | Pick your next task after finishing one | [Picking your next task](#picking-your-next-task) |
 | Start work on an assigned Jira ticket | [Working a Jira ticket](#working-a-jira-ticket) |
 | See an unassigned Jira ticket or want to assign one | [Jira assignment](#jira-assignment) |
+| Push code or think a PR is needed | [Code and PR boundary](#code-and-pr-boundary) |
 | Hand off from manager to developer | [Manager → developer handoff](#manager--developer-handoff) |
 | Review someone else's work | [Reviewing](#reviewing) |
 | Handle email | [Email](#email) |
@@ -162,9 +163,10 @@ feedback-first. Max one such Telegram per 24 h per agent.
    start implementation. A manager may assign it to a developer when that
    is the correct handoff; a developer waits for zeh or the manager to
    assign it.
-7. A manager-role agent must not implement, push, or create a PR. Manager
-   output is planning, delegation, review, decision, or a signed Jira/email
-   reply. Implementation and PR creation belong to the assigned developer.
+7. Determine your Jira role from the live issue, not your persona. Being
+   "manager" in `agents.json` is not permission to take ownership. You may
+   implement only when the issue is explicitly assigned to you by zeh or by a
+   valid manager-to-developer handoff.
 8. Send exactly **one** concise Telegram start notice to zeh after
    accepting an assigned ticket, then move it to `In Progress` before
    real work. After that, communicate about the task only in Jira
@@ -181,15 +183,15 @@ feedback-first. Max one such Telegram per 24 h per agent.
 11. For risky / ambiguous / multi-step work needing approval, post a
    concise plan **before** implementation.
 12. Run relevant tests/builds, or state plainly what couldn't be tested.
-13. Developer implementers push the branch and open or update a PR when
-    appropriate. Manager-role agents do not create PRs.
-14. **Do not merge the PR.** Landing a pull request is exclusively a
-    human operator action — no role, no review verdict, no time
-    elapsed, no "looks fine" justifies an agent merging. See
-    [`CODE_REPOS.md` → Merging](./CODE_REPOS.md#merging--humans-only).
+13. Push the branch. Do **not** create or update a pull request. PR creation
+    is human-only.
+14. **Do not create or merge a PR.** Creating and landing pull requests are
+    exclusively human operator actions — no role, no review verdict, no time
+    elapsed, no "looks fine" justifies an agent creating or merging one. See
+    [`CODE_REPOS.md` → Pull requests](./CODE_REPOS.md#pull-requests--humans-only).
 15. On completion, move the ticket to `Wait for Review` (or the project
-    equivalent `In Review`). Post a concise completion comment with
-    branch/PR, summary, tests, and residual risk. Sign it.
+    equivalent `In Review`). Post a concise completion comment with branch,
+    commit, tests, and residual risk. Sign it.
 16. Do **not** move tickets to `Done` unless explicitly instructed or
     the project workflow clearly assigns Done ownership to you.
 
@@ -197,6 +199,13 @@ feedback-first. Max one such Telegram per 24 h per agent.
 
 ## Jira assignment
 
+- Before any Jira mutation, run this preflight:
+  - Is it an Epic?
+  - Am I assigned to the Epic?
+  - Is this a child of an Epic I am assigned to manage?
+  - Is this task assigned to me by zeh or a valid manager handoff?
+  - Is it Backlog?
+  - If none of those prove ownership or review duty: no mutation and no work.
 - Never assign a Jira ticket to yourself.
 - Unassigned implementation tickets are not automatically yours, even if
   they are `Selected for Development` or arrive through a webhook.
@@ -205,6 +214,19 @@ feedback-first. Max one such Telegram per 24 h per agent.
 - The developer may start only after assignment by zeh or the manager.
 - If a webhook says "assigned to me" but the actor is yourself, treat it
   as a policy error and do not start work.
+
+---
+
+## Code and PR boundary
+
+- Code work happens under `/srv/Code` worktrees only, through
+  `claim-branch`, unless zeh explicitly says otherwise.
+- Commits under `/srv/Code` must be authored as
+  `Zeh Ferrari <e@zeh.me>`.
+- Agents may push their ticket branch.
+- Agents must not create pull requests, update pull request metadata, approve
+  pull requests, or merge pull requests. When a branch is ready, report the
+  branch, commit, tests, and residual risk in Jira/email and wait for zeh.
 
 ---
 
@@ -239,10 +261,10 @@ while the implementer is still iterating (`claim-branch <repo> <branch> --review
 Release with `claim-branch --release <repo> <branch> [--review]` when done.
 Full flow in [`CODE_REPOS.md`](./CODE_REPOS.md).
 
-A signed-off review **does not** authorise the reviewer (or anyone
-else) to merge the PR. Approving means "this is ready for zeh to
-land" — not "go land it". See
-[`CODE_REPOS.md` → Merging](./CODE_REPOS.md#merging--humans-only).
+A signed-off review **does not** authorise the reviewer (or anyone else) to
+create or merge a PR. Approving means "this branch is ready for zeh to turn
+into a PR and land" — not "go create or land it". See
+[`CODE_REPOS.md` → Pull requests](./CODE_REPOS.md#pull-requests--humans-only).
 
 Reviewer checks:
 
