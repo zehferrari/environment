@@ -58,13 +58,14 @@ The action you take depends on **kind** and **tier**. Look up your kind in this 
 | `task-stalled-no-agent` (idle session, ticket In Progress) | `wake-agent <user> "<key + reminder>"` | `restart-and-wake <user> "<key + reminder>"` | Telegram. Suspect agent runtime is wedged — needs human eyes. |
 | `task-stalled-no-progress` (session active, Jira not updating — heartbeat loop) | `restart-and-wake <user> "<key + focused brief>"` | `restart-and-wake <user>` again with sharper brief naming the file/test that's failing | Telegram. Probably a real bug the agent can't break out of. |
 | `agent-idle-with-queue` (idle, has Selected for Development / To Do tickets) | **Bypassed by ai-monitor** — ai-monitor runs `wake-agent` directly. You won't see this incident unless wake fails. If you do see it: tier-1 = `restart-and-wake`. | `restart-and-wake` again | Telegram. |
+| `email-awaiting-action` (Gmail task still `QUEUED` in `~/tasks/current.md`) | **Bypassed by ai-monitor** — ai-monitor runs `wake-agent` directly with the pending email subjects/message IDs. You won't see this incident unless wake fails. If you do see it: tier-1 = `restart-and-wake` and remind the agent to reply in the source email thread, include the required signature/runtime model, and move the task out of `QUEUED`. | `restart-and-wake` again | Telegram. |
 | Stuck `openclaw-*` or `wdt-*` user service (`inactive`/`failed`/crash-loop) | `sudo /usr/local/sbin/openclaw-control restart-services <user> "ai-monitor incident <id>"` (idempotent — restarts every enabled openclaw-*/wdt-* unit for that user) | Same `restart-services <user>` again — sometimes a slow service needed a second pass | Telegram. |
 
 ### System service kinds (you now have permission to restart these)
 
 | Kind | Tier 1 | Tier 2 | Tier 3 |
 |---|---|---|---|
-| `crash-loop` / `inactive` on `ollama.service` | `sudo systemctl restart ollama.service`, sleep 15, re-probe `curl -sf http://127.0.0.1:11434/api/version` | Restart again + check `journalctl -u ollama -n 50` for clue | Telegram, include the journalctl tail in the message |
+| `crash-loop` / `inactive` on `ollama.service` | `sudo systemctl restart ollama.service`, sleep 15, re-probe `curl -A node -sf http://ollama.local/api/version` from an agent host, and `curl -sf http://127.0.0.1:11434/api/version` on the backend itself | Restart again + check `journalctl -u ollama -n 50` for clue | Telegram, include the journalctl tail in the message |
 | `crash-loop` / `inactive` on `nginx.service` | `sudo systemctl restart nginx.service`, sleep 5, re-probe `curl -sI http://127.0.0.1:80` | Same restart again | Telegram |
 | `crash-loop` / `inactive` on `mariadb.service` | `sudo systemctl restart mariadb.service`, sleep 10, re-probe `nc -zv 127.0.0.1 3306` | Same restart again | Telegram |
 | `crash-loop` / `inactive` on `php-fpm.service` | `sudo systemctl restart php-fpm.service`, sleep 5, re-probe `nc -zv 127.0.0.1 9000` | Same restart again | Telegram |

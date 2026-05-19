@@ -556,11 +556,11 @@ Ollama is installed as a system service:
 - Service: `/etc/systemd/system/ollama.service`
 - Binary: `/usr/local/bin/ollama`
 - User/group: `ollama:ollama` (`971:971`), also in `video` and `render`
-- Bind: `127.0.0.1:11434`
+- Bind: `0.0.0.0:11434` on x1, with firewalld allowing TCP `11434` only from moonlight (`10.0.0.10`). Agents should use `http://ollama.local`, not the raw backend port.
 - Data dir: `/usr/share/ollama`
 - Cloud auth identity: `/usr/share/ollama/.ollama/id_ed25519` and `.pub` were migrated from ThinkPad. If these are regenerated, `:cloud` models can still list but fail with `401 unauthorized`.
 
-Only cloud models were installed on `x1`; the large local ThinkPad model blobs were intentionally not copied.
+Cloud models are installed on `x1`; `qwen2.5:3b-instruct` is also available locally as the small offline fallback. `x1` is registered as a backup backend behind the moonlight `ollama.local` nginx proxy.
 
 Expected cloud models:
 
@@ -591,6 +591,7 @@ Local fallback model (added 2026-05-08):
   - `task-stalled-no-agent` (primary, **policy-defined stall**): Jira issue assigned to a coding agent in `In Progress` *while that agent's openclaw session jsonl mtime is older than the threshold*. Definitionally a stall — the agent isn't actively running on it. Threshold: warn at 5 min idle, crit at 15 min. The monitoring agent is asked to triage and is expected to run `openclaw-control wake-agent <user>` before suppressing. **If the monitoring agent suppresses with empty `actions_taken`, ai-monitor performs the wake itself** (deterministic fallback) — `sudo openclaw-control wake-agent <user> '<reminder>'`, sleep 15 s, re-probe session idle. If recovered (idle < 30 s after wake) → log `auto_woke_after_karen_suppress` and stay silent. If still idle → Telegram with the wake attempt result. Net effect: the agent always gets nudged when this kind fires, regardless of triage judgment; you only get a Telegram when the wake genuinely failed.
   - `task-stalled-no-progress` (secondary): Jira issue `In Progress` with stale `updated` field (>30 min) but session is fresh — i.e. the agent is alive but spinning (HOMELAB-5 heartbeat-loop pattern). The monitoring agent uses `openclaw-control restart-and-wake <user> '<focused brief>'` to break the loop.
   - Both checks query Jira via each coding agent's own token (`~/.ssh/jiraToken.txt`, per-user least privilege). Thresholds live in `/etc/ai-monitor/config.json` under `stalled_tasks_check` (`session_idle_warn_minutes`, `session_idle_crit_minutes`, `update_warn_minutes`). Disable per-agent by setting `coding: false` or `integrations.jira: false` in the registry.
+- Pending email action detection: ai-monitor scans each monitored coding agent's `~/tasks/current.md` for Gmail-backed sections (`Gmail messageId:`) still marked `Status: QUEUED`. It fires `email-awaiting-action` at 15 min warn / 60 min crit, ignores stale historical entries older than 24 h, and wakes the owning agent directly with a reminder to process the queued email, reply in-thread when required, include the configured signature/runtime model, and move the task out of `QUEUED`.
 - Agent dashboard: `https://dev.vixi.au/agents.html` (basic auth — same `admin` user as the per-agent vhosts, htpasswd at `/etc/nginx/.htpasswd`). Real-time per-agent activity, AI monitor status, monitoring agent decisions, system service health. SSE-driven, no refresh needed. See **§16 Agent Dashboard** subsection below for the architecture.
 - ThinkPad cron job `/etc/cron.d/openclaw-integrity` was preserved for reference only. x1's active automation uses systemd timers, not cron.
 - On openSUSE, the active scheduler is `openclaw-integrity.timer` plus `openclaw-integrity.service`, running every 2 minutes.

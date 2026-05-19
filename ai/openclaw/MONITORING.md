@@ -47,6 +47,14 @@ the entry-point overview.
   naming the queued ticket keys and referencing TEAM_WORKFLOW.md
   *"Picking the Next Task"*. Rationale: situation is unambiguous and the
   action is bounded; no triage judgment needed.
+- **Pending email tasks** for any coding agent with Gmail integration.
+  `probe_pending_email_tasks` scans `~/tasks/current.md` for sections with
+  `Gmail messageId:` and `Status: QUEUED`. It fires
+  `email-awaiting-action` at warn 15 min / crit 60 min, ignores entries older
+  than 24 h, and bypasses Karen so ai-monitor can run `wake-agent` directly.
+  The wake reminder tells the agent to process the queued email, reply in the
+  original thread when required, include the configured signature/runtime
+  model, and update the task status out of `QUEUED`.
 
 ## Registry-driven
 

@@ -5,7 +5,7 @@ Use `/etc/openclaw/agents.json` for the machine-readable monitoring roster.
 ## System Timers
 
 - `openclaw-integrity.timer`: runs `/usr/local/bin/openclaw-integrity-check` every 2 minutes.
-- `ai-monitor.timer`: runs `/usr/local/bin/ai-monitor` every 2 minutes, offset from integrity.
+- `ai-monitor.timer`: runs `/usr/local/bin/ai-monitor` every 2 minutes, offset from integrity. Checks service health, Jira stalls/queues, pending mentions, and Gmail-derived `~/tasks/current.md` items still marked `Status: QUEUED`.
 - `openclaw-backup.timer`: runs `/usr/local/bin/openclaw-backup` daily at 04:20 with up to 20 minutes randomized delay for small critical OpenClaw state.
 - `zypper-dup.timer`: runs weekly Tumbleweed updates.
 
@@ -13,7 +13,7 @@ x1 uses systemd timers for active automation. Cron references in old migration n
 
 ## System Services
 
-- `ollama.service`: local Ollama API on `127.0.0.1:11434`.
+- `ollama.service`: local Ollama API on `0.0.0.0:11434`; firewalld permits raw access only from moonlight (`10.0.0.10`). Agent configs use the moonlight proxy at `http://ollama.local`.
 - `nginx.service`: local reverse proxy/static serving on x1.
 - `mariadb.service`: local DB.
 - `php-fpm.service`: local PHP runtime.

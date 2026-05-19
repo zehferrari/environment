@@ -1,0 +1,2805 @@
+#!/usr/bin/env python3
+"""
+ai-monitor: AI judgment layer for the x1 agent host.
+
+Wraps /usr/local/bin/openclaw-integrity-check, augments with resource sensors
+and a functional ollama probe, asks a locally-hosted ollama model to reason
+over the combined signal, and sends deduplicated Telegram alerts via
+asdrubal's bot. Observe-only with respect to remediation: openclaw-integrity-check
+already restarts services with a 120s cooldown.
+
+Usage:
+  ai-monitor                   one tick (alerts on failure)
+  ai-monitor --dry-run         probe + judge, no alerts, prints full JSON
+  ai-monitor --test-notify     send one Telegram test message and exit
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import pwd
+import shlex
+import socket
+import stat
+import subprocess
+import sys
+import time
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+CONFIG_PATH = "/etc/ai-monitor/config.json"
+STATE_PATH = "/var/lib/ai-monitor/state.json"
+
+
+def run_cmd(argv, timeout=30, input_text=None):
+    try:
+        res = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout, input=input_text
+        )
+        return res.returncode, res.stdout, res.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", f"timeout after {timeout}s"
+    except FileNotFoundError as e:
+        return 127, "", str(e)
+    except Exception as e:
+        return 1, "", str(e)
+
+
+def http_post_json(url, payload, timeout=10):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status, resp.read().decode("utf-8", errors="replace")
+
+
+def probe_listener(host, port, timeout=2):
+    s = socket.socket()
+    s.settimeout(timeout)
+    try:
+        s.connect((host, port))
+        s.close()
+        return {"open": True}
+    except Exception as e:
+        return {"open": False, "error": str(e)[:120]}
+
+
+def probe_systemd_system(unit):
+    rc, out, _ = run_cmd(["systemctl", "is-active", unit], timeout=5)
+    return {"is_active": out.strip(), "rc": rc}
+
+
+def probe_systemd_user(user, uid, unit):
+    argv = [
+        "sudo", "-n", "-u", user, "env",
+        f"XDG_RUNTIME_DIR=/run/user/{uid}",
+        f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+        "systemctl", "--user", "is-active", unit,
+    ]
+    rc, out, err = run_cmd(argv, timeout=5)
+    return {"is_active": out.strip() or "unknown", "rc": rc, "err": err.strip()[:160]}
+
+
+def probe_resources(thresholds):
+    res = {"ts": int(time.time())}
+    try:
+        with open("/proc/loadavg") as f:
+            parts = f.read().split()
+            res["load1"] = float(parts[0])
+            res["load5"] = float(parts[1])
+            res["load15"] = float(parts[2])
+    except Exception:
+        pass
+    try:
+        meminfo = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, v = line.split(":", 1)
+                meminfo[k] = int(v.strip().split()[0]) * 1024
+        res["mem_total"] = meminfo.get("MemTotal", 0)
+        res["mem_avail"] = meminfo.get("MemAvailable", 0)
+        res["swap_total"] = meminfo.get("SwapTotal", 0)
+        res["swap_free"] = meminfo.get("SwapFree", 0)
+        if res["mem_total"]:
+            res["mem_used_pct"] = round(
+                100 * (1 - res["mem_avail"] / res["mem_total"]), 1
+            )
+        if res["swap_total"]:
+            res["swap_used_pct"] = round(
+                100 * (1 - res["swap_free"] / res["swap_total"]), 1
+            )
+        else:
+            res["swap_used_pct"] = 0
+    except Exception:
+        pass
+    res["cpu_count"] = os.cpu_count() or 1
+
+    temps = []
+    for p in Path("/sys/class/thermal").glob("thermal_zone*/temp"):
+        try:
+            t = int(p.read_text().strip()) / 1000.0
+            kind = (p.parent / "type").read_text().strip()
+            temps.append({"zone": p.parent.name, "type": kind, "celsius": round(t, 1)})
+        except Exception:
+            pass
+    res["thermal"] = temps
+    res["temp_max_c"] = max((t["celsius"] for t in temps), default=0)
+
+    batt = []
+    for p in sorted(Path("/sys/class/power_supply").glob("BAT*")):
+        try:
+            cap = int((p / "capacity").read_text().strip())
+            stat = (p / "status").read_text().strip()
+            batt.append({"name": p.name, "capacity": cap, "status": stat})
+        except Exception:
+            pass
+    res["battery"] = batt
+
+    res["ac_online"] = None
+    for p in Path("/sys/class/power_supply").glob("A*"):
+        if (p / "online").exists():
+            try:
+                res["ac_online"] = int((p / "online").read_text().strip())
+                break
+            except Exception:
+                pass
+
+    fans = []
+    for p in Path("/sys/class/hwmon").glob("hwmon*"):
+        try:
+            name = (p / "name").read_text().strip()
+            for f in p.glob("fan*_input"):
+                try:
+                    rpm = int(f.read_text().strip())
+                    fans.append({"hwmon": name, "input": f.name, "rpm": rpm})
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    res["fans"] = fans
+    res["fan_rpm_max"] = max((f["rpm"] for f in fans), default=0)
+
+    try:
+        st = os.statvfs("/")
+        res["rootfs_used_pct"] = round(100 * (1 - st.f_bavail / st.f_blocks), 1)
+    except Exception:
+        pass
+
+    try:
+        ifaces = {}
+        with open("/proc/net/dev") as f:
+            for line in f.readlines()[2:]:
+                name, rest = line.split(":", 1)
+                fields = rest.split()
+                ifaces[name.strip()] = {
+                    "rx_bytes": int(fields[0]),
+                    "tx_bytes": int(fields[8]),
+                    "rx_errs": int(fields[2]),
+                    "tx_errs": int(fields[10]),
+                }
+        res["net"] = ifaces
+    except Exception:
+        pass
+
+    breaches = []
+    if res.get("load1", 0) / res["cpu_count"] > thresholds["load1_per_core"]:
+        breaches.append(f"load1/core={round(res['load1']/res['cpu_count'],2)}")
+    if res.get("mem_used_pct", 0) > thresholds["mem_used_pct"]:
+        breaches.append(f"mem_used={res['mem_used_pct']}%")
+    if res.get("swap_used_pct", 0) > thresholds["swap_used_pct"]:
+        breaches.append(f"swap_used={res['swap_used_pct']}%")
+    if res.get("temp_max_c", 0) > thresholds["temp_c"]:
+        breaches.append(f"temp={res['temp_max_c']}C")
+    if res.get("fan_rpm_max", 0) > thresholds["fan_rpm_max"]:
+        breaches.append(f"fan={res['fan_rpm_max']}rpm")
+    if res.get("rootfs_used_pct", 0) > thresholds["rootfs_used_pct"]:
+        breaches.append(f"rootfs={res['rootfs_used_pct']}%")
+    for b in res.get("battery", []):
+        if (
+            b["capacity"] < thresholds["battery_low_pct"]
+            and b["status"] != "Charging"
+            and not res.get("ac_online")
+        ):
+            breaches.append(f"battery={b['capacity']}%")
+    res["threshold_breaches"] = breaches
+    return res
+
+
+def probe_integrity_check(cfg):
+    """Read the most recent openclaw-integrity-check output from the journal.
+    We don't invoke the binary inline -- when called from a systemd service context
+    its systemd-run --user pattern returns 'Transport endpoint is not connected' for
+    user services. The openclaw-integrity.timer already runs it every 2 min."""
+    tag = cfg["integrity"]["journal_tag"]
+    window = cfg["integrity"]["journal_window"]
+    rc, out, _ = run_cmd(
+        [
+            "journalctl", "-t", tag,
+            "--since", window,
+            "--no-pager", "--output=cat",
+        ],
+        timeout=10,
+    )
+    lines = out.strip().splitlines()
+    # Group into runs by [INFO] ... started markers; keep the most recent run.
+    runs = []
+    current = []
+    for line in lines:
+        if line.startswith("[INFO]") and "started at" in line:
+            if current:
+                runs.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        runs.append(current)
+    last_run = runs[-1] if runs else []
+    fails = [l for l in last_run if l.startswith("[FAIL]")]
+    warns = [l for l in last_run if l.startswith("[WARN]")]
+    summary_line = next(
+        (l for l in reversed(last_run) if l.startswith("[SUMMARY]")), ""
+    )
+    # Heuristic: ignore transient "Transport endpoint is not connected" FAILs --
+    # those are a known artifact of openclaw-integrity-check's systemd-run --user
+    # pattern, not real outages. They self-clear on the next tick.
+    real_fails = [
+        l for l in fails
+        if "Transport endpoint is not connected" not in l
+        and "Bad message" not in l
+    ]
+    transient_fails = len(fails) - len(real_fails)
+    return {
+        "exit_code": 0 if last_run else None,
+        "run_age_lines": len(last_run),
+        "summary_line": summary_line,
+        "fail_lines": real_fails[-20:],
+        "warn_lines": warns[-20:],
+        "transient_fails_ignored": transient_fails,
+        "runs_in_window": len(runs),
+    }
+
+
+def probe_journal_integrity(cfg):
+    """Kept for backwards compat in the log payload. Returns the count of
+    integrity-check journal lines in the window."""
+    rc, out, _ = run_cmd(
+        [
+            "journalctl", "-t", cfg["integrity"]["journal_tag"],
+            "--since", cfg["integrity"]["journal_window"],
+            "--no-pager", "--output=short",
+        ],
+        timeout=10,
+    )
+    lines = out.strip().splitlines()
+    return {"line_count": len(lines)}
+
+
+def _cpu_burst_pct(pids, sample_interval_s=1.0):
+    """Sum CPU% across pids by sampling /proc/<pid>/stat twice with a
+    small gap. Returns total percent (can exceed 100 on multi-core).
+    Returns 0.0 if pids is empty or on any error."""
+    if not pids:
+        return 0.0
+
+    def read_total_jiffies(pid):
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                line = f.read()
+            tail = line.split(")", 1)[1].split()
+            # tail indices (0-based after the closing paren):
+            #   0=state, 11=utime, 12=stime
+            return int(tail[11]) + int(tail[12])
+        except Exception:
+            return None
+
+    samples1 = {pid: read_total_jiffies(pid) for pid in pids}
+    time.sleep(sample_interval_s)
+    samples2 = {pid: read_total_jiffies(pid) for pid in pids}
+
+    try:
+        import os as _os
+        hz = _os.sysconf("SC_CLK_TCK") or 100
+    except Exception:
+        hz = 100
+
+    total_jiffies = 0
+    for pid in pids:
+        s1, s2 = samples1.get(pid), samples2.get(pid)
+        if s1 is None or s2 is None:
+            continue
+        total_jiffies += max(s2 - s1, 0)
+    cpu_seconds = total_jiffies / hz
+    return (cpu_seconds / sample_interval_s) * 100.0
+
+
+def probe_busy_state(user, home_dir, max_running_age_s=1800,
+                     cli_jsonl_recent_s=60, cpu_threshold_pct=5.0):
+    """Distinguish "busy" (mid-turn, doing real work) from "stalled"
+    (idle / unresponsive). Three independent signals OR'd together:
+
+      1. sessions.json: any agent:main:* key with status='running' and
+         updatedAt within the last `max_running_age_s` (default 30 min).
+         The age cap excludes leaked-running statuses from crashed gateways.
+      2. claude-cli's own jsonl mtime within the last `cli_jsonl_recent_s`
+         (default 60 s). Catches activity for non-streaming claude-cli
+         turns where openclaw's sessions.json updatedAt only ticks at
+         turn end.
+      3. Aggregate CPU% across the agent's openclaw/claude pids over a
+         1 s sample > `cpu_threshold_pct` (default 5%). Catches in-process
+         work that the other two signals can miss.
+
+    Returns:
+      {
+        "is_busy": bool,
+        "signals": [list of signal names that tripped],
+        "details": {per-signal data},
+      }
+    """
+    signals = []
+    details = {}
+
+    # Signal 1: sessions.json running key
+    sessions_path = Path(home_dir) / ".openclaw/agents/main/sessions/sessions.json"
+    if sessions_path.exists():
+        try:
+            data = json.loads(sessions_path.read_text())
+            now_ms = int(time.time() * 1000)
+            best = None
+            for k, v in (data or {}).items():
+                if not k.startswith("agent:main:"):
+                    continue
+                if (v or {}).get("status") != "running":
+                    continue
+                upd = int(v.get("updatedAt", 0) or 0)
+                age_ms = now_ms - upd
+                if age_ms < 0 or age_ms > max_running_age_s * 1000:
+                    continue
+                if best is None or age_ms < best["age_ms"]:
+                    best = {
+                        "key": k,
+                        "age_ms": age_ms,
+                        "model": f"{v.get('modelProvider')}/{v.get('model')}",
+                    }
+            if best is not None:
+                signals.append("running_key")
+                details["running_key"] = {
+                    "key": best["key"],
+                    "age_s": best["age_ms"] // 1000,
+                    "model": best["model"],
+                }
+        except Exception as e:
+            details["sessions_error"] = str(e)[:100]
+
+    # Signal 2: claude-cli jsonl mtime within last cli_jsonl_recent_s
+    cli_dir = Path(f"/home/{user}/.claude/projects/-home-{user}-workspace")
+    if cli_dir.exists():
+        try:
+            mtimes = [p.stat().st_mtime for p in cli_dir.glob("*.jsonl")]
+            if mtimes:
+                newest = max(mtimes)
+                age_s = int(time.time() - newest)
+                details["cli_jsonl"] = {"newest_mtime_age_s": age_s}
+                if 0 <= age_s <= cli_jsonl_recent_s:
+                    signals.append("cli_jsonl_recent")
+        except Exception as e:
+            details["cli_jsonl_error"] = str(e)[:100]
+
+    # Signal 3: process CPU > threshold over 1 s sample
+    try:
+        rc, out, _ = run_cmd(
+            ["pgrep", "-u", user, "-f", "openclaw|claude"], timeout=5
+        )
+        pids = [p.strip() for p in out.splitlines() if p.strip()]
+        if pids:
+            cpu_pct = _cpu_burst_pct(pids, sample_interval_s=1.0)
+            details["cpu_pct"] = round(cpu_pct, 1)
+            details["cpu_pid_count"] = len(pids)
+            if cpu_pct > cpu_threshold_pct:
+                signals.append("cpu_active")
+    except Exception as e:
+        details["cpu_error"] = str(e)[:100]
+
+    return {
+        "is_busy": bool(signals),
+        "signals": signals,
+        "details": details,
+    }
+
+
+def probe_session_idle_for_user(user, home_dir):
+    """Return (idle_seconds, latest_session_path) — seconds since the most recent
+    sign of activity for this user. Returns (None, None) when nothing usable.
+    Activity sources, most-recent wins:
+      1. Newest openclaw session jsonl mtime — for ollama / openai-codex
+         providers where openclaw writes its own jsonl.
+      2. sessions.json[agent:main:main].updatedAt — works for ALL providers,
+         including claude-cli where the openclaw jsonl is never written
+         because the conversation content lives in claude-cli's own jsonl
+         under ~/.claude/projects/. Without this source the probe would
+         falsely report stall for any agent on claude-cli."""
+    sessions_dir = f"{home_dir}/.openclaw/agents/main/sessions"
+    best_mtime = 0
+    best_path = None
+    # Source 1: newest openclaw jsonl (skip rotated / checkpoint / archive variants)
+    try:
+        for fn in os.listdir(sessions_dir):
+            if not fn.endswith(".jsonl"):
+                continue
+            if ".checkpoint." in fn or ".reset." in fn or ".archive-" in fn:
+                continue
+            full = os.path.join(sessions_dir, fn)
+            try:
+                m = int(os.path.getmtime(full))
+            except OSError:
+                continue
+            if m > best_mtime:
+                best_mtime, best_path = m, full
+    except OSError:
+        pass
+    # Source 2: max updatedAt across ALL agent:main:* conversation keys in
+    # sessions.json. Catches claude-cli sessions (no openclaw jsonl) AND
+    # activity on non-heartbeat surfaces like telegram DMs / subagents.
+    sj_path = os.path.join(sessions_dir, "sessions.json")
+    try:
+        with open(sj_path) as f:
+            sj = json.load(f)
+        best_key = None
+        for k, e in sj.items():
+            if not k.startswith("agent:main:") or not isinstance(e, dict):
+                continue
+            upd_ms = e.get("updatedAt") or 0
+            upd = int(upd_ms / 1000) if upd_ms else 0
+            if upd > best_mtime:
+                best_mtime, best_key = upd, k
+        if best_key:
+            best_path = f"{sj_path}#{best_key}"
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    if best_mtime <= 0:
+        return None, None
+    return int(time.time() - best_mtime), best_path
+
+
+def probe_jira_stalled_for_agent(agent, cfg, sc):
+    """Query Jira (using the agent's own token) for issues assigned to that agent
+    in stall-watching statuses. Classifies each in-progress issue into one of:
+      - task-stalled-no-agent  (primary, CRIT/WARN)  — agent's session is silent
+      - task-stalled-no-progress (secondary, WARN)   — Jira hasn't seen activity
+    The two are mutually exclusive: no-progress only fires when no-agent doesn't."""
+    user = agent.get("user")
+    email = agent.get("email")
+    home = agent.get("home") or f"/home/{user}"
+    if not user or not email:
+        return []
+    integrations = agent.get("integrations") or {}
+    if not (agent.get("coding") and integrations.get("jira")):
+        return []
+    host = sc.get("jira_host", "zeh-ferrari.atlassian.net")
+    statuses = sc.get("statuses", ["In Progress"])
+    idle_warn_s = sc.get("session_idle_warn_minutes", 5) * 60
+    idle_crit_s = sc.get("session_idle_crit_minutes", 15) * 60
+    update_warn_s = sc.get("update_warn_minutes", 30) * 60
+
+    status_clause = " OR ".join([f'status="{s}"' for s in statuses])
+    jql = f"assignee=currentUser() AND ({status_clause})"
+    body = json.dumps(
+        {"jql": jql, "fields": ["summary", "status", "updated"], "maxResults": 20}
+    )
+    url = f"https://{host}/rest/api/3/search/jql"
+    cmd = [
+        "sudo", "-n", "-u", user, "bash", "-c",
+        f"T=$(cat ~/.ssh/jiraToken.txt 2>/dev/null); "
+        f"if [ -z \"$T\" ]; then echo NO_TOKEN >&2; exit 2; fi; "
+        f"curl -s --max-time {sc.get('http_timeout_s', 10)} -X POST "
+        f"-u {shlex.quote(email)}:\"$T\" "
+        f"-H 'Accept: application/json' -H 'Content-Type: application/json' "
+        f"--data {shlex.quote(body)} "
+        f"{shlex.quote(url)}",
+    ]
+    rc, out, err = run_cmd(cmd, timeout=sc.get("http_timeout_s", 10) + 4)
+    if rc != 0 or not out.strip():
+        return [{"_error": f"jira query failed for {user}: rc={rc} {err.strip()[:120]}"}]
+    try:
+        d = json.loads(out)
+    except Exception as e:
+        return [{"_error": f"jira parse for {user}: {e}; body[:120]={out[:120]}"}]
+    if d.get("errorMessages"):
+        return [{"_error": f"jira API error for {user}: {d['errorMessages']}"}]
+
+    from datetime import datetime
+    now_s = int(time.time())
+
+    # One session-idle reading per agent (issue-level checks share it).
+    session_idle_s, session_path = probe_session_idle_for_user(user, home)
+
+    # Busy gate: if the agent is mid-turn (sessions.json running key with
+    # recent updatedAt, recent claude-cli jsonl write, or active CPU), the
+    # session-idle threshold doesn't mean a stall — the agent is doing
+    # heavy work. Skip task-stalled-no-agent. task-stalled-no-progress
+    # (Jira not updating despite active session) still fires; that's a
+    # different failure mode.
+    busy = probe_busy_state(user, home)
+
+    results = []
+    for issue in d.get("issues", []) or []:
+        f = issue.get("fields", {}) or {}
+        updated_str = f.get("updated", "")
+        updated_age_s = None
+        try:
+            dt = datetime.fromisoformat(updated_str)
+            updated_age_s = now_s - int(dt.timestamp())
+        except Exception:
+            pass
+
+        common = {
+            "agent": user,
+            "key": issue.get("key"),
+            "summary": (f.get("summary") or "")[:80],
+            "status": (f.get("status") or {}).get("name"),
+            "updated": updated_str,
+            "updated_age_s": updated_age_s,
+            "session_idle_s": session_idle_s,
+            "busy_state": busy,
+        }
+
+        # PRIMARY: session-idle stall — Jira says In Progress but the agent's
+        # openclaw session has been silent. Skipped if busy (mid-turn).
+        if session_idle_s is not None and not busy.get("is_busy"):
+            if session_idle_s >= idle_crit_s:
+                results.append({**common, "kind": "task-stalled-no-agent", "severity": "crit"})
+                continue
+            if session_idle_s >= idle_warn_s:
+                results.append({**common, "kind": "task-stalled-no-agent", "severity": "warn"})
+                continue
+
+        # SECONDARY: no-progress stall — agent IS active (session fresh) but
+        # Jira hasn't been touched in a while. Catches the heartbeat-loop case
+        # (HOMELAB-5 pattern) where the agent is alive but spinning.
+        if updated_age_s is not None and updated_age_s >= update_warn_s:
+            results.append({**common, "kind": "task-stalled-no-progress", "severity": "warn"})
+
+    return results
+
+
+def probe_stalled_tasks(cfg, registry):
+    """Returns {stalled_tasks: [...], errors: [...], enabled: bool} aggregating
+    across all coding+jira-enabled agents in the registry."""
+    sc = cfg.get("stalled_tasks_check", {})
+    out = {"stalled_tasks": [], "errors": [], "enabled": sc.get("enabled", True)}
+    if not out["enabled"] or not registry:
+        return out
+    for agent in registry.get("agents", []) or []:
+        if not (agent.get("enabled") and agent.get("monitor")):
+            continue
+        items = probe_jira_stalled_for_agent(agent, cfg, sc)
+        for item in items:
+            if item.get("_error"):
+                out["errors"].append(item["_error"])
+            else:
+                out["stalled_tasks"].append(item)
+    return out
+
+
+def probe_idle_with_queue_for_agent(agent, cfg, sc):
+    """Catches the gap that `task-stalled-no-agent` cannot: the agent has
+    nothing in In Progress but ≥1 ticket in Selected for Development AND
+    their session has been idle past threshold. After finishing a ticket
+    (transition out of In Progress) agents should pick up the next per
+    TEAM_WORKFLOW.md "Picking the Next Task"; this fires when they don't.
+    Returns a single-item list (or empty)."""
+    user = agent.get("user")
+    email = agent.get("email")
+    home = agent.get("home") or f"/home/{user}"
+    if not user or not email:
+        return []
+    integrations = agent.get("integrations") or {}
+    if not (agent.get("coding") and integrations.get("jira")):
+        return []
+
+    host = sc.get("jira_host", "zeh-ferrari.atlassian.net")
+    in_progress_statuses = sc.get("statuses", ["In Progress"])
+    queue_statuses = sc.get("queue_statuses", ["Selected for Development", "To Do"])
+    idle_warn_s = sc.get("queue_idle_warn_minutes", 10) * 60
+    idle_crit_s = sc.get("queue_idle_crit_minutes", 30) * 60
+
+    # One JQL covering both buckets; classify locally.
+    all_statuses = list(in_progress_statuses) + list(queue_statuses)
+    status_clause = " OR ".join([f'status="{s}"' for s in all_statuses])
+    jql = f"assignee=currentUser() AND ({status_clause})"
+    body = json.dumps(
+        {"jql": jql, "fields": ["summary", "status"], "maxResults": 50}
+    )
+    url = f"https://{host}/rest/api/3/search/jql"
+    cmd = [
+        "sudo", "-n", "-u", user, "bash", "-c",
+        f"T=$(cat ~/.ssh/jiraToken.txt 2>/dev/null); "
+        f"if [ -z \"$T\" ]; then echo NO_TOKEN >&2; exit 2; fi; "
+        f"curl -s --max-time {sc.get('http_timeout_s', 10)} -X POST "
+        f"-u {shlex.quote(email)}:\"$T\" "
+        f"-H 'Accept: application/json' -H 'Content-Type: application/json' "
+        f"--data {shlex.quote(body)} "
+        f"{shlex.quote(url)}",
+    ]
+    rc, out, err = run_cmd(cmd, timeout=sc.get("http_timeout_s", 10) + 4)
+    if rc != 0 or not out.strip():
+        return [{"_error": f"jira queue query failed for {user}: rc={rc} {err.strip()[:120]}"}]
+    try:
+        d = json.loads(out)
+    except Exception as e:
+        return [{"_error": f"jira queue parse for {user}: {e}; body[:120]={out[:120]}"}]
+    if d.get("errorMessages"):
+        return [{"_error": f"jira queue API error for {user}: {d['errorMessages']}"}]
+
+    in_prog, queue = [], []
+    for issue in d.get("issues", []) or []:
+        f = issue.get("fields", {}) or {}
+        st = (f.get("status") or {}).get("name")
+        rec = {"key": issue.get("key"), "summary": (f.get("summary") or "")[:80], "status": st}
+        if st in in_progress_statuses:
+            in_prog.append(rec)
+        elif st in queue_statuses:
+            queue.append(rec)
+
+    # Only fire when there's a queue AND nothing in progress.
+    if not queue or in_prog:
+        return []
+    session_idle_s, _ = probe_session_idle_for_user(user, home)
+    if session_idle_s is None or session_idle_s < idle_warn_s:
+        return []
+
+    # Busy gate: even if the agent has nothing In Progress and the queue is
+    # waiting, an active turn (e.g. they're between transitions, writing a
+    # comment, or in another conversation) means they're working — don't
+    # fire wake-agent on top of an active session.
+    busy = probe_busy_state(user, home)
+    if busy.get("is_busy"):
+        return []
+
+    sev = "crit" if session_idle_s >= idle_crit_s else "warn"
+    return [{
+        "agent": user,
+        "queue_count": len(queue),
+        "queue_keys": [q["key"] for q in queue][:5],
+        "session_idle_s": session_idle_s,
+        "busy_state": busy,
+        "severity": sev,
+        "kind": "agent-idle-with-queue",
+    }]
+
+
+def probe_agent_queue(cfg, registry):
+    """Returns {idle_with_queue: [...], errors: [...], enabled: bool}.
+    Companion to probe_stalled_tasks — same shape, different gap."""
+    sc_q = cfg.get("agent_queue_check", {})
+    out = {"idle_with_queue": [], "errors": [], "enabled": sc_q.get("enabled", True)}
+    if not out["enabled"] or not registry:
+        return out
+    # Inherit host / http_timeout / statuses from stalled_tasks_check unless
+    # the agent_queue_check block overrides — keeps Jira config DRY.
+    sc = {**(cfg.get("stalled_tasks_check") or {}), **sc_q}
+    for agent in registry.get("agents", []) or []:
+        if not (agent.get("enabled") and agent.get("monitor")):
+            continue
+        items = probe_idle_with_queue_for_agent(agent, cfg, sc)
+        for item in items:
+            if item.get("_error"):
+                out["errors"].append(item["_error"])
+            else:
+                out["idle_with_queue"].append(item)
+    return out
+
+
+def _parse_agent_task_timestamp(value):
+    """Parse timestamps written by webhook/Gmail task appenders.
+
+    Inputs are a mix of UTC ISO strings and Australia/Brisbane locale strings,
+    for example:
+      - 2026-05-19T04:47:01.400Z
+      - 19/05/2026, 2:28:16 pm
+    Returns epoch seconds or None.
+    """
+    if not value:
+        return None
+    try:
+        from datetime import datetime, timezone, timedelta
+        raw = str(value).strip()
+        if raw.endswith("Z"):
+            return int(datetime.fromisoformat(raw[:-1] + "+00:00").timestamp())
+        try:
+            return int(datetime.fromisoformat(raw).timestamp())
+        except Exception:
+            pass
+        # Locale format from toLocaleString('en-AU', Australia/Brisbane).
+        normalized = raw.upper().replace("\u202f", " ")
+        for fmt in ("%d/%m/%Y, %I:%M:%S %p", "%d/%m/%Y, %H:%M:%S"):
+            try:
+                dt = datetime.strptime(normalized, fmt)
+                brisbane = timezone(timedelta(hours=10))
+                return int(dt.replace(tzinfo=brisbane).timestamp())
+            except Exception:
+                pass
+    except Exception:
+        return None
+    return None
+
+
+def _extract_field_from_section(section, field):
+    import re as _re
+    m = _re.search(rf"(?im)^\s*{_re.escape(field)}:\s*(.+?)\s*$", section)
+    return m.group(1).strip() if m else ""
+
+
+def probe_pending_email_tasks_for_agent(agent, cfg, sc):
+    """Read ~/tasks/current.md and find Gmail-originated tasks still queued.
+
+    Gmail workers append actionable mail to current.md with `Gmail messageId`
+    and `Status: QUEUED`. If that section stays queued past the configured
+    threshold, the agent either missed the wake or did not act. This closes
+    the blind spot where service health is green but a user-facing email sits
+    unanswered.
+    """
+    user = agent.get("user")
+    home = agent.get("home") or f"/home/{user}"
+    if not user:
+        return []
+    integrations = agent.get("integrations") or {}
+    if not integrations.get("gmail", True):
+        return []
+    current_path = Path(home) / "tasks/current.md"
+    if not current_path.exists():
+        return []
+
+    warn_s = int(sc.get("warn_minutes", 15)) * 60
+    crit_s = int(sc.get("crit_minutes", 60)) * 60
+    max_age_s = int(sc.get("max_age_hours", 24)) * 3600
+    max_items = int(sc.get("max_items_per_agent", 10))
+    now = int(time.time())
+    try:
+        text = current_path.read_text(errors="replace")
+    except Exception as e:
+        return [{"_error": f"pending email task read failed for {user}: {e}"}]
+
+    import re as _re
+    sections = _re.split(r"(?m)^---\s*$", text)
+    pending = []
+    seen_msgids = set()
+    for section in sections:
+        if "Gmail messageId:" not in section:
+            continue
+        status = _extract_field_from_section(section, "Status").upper()
+        if status != "QUEUED":
+            continue
+        msgid = _extract_field_from_section(section, "Gmail messageId")
+        if not msgid or msgid in seen_msgids:
+            continue
+        seen_msgids.add(msgid)
+        heading = ""
+        hm = _re.search(r"(?m)^##\s+(.+?)\s*$", section)
+        if hm:
+            heading = hm.group(1).strip()
+        source = _extract_field_from_section(section, "Source")
+        received = _extract_field_from_section(section, "Received")
+        received_s = _parse_agent_task_timestamp(received)
+        if received_s is None:
+            # Conservative fallback: use the task file mtime. This avoids a
+            # parse failure creating a false multi-day alert.
+            try:
+                received_s = int(current_path.stat().st_mtime)
+            except Exception:
+                continue
+        age_s = now - received_s
+        if max_age_s > 0 and age_s > max_age_s:
+            continue
+        if age_s < warn_s:
+            continue
+        severity = "crit" if age_s >= crit_s else "warn"
+        pending.append({
+            "agent": user,
+            "message_id": msgid,
+            "subject": heading[:140],
+            "source": source[:140],
+            "received": received,
+            "age_s": age_s,
+            "severity": severity,
+            "current_path": str(current_path),
+            "kind": "email-awaiting-action",
+        })
+        if len(pending) >= max_items:
+            break
+    return pending
+
+
+def probe_pending_email_tasks(cfg, registry):
+    """Returns {pending: [...], errors: [...], enabled: bool} for queued
+    actionable Gmail tasks that have not moved out of QUEUED."""
+    sc = cfg.get("pending_email_tasks", {})
+    out = {"pending": [], "errors": [], "enabled": sc.get("enabled", True)}
+    if not out["enabled"] or not registry:
+        return out
+    for agent in registry.get("agents", []) or []:
+        if not (agent.get("enabled") and agent.get("monitor") and agent.get("coding")):
+            continue
+        items = probe_pending_email_tasks_for_agent(agent, cfg, sc)
+        for item in items:
+            if item.get("_error"):
+                out["errors"].append(item["_error"])
+            else:
+                out["pending"].append(item)
+    return out
+
+
+def _iso_to_epoch(s):
+    try:
+        from datetime import datetime
+        return int(datetime.fromisoformat(s).timestamp())
+    except Exception:
+        return None
+
+
+def _agent_replied_since(agent, pending, cfg):
+    """Has the issue moved to a Done status, OR has `agent` posted a comment
+    on pending['issue_key'] dated >= pending['comment_created']?
+    Either case → resolved (no point chasing a reply on a closed ticket).
+    Returns (resolved: bool, error: str|None)."""
+    user = agent.get("user")
+    email = agent.get("email")
+    account_id = agent.get("jira_account_id")
+    issue_key = pending.get("issue_key")
+    comment_created = pending.get("comment_created")
+    sc = cfg.get("stalled_tasks_check") or {}
+    host = sc.get("jira_host", "zeh-ferrari.atlassian.net")
+    http_timeout_s = int(sc.get("http_timeout_s", 15))
+    if not (user and email and account_id and issue_key and comment_created):
+        return False, f"pending-mention missing fields for {pending.get('issue_key')}"
+    # Single round-trip: status + comments together.
+    url = f"https://{host}/rest/api/3/issue/{issue_key}?fields=status,comment"
+    cmd = [
+        "sudo", "-n", "-u", user, "bash", "-c",
+        f"T=$(cat ~/.ssh/jiraToken.txt 2>/dev/null); "
+        f"if [ -z \"$T\" ]; then echo NO_TOKEN >&2; exit 2; fi; "
+        f"curl -s --max-time {http_timeout_s} -u {shlex.quote(email)}:\"$T\" "
+        f"-H 'Accept: application/json' {shlex.quote(url)}",
+    ]
+    rc, out, err = run_cmd(cmd, timeout=http_timeout_s + 4)
+    if rc != 0 or not out.strip():
+        return False, f"jira comment fetch {user}/{issue_key}: rc={rc} {err.strip()[:120]}"
+    try:
+        d = json.loads(out)
+    except Exception as e:
+        return False, f"jira comment parse {user}/{issue_key}: {e}"
+    if d.get("errorMessages"):
+        return False, f"jira API error {user}/{issue_key}: {d['errorMessages']}"
+    fields = d.get("fields") or {}
+    # Done detection: statusCategory.key == 'done' is the workflow-agnostic
+    # signal (custom workflows can rename "Done" to "Closed", "Resolved",
+    # "Shipped" etc., but the category stays `done`).
+    cat = ((fields.get("status") or {}).get("statusCategory") or {}).get("key")
+    if cat == "done":
+        return True, None
+    base_s = _iso_to_epoch(comment_created) or 0
+    comments = ((fields.get("comment") or {}).get("comments")) or []
+    for c in comments:
+        if (c.get("author") or {}).get("accountId") == account_id:
+            c_s = _iso_to_epoch(c.get("created", "")) or 0
+            if c_s >= base_s:
+                return True, None
+    return False, None
+
+
+def probe_pending_mentions(cfg, registry):
+    """Walks /var/lib/ai-monitor/pending-mentions/ (written by webhook-receiver
+    when a Jira comment @-mentions a known agent). For each pending entry,
+    asks Jira whether the mentioned agent has posted any comment since the
+    mention. Resolved entries are deleted; aging entries become 'awaiting'
+    issues that deterministic_issues turns into mention-awaiting-reply alerts."""
+    pmc = cfg.get("pending_mentions") or {}
+    out = {"awaiting": [], "resolved": [], "errors": [], "enabled": pmc.get("enabled", True)}
+    if not out["enabled"]:
+        return out
+    pdir = pmc.get("dir", "/var/lib/ai-monitor/pending-mentions")
+    warn_s = pmc.get("warn_minutes", 15) * 60
+    crit_s = pmc.get("crit_minutes", 60) * 60
+    # Safety net: a mention marker older than this is considered stale and
+    # silently removed. The original webhook delivery has long since fallen
+    # off the operator's radar; continuing to alert about it isn't useful.
+    max_age_s = pmc.get("max_age_hours", 168) * 3600
+    if not os.path.isdir(pdir):
+        return out
+
+    by_user = {}
+    for a in (registry.get("agents") or []):
+        u = a.get("user")
+        if u and a.get("enabled") and a.get("monitor"):
+            by_user[u] = a
+
+    for fn in sorted(os.listdir(pdir)):
+        if not fn.endswith(".json"):
+            continue
+        fpath = os.path.join(pdir, fn)
+        try:
+            with open(fpath) as f:
+                data = json.load(f)
+        except Exception as e:
+            out["errors"].append(f"unreadable {fn}: {e}")
+            continue
+        agent = by_user.get(data.get("agent"))
+        if not agent:
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
+            continue
+        # Pre-flight age check — if the marker is older than max_age_s,
+        # drop it without consulting Jira (saves an API call AND prevents
+        # transient probe-failures from bouncing on a stale entry forever).
+        created_s = _iso_to_epoch(data.get("comment_created", ""))
+        if created_s is not None and (int(time.time()) - created_s) >= max_age_s:
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
+            out["resolved"].append({
+                "issue_key": data.get("issue_key"),
+                "agent": data.get("agent"),
+                "reason": f"stale-marker-age>{max_age_s}s",
+            })
+            continue
+        resolved, err = _agent_replied_since(agent, data, cfg)
+        if err:
+            out["errors"].append(err)
+            continue
+        if resolved:
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
+            out["resolved"].append({
+                "issue_key": data.get("issue_key"),
+                "agent": data.get("agent"),
+                "reason": "ticket-done-or-agent-replied",
+            })
+            continue
+        if created_s is None:
+            continue
+        age_s = int(time.time()) - created_s
+        if age_s >= crit_s:
+            severity = "crit"
+        elif age_s >= warn_s:
+            severity = "warn"
+        else:
+            continue
+        entry = dict(data)
+        entry["age_s"] = age_s
+        entry["severity"] = severity
+        out["awaiting"].append(entry)
+    return out
+
+
+def probe_ollama(cfg):
+    """Reachability check only. We do NOT force a model load here -- on a CPU host the
+    cold-load latency dwarfs the tick budget. The AI judge call (when invoked) is the
+    real functional probe."""
+    base = cfg["ollama_probe"]["endpoint"]
+    timeout = cfg["ollama_probe"].get("timeout_s", 5)
+    expected_models = [
+        cfg["ai"].get("model"),
+        cfg["ai"].get("fallback_model"),
+    ]
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(base + "/api/tags", timeout=timeout) as resp:
+            status = resp.status
+            body = resp.read().decode("utf-8", errors="replace")
+        obj = json.loads(body)
+        names = [m.get("name") for m in obj.get("models", [])]
+        missing = [m for m in expected_models if m and m not in names]
+        return {
+            "ok": status == 200 and not missing,
+            "status": status,
+            "latency_s": round(time.time() - t0, 2),
+            "models_count": len(names),
+            "missing_models": missing,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e)[:200],
+            "latency_s": round(time.time() - t0, 2),
+        }
+
+
+SYSTEM_PROMPT = """You are the AI judge for the host's agent monitor on openSUSE Tumbleweed.
+
+The host runs one or more tenant users (registered in /etc/openclaw/agents.json) plus system services (ollama, nginx, mariadb, php-fpm). The procedural watchdog `openclaw-integrity-check` has already run; you receive its output plus host resources and an ollama liveness probe.
+
+Output ONLY a single JSON object with this shape:
+{
+  "healthy": true|false,
+  "summary": "<=180 chars plain English",
+  "issues": [
+    {
+      "unit": "<systemd unit OR resource name OR listener host:port>",
+      "kind": "<short slug, e.g. crash-loop, gmail-watch-expiring, telegram-send-failing, mem-high, listener-down>",
+      "severity": "info"|"warn"|"crit",
+      "reason": "<one sentence with concrete evidence from the probes>",
+      "suggested_action": "none"|"investigate"|"rotate-credentials"|"observe"
+    }
+  ]
+}
+
+Rules:
+- A FAIL line in `integrity_check.fail_lines` is at minimum WARN; persistent FAIL across runs (also in `previously_open`) is CRIT.
+- Treat is_active=active as insufficient if the unit's recent journal shows repeated "Scheduled restart" or rapid exits — that is a crash loop and is CRIT.
+- Telegram sendMessage failures: WARN if 1-3 in last 10min, CRIT if more.
+- Gmail watch expiring within 24h is WARN; expired is CRIT.
+- Resource threshold breaches in `resources.threshold_breaches` are WARN; if the same breach appears in `previously_open`, escalate to CRIT.
+- A listener marked open=false for an expected port is CRIT.
+- Functional ollama probe `ok=false` is CRIT.
+- Healthy state: `healthy=true`, `issues=[]`, summary names the green services briefly.
+- Be terse. No prose outside JSON. Do NOT recommend `restart` — the procedural checker already restarts. Use `investigate` or `observe`.
+"""
+
+
+def build_compact_input(probes):
+    """Produce a minimal probe summary for the LLM. The full probe lives in log.jsonl."""
+    r = probes.get("resources", {})
+    cpu = max(r.get("cpu_count", 1) or 1, 1)
+    integrity = probes.get("integrity_check", {})
+    listeners = probes.get("listeners", {})
+    return {
+        "ts": probes.get("ts"),
+        "host": probes.get("host"),
+        "integrity_check": {
+            "exit_code": integrity.get("exit_code"),
+            "fail_lines": integrity.get("fail_lines", [])[:10],
+            "warn_lines": integrity.get("warn_lines", [])[:10],
+        },
+        "ollama_probe": {
+            "ok": probes.get("ollama_probe", {}).get("ok"),
+            "latency_s": probes.get("ollama_probe", {}).get("latency_s"),
+            "error": probes.get("ollama_probe", {}).get("error"),
+        },
+        "resources": {
+            "load1_per_core": round(r.get("load1", 0) / cpu, 2),
+            "mem_used_pct": r.get("mem_used_pct"),
+            "swap_used_pct": r.get("swap_used_pct"),
+            "temp_max_c": r.get("temp_max_c"),
+            "fan_rpm_max": r.get("fan_rpm_max"),
+            "rootfs_used_pct": r.get("rootfs_used_pct"),
+            "ac_online": r.get("ac_online"),
+            "battery": r.get("battery"),
+            "threshold_breaches": r.get("threshold_breaches", []),
+        },
+        "system_units": {
+            u: s.get("is_active") for u, s in probes.get("system_units", {}).items()
+        },
+        "user_units": {
+            k: v.get("is_active") for k, v in probes.get("user_units", {}).items()
+        },
+        "down_listeners": [
+            f"{k} ({v.get('owner','?')})"
+            for k, v in listeners.items()
+            if not v.get("open") and v.get("expected", True)
+        ],
+        "registry": {
+            "ok": probes.get("registry", {}).get("ok"),
+            "agents_seen": probes.get("registry", {}).get("agents_seen", 0),
+            "stale": probes.get("registry", {}).get("stale", False),
+        },
+        "stalled_tasks": [
+            {"agent": t["agent"], "key": t["key"],
+             "age_minutes": t["age_s"] // 60, "severity": t["severity"]}
+            for t in probes.get("stalled_tasks", {}).get("stalled_tasks", [])
+        ],
+        "pending_email_tasks": [
+            {"agent": e["agent"], "message_id": e["message_id"],
+             "age_minutes": e["age_s"] // 60, "severity": e["severity"],
+             "subject": e.get("subject", "")[:80]}
+            for e in probes.get("pending_email_tasks", {}).get("pending", [])
+        ],
+    }
+
+
+def deterministic_issues(probes):
+    """Emit issues we can derive without an LLM. These are the unambiguous signals;
+    no natural-language interpretation needed. Run on every tick."""
+    out = []
+    for unit, state in probes.get("system_units", {}).items():
+        v = state.get("is_active")
+        if v != "active":
+            out.append({
+                "unit": unit, "kind": "system-unit-not-active",
+                "severity": "crit",
+                "reason": f"systemctl is-active reports '{v}'",
+                "suggested_action": "investigate",
+            })
+    for key, state in probes.get("user_units", {}).items():
+        v = state.get("is_active")
+        if v != "active":
+            out.append({
+                "unit": key, "kind": "user-unit-not-active",
+                "severity": "crit",
+                "reason": f"systemctl --user is-active reports '{v}' ({state.get('err','')[:80]})",
+                "suggested_action": "investigate",
+            })
+    for key, state in probes.get("listeners", {}).items():
+        if state.get("expected", True) and not state.get("open"):
+            out.append({
+                "unit": f"listener:{key}", "kind": "listener-down",
+                "severity": "crit",
+                "reason": f"TCP connect failed for {state.get('owner','')} ({state.get('error','')[:80]})",
+                "suggested_action": "investigate",
+            })
+    op = probes.get("ollama_probe", {})
+    if not op.get("ok"):
+        miss = op.get("missing_models")
+        reason = (
+            f"missing models: {miss}" if miss
+            else f"/api/tags failed ({op.get('error','')[:80]})"
+        )
+        out.append({
+            "unit": "ollama:127.0.0.1:11434", "kind": "ollama-unreachable",
+            "severity": "crit",
+            "reason": reason,
+            "suggested_action": "investigate",
+        })
+    for breach in probes.get("resources", {}).get("threshold_breaches", []):
+        kind = breach.split("=")[0]
+        out.append({
+            "unit": f"resource:{kind}", "kind": f"threshold-{kind}",
+            "severity": "warn",
+            "reason": f"breach: {breach}",
+            "suggested_action": "observe",
+        })
+    integ = probes.get("integrity_check", {})
+    if integ.get("exit_code") is None:
+        out.append({
+            "unit": "openclaw-integrity-check", "kind": "no-recent-run",
+            "severity": "warn",
+            "reason": f"no openclaw-integrity output in window ({integ.get('runs_in_window',0)} runs seen)",
+            "suggested_action": "investigate",
+        })
+    reg = probes.get("registry", {})
+    if not reg.get("ok"):
+        out.append({
+            "unit": "ai-monitor:registry",
+            "kind": "registry-unreadable",
+            "severity": "crit",
+            "reason": f"agents.json registry not readable at {reg.get('path','?')}: {reg.get('error','?')}",
+            "suggested_action": "investigate",
+        })
+    elif reg.get("stale"):
+        out.append({
+            "unit": "ai-monitor:registry",
+            "kind": "registry-stale",
+            "severity": "warn",
+            "reason": f"agents.json registry not modified in {reg.get('age_s',0)//86400} days (>{reg.get('max_age_hours','?')}h threshold)",
+            "suggested_action": "observe",
+        })
+    elif reg.get("agents_seen", 0) == 0:
+        out.append({
+            "unit": "ai-monitor:registry",
+            "kind": "registry-empty",
+            "severity": "warn",
+            "reason": "agents.json has zero enabled+monitored agents — nothing tenant-side is being watched",
+            "suggested_action": "investigate",
+        })
+    stalled = probes.get("stalled_tasks", {})
+    for task in stalled.get("stalled_tasks", []) or []:
+        kind = task.get("kind", "task-stalled")
+        idle_s = task.get("session_idle_s")
+        upd_s = task.get("updated_age_s")
+        if kind == "task-stalled-no-agent":
+            mins = (idle_s or 0) // 60
+            reason = (
+                f"{task['key']} ({task['summary']}) — assigned to {task['agent']} "
+                f"({task.get('status','?')}); agent session silent for {mins} min — "
+                f"agent isn't running this ticket"
+            )
+        else:  # task-stalled-no-progress
+            mins = (upd_s or 0) // 60
+            idle_mins = (idle_s or 0) // 60 if idle_s is not None else None
+            extra = f", session active ({idle_mins}m idle)" if idle_mins is not None else ""
+            reason = (
+                f"{task['key']} ({task['summary']}) — assigned to {task['agent']} "
+                f"({task.get('status','?')}); no Jira update in {mins} min{extra} — "
+                f"possible heartbeat loop"
+            )
+        out.append({
+            "unit": f"jira:{task['agent']}/{task['key']}",
+            "kind": kind,
+            "severity": task.get("severity", "warn"),
+            "reason": reason,
+            "suggested_action": "investigate",
+        })
+    # Item 4: surface jira-probe failures so a token rot or network glitch
+    # doesn't go silent. Was previously buried in stalled["errors"].
+    for err in stalled.get("errors", []) or []:
+        out.append({
+            "unit": "jira:probe",
+            "kind": "jira-probe-failed",
+            "severity": "warn",
+            "reason": f"jira probe error: {err}",
+            "suggested_action": "investigate",
+        })
+    # agent-idle-with-queue: agent has nothing In Progress but ≥1 ticket
+    # in any of the configured queue_statuses (Selected for Development /
+    # To Do by default) AND session is idle past threshold. Catches the
+    # gap where an agent finishes a ticket and just sits instead of
+    # picking up the next per TEAM_WORKFLOW.md "Picking the Next Task".
+    # Handled deterministically by ai-monitor (auto-wake, no monitor agent).
+    queue_probe = probes.get("agent_queue", {})
+    for q in queue_probe.get("idle_with_queue", []) or []:
+        mins = (q.get("session_idle_s") or 0) // 60
+        keys = ", ".join(q.get("queue_keys", []) or [])
+        more = q.get("queue_count", 0) - len(q.get("queue_keys", []) or [])
+        extra = f" (and {more} more)" if more > 0 else ""
+        out.append({
+            "unit": f"jira:{q['agent']}/queue",
+            "kind": "agent-idle-with-queue",
+            "severity": q.get("severity", "warn"),
+            "reason": (
+                f"{q['agent']}: {q['queue_count']} queued ticket(s) "
+                f"({keys}{extra}), nothing In Progress, session idle {mins} min — "
+                f"agent should be picking up next task per TEAM_WORKFLOW.md "
+                f"\"Picking the Next Task\""
+            ),
+            "suggested_action": "investigate",
+        })
+    for err in queue_probe.get("errors", []) or []:
+        out.append({
+            "unit": "jira:agent-queue",
+            "kind": "agent-queue-probe-failed",
+            "severity": "warn",
+            "reason": f"agent-queue probe error: {err}",
+            "suggested_action": "investigate",
+        })
+    # Actionable Gmail queued but not acted on. The Gmail worker already
+    # woke the agent when it wrote the QUEUED task; if it is still queued
+    # after the threshold, wake/restart escalation is justified.
+    email_probe = probes.get("pending_email_tasks", {})
+    for e in email_probe.get("pending", []) or []:
+        mins = (e.get("age_s") or 0) // 60
+        out.append({
+            "unit": f"email:{e['agent']}/{e['message_id']}",
+            "kind": "email-awaiting-action",
+            "severity": e.get("severity", "warn"),
+            "reason": (
+                f"{e['agent']}: actionable email still QUEUED for {mins} min — "
+                f"from {e.get('source','?')}; subject \"{e.get('subject','(no subject)')}\". "
+                f"Task file: {e.get('current_path')}"
+            ),
+            "suggested_action": "investigate",
+        })
+    for err in email_probe.get("errors", []) or []:
+        out.append({
+            "unit": "email:pending-tasks",
+            "kind": "pending-email-probe-failed",
+            "severity": "warn",
+            "reason": f"pending-email probe error: {err}",
+            "suggested_action": "investigate",
+        })
+    # Item 2: @-mention awaiting reply (sourced from pending-mentions queue
+    # written by the webhook receiver).
+    pm = probes.get("pending_mentions", {})
+    for m in pm.get("awaiting", []) or []:
+        age_min = (m.get("age_s") or 0) // 60
+        preview = (m.get("preview") or "")[:140]
+        out.append({
+            "unit": f"jira:{m['agent']}/{m['issue_key']}",
+            "kind": "mention-awaiting-reply",
+            "severity": m.get("severity", "warn"),
+            "reason": (
+                f"{m['issue_key']} — {m['agent']} was @-mentioned by "
+                f"{m.get('mentioner_name','someone')} {age_min}m ago and has not replied. "
+                f"Comment preview: \"{preview}\""
+            ),
+            "suggested_action": "investigate",
+        })
+    for err in pm.get("errors", []) or []:
+        out.append({
+            "unit": "jira:pending-mentions",
+            "kind": "pending-mentions-probe-failed",
+            "severity": "warn",
+            "reason": f"pending-mentions probe error: {err}",
+            "suggested_action": "investigate",
+        })
+    return out
+
+
+def needs_ai_interpretation(probes):
+    """The AI adds value when there are integrity FAIL/WARN lines that need translation
+    into plain-English alerts with severity grading. Deterministic issues are already
+    handled. Returns (should_invoke, reason)."""
+    integ = probes.get("integrity_check", {})
+    if integ.get("fail_lines"):
+        return True, f"{len(integ['fail_lines'])} integrity FAIL lines"
+    if integ.get("warn_lines"):
+        return True, f"{len(integ['warn_lines'])} integrity WARN lines"
+    return False, "no integrity log lines to interpret"
+
+
+def make_verdict(deterministic, ai_verdict_or_none):
+    issues = list(deterministic)
+    ai_succeeded = bool(
+        ai_verdict_or_none and ai_verdict_or_none.get("_model") not in (None, "none")
+    )
+    if ai_succeeded:
+        ai_issues = ai_verdict_or_none.get("issues", []) or []
+        seen = {event_key(i) for i in issues}
+        for ai_issue in ai_issues:
+            if event_key(ai_issue) not in seen:
+                issues.append(ai_issue)
+        model = ai_verdict_or_none.get("_model")
+    elif ai_verdict_or_none:
+        model = "deterministic+ai-failed"
+    else:
+        model = "deterministic"
+
+    if not issues:
+        return {
+            "healthy": True,
+            "summary": (
+                ai_verdict_or_none.get("summary") or "all signals nominal"
+            )[:180] if ai_succeeded else "all signals nominal",
+            "issues": [],
+            "_model": model if ai_succeeded else "bypass",
+            "_ai_error": (ai_verdict_or_none or {}).get("_ai_error"),
+        }
+    crit = sum(1 for i in issues if i.get("severity") == "crit")
+    warn = sum(1 for i in issues if i.get("severity") == "warn")
+    summary = (
+        ai_verdict_or_none["summary"][:180]
+        if ai_succeeded and ai_verdict_or_none.get("summary")
+        else f"{crit} crit, {warn} warn — {issues[0].get('unit','?')}: {issues[0].get('kind','?')}"
+    )
+    return {
+        "healthy": False,
+        "summary": summary[:180],
+        "issues": issues,
+        "_model": model,
+        "_ai_error": (ai_verdict_or_none or {}).get("_ai_error"),
+    }
+
+
+def _strip_json_fence(s):
+    """Some cloud models (notably glm-5.1) wrap their JSON output in markdown
+    code fences even when format=json is set. Strip ```json ... ``` /
+    ``` ... ``` envelopes if present."""
+    s = (s or "").strip()
+    if s.startswith("```"):
+        # drop opening fence + optional language tag
+        first_nl = s.find("\n")
+        if first_nl != -1:
+            s = s[first_nl + 1 :]
+        if s.endswith("```"):
+            s = s[:-3]
+        elif "```" in s:
+            s = s[: s.rfind("```")]
+        s = s.strip()
+    return s
+
+
+def _ai_chain(cfg):
+    """Build the model fallback chain: primary first, then fallbacks. Supports
+    both new `fallback_models: [...]` and the old single `fallback_model`."""
+    chain = [cfg["ai"]["model"]]
+    fbs = cfg["ai"].get("fallback_models")
+    if fbs:
+        chain.extend(fbs)
+    elif cfg["ai"].get("fallback_model"):
+        chain.append(cfg["ai"]["fallback_model"])
+    return [m for m in chain if m]
+
+
+def ai_judge(cfg, probe_blob, prev_open):
+    compact = build_compact_input(probe_blob)
+    user_msg = json.dumps(
+        {"probes": compact, "previously_open": prev_open}, default=str
+    )
+    last_error = ""
+    for model in _ai_chain(cfg):
+        try:
+            url = cfg["ai"]["endpoint"] + "/api/chat"
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                "format": "json",
+                "stream": False,
+                "keep_alive": cfg["ai"].get("keep_alive", "30m"),
+                "options": {"temperature": 0.1, "num_predict": 1024},
+            }
+            status, body = http_post_json(
+                url, payload, timeout=cfg["ai"]["timeout_s"]
+            )
+            obj = json.loads(body)
+            verdict_text = obj.get("message", {}).get("content", "")
+            verdict = json.loads(_strip_json_fence(verdict_text))
+            if not isinstance(verdict.get("issues"), list):
+                verdict["issues"] = []
+            verdict["_model"] = model
+            verdict["_latency_s"] = obj.get("total_duration", 0) / 1e9 if obj.get("total_duration") else None
+            return verdict
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+            continue
+    # AI failed silently: deterministic_issues already produced the alerts the user
+    # cares about. Don't add a noisy "judge-failed" issue on top. The failure is
+    # captured in the JSONL log via the _model field and _ai_error.
+    return {
+        "healthy": True,
+        "summary": "",
+        "issues": [],
+        "_model": "none",
+        "_ai_error": last_error[:200],
+    }
+
+
+def event_key(issue):
+    raw = (
+        f"{issue.get('unit','?')}|{issue.get('kind','?')}|{issue.get('severity','?')}"
+    )
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+def get_monitor_agent(registry):
+    """Find the monitor (triage) agent in the registry by `role: 'monitor'`.
+    Returns the registry entry dict (with keys like 'user', 'home', etc.) or
+    None if no monitor is configured / enabled. The monitor field on coding
+    agents means 'ai-monitor watches them' — only role='monitor' identifies
+    the actual triage agent."""
+    if not registry:
+        return None
+    for a in (registry.get("agents") or []):
+        if a.get("role") == "monitor" and a.get("enabled"):
+            return a
+    return None
+
+
+def get_coding_agents(registry):
+    """All enabled, monitored, coding agents from the registry."""
+    if not registry:
+        return []
+    return [
+        a for a in (registry.get("agents") or [])
+        if a.get("enabled") and a.get("monitor") and a.get("coding")
+    ]
+
+
+def resolve_user_uid(user):
+    """Resolve a Linux user to their UID. Returns None on failure."""
+    try:
+        return pwd.getpwnam(user).pw_uid
+    except Exception:
+        return None
+
+
+def _is_monitor_self_incident(issues, monitor_user):
+    """Return True if any issue is about the monitor agent's own services
+    or ai-monitor itself. The monitor agent can't safely triage her own
+    outage — ai-monitor must escalate directly."""
+    if not monitor_user:
+        return False
+    for i in issues:
+        unit = i.get("unit", "")
+        if unit.startswith(f"{monitor_user}/"):
+            return True
+        if unit.startswith("ai-monitor"):
+            return True
+    return False
+
+
+def restart_and_wake_stalled_agents(no_agent_issues):
+    """Tier-2 escalation for bypass-monitor kinds: instead of `wake-agent`,
+    run `openclaw-control restart-and-wake <user> <reminder>`. Same shape
+    as auto_wake_stalled_agents — same grouping by user, same idle re-probe
+    after the action. Used when tier-1 wake-agent didn't recover the agent."""
+    by_user = {}
+    for issue in no_agent_issues:
+        kind = issue.get("kind")
+        unit = issue.get("unit", "")
+        if unit.startswith("jira:"):
+            rest = unit[5:]
+        elif unit.startswith("email:"):
+            rest = unit[6:]
+        else:
+            continue
+        if "/" not in rest:
+            continue
+        user, tail = rest.split("/", 1)
+        bucket = by_user.setdefault(user, {
+            "tickets": [], "queue_count": 0, "queue_keys": [], "emails": []
+        })
+        if kind == "task-stalled-no-agent":
+            bucket["tickets"].append(tail)
+        elif kind == "agent-idle-with-queue":
+            reason = issue.get("reason", "") or ""
+            import re as _re
+            keys = _re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", reason)
+            bucket["queue_keys"].extend(keys)
+            m = _re.match(r"^[a-z0-9_-]+:\s*(\d+)\s+ticket", reason)
+            if m:
+                bucket["queue_count"] = max(bucket["queue_count"], int(m.group(1)))
+        elif kind == "email-awaiting-action":
+            reason = issue.get("reason", "") or ""
+            subject = ""
+            import re as _re
+            m = _re.search(r"subject \"(.+?)\"", reason)
+            if m:
+                subject = m.group(1)
+            bucket["emails"].append({"message_id": tail, "subject": subject[:100]})
+
+    results = {}
+    for user, b in by_user.items():
+        parts = []
+        if b["tickets"]:
+            parts.append(
+                f"tier-2 escalation — wake-agent didn't take. ticket(s) "
+                f"{', '.join(b['tickets'])} are stalled In Progress; restarting "
+                f"your session and waking you with this reminder. resume work "
+                f"or transition them appropriately"
+            )
+        if b["queue_keys"]:
+            kc = b["queue_count"] or len(b["queue_keys"])
+            kk = ", ".join(b["queue_keys"][:5])
+            more = kc - len(b["queue_keys"][:5])
+            extra = f" (and {more} more)" if more > 0 else ""
+            parts.append(
+                f"tier-2 escalation — wake-agent didn't take. you have {kc} "
+                f"queued ticket(s) ({kk}{extra}) and nothing In Progress; "
+                f"restarting your session — pick the next task per "
+                f"TEAM_WORKFLOW.md \"Picking the Next Task\""
+            )
+        if b["emails"]:
+            subjects = "; ".join(
+                f"{e['message_id']} {e['subject']}".strip()
+                for e in b["emails"][:5]
+            )
+            parts.append(
+                f"tier-2 escalation — wake-agent didn't take. actionable email "
+                f"task(s) are still QUEUED ({subjects}); restarting your session "
+                f"and waking you to process them now. reply in the source email "
+                f"thread and update ~/tasks/current.md out of QUEUED"
+            )
+        reminder = "ai-monitor: " + "; ".join(parts) + "."
+        cmd = [
+            "sudo", "-n", "/usr/local/sbin/openclaw-control",
+            "restart-and-wake", user, reminder,
+        ]
+        rc, out, err = run_cmd(cmd, timeout=120)
+        time.sleep(20)
+        post_idle_s, post_path = probe_session_idle_for_user(user, f"/home/{user}")
+        results[user] = {
+            "tickets": b["tickets"],
+            "queue_keys": b["queue_keys"],
+            "emails": b["emails"],
+            "wake_rc": rc,
+            "wake_err": (err.strip()[:200] if rc != 0 else ""),
+            "post_idle_s": post_idle_s,
+            "recovered": (post_idle_s is not None and post_idle_s < 30),
+            "action": "restart-and-wake",
+        }
+    return results
+
+
+def auto_wake_stalled_agents(no_agent_issues):
+    """Deterministic fallback when the monitor suppresses an issue that REQUIRED
+    a wake without performing one. Handles two kinds:
+      - task-stalled-no-agent (ticket-attached) — reminder names the ticket(s)
+      - agent-idle-with-queue (per-agent) — reminder names the queued tickets
+    ai-monitor itself runs `openclaw-control wake-agent <user>` for each
+    affected user, sleeps 15 s, then re-probes session idleness. Returns
+    dict of per-user results."""
+    # Group: user -> {ticket_keys: [...], queue_keys: [...]}
+    by_user = {}
+    for issue in no_agent_issues:
+        kind = issue.get("kind")
+        unit = issue.get("unit", "")
+        if unit.startswith("jira:"):
+            rest = unit[5:]
+        elif unit.startswith("email:"):
+            rest = unit[6:]
+        else:
+            continue
+        if "/" not in rest:
+            continue
+        user, tail = rest.split("/", 1)
+        bucket = by_user.setdefault(user, {
+            "tickets": [], "queue_count": 0, "queue_keys": [], "emails": []
+        })
+        if kind == "task-stalled-no-agent":
+            bucket["tickets"].append(tail)
+        elif kind == "agent-idle-with-queue":
+            # tail is the literal "queue"; pull keys out of issue payload
+            # (the deterministic_issues reason text has them, but we kept
+            # queue_keys on the original probe item — re-derive here).
+            # Easier: parse keys from the reason string.
+            reason = issue.get("reason", "") or ""
+            # heuristic: keys appear as ALLCAPS-DIGITS tokens in the reason
+            import re as _re
+            keys = _re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", reason)
+            bucket["queue_keys"].extend(keys)
+            # extract count too
+            m = _re.match(r"^[a-z0-9_-]+:\s*(\d+)\s+ticket", reason)
+            if m:
+                bucket["queue_count"] = max(bucket["queue_count"], int(m.group(1)))
+        elif kind == "email-awaiting-action":
+            reason = issue.get("reason", "") or ""
+            subject = ""
+            import re as _re
+            m = _re.search(r"subject \"(.+?)\"", reason)
+            if m:
+                subject = m.group(1)
+            bucket["emails"].append({"message_id": tail, "subject": subject[:100]})
+
+    results = {}
+    for user, b in by_user.items():
+        parts = []
+        if b["tickets"]:
+            parts.append(
+                f"ticket(s) {', '.join(b['tickets'])} are assigned to you in "
+                f"'In Progress' but your session has been idle — resume work "
+                f"or transition them appropriately"
+            )
+        if b["queue_keys"]:
+            kc = b["queue_count"] or len(b["queue_keys"])
+            kk = ", ".join(b["queue_keys"][:5])
+            more = kc - len(b["queue_keys"][:5])
+            extra = f" (and {more} more)" if more > 0 else ""
+            parts.append(
+                f"you have {kc} queued ticket(s) "
+                f"({kk}{extra}) and nothing In Progress — pick the next task "
+                f"per TEAM_WORKFLOW.md \"Picking the Next Task\" "
+                f"(unanswered feedback first, then Selected for Development, then To Do)"
+            )
+        if b["emails"]:
+            subjects = "; ".join(
+                f"{e['message_id']} {e['subject']}".strip()
+                for e in b["emails"][:5]
+            )
+            parts.append(
+                f"actionable email task(s) are still QUEUED ({subjects}) — "
+                f"process {f'/home/{user}/tasks/current.md'} now, reply in the "
+                f"source email thread if a response or acknowledgement is needed, "
+                f"sign outbound email with the current runtime model, and update "
+                f"the task status out of QUEUED"
+            )
+        reminder = "ai-monitor: " + "; ".join(parts) + "."
+        cmd = [
+            "sudo", "-n", "/usr/local/sbin/openclaw-control",
+            "wake-agent", user, reminder,
+        ]
+        rc, out, err = run_cmd(cmd, timeout=60)
+        time.sleep(15)
+        post_idle_s, post_path = probe_session_idle_for_user(user, f"/home/{user}")
+        results[user] = {
+            "tickets": b["tickets"],
+            "queue_keys": b["queue_keys"],
+            "emails": b["emails"],
+            "wake_rc": rc,
+            "wake_err": (err.strip()[:200] if rc != 0 else ""),
+            "post_idle_s": post_idle_s,
+            "recovered": (post_idle_s is not None and post_idle_s < 30),
+        }
+    return results
+
+
+def _clear_monitor_pending_delivery(monitor_user, monitor_home=None,
+                                    key="agent:main:main"):
+    """Null out pendingFinalDelivery* fields on the monitor agent's heartbeat
+    session.
+
+    Why: ai-monitor invokes the monitor via `openclaw system event --mode now`,
+    which expects a caller waiting to ACK the response. There is no such
+    caller — the decision file ai-monitor polls for is the deliverable,
+    and the response text is unused. Without this cleanup, openclaw marks
+    `pendingFinalDelivery: true` and refuses to start a new turn until
+    delivery succeeds; over time the `agent:main:main` queue blocks and
+    every subsequent wake silently times out.
+
+    Safety:
+      - Skip if status == 'running' (would race with an in-flight turn).
+      - Atomic tmp+rename, preserving the agent's owner/mode on the file.
+    Returns {cleared, prior_attempt_count?, reason?, error?}.
+    """
+    if not monitor_user:
+        return {"cleared": False, "reason": "no-monitor-user"}
+    home = monitor_home or f"/home/{monitor_user}"
+    sj_path = Path(f"{home}/.openclaw/agents/main/sessions/sessions.json")
+    try:
+        st = sj_path.stat()
+        data = json.loads(sj_path.read_text())
+        entry = data.get(key) or {}
+        if not entry.get("pendingFinalDelivery"):
+            return {"cleared": False, "reason": "no-pending"}
+        if entry.get("status") == "running":
+            return {"cleared": False, "reason": "still-running"}
+        prior = entry.get("pendingFinalDeliveryAttemptCount")
+        entry["pendingFinalDelivery"] = False
+        for f in (
+            "pendingFinalDeliveryText",
+            "pendingFinalDeliveryCreatedAt",
+            "pendingFinalDeliveryLastAttemptAt",
+            "pendingFinalDeliveryAttemptCount",
+            "pendingFinalDeliveryLastError",
+        ):
+            entry.pop(f, None)
+        tmp = sj_path.with_suffix(sj_path.suffix + ".aim-tmp")
+        tmp.write_text(json.dumps(data, indent=2, default=str))
+        os.chown(tmp, st.st_uid, st.st_gid)
+        os.chmod(tmp, stat.S_IMODE(st.st_mode))
+        os.replace(tmp, sj_path)
+        return {"cleared": True, "prior_attempt_count": prior}
+    except Exception as e:
+        return {"cleared": False, "error": str(e)[:200]}
+
+
+def hand_off_to_monitor(cfg, registry, incident_id, incident_payload):
+    """Write the incident to disk, wake the monitor agent via
+    `openclaw system event`, then poll for her decision file with timeout.
+    The monitor agent is identified by `role: 'monitor'` in the registry.
+    Returns the decision dict or {"_error": "..."} on failure/timeout."""
+    triage = cfg.get("monitor_triage") or cfg.get("karen_triage") or {}
+
+    monitor = get_monitor_agent(registry)
+    monitor_user = (
+        triage.get("monitor_user")  # explicit override
+        or triage.get("karen_user")  # legacy alias
+        or (monitor and monitor.get("user"))
+    )
+    if not monitor_user:
+        return {"_error": "no monitor agent in registry (role='monitor')"}
+    monitor_home = (monitor and monitor.get("home")) or f"/home/{monitor_user}"
+    monitor_uid = (
+        triage.get("monitor_uid")
+        or triage.get("karen_uid")
+        or (monitor and monitor.get("uid"))
+        or resolve_user_uid(monitor_user)
+    )
+    if monitor_uid is None:
+        return {"_error": f"cannot resolve uid for monitor user '{monitor_user}'"}
+
+    incidents_dir = Path(triage.get("incidents_dir", "/var/lib/ai-monitor/incidents"))
+    decisions_dir = Path(triage.get("decisions_dir", "/var/lib/ai-monitor/decisions"))
+    poll_interval_s = triage.get("poll_interval_s", 2)
+    timeout_s = triage.get("timeout_s", 120)
+    secrets_path = (
+        triage.get("secrets_path")
+        or f"{monitor_home}/.config/openclaw/openclaw-secrets.env"
+    )
+
+    incidents_dir.mkdir(parents=True, exist_ok=True)
+    incident_file = incidents_dir / f"{incident_id}.json"
+    incident_file.write_text(
+        json.dumps(incident_payload, indent=2, default=str)
+    )
+
+    decision_file = decisions_dir / f"{incident_id}.json"
+    if decision_file.exists():
+        decision_file.unlink()
+
+    # Pre-clear: openclaw flips pendingFinalDelivery=true ~3-8 s AFTER the
+    # monitor finishes a turn (when delivery to the invoking channel fails).
+    # The end-of-handoff cleanup races with that flip, so we also clear at
+    # the START of every handoff — catches any leftover from the prior
+    # tick before it can block this wake.
+    pre_clear = _clear_monitor_pending_delivery(monitor_user, monitor_home)
+
+    wake_text = (
+        f"INCIDENT {incident_id}\n"
+        f"ai-monitor handed off an incident to you. Payload: "
+        f"/var/lib/ai-monitor/incidents/{incident_id}.json\n"
+        f"Follow ~/.openclaw/workspace/INCIDENT_HANDLING.md. Write your "
+        f"decision to /var/lib/ai-monitor/decisions/{incident_id}.json when done."
+    )
+    cmd = [
+        "runuser", "-u", monitor_user, "--",
+        "env", f"HOME={monitor_home}",
+        f"XDG_RUNTIME_DIR=/run/user/{monitor_uid}",
+        "bash", "-lc",
+        (
+            f"set -a; "
+            f"if [ -r {shlex.quote(secrets_path)} ]; then . {shlex.quote(secrets_path)}; fi; "
+            f"set +a; "
+            f"exec openclaw system event --mode now --text \"$1\" --timeout 30000 --json"
+        ),
+        "_", wake_text,
+    ]
+    rc, out, err = run_cmd(cmd, timeout=45)
+    if rc != 0:
+        result = {
+            "_error": (
+                f"monitor wake failed (rc={rc}): "
+                f"{err.strip()[:200] or out.strip()[:200]}"
+            )
+        }
+        # Try cleanup anyway — a previously-stuck pendingFinalDelivery
+        # may itself be why the wake failed.
+        result["_pending_clear"] = _clear_monitor_pending_delivery(
+            monitor_user, monitor_home
+        )
+        return result
+
+    deadline = time.time() + timeout_s
+    result = None
+    while time.time() < deadline:
+        if decision_file.exists():
+            try:
+                d = json.loads(decision_file.read_text())
+                d["_handoff_latency_s"] = round(
+                    timeout_s - max(deadline - time.time(), 0), 1
+                )
+                result = d
+            except Exception as e:
+                result = {"_error": f"decision parse: {e}"}
+            break
+        time.sleep(poll_interval_s)
+    if result is None:
+        result = {
+            "_error": f"monitor did not write a decision within {timeout_s}s"
+        }
+    # Best-effort post-clear (often a no-op because openclaw hasn't yet
+    # flipped pendingFinalDelivery). The pre-clear at the start of the
+    # NEXT handoff is the actual safeguard.
+    result["_pending_clear_pre"] = pre_clear
+    result["_pending_clear_post"] = _clear_monitor_pending_delivery(
+        monitor_user, monitor_home
+    )
+    return result
+
+
+def read_telegram_creds(cfg, registry=None):
+    """Resolve the Telegram bot's home (where the token lives) and the
+    allowed chat list. Default to the monitor agent in the registry; can
+    be overridden via `notify.telegram_bot_user` for cases where alerts
+    should come from a different agent's bot.
+    """
+    notify = cfg.get("notify", {})
+    user = notify.get("telegram_bot_user")
+    if not user:
+        monitor = get_monitor_agent(registry)
+        user = monitor.get("user") if monitor else None
+    if not user:
+        return None, None
+    home = f"/home/{user}"
+    if registry:
+        for a in (registry.get("agents") or []):
+            if a.get("user") == user and a.get("home"):
+                home = a["home"]
+                break
+    secrets_path = notify.get(
+        "secrets_path", f"{home}/.config/openclaw/openclaw-secrets.env"
+    )
+    chat_ids_path = notify.get(
+        "chat_ids_path",
+        f"{home}/.openclaw/credentials/telegram-allowFrom.json",
+    )
+    rc1, token, _ = run_cmd(
+        [
+            "sudo", "-n", "-u", user, "bash", "-c",
+            f"grep -E '^TELEGRAM_BOT_TOKEN=' {shlex.quote(secrets_path)} | head -1 | cut -d= -f2-",
+        ],
+        timeout=5,
+    )
+    token = token.strip().strip("'\"")
+    rc2, blob, _ = run_cmd(
+        ["sudo", "-n", "-u", user, "cat", chat_ids_path],
+        timeout=5,
+    )
+    chat_id = None
+    try:
+        obj = json.loads(blob)
+        ids = obj.get("allowFrom", [])
+        if ids:
+            chat_id = ids[0]
+    except Exception:
+        pass
+    return token, chat_id
+
+
+def send_telegram(cfg, text, registry=None):
+    token, chat_id = read_telegram_creds(cfg, registry=registry)
+    if not token:
+        return {"ok": False, "error": "no token"}
+    if not chat_id:
+        return {"ok": False, "error": "no chat_id"}
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        status, body = http_post_json(
+            url,
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": True,
+            },
+            timeout=8,
+        )
+        return {"ok": status == 200, "status": status, "body": body[:200]}
+    except urllib.error.HTTPError as e:
+        try:
+            return {"ok": False, "status": e.code, "body": e.read().decode("utf-8", errors="replace")[:200]}
+        except Exception:
+            return {"ok": False, "status": e.code, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
+SEVERITY_ICON = {"crit": "🔴", "warn": "🟡", "info": "🔵"}
+
+
+def _worst_severity(issues):
+    order = ["crit", "warn", "info"]
+    for sev in order:
+        if any(i.get("severity") == sev for i in issues):
+            return sev
+    return "info"
+
+
+def format_alerts_message(issues):
+    """Build a single Telegram message for all new-alert issues in this tick."""
+    head_icon = SEVERITY_ICON.get(_worst_severity(issues), "⚪")
+    n = len(issues)
+    header = f"{head_icon} x1 — {n} issue{'s' if n != 1 else ''}"
+    blocks = []
+    for issue in issues:
+        sev_icon = SEVERITY_ICON.get(issue.get("severity"), "⚪")
+        blocks.append(
+            f"{sev_icon} {issue.get('unit','?')} — {issue.get('kind','?')}\n"
+            f"{issue.get('reason','(no reason)')}\n"
+            f"action: {issue.get('suggested_action','none')}"
+        )
+    return header + "\n\n" + "\n\n".join(blocks)
+
+
+def format_resolved_message(issues):
+    """Build a single Telegram message for all resolved issues in this tick."""
+    n = len(issues)
+    header = f"✅ x1 — {n} resolved"
+    lines = [
+        f"{issue.get('unit','?')} — {issue.get('kind','?')}" for issue in issues
+    ]
+    return header + "\n" + "\n".join(lines)
+
+
+def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
+    now = int(time.time())
+    issues = verdict.get("issues", []) or []
+    actions = []
+    state.setdefault("events", {})
+    seen_keys = set()
+
+    new_alert_issues = []
+    new_alert_keys = []
+
+    triage_cfg_for_init = cfg.get("monitor_triage") or cfg.get("karen_triage") or {}
+    ladder_cfg = triage_cfg_for_init.get("escalation_ladder", {}) or {}
+    confirmation_window_s = int(ladder_cfg.get("confirmation_window_s", 300))
+
+    # Transient kinds: infrastructure flakes (curl timeouts, transient API
+    # failures) that aren't actionable by the monitor agent and shouldn't
+    # telegram on a single occurrence. These never reach the monitor and
+    # require N consecutive ticks of the SAME key being seen before they
+    # graduate to a real alert.
+    # After telegram, suppressed for `transient_cooldown_s` to avoid a
+    # repeat-page loop on a network partition that lasts an hour.
+    TRANSIENT_KINDS = set(triage_cfg_for_init.get(
+        "transient_kinds",
+        [
+            "jira-probe-failed",
+            "agent-queue-probe-failed",
+            "pending-mentions-probe-failed",
+            "gmail-pubsub-timeout",
+            "telegram-network-unreachable",
+        ],
+    ))
+    transient_threshold = int(triage_cfg_for_init.get(
+        "transient_consecutive_threshold", 5
+    ))
+    transient_cooldown_s = int(triage_cfg_for_init.get(
+        "transient_cooldown_s", 3600
+    ))
+
+    for issue in issues:
+        key = event_key(issue)
+        seen_keys.add(key)
+        sev = issue.get("severity", "info")
+        kind = issue.get("kind", "")
+        ev = state["events"].get(key)
+        if ev is None:
+            ev = {
+                "first_seen": now,
+                "last_seen": now,
+                "alert_sent": False,
+                "issue": issue,
+                "missed_runs": 0,
+                "attempts": 0,
+                "attempt_history": [],
+                "next_attempt_after": 0,
+                "consecutive_seen": 0,
+                "transient_telegram_after": 0,
+            }
+            state["events"][key] = ev
+        else:
+            ev["last_seen"] = now
+            ev["missed_runs"] = 0
+            ev["issue"] = issue
+            ev.setdefault("attempts", 0)
+            ev.setdefault("attempt_history", [])
+            ev.setdefault("next_attempt_after", 0)
+            ev.setdefault("consecutive_seen", 0)
+            ev.setdefault("transient_telegram_after", 0)
+
+        # Bump the consecutive-seen counter every tick this issue is present.
+        # Reset is handled by the missed_runs eviction path below.
+        ev["consecutive_seen"] = int(ev.get("consecutive_seen", 0)) + 1
+
+        if sev not in ("warn", "crit") or ev["alert_sent"]:
+            continue
+
+        # Transient gate: don't graduate to an alert until we've seen the
+        # same key N consecutive ticks. Once telegrammed, hold off for the
+        # cooldown window even if it stays present.
+        if kind in TRANSIENT_KINDS:
+            if ev["consecutive_seen"] < transient_threshold:
+                continue
+            if now < ev.get("transient_telegram_after", 0):
+                continue
+            # Graduate: queue as alert AND mark it transient so the
+            # downstream router skips the monitor and adds a sustained-failure note.
+            issue["_transient"] = True
+            issue["_consecutive_seen"] = ev["consecutive_seen"]
+            new_alert_issues.append(issue)
+            new_alert_keys.append(key)
+            continue
+
+        # Tier framework: respect the confirmation window between attempts.
+        # If we acted at tier N within the last `confirmation_window_s`,
+        # don't act again — give the prior fix time to take. The natural
+        # recovery path is: tier-N succeeds → next probe doesn't see the
+        # issue → missed_runs increments → silent eviction. If the issue
+        # is still seen after the window expires, we proceed to tier N+1.
+        if now < ev.get("next_attempt_after", 0):
+            continue
+        new_alert_issues.append(issue)
+        new_alert_keys.append(key)
+
+    if new_alert_issues:
+        text = format_alerts_message(new_alert_issues)
+        triage_cfg = cfg.get("monitor_triage") or cfg.get("karen_triage") or {}
+        monitor_enabled = triage_cfg.get("enabled", True)
+        monitor_agent = get_monitor_agent(registry)
+        monitor_user = (
+            triage_cfg.get("monitor_user")
+            or triage_cfg.get("karen_user")
+            or (monitor_agent and monitor_agent.get("user"))
+        )
+        self_incident = _is_monitor_self_incident(new_alert_issues, monitor_user)
+
+        # Transient issues (graduated from the consecutive-failure gate
+        # above) skip the monitor agent entirely. They get a single rolled-up
+        # telegram naming the kind and how long it's been failing, then
+        # enter cooldown.
+        transient_issues = [i for i in new_alert_issues if i.get("_transient")]
+        transient_keys = [event_key(i) for i in transient_issues]
+
+        if transient_issues and not dry_run:
+            tg_text_parts = [
+                "⚠️ Sustained probe failure (monitor bypassed)\n"
+            ]
+            for ti in transient_issues:
+                cs = ti.get("_consecutive_seen", "?")
+                tg_text_parts.append(
+                    f"\n• {ti.get('kind')} — {cs} consecutive ticks "
+                    f"(~{cs * 2} min)\n  reason: {(ti.get('reason') or '')[:200]}"
+                )
+            r = send_telegram(cfg, "".join(tg_text_parts), registry=registry)
+            actions.append({
+                "type": "alert_transient_sustained",
+                "keys": transient_keys,
+                "kinds": sorted({i.get("kind") for i in transient_issues}),
+                "result": r,
+            })
+            for k in transient_keys:
+                if k in state["events"]:
+                    if r.get("ok"):
+                        state["events"][k]["alert_sent"] = True
+                    state["events"][k]["transient_telegram_after"] = now + transient_cooldown_s
+                    # Reset consecutive_seen so the next telegram waits the
+                    # full threshold again rather than firing on the next tick.
+                    state["events"][k]["consecutive_seen"] = 0
+
+        # Now strip transient issues out of the working set — they're done.
+        new_alert_issues = [i for i in new_alert_issues if not i.get("_transient")]
+        new_alert_keys = [event_key(i) for i in new_alert_issues]
+        if new_alert_issues:
+            text = format_alerts_message(new_alert_issues)
+        else:
+            text = ""
+
+        # Kinds ai-monitor handles deterministically without involving the
+        # monitor agent. The situation is unambiguous (e.g. "agent has nothing
+        # In Progress but tickets are queued and they're idle") and the
+        # action is bounded and idempotent (wake-agent). No judgment needed;
+        # routing through the monitor just adds latency and a chance of a
+        # wrong suppress.
+        AUTO_ACTION_KINDS = set(triage_cfg.get(
+            "auto_action_kinds_bypass_monitor",
+            triage_cfg.get(
+                "auto_action_kinds_bypass_karen",
+                ["agent-idle-with-queue", "email-awaiting-action"],
+            ),
+        ))
+        auto_issues = [i for i in new_alert_issues if i.get("kind") in AUTO_ACTION_KINDS]
+        monitor_bound_issues = [
+            i for i in new_alert_issues if i.get("kind") not in AUTO_ACTION_KINDS
+        ]
+        auto_keys = [event_key(i) for i in auto_issues]
+        monitor_bound_keys = [event_key(i) for i in monitor_bound_issues]
+
+        max_attempts = int(ladder_cfg.get("max_attempts", 3))
+
+        if auto_issues and not dry_run:
+            # Tier framework for bypass-monitor kinds:
+            #   T1 = wake-agent
+            #   T2 = restart-and-wake
+            #   T3 = telegram (with attempt history)
+            # The ev["attempts"] counter on each event tracks how many
+            # tiers have already fired. Recovery from a tier resets the
+            # counter; eviction (issue stops appearing) is silent.
+            tier1_issues, tier2_issues, tier3_issues = [], [], []
+            for i in auto_issues:
+                k = event_key(i)
+                ev = state["events"].get(k, {})
+                attempt = int(ev.get("attempts", 0)) + 1
+                if attempt == 1:
+                    tier1_issues.append(i)
+                elif attempt == 2:
+                    tier2_issues.append(i)
+                else:
+                    tier3_issues.append(i)
+
+            tier_actions = []
+
+            if tier1_issues:
+                wake_results = auto_wake_stalled_agents(tier1_issues)
+                for i in tier1_issues:
+                    k = event_key(i)
+                    ev = state["events"].get(k, {})
+                    ev["attempts"] = 1
+                    ev.setdefault("attempt_history", []).append({
+                        "ts": now,
+                        "tier": 1,
+                        "kind": i.get("kind"),
+                        "route": "bypass-monitor",
+                        "action": "wake-agent",
+                        "wake_results": wake_results,
+                    })
+                    ev["next_attempt_after"] = now + confirmation_window_s
+                tier_actions.append({
+                    "type": "auto_action_bypass_monitor_tier1",
+                    "keys": [event_key(i) for i in tier1_issues],
+                    "wake_results": wake_results,
+                })
+
+            if tier2_issues:
+                rw_results = restart_and_wake_stalled_agents(tier2_issues)
+                for i in tier2_issues:
+                    k = event_key(i)
+                    ev = state["events"].get(k, {})
+                    ev["attempts"] = 2
+                    ev.setdefault("attempt_history", []).append({
+                        "ts": now,
+                        "tier": 2,
+                        "kind": i.get("kind"),
+                        "route": "bypass-monitor",
+                        "action": "restart-and-wake",
+                        "wake_results": rw_results,
+                    })
+                    ev["next_attempt_after"] = now + confirmation_window_s
+                tier_actions.append({
+                    "type": "auto_action_bypass_monitor_tier2",
+                    "keys": [event_key(i) for i in tier2_issues],
+                    "wake_results": rw_results,
+                })
+
+            if tier3_issues:
+                # Final tier — telegram with attempt history.
+                hist_text_parts = [text]
+                hist_text_parts.append(
+                    "\n\n[Tier 3 — bypass-monitor ladder exhausted. "
+                    "Prior attempts:"
+                )
+                for i in tier3_issues:
+                    k = event_key(i)
+                    ev = state["events"].get(k, {})
+                    for h in (ev.get("attempt_history") or [])[-3:]:
+                        hist_text_parts.append(
+                            f"\n  T{h.get('tier')} ({h.get('action')}): "
+                            f"{json.dumps(h.get('wake_results') or {}, default=str)[:200]}"
+                        )
+                hist_text_parts.append("\n]")
+                tier3_text = "".join(hist_text_parts)
+                r = send_telegram(cfg, tier3_text, registry=registry)
+                for i in tier3_issues:
+                    k = event_key(i)
+                    ev = state["events"].get(k, {})
+                    ev["attempts"] = 3
+                    ev.setdefault("attempt_history", []).append({
+                        "ts": now,
+                        "tier": 3,
+                        "kind": i.get("kind"),
+                        "route": "bypass-monitor",
+                        "action": "telegram",
+                        "telegram_result": r,
+                    })
+                    if r.get("ok"):
+                        ev["alert_sent"] = True
+                tier_actions.append({
+                    "type": "auto_action_bypass_monitor_tier3_telegram",
+                    "keys": [event_key(i) for i in tier3_issues],
+                    "result": r,
+                })
+
+            actions.extend(tier_actions)
+            # Refresh the local view: only the monitor-bound subset proceeds.
+            new_alert_issues = monitor_bound_issues
+            new_alert_keys = monitor_bound_keys
+            if monitor_bound_issues:
+                # Rebuild the alert text without the auto-handled issues.
+                text = format_alerts_message(monitor_bound_issues)
+
+        if not new_alert_issues:
+            # Nothing left after transient-strip + auto-action — no monitor, no Telegram.
+            pass
+        elif dry_run:
+            actions.append(
+                {"type": "would_alert", "keys": new_alert_keys, "text": text}
+            )
+            for k in new_alert_keys:
+                state["events"][k]["alert_sent"] = True
+        elif monitor_enabled and not self_incident:
+            incident_id = hashlib.sha1(
+                "|".join(sorted(new_alert_keys)).encode()
+            ).hexdigest()[:16]
+
+            # Tier framework for monitor-bound kinds:
+            #   T1 = monitor acts, suppress, no telegram
+            #   T2 = monitor acts (with escalation_context), suppress, no telegram
+            #   T3 = monitor acts AND telegrams with attempt history (or
+            #        ai-monitor falls back to telegram if the monitor punts)
+            # Compute the tier based on the highest attempts counter across
+            # the keys in this incident. All keys in one incident share a
+            # tier — they're co-occurring symptoms.
+            this_tier = max(
+                int(state["events"].get(k, {}).get("attempts", 0)) for k in new_alert_keys
+            ) + 1
+            is_final = this_tier >= max_attempts
+            prior_history = []
+            for k in new_alert_keys:
+                ev = state["events"].get(k, {})
+                for h in (ev.get("attempt_history") or []):
+                    prior_history.append({
+                        "ts": h.get("ts"),
+                        "tier": h.get("tier"),
+                        "kind": h.get("kind"),
+                        "actions_taken": h.get("actions_taken")
+                            or h.get("action") or [],
+                    })
+
+            payload = {
+                "incident_id": incident_id,
+                "ts": now,
+                "summary": text.split("\n", 1)[0],
+                "issues": new_alert_issues,
+                "event_keys": new_alert_keys,
+                "escalation_context": {
+                    "attempt": this_tier,
+                    "max_attempts": max_attempts,
+                    "is_final": is_final,
+                    "confirmation_window_s": confirmation_window_s,
+                    "prior_attempts": prior_history,
+                    "guidance": (
+                        "Final attempt — try the heaviest sensible fix and "
+                        "send Telegram with attempt history (telegram_sent: true)."
+                        if is_final else
+                        f"Attempt {this_tier} of {max_attempts}. Try a fix "
+                        f"and suppress with telegram_sent: false. ai-monitor "
+                        f"will re-handoff in {confirmation_window_s} s if "
+                        f"the fix doesn't take."
+                    ),
+                },
+            }
+            decision = hand_off_to_monitor(cfg, registry, incident_id, payload)
+
+            # Whatever the monitor does, advance the attempt counter and
+            # record what happened for the next tier's escalation_context.
+            for k in new_alert_keys:
+                ev = state["events"].setdefault(k, {})
+                ev["attempts"] = this_tier
+                ev.setdefault("attempt_history", []).append({
+                    "ts": now,
+                    "tier": this_tier,
+                    "kind": (ev.get("issue") or {}).get("kind"),
+                    "route": "monitor",
+                    "actions_taken": (decision or {}).get("actions_taken") or [],
+                    "decision": (decision or {}).get("decision"),
+                    "telegram_sent": (decision or {}).get("telegram_sent", False),
+                    "monitor_error": (decision or {}).get("_error"),
+                })
+                ev["next_attempt_after"] = now + confirmation_window_s
+
+            if decision and not decision.get("_error"):
+                d = decision.get("decision")
+                if d == "suppress":
+                    suppression_required_actions = {
+                        "task-stalled-no-agent": ("wake-agent", "restart-and-wake"),
+                        "agent-idle-with-queue": ("wake-agent", "restart-and-wake"),
+                        "email-awaiting-action": ("wake-agent", "restart-and-wake"),
+                    }
+                    actions_taken_lc = [a.lower() for a in (decision.get("actions_taken") or [])]
+                    violations = []
+                    for issue in new_alert_issues:
+                        kind = issue.get("kind")
+                        if kind in suppression_required_actions:
+                            needed = suppression_required_actions[kind]
+                            if not any(any(n in a for n in needed) for a in actions_taken_lc):
+                                violations.append(f"{kind} requires one of {needed}")
+
+                    if violations:
+                        # The monitor punted on a kind that requires action.
+                        # Run the deterministic fallback wake (silent on tier
+                        # 1/2; recorded in attempt_history). Telegram only
+                        # on the final tier if recovery still didn't happen.
+                        no_agent_issues = [
+                            i for i in new_alert_issues
+                            if i.get("kind") in (
+                                "task-stalled-no-agent",
+                                "agent-idle-with-queue",
+                                "email-awaiting-action",
+                            )
+                        ]
+                        wake_results = (
+                            auto_wake_stalled_agents(no_agent_issues)
+                            if no_agent_issues else {}
+                        )
+                        all_recovered = bool(wake_results) and all(
+                            r.get("recovered") for r in wake_results.values()
+                        )
+                        for k in new_alert_keys:
+                            ev = state["events"].get(k, {})
+                            (ev.get("attempt_history") or [{}])[-1]["fallback_wake_results"] = wake_results
+                            (ev.get("attempt_history") or [{}])[-1]["fallback_recovered"] = all_recovered
+
+                        if is_final and not all_recovered:
+                            wake_summary = ""
+                            if wake_results:
+                                lines = []
+                                for u, r in wake_results.items():
+                                    if r.get("recovered"):
+                                        lines.append(f"  {u}: ✓ now active")
+                                    else:
+                                        idle_s = r.get("post_idle_s")
+                                        idle_str = (
+                                            f"{idle_s//60}m{idle_s%60}s"
+                                            if idle_s is not None else "unknown"
+                                        )
+                                        lines.append(
+                                            f"  {u}: ✗ still idle ({idle_str}) — wake_rc={r.get('wake_rc')}"
+                                        )
+                                wake_summary = (
+                                    "\n\n[ai-monitor wake attempts:\n"
+                                    + "\n".join(lines)
+                                    + "\n]"
+                                )
+                            override_text = (
+                                f"⚠️ Tier {this_tier}/{max_attempts} — monitor "
+                                f"suppressed without acting; auto-wake didn't recover\n"
+                                f"Violation: {'; '.join(violations)}\n\n"
+                                + text + wake_summary
+                            )
+                            r = send_telegram(cfg, override_text, registry=registry)
+                            actions.append({
+                                "type": "alert_policy_override_monitor_suppress",
+                                "incident_id": incident_id,
+                                "keys": new_alert_keys,
+                                "tier": this_tier,
+                                "decision": decision,
+                                "violations": violations,
+                                "wake_results": wake_results,
+                                "result": r,
+                            })
+                            for k in new_alert_keys:
+                                state["events"][k]["alert_sent"] = True
+                        else:
+                            actions.append({
+                                "type": "auto_woke_after_monitor_suppress_silent" if not is_final else
+                                        "auto_woke_after_monitor_suppress_recovered_final",
+                                "incident_id": incident_id,
+                                "keys": new_alert_keys,
+                                "tier": this_tier,
+                                "decision": decision,
+                                "violations": violations,
+                                "wake_results": wake_results,
+                                "all_recovered": all_recovered,
+                            })
+                            if is_final:
+                                # Recovered on the final tier — still mark
+                                # alert_sent so eviction is tracked, but no
+                                # telegram (the user said: only telegram if
+                                # the fix didn't work).
+                                for k in new_alert_keys:
+                                    state["events"][k]["alert_sent"] = True
+                    else:
+                        # The monitor acted (suppress with action). On tier
+                        # 1/2 we trust it and wait the confirmation window.
+                        # On the final tier we still send a telegram with
+                        # attempt history so the operator sees what happened
+                        # — but only if the monitor didn't already telegram
+                        # (it's instructed to do so on the final tier).
+                        if is_final and not decision.get("telegram_sent"):
+                            hist_lines = []
+                            for h in prior_history[-3:]:
+                                hist_lines.append(
+                                    f"  T{h.get('tier')}: {h.get('actions_taken') or []}"
+                                )
+                            hist_block = (
+                                "\n\n[Tier 3 final attempt — monitor suppressed; "
+                                "prior tiers:\n" + "\n".join(hist_lines) + "\n]"
+                                if hist_lines else
+                                "\n\n[Tier 3 final attempt — monitor suppressed]"
+                            )
+                            r = send_telegram(cfg, text + hist_block, registry=registry)
+                            actions.append({
+                                "type": "alert_after_monitor_suppress_final_tier",
+                                "incident_id": incident_id,
+                                "keys": new_alert_keys,
+                                "tier": this_tier,
+                                "decision": decision,
+                                "result": r,
+                            })
+                            for k in new_alert_keys:
+                                state["events"][k]["alert_sent"] = True
+                        else:
+                            actions.append({
+                                "type": "suppressed_by_monitor",
+                                "incident_id": incident_id,
+                                "keys": new_alert_keys,
+                                "tier": this_tier,
+                                "decision": decision,
+                            })
+                            if is_final:
+                                # Final tier with monitor-sent telegram — done.
+                                for k in new_alert_keys:
+                                    state["events"][k]["alert_sent"] = True
+                else:  # escalate or unknown — monitor overrode the framework
+                    if decision.get("telegram_sent"):
+                        actions.append({
+                            "type": "escalated_by_monitor",
+                            "incident_id": incident_id,
+                            "keys": new_alert_keys,
+                            "tier": this_tier,
+                            "decision": decision,
+                        })
+                    else:
+                        r = send_telegram(cfg, text, registry=registry)
+                        actions.append({
+                            "type": "alert_after_monitor",
+                            "incident_id": incident_id,
+                            "keys": new_alert_keys,
+                            "tier": this_tier,
+                            "result": r,
+                            "decision": decision,
+                        })
+                    for k in new_alert_keys:
+                        state["events"][k]["alert_sent"] = True
+            else:
+                fallback_text = (
+                    "⚠️ Monitor unavailable — direct alert\n\n" + text
+                )
+                r = send_telegram(cfg, fallback_text, registry=registry)
+                actions.append({
+                    "type": "alert_monitor_unavailable",
+                    "incident_id": incident_id,
+                    "keys": new_alert_keys,
+                    "result": r,
+                    "monitor_error": (decision or {}).get("_error", "no decision"),
+                })
+                if r.get("ok"):
+                    for k in new_alert_keys:
+                        state["events"][k]["alert_sent"] = True
+        else:
+            tag = ""
+            if self_incident:
+                tag = "🔒 Self-incident (monitor agent affected) — direct alert\n\n"
+            r = send_telegram(cfg, tag + text, registry=registry)
+            actions.append({
+                "type": "alert" if not self_incident else "alert_self_incident",
+                "keys": new_alert_keys,
+                "result": r,
+            })
+            if r.get("ok"):
+                for k in new_alert_keys:
+                    state["events"][k]["alert_sent"] = True
+
+    threshold = cfg["notify"]["dedupe"]["resolved_after_runs"]
+    resolved_issues = []
+    resolved_keys = []
+    silent_evict_keys = []
+    for key, ev in state["events"].items():
+        if key in seen_keys:
+            continue
+        ev["missed_runs"] = ev.get("missed_runs", 0) + 1
+        if ev["missed_runs"] >= threshold:
+            if ev.get("alert_sent"):
+                resolved_issues.append(ev.get("issue", {}))
+                resolved_keys.append(key)
+            else:
+                silent_evict_keys.append(key)
+
+    if resolved_issues:
+        text = format_resolved_message(resolved_issues)
+        if dry_run:
+            actions.append(
+                {"type": "would_resolve", "keys": resolved_keys, "text": text}
+            )
+            silent_evict_keys.extend(resolved_keys)
+        else:
+            r = send_telegram(cfg, text, registry=registry)
+            actions.append(
+                {"type": "resolved", "keys": resolved_keys, "result": r}
+            )
+            if r.get("ok"):
+                silent_evict_keys.extend(resolved_keys)
+
+    for key in silent_evict_keys:
+        state["events"].pop(key, None)
+    return actions
+
+
+def append_jsonl(path, payload):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as f:
+        f.write(json.dumps(payload, default=str) + "\n")
+
+
+def rotate_log(path, max_age_days=14):
+    p = Path(path)
+    if not p.exists():
+        return
+    cutoff = time.time() - max_age_days * 86400
+    try:
+        kept = []
+        total = 0
+        for line in p.open():
+            total += 1
+            try:
+                ts = json.loads(line).get("ts", 0)
+                if ts >= cutoff:
+                    kept.append(line)
+            except Exception:
+                kept.append(line)
+        if len(kept) < total:
+            p.write_text("".join(kept))
+    except Exception:
+        pass
+
+
+def load_state():
+    try:
+        return json.loads(Path(STATE_PATH).read_text())
+    except Exception:
+        return {"events": {}}
+
+
+def save_state(state):
+    Path(STATE_PATH).parent.mkdir(parents=True, exist_ok=True)
+    tmp = Path(STATE_PATH).with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2, default=str))
+    tmp.replace(STATE_PATH)
+
+
+def load_config():
+    try:
+        return json.loads(Path(CONFIG_PATH).read_text())
+    except Exception as e:
+        print(f"FATAL: cannot load {CONFIG_PATH}: {e}", file=sys.stderr)
+        sys.exit(2)
+
+
+def load_registry(cfg):
+    """Read /etc/openclaw/agents.json (or whatever cfg.watch.agents_registry points to).
+    Returns (registry_dict_or_None, health_dict). health.ok=False if the file can't be
+    read or doesn't parse — callers should still run, but emit a registry-unreadable
+    deterministic issue."""
+    path = cfg["watch"].get("agents_registry", "/etc/openclaw/agents.json")
+    p = Path(path)
+    health = {"ok": False, "path": path, "agents_seen": 0}
+    if not p.exists():
+        health["error"] = "file does not exist"
+        return None, health
+    try:
+        mtime = p.stat().st_mtime
+        age_s = int(time.time() - mtime)
+        health["mtime"] = int(mtime)
+        health["age_s"] = age_s
+        registry = json.loads(p.read_text())
+        max_age_h = cfg["watch"].get("agents_registry_max_age_hours")
+        if max_age_h:
+            health["max_age_hours"] = max_age_h
+            if age_s > max_age_h * 3600:
+                health["stale"] = True
+        agents = [
+            a for a in registry.get("agents", [])
+            if a.get("enabled") and a.get("monitor")
+        ]
+        health["ok"] = True
+        health["agents_seen"] = len(agents)
+        return registry, health
+    except Exception as e:
+        health["error"] = f"{type(e).__name__}: {e}"
+        return None, health
+
+
+def expand_watch_from_registry(cfg, registry):
+    """Combine system-level config with per-agent entries from the registry.
+    Returns (user_units_spec, listeners_spec) where:
+      user_units_spec = list of (user, uid, unit_name)
+      listeners_spec = list of dicts {host, port, owner, expected}
+    """
+    user_units = []
+    listeners = list(cfg["watch"].get("system_listeners", []))
+    if registry:
+        for agent in registry.get("agents", []):
+            if not (agent.get("enabled") and agent.get("monitor")):
+                continue
+            user = agent.get("user")
+            uid = agent.get("uid")
+            if not user or uid is None:
+                continue
+            for svc in agent.get("services", []) or []:
+                user_units.append((user, uid, svc))
+            for lst in agent.get("listeners", []) or []:
+                if lst.get("port"):
+                    listeners.append(
+                        {
+                            "host": lst.get("host", "127.0.0.1"),
+                            "port": lst["port"],
+                            "owner": lst.get("owner", f"{user} {svc}"),
+                            "expected": lst.get("expected", True),
+                        }
+                    )
+    return user_units, listeners
+
+
+def gather_probes(cfg):
+    registry, registry_health = load_registry(cfg)
+    user_units_spec, listeners_spec = expand_watch_from_registry(cfg, registry)
+
+    probes = {
+        "ts": int(time.time()),
+        "host": "x1",
+        "integrity_check": probe_integrity_check(cfg),
+        "integrity_journal": probe_journal_integrity(cfg),
+        "ollama_probe": probe_ollama(cfg),
+        "resources": probe_resources(cfg["resources"]["thresholds"]),
+        "system_units": {
+            u: probe_systemd_system(u) for u in cfg["watch"]["system_units"]
+        },
+        "user_units": {},
+        "listeners": {},
+        "registry": registry_health,
+        "stalled_tasks": probe_stalled_tasks(cfg, registry),
+        "agent_queue": probe_agent_queue(cfg, registry),
+        "pending_email_tasks": probe_pending_email_tasks(cfg, registry),
+        "pending_mentions": probe_pending_mentions(cfg, registry),
+    }
+    for user, uid, unit in user_units_spec:
+        key = f"{user}/{unit}"
+        probes["user_units"][key] = probe_systemd_user(user, uid, unit)
+    for entry in listeners_spec:
+        key = f"{entry['host']}:{entry['port']}"
+        probes["listeners"][key] = probe_listener(entry["host"], entry["port"])
+        probes["listeners"][key]["expected"] = entry.get("expected", True)
+        probes["listeners"][key]["owner"] = entry.get("owner", "")
+    return probes
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n", 2)[1])
+    ap.add_argument("--once", action="store_true", help="(default) one tick")
+    ap.add_argument("--dry-run", action="store_true", help="probe + judge but do not alert")
+    ap.add_argument("--test-notify", action="store_true", help="send one Telegram test message and exit")
+    ap.add_argument("--probe-only", action="store_true", help="dump probe JSON, skip AI")
+    args = ap.parse_args()
+
+    cfg = load_config()
+
+    if args.test_notify:
+        registry, _ = load_registry(cfg)
+        r = send_telegram(
+            cfg, "🧪 ai-monitor — test notification (registry-resolved bot).",
+            registry=registry,
+        )
+        print(json.dumps(r))
+        sys.exit(0 if r.get("ok") else 1)
+
+    state = load_state()
+    probes = gather_probes(cfg)
+
+    if args.probe_only:
+        print(json.dumps(probes, indent=2, default=str))
+        sys.exit(0)
+
+    prev_open = [
+        {
+            "unit": ev.get("issue", {}).get("unit"),
+            "kind": ev.get("issue", {}).get("kind"),
+            "severity": ev.get("issue", {}).get("severity"),
+            "missed_runs": ev.get("missed_runs", 0),
+            "first_seen_ago_s": int(time.time()) - ev.get("first_seen", int(time.time())),
+        }
+        for ev in state.get("events", {}).values()
+    ]
+
+    det_issues = deterministic_issues(probes)
+    invoke_ai, ai_reason = needs_ai_interpretation(probes)
+    ai_verdict = ai_judge(cfg, probes, prev_open) if invoke_ai else None
+    verdict = make_verdict(det_issues, ai_verdict)
+    verdict["_ai_invoked"] = bool(invoke_ai)
+    verdict["_ai_reason"] = ai_reason
+    # gather_probes already loaded the registry; reload here so the
+    # dispatcher can resolve the monitor agent (role='monitor') without
+    # going through cfg.
+    registry, _ = load_registry(cfg)
+    actions = dedupe_and_act(cfg, verdict, state, registry=registry, dry_run=args.dry_run)
+
+    record = {
+        "ts": probes["ts"],
+        "verdict": verdict,
+        "actions": actions,
+        "probe_summary": {
+            "integrity_rc": probes["integrity_check"]["exit_code"],
+            "integrity_fails": len(probes["integrity_check"]["fail_lines"]),
+            "ollama_ok": probes["ollama_probe"].get("ok"),
+            "ollama_latency_s": probes["ollama_probe"].get("latency_s"),
+            "load1": probes["resources"].get("load1"),
+            "mem_used_pct": probes["resources"].get("mem_used_pct"),
+            "temp_max_c": probes["resources"].get("temp_max_c"),
+            "threshold_breaches": probes["resources"].get("threshold_breaches", []),
+            "pending_email_tasks": len(
+                probes.get("pending_email_tasks", {}).get("pending", [])
+            ),
+            "down_listeners": [
+                k for k, v in probes["listeners"].items() if not v.get("open")
+            ],
+        },
+    }
+    append_jsonl(cfg["log"]["jsonl_path"], record)
+    rotate_log(cfg["log"]["jsonl_path"], cfg["log"].get("max_age_days", 14))
+    save_state(state)
+
+    if args.dry_run:
+        print(
+            json.dumps(
+                {"verdict": verdict, "actions": actions, "probes": probes},
+                indent=2, default=str,
+            )
+        )
+    else:
+        print(
+            f"healthy={verdict.get('healthy')} "
+            f"issues={len(verdict.get('issues', []))} "
+            f"actions={len(actions)} "
+            f"model={verdict.get('_model')} "
+            f"summary={(verdict.get('summary') or '')[:160]}"
+        )
+
+
+if __name__ == "__main__":
+    main()
