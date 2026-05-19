@@ -106,6 +106,11 @@ After completing a ticket, email, or Telegram task, pick the next using
 this **fixed priority order**. Tier 1 must be exhausted before tier 2 or
 3.
 
+0. **Explicit wake/system-event task.** If the current turn says to process
+   a specific queued email, Telegram request, Jira mention/ticket, or
+   `~/tasks/current.md` entry, do that first. The task is not complete until
+   the requested source-channel reply/action is done and the task entry is
+   updated out of `QUEUED`.
 1. **Unanswered feedback on your review-stage tickets.** A round is
    "unanswered" when the latest comment on a ticket in `In Review` /
    `Wait for Review` is from someone other than you, postdates your last
@@ -237,6 +242,11 @@ remaining risk. Sign the review handoff.
 - In-scope mail: direct inbox from zeh / sibling agents, plus Jira /
   Atlassian / Bitbucket / Confluence labels (even when filters archived
   them).
+- Mail from approved senders is actionable by default: the configured email
+  whitelist plus every registered local agent with email access. If it asks
+  for a plan, example, acknowledgement, check, decision, or implementation
+  action, reply in the same email thread promptly. Do not wait for Jira
+  assignment unless the email explicitly says to wait.
 - **Read whole thread before acting.**
 - After inspecting any in-scope email, **mark it read immediately** —
   use helpers that mark read automatically (`gmail-get-text.js`) or run
@@ -245,6 +255,10 @@ remaining risk. Sign the review handoff.
 - Email from zeh or a sibling agent is **actionable by default**. When
   an email asks for a reply or response-time test, send a concise reply
   promptly before longer work.
+- A queued email task is complete only when the source email action is
+  complete: reply/acknowledgement sent when requested, relevant helper output
+  recorded in the progress log, and the `Status:` in `~/tasks/current.md` is
+  no longer `QUEUED`.
 - For email-originated tasks: send exactly one Telegram start notice
   after accepting; then communicate only in the email thread.
 - Sibling-agent replies in an existing email task thread are actionable
@@ -258,6 +272,9 @@ remaining risk. Sign the review handoff.
 ## Telegram
 
 - Direct requests from zeh are actionable.
+- If an approved Telegram sender asks for a finding, check, decision, or
+  action, answer in Telegram unless redirected to email/Jira. Do not convert
+  the request into background work and go silent.
 - **Start with the work**, not acknowledgement.
 - Telegram is findings-only by default: answer with the result, risk,
   decision, or blocker that matters.

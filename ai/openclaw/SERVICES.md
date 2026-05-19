@@ -32,6 +32,11 @@ x1 uses systemd timers for active automation. Cron references in old migration n
 - `/usr/local/bin/openclaw-registry-check --runtime`: also validates declared user services and listener ports.
 - `/usr/local/bin/openclaw-boot-readiness`: post-reboot readiness check; runs registry runtime validation, linger checks, integrity check, and ai-monitor probe.
 - `/usr/local/bin/openclaw-backup`: creates a root-only tarball of critical OpenClaw state under `/var/backups/openclaw`.
+- `/usr/local/sbin/openclaw-control`: restart/wake helper used by ai-monitor
+  and the monitor agent. Before every wake it clears stale non-running
+  `pendingFinalDelivery*` state and quarantines a broken `agent:main:main`
+  entry whose session file is missing, so a successful wake means a task turn
+  can actually start.
 
 ## Agent Services
 

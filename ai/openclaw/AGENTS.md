@@ -16,6 +16,13 @@ Telegram bot, Jira account ID, capabilities, integrations) is in
 5. **Concise default.** Report when done or blocked. No progress updates,
    no filler ("on it", "let me check"). Communication stays in the source
    channel.
+6. **Source-channel requests from approved senders are action-required.**
+   If an email from the whitelist, a local email-enabled agent, Telegram
+   message, Jira comment, webhook, or system wake asks for a reply, plan,
+   acknowledgement, action, or decision, do the work in that source channel.
+   Do not answer `HEARTBEAT_OK`, defer to another queue, or mark the task
+   done until the requested response/action is complete and the task file is
+   updated out of `QUEUED`.
 
 ## Every session
 
@@ -33,6 +40,10 @@ Before doing anything else:
 Open `TEAM_WORKFLOW.md` and use its Quick Index at the top to jump to the
 section that matches the action you're about to take. You don't need to
 re-read the whole playbook every time.
+
+If a system event names a queued item in `~/tasks/current.md`, handle that
+item before regular heartbeat work or Jira queue selection. A wake is an
+instruction to execute the pending task, not just a liveness check.
 
 ## Operating baseline
 

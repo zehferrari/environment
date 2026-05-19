@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import shlex
 import socket
 import stat
@@ -1495,6 +1496,34 @@ def _is_monitor_self_incident(issues, monitor_user):
     return False
 
 
+def _email_task_resolved(user, message_id):
+    """True when the Gmail-backed task section is no longer QUEUED."""
+    path = Path(f"/home/{user}/tasks/current.md")
+    try:
+        text = path.read_text(errors="replace")
+    except Exception:
+        return False
+    for section in re.split(r"(?m)^---\s*$", text):
+        if f"Gmail messageId: {message_id}" not in section:
+            continue
+        status = (_extract_field_from_section(section, "Status") or "").strip().upper()
+        return bool(status and status != "QUEUED")
+    return False
+
+
+def _issues_resolved_for_user(user, bucket):
+    email_results = {}
+    for e in bucket.get("emails") or []:
+        mid = e.get("message_id") or ""
+        email_results[mid] = _email_task_resolved(user, mid)
+    if email_results:
+        return {
+            "email_results": email_results,
+            "all_email_resolved": all(email_results.values()),
+        }
+    return {"email_results": {}, "all_email_resolved": None}
+
+
 def restart_and_wake_stalled_agents(no_agent_issues):
     """Tier-2 escalation for bypass-monitor kinds: instead of `wake-agent`,
     run `openclaw-control restart-and-wake <user> <reminder>`. Same shape
@@ -1575,6 +1604,12 @@ def restart_and_wake_stalled_agents(no_agent_issues):
         rc, out, err = run_cmd(cmd, timeout=120)
         time.sleep(20)
         post_idle_s, post_path = probe_session_idle_for_user(user, f"/home/{user}")
+        resolution = _issues_resolved_for_user(user, b)
+        recovered = (
+            resolution["all_email_resolved"]
+            if resolution["all_email_resolved"] is not None
+            else (post_idle_s is not None and post_idle_s < 30)
+        )
         results[user] = {
             "tickets": b["tickets"],
             "queue_keys": b["queue_keys"],
@@ -1582,7 +1617,8 @@ def restart_and_wake_stalled_agents(no_agent_issues):
             "wake_rc": rc,
             "wake_err": (err.strip()[:200] if rc != 0 else ""),
             "post_idle_s": post_idle_s,
-            "recovered": (post_idle_s is not None and post_idle_s < 30),
+            "recovered": bool(recovered),
+            **resolution,
             "action": "restart-and-wake",
         }
     return results
@@ -1678,6 +1714,12 @@ def auto_wake_stalled_agents(no_agent_issues):
         rc, out, err = run_cmd(cmd, timeout=60)
         time.sleep(15)
         post_idle_s, post_path = probe_session_idle_for_user(user, f"/home/{user}")
+        resolution = _issues_resolved_for_user(user, b)
+        recovered = (
+            resolution["all_email_resolved"]
+            if resolution["all_email_resolved"] is not None
+            else (post_idle_s is not None and post_idle_s < 30)
+        )
         results[user] = {
             "tickets": b["tickets"],
             "queue_keys": b["queue_keys"],
@@ -1685,7 +1727,8 @@ def auto_wake_stalled_agents(no_agent_issues):
             "wake_rc": rc,
             "wake_err": (err.strip()[:200] if rc != 0 else ""),
             "post_idle_s": post_idle_s,
-            "recovered": (post_idle_s is not None and post_idle_s < 30),
+            "recovered": bool(recovered),
+            **resolution,
         }
     return results
 
@@ -2249,7 +2292,17 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                         "telegram_result": r,
                     })
                     if r.get("ok"):
-                        ev["alert_sent"] = True
+                        if i.get("kind") == "email-awaiting-action":
+                            # The user has been paged, but the work is not
+                            # done while the task section remains QUEUED.
+                            # Keep the event live and restart the ladder
+                            # after a longer cooldown instead of suppressing
+                            # future recovery attempts permanently.
+                            ev["attempts"] = 0
+                            ev["next_attempt_after"] = now + max(1800, confirmation_window_s)
+                            ev["last_tier3_telegram"] = now
+                        else:
+                            ev["alert_sent"] = True
                 tier_actions.append({
                     "type": "auto_action_bypass_monitor_tier3_telegram",
                     "keys": [event_key(i) for i in tier3_issues],

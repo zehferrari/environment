@@ -55,6 +55,10 @@ the entry-point overview.
   The wake reminder tells the agent to process the queued email, reply in the
   original thread when required, include the configured signature/runtime
   model, and update the task status out of `QUEUED`.
+  Recovery for this kind is task-status based: the wake/restart is not
+  considered successful while the same Gmail messageId is still `QUEUED`.
+  `openclaw-control` also clears stale non-running `pendingFinalDelivery*`
+  state before each wake so CLI system events cannot wedge the next turn.
 
 ## Registry-driven
 
@@ -133,6 +137,11 @@ monitor agent is identified by `role: "monitor"` in the registry — no
 hardcoded user name. To manually clear if needed:
 `sudo /usr/local/sbin/openclaw-control restart-and-wake <monitor-user>
 "<reason>"` (the user is whatever the registry says — `karen` here).
+
+The same stale-delivery preflight now runs in `openclaw-control` for every
+agent before `wake-agent` / `restart-and-wake`. If `agent:main:main` points at
+a missing session jsonl and is not running, the stale entry is quarantined so
+OpenClaw can create a fresh main turn.
 
 ### Transient kinds (probe failures bypass the monitor)
 
