@@ -1,4 +1,5 @@
 const { jiraRequest } = require('./lib');
+const self = require('../agent-self');
 
 async function main() {
   const issueKey = process.argv[2];
@@ -7,6 +8,13 @@ async function main() {
   if (!issueKey || !newStatus) {
     console.error('Usage: node jira-transition.js <ISSUE-KEY> "Status Name"');
     console.error('Example: node jira-transition.js WDT-1 "In Progress"');
+    process.exit(1);
+  }
+
+  if (self.agent?.role === 'manager' && /^in progress$/i.test(newStatus)) {
+    console.error(JSON.stringify({
+      error: 'Policy guard: manager-role agents do not move Jira tickets to In Progress. Assign implementation to the developer or ask zeh for an explicit handoff.'
+    }, null, 2));
     process.exit(1);
   }
   

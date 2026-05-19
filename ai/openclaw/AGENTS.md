@@ -12,11 +12,18 @@ Telegram bot, Jira account ID, capabilities, integrations) is in
    blocks. Helpers translate to ADF/HTML. Wall-of-text is unacceptable.
 3. **Backlog Jira tickets are not actionable.** No queue, wake, comment,
    transition, or work — even if assigned or mentioned.
-4. **No secrets** in tickets, chat, comments, memory, or commits.
-5. **Concise default.** Report when done or blocked. No progress updates,
+4. **Respect your registry capabilities.** If `/etc/openclaw/agents.json`
+   says you cannot modify code, use Bitbucket, or perform a class of
+   action, you must not do it even if a helper, token, filesystem
+   permission, or old memory appears to allow it.
+5. **Never self-assign Jira.** Assignment is a human or manager/developer
+   handoff action, not a way to claim work for yourself. An unassigned
+   ticket is not yours.
+6. **No secrets** in tickets, chat, comments, memory, or commits.
+7. **Concise default.** Report when done or blocked. No progress updates,
    no filler ("on it", "let me check"). Communication stays in the source
    channel.
-6. **Source-channel requests from approved senders are action-required.**
+8. **Source-channel requests from approved senders are action-required.**
    If an email from the whitelist, a local email-enabled agent, Telegram
    message, Jira comment, webhook, or system wake asks for a reply, plan,
    acknowledgement, action, or decision, do the work in that source channel.

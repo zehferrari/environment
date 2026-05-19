@@ -481,6 +481,12 @@ Current model posture by role. Each role uses a model **tuned for that kind of w
 | `developer` | Focused execution of well-scoped tasks | `ollama/kimi-k2.6:cloud` | `ollama/deepseek-v4-pro:cloud`, `ollama/glm-5.1:cloud`, `ollama/deepseek-v4-flash:cloud` |
 | `monitor` (user `karen`) | Triage, host probing, terse Telegram alerts | `ollama/deepseek-v4-pro:cloud` | `ollama/kimi-k2.6:cloud`, `ollama/glm-5.1:cloud`, `ollama/deepseek-v4-flash:cloud` |
 
+Manager-role agents are review/triage/delegation agents, not implementers.
+They must not self-assign Jira work, modify shared code, push branches, or
+create pull requests. The live registry reflects this with
+`capabilities.can_modify_code=false` and `integrations.bitbucket=false` for
+`asdrubal`.
+
 Live per-user defaults are in each agent's own `~/.openclaw/openclaw.json`, **not** in the shared registry — model preference is persona, not host topology.
 
 Enabled model providers for coding agents:
@@ -728,7 +734,7 @@ Second consolidated note covering changes since the 2026-05-08 entry. Each bulle
 
 - **Dashboard HTML lives in the environment repo** (/srv/Code/environment/ai/web/). nginx serves the main dashboard and experiment HTML copies directly via alias from /etc/nginx/vhosts.d/dev.conf. The Node service still handles /agents/events, /agents/snapshot, registry toggles, service restarts, and /agents/health.
 
-- **Webhook @-mention routing** (`/home/karen/webhooks/webhook-receiver.js` + `users.json`). `comment_*` events are parsed for both ADF and wiki-markup mentions (`[~accountid:712020:...]`). Jira Cloud delivers webhook `comment.body` as a wiki-markup string (not ADF — the REST API does ADF, webhooks do not), so `extractWikiMentions()` is the path that fires in practice. Mentioned agents are routed by `jiraAccountId` lookup (per-user map built at startup from `users.json`); the wake message gets a "You were @-mentioned in <KEY> by <Mentioner>" prefix invoking the new TEAM_WORKFLOW.md "Responding to @-mentions" rule. Comment author is excluded (no self-wake). Falls back to assignee match, then broadcast.
+- **Webhook @-mention routing** (`/home/karen/webhooks/webhook-receiver.js` + `users.json`). `comment_*` events are parsed for both ADF and wiki-markup mentions (`[~accountid:712020:...]`). Jira Cloud delivers webhook `comment.body` as a wiki-markup string (not ADF — the REST API does ADF, webhooks do not), so `extractWikiMentions()` is the path that fires in practice. Mentioned agents are routed by `jiraAccountId` lookup (per-user map built at startup from `users.json`); the wake message gets a "You were @-mentioned in <KEY> by <Mentioner>" prefix invoking the TEAM_WORKFLOW.md "Receiving an @-mention" rule. Comment author is excluded (no self-wake). Otherwise routing is assignee-only; unassigned Jira updates are not broadcast to all agents and are not executable work.
 
 - **Pending-mention queue** (`/var/lib/ai-monitor/pending-mentions/`, root:karen 0775). Receiver writes one JSON per `(issue_key, comment_id, agent)` recording mention metadata. ai-monitor's new `probe_pending_mentions` walks the queue every tick, queries Jira for an agent reply on the issue dated ≥ the mention's `created`, and either deletes the resolved entry or surfaces a `mention-awaiting-reply` warn (≥15 min) or crit (≥60 min). Configured under `/etc/ai-monitor/config.json` → `pending_mentions` block.
 

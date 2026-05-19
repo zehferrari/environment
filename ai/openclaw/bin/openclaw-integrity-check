@@ -1,0 +1,803 @@
+#!/usr/bin/env python3
+import base64
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+WEBHOOK_PORT_FALLBACKS = {"karen": 3010, "asdrubal": 3011, "barekbaal": 3012}
+AGENT_REGISTRY_PATH = Path("/etc/openclaw/agents.json")
+TELEGRAM_LOG_WINDOW = "-10min"
+PUBLIC_DEV_HEALTH_URL = "https://dev.vixi.au/webhooks/health"
+PUBLIC_DEV_HEALTH_UA = "Mozilla/5.0"
+WATCH_EXPIRY_WARN_HOURS = 24
+REMEDIATION_ENABLED = True  # Auto-restart failed services
+REMEDIATION_COOLDOWN_SECONDS = 120  # Don't restart same service within 2 minutes
+REMEDIATION_LOG_FILE = Path("/var/log/openclaw-remediation.log")
+
+
+ok_count = 0
+warn_count = 0
+fail_count = 0
+
+
+def emit(level, message):
+    global ok_count, warn_count, fail_count
+    if level == "OK":
+        ok_count += 1
+    elif level == "WARN":
+        warn_count += 1
+    elif level == "FAIL":
+        fail_count += 1
+    print(f"[{level}] {message}")
+
+
+def trim(text, limit=200):
+    text = (text or "").strip().replace("\n", " ")
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def run(cmd, timeout=20, cwd=None, env=None):
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update(env)
+    try:
+        cp = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd, env=merged_env)
+        return cp.returncode, cp.stdout, cp.stderr
+    except subprocess.TimeoutExpired as exc:
+        return 124, exc.stdout or "", exc.stderr or "timeout"
+    except Exception as exc:
+        return 1, "", str(exc)
+
+
+def load_json_file(path):
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def load_agent_registry():
+    if not AGENT_REGISTRY_PATH.exists():
+        return None
+    try:
+        registry = load_json_file(AGENT_REGISTRY_PATH)
+    except Exception as exc:
+        emit("FAIL", f"unable to parse {AGENT_REGISTRY_PATH} ({trim(str(exc))})")
+        return None
+    agents = [
+        a for a in registry.get("agents", [])
+        if a.get("enabled", True) and a.get("monitor", True) and a.get("user")
+    ]
+    if agents:
+        emit("OK", f"agent monitoring registry loaded ({AGENT_REGISTRY_PATH}, agents={','.join(a['user'] for a in agents)})")
+        return registry
+    emit("FAIL", f"agent monitoring registry has no enabled monitored agents ({AGENT_REGISTRY_PATH})")
+    return None
+
+
+def fallback_agent_registry(users_cfg):
+    agents = []
+    for user in sorted((users_cfg.get("users") or {}).keys()):
+        services = [
+            "openclaw-gateway.service",
+            "openclaw-gmail-listener.service",
+            "openclaw-webhook-receiver.service",
+        ]
+        if user == "asdrubal":
+            services.append("wdt-asdrubal.service")
+        if user == "barekbaal":
+            services.append("wdt-barekbaal.service")
+        agents.append({
+            "user": user,
+            "enabled": True,
+            "monitor": True,
+            "services": services,
+            "telegram": {"enabled": True},
+            "integrations": {
+                "webhook": True,
+                "gmail": True,
+                "jira": True,
+                "bitbucket": True,
+                "openaiAuth": True,
+            },
+        })
+    agents.append({
+        "user": "karen",
+        "enabled": True,
+        "monitor": True,
+        "services": ["openclaw-webhook-receiver.service"],
+        "telegram": {"enabled": False},
+        "integrations": {"webhook": True},
+    })
+    return {"version": 0, "agents": agents}
+
+
+def parse_env_file(path):
+    data = {}
+    p = Path(path)
+    if not p.exists():
+        return data
+    for raw in p.read_text().splitlines():
+        if not raw or raw.lstrip().startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        data[key] = value.strip().strip('"').strip("'")
+    return data
+
+
+def parse_systemd_show_environment(text):
+    text = (text or "").strip()
+    if not text.startswith("Environment="):
+        return {}
+    payload = text[len("Environment="):].strip()
+    if not payload:
+        return {}
+    env = {}
+    for item in payload.split():
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        env[key] = value
+    return env
+
+
+def http_json(url, headers=None, timeout=15):
+    req = Request(url, headers=headers or {})
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", "replace")
+            return resp.getcode(), json.loads(body), body
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        try:
+            data = json.loads(body)
+        except Exception:
+            data = None
+        return exc.code, data, body
+    except URLError as exc:
+        raise RuntimeError(str(exc.reason))
+
+
+def user_systemctl_cmd(user, uid, *args):
+    return [
+        "sudo", "-n", "-u", user, "env",
+        f"XDG_RUNTIME_DIR=/run/user/{uid}",
+        f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+        "systemctl", "--user", *args,
+    ]
+
+
+def user_uid(user):
+    try:
+        return int(__import__("pwd").getpwnam(user).pw_uid)
+    except Exception:
+        return None
+
+
+def check_user_service(user, service):
+    uid = user_uid(user)
+    if uid is None:
+        emit("FAIL", f"{user}: no passwd entry for service {service}")
+        return False
+    rc, out, err = run(user_systemctl_cmd(user, uid, "is-active", service), timeout=10)
+    if rc == 0 and out.strip() == "active":
+        emit("OK", f"{user}: service {service} is active")
+        return True
+    emit("FAIL", f"{user}: service {service} is not active ({trim(out or err)})")
+    return False
+
+
+def check_webhook_health(name, port, expected_users=None):
+    try:
+        status, data, body = http_json(f"http://127.0.0.1:{port}/health", timeout=5)
+    except Exception as exc:
+        emit("FAIL", f"{name}: webhook health probe failed on port {port} ({trim(str(exc))})")
+        return
+    if status != 200:
+        emit("FAIL", f"{name}: webhook health probe returned HTTP {status} on port {port}")
+        return
+    if isinstance(data, dict) and data.get("status") == "ok":
+        if expected_users:
+            users = sorted(data.get("users") or [])
+            want = sorted(expected_users)
+            if users == want:
+                emit("OK", f"{name}: webhook health is ok on port {port} with users {','.join(users)}")
+            else:
+                emit("FAIL", f"{name}: webhook health users mismatch on port {port} (got {users}, expected {want})")
+        else:
+            emit("OK", f"{name}: webhook health is ok on port {port}")
+        return
+    if "ok" in body.lower():
+        emit("OK", f"{name}: webhook health is ok on port {port}")
+    else:
+        emit("FAIL", f"{name}: unexpected webhook health payload on port {port} ({trim(body)})")
+
+
+def detect_webhook_port(user):
+    env_path = Path(f"/home/{user}/.config/openclaw/openclaw-webhook.env")
+    env = parse_env_file(env_path)
+    try:
+        if env.get("PORT"):
+            return int(env["PORT"])
+    except ValueError:
+        pass
+    return WEBHOOK_PORT_FALLBACKS.get(user)
+
+
+def check_recent_telegram_logs(user):
+    # Check 10m window for reporting
+    rc, out, err = run(
+        ["su", "-", user, "-c", f"journalctl --user -u openclaw-gateway --since={TELEGRAM_LOG_WINDOW} --no-pager"],
+        timeout=20,
+    )
+    text_10m = (out or "") + (err or "")
+    send_failures = text_10m.count("sendMessage failed")
+    action_failures = text_10m.count("sendChatAction failed")
+    final_failures = text_10m.count("final reply failed")
+    polling_stalls_10m = text_10m.count("Polling stall detected")
+    
+    # Check 3m window for auto-remediation (more recent, avoids re-triggering on old errors)
+    rc2, out2, err2 = run(
+        ["su", "-", user, "-c", "journalctl --user -u openclaw-gateway --since=-3min --no-pager"],
+        timeout=20,
+    )
+    text_3m = (out2 or "") + (err2 or "")
+    polling_stalls_3m = text_3m.count("Polling stall detected")
+    
+    # Only auto-restart if there are RECENT stalls (within 3m), not just any in 10m window
+    # AND the service isn't already restarting frequently
+    if polling_stalls_10m or final_failures or send_failures >= 3:
+        # Attempt remediation only for recent issues
+        remediated = False
+        remediation_msg = ""
+        if polling_stalls_3m >= 1:  # Only restart if RECENT stalls
+            # First check if service is actually active
+            rc_active, out_active, _ = run(
+                ["systemctl", "--user", "-M", f"{user}@", "is-active", "openclaw-gateway"],
+                timeout=5,
+            )
+            if rc_active == 0 and out_active.strip() == "active":
+                # Service is active but has polling stalls - restart it
+                remediated, remediation_msg = remediate_service(user, "openclaw-gateway")
+                if remediated:
+                    log_remediation("AUTO_RESTART", user, "openclaw-gateway", "success")
+            else:
+                # Service is not active - don't restart, let systemd handle it
+                remediation_msg = f"service not active ({out_active.strip()})"
+        
+        status_msg = f"(polling_stalls={polling_stalls_10m}, final_reply_failures={final_failures}, send_failures={send_failures}, action_failures={action_failures})"
+        if remediated:
+            emit("WARN", f"{user}: Recent Telegram errors detected, auto-restart triggered {status_msg}")
+        else:
+            emit(
+                "FAIL",
+                f"{user}: recent Telegram gateway errors detected in last 10m {status_msg}"
+                + (f" [remediation: {remediation_msg}]" if remediation_msg else ""),
+            )
+    else:
+        emit("OK", f"{user}: no recent Telegram gateway errors in last 10m")
+
+
+def check_gmail_watch_state(user, google_dir):
+    state_path = google_dir / "watch-state.json"
+    if not state_path.exists():
+        emit("FAIL", f"{user}: missing Gmail watch state file {state_path}")
+        return
+    try:
+        state = load_json_file(state_path)
+    except Exception as exc:
+        emit("FAIL", f"{user}: unable to parse Gmail watch state ({trim(str(exc))})")
+        return
+
+    expiration_raw = state.get("expiration")
+    if not expiration_raw:
+        emit("FAIL", f"{user}: Gmail watch state missing expiration")
+        return
+
+    try:
+        expiration_dt = datetime.fromtimestamp(int(expiration_raw) / 1000, timezone.utc)
+    except Exception as exc:
+        emit("FAIL", f"{user}: invalid Gmail watch expiration ({trim(str(exc))})")
+        return
+
+    remaining_seconds = (expiration_dt - datetime.now(timezone.utc)).total_seconds()
+    if remaining_seconds <= 0:
+        emit("FAIL", f"{user}: Gmail watch expired at {expiration_dt.isoformat()} (renew required)")
+        return
+
+    if remaining_seconds < WATCH_EXPIRY_WARN_HOURS * 3600:
+        emit("WARN", f"{user}: Gmail watch expires soon at {expiration_dt.isoformat()} (<{WATCH_EXPIRY_WARN_HOURS}h)")
+    else:
+        emit("OK", f"{user}: Gmail watch valid until {expiration_dt.isoformat()}")
+
+
+def check_google(user, openclaw_cfg):
+    skill_enabled = bool(openclaw_cfg.get("skills", {}).get("entries", {}).get("google-workspace", {}).get("enabled"))
+    if skill_enabled:
+        emit("OK", f"{user}: google-workspace skill enabled")
+    else:
+        emit("FAIL", f"{user}: google-workspace skill not enabled")
+    google_dir = Path(f"/home/{user}/.openclaw/workspace/google")
+    check_gmail_watch_state(user, google_dir)
+    sa_path = google_dir / "secrets/gcp-sa.json"
+    if not sa_path.exists():
+        emit("FAIL", f"{user}: missing Google service account file {sa_path}")
+        return
+    try:
+        sa = load_json_file(sa_path)
+    except Exception as exc:
+        emit("FAIL", f"{user}: unable to parse Google service account file ({trim(str(exc))})")
+        return
+    project_id = sa.get("project_id")
+    client_email = sa.get("client_email")
+    if project_id and client_email:
+        emit("OK", f"{user}: Google service account metadata present ({project_id}, {client_email})")
+    else:
+        emit("FAIL", f"{user}: Google service account metadata incomplete")
+        return
+    unit_path = Path(f"/home/{user}/.config/systemd/user/openclaw-gmail-listener.service")
+    sub_name = "gmail-inbox-watch-sub"
+    if unit_path.exists():
+        match = re.search(r"gmail-push-worker\.js\s+(\S+)", unit_path.read_text())
+        if match:
+            sub_name = match.group(1)
+    node_script = (
+        "const {PubSub}=require('@google-cloud/pubsub');"
+        "const projectId=process.argv[1];"
+        "const subName=process.argv[2];"
+        "const sub=new PubSub({projectId}).subscription(subName);"
+        "sub.getMetadata().then(([m])=>{console.log(m.name||'ok');}).catch((err)=>{"
+        "console.error(err && err.message ? err.message : String(err)); process.exit(1);});"
+    )
+    rc, out, err = run(
+        ["node", "-e", node_script, project_id, sub_name],
+        cwd=str(google_dir),
+        env={"GOOGLE_APPLICATION_CREDENTIALS": str(sa_path)},
+        timeout=25,
+    )
+    if rc == 0:
+        emit("OK", f"{user}: Google Pub/Sub probe succeeded ({trim(out)})")
+    else:
+        emit("FAIL", f"{user}: Google Pub/Sub probe failed ({trim(err or out)})")
+
+
+def check_telegram(user, openclaw_cfg):
+    telegram_cfg = openclaw_cfg.get("channels", {}).get("telegram", {})
+    if not telegram_cfg.get("enabled"):
+        emit("FAIL", f"{user}: Telegram channel not enabled")
+        return
+    bot_token = (telegram_cfg.get("botToken") or "").strip()
+    if not bot_token:
+        token_file = (telegram_cfg.get("tokenFile") or "").strip()
+        if token_file:
+            try:
+                bot_token = Path(token_file).read_text().strip()
+            except Exception as exc:
+                emit("FAIL", f"{user}: Telegram tokenFile unreadable ({trim(str(exc))})")
+                return
+        else:
+            env_path = Path(f"/home/{user}/.config/openclaw/openclaw-secrets.env")
+            if env_path.exists():
+                try:
+                    for line in env_path.read_text().splitlines():
+                        if line.startswith("TELEGRAM_BOT_TOKEN="):
+                            bot_token = line.split("=", 1)[1].strip()
+                            break
+                except Exception as exc:
+                    emit("FAIL", f"{user}: secrets.env unreadable ({trim(str(exc))})")
+                    return
+    if not bot_token:
+        emit("FAIL", f"{user}: Telegram bot token missing (no botToken, tokenFile, or TELEGRAM_BOT_TOKEN in secrets.env)")
+        return
+    emit("OK", f"{user}: Telegram channel enabled")
+    try:
+        status, data, body = http_json(
+            f"https://api.telegram.org/bot{bot_token}/getMe",
+            headers={"User-Agent": PUBLIC_DEV_HEALTH_UA},
+            timeout=15,
+        )
+    except Exception as exc:
+        emit("FAIL", f"{user}: Telegram getMe probe failed ({trim(str(exc))})")
+        return
+    if status == 200 and isinstance(data, dict) and data.get("ok") is True:
+        username = ((data.get("result") or {}).get("username") or "").strip()
+        label = f"@{username}" if username else "Telegram bot"
+        emit("OK", f"{user}: Telegram API probe succeeded ({label})")
+    else:
+        emit("FAIL", f"{user}: Telegram API probe returned HTTP {status} ({trim(body)})")
+    check_recent_telegram_logs(user)
+
+
+def check_openai_auth(user):
+    auth_path = Path(f"/home/{user}/.openclaw/agents/main/agent/auth.json")
+    if not auth_path.exists():
+        emit("OK", f"{user}: no OpenAI auth file (not using OpenAI OAuth)")
+        return
+    try:
+        auth_data = load_json_file(auth_path)
+    except Exception as exc:
+        emit("FAIL", f"{user}: unable to parse auth file ({trim(str(exc))})")
+        return
+    if not auth_data:
+        emit("OK", f"{user}: auth file is empty (no OAuth providers)")
+        return
+
+    for provider, cred in auth_data.items():
+        if not isinstance(cred, dict) or cred.get("type") != "oauth":
+            continue
+
+        expires_ms = cred.get("expires")
+        if not expires_ms:
+            emit("WARN", f"{user}: {provider} OAuth entry has no expiry field")
+            continue
+
+        try:
+            expires_dt = datetime.fromtimestamp(int(expires_ms) / 1000, timezone.utc)
+        except Exception:
+            emit("FAIL", f"{user}: {provider} OAuth expiry is not a valid timestamp")
+            continue
+
+        now = datetime.now(timezone.utc)
+        remaining = (expires_dt - now).total_seconds()
+
+        if remaining <= 0:
+            days_ago = -remaining / 86400
+            access_token = (cred.get("access") or "").strip()
+            has_refresh = bool((cred.get("refresh") or "").strip())
+            # Try a lightweight API probe to see if the token still works
+            probe_ok = False
+            if access_token:
+                try:
+                    status, data, body = http_json(
+                        "https://api.openai.com/v1/models?limit=1",
+                        headers={"Authorization": f"Bearer {access_token}", "User-Agent": PUBLIC_DEV_HEALTH_UA},
+                        timeout=10,
+                    )
+                    probe_ok = status == 200
+                except Exception:
+                    pass
+
+            if probe_ok:
+                emit("WARN", f"{user}: {provider} OAuth file expired {days_ago:.0f}d ago but API probe succeeded (runtime refresh working)")
+            elif has_refresh:
+                emit("FAIL", f"{user}: {provider} OAuth expired {days_ago:.0f}d ago; API probe failed (refresh token may be stale — re-authenticate)")
+            else:
+                emit("FAIL", f"{user}: {provider} OAuth expired {days_ago:.0f}d ago with no refresh token")
+        elif remaining < 3600:
+            emit("WARN", f"{user}: {provider} OAuth expires in {remaining / 60:.0f} minutes")
+        else:
+            emit("OK", f"{user}: {provider} OAuth valid until {expires_dt.isoformat()}")
+
+
+def check_bitbucket(user, user_cfg, workspace, repo):
+    token_file = user_cfg.get("bitbucketTokenFile")
+    email = (user_cfg.get("bitbucketEmail") or "").strip()
+    if not token_file:
+        emit("FAIL", f"{user}: Bitbucket token file not configured")
+        return
+    token_path = Path(token_file)
+    if not token_path.exists():
+        emit("FAIL", f"{user}: missing Bitbucket token file {token_path}")
+        return
+    token = token_path.read_text().strip()
+    if not token or not email:
+        emit("FAIL", f"{user}: Bitbucket credentials incomplete")
+        return
+    emit("OK", f"{user}: Bitbucket token file present")
+    auth = base64.b64encode(f"{email}:{token}".encode("utf-8")).decode("ascii")
+    try:
+        status, data, body = http_json(
+            f"https://api.bitbucket.org/2.0/repositories/{workspace}/{repo}",
+            headers={"Authorization": f"Basic {auth}", "Accept": "application/json", "User-Agent": PUBLIC_DEV_HEALTH_UA},
+            timeout=15,
+        )
+    except Exception as exc:
+        emit("FAIL", f"{user}: Bitbucket probe failed ({trim(str(exc))})")
+        return
+    expected_name = f"{workspace}/{repo}"
+    if status == 200 and isinstance(data, dict) and data.get("full_name") == expected_name:
+        emit("OK", f"{user}: Bitbucket API probe succeeded ({expected_name})")
+    else:
+        emit("FAIL", f"{user}: Bitbucket probe returned HTTP {status} ({trim(body)})")
+
+
+def check_jira(user, user_cfg):
+    token_file = user_cfg.get("jiraTokenFile")
+    if not token_file:
+        emit("FAIL", f"{user}: Jira token file not configured")
+        return
+    token_path = Path(token_file)
+    if not token_path.exists():
+        emit("FAIL", f"{user}: missing Jira token file {token_path}")
+        return
+    token = token_path.read_text().strip()
+    if token:
+        emit("OK", f"{user}: Jira token file present")
+    else:
+        emit("FAIL", f"{user}: Jira token file is empty")
+
+
+def check_dev_public_ingress(expected_users):
+    rc, out, err = run(
+        ["ssh", "moonlight", "curl", "-fsS", "-A", PUBLIC_DEV_HEALTH_UA, PUBLIC_DEV_HEALTH_URL],
+        timeout=25,
+    )
+    if rc != 0:
+        emit("FAIL", f"karen: public moonlight ingress probe failed ({trim(err or out)})")
+        return
+    body = (out or "").strip()
+    try:
+        data = json.loads(body)
+    except Exception:
+        emit("FAIL", f"karen: public moonlight ingress returned non-JSON payload ({trim(body)})")
+        return
+    users = sorted(data.get("users") or [])
+    want = sorted(expected_users)
+    if data.get("status") == "ok" and users == want:
+        emit("OK", f"karen: public moonlight ingress health is ok with users {','.join(users)}")
+    else:
+        emit("FAIL", f"karen: public moonlight ingress payload mismatch ({trim(body)})")
+
+
+def check_dev_shared_files(users_cfg, agent_registry=None):
+    dev_paths = [
+        Path("/home/karen/webhooks/webhook-receiver.js"),
+        Path("/home/karen/webhooks/users.json"),
+        Path("/home/karen/.config/openclaw/openclaw-webhook.env"),
+    ]
+    for path in dev_paths:
+        if path.exists():
+            emit("OK", f"karen: required file present ({path})")
+        else:
+            emit("FAIL", f"karen: required file missing ({path})")
+
+    users = users_cfg.get("users") or {}
+    registry_by_user = {
+        a.get("user"): a for a in ((agent_registry or {}).get("agents") or [])
+        if a.get("user")
+    }
+    for user, cfg in users.items():
+        agent = registry_by_user.get(user) or {}
+        integrations = agent.get("integrations") or {}
+        checks = {
+            "home": cfg.get("home"),
+            "tasksFile": cfg.get("tasksFile"),
+            "logFile": cfg.get("logFile"),
+            "jiraTokenFile": cfg.get("jiraTokenFile"),
+        }
+        if integrations.get("bitbucket"):
+            checks["bitbucketTokenFile"] = cfg.get("bitbucketTokenFile")
+        for label, raw_path in checks.items():
+            if raw_path and Path(raw_path).exists():
+                emit("OK", f"karen: users.json route for {user} has existing {label}")
+            else:
+                emit("FAIL", f"karen: users.json route for {user} missing {label} ({raw_path})")
+        if not integrations.get("bitbucket"):
+            emit("OK", f"karen: users.json route for {user} skips bitbucketTokenFile (Bitbucket integration disabled)")
+
+
+def check_dev_env_drift():
+    env_file_path = Path("/home/karen/.config/openclaw/openclaw-webhook.env")
+    file_env = parse_env_file(env_file_path)
+    uid = user_uid("karen") or 1003
+    rc, out, err = run(
+        user_systemctl_cmd("karen", uid, "show", "openclaw-webhook-receiver", "-p", "Environment"),
+        timeout=10,
+    )
+    if rc != 0:
+        emit("FAIL", f"karen: unable to inspect effective systemd environment ({trim(err or out)})")
+        return
+    effective_env = parse_systemd_show_environment(out)
+
+    unit_text = ""
+    unit_candidates = [
+        Path("/home/karen/.config/systemd/user/openclaw-webhook-receiver.service"),
+        Path("/usr/lib/systemd/user/openclaw-webhook-receiver.service"),
+    ]
+    for candidate in unit_candidates:
+        if candidate.exists():
+            try:
+                unit_text = candidate.read_text()
+                break
+            except Exception:
+                pass
+    if not unit_text:
+        emit("WARN", "karen: unable to inspect unit file for EnvironmentFile wiring")
+    envfile_wired = str(env_file_path) in unit_text
+
+    for key in ("PORT", "JIRA_WEBHOOK_SECRET", "BITBUCKET_WEBHOOK_SECRET"):
+        file_value = file_env.get(key, "")
+        effective_value = effective_env.get(key, "")
+        if key == "PORT":
+            if file_value and effective_value and file_value != effective_value:
+                emit("WARN", f"karen: env file PORT={file_value} differs from effective PORT={effective_value}")
+            else:
+                emit("OK", f"karen: effective {key} is {effective_value or file_value or WEBHOOK_PORT_FALLBACKS['karen']}")
+            continue
+
+        if file_value and envfile_wired:
+            emit("OK", f"karen: {key} supplied via EnvironmentFile ({env_file_path})")
+            continue
+
+        if file_value == effective_value:
+            emit("OK", f"karen: {key} env file matches effective service environment")
+        else:
+            if file_value and not effective_value:
+                emit("WARN", f"karen: {key} is set in env file but blank in effective service environment")
+            else:
+                emit("WARN", f"karen: {key} env file/effective service mismatch")
+
+
+
+# Remediation tracking with persistent state file
+RESTART_STATE_FILE = Path("/var/lib/openclaw/remediation-state.json")
+
+def load_restart_state():
+    """Load persistent restart timestamps"""
+    try:
+        if RESTART_STATE_FILE.exists():
+            return json.loads(RESTART_STATE_FILE.read_text())
+    except Exception:
+        pass
+    return {}
+
+def save_restart_state(state):
+    """Save persistent restart timestamps"""
+    try:
+        RESTART_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        RESTART_STATE_FILE.write_text(json.dumps(state, indent=2))
+    except Exception:
+        pass
+
+def log_remediation(action, user, service, result):
+    """Log remediation actions to file"""
+    from datetime import datetime
+    ts = datetime.now().isoformat()
+    line = f"{ts} {action}: {user}/{service} -> {result}\n"
+    try:
+        with open(REMEDIATION_LOG_FILE, 'a') as f:
+            f.write(line)
+    except Exception:
+        pass
+
+def should_remediate(user, service):
+    """Check if enough time has passed since last remediation AND service wasn't just restarted"""
+    from datetime import datetime, timezone
+    
+    # Check persistent state
+    state = load_restart_state()
+    key = f"{user}:{service}"
+    now = datetime.now(timezone.utc)
+    
+    # Check if we recently restarted this service
+    last_restart = state.get(key)
+    if last_restart:
+        try:
+            last_dt = datetime.fromisoformat(last_restart.replace('Z', '+00:00'))
+            elapsed = (now - last_dt).total_seconds()
+            if elapsed < REMEDIATION_COOLDOWN_SECONDS:
+                return False, f"service restarted {int(elapsed)}s ago"
+        except Exception:
+            pass
+    
+    return True, None
+
+def mark_remediated(user, service):
+    """Mark that we just remediated this service - persist to disk"""
+    from datetime import datetime, timezone
+    state = load_restart_state()
+    state[f"{user}:{service}"] = datetime.now(timezone.utc).isoformat()
+    save_restart_state(state)
+
+def remediate_service(user, service):
+    """Attempt to restart a failed service"""
+    if not REMEDIATION_ENABLED:
+        return False, "remediation disabled"
+    
+    can_remediate, reason = should_remediate(user, service)
+    if not can_remediate:
+        return False, reason
+    
+    rc, out, err = run(
+        ["systemctl", "--user", "-M", f"{user}@", "restart", service],
+        timeout=30,
+    )
+    
+    if rc == 0:
+        mark_remediated(user, service)
+        return True, "restart successful"
+    else:
+        return False, f"restart failed: {trim(err or out)}"
+
+
+def main():
+    print(f"[INFO] openclaw integrity check started at {datetime.now(timezone.utc).isoformat()}")
+    users_cfg_path = Path("/home/karen/webhooks/users.json")
+    if not users_cfg_path.exists():
+        emit("FAIL", f"missing shared users config {users_cfg_path}")
+        print(f"[SUMMARY] ok={ok_count} warn={warn_count} fail={fail_count}")
+        return 1
+    try:
+        users_cfg = load_json_file(users_cfg_path)
+    except Exception as exc:
+        emit("FAIL", f"unable to parse {users_cfg_path} ({trim(str(exc))})")
+        print(f"[SUMMARY] ok={ok_count} warn={warn_count} fail={fail_count}")
+        return 1
+
+    users = users_cfg.get("users") or {}
+    if not users:
+        emit("FAIL", "no routed users found in shared users config")
+        print(f"[SUMMARY] ok={ok_count} warn={warn_count} fail={fail_count}")
+        return 1
+
+    agent_registry = load_agent_registry() or fallback_agent_registry(users_cfg)
+    monitor_agents = [
+        a for a in agent_registry.get("agents", [])
+        if a.get("enabled", True) and a.get("monitor", True) and a.get("user")
+    ]
+
+    jira_host = (users_cfg.get("jiraHost") or "").strip()
+    bitbucket_workspace = (users_cfg.get("bitbucketWorkspace") or "").strip()
+    bitbucket_repo = (users_cfg.get("bitbucketRepo") or "").strip()
+
+    if jira_host:
+        emit("OK", f"shared Jira host configured ({jira_host})")
+    else:
+        emit("FAIL", "shared Jira host missing from users config")
+    if bitbucket_workspace and bitbucket_repo:
+        emit("OK", f"shared Bitbucket target configured ({bitbucket_workspace}/{bitbucket_repo})")
+    else:
+        emit("FAIL", "shared Bitbucket target missing from users config")
+
+    check_dev_shared_files(users_cfg, agent_registry)
+    check_dev_env_drift()
+    check_dev_public_ingress(list(users.keys()))
+
+    for agent in monitor_agents:
+        user = agent["user"]
+        user_cfg = users.get(user, {})
+        integrations = agent.get("integrations") or {}
+
+        for service in agent.get("services") or []:
+            check_user_service(user, service)
+
+        if integrations.get("webhook"):
+            port = detect_webhook_port(user)
+            if port is None:
+                emit("FAIL", f"{user}: unable to determine webhook port")
+            elif user == "karen":
+                check_webhook_health(user, port, expected_users=list(users.keys()))
+            else:
+                check_webhook_health(user, port)
+
+        openclaw_cfg_path = Path(f"/home/{user}/.openclaw/openclaw.json")
+        if not openclaw_cfg_path.exists():
+            emit("FAIL", f"{user}: missing OpenClaw config {openclaw_cfg_path}")
+            continue
+        try:
+            openclaw_cfg = load_json_file(openclaw_cfg_path)
+        except Exception as exc:
+            emit("FAIL", f"{user}: unable to parse OpenClaw config ({trim(str(exc))})")
+            continue
+        emit("OK", f"{user}: OpenClaw config loaded")
+        if (agent.get("telegram") or {}).get("enabled"):
+            check_telegram(user, openclaw_cfg)
+        if integrations.get("gmail"):
+            check_google(user, openclaw_cfg)
+        if integrations.get("openaiAuth"):
+            check_openai_auth(user)
+        if integrations.get("jira"):
+            check_jira(user, user_cfg)
+        if integrations.get("bitbucket") and bitbucket_workspace and bitbucket_repo:
+            check_bitbucket(user, user_cfg, bitbucket_workspace, bitbucket_repo)
+
+    print(f"[SUMMARY] ok={ok_count} warn={warn_count} fail={fail_count}")
+    return 1 if fail_count else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

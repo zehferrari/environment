@@ -16,6 +16,7 @@ the whole file every session.
 | Receive an @-mention on Jira | [Receiving an @-mention](#receiving-an-mention) |
 | Pick your next task after finishing one | [Picking your next task](#picking-your-next-task) |
 | Start work on an assigned Jira ticket | [Working a Jira ticket](#working-a-jira-ticket) |
+| See an unassigned Jira ticket or want to assign one | [Jira assignment](#jira-assignment) |
 | Hand off from manager to developer | [Manager → developer handoff](#manager--developer-handoff) |
 | Review someone else's work | [Reviewing](#reviewing) |
 | Handle email | [Email](#email) |
@@ -125,7 +126,10 @@ this **fixed priority order**. Tier 1 must be exhausted before tier 2 or
    Otherwise post a one-line Jira intent comment, move to `In Progress`,
    proceed.
 4. **`Backlog`** → always skip.
-5. **Nothing in tiers 1–3** → send `HEARTBEAT_OK` and stop. Don't poll
+5. **Unassigned tickets** → do not claim them. If one looks important,
+   report the finding in the source channel or hand it to the manager /
+   zeh for assignment.
+6. **Nothing in tiers 1–3** → send `HEARTBEAT_OK` and stop. Don't poll
    Jira; the next webhook or email will wake you.
 
 ### Pressure-relief escape hatch
@@ -154,32 +158,53 @@ feedback-first. Max one such Telegram per 24 h per agent.
 5. **`Backlog` → ignore completely.** No queue, wake, comment,
    transition, or work — even if assigned or mentioned. Override only on
    explicit zeh instruction for that specific ticket.
-6. Send exactly **one** concise Telegram start notice to zeh after
+6. If the ticket is unassigned, do not assign it to yourself and do not
+   start implementation. A manager may assign it to a developer when that
+   is the correct handoff; a developer waits for zeh or the manager to
+   assign it.
+7. A manager-role agent must not implement, push, or create a PR. Manager
+   output is planning, delegation, review, decision, or a signed Jira/email
+   reply. Implementation and PR creation belong to the assigned developer.
+8. Send exactly **one** concise Telegram start notice to zeh after
    accepting an assigned ticket, then move it to `In Progress` before
    real work. After that, communicate about the task only in Jira
    unless zeh redirects.
-7. If blocked, don't start unless explicitly instructed. If a blocker
+9. If blocked, don't start unless explicitly instructed. If a blocker
    exists, wait until the blocker is `Done`/merged-to-main, not merely
    approved.
-8. Use a ticket-key branch. Commit messages include the ticket key.
+10. Use a ticket-key branch. Commit messages include the ticket key.
    For repos under `/srv/Code/`: the target Bitbucket branch **must**
    be named in the ticket — do not start without one. Attach a
    worktree on that branch with `claim-branch <repo> <branch>` and
    work inside the path it prints (never edit the primary `/srv/Code/<repo>/`
    tree directly). Full workflow in [`CODE_REPOS.md`](./CODE_REPOS.md).
-9. For risky / ambiguous / multi-step work needing approval, post a
+11. For risky / ambiguous / multi-step work needing approval, post a
    concise plan **before** implementation.
-10. Run relevant tests/builds, or state plainly what couldn't be tested.
-11. Push the branch and open or update a PR when appropriate.
-12. **Do not merge the PR.** Landing a pull request is exclusively a
+12. Run relevant tests/builds, or state plainly what couldn't be tested.
+13. Developer implementers push the branch and open or update a PR when
+    appropriate. Manager-role agents do not create PRs.
+14. **Do not merge the PR.** Landing a pull request is exclusively a
     human operator action — no role, no review verdict, no time
     elapsed, no "looks fine" justifies an agent merging. See
     [`CODE_REPOS.md` → Merging](./CODE_REPOS.md#merging--humans-only).
-13. On completion, move the ticket to `Wait for Review` (or the project
+15. On completion, move the ticket to `Wait for Review` (or the project
     equivalent `In Review`). Post a concise completion comment with
     branch/PR, summary, tests, and residual risk. Sign it.
-14. Do **not** move tickets to `Done` unless explicitly instructed or
+16. Do **not** move tickets to `Done` unless explicitly instructed or
     the project workflow clearly assigns Done ownership to you.
+
+---
+
+## Jira assignment
+
+- Never assign a Jira ticket to yourself.
+- Unassigned implementation tickets are not automatically yours, even if
+  they are `Selected for Development` or arrive through a webhook.
+- The manager may assign a ticket to the developer as an explicit handoff
+  when the task is ready and not blocked.
+- The developer may start only after assignment by zeh or the manager.
+- If a webhook says "assigned to me" but the actor is yourself, treat it
+  as a policy error and do not start work.
 
 ---
 

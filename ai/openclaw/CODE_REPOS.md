@@ -38,7 +38,11 @@ should never carry feature commits directly. All ticket work happens
 in a per-branch worktree under `/srv/Code/<repo>.worktrees/<branch>/`,
 created via `claim-branch`.
 
-The implementer flow is:
+The implementer flow is for developer-role implementers. Manager-role agents
+do not modify shared code, push branches, or create pull requests; they
+review, plan, and delegate instead.
+
+The developer implementer flow is:
 
 1. Read the Jira ticket, note the designated branch (e.g. `feature/HOMELAB-12-foo`).
 2. `claim-branch <repo> <branch>` — checks the branch exists on origin,
@@ -51,7 +55,8 @@ The implementer flow is:
    For a brand-new branch from `--from`, the helper has already done
    the initial `git push -u origin <branch>` for you. Auth resolves
    as zeh via `bbZeh` — no flags or env needed.
-6. Open the PR on Bitbucket.
+6. Open the PR on Bitbucket. This step is developer-only; managers do not
+   create PRs.
 7. After the PR merges, `claim-branch --release <repo> <branch>` to
    tear down the worktree. The remote branch is cleaned up on
    Bitbucket separately by whoever merges the PR.

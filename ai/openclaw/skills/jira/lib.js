@@ -14,7 +14,34 @@ function getAuth() {
   return Buffer.from(`${USERNAME}:${token}`).toString('base64');
 }
 
+function methodOf(options = {}) {
+  return String(options.method || 'GET').toUpperCase();
+}
+
+function parseBody(options = {}) {
+  if (!options.body) return null;
+  if (typeof options.body === 'object') return options.body;
+  try {
+    return JSON.parse(String(options.body));
+  } catch {
+    return null;
+  }
+}
+
+function assertAllowedMutation(endpoint, options = {}) {
+  const method = methodOf(options);
+  const body = parseBody(options);
+
+  if (method === 'PUT' && /^\/issue\/[^/]+\/assignee(?:\?|$)/.test(endpoint)) {
+    const targetAccountId = body?.accountId || null;
+    if (targetAccountId && self.jiraAccountId && targetAccountId === self.jiraAccountId) {
+      throw new Error('Policy guard: agents may not assign Jira tickets to themselves. Ask zeh or use an explicit manager-to-developer handoff.');
+    }
+  }
+}
+
 async function jiraRequest(endpoint, options = {}) {
+  assertAllowedMutation(endpoint, options);
   const auth = getAuth();
   const url = `${JIRA_URL}/rest/api/3${endpoint}`;
 
