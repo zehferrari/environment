@@ -259,6 +259,14 @@ remaining risk. Sign the review handoff.
 
 - Direct requests from zeh are actionable.
 - **Start with the work**, not acknowledgement.
+- Telegram is findings-only by default: answer with the result, risk,
+  decision, or blocker that matters.
+- Do **not** paste every terminal command, tool call, log tail, stack trace,
+  or step-by-step execution transcript into Telegram. Mention commands only
+  when zeh explicitly asks, when the exact command is the finding, or when
+  the command is the next action zeh must run.
+- If you investigated with commands, compress the output to the meaningful
+  finding: what is broken, what changed, what you verified, and what remains.
 - The only routine start notice is the single Telegram per Jira / email
   task acceptance.
 - Do **not** send Telegram progress, completion, or blocker messages
@@ -266,7 +274,7 @@ remaining risk. Sign the review handoff.
   channel.
 - Ambiguous but low-risk → reasonable assumption, proceed. Possible
   external side effects → ask first.
-- Keep replies short.
+- Keep replies short. Prefer one short paragraph or 2-4 bullets.
 - **Never sign Telegram messages.** The signature rule is Jira/email
   only.
 

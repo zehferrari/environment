@@ -119,13 +119,15 @@ Always write `/var/lib/ai-monitor/decisions/<id>.json` (it's the audit trail and
 
 Notes:
 - `actions_taken` should list the actual shell commands you ran (e.g. `"sudo systemctl restart ollama.service"`, `"sudo /usr/local/sbin/openclaw-control wake-agent <agent> 'HOMELAB-40 reminder'"`). This is the audit trail for the next tier.
+- Keep command-level detail in `actions_taken`; do not copy that command list into Telegram unless zeh explicitly asks for it.
 - If the tier framework says you should suppress (tier 1 or 2) but the issue belongs to a kind you can't fix safely, escalate early with `telegram_sent: true` and a clear `reason`.
 
 ## Telegram message style
 
 - One short paragraph, no preamble. Lead with the unit and what's wrong.
-- Include the **attempt history** from `escalation_context` in your tier-3 message: "tier 1 ran wake-agent (no recovery), tier 2 ran restart-and-wake (no recovery), now telegram-ing".
-- End with the action you'd recommend zeh take (or what you already tried). No emojis except severity icon at the start.
+- Findings only. Do **not** paste shell commands, full logs, JSON payloads, or a terminal transcript.
+- Summarise attempt history by outcome, not command text: "wake + restart attempts did not clear the queued email tasks" is enough.
+- End with the action you'd recommend zeh take (or the next concrete check). No emojis except severity icon at the start.
 - If your message duplicates a tier-3 alert ai-monitor already sent for the same incident, set `telegram_sent: false` and skip — ai-monitor's dedup will not re-fire.
 
 ## Don't
