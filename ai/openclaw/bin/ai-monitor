@@ -1903,6 +1903,15 @@ def read_telegram_creds(cfg, registry=None):
     return token, chat_id
 
 
+def fit_telegram_text(text, limit=3900):
+    """Telegram sendMessage caps text at 4096 chars; leave room for Unicode/API variance."""
+    text = str(text)
+    if len(text) <= limit:
+        return text
+    suffix = "\n\n[truncated by ai-monitor: alert exceeded Telegram message length]"
+    return text[: max(0, limit - len(suffix))].rstrip() + suffix
+
+
 def send_telegram(cfg, text, registry=None):
     token, chat_id = read_telegram_creds(cfg, registry=registry)
     if not token:
@@ -1910,6 +1919,7 @@ def send_telegram(cfg, text, registry=None):
     if not chat_id:
         return {"ok": False, "error": "no chat_id"}
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    text = fit_telegram_text(text)
     try:
         status, body = http_post_json(
             url,
