@@ -1,0 +1,12 @@
+# Allow mail ingestion workers to wake only their own OpenClaw agent.
+# Install host-specific copies as /etc/sudoers.d/openclaw-mail-self-wake
+# and validate with: visudo -cf /etc/sudoers.d/openclaw-mail-self-wake
+#
+# x1:
+# asdrubal ALL=(root) NOPASSWD: /usr/local/sbin/openclaw-control wake-agent asdrubal *
+# barekbaal ALL=(root) NOPASSWD: /usr/local/sbin/openclaw-control wake-agent barekbaal *
+#
+# yoga510:
+# ada ALL=(root) NOPASSWD: /usr/local/sbin/openclaw-control wake-agent ada *
+# claudia ALL=(root) NOPASSWD: /usr/local/sbin/openclaw-control wake-agent claudia *
+# emery ALL=(root) NOPASSWD: /usr/local/sbin/openclaw-control wake-agent emery *

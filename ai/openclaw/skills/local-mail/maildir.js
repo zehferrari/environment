@@ -356,14 +356,12 @@ function agentPrompt(message) {
 function dispatchToAgent(message) {
   const prompt = agentPrompt(message);
   appendEvent({ type: 'dispatch-start', message });
-  const child = spawn('openclaw', [
-    'agent',
-    '--agent',
-    'main',
-    '--message',
+  const child = spawn('sudo', [
+    '-n',
+    '/usr/local/sbin/openclaw-control',
+    'wake-agent',
+    USER,
     prompt,
-    '--timeout',
-    String(process.env.LOCAL_MAIL_AGENT_TIMEOUT || 600)
   ], {
     cwd: path.dirname(POLICY_PATH),
     env: { ...process.env, HOME },

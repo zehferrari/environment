@@ -47,14 +47,19 @@ the entry-point overview.
   naming the queued ticket keys and referencing TEAM_WORKFLOW.md
   *"Picking the Next Task"*. Rationale: situation is unambiguous and the
   action is bounded; no triage judgment needed.
-- **Pending email tasks** for any coding agent with Gmail integration.
-  `probe_pending_email_tasks` scans `~/tasks/current.md` for sections with
-  `Gmail messageId:` and `Status: QUEUED`. It fires
-  `email-awaiting-action` at warn 15 min / crit 60 min, ignores entries older
-  than 24 h, and bypasses Karen so ai-monitor can run `wake-agent` directly.
-  The wake reminder tells the agent to process the queued email, reply in the
-  original thread when required, include the configured signature/runtime
-  model, and update the task status out of `QUEUED`.
+- **Pending email tasks** for any coding agent with email integration.
+  Gmail and local Maildir listeners are the first responders: when an
+  allowlisted sender or local email-capable agent sends an actionable request,
+  the listener queues the task and immediately wakes the owner through
+  `/usr/local/sbin/openclaw-control wake-agent <self>`. `probe_pending_email_tasks`
+  is the fallback if that immediate wake does not result in action. It scans
+  `~/tasks/current.md` for sections with `Gmail messageId:` and
+  `Status: QUEUED`. It fires `email-awaiting-action` at warn 15 min / crit
+  60 min, ignores entries older than 24 h, and bypasses Karen so ai-monitor can
+  run `wake-agent` directly. The wake reminder tells the agent to process the
+  queued email, reply in the original thread when required, include the
+  configured signature/runtime model, and update the task status out of
+  `QUEUED`.
   Recovery for this kind is task-status based: the wake/restart is not
   considered successful while the same Gmail messageId is still `QUEUED`.
   `openclaw-control` also clears stale non-running `pendingFinalDelivery*`
