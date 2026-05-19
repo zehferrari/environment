@@ -38,8 +38,9 @@ Before doing anything else:
 1. Read `SOUL.md`, `USER.md`, today's `memory/YYYY-MM-DD.md`.
 2. **Main session only**: also `MEMORY.md` — never in shared or group
    contexts (it holds personal context).
-3. Look up your role in `agents.json`; read your section in `ROLES.md`
-   (it may add role-specific session-start steps).
+3. Look up your registry entry in `agents.json`; confirm your capabilities.
+   Read `ROLES.md`: coding agents use it to pick the task role from live
+   Jira/Epic context, while the monitor reads the monitor section.
 4. Glance at `HEARTBEAT.md`.
 
 ## On task

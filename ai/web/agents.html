@@ -26,6 +26,7 @@
     --shadow:       0 4px 18px rgba(0,0,0,0.45);
     --role-manager:   #a78bfa;
     --role-developer: #22d3ee;
+    --role-coding:    #22d3ee;
     --role-monitor:   #fbbf24;
   }
   :root[data-theme="light"] {
@@ -48,6 +49,7 @@
     --shadow:       0 4px 18px rgba(15,23,42,0.10);
     --role-manager:   #7c3aed;
     --role-developer: #0891b2;
+    --role-coding:    #0891b2;
     --role-monitor:   #d97706;
   }
 
@@ -118,6 +120,7 @@
   .agent-card:hover { border-color: var(--line-strong); }
   .agent-card[data-role="manager"]   { --accent-role: var(--role-manager); }
   .agent-card[data-role="developer"] { --accent-role: var(--role-developer); }
+  .agent-card[data-role="coding"]    { --accent-role: var(--role-coding); }
   .agent-card[data-role="monitor"]   { --accent-role: var(--role-monitor); }
   .agent-card[data-role=""]          { --accent-role: var(--accent); }
 
@@ -729,7 +732,7 @@ function renderAgent(reg, live) {
   // Head: avatar + name + role chip + idle pip
   const head = el('div', 'agent-head');
   const avatarEl = el('div', 'agent-avatar');
-  const fallbackEmoji = live_.avatar || (reg.role === 'monitor' ? '👁️' : reg.role === 'manager' ? '👔' : '🛠️');
+  const fallbackEmoji = live_.avatar || (reg.role === 'monitor' ? '👁️' : '🛠️');
   // Avatar URL: prefer SSE snapshot value; else derive directly from the
   // registry (so the avatar renders as soon as the page loads, no need to
   // wait for the SSE snapshot to arrive).

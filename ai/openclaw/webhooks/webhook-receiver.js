@@ -305,18 +305,12 @@ async function queueJiraTask(userCfg, event) {
 
   // Assignment to this user — wake immediately
   if (isAssignedToUser) {
-    const isManager = userCfg.role === 'manager';
-    const nextSteps = isManager
-      ? [
-          '- [ ] Check assignee and source of assignment',
-          '- [ ] Confirm this was not self-assigned',
-          '- [ ] If assigned by zeh or a valid handoff, work normally; do not create a PR'
-        ]
-      : [
-          '- [ ] Check assignee and source of assignment',
-          '- [ ] Move ticket to "In Progress"',
-          '- [ ] Start executing work; do not create a PR'
-        ];
+    const nextSteps = [
+      '- [ ] Check assignee and source of assignment',
+      '- [ ] Confirm this was not self-assigned',
+      '- [ ] Determine the task role from Jira/Epic context, not persona',
+      '- [ ] If assignment is valid, start work; do not create a PR'
+    ];
     const entry = `
 ---
 ## [JIRA Webhook] ${issueKey}: ${issueSummary} 🔔 ASSIGNED TO ME
@@ -462,9 +456,7 @@ function wakeAgent(userCfg, reason = 'webhook-event', extraContext = '') {
   }
 
   const prefix = extraContext ? `${extraContext}\n\n` : '';
-  const rolePolicy = userCfg.role === 'manager'
-    ? 'You are the manager role: do not self-assign and do not create PRs. If the ticket is explicitly assigned to you by zeh or a valid handoff, you may work it; otherwise triage, review, delegate to the developer, or ask zeh for clarification.'
-    : 'You are the developer role: only start implementation when the ticket is assigned to you by zeh or the manager and is not blocked. Do not create PRs.';
+  const rolePolicy = 'You are a coding agent, not a standing manager/developer persona. Determine the task role from live Jira/Epic context and explicit assignment. Do not self-assign. Start implementation only when assigned by zeh or a valid handoff. Do not create PRs.';
   const text = `${prefix}New Jira webhook event received (${reason}). Process ${userCfg.tasksFile} now. ${rolePolicy} Send exactly one concise Telegram start notice to zeh if this creates actionable work, then keep all task communication in Jira. Do not send Telegram progress, completion, or blocker messages for this Jira task unless zeh explicitly redirects the conversation. Fill Next steps and follow SOUL.md, ROLES.md, and TEAM_WORKFLOW.md. Sign every outbound Jira comment/update with the current runtime model using the Outbound Signature Rule. Update ${userCfg.logFile}.`;
 
   try {

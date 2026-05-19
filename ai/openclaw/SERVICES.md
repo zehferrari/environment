@@ -44,7 +44,7 @@ x1 uses systemd timers for active automation. Cron references in old migration n
 
 Per-agent systemd user services follow a fixed pattern; the canonical list for each registered agent is in `/etc/openclaw/agents.json` under `services`.
 
-### Coding agents (`role: manager` / `role: developer`)
+### Coding agents (`role: coding`)
 
 - `openclaw-gateway.service` — OpenClaw runtime gateway
 - `openclaw-gmail-listener.service` — Gmail Pub/Sub listener

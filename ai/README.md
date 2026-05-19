@@ -407,10 +407,12 @@ Migrated from `thinkpad` (`10.0.0.105`) to `x1` (`10.0.0.108`) on 2026-05-06.
 
 | UID/GID range | Role | Notes |
 |---:|---|---|
-| `1001+` | Coding agents (`role: manager`, `role: developer`) | Full OpenClaw agent, WDT playground, Telegram/Gmail/Jira auth. One UID per registered agent in `agents.json`. |
+| `1001+` | Coding agents (`role: coding`) | Full OpenClaw agent, WDT playground, Telegram/Gmail/Jira auth. One UID per registered agent in `agents.json`. |
 | `1003` | Monitoring agent (Linux user `karen`) | Telegram alert persona, multi-tenant webhook dispatch account, shared web root. |
 
-The authoritative roster — usernames, UIDs, roles, services, ports — is `/etc/openclaw/agents.json`. Add or rename agents only by editing that registry; the docs below describe behaviour by **role**, not by name.
+The authoritative roster — usernames, UIDs, operational role/class, services,
+and ports — is `/etc/openclaw/agents.json`. Add or rename agents only by
+editing that registry; coding task roles still come from Jira/Epic context.
 
 Runtime notes:
 
@@ -467,24 +469,27 @@ The exact port numbers per registered user live in `agents.json` (`listeners[].h
 - `/home/karen/webhooks/users.json` is webhook routing only, not the full monitoring roster.
 - The shared docs (`AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`, `CODE_REPOS.md`) are canonical at `/srv/Code/environment/ai/openclaw/` (deployed from `environment/ai/openclaw/` in the unified `environment` repo). Each coding agent's home has two symlinks per file (one in `~/workspace/`, one in `~/.openclaw/workspace/`) pointing at the canonical file in the repo, so both the user-facing and OpenClaw internal workspaces see the same content. The monitoring agent (`karen`) has only `~/.openclaw/workspace/`, with one symlink per file.
 - Per-agent files (`SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `MEMORY.md`, `HEARTBEAT.md`) are **content-per-agent** but **single-canonical in location**: each lives at `~/workspace/<file>` and `~/.openclaw/workspace/<file>` is a symlink to it.
-- `AGENTS.md` defines the operating baseline (always-on rules + memory/safety/group-chats/heartbeats/tools). `ROLES.md` defines role-specific behaviour. `TEAM_WORKFLOW.md` is the action-indexed playbook for tasks. `SOUL.md` and `IDENTITY.md` define per-agent persona only.
+- `AGENTS.md` defines the operating baseline (always-on rules + memory/safety/group-chats/heartbeats/tools). `ROLES.md` defines task-role behaviour for coding agents plus the standing monitor role. `TEAM_WORKFLOW.md` is the action-indexed playbook for tasks. `SOUL.md` and `IDENTITY.md` define per-agent persona only.
 - Jira tickets in `Backlog` are not actionable. Agents and dispatchers must completely ignore them: do not queue, wake, send Telegram, comment, transition, or start work unless zeh explicitly overrides Backlog for that specific ticket.
 - Mandatory outbound signature rule: every outbound email and Jira update/comment must end with `--`, the agent name, and `Model: <provider>/<model>` using the actual current runtime model at send time.
 - Agent communication policy: report only when finished or blocked. No play-by-play progress updates.
 - Preserve the source communication channel. Jira tasks use Jira comments/status updates; email tasks use the email thread; Telegram tasks use Telegram. Jira/email-triggered work may send exactly one Telegram start notice to zeh, then no further Telegram messages for that task unless zeh explicitly redirects the conversation.
 
-Current model posture by role. Each role uses a model **tuned for that kind of work**, not arranged on a cheap-vs-expensive ladder; the manager and developer running different models is what makes "escalating to the manager" useful as a *fresh perspective* rather than just a louder voice.
+Current model posture by operational class. Coding agents do not have fixed
+manager/developer personas; they take task roles from Jira/Epic assignment or
+explicit handoff. Model choice is per-agent and task-fit based, not arranged
+on a cheap-vs-expensive ladder.
 
-| Role | Tuned for | Typical primary | Typical fallbacks |
+| Class | Tuned for | Typical primary | Typical fallbacks |
 |---|---|---|---|
-| `manager` | Ambiguity, architecture, risky review, difficult blockers | `openai-codex/gpt-5.5` | `openai-codex/gpt-5.4`, `openai-codex/gpt-5.3-codex`, `openrouter/google/gemini-3-flash-preview`, `openrouter/x-ai/grok-4.1-fast` |
-| `developer` | Focused execution of well-scoped tasks | `ollama/kimi-k2.6:cloud` | `ollama/deepseek-v4-pro:cloud`, `ollama/glm-5.1:cloud`, `ollama/deepseek-v4-flash:cloud` |
+| Coding agent `asdrubal` | Ambiguity, architecture, review, implementation when assigned | `openai-codex/gpt-5.5` | `openai-codex/gpt-5.4`, `openai-codex/gpt-5.3-codex`, `openrouter/google/gemini-3-flash-preview`, `openrouter/x-ai/grok-4.1-fast` |
+| Coding agent `barekbaal` | Focused execution, engineering, implementation, review when assigned | `ollama/kimi-k2.6:cloud` | `ollama/deepseek-v4-pro:cloud`, `ollama/glm-5.1:cloud`, `ollama/deepseek-v4-flash:cloud` |
 | `monitor` (user `karen`) | Triage, host probing, terse Telegram alerts | `ollama/deepseek-v4-pro:cloud` | `ollama/kimi-k2.6:cloud`, `ollama/glm-5.1:cloud`, `ollama/deepseek-v4-flash:cloud` |
 
-Manager-role agents are review/triage/delegation agents by default, but can
-modify code when zeh explicitly assigns the ticket to them. They must never
-self-assign Jira work. No agent creates or merges pull requests; agents push
-branches and report readiness, and zeh creates/lands PRs.
+Coding agents can implement, coordinate, review, research, or operate when the
+live ticket/Epic assignment gives them that role. They must never self-assign
+Jira work. No agent creates or merges pull requests; agents push branches and
+report readiness, and zeh creates/lands PRs.
 
 Live per-user defaults are in each agent's own `~/.openclaw/openclaw.json`, **not** in the shared registry — model preference is persona, not host topology.
 
@@ -647,7 +652,7 @@ Added 2026-05-08. A read-only single-page dashboard at `https://dev.vixi.au/agen
 | Path | Purpose |
 |---|---|
 | `/usr/local/bin/agent-dashboard` | Node server (~530 lines). Stdlib `http`, `fs`, `child_process`. Listens on 127.0.0.1:3013. |
-| `/srv/Code/environment/ai/web/agents.html` | Single-file frontend (~810 lines including CSS + JS), redesigned 2026-05-10: modern dark/light themes (toggle persisted in `localStorage`), role-coded cards (`manager`/`developer`/`monitor` accent colors), capability + integration + service badges per agent, SVG-free icons. Hydrates per-agent metadata from `/agents/registry.json` (auth-gated nginx alias to `/srv/agents/index.json` — the live runtime registry, NOT in the repo); live state still flows via the SSE stream. Tracked in `environment/ai/web/agents.html`. Served by **nginx** directly via `alias`; SELinux context `httpd_sys_content_t`. The legacy path `/usr/local/share/agent-dashboard/agents.html` is now a symlink to this file so the Node fallback path still works for loopback-direct fetches. |
+| `/srv/Code/environment/ai/web/agents.html` | Single-file frontend (~810 lines including CSS + JS), redesigned 2026-05-10: modern dark/light themes (toggle persisted in `localStorage`), class-coded cards (`coding`/`monitor` accent colors), capability + integration + service badges per agent, SVG-free icons. Hydrates per-agent metadata from `/agents/registry.json` (auth-gated nginx alias to `/srv/agents/index.json` — the live runtime registry, NOT in the repo); live state still flows via the SSE stream. Tracked in `environment/ai/web/agents.html`. Served by **nginx** directly via `alias`; SELinux context `httpd_sys_content_t`. The legacy path `/usr/local/share/agent-dashboard/agents.html` is now a symlink to this file so the Node fallback path still works for loopback-direct fetches. |
 | `/etc/agent-dashboard/config.json` | Bind address/port, `agents_registry` path, jira host, `system_services` list, poll intervals. |
 | `/etc/systemd/system/agent-dashboard.service` | `Type=simple`, `Restart=always`, runs as root, depends on `network-online.target` and `ai-monitor.timer`. |
 
@@ -763,15 +768,15 @@ Second consolidated note covering changes since the 2026-05-08 entry. Each bulle
 
 - **`mime.js textToHtml` signature styling** (`/srv/Code/environment/ai/openclaw/skills/google-workspace/mime.js`). Detects the trailing `--/Name/Provider/Model` paragraph and renders the provider/model line as `<span style="color:#888;font-size:smaller;font-style:italic;">…</span>` in the HTML email part. Plain-text part unchanged.
 
-- **Roles renamed** in `agents.json` and every doc/per-agent file: `manager-worker` → `manager`, `cost-efficient implementer` → `developer`, `monitor` unchanged. No code did literal string-matching on these (verified by grep across `/usr/local/bin`, `/usr/local/sbin`, `/etc/ai-monitor`, `/etc/agent-dashboard`, `/home/karen/webhooks`, `skills/`), so the rename is data-only. Reframed the model-tier language: each role uses a model **tuned for that kind of work**, not arranged on a cheap-vs-expensive ladder. An "escalation" between roles is a fresh perspective from a different model — not an admission that the other model is inferior.
+- **Coding role normalized** in `agents.json`: Asdrubal and Barekbaal use `role: coding`; `manager` and `developer` are task roles determined from Jira/Epic assignment or explicit handoff, not standing personas. `monitor` remains unchanged for Karen because it maps to a service responsibility.
 
 - **Documentation generalised**: every prose mention of `Asdrubal`, `Barekbaal`, `Karen` removed from the shared docs (replaced with role-based or `<user>` references). Wire-format identifiers (`karen_decision` SSE event, `karen_triage` JSON config key, `auto_woke_after_karen_suppress` log/action string) kept verbatim because they're live code/config constants — annotated as such in this doc. The `agents.json` registry, the per-agent `SOUL.md`/`IDENTITY.md` (persona), and webhook routing config legitimately keep agent names as data.
 
-- **Doc consolidation: `AGENTS.md` + new `ROLES.md`**. The `AGENTS/` folder (manager.md / developer.md / monitor.md) was collapsed into a single shared `AGENTS.md` (operating baseline read by every agent regardless of role) and a new `ROLES.md` (sectioned by role: `## Manager`, `## Developer`, `## Monitor`). Each agent reads `AGENTS.md`, looks up its `role` in `agents.json`, and reads the matching section in `ROLES.md`. All five per-agent `AGENTS.md` symlinks now point at the same shared file. Also: `TEAM_SHARED.md` deleted (was a strict duplicate of `TEAM_WORKFLOW.md`).
+- **Doc consolidation: `AGENTS.md` + `ROLES.md`**. The `AGENTS/` folder (manager.md / developer.md / monitor.md) was collapsed into a single shared `AGENTS.md` (operating baseline read by every agent regardless of role) and `ROLES.md` (task-role guidance plus the standing monitor role). Coding agents have registry `role: coding`; manager/developer are task roles proven by Jira/Epic assignment, not personas. All five per-agent `AGENTS.md` symlinks now point at the same shared file. Also: `TEAM_SHARED.md` deleted (was a strict duplicate of `TEAM_WORKFLOW.md`).
 
-- **Action-indexed workflow doc**. `TEAM_WORKFLOW.md` got a Quick Index table at the top mapping "When you are about to X, read § Y", with action-titled section headings ("Sending an outbound", "Receiving an @-mention", "Picking your next task", "Working a Jira ticket", "Reviewing", "Email", "Telegram", "System / service operations", "Knowledge handling", "Escalation", "Manager → developer handoff"). Lets agents jump to the relevant ~10-line section instead of re-reading 200+ lines per task. Net byte size on always-loaded baseline (`AGENTS.md` + `ROLES.md` + `TEAM_WORKFLOW.md`) dropped ~24 % alongside.
+- **Action-indexed workflow doc**. `TEAM_WORKFLOW.md` got a Quick Index table at the top mapping "When you are about to X, read § Y", with action-titled section headings ("Sending an outbound", "Receiving an @-mention", "Picking your next task", "Working a Jira ticket", "Reviewing", "Email", "Telegram", "System / service operations", "Knowledge handling", "Escalation", "Task handoff"). Lets agents jump to the relevant ~10-line section instead of re-reading 200+ lines per task. Net byte size on always-loaded baseline (`AGENTS.md` + `ROLES.md` + `TEAM_WORKFLOW.md`) dropped ~24 % alongside.
 
-- **Per-agent file audit**. Removed restated workflow rules (Communication, Boundaries, escalation criteria) from `SOUL.md` and `IDENTITY.md` for both coding agents — those rules now live exclusively in `AGENTS.md` and `TEAM_WORKFLOW.md`. Updated stale role names (`manager-worker`, `cost-efficient implementer`) and obsolete model-tier framings (`stronger model`, `Ollama cloud models, so be disciplined`) to match the new role-tuned-for-work framing. The monitoring agent's stale `/home/zeh/AGENTS.md` reference in `IDENTITY.md` was replaced with the actual canonical doc paths.
+- **Per-agent file audit**. Removed restated workflow rules (Communication, Boundaries, escalation criteria) from `SOUL.md` and `IDENTITY.md` for both coding agents — those rules now live exclusively in `AGENTS.md` and `TEAM_WORKFLOW.md`. Updated stale role names and obsolete model-tier framings; current policy is `role: coding` for coding agents, with manager/developer used only as task roles. The monitoring agent's stale `/home/zeh/AGENTS.md` reference in `IDENTITY.md` was replaced with the actual canonical doc paths.
 
 - **Workspace divergence resolved**. For each coding agent, `~/.openclaw/workspace/{SOUL,IDENTITY,USER,TOOLS,MEMORY,HEARTBEAT}.md` was previously a separate file from `~/workspace/<file>` — typically a generic openclaw template, drifted from the user-customised `~/workspace/` version. Each `~/.openclaw/workspace/` per-agent file is now a symlink to its `~/workspace/` canonical. Pre-unification originals saved as `*.preunify-20260510T1541` for inspection. Net effect: a single canonical location per per-agent file regardless of which workspace the runtime reads.
 
@@ -829,13 +834,15 @@ This chapter captures the yoga510 migration pattern for bringing up a new local 
 
 ### 21.1 Decide the user mapping first
 
-Create the target Linux users before installing OpenClaw. Keep a written role map for the target users, including which x1 behaviour profile each role should follow:
+Create the target Linux users before installing OpenClaw. Keep a written class
+map for the target users, including which operating profile each user should
+follow:
 
-| Source behaviour | Target example from yoga510 |
+| Source class | Target example from yoga510 |
 |---|---|
 | Owner/admin | `rachael` |
-| Primary code-agent behaviour | `ada` |
-| Secondary code-agent behaviour | `claudia` |
+| Coding-agent behaviour | `ada` |
+| Coding-agent behaviour | `claudia` |
 | Monitoring-agent behaviour | `emery` |
 
 Use the target names everywhere in runtime paths: `/home/<target>`, `/home/<target>/workspace`, `/home/<target>/.openclaw`, systemd user services, Maildir ownership, and `/etc/openclaw/agents.json`.

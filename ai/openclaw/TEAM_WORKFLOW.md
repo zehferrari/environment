@@ -5,7 +5,7 @@ what you're about to do; jump to that section. You do not need to re-read
 the whole file every session.
 
 `AGENTS.md` is the boot manifest (always-on rules, operating baseline).
-`ROLES.md` is the per-role manual. This file wins for any conflict on
+`ROLES.md` is the task-role manual. This file wins for any conflict on
 **process and task handling**.
 
 ## Quick index
@@ -18,13 +18,13 @@ the whole file every session.
 | Start work on an assigned Jira ticket | [Working a Jira ticket](#working-a-jira-ticket) |
 | See an unassigned Jira ticket or want to assign one | [Jira assignment](#jira-assignment) |
 | Push code or think a PR is needed | [Code and PR boundary](#code-and-pr-boundary) |
-| Hand off from manager to developer | [Manager → developer handoff](#manager--developer-handoff) |
+| Hand off work to another agent | [Task handoff](#task-handoff) |
 | Review someone else's work | [Reviewing](#reviewing) |
 | Handle email | [Email](#email) |
 | Send a Telegram message | [Telegram](#telegram) |
 | Touch a system or service | [System / service operations](#system--service-operations) |
 | Save what you learned | [Knowledge handling](#knowledge-handling) |
-| Escalate (to manager, or to zeh) | [Escalation](#escalation) |
+| Escalate to another agent or to zeh | [Escalation](#escalation) |
 
 ---
 
@@ -160,13 +160,11 @@ feedback-first. Max one such Telegram per 24 h per agent.
    transition, or work — even if assigned or mentioned. Override only on
    explicit zeh instruction for that specific ticket.
 6. If the ticket is unassigned, do not assign it to yourself and do not
-   start implementation. A manager may assign it to a developer when that
-   is the correct handoff; a developer waits for zeh or the manager to
-   assign it.
-7. Determine your Jira role from the live issue, not your persona. Being
-   "manager" in `agents.json` is not permission to take ownership. You may
-   implement only when the issue is explicitly assigned to you by zeh or by a
-   valid manager-to-developer handoff.
+   start implementation. A coordinating agent may assign it to another
+   agent only when that handoff is justified by the Epic/task context.
+7. Determine your Jira role from the live issue, not your persona or
+   registry label. You may implement only when the issue is explicitly
+   assigned to you by zeh or by a valid task handoff.
 8. Send exactly **one** concise Telegram start notice to zeh after
    accepting an assigned ticket, then move it to `In Progress` before
    real work. After that, communicate about the task only in Jira
@@ -203,15 +201,15 @@ feedback-first. Max one such Telegram per 24 h per agent.
   - Is it an Epic?
   - Am I assigned to the Epic?
   - Is this a child of an Epic I am assigned to manage?
-  - Is this task assigned to me by zeh or a valid manager handoff?
+  - Is this task assigned to me by zeh or a valid agent handoff?
   - Is it Backlog?
   - If none of those prove ownership or review duty: no mutation and no work.
 - Never assign a Jira ticket to yourself.
 - Unassigned implementation tickets are not automatically yours, even if
   they are `Selected for Development` or arrive through a webhook.
-- The manager may assign a ticket to the developer as an explicit handoff
-  when the task is ready and not blocked.
-- The developer may start only after assignment by zeh or the manager.
+- A coordinating agent may assign a ticket to another agent as an explicit
+  handoff when the task is ready and not blocked.
+- Any coding agent may start only after assignment by zeh or a valid handoff.
 - If a webhook says "assigned to me" but the actor is yourself, treat it
   as a policy error and do not start work.
 
@@ -230,9 +228,9 @@ feedback-first. Max one such Telegram per 24 h per agent.
 
 ---
 
-## Manager → developer handoff
+## Task handoff
 
-The manager provides:
+The coordinating agent provides:
 
 - Goal.
 - Ticket / link / context.
@@ -243,7 +241,7 @@ The manager provides:
 - Required tests / builds / checks.
 - Escalation triggers.
 
-The developer:
+The receiving agent:
 
 - Follows the plan closely; avoids broad refactors unless required.
 - Asks or escalates when the plan conflicts with reality.
@@ -363,23 +361,22 @@ remaining risk. Sign the review handoff.
 - **No secrets** in memory, tickets, chat, or comments.
 - Update memory immediately when a fact changes role / models / auth /
   deployment / service ports / workflow.
-- After a manager → developer execution loop, the developer saves
-  reusable implementation lessons; the manager saves
-  management/review lessons if any.
+- After a coordinated execution loop, the implementer saves reusable
+  implementation lessons; the coordinating/reviewing agent saves review
+  lessons if any.
 
 ---
 
 ## Escalation
 
-**Escalate to the manager** when:
+**Escalate to another agent/reviewer** when:
 
 - Architecture is unclear.
 - Production, auth, data-loss, or security risk is involved.
 - A second perspective from a different model would help — for example
-  the developer's current approach isn't converging, or you want a
-  sanity check on a non-obvious decision before committing. Treat this
-  as **getting another perspective**, not as admitting the developer's
-  model is inferior.
+  the current approach isn't converging, or you want a sanity check on a
+  non-obvious decision before committing. Treat this as **getting another
+  perspective**, not as a role hierarchy.
 - A task crosses multiple systems or has ambiguous acceptance criteria.
 
 **Escalate to zeh** when:

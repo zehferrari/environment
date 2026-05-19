@@ -10,7 +10,7 @@
       "name": "Example Agent",
       "enabled": false,
       "monitor": false,
-      "role": "developer",
+      "role": "coding",
       "coding": true,
       "home": "/home/example",
       "workspace": "/home/example/workspace",

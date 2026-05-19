@@ -19,7 +19,7 @@ For broader context:
 ├── SERVICES.md            service catalog
 ├── MONITORING.md          monitoring topology overview
 ├── AGENTS.md              shared agent operating manual (every agent reads it)
-├── ROLES.md               role-specific behaviour (manager / developer / monitor)
+├── ROLES.md               task-role behaviour for coding agents + monitor role
 ├── TEAM_WORKFLOW.md       canonical workflow rules — symlinked into every agent's workspace
 ├── CODE_REPOS.md          shared /srv/Code/ project repos + mandatory branch workflow
 ├── index.example.json     agent registry template (single record) — copy to /srv/agents/index.json (live, NOT in repo) and edit
@@ -31,10 +31,11 @@ For broader context:
 ```
 
 The split between `AGENTS.md` and `ROLES.md` is deliberate: every agent reads the
-**same** `AGENTS.md` (operating baseline) regardless of role, then resolves its
-`role` from `agents.json` and reads the matching section in `ROLES.md`. One
-unique source per concern: identity baseline (`AGENTS.md`), role behaviour
-(`ROLES.md`), task workflow (`TEAM_WORKFLOW.md`).
+**same** `AGENTS.md` (operating baseline). Coding agents then use `ROLES.md` to
+map the live ticket/Epic context to a task role; `manager` and `developer` are
+not standing personas. `monitor` remains a standing operational role for Karen.
+One unique source per concern: identity baseline (`AGENTS.md`), task-role
+behaviour (`ROLES.md`), task workflow (`TEAM_WORKFLOW.md`).
 
 ## How agents see this repo
 
@@ -57,7 +58,8 @@ Per-agent symlinks point into the host-specific OpenClaw checkout. Use `/srv/Cod
 
 Note: the `monitoring` agent (Linux user `karen`) has only the
 `~/.openclaw/workspace/` paths — the user-facing `~/workspace/` doesn't exist
-for that role, so AGENTS/ROLES/TEAM_WORKFLOW are symlinked once each there.
+for the monitor user, so AGENTS/ROLES/TEAM_WORKFLOW are symlinked once each
+there.
 
 Per-agent **state**, **identity**, **tokens**, and **memory** are NOT symlinked and NOT in this repo — see [`AGENT_FILES.md`](./AGENT_FILES.md).
 
