@@ -67,7 +67,7 @@ signature and allowlist controls.
 - Ada uses `openai-codex/gpt-5.5` with the x1 primary code-agent fallback order.
 - Claudia uses Claude CLI OAuth through the normalized `anthropic/claude-opus-4-7` provider, with the x1 secondary code-agent fallback order.
 - Emery uses the x1 monitoring-agent Ollama cloud fallback stack.
-- All Ollama cloud entries use `https://ollama.zeh.me`.
+- All Ollama cloud entries use `http://ollama.local`, resolved locally to moonlight (`10.0.0.10`) via `/etc/hosts`.
 
 ## Telegram
 
