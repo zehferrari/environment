@@ -891,11 +891,19 @@ def main():
         for service in agent.get("services") or []:
             check_user_service(user, service)
 
-        # Monitor integration: the agent runs jira-receiver:3014 and
-        # bitbucket-receiver:3015 (split from the legacy webhook-receiver:3010).
-        # Each /health endpoint returns the routed user list — verify both.
+        # Monitor integration: the agent CAN run jira-receiver:3014 and
+        # bitbucket-receiver:3015. Each receiver is gated independently
+        # by integrations.<X> (see webhooks/common.js KNOWN_RECEIVERS) —
+        # only probe the ones whose gate is on.
         if integrations.get("monitor"):
-            for label, port in (("jira-receiver", 3014), ("bitbucket-receiver", 3015)):
+            receiver_ports = [
+                ("jira-receiver", 3014, "jira"),
+                ("bitbucket-receiver", 3015, "bitbucket"),
+            ]
+            for label, port, gate in receiver_ports:
+                if not integrations.get(gate):
+                    emit("OK", f"{user}/{label}: gated off (integrations.{gate}=false); not probed")
+                    continue
                 check_webhook_health(f"{user}/{label}", port,
                                      expected_users=list(users.keys()) if user == monitor_user else None)
 
