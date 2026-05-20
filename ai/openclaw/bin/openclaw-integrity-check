@@ -705,7 +705,14 @@ def check_dev_env_drift(monitor_user=None, monitor_home=None, monitor_uid=None):
                 pass
     if not unit_text:
         emit("WARN", f"{monitor_user}: unable to inspect unit file for EnvironmentFile wiring")
-    envfile_wired = str(env_file_path) in unit_text
+    # Match either the literal path or the systemd specifier form (%h/...)
+    # — user units commonly use %h so the same unit file works for any
+    # user without per-host substitution.
+    envfile_specifier = str(env_file_path).replace(monitor_home, "%h", 1)
+    envfile_wired = (
+        str(env_file_path) in unit_text
+        or envfile_specifier in unit_text
+    )
 
     fallback_port = WEBHOOK_PORT_FALLBACKS.get(monitor_user, "?")
     for key in ("PORT", "JIRA_WEBHOOK_SECRET", "BITBUCKET_WEBHOOK_SECRET"):
@@ -896,9 +903,13 @@ def main():
             check_google(user, openclaw_cfg)
         if integrations.get("openaiAuth"):
             check_openai_auth(user)
-        if integrations.get("jira"):
+        # Outbound API token checks are only meaningful for coding agents
+        # (who actually call Jira/Bitbucket). The monitor agent may have
+        # integrations.jira/bitbucket=true to gate its inbound RECEIVERS,
+        # but has no token file by design — checking would always FAIL.
+        if integrations.get("jira") and agent.get("role") == "coding":
             check_jira(user, user_cfg)
-        if integrations.get("bitbucket") and bitbucket_workspace and bitbucket_repo:
+        if integrations.get("bitbucket") and agent.get("role") == "coding" and bitbucket_workspace and bitbucket_repo:
             check_bitbucket(user, user_cfg, bitbucket_workspace, bitbucket_repo)
 
     print(f"[SUMMARY] ok={ok_count} warn={warn_count} fail={fail_count}")
