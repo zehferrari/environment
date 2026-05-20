@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
+const agentSelf = require('../agent-self');
 
 const HOME = os.homedir();
 const USER = os.userInfo().username;
@@ -266,7 +267,12 @@ function listMessages(limit = 20) {
 function sendMail({ to, subject, body, extraHeaders = {} }) {
   assertAllowedRecipients(to, 'send');
   assertSignedBody(body, 'send');
-  const from = process.env.LOCAL_MAIL_FROM || `${USER}@${DOMAIN}`;
+  // Per TEAM_WORKFLOW.md "Email sender header (mandatory)": always send
+  // as "Name <email>" pulled from the registry. LOCAL_MAIL_FROM env still
+  // overrides for explicit operator control (e.g. sending as a role
+  // alias), but the default is the canonical registry-derived form
+  // rather than the bare `<user>@<domain>` it was before.
+  const from = process.env.LOCAL_MAIL_FROM || agentSelf.fromHeader();
   const msgId = `<${Date.now()}.${crypto.randomBytes(6).toString('hex')}@${os.hostname()}>`;
   const headers = [
     ['From', from],
