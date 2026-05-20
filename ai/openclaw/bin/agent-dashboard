@@ -108,6 +108,20 @@ function deriveEffectiveAgent(agent, defaults) {
     }
   } catch (_e) { /* ignore */ }
 
+  // Receiver-gating: openclaw-<X>-receiver.service is gated at script
+  // startup by integrations.<X> (see webhooks/common.js KNOWN_RECEIVERS).
+  // If the gate is off, the script exits 0 and the service stays
+  // inactive by design. Drop it from the derived services list so
+  // downstream consumers (install.sh reconcile, integrity-check, dashboard)
+  // don't expect a running service that's intentionally idle.
+  const integ = agent.integrations || {};
+  const RECEIVER_RE = /^openclaw-([a-z0-9-]+)-receiver\.service$/;
+  services = services.filter(s => {
+    const m = s.match(RECEIVER_RE);
+    if (!m) return true;
+    return Boolean(integ[m[1]]);
+  });
+
   eff.services = services;
   eff.capabilities = caps;
   return eff;

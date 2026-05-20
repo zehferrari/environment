@@ -2771,6 +2771,21 @@ def derive_effective_agent(agent, defaults):
         except Exception:
             pass
 
+    # Receiver-gating: openclaw-<X>-receiver.service is gated at script
+    # startup by integrations.<X> (see webhooks/common.js KNOWN_RECEIVERS).
+    # If the gate is off, the script exits 0 and the service stays
+    # inactive by design — drop it from the derived list so downstream
+    # consumers don't expect a running service that's intentionally idle.
+    import re as _re_recv
+    _integ = agent.get("integrations") or {}
+    _recv_re = _re_recv.compile(r"^openclaw-([a-z0-9-]+)-receiver\.service$")
+    def _keep(s):
+        m = _recv_re.match(s)
+        if not m:
+            return True
+        return bool(_integ.get(m.group(1)))
+    services = [s for s in services if _keep(s)]
+
     eff["services"] = services
     eff["capabilities"] = caps
     return eff
