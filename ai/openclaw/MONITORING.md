@@ -18,11 +18,12 @@ the entry-point overview.
     `openclaw-backup.timer`. Latest 14 archives kept under
     `/var/backups/openclaw`; off-host copy at
     `moonlight:/srv/backups/openclaw/x1`.
-- **Per-agent services** declared under `services` in `agents.json`
-  (`openclaw-gateway`, `openclaw-gmail-listener`,
-  `openclaw-webhook-receiver`, `wdt-<user>`).
+- **Per-agent services** derived at runtime from `agent-defaults.json` based on
+  the agent's `role` plus enabled `integrations` (e.g. `openclaw-gateway`,
+  `openclaw-gmail-listener`, `openclaw-webhook-receiver`,
+  `openclaw-mail-listener`). Per-agent `services` in `agents.json` adds extras.
 - **Listeners** declared under `listeners` in `agents.json`.
-- **Stalled Jira tickets** for any agent with `coding: true` and
+- **Stalled Jira tickets** for any agent with `role: "coding"` and
   `integrations.jira: true`. Two complementary kinds: `task-stalled-no-agent`
   (primary, defined by *most-recent activity* — max of newest openclaw
   session-jsonl mtime AND `updatedAt` across all `agent:main:*` keys in
@@ -67,13 +68,75 @@ the entry-point overview.
 
 ## Registry-driven
 
-The registry (`agents.json`) is the source for what to monitor:
+The registry (`agents.json`) and the defaults schema (`agent-defaults.json` in
+this repo, symlinked to `/etc/openclaw/agent-defaults.json`) together drive
+what's monitored. `agents.json` carries flags only; services and capabilities
+are derived:
 
-- `monitor: true` — included in checks.
-- `services` — user systemd services expected active.
-- `listeners` — expected TCP listeners.
-- `integrations` — controls deeper checks (Gmail, Jira, Bitbucket).
-- `capabilities` — declares what the monitoring agent may do (and may not).
+- `enabled: true` — included in monitoring sweeps and probes.
+- `role: "coding" | "monitor"` — exclusive identity; drives the
+  `byRole` block in `agent-defaults.json` (caps + services). A coding agent
+  modifies code and works tickets; a monitor agent triages incidents, wakes
+  and restarts other agents, sends alerts. Never both.
+- `integrations` — each truthy integration adds services and capabilities
+  via `agent-defaults.json` `byIntegration[k]` (e.g. `gmail: true` adds
+  `openclaw-gmail-listener.service` and `can_send_email: true`).
+- `listeners` — expected TCP listeners (host-specific; not derivable).
+- `services` (optional, per-agent) — extra services appended to the derived
+  list. Use for project-specific extras the defaults don't know about.
+- `capabilities` (optional, per-agent) — key-by-key overrides of the
+  derived capabilities (e.g. read-only mode for maintenance: `{ can_modify_code: false }`).
+
+Consumers (`ai-monitor`, `openclaw-integrity-check`, `agent-dashboard`)
+call a shared `derive_effective_agent(agent, defaults)` helper that does
+the merge. After that step every agent record exposes its `services` and
+`capabilities` arrays — same shape as the legacy explicit form, derived
+not authored. See the comments block at the top of `agent-defaults.json`
+for the merge algorithm.
+
+### Per-agent project resources (`~/.local/openclaw/monitor.json`)
+
+Each agent declares their own project resources (side projects, dev
+playgrounds, containers) in `~/<user>/.local/openclaw/monitor.json`:
+
+```json
+{
+  "version": 1,
+  "resources": [
+    {
+      "name": "wdt",
+      "description": "Whitsunday Discovery Trail dev playground",
+      "enabled": true,
+      "services": ["wdt-<user>.service"],
+      "listeners": [
+        { "host": "127.0.0.1", "port": 3001, "owner": "wdt", "expected": true }
+      ]
+    }
+  ]
+}
+```
+
+The single `enabled` flag controls **both** sides at once:
+
+- **Service lifecycle**: `openclaw-monitor-sync` (system service, root)
+  reconciles actual systemd state against the file. `enabled: true` →
+  unit is `systemctl --user enable --now`. `enabled: false` → unit is
+  `systemctl --user stop` (kept installed; flip back to restart).
+- **Monitoring sweep**: `ai-monitor`, `openclaw-integrity-check`, and
+  `agent-dashboard` merge each enabled resource's `services` and
+  `listeners` into the effective agent view. Disabled resources are
+  invisible to monitoring — no false alerts about stopped units.
+
+Triggers for `openclaw-monitor-sync`:
+
+- `openclaw-monitor-sync.path` — watches every per-agent `monitor.json`;
+  fires the reconcile within ~1 s of a write.
+- `openclaw-monitor-sync.timer` — periodic drift correction every 5 min.
+- Manual: `sudo /usr/local/sbin/openclaw-monitor-sync [<user>]`.
+
+To add a project: write the file, set `enabled: true`, done — no central
+registry edit. To temporarily pause monitoring + running: flip `enabled`
+to `false` and write the file. Idempotent.
 
 `/home/karen/webhooks/users.json` is webhook routing only, **not** the
 agent roster. Don't conflate them.
@@ -220,7 +283,7 @@ Read-only, real-time, basic-auth-gated:
 
 ## Known risks
 
-- x1 is a **single point of failure** for agents, monitoring, WDT
+- The host is a **single point of failure** for its agents, monitoring,
   playgrounds, and remediation. Disk-loss risk is bounded only as long as
   off-host backup stays current.
 - **Gmail watches expire** and must keep renewing successfully.

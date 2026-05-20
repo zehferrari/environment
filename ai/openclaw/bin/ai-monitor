@@ -488,7 +488,7 @@ def probe_jira_stalled_for_agent(agent, cfg, sc):
     if not user or not email:
         return []
     integrations = agent.get("integrations") or {}
-    if not (agent.get("coding") and integrations.get("jira")):
+    if not (agent.get("role") == "coding" and integrations.get("jira")):
         return []
     host = sc.get("jira_host", "zeh-ferrari.atlassian.net")
     statuses = sc.get("statuses", ["In Progress"])
@@ -585,7 +585,7 @@ def probe_stalled_tasks(cfg, registry):
     if not out["enabled"] or not registry:
         return out
     for agent in registry.get("agents", []) or []:
-        if not (agent.get("enabled") and agent.get("monitor")):
+        if not (agent.get("enabled")):
             continue
         items = probe_jira_stalled_for_agent(agent, cfg, sc)
         for item in items:
@@ -609,7 +609,7 @@ def probe_idle_with_queue_for_agent(agent, cfg, sc):
     if not user or not email:
         return []
     integrations = agent.get("integrations") or {}
-    if not (agent.get("coding") and integrations.get("jira")):
+    if not (agent.get("role") == "coding" and integrations.get("jira")):
         return []
 
     host = sc.get("jira_host", "zeh-ferrari.atlassian.net")
@@ -694,7 +694,7 @@ def probe_agent_queue(cfg, registry):
     # the agent_queue_check block overrides — keeps Jira config DRY.
     sc = {**(cfg.get("stalled_tasks_check") or {}), **sc_q}
     for agent in registry.get("agents", []) or []:
-        if not (agent.get("enabled") and agent.get("monitor")):
+        if not (agent.get("enabled")):
             continue
         items = probe_idle_with_queue_for_agent(agent, cfg, sc)
         for item in items:
@@ -833,7 +833,7 @@ def probe_pending_email_tasks(cfg, registry):
     if not out["enabled"] or not registry:
         return out
     for agent in registry.get("agents", []) or []:
-        if not (agent.get("enabled") and agent.get("monitor") and agent.get("coding")):
+        if not (agent.get("enabled") and agent.get("role") == "coding"):
             continue
         items = probe_pending_email_tasks_for_agent(agent, cfg, sc)
         for item in items:
@@ -2687,8 +2687,98 @@ def load_config():
         sys.exit(2)
 
 
+def load_agent_defaults(cfg):
+    """Read /etc/openclaw/agent-defaults.json (or override). Returns a
+    defaults dict; on read/parse failure returns a minimal safe default
+    so derived views still produce sensible results."""
+    path = (cfg.get("watch") or {}).get(
+        "agent_defaults", "/etc/openclaw/agent-defaults.json"
+    )
+    try:
+        return json.loads(Path(path).read_text())
+    except Exception:
+        return {"core": {"services": [], "capabilities": {}},
+                "byRole": {}, "byIntegration": {}}
+
+
+def derive_effective_agent(agent, defaults):
+    """Compute effective services and capabilities for an agent by
+    merging the central defaults schema with the per-agent flags.
+
+    Algorithm (see agent-defaults.json comments.merge_algorithm):
+      1. Start with core.{services, capabilities}.
+      2. Merge byRole[agent.role].
+      3. For each integration where agent.integrations[k] is truthy,
+         merge byIntegration[k].
+      4. Per-agent agent.services APPENDS (dedup); agent.capabilities
+         OVERRIDES key-by-key.
+
+    Returns a shallow copy of `agent` with `services` and `capabilities`
+    set to the effective derived values. All other agent fields are
+    preserved.
+    """
+    eff = dict(agent)
+    core = (defaults.get("core") or {})
+    services = list(core.get("services") or [])
+    caps = dict(core.get("capabilities") or {})
+
+    role = agent.get("role")
+    by_role = ((defaults.get("byRole") or {}).get(role) or {}) if role else {}
+    for s in (by_role.get("services") or []):
+        if s not in services:
+            services.append(s)
+    caps.update(by_role.get("capabilities") or {})
+
+    by_int = defaults.get("byIntegration") or {}
+    for k, on in (agent.get("integrations") or {}).items():
+        if not on:
+            continue
+        block = by_int.get(k) or {}
+        for s in (block.get("services") or []):
+            if s not in services:
+                services.append(s)
+        caps.update(block.get("capabilities") or {})
+
+    # Per-agent overrides win.
+    for s in (agent.get("services") or []):
+        if s not in services:
+            services.append(s)
+    caps.update(agent.get("capabilities") or {})
+
+    # Per-agent monitor.json: project resources the agent has installed
+    # in their home (~/.local/openclaw/monitor.json). Each resource with
+    # enabled=true contributes its services + listeners. Lets agents add
+    # side-project monitoring without touching the central registry.
+    home = agent.get("home") or f"/home/{agent.get('user')}"
+    mpath = Path(home) / ".local" / "openclaw" / "monitor.json"
+    if mpath.exists():
+        try:
+            mdoc = json.loads(mpath.read_text())
+            eff_listeners = list(agent.get("listeners") or [])
+            seen_listeners = {(L.get("host"), L.get("port")) for L in eff_listeners}
+            for r in (mdoc.get("resources") or []):
+                if not r.get("enabled"):
+                    continue
+                for s in (r.get("services") or []):
+                    if s not in services:
+                        services.append(s)
+                for L in (r.get("listeners") or []):
+                    key = (L.get("host"), L.get("port"))
+                    if key not in seen_listeners:
+                        eff_listeners.append(L)
+                        seen_listeners.add(key)
+            eff["listeners"] = eff_listeners
+        except Exception:
+            pass
+
+    eff["services"] = services
+    eff["capabilities"] = caps
+    return eff
+
+
 def load_registry(cfg):
-    """Read /etc/openclaw/agents.json (or whatever cfg.watch.agents_registry points to).
+    """Read /etc/openclaw/agents.json (or whatever cfg.watch.agents_registry points to)
+    and apply derived defaults from /etc/openclaw/agent-defaults.json to each agent.
     Returns (registry_dict_or_None, health_dict). health.ok=False if the file can't be
     read or doesn't parse — callers should still run, but emit a registry-unreadable
     deterministic issue."""
@@ -2704,15 +2794,17 @@ def load_registry(cfg):
         health["mtime"] = int(mtime)
         health["age_s"] = age_s
         registry = json.loads(p.read_text())
+        defaults = load_agent_defaults(cfg)
+        registry["agents"] = [
+            derive_effective_agent(a, defaults)
+            for a in (registry.get("agents") or [])
+        ]
         max_age_h = cfg["watch"].get("agents_registry_max_age_hours")
         if max_age_h:
             health["max_age_hours"] = max_age_h
             if age_s > max_age_h * 3600:
                 health["stale"] = True
-        agents = [
-            a for a in registry.get("agents", [])
-            if a.get("enabled") and a.get("monitor")
-        ]
+        agents = [a for a in registry.get("agents", []) if a.get("enabled")]
         health["ok"] = True
         health["agents_seen"] = len(agents)
         return registry, health
@@ -2731,7 +2823,7 @@ def expand_watch_from_registry(cfg, registry):
     listeners = list(cfg["watch"].get("system_listeners", []))
     if registry:
         for agent in registry.get("agents", []):
-            if not (agent.get("enabled") and agent.get("monitor")):
+            if not (agent.get("enabled")):
                 continue
             user = agent.get("user")
             uid = agent.get("uid")

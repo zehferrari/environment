@@ -1,20 +1,22 @@
 {
   "version": 1,
-  "description": "Example registry — copy this to /srv/agents/index.json, edit, restart agent-dashboard.service. Live edits (e.g. dashboard capability/integration toggles) write back to /srv/agents/index.json directly; this template stays in git as the single-record reference.",
+  "description": "Example agents.json — single-record template. Copy to <host>:/srv/agents/index.json (live, NOT in repo), edit, restart agent-dashboard.service. Per-agent capabilities and services are derived at runtime from /etc/openclaw/agent-defaults.json (in this same repo, agent-defaults.json) based on role + integrations. This file carries only flags and host-specific data.",
   "sharedKnowledgeDir": "/srv/Code/environment/ai/openclaw",
   "webhookRoutedUsers": ["example"],
   "agents": [
     {
+      "_doc_role": "role is exclusive: 'coding' (modifies code, works tickets) OR 'monitor' (triages incidents, wakes/restarts other agents, sends alerts). Never both. Derived capabilities and services come from agent-defaults.json byRole[role].",
+      "_doc_integrations": "Each truthy integration adds services and capabilities via agent-defaults.json byIntegration[k]. Turning an integration off removes both. Available: webhook, gmail, maildir, jira, bitbucket, openaiAuth, claudeAuth, telegram.",
+      "_doc_overrides": "Optional `capabilities` overrides individual keys (e.g. read-only mode: { can_modify_code: false }). Optional `services` adds extras to the derived list. For project-specific add-ons, drop a file in ~/<user>/.config/openclaw/projects/<name>.json (convention — not yet wired into the loader).",
+
       "user": "example",
       "uid": 9999,
       "name": "Example Agent",
       "enabled": false,
-      "monitor": false,
       "role": "coding",
-      "coding": true,
       "home": "/home/example",
       "workspace": "/home/example/workspace",
-      "email": "example@zeh.me",
+      "email": "example@example.com",
       "jira_account_id": "712020:00000000-0000-0000-0000-000000000000",
       "avatar": "/srv/agents/Pictures/Example/avatar.png",
       "telegram": {
@@ -22,32 +24,15 @@
         "bot": "@example_bot"
       },
       "integrations": {
-        "webhook": false,
-        "gmail": false,
-        "jira": false,
-        "bitbucket": false,
-        "openaiAuth": false,
-        "wdt": false
+        "webhook": true,
+        "gmail": true,
+        "jira": true,
+        "bitbucket": true,
+        "openaiAuth": true
       },
-      "capabilities": {
-        "can_modify_code": false,
-        "can_jira": false,
-        "can_send_email": false,
-        "can_send_telegram_alerts": false,
-        "can_restart_agents": false,
-        "can_wake_agents": false,
-        "can_triage_incidents": false
-      },
-      "services": [
-        "openclaw-gateway.service",
-        "openclaw-gmail-listener.service",
-        "openclaw-webhook-receiver.service",
-        "wdt-example.service"
-      ],
       "listeners": [
-        { "host": "127.0.0.1", "port": 18900, "owner": "example openclaw-gateway", "expected": true },
-        { "host": "127.0.0.1", "port": 3019, "owner": "example openclaw-webhook-receiver", "expected": true },
-        { "host": "127.0.0.1", "port": 3009, "owner": "example wdt", "expected": true }
+        { "host": "127.0.0.1", "port": 18900, "owner": "openclaw-gateway", "expected": true },
+        { "host": "127.0.0.1", "port": 3019, "owner": "openclaw-webhook-receiver", "expected": true }
       ]
     }
   ]

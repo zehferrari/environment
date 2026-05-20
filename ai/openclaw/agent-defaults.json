@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "description": "Default services and capabilities derived from per-agent fields in agents.json. agents.json should carry only flags (role, enabled, integrations) — never derived data. Per-agent overrides under capabilities/services win.",
+
+  "comments": {
+    "role_is_exclusive": "Every agent has exactly one role — `coding` or `monitor`. Never both. Coding agents modify code and work tickets; monitor agents triage incidents, wake/restart other agents, send alerts. The boundary is deliberate: different model tunings, different sudoers, different telegram bots, different operational guardrails.",
+    "merge_algorithm": [
+      "1. Start with core.{services, capabilities}.",
+      "2. Merge in byRole[agent.role].{services, capabilities}.",
+      "3. For each integration k where agent.integrations[k] is true, merge in byIntegration[k].{services, capabilities}.",
+      "4. Per-agent agent.services is APPENDED to the derived services list and de-duplicated. Useful for project-specific extras.",
+      "5. Per-agent agent.capabilities OVERRIDES the derived capabilities key-by-key. Useful for read-only / maintenance modes.",
+      "6. Result: the effective agent view consumers (ai-monitor, agent-dashboard, openclaw-integrity-check) use."
+    ],
+    "turning_things_off": "Take an agent fully offline: enabled=false. Disable a single capability for maintenance: capabilities: { can_modify_code: false }. Disable an integration: integrations.gmail=false (removes the listener service and the can_send_email cap together).",
+    "per_project_extensions": "Per-project add-ons (extra services to watch, listener ports for a side project) should live in ~/<user>/.config/openclaw/projects/<name>.json and be merged dynamically by the loader. Convention documented but not implemented — wait for a real project to need it. Goal: keep this central registry free of project data that comes and goes."
+  },
+
+  "core": {
+    "_doc": "Applied to every enabled agent regardless of role. The openclaw gateway is the runtime every agent needs.",
+    "services": ["openclaw-gateway.service"],
+    "capabilities": {}
+  },
+
+  "byRole": {
+    "coding": {
+      "_doc": "Coding agents work Jira tickets, modify code, push branches. Never participate in monitoring.",
+      "services": [],
+      "capabilities": {
+        "can_modify_code": true
+      }
+    },
+    "monitor": {
+      "_doc": "Monitor agents triage ai-monitor incidents, wake/restart coding agents, send alerts. Never modify code.",
+      "services": [],
+      "capabilities": {
+        "can_wake_agents": true,
+        "can_restart_agents": true,
+        "can_triage_incidents": true,
+        "send_alerts_to": "telegram"
+      }
+    }
+  },
+
+  "byIntegration": {
+    "_doc": "Each enabled integration contributes services and capabilities. Turning an integration off in agents.json removes both.",
+
+    "gmail": {
+      "services": ["openclaw-gmail-listener.service"],
+      "capabilities": { "can_send_email": true }
+    },
+    "maildir": {
+      "services": ["openclaw-mail-listener.service"],
+      "capabilities": { "can_send_email": true }
+    },
+    "webhook": {
+      "services": ["openclaw-webhook-receiver.service"],
+      "capabilities": {}
+    },
+    "jira": {
+      "services": [],
+      "capabilities": { "can_jira": true }
+    },
+    "bitbucket": {
+      "services": [],
+      "capabilities": { "can_modify_code": true }
+    },
+    "telegram": {
+      "_doc": "Telegram bot is configured under agent.telegram, not as a service. Entry exists for symmetry.",
+      "services": [],
+      "capabilities": {}
+    },
+    "openaiAuth": { "services": [], "capabilities": {} },
+    "claudeAuth": { "services": [], "capabilities": {} }
+  }
+}

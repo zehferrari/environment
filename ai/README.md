@@ -407,7 +407,7 @@ Migrated from `thinkpad` (`10.0.0.105`) to `x1` (`10.0.0.108`) on 2026-05-06.
 
 | UID/GID range | Role | Notes |
 |---:|---|---|
-| `1001+` | Coding agents (`role: coding`) | Full OpenClaw agent, WDT playground, Telegram/Gmail/Jira auth. One UID per registered agent in `agents.json`. |
+| `1001+` | Coding agents (`role: coding`) | Full OpenClaw agent, Telegram/Gmail/Jira auth. One UID per registered agent in `agents.json`. |
 | `1003` | Monitoring agent (Linux user `karen`) | Telegram alert persona, multi-tenant webhook dispatch account, shared web root. |
 
 The authoritative roster — usernames, UIDs, operational role/class, services,
@@ -419,7 +419,7 @@ Runtime notes:
 - Source homes are still intact on `thinkpad`, but migrated user services and linger are disabled there.
 - `moonlight` proxies the relevant `vixi.au` routes to `10.0.0.108` in `/etc/nginx/sites-available/vixiAu`; disabled `/etc/nginx/sites-available/webhooks` was also updated from `10.0.0.105` to `10.0.0.108`.
 - Global OpenClaw lives at `/usr/local/lib/node_modules/openclaw`; `/usr/local/bin/openclaw` points to it.
-- `pnpm` 10.33.0 is installed at `/usr/local/lib/node_modules/pnpm` and `/usr/local/bin/pnpm` for WDT builds.
+- `pnpm` 10.33.0 is installed at `/usr/local/lib/node_modules/pnpm` and `/usr/local/bin/pnpm` for Node project builds.
 - Tumbleweed's Node 24 binary rejects being invoked as `node-24`, so `/usr/bin/node-24` is a wrapper that execs `/usr/bin/node` with argv name `node`.
 - SELinux is enforcing. nginx needs `httpd_can_network_connect`, ACL traverse rights on migrated home dirs, and `httpd_sys_content_t` labels on migrated web roots/static assets.
 - Root SSH client material from `thinkpad:/root/.ssh` was migrated because the integrity checker probes `moonlight` over SSH.
@@ -438,7 +438,7 @@ Expected enabled user services/timers, by role (concrete user → services map i
 | Role | Services / timers |
 |---|---|
 | Monitoring agent (user `karen`) | `openclaw-gateway.service`, `openclaw-webhook-receiver.service` |
-| Each coding agent (one row per agent in registry) | `openclaw-gateway.service`, `openclaw-gmail-listener.service`, `openclaw-webhook-receiver.service`, `wdt-<user>.service` |
+| Each coding agent (one row per agent in registry) | Core: `openclaw-gateway.service`, `openclaw-gmail-listener.service`, `openclaw-webhook-receiver.service` (derived from `role` + `integrations` via `agent-defaults.json`). Plus any project resources the agent has enabled in `~/.local/openclaw/monitor.json` (e.g. `wdt-<user>.service`). |
 
 Expected listeners on `x1` (concrete `user → port` map is in `agents.json` `listeners`):
 
@@ -449,7 +449,7 @@ Expected listeners on `x1` (concrete `user → port` map is in `agents.json` `li
 | `18793` | Monitoring agent (`karen`) | OpenClaw gateway |
 | `3010` | Monitoring agent (`karen`) | Multi-tenant OpenClaw webhook receiver |
 | `3011, 3012, …` (one per coding agent) | Coding agent | Per-agent OpenClaw webhook receiver |
-| `3001, 3002, …` (one per coding agent) | Coding agent | WDT Next.js standalone, loopback |
+| Per-agent project resources (e.g. `3001, 3002, …`) | Coding agent | Declared in that agent's `~/.local/openclaw/monitor.json` (e.g. WDT Next.js standalone, loopback). Each resource's `enabled` flag controls both whether it runs and whether it's monitored. |
 | `11434` | system (`ollama`) | Ollama API, loopback |
 | `3013` | system (`root`, `agent-dashboard.service`) | Agent dashboard backend (HTTP + SSE), loopback only — public access via nginx at `https://dev.vixi.au/agents.html` with basic auth |
 
@@ -517,14 +517,14 @@ Webhook and integration facts:
 - Routing config: `/home/karen/webhooks/users.json`.
 - Endpoints: `GET /health`, `POST /jira`, `POST /bitbucket`.
 - `karen` may run `/usr/local/sbin/openclaw-control *` via `/etc/sudoers.d/karen-openclaw-control`.
-- `openclaw-control` only permits target users that are coding agents in `/etc/openclaw/agents.json` (`role` matches a coding role); commands include `restart-services`, `wake-agent`, and `restart-and-wake`. As of 2026-05-08, `restart-services` covers all enabled `openclaw-*` **and** `wdt-*` user services for the target user (was `openclaw-*` only); `systemctl restart` is invoked uniformly so inactive units are also (re)started. This is the path the monitoring agent / `ai-monitor` uses to bring stuck user services back up automatically.
+- `openclaw-control` permits target users that are coding agents in `/etc/openclaw/agents.json`; commands include `restart-services`, `wake-agent`, and `restart-and-wake`. `restart-services` covers all enabled `openclaw-*` user services for the target user; `systemctl restart` is invoked uniformly so inactive units are also (re)started. This is the path the monitoring agent / `ai-monitor` uses to bring stuck user services back up automatically. Project-specific services should NOT be named `openclaw-*`; declare them in `~/<user>/.config/openclaw/projects/<name>.json` instead (convention; loader hook not yet wired).
 - `openclaw-control wake-agent` loads `/home/<user>/.config/openclaw/openclaw-secrets.env` before calling `openclaw system event`, so gateway token secret refs resolve for webhook wakes.
 - Telegram bots: one per agent, recorded in `/etc/openclaw/agents.json` under each agent's `telegram.bot` field.
 - Jira host: `zeh-ferrari.atlassian.net`.
 - Bitbucket workspace/repo: `zehferrari` / `whitsunday-discovery-trail`.
 - Agents may push ticket branches but must not create or merge Bitbucket pull
   requests. PR creation and landing are human-only.
-- Jira issue keys are not WDT-only. Gmail/Jira automation must accept generic `PROJECT-123` keys such as `HOMELAB-3`.
+- Jira issue keys are project-agnostic. Gmail/Jira automation must accept any generic `PROJECT-123` key, not a hard-coded prefix.
 - If an agent gets a Jira "not found/no access" result but a webhook or email clearly names the ticket, the agent must re-check with workspace Jira helpers before telling zeh no action is needed.
 - Jira webhook receivers and Gmail Jira fallback ignore issues whose live/current status is `Backlog`.
 
@@ -798,29 +798,25 @@ Set of fixes triggered by moving an agent onto the `claude-cli` provider and dis
 
 - **Bypass-Karen path for deterministic kinds** (`dedupe_and_act`). New `karen_triage.auto_action_kinds_bypass_karen` config list (default `["agent-idle-with-queue"]`). When an issue of one of these kinds appears in the same tick, ai-monitor partitions it OUT of the karen-bound set, runs `auto_wake_stalled_agents` directly (which generates a kind-aware reminder naming the queued keys + TEAM_WORKFLOW.md *"Picking the Next Task"* and pushes it through `openclaw-control wake-agent`), marks the alert key `alert_sent` so it doesn't re-fire next tick, and records an `auto_action_bypass_karen` action in the verdict log. The remaining (non-auto) issues still flow through Karen as before. If ALL issues this tick were auto-handled, the Karen handoff is skipped entirely — no incident written, no Telegram. Rationale: when the situation is unambiguous and the action is bounded + idempotent, a triage round-trip just adds latency and a chance of a wrong suppress. To extend, add a kind to the config list — no code change.
 
-### WDT Notes
+### Recent changes (2026-05-20)
 
-Each coding agent has its own `wdt-<user>.service` (Next.js standalone WDT playground). The unit name embeds the Linux username; the `<user>` and per-agent listener port are recorded in `/etc/openclaw/agents.json`.
+Big registry refactor: separate identity (central) from derived data (defaults) from per-agent project resources (per-agent files). Goal: `agents.json` carries only flags; everything else is computed.
 
-- WDT playgrounds were brought up on 2026-05-06 during the ThinkPad → x1 migration.
-- Legacy `wdt-branch-control.service` has been removed. Do not recreate it; branch-control server code was a retired dev helper, not part of the active WDT runtime.
-- The current WDT app uses `.env`; `.env.production` is legacy.
-- Each agent's `.env` uses an absolute SQLite URL so it resolves correctly when systemd runs from `.next/standalone`.
-- `wdt-<user>.service` uses `EnvironmentFile=/home/<user>/Code/whitsunday-discovery-trail/.env`, a per-agent `PORT` (see `agents.json` `listeners`), and `HOSTNAME=127.0.0.1`.
-- The app is rebuilt with `pnpm run build`, generating `.next/standalone/server.js`.
-- After rebuilding WDT, re-apply nginx access and SELinux context to static assets if nginx serves `/_next/static/` directly. Substitute `<user>` for each coding agent:
+- **New schema `agent-defaults.json`** (`/srv/Code/environment/ai/openclaw/agent-defaults.json`, symlinked to `/etc/openclaw/agent-defaults.json`). Defines `core` (services every agent gets), `byRole` (services + capabilities per role: `coding` modifies code and works tickets; `monitor` triages incidents and wakes/restarts other agents — never both), and `byIntegration` (each enabled integration contributes its services + capabilities). Per-agent overrides under `agent.capabilities` (key-by-key override) and `agent.services` (append) still win. `can_send_telegram_alerts` replaced by `send_alerts_to: "telegram"` (default for monitor role).
 
-  ```
-  setfacl -m u:nginx:rx /home/<user> /home/<user>/Code /home/<user>/Code/whitsunday-discovery-trail /home/<user>/Code/whitsunday-discovery-trail/.next
-  setfacl -R -m u:nginx:rX /home/<user>/Code/whitsunday-discovery-trail/.next/static
-  chcon -R -t httpd_sys_content_t /home/<user>/Code/whitsunday-discovery-trail/.next/static
-  ```
+- **`agents.json` slimmed.** Dropped the `services` and `capabilities` arrays (now derived). Dropped the `monitor` and `coding` boolean flags — `role` is now the single exclusive switch (`coding | monitor`, never both). Dropped `integrations.wdt` — WDT moved to per-agent `monitor.json` (see next bullet). Listeners stay (host-specific, not derivable).
+
+- **Per-agent `~/.local/openclaw/monitor.json`**. Each agent declares their own project resources (WDT dev playground, custom containers, etc.) in this file. Schema: `{ resources: [{ name, enabled, services, listeners }] }`. The single `enabled` flag controls both whether the service runs AND whether ai-monitor / agent-dashboard probe it. Side projects come and go without touching the central registry.
+
+- **`openclaw-monitor-sync`** (`/usr/local/sbin/openclaw-monitor-sync`, `openclaw-monitor-sync.{service,path,timer}`). Reconciles actual systemd state against each agent's `monitor.json`. Path-watch unit fires within ~1 s of any `monitor.json` write; timer runs every 5 min for drift correction. Idempotent. Manual invocation: `sudo /usr/local/sbin/openclaw-monitor-sync [<user>]`. Verified end-to-end with the WDT round-trip: flip `enabled` to `false` → service stops within 4 s + ai-monitor drops it from the sweep → flip back to `true` → service restarts + reappears in the sweep.
+
+- **`derive_effective_agent(agent, defaults)` shared helper** (mirrored in Python for `ai-monitor` and `openclaw-integrity-check`, in JS for `agent-dashboard`). Merge order: `core` → `byRole[role]` → `byIntegration[k]` for every truthy integration → per-agent overrides → per-agent `monitor.json` enabled resources. All consumers see a single uniform view; callers no longer touch `agent.monitor` / `agent.coding` (gone), just `agent.role`.
 
 Known follow-ups:
 
 - If BotFather tokens are ever rotated, update each user's `telegram-token` and OpenClaw secrets env.
 - The Ollama service on `x1` uses conservative default backend settings, not ThinkPad-specific GPU tuning.
-- x1 is still a single point of failure for OpenClaw agents, WDT playgrounds, monitoring, and remediation. Local backup reduces accidental-loss risk; disk-loss protection depends on keeping `moonlight:/srv/backups/openclaw/x1` current.
+- x1 is still a single point of failure for its OpenClaw agents, monitoring, and remediation. Local backup reduces accidental-loss risk; disk-loss protection depends on keeping `moonlight:/srv/backups/openclaw/x1` current.
 - Gmail watch renewal remains operationally critical because Gmail watches expire. Keep `/usr/local/bin/openclaw-integrity-check` and dashboard status green.
 - The monitoring agent runs on the host it monitors. Self-incidents must continue to bypass the monitoring agent and go directly to Telegram fallback.
 - Secrets are split by Linux user for least privilege, which is correct, but audits should use `/usr/local/bin/openclaw-backup --inventory` plus `/usr/local/bin/openclaw-registry-check`.

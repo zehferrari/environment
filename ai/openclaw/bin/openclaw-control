@@ -18,10 +18,10 @@ Allowed users are read from the registry (${REGISTRY}); any agent with
 \`enabled: true\` is accepted.
 
 Notes:
-  restart-services covers all enabled \`openclaw-*\` and \`wdt-*\` user
-  services for the target user. \`systemctl restart\` is used uniformly,
-  so inactive units are also (re)started — this is the path the monitor
-  agent / ai-monitor uses to bring stuck services back up.
+  restart-services covers all enabled \`openclaw-*\` user services for
+  the target user. \`systemctl restart\` is used uniformly, so inactive
+  units are also (re)started — this is the path the monitor agent /
+  ai-monitor uses to bring stuck services back up.
 
   For the monitor agent (registry role='monitor'), restart-and-wake is
   also the recovery path when the agent:main:main heartbeat conversation
@@ -56,13 +56,15 @@ is_allowed_user() {
 }
 
 list_managed_user_services() {
-  # All `openclaw-*` and `wdt-*` user services that are currently enabled
-  # (persistent or runtime). State filter on list-unit-files lets us catch
-  # inactive units that need starting too — `systemctl restart` works
-  # identically on active/inactive/failed.
+  # All `openclaw-*` user services that are currently enabled (persistent
+  # or runtime). State filter on list-unit-files lets us catch inactive
+  # units that need starting too — `systemctl restart` works identically
+  # on active/inactive/failed. Project-specific services should NOT be
+  # named `openclaw-*` — drop a config in ~/.config/openclaw/projects/
+  # instead (see agent-defaults.json comments.per_project_extensions).
   local user="$1"
   systemctl --user -M "${user}@" --no-pager --plain --no-legend \
-    list-unit-files 'openclaw-*.service' 'wdt-*.service' \
+    list-unit-files 'openclaw-*.service' \
     --state=enabled,enabled-runtime 2>/dev/null \
     | awk '{print $1}' | sort -u
 }
