@@ -649,7 +649,7 @@ const CAP_LABELS = {
   can_modify_code: 'code',
   can_jira: 'jira',
   can_send_email: 'email',
-  can_send_telegram_alerts: 'telegram',
+  send_alerts_to: 'alerts',
   can_restart_agents: 'restart',
   can_wake_agents: 'wake',
   can_triage_incidents: 'triage',
@@ -713,7 +713,8 @@ function regOrder() {
   // monitoring agent last; coding agents alphabetical by user
   const list = [...(state.registry?.agents || [])];
   list.sort((a, b) => {
-    if (a.coding !== b.coding) return a.coding ? -1 : 1;
+    const aCoding = a.role === 'coding', bCoding = b.role === 'coding';
+    if (aCoding !== bCoding) return aCoding ? -1 : 1;
     return (a.user || '').localeCompare(b.user || '');
   });
   return list;
@@ -796,7 +797,7 @@ function renderAgent(reg, live) {
     row.append(el('span', 'ticket-summary', cur.summary || ''));
     row.append(el('span', `ticket-status ${statusClass(cur.status)}`, cur.status));
     taskField.append(row);
-  } else if (reg.coding) {
+  } else if (reg.role === "coding") {
     taskField.append(el('div', 'field-value dim', 'no in-progress ticket'));
   } else {
     taskField.append(el('div', 'field-value dim', 'not a coding agent'));
@@ -834,7 +835,7 @@ function renderAgent(reg, live) {
   body.append(actField);
 
   // — Open Jira tickets (coding agents only)
-  if (reg.coding) {
+  if (reg.role === "coding") {
     const tickets = live_.jira_tickets || [];
     const jiraField = el('div', 'field');
     const jl = el('div', 'field-label');
