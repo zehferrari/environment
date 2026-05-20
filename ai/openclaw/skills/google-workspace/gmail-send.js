@@ -1,5 +1,6 @@
 const { google } = require('googleapis');
 const { getAuth } = require('./lib');
+const agentSelf = require('../agent-self');
 
 function usage() {
   console.error('Usage: node gmail-send.js to@example.com "Subject" "Body"');
@@ -23,8 +24,11 @@ async function main() {
   const auth = getAuth();
   const gmail = google.gmail({ version: 'v1', auth });
 
-  const fromProfile = await gmail.users.getProfile({ userId: 'me' });
-  const from = fromProfile.data.emailAddress;
+  // Per TEAM_WORKFLOW.md "Email sender header (mandatory)": always
+  // send as "Name <email>" pulled from the registry. The Gmail profile's
+  // bare emailAddress is intentionally NOT used — recipients need to see
+  // who's writing, not just the mailbox.
+  const from = agentSelf.fromHeader();
 
   const msg = buildMultipartAlternative({ from, to, subject, text: body });
 
