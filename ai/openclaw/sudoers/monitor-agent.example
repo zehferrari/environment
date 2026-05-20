@@ -1,0 +1,57 @@
+# Sudoers for the monitor agent (role: monitor in agents.json).
+# Install to /etc/sudoers.d/<monitor_user>-openclaw-control with mode 0440
+# (visudo -c -f <file> to validate first).
+#
+# Replace ALL three substitutions before installing:
+#   <MONITOR_USER>       — Linux user from agents.json `user` field
+#   <CODING_USERS>       — comma-separated list of coding agent users
+#                          (e.g. asdrubal,barekbaal,dev)
+#   <HOST_SERVICES>      — system services the monitor agent may restart
+#                          (host-specific: nginx,php-fpm,mariadb on x1;
+#                          postfix,dovecot on yoga510; etc.)
+#
+# The monitor agent should run with NO usable password (passwd -l
+# <user>), so only NOPASSWD entries here are reachable.
+
+Defaults:<MONITOR_USER> !requiretty
+
+# openclaw-control wraps wake-agent / restart-and-wake / restart-services
+# for any enabled agent in /etc/openclaw/agents.json.
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/local/sbin/openclaw-control *
+
+# System-level units the monitor agent may restart. Restart only —
+# no start/stop/disable. Customise per host.
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl restart ollama.service
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl restart nginx.service
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl restart agent-dashboard.service
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl restart openclaw-typing-keepalive.service
+# Restart of ai-monitor.service is allowed but should only be used when
+# zeh tells the monitor agent to in an incident — self-incidents bypass
+# the handoff and go direct to Telegram.
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl restart ai-monitor.service
+# host-specific extras — uncomment as needed:
+#<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl restart php-fpm.service
+#<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl restart mariadb.service
+#<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl restart postfix.service
+#<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl restart dovecot.service
+
+# Read-only inspection: status / is-active / is-failed for any unit, plus journals.
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl status *
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl is-active *
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl is-failed *
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl list-units *
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl list-unit-files *
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/systemctl show *
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/journalctl *
+
+# Run things as the agent users (for `systemctl --user` probes/remediation
+# and skill scripts that need to act as the agent).
+<MONITOR_USER> ALL=(<CODING_USERS>) NOPASSWD: /usr/bin/systemctl --user *
+<MONITOR_USER> ALL=(<CODING_USERS>) NOPASSWD: /usr/bin/node /srv/Code/environment/ai/openclaw/skills/*
+# yoga510-style mail-skill variant:
+#<MONITOR_USER> ALL=(<CODING_USERS>) NOPASSWD: /usr/bin/node /home/rachael/Code/environment/ai/openclaw/skills/local-mail/*
+
+# Inspection of agent and host state (fs metadata + read-only file reads).
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/stat *
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/ls *
+<MONITOR_USER> ALL=(root) NOPASSWD: /usr/bin/cat /etc/openclaw/*, /usr/bin/cat /etc/agent-dashboard/*, /usr/bin/cat /home/*, /usr/bin/cat /var/lib/ai-monitor/*, /usr/bin/cat /var/log/ai-monitor/*

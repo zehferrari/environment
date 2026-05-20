@@ -1,0 +1,10 @@
+[Unit]
+Description=Renew all per-agent Gmail push watches
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gmail-watch-renew-all
+StandardOutput=journal
+StandardError=journal

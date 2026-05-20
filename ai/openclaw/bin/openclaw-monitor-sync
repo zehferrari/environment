@@ -1,0 +1,102 @@
+#!/bin/bash
+# openclaw-monitor-sync — reconcile per-agent project resource state.
+#
+# For every agent in the OpenClaw registry:
+#   - Read ~/.local/openclaw/monitor.json
+#   - For each resource with enabled=true: ensure listed services are
+#     systemctl --user enabled + active.
+#   - For each resource with enabled=false: ensure listed services are
+#     systemctl --user stopped (unit kept; flip enabled back to start).
+#
+# Triggered three ways:
+#   1. systemd path-watch units on each agent's monitor.json (instant)
+#   2. openclaw-monitor-sync.timer (periodic drift correction)
+#   3. manual: sudo /usr/local/sbin/openclaw-monitor-sync [<user>]
+#
+# Idempotent: re-running with no state change is a no-op modulo a few
+# `is-active` queries.
+
+set -u
+
+REGISTRY="${OPENCLAW_AGENTS_JSON:-/etc/openclaw/agents.json}"
+LOG_TAG="openclaw-monitor-sync"
+
+log() { logger -t "$LOG_TAG" -- "$*"; echo "$*"; }
+
+if [ ! -r "$REGISTRY" ]; then
+    log "FATAL: cannot read registry $REGISTRY"
+    exit 2
+fi
+
+TARGET_USER="${1:-}"
+
+# Pull (user, uid, home) for enabled agents from the registry.
+mapfile -t entries < <(jq -r '.agents[]
+    | select(.enabled == true)
+    | "\(.user)\t\(.uid)\t\(.home // "/home/\(.user)")"' "$REGISTRY")
+
+if [ ${#entries[@]} -eq 0 ]; then
+    log "no enabled agents in registry"
+    exit 0
+fi
+
+run_user_systemctl() {
+    local user="$1" uid="$2"; shift 2
+    sudo -n -u "$user" \
+        env XDG_RUNTIME_DIR="/run/user/$uid" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+        systemctl --user "$@"
+}
+
+reconcile_user() {
+    local user="$1" uid="$2" home="$3"
+    local mpath="$home/.local/openclaw/monitor.json"
+
+    if [ ! -r "$mpath" ]; then
+        return 0
+    fi
+
+    # Validate JSON early so a broken edit doesn't loop log spam.
+    if ! jq -e . "$mpath" >/dev/null 2>&1; then
+        log "$user: monitor.json invalid JSON; skipping"
+        return 1
+    fi
+
+    # Iterate resources. Each line: "<enabled>\t<service>" — fan out per
+    # service so a resource with multiple services reconciles each one.
+    while IFS=$'\t' read -r enabled svc; do
+        [ -z "$svc" ] && continue
+        local current
+        current=$(run_user_systemctl "$user" "$uid" is-active "$svc" 2>/dev/null || true)
+
+        if [ "$enabled" = "true" ]; then
+            if [ "$current" = "active" ]; then
+                continue
+            fi
+            log "$user: enabling+starting $svc (was $current)"
+            run_user_systemctl "$user" "$uid" enable --now "$svc" 2>&1 | sed "s/^/$user: /" || \
+                log "$user: WARN failed to start $svc"
+        else
+            if [ "$current" = "inactive" ] || [ "$current" = "failed" ]; then
+                continue
+            fi
+            log "$user: stopping $svc (was $current; resource enabled=false)"
+            run_user_systemctl "$user" "$uid" stop "$svc" 2>&1 | sed "s/^/$user: /" || \
+                log "$user: WARN failed to stop $svc"
+        fi
+    done < <(jq -r '.resources[]? | (.enabled|tostring) as $e | .services[]? | "\($e)\t\(.)"' "$mpath")
+}
+
+for entry in "${entries[@]}"; do
+    user=$(echo "$entry" | cut -f1)
+    uid=$(echo "$entry" | cut -f2)
+    home=$(echo "$entry" | cut -f3)
+    if [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "$user" ]; then
+        continue
+    fi
+    if ! id -u "$user" >/dev/null 2>&1; then
+        log "skip $user: no system user"
+        continue
+    fi
+    reconcile_user "$user" "$uid" "$home"
+done

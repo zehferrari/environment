@@ -1,0 +1,1336 @@
+#!/usr/bin/env node
+'use strict';
+
+// agent-dashboard — single-file Node server.
+//
+// Listens on 127.0.0.1:<port> with two routes:
+//   GET /agents.html      — embedded static HTML
+//   GET /agents/events    — SSE stream of structured events
+//
+// Data sources:
+//   - /home/<user>/.openclaw/agents/main/sessions/*.jsonl (tail -F the newest)
+//   - /home/<user>/tasks/current.md (fs.watch)
+//   - /var/lib/ai-monitor/state.json (poll)
+//   - /var/lib/ai-monitor/decisions/*.json (fs.watch)
+//   - /var/log/ai-monitor/log.jsonl (tail -F)
+//   - systemctl is-active <service> (poll)
+//   - Jira /rest/api/3/search/jql per coding agent (poll, via sudo -u <user>)
+//
+// Service runs as root. Bind to loopback only — auth is at the nginx layer.
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const { spawn, execFile, execFileSync } = require('child_process');
+
+const CONFIG_PATH = '/etc/agent-dashboard/config.json';
+
+// -------- state --------
+let cfg = null;
+let registry = null;
+const clients = new Set();
+const replay = [];          // ring of recent events for new-client replay
+const REPLAY_MAX = 80;
+const REPLAYABLE_TYPES = new Set([
+  'agent_activity',
+  'agent_task_change',
+  'monitor_decision',
+  'registry_updated',
+]);
+
+const agentState = {};      // user -> { name, model_primary, current_task, last_activity, session_idle_s, jira_tickets, gateway_up }
+const configuredModelCache = {}; // user -> { ts, model }
+const systemState = {};     // service -> { is_active }
+let monitorState = {        // ai-monitor digest
+  last_tick: null,
+  open_events: [],
+  last_decision: null,
+  recent_decisions: [],
+};
+
+// -------- bootstrap --------
+function loadConfig() {
+  cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+}
+
+function loadAgentDefaults() {
+  const p = (cfg && cfg.agent_defaults) || '/etc/openclaw/agent-defaults.json';
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (_e) {
+    return { core: { services: [], capabilities: {} }, byRole: {}, byIntegration: {} };
+  }
+}
+
+// Mirror of Python derive_effective_agent in ai-monitor / openclaw-integrity-check.
+// Merge order: core → byRole[agent.role] → byIntegration[k] for every truthy
+// integration → per-agent overrides (services append-dedup; capabilities key-by-key).
+function deriveEffectiveAgent(agent, defaults) {
+  const eff = { ...agent };
+  const core = defaults.core || {};
+  let services = [...(core.services || [])];
+  const caps = { ...(core.capabilities || {}) };
+
+  const byRole = (defaults.byRole || {})[agent.role] || {};
+  for (const s of (byRole.services || [])) if (!services.includes(s)) services.push(s);
+  Object.assign(caps, byRole.capabilities || {});
+
+  const byInt = defaults.byIntegration || {};
+  for (const [k, on] of Object.entries(agent.integrations || {})) {
+    if (!on) continue;
+    const block = byInt[k] || {};
+    for (const s of (block.services || [])) if (!services.includes(s)) services.push(s);
+    Object.assign(caps, block.capabilities || {});
+  }
+
+  for (const s of (agent.services || [])) if (!services.includes(s)) services.push(s);
+  Object.assign(caps, agent.capabilities || {});
+
+  // Per-agent monitor.json: project resources the agent has installed in
+  // their home (~/.local/openclaw/monitor.json). Each resource with
+  // enabled=true contributes its services + listeners.
+  const home = agent.home || `/home/${agent.user}`;
+  const mPath = `${home}/.local/openclaw/monitor.json`;
+  try {
+    if (fs.existsSync(mPath)) {
+      const mdoc = JSON.parse(fs.readFileSync(mPath, 'utf8'));
+      const effListeners = [...(agent.listeners || [])];
+      const seen = new Set(effListeners.map(L => `${L.host}:${L.port}`));
+      for (const r of (mdoc.resources || [])) {
+        if (!r.enabled) continue;
+        for (const s of (r.services || [])) if (!services.includes(s)) services.push(s);
+        for (const L of (r.listeners || [])) {
+          const k = `${L.host}:${L.port}`;
+          if (!seen.has(k)) { effListeners.push(L); seen.add(k); }
+        }
+      }
+      eff.listeners = effListeners;
+    }
+  } catch (_e) { /* ignore */ }
+
+  eff.services = services;
+  eff.capabilities = caps;
+  return eff;
+}
+
+function loadRegistry() {
+  const p = (cfg && cfg.agents_registry) || '/etc/openclaw/agents.json';
+  try {
+    const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const defaults = loadAgentDefaults();
+    raw.agents = (raw.agents || []).map(a => deriveEffectiveAgent(a, defaults));
+    registry = raw;
+  } catch (e) {
+    log('ERROR loading registry', p, String(e));
+    registry = { agents: [] };
+  }
+}
+
+// Watch the central registry AND each per-agent ~/.local/openclaw/monitor.json
+// so external edits (a coder flipping enabled in monitor.json, or someone
+// updating agents.json by hand) propagate to the dashboard immediately.
+// Without these watches the dashboard's in-memory registry is stale until
+// the next service restart — and Services panels silently miss newly-added
+// project resources.
+const _registryWatchHandles = [];
+function watchRegistrySources() {
+  // Tear down any previous watches before re-establishing.
+  while (_registryWatchHandles.length) {
+    try { _registryWatchHandles.pop().close(); } catch (_e) {}
+  }
+
+  const debounceMs = 250;
+  let pending = null;
+  const triggerReload = (source) => {
+    if (pending) return;
+    pending = setTimeout(() => {
+      pending = null;
+      log('registry source changed:', source, '→ reloading');
+      loadRegistry();
+      broadcast({ type: 'registry_updated', source });
+    }, debounceMs);
+  };
+
+  const regPath = (cfg && cfg.agents_registry) || '/etc/openclaw/agents.json';
+  try {
+    _registryWatchHandles.push(fs.watch(regPath, () => triggerReload(regPath)));
+  } catch (e) {
+    log('WARN cannot watch', regPath, String(e));
+  }
+
+  for (const a of (registry.agents || [])) {
+    const home = a.home || `/home/${a.user}`;
+    const mPath = `${home}/.local/openclaw/monitor.json`;
+    if (!fs.existsSync(mPath)) continue;
+    try {
+      _registryWatchHandles.push(fs.watch(mPath, () => triggerReload(mPath)));
+    } catch (e) {
+      log('WARN cannot watch', mPath, String(e));
+    }
+  }
+}
+
+function log(...args) {
+  const ts = new Date().toISOString();
+  console.log(ts, ...args);
+}
+
+// -------- broadcast --------
+function broadcast(ev) {
+  ev.ts = ev.ts || Date.now();
+  if (REPLAYABLE_TYPES.has(ev.type)) {
+    replay.push(ev);
+    if (replay.length > REPLAY_MAX) replay.shift();
+  }
+  const line = `data: ${JSON.stringify(ev)}\n\n`;
+  for (const res of clients) {
+    try { res.write(line); } catch (_e) { clients.delete(res); }
+  }
+}
+
+// -------- snapshot --------
+function snapshot() {
+  return {
+    type: 'snapshot',
+    ts: Date.now(),
+    agents: agentState,
+    system: systemState,
+    monitor: monitorState,
+    config: {
+      poll_jira_s: cfg.poll_jira_s,
+      poll_systemctl_s: cfg.poll_systemctl_s,
+      poll_aimonitor_s: cfg.poll_aimonitor_s,
+    },
+  };
+}
+
+// -------- file: jsonl tail --------
+function pickLatestSessionJsonl(user) {
+  const dir = `/home/${user}/.openclaw/agents/main/sessions`;
+  let files;
+  try {
+    files = fs.readdirSync(dir)
+      .filter(f => f.endsWith('.jsonl') && !f.includes('.checkpoint.') && !f.includes('.deleted.') && !f.includes('.reset.') && !f.includes('.archive-'))
+      .map(f => ({ name: f, full: path.join(dir, f), mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+  } catch (_e) {
+    return null;
+  }
+  return files.length ? files[0].full : null;
+}
+
+// Returns { file, format } describing which jsonl to tail for the user.
+// Scans ALL agent:main:* conversation keys in sessions.json, picks the one
+// with the most-recent updatedAt, then resolves to its file:
+//   - claude-cli session → tail the claude-cli jsonl under ~/.claude/projects/
+//     (openclaw doesn't write its own jsonl for claude-cli sessions)
+//   - everything else    → tail the openclaw jsonl referenced by sessionFile
+// Falls back to the newest openclaw jsonl on disk if sessions.json can't be
+// read or has no usable entries.
+function pickActiveSessionInfo(user) {
+  try {
+    const sjPath = `/home/${user}/.openclaw/agents/main/sessions/sessions.json`;
+    const sj = JSON.parse(fs.readFileSync(sjPath, 'utf8'));
+    let best = null; // { entry, key }
+    for (const [k, e] of Object.entries(sj)) {
+      if (!k.startsWith('agent:main:')) continue;
+      if (!e || typeof e !== 'object') continue;
+      const upd = e.updatedAt || 0;
+      if (!best || upd > (best.entry.updatedAt || 0)) best = { entry: e, key: k };
+    }
+    if (best) {
+      const e = best.entry;
+      const sid = e.claudeCliSessionId
+        || (e.cliSessionBindings && e.cliSessionBindings['claude-cli'] && e.cliSessionBindings['claude-cli'].sessionId);
+      if (e.modelProvider === 'claude-cli' && sid) {
+        const projDir = `/home/${user}/.claude/projects/-home-${user}-workspace`;
+        const candidate = `${projDir}/${sid}.jsonl`;
+        if (fs.existsSync(candidate)) return { file: candidate, format: 'claude-cli' };
+      }
+      if (e.sessionFile && fs.existsSync(e.sessionFile)) {
+        return { file: e.sessionFile, format: 'openclaw' };
+      }
+    }
+  } catch (_e) { /* fall through */ }
+  const f = pickLatestSessionJsonl(user);
+  if (f) return { file: f, format: 'openclaw' };
+  return null;
+}
+
+// Map per-user tail-F process
+const tails = {};
+
+function startSessionTail(user) {
+  // Stop existing tail if any
+  if (tails[user]) {
+    try { tails[user].child.kill(); } catch (_e) {}
+    delete tails[user];
+  }
+  const info = pickActiveSessionInfo(user);
+  if (!info) {
+    log(`no session jsonl for ${user}`);
+    return;
+  }
+  const { file, format } = info;
+  log(`tail -F ${file} (user=${user}, format=${format})`);
+  // tail -n 0 -F to start from EOF and follow; restart on rotation
+  const child = spawn('tail', ['-n', '0', '-F', file], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let buf = '';
+  child.stdout.on('data', chunk => {
+    buf += chunk.toString('utf8');
+    let idx;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, idx);
+      buf = buf.slice(idx + 1);
+      if (format === 'claude-cli') handleClaudeCliLine(user, file, line);
+      else handleSessionLine(user, file, line);
+    }
+  });
+  child.stderr.on('data', d => log(`tail[${user}] stderr: ${d.toString().trim()}`));
+  child.on('exit', code => {
+    log(`tail[${user}] exited with ${code} — will restart in 3s`);
+    setTimeout(() => startSessionTail(user), 3000);
+  });
+  tails[user] = { child, file, format };
+}
+
+function summarizeContent(content) {
+  const out = [];
+  for (const c of content || []) {
+    if (c.type === 'text') {
+      const t = (c.text || '').trim().replace(/\s+/g, ' ');
+      out.push({ kind: 'text', preview: t.slice(0, 140) });
+    } else if (c.type === 'toolCall') {
+      const args = c.arguments || {};
+      const keyArgs = ['command', 'path', 'url', 'text', 'jql'];
+      let preview = '';
+      for (const k of keyArgs) {
+        if (args[k]) { preview = String(args[k]).slice(0, 100); break; }
+      }
+      out.push({ kind: 'tool_call', name: c.name, preview });
+    } else if (c.type === 'toolResult') {
+      const inner = (c.content || []).find(x => x.type === 'text');
+      out.push({
+        kind: 'tool_result',
+        name: c.toolName,
+        preview: inner ? (inner.text || '').slice(0, 100).replace(/\s+/g, ' ') : '',
+      });
+    } else if (c.type === 'thinking') {
+      out.push({ kind: 'thinking', preview: (c.text || '').slice(0, 100) });
+    }
+  }
+  return out;
+}
+
+function handleSessionLine(user, file, raw) {
+  if (!raw.trim()) return;
+  let o;
+  try { o = JSON.parse(raw); } catch (_e) { return; }
+  const t = o.type;
+  if (t === 'session') {
+    log(`[${user}] new session ${o.id}`);
+    return;
+  }
+  if (t === 'model_change') {
+    if (!agentState[user]) agentState[user] = {};
+    agentState[user].model_primary = `${o.provider}/${o.modelId}`;
+    broadcast({
+      type: 'agent_activity', agent: user, event: 'model_change',
+      model: agentState[user].model_primary, session_id: o.id,
+    });
+    return;
+  }
+  if (t !== 'message') return;
+  const msg = o.message || {};
+  const role = msg.role;
+  const summary = summarizeContent(msg.content);
+  // Update agentState last_activity
+  if (!agentState[user]) agentState[user] = {};
+  const tsMs = msg.timestamp || Date.now();
+  agentState[user].last_activity = {
+    ts: tsMs, role, items: summary,
+    stop_reason: msg.stopReason, error: msg.errorMessage || null,
+  };
+  agentState[user].session_idle_s = 0;
+  broadcast({
+    type: 'agent_activity', agent: user, event: 'message',
+    role, items: summary, stop_reason: msg.stopReason, error: msg.errorMessage || null,
+    ts: Math.floor(tsMs),
+  });
+}
+
+// ---- claude-cli jsonl format ---------------------------------------------
+// Different schema from openclaw's jsonl. Lines look like:
+//   {"parentUuid":..., "type":"user"|"assistant", "message":{"role":..., "content":[...], "model":..., "stop_reason":...}, "timestamp":"<ISO>"}
+// content blocks: {type:"text",text}, {type:"tool_use",name,input},
+//                 {type:"thinking",thinking}, {type:"tool_result",content,...}
+function summarizeContentClaudeCli(content) {
+  const out = [];
+  for (const c of content || []) {
+    if (!c || typeof c !== 'object') continue;
+    if (c.type === 'text') {
+      const t = (c.text || '').trim().replace(/\s+/g, ' ');
+      out.push({ kind: 'text', preview: t.slice(0, 140) });
+    } else if (c.type === 'tool_use') {
+      const args = c.input || {};
+      const keyArgs = ['command', 'path', 'url', 'text', 'jql', 'pattern', 'file_path', 'query'];
+      let preview = '';
+      for (const k of keyArgs) {
+        if (args[k]) { preview = String(args[k]).slice(0, 100); break; }
+      }
+      out.push({ kind: 'tool_call', name: c.name, preview });
+    } else if (c.type === 'tool_result') {
+      let text = '';
+      if (typeof c.content === 'string') text = c.content;
+      else if (Array.isArray(c.content)) {
+        const inner = c.content.find(x => x && x.type === 'text');
+        if (inner) text = inner.text || '';
+      }
+      out.push({ kind: 'tool_result', name: '', preview: text.slice(0, 100).replace(/\s+/g, ' ') });
+    } else if (c.type === 'thinking') {
+      out.push({ kind: 'thinking', preview: (c.thinking || '').slice(0, 100) });
+    }
+  }
+  return out;
+}
+
+function handleClaudeCliLine(user, file, raw) {
+  if (!raw.trim()) return;
+  let o;
+  try { o = JSON.parse(raw); } catch (_e) { return; }
+  const msg = o.message;
+  if (!msg || !msg.role) return;
+  const role = msg.role;
+  // content can be a string (some user messages) or an array of blocks
+  const content = Array.isArray(msg.content)
+    ? msg.content
+    : (typeof msg.content === 'string' ? [{ type: 'text', text: msg.content }] : []);
+  const summary = summarizeContentClaudeCli(content);
+  if (!agentState[user]) agentState[user] = {};
+  let tsMs = Date.now();
+  if (o.timestamp) {
+    const parsed = Date.parse(o.timestamp);
+    if (!isNaN(parsed)) tsMs = parsed;
+  }
+  // Track current model from assistant messages (model is on msg.model in claude-cli format)
+  if (role === 'assistant' && msg.model) {
+    agentState[user].model_primary = `claude-cli/${msg.model}`;
+  }
+  agentState[user].last_activity = {
+    ts: tsMs, role, items: summary,
+    stop_reason: msg.stop_reason || null, error: null,
+  };
+  agentState[user].session_idle_s = 0;
+  broadcast({
+    type: 'agent_activity', agent: user, event: 'message',
+    role, items: summary, stop_reason: msg.stop_reason || null, error: null,
+    ts: Math.floor(tsMs),
+  });
+}
+
+// Periodically check if the active session file has changed (rotation, or
+// flip between openclaw and claude-cli formats when provider changes).
+function rotateSessionTailsIfNeeded() {
+  for (const a of (registry.agents || [])) {
+    if (!a.enabled) continue;
+    const user = a.user;
+    const info = pickActiveSessionInfo(user);
+    if (!info) continue;
+    const cur = tails[user] && tails[user].file;
+    const curFmt = tails[user] && tails[user].format;
+    if (info.file !== cur || info.format !== curFmt) {
+      log(`session rotation for ${user}: ${cur || '(none)'}[${curFmt || '-'}] -> ${info.file}[${info.format}]`);
+      startSessionTail(user);
+    }
+  }
+}
+
+// -------- per-user current.md watcher --------
+function readCurrentTask(user) {
+  const p = `/home/${user}/tasks/current.md`;
+  try {
+    const text = fs.readFileSync(p, 'utf8');
+    // Heuristic: extract the most recent "## " heading and a status-ish line.
+    const headingMatch = text.match(/^##\s+(.+)$/m);
+    const ticketMatch = text.match(/\b([A-Z][A-Z0-9]+-\d+)\b/);
+    const statusMatch = text.match(/Status:\s*([^\n]+)/);
+    return {
+      heading: headingMatch ? headingMatch[1].trim().slice(0, 120) : null,
+      ticket: ticketMatch ? ticketMatch[1] : null,
+      status: statusMatch ? statusMatch[1].trim().slice(0, 60) : null,
+      mtime: fs.statSync(p).mtimeMs,
+    };
+  } catch (_e) {
+    return null;
+  }
+}
+
+function watchCurrentTask(user) {
+  const dir = `/home/${user}/tasks`;
+  if (!fs.existsSync(dir)) return;
+  try {
+    fs.watch(dir, (event, fn) => {
+      if (fn !== 'current.md') return;
+      const t = readCurrentTask(user);
+      if (!agentState[user]) agentState[user] = {};
+      agentState[user].current_task = t;
+      broadcast({ type: 'agent_task_change', agent: user, task: t });
+    });
+  } catch (e) {
+    log(`watchCurrentTask error ${user}:`, String(e));
+  }
+}
+
+// -------- ai-monitor watchers --------
+function tailFile(filePath, onLine) {
+  const child = spawn('tail', ['-n', '0', '-F', filePath], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let buf = '';
+  child.stdout.on('data', d => {
+    buf += d.toString('utf8');
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      onLine(buf.slice(0, i)); buf = buf.slice(i + 1);
+    }
+  });
+  child.stderr.on('data', d => log(`tail[${filePath}] stderr: ${d.toString().trim()}`));
+  child.on('exit', code => {
+    log(`tail[${filePath}] exited ${code} — restarting in 3s`);
+    setTimeout(() => tailFile(filePath, onLine), 3000);
+  });
+}
+
+function startAiMonitorTails() {
+  // log.jsonl — tick records
+  tailFile('/var/log/ai-monitor/log.jsonl', line => {
+    if (!line.trim()) return;
+    try {
+      const o = JSON.parse(line);
+      monitorState.last_tick = {
+        ts: o.ts, healthy: o.verdict.healthy, model: o.verdict._model,
+        summary: o.verdict.summary, issues: (o.verdict.issues || []).length,
+        actions: (o.actions || []).map(a => a.type),
+      };
+      broadcast({ type: 'ai_monitor_tick', tick: monitorState.last_tick });
+    } catch (_e) {}
+  });
+  // decisions dir — Karen's outputs
+  const decisionsDir = '/var/lib/ai-monitor/decisions';
+  if (fs.existsSync(decisionsDir)) {
+    fs.watch(decisionsDir, (event, fn) => {
+      if (event !== 'rename' || !fn || !fn.endsWith('.json')) return;
+      const full = path.join(decisionsDir, fn);
+      setTimeout(() => {
+        try {
+          const o = JSON.parse(fs.readFileSync(full, 'utf8'));
+          monitorState.last_decision = o;
+          monitorState.recent_decisions.unshift(o);
+          if (monitorState.recent_decisions.length > 10) monitorState.recent_decisions.length = 10;
+          broadcast({ type: 'monitor_decision', decision: o });
+        } catch (_e) {}
+      }, 200); // small delay to ensure write completed
+    });
+  }
+}
+
+// -------- systemctl polling --------
+function pollSystemctl() {
+  const services = (cfg && cfg.system_services) || [];
+  for (const svc of services) {
+    execFile('systemctl', ['is-active', svc], (err, stdout) => {
+      const state = (stdout || '').trim() || 'unknown';
+      const prev = systemState[svc] && systemState[svc].is_active;
+      systemState[svc] = { is_active: state };
+      if (prev !== state) {
+        broadcast({ type: 'system_state', service: svc, is_active: state, prev });
+      }
+    });
+  }
+  // Per-user services from registry
+  for (const a of (registry.agents || [])) {
+    if (!a.enabled) continue;
+    for (const svc of (a.services || [])) {
+      const key = `${a.user}/${svc}`;
+      const args = [
+        '-n', '-u', a.user, 'env',
+        `XDG_RUNTIME_DIR=/run/user/${a.uid}`,
+        `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${a.uid}/bus`,
+        'systemctl', '--user', 'is-active', svc,
+      ];
+      execFile('sudo', args, (err, stdout) => {
+        const state = (stdout || '').trim() || 'unknown';
+        const prev = systemState[key] && systemState[key].is_active;
+        systemState[key] = { is_active: state };
+        if (prev !== state) {
+          broadcast({ type: 'system_state', service: key, is_active: state, prev });
+        }
+      });
+    }
+  }
+}
+
+// -------- ai-monitor state poll --------
+function pollAiMonitorState() {
+  try {
+    const s = JSON.parse(fs.readFileSync('/var/lib/ai-monitor/state.json', 'utf8'));
+    const open = Object.entries(s.events || {}).map(([k, ev]) => ({
+      key: k,
+      unit: ev.issue && ev.issue.unit,
+      kind: ev.issue && ev.issue.kind,
+      severity: ev.issue && ev.issue.severity,
+      first_seen: ev.first_seen,
+      missed_runs: ev.missed_runs,
+      alert_sent: ev.alert_sent,
+    }));
+    monitorState.open_events = open;
+    broadcast({ type: 'ai_monitor_state', open_events: open });
+  } catch (_e) {}
+}
+
+// -------- per-agent Jira poll --------
+// `filterUser` = null  → poll every coding agent (timer cadence)
+// `filterUser` = "<u>" → poll just that user (webhook-triggered immediate refresh)
+function pollJira(filterUser) {
+  for (const a of (registry.agents || [])) {
+    if (filterUser && a.user !== filterUser) continue;
+    if (!a.enabled || a.role !== "coding") continue;
+    if (!(a.integrations || {}).jira) continue;
+    const jql = `assignee=currentUser() AND statusCategory != Done`;
+    const body = JSON.stringify({ jql, fields: ['summary', 'status', 'updated'], maxResults: 30 });
+    const cmd = [
+      '-n', '-u', a.user, 'bash', '-lc',
+      `T=$(cat ~/.ssh/jiraToken.txt 2>/dev/null); ` +
+      `if [ -z "$T" ]; then exit 2; fi; ` +
+      `curl -s --max-time 10 -X POST -u ${shellEscape(a.email)}:"$T" ` +
+      `-H 'Accept: application/json' -H 'Content-Type: application/json' ` +
+      `--data ${shellEscape(body)} ` +
+      `https://${cfg.jira_host || 'zeh-ferrari.atlassian.net'}/rest/api/3/search/jql`,
+    ];
+    execFile('sudo', cmd, { timeout: 15000 }, (err, stdout) => {
+      if (err || !stdout) return;
+      try {
+        const d = JSON.parse(stdout);
+        const tickets = (d.issues || []).map(i => ({
+          key: i.key,
+          summary: ((i.fields || {}).summary || '').slice(0, 80),
+          status: ((i.fields || {}).status || {}).name,
+          updated: (i.fields || {}).updated,
+        }));
+        if (!agentState[a.user]) agentState[a.user] = {};
+        agentState[a.user].jira_tickets = tickets;
+        broadcast({ type: 'agent_jira', agent: a.user, tickets });
+      } catch (_e) {}
+    });
+  }
+}
+
+function shellEscape(s) { return `'${String(s).replace(/'/g, "'\\''")}'`; }
+
+// Most-recent sign of activity for a user, in epoch ms. Sources (max wins):
+//   1. Newest openclaw session jsonl mtime — for ollama / openai-codex
+//      providers where openclaw writes its own jsonl.
+//   2. updatedAt across ALL agent:main:* conversation keys in sessions.json
+//      — works for ALL providers, including claude-cli (openclaw doesn't
+//      write its own jsonl there) and across all conversation surfaces
+//      (heartbeat, telegram DMs/groups, subagents). Without this the idle
+//      indicator would miss telegram activity entirely for claude-cli agents.
+function mostRecentActivityMs(user) {
+  const dir = `/home/${user}/.openclaw/agents/main/sessions`;
+  let best = 0;
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.jsonl')) continue;
+      if (f.includes('.checkpoint.') || f.includes('.reset.') || f.includes('.archive-')) continue;
+      try {
+        const m = fs.statSync(path.join(dir, f)).mtimeMs;
+        if (m > best) best = m;
+      } catch (_e) { /* ignore */ }
+    }
+  } catch (_e) { /* dir missing */ }
+  try {
+    const sj = JSON.parse(fs.readFileSync(path.join(dir, 'sessions.json'), 'utf8'));
+    for (const [k, e] of Object.entries(sj)) {
+      if (!k.startsWith('agent:main:')) continue;
+      if (!e || typeof e !== 'object') continue;
+      const upd = e.updatedAt || 0;
+      if (upd > best) best = upd;
+    }
+  } catch (_e) { /* ignore */ }
+  return best;
+}
+
+// Cheap "busy vs stalled" detector for UI display. Mirrors ai-monitor's
+// probe_busy_state but skips the CPU sample (which is a 1 s blocking
+// sample — too expensive for a 5 s UI poll). Two signals:
+//   1. sessions.json: any agent:main:* key with status='running' and
+//      updatedAt within the last 30 min (filters out leaked-running
+//      statuses from old subagents / crashed gateways).
+//   2. claude-cli's own jsonl mtime within the last 60 s (covers
+//      non-streaming claude-cli turns where openclaw's sessions.json
+//      updatedAt only ticks at turn end).
+// Returns { is_busy, signals: [...], details: {...} }. Server-side
+// ai-monitor's full 3-signal version is the authority for triage gating;
+// this version is for live UI feedback only.
+function busyStateForUser(user) {
+  const signals = [];
+  const details = {};
+  const MAX_RUNNING_AGE_MS = 30 * 60 * 1000;
+  const CLI_RECENT_MS = 60 * 1000;
+
+  try {
+    const sj = JSON.parse(fs.readFileSync(
+      `/home/${user}/.openclaw/agents/main/sessions/sessions.json`, 'utf8'
+    ));
+    const now = Date.now();
+    let best = null;
+    for (const [k, e] of Object.entries(sj || {})) {
+      if (!k.startsWith('agent:main:')) continue;
+      if (!e || e.status !== 'running') continue;
+      const age = now - (e.updatedAt || 0);
+      if (age < 0 || age > MAX_RUNNING_AGE_MS) continue;
+      if (!best || age < best.age) best = { key: k, age, model: `${e.modelProvider}/${e.model}` };
+    }
+    if (best) {
+      signals.push('running_key');
+      details.running_key = { key: best.key, age_s: Math.floor(best.age / 1000), model: best.model };
+    }
+  } catch (_e) { /* ignore */ }
+
+  try {
+    const dir = `/home/${user}/.claude/projects/-home-${user}-workspace`;
+    let newest = 0;
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.jsonl')) continue;
+      try {
+        const m = fs.statSync(path.join(dir, f)).mtimeMs;
+        if (m > newest) newest = m;
+      } catch (_e) { /* ignore */ }
+    }
+    if (newest) {
+      const age = Date.now() - newest;
+      details.cli_jsonl = { newest_mtime_age_s: Math.floor(age / 1000) };
+      if (age >= 0 && age <= CLI_RECENT_MS) signals.push('cli_jsonl_recent');
+    }
+  } catch (_e) { /* claude-cli dir absent for non-cli agents */ }
+
+  return { is_busy: signals.length > 0, signals, details };
+}
+
+
+// Resolve the model the user is *actually running right now* by reading
+// sessions.json — the most-recent agent:main:* entry's modelProvider/model
+// is the source of truth (covers fallbacks, post-restart state, and
+// claude-cli sessions whose openclaw jsonl is never written). Returns
+// e.g. "claude-cli/claude-opus-4-7" or null.
+function currentModelFromSessions(user) {
+  try {
+    const sj = JSON.parse(fs.readFileSync(`/home/${user}/.openclaw/agents/main/sessions/sessions.json`, 'utf8'));
+    let best = null;
+    for (const [k, e] of Object.entries(sj)) {
+      if (!k.startsWith('agent:main:')) continue;
+      if (!e || typeof e !== 'object') continue;
+      if (!e.model || !e.modelProvider) continue;
+      const upd = e.updatedAt || 0;
+      if (!best || upd > best.upd) best = { upd, model: `${e.modelProvider}/${e.model}` };
+    }
+    return best ? best.model : null;
+  } catch (_e) { return null; }
+}
+
+// Fallback: when sessions.json has no model yet (fresh install / agent
+// has never run a turn), ask openclaw what their default model is. Cached
+// for 60 s to avoid spawning a sudo per poll.
+function configuredDefaultModel(user) {
+  const cached = configuredModelCache[user];
+  const now = Date.now();
+  if (cached && now - cached.ts < 60000) return cached.model;
+
+  let model = null;
+  try {
+    const out = execFileSync('sudo', ['-iu', user, 'openclaw', 'models', 'list'], {
+      encoding: 'utf8',
+      timeout: 15000,
+      maxBuffer: 1024 * 1024,
+    });
+    for (const line of out.split(/\r?\n/)) {
+      if (!/\bdefault\b/.test(line)) continue;
+      const first = line.trim().split(/\s+/)[0];
+      if (/^[a-z0-9_.-]+\/\S+$/i.test(first)) {
+        model = first;
+        break;
+      }
+    }
+  } catch (e) {
+    log(`configuredDefaultModel[${user}] failed: ${String(e.message || e)}`);
+  }
+
+  configuredModelCache[user] = { ts: now, model };
+  return model;
+}
+
+// -------- session-idle poll (so we can show "12s ago") --------
+function pollSessionIdle() {
+  for (const a of (registry.agents || [])) {
+    if (!a.enabled) continue;
+    const ms = mostRecentActivityMs(a.user);
+    if (ms) {
+      const idle_s = Math.floor((Date.now() - ms) / 1000);
+      if (!agentState[a.user]) agentState[a.user] = {};
+      agentState[a.user].session_idle_s = idle_s;
+    }
+    // Refresh model from sessions.json — covers initial paint, fallbacks,
+    // and claude-cli sessions where stream events don't reach us via openclaw jsonl.
+    // Falls back to `openclaw models list` (cached 60 s) for agents that haven't
+    // run a turn yet — keeps the chip populated on fresh installs.
+    const m = currentModelFromSessions(a.user) || configuredDefaultModel(a.user);
+    if (m) {
+      if (!agentState[a.user]) agentState[a.user] = {};
+      const prev = agentState[a.user].model_primary;
+      agentState[a.user].model_primary = m;
+      if (prev !== m) {
+        broadcast({ type: 'agent_activity', agent: a.user, event: 'model_change', model: m });
+      }
+    }
+    // Refresh busy_state — sessions.json running key + claude-cli mtime.
+    const bs = busyStateForUser(a.user);
+    if (!agentState[a.user]) agentState[a.user] = {};
+    const prevBusy = agentState[a.user].busy_state || { is_busy: false, signals: [] };
+    agentState[a.user].busy_state = bs;
+    const flipped = prevBusy.is_busy !== bs.is_busy
+      || (prevBusy.signals || []).join(',') !== (bs.signals || []).join(',');
+    if (flipped) {
+      broadcast({
+        type: 'agent_activity', agent: a.user, event: 'busy_state_change',
+        busy_state: bs,
+      });
+    }
+  }
+  // single batched broadcast
+  broadcast({ type: 'session_idle_tick' });
+}
+
+// -------- HTTP routes --------
+function serveDashboardHTML(req, res) {
+  const html = require('fs').readFileSync(cfg.html_path, 'utf8');
+  res.writeHead(200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  res.end(html);
+}
+
+function serveSSE(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-store',
+    'X-Accel-Buffering': 'no',
+    Connection: 'keep-alive',
+  });
+  // initial snapshot
+  res.write(`data: ${JSON.stringify(snapshot())}\n\n`);
+  // replay last few events so the client sees recent context
+  for (const ev of replay) {
+    res.write(`data: ${JSON.stringify(ev)}\n\n`);
+  }
+  // keep-alive ping every 25s
+  const ping = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch (_e) { clearInterval(ping); }
+  }, 25000);
+  clients.add(res);
+  req.on('close', () => {
+    clearInterval(ping);
+    clients.delete(res);
+  });
+}
+
+function serveSnapshot(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store',
+  });
+  res.end(JSON.stringify(snapshot()));
+}
+
+function serveHealth(req, res) {
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, agents: Object.keys(agentState), clients: clients.size }));
+}
+
+// Frontend reads /agents/registry.json to learn the agent list and each
+// agent's role + integrations + (derived) services + capabilities. This
+// is the post-derive view — already merged with agent-defaults.json and
+// per-agent ~/.local/openclaw/monitor.json by loadRegistry().
+function serveRegistry(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store',
+  });
+  res.end(JSON.stringify(registry || { agents: [] }));
+}
+
+// Loopback-only "hint" endpoint. The monitor agent's openclaw-webhook-receiver POSTs here
+// when it routes a Jira event to a specific agent — we re-poll Jira for that
+// agent immediately so the dashboard reflects the change within seconds rather
+// than waiting up to `poll_jira_s`. Body: {user, key}. No auth (loopback only).
+function handleInternalJiraEvent(req, res) {
+  if (!/^127\.0\.0\.1(:|$)/.test(req.socket.remoteAddress + ':') &&
+      req.socket.remoteAddress !== '127.0.0.1' &&
+      req.socket.remoteAddress !== '::1' &&
+      req.socket.remoteAddress !== '::ffff:127.0.0.1') {
+    res.writeHead(403); res.end('loopback only'); return;
+  }
+  let body = '';
+  req.on('data', c => { body += c; if (body.length > 4096) { req.destroy(); } });
+  req.on('end', () => {
+    try {
+      const o = JSON.parse(body || '{}');
+      const user = o.user;
+      const key = o.key;
+      if (!user) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'user required' }));
+        return;
+      }
+      log(`[/internal/jira-event] re-polling jira for ${user} (key=${key || '?'})`);
+      // fire and forget; pollJira broadcasts agent_jira when results arrive
+      setImmediate(() => pollJira(user));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, polled: user, key: key || null }));
+    } catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: String(e) }));
+    }
+  });
+}
+
+// -------- registry editor (capability / integration toggle) --------
+//
+// Surgical line-by-line edit so the JSON file's hand-curated formatting
+// (compact inline arrays for listeners, key order) is preserved across
+// edits. JSON.parse/stringify would expand listeners and lose order,
+// making every toggle a noisy diff.
+function setRegistryFlag(user, kind, key, value) {
+  if (kind !== 'capabilities' && kind !== 'integrations') return false;
+  if (typeof value !== 'boolean') return false;
+  const regPath = (cfg && cfg.agents_registry) || '/etc/openclaw/agents.json';
+  const text = fs.readFileSync(regPath, 'utf8');
+  const lines = text.split('\n');
+
+  let inAgent = false;
+  let inSection = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Each agent's object starts with a "user" field. Track whether we're
+    // currently inside the target's object.
+    const userMatch = line.match(/"user":\s*"([^"]+)"/);
+    if (userMatch) {
+      inAgent = (userMatch[1] === user);
+      inSection = false;
+      continue;
+    }
+    if (!inAgent) continue;
+
+    if (line.match(new RegExp(`"${kind}":\\s*\\{`))) {
+      inSection = true;
+      continue;
+    }
+    if (!inSection) continue;
+
+    // Closing brace of the section
+    if (line.match(/^\s*\},?\s*$/)) {
+      inSection = false;
+      continue;
+    }
+
+    // Match the target key + boolean
+    const kvMatch = line.match(new RegExp(`^(\\s*"${key}":\\s*)(true|false)(.*)$`));
+    if (kvMatch) {
+      lines[i] = kvMatch[1] + value + kvMatch[3];
+      fs.writeFileSync(regPath, lines.join('\n'));
+      log('registry edit', user, kind, key, '->', value);
+      return true;
+    }
+  }
+  return false;
+}
+
+function handleRegistryToggle(req, res) {
+  let body = '';
+  req.on('data', c => { body += c; if (body.length > 4096) req.destroy(); });
+  req.on('end', () => {
+    let payload;
+    try { payload = JSON.parse(body); }
+    catch (_e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
+      return;
+    }
+    const { user, kind, key, value } = payload || {};
+    if (!user || !kind || !key || typeof value !== 'boolean') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'missing user/kind/key/value' }));
+      return;
+    }
+    let ok;
+    try {
+      ok = setRegistryFlag(user, kind, key, value);
+    } catch (e) {
+      log('registry toggle error', String(e));
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: String(e) }));
+      return;
+    }
+    if (!ok) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'agent / kind / key not found in registry' }));
+      return;
+    }
+    // Reload registry into memory so anything that reads it locally sees
+    // the change. Then broadcast a registry_updated event so connected
+    // browsers refetch /agents/registry.json.
+    loadRegistry();
+    watchRegistrySources();
+    broadcast({ type: 'registry_updated', user, kind, key, value });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, user, kind, key, value }));
+  });
+}
+
+// -------- service restart --------
+//
+// Restart a service belonging to an agent (per-user systemd) or a system
+// service (root systemd). The service must be either:
+//   - listed in the agent's `services` array in the registry, OR
+//   - listed in cfg.system_services
+// Otherwise we refuse to act, so an attacker can't ask the dashboard to
+// restart anything not already declared as monitored.
+function restartService(user, service, callback) {
+  const agent = (registry.agents || []).find(a => a.user === user);
+  if (!agent) { const e = new Error('agent not in registry'); e.statusCode = 404; return callback(e); }
+  const isUserService = (agent.services || []).includes(service);
+  const isSystemService = (cfg && (cfg.system_services || []).includes(service));
+  if (!isUserService && !isSystemService) { const e = new Error('service not in registry or system_services list'); e.statusCode = 404; return callback(e); }
+
+  if (isUserService) {
+    const args = [
+      '-n', '-u', user, 'env',
+      `XDG_RUNTIME_DIR=/run/user/${agent.uid}`,
+      `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${agent.uid}/bus`,
+      'systemctl', '--user', 'restart', service,
+    ];
+    execFile('sudo', args, { timeout: 30000 }, (err, stdout, stderr) => {
+      if (err) return callback(new Error(String((stderr || '').trim() || err.message || err)));
+      callback(null, { user_service: true });
+    });
+  } else {
+    execFile('systemctl', ['restart', service], { timeout: 30000 }, (err, stdout, stderr) => {
+      if (err) return callback(new Error(String((stderr || '').trim() || err.message || err)));
+      callback(null, { system_service: true });
+    });
+  }
+}
+
+function handleServiceRestart(req, res) {
+  let body = '';
+  req.on('data', c => { body += c; if (body.length > 4096) req.destroy(); });
+  req.on('end', () => {
+    let payload;
+    try { payload = JSON.parse(body); }
+    catch (_e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
+      return;
+    }
+    const { user, service } = payload || {};
+    if (!user || !service || typeof user !== 'string' || typeof service !== 'string') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'missing user/service' }));
+      return;
+    }
+    restartService(user, service, (err, result) => {
+      if (err) {
+        log('service restart error', user, service, String(err.message || err));
+        res.writeHead(err.statusCode || 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: String(err.message || err) }));
+        return;
+      }
+      log('service restart ok', user, service);
+      // Trigger a one-shot poll soon so SSE picks up the new state
+      // without waiting for the next 10 s tick.
+      setTimeout(() => { try { pollSystemctl(); } catch (_e) {} }, 800);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, user, service, ...result }));
+    });
+  });
+}
+
+// -------- integration credentials --------
+//
+// Per-integration field name allowlist. Anything sent that isn't in this
+// list is dropped, so the form can't be coerced into writing arbitrary
+// keys into the credentials file.
+const INTEG_CRED_FIELDS = {
+  jira:       ['email', 'api_token'],
+  bitbucket:  ['username', 'app_password'],
+  gmail:      ['client_id', 'client_secret', 'refresh_token'],
+  openaiAuth: ['api_key'],
+  webhook:    ['secret'],
+};
+const CRED_BASE = '/etc/openclaw/credentials';
+
+function saveIntegrationCredentials(user, integration, fields, callback) {
+  const allowed = INTEG_CRED_FIELDS[integration];
+  if (!allowed) { const e = new Error('unknown integration'); e.statusCode = 400; return callback(e); }
+  const agent = (registry.agents || []).find(a => a.user === user);
+  if (!agent) { const e = new Error('agent not in registry'); e.statusCode = 404; return callback(e); }
+
+  const cleaned = {};
+  for (const k of allowed) {
+    if (typeof fields[k] === 'string' && fields[k].length > 0) cleaned[k] = fields[k];
+  }
+  if (Object.keys(cleaned).length === 0) { const e = new Error('no fields supplied'); e.statusCode = 400; return callback(e); }
+
+  const dir = `${CRED_BASE}/${user}`;
+  const file = `${dir}/${integration}.json`;
+  try {
+    fs.mkdirSync(CRED_BASE, { recursive: true, mode: 0o755 });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, JSON.stringify(cleaned, null, 2) + '\n', { mode: 0o600 });
+  } catch (e) { return callback(e); }
+  // chown the per-user dir + file to the agent so the agent can read its
+  // own credentials at runtime.
+  execFile('chown', ['-R', `${user}:${user}`, dir], (chErr) => {
+    if (chErr) return callback(new Error(`chown failed: ${chErr.message || chErr}`));
+    try {
+      fs.chmodSync(dir, 0o700);
+      fs.chmodSync(file, 0o600);
+    } catch (e) { return callback(e); }
+
+    // Backward-compat: existing jira consumer reads ~/.ssh/jiraToken.txt
+    if (integration === 'jira' && cleaned.api_token) {
+      const sshDir = `/home/${user}/.ssh`;
+      const tokenPath = `${sshDir}/jiraToken.txt`;
+      try {
+        fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+        fs.writeFileSync(tokenPath, cleaned.api_token, { mode: 0o600 });
+      } catch (e) { return callback(e); }
+      execFile('chown', [`${user}:${user}`, sshDir, tokenPath], (chErr2) => {
+        // best-effort: primary write already succeeded; report success
+        // even if backward-compat chown had a transient hiccup
+        if (chErr2) log('jira legacy chown warning', String(chErr2.message || chErr2));
+        callback(null, { saved: file, legacy: tokenPath });
+      });
+    } else {
+      callback(null, { saved: file });
+    }
+  });
+}
+
+// Read the saved credentials JSON for a (user, integration) pair so the
+// dashboard's credentials modal can pre-fill its fields with the current
+// state. Returns `{ fields: {} }` when no file exists yet.
+//
+// The values come back in plaintext over loopback; nginx is the auth
+// boundary (admin basic-auth on every /agents/* path), so an unauthorized
+// caller on the LAN cannot reach this endpoint. Anyone who can hit this
+// can already restart services and edit the registry, so the threat
+// surface is the same as the existing toggle endpoint.
+function handleIntegrationCredentialsGet(req, res, query) {
+  const user = query.user;
+  const integration = query.integration;
+  if (!user || !integration) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'missing user/integration' }));
+    return;
+  }
+  if (!INTEG_CRED_FIELDS[integration]) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'unknown integration' }));
+    return;
+  }
+  const file = `${CRED_BASE}/${user}/${integration}.json`;
+  let saved = {};
+  try { saved = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; }
+  catch (_e) { /* no file yet — empty result is fine */ }
+  // Allowlist the keys we return (defensive: never echo unexpected keys
+  // even if the file on disk has been hand-edited to include extras).
+  const fields = {};
+  for (const k of INTEG_CRED_FIELDS[integration]) {
+    if (typeof saved[k] === 'string') fields[k] = saved[k];
+  }
+
+  // Fall back to legacy/canonical sources so the modal can pre-fill the
+  // operator with what's actually in effect right now, not just what's
+  // been previously saved through this endpoint.
+  const meta = {};
+  if (integration === 'jira') {
+    if (!fields.api_token) {
+      try {
+        const legacy = fs.readFileSync(`/home/${user}/.ssh/jiraToken.txt`, 'utf8').trim();
+        if (legacy) fields.api_token = legacy;
+      } catch (_e) {}
+    }
+    if (!fields.email) {
+      const agent = (registry.agents || []).find(a => a.user === user);
+      if (agent && agent.email) fields.email = agent.email;
+    }
+  }
+
+  // openaiAuth has two parallel paths: a static API key OR a ChatGPT
+  // subscriber OAuth login. Both are stored together in the agent's
+  // auth-profiles.json — `openai:*` keys hold api_key profiles and
+  // `openai-codex:*` keys hold OAuth profiles. We surface api_key into
+  // the form's pre-fill and oauth status into `meta.oauth` so the UI
+  // can show "logged in as X" without being editable from the form
+  // (OAuth requires `codex login` on the agent's terminal).
+  if (integration === 'openaiAuth') {
+    try {
+      const profiles = JSON.parse(fs.readFileSync(
+        `/home/${user}/.openclaw/agents/main/agent/auth-profiles.json`, 'utf8'
+      ));
+      const map = (profiles && profiles.profiles) || {};
+      if (!fields.api_key) {
+        for (const [k, v] of Object.entries(map)) {
+          if (k.startsWith('openai:') && v && v.type === 'api_key' && typeof v.apiKey === 'string') {
+            fields.api_key = v.apiKey;
+            break;
+          }
+        }
+      }
+      for (const [k, v] of Object.entries(map)) {
+        if (k.startsWith('openai-codex:') && v && v.type === 'oauth') {
+          let plan = null;
+          try {
+            const parts = (v.access || '').split('.');
+            if (parts.length >= 2) {
+              const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+              const auth = claims['https://api.openai.com/auth'] || {};
+              plan = auth.chatgpt_plan_type || null;
+            }
+          } catch (_e) {}
+          meta.oauth = {
+            connected: true,
+            email: v.email || null,
+            plan,
+            expires: v.expires || null,
+          };
+          break;
+        }
+      }
+      if (!meta.oauth) meta.oauth = { connected: false };
+    } catch (_e) {
+      meta.oauth = { connected: false };
+    }
+  }
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, user, integration, fields, meta }));
+}
+
+function handleIntegrationCredentials(req, res) {
+  let body = '';
+  req.on('data', c => { body += c; if (body.length > 16384) req.destroy(); });
+  req.on('end', () => {
+    let payload;
+    try { payload = JSON.parse(body); }
+    catch (_e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
+      return;
+    }
+    const { user, integration, fields } = payload || {};
+    if (!user || !integration || !fields || typeof fields !== 'object') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'missing user/integration/fields' }));
+      return;
+    }
+    saveIntegrationCredentials(user, integration, fields, (err, result) => {
+      if (err) {
+        log('integration creds error', user, integration, String(err.message || err));
+        res.writeHead(err.statusCode || 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: String(err.message || err) }));
+        return;
+      }
+      log('integration creds saved', user, integration, '->', result.saved);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, user, integration, saved: result.saved, legacy: result.legacy || null }));
+    });
+  });
+}
+
+const server = http.createServer((req, res) => {
+  const parsed = req.url.split('?');
+  const url = parsed[0];
+  const query = {};
+  if (parsed[1]) {
+    for (const pair of parsed[1].split('&')) {
+      const [k, v] = pair.split('=');
+      if (k) query[decodeURIComponent(k)] = v ? decodeURIComponent(v) : '';
+    }
+  }
+  if (url === '/agents.html' || url === '/' || url === '/agents/') return serveDashboardHTML(req, res);
+  if (url === '/agents/events') return serveSSE(req, res);
+  if (url === '/agents/snapshot') return serveSnapshot(req, res);
+  if (url === '/agents/health') return serveHealth(req, res);
+  if (url === '/agents/registry.json') return serveRegistry(req, res);
+  if (url === '/agents/registry/toggle' && req.method === 'POST') return handleRegistryToggle(req, res);
+  if (url === '/agents/services/restart' && req.method === 'POST') return handleServiceRestart(req, res);
+  if (url === '/agents/integrations/credentials' && req.method === 'POST') return handleIntegrationCredentials(req, res);
+  if (url === '/agents/integrations/credentials' && req.method === 'GET') return handleIntegrationCredentialsGet(req, res, query);
+  if (url === '/internal/jira-event' && req.method === 'POST') return handleInternalJiraEvent(req, res);
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  res.end('not found');
+});
+
+// -------- main --------
+function main() {
+  loadConfig();
+  loadRegistry();
+  watchRegistrySources();
+
+  // initial agent state from registry
+  for (const a of (registry.agents || [])) {
+    if (!a.enabled) continue;
+    const firstName = (a.name || a.user || '').split(/\s+/)[0] || a.user;
+    agentState[a.user] = {
+      name: a.name || a.user,
+      role: a.role,
+      coding: a.role === "coding",
+      avatar: a.role === "monitor" ? "👁️" : (a.role === "coding" ? "🛠️" : "📋"),
+      // avatar_url is null when the registry has no `avatar` field for this agent.
+      // The frontend renders an <img> when avatar_url is set, falling back to the
+      // emoji `avatar` field on load error or when null.
+      avatar_url: a.avatar ? `/agents/avatars/${encodeURIComponent(firstName)}` : null,
+      bot: (a.telegram || {}).bot,
+      gateway_listeners: (a.listeners || []).filter(l => /gateway/i.test(l.owner || '')).map(l => l.port),
+    };
+    startSessionTail(a.user);
+    watchCurrentTask(a.user);
+    const t = readCurrentTask(a.user);
+    if (t) agentState[a.user].current_task = t;
+  }
+
+  startAiMonitorTails();
+
+  // initial polls
+  pollSystemctl();
+  pollAiMonitorState();
+  pollJira();
+  pollSessionIdle();
+
+  setInterval(pollSystemctl, (cfg.poll_systemctl_s || 10) * 1000);
+  setInterval(pollAiMonitorState, (cfg.poll_aimonitor_s || 5) * 1000);
+  setInterval(pollJira, (cfg.poll_jira_s || 60) * 1000);
+  setInterval(pollSessionIdle, (cfg.poll_session_idle_s || 3) * 1000);
+  setInterval(rotateSessionTailsIfNeeded, 30000);
+
+  const port = cfg.port || 3013;
+  const host = cfg.bind || '127.0.0.1';
+  server.listen(port, host, () => log(`agent-dashboard listening http://${host}:${port}`));
+}
+
+process.on('SIGTERM', () => { log('SIGTERM, shutting down'); process.exit(0); });
+process.on('SIGINT', () => { log('SIGINT, shutting down'); process.exit(0); });
+process.on('uncaughtException', e => log('uncaughtException', e && e.stack || e));
+
+main();

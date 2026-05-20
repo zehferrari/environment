@@ -72,3 +72,4 @@ ha/shell_scripts/output.txt
 *.mov
 *.wmv
 
+__pycache__/

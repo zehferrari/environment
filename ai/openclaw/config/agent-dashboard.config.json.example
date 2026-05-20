@@ -1,0 +1,26 @@
+{
+  "_doc": "Per-host config for agent-dashboard.service. Install to /etc/agent-dashboard/config.json. The `system_services` list is host-specific — list every system unit you want shown in the dashboard's System Services panel. agents_registry MUST be /etc/openclaw/agents.json (symlinked to the live /srv/agents/index.json on x1, etc). html_path points to the dashboard frontend file shipped under ai/web/ in this repo; install.sh creates a symlink to it.",
+
+  "bind": "127.0.0.1",
+  "port": 3013,
+
+  "agents_registry": "/etc/openclaw/agents.json",
+  "agent_defaults": "/etc/openclaw/agent-defaults.json",
+  "html_path": "/usr/local/share/agent-dashboard/agents.html",
+
+  "jira_host": "zeh-ferrari.atlassian.net",
+
+  "system_services": [
+    "ollama.service",
+    "nginx.service",
+    "ai-monitor.timer",
+    "openclaw-integrity.timer",
+    "openclaw-monitor-sync.timer",
+    "sshd.service"
+  ],
+
+  "poll_jira_s": 15,
+  "poll_systemctl_s": 10,
+  "poll_aimonitor_s": 5,
+  "poll_session_idle_s": 3
+}

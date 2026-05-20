@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""
+openclaw-typing-keepalive — Telegram typing-indicator sidecar for cli-backend.
+
+System-wide service. Reads /etc/openclaw/agents.json and watches every
+enabled agent's sessions.json for telegram conversation keys that flip to
+status=running on a claude-cli session, then refreshes the Telegram
+"typing..." indicator for the corresponding chat every 4 seconds until the
+turn completes.
+
+Why this exists: the openclaw cli-backend (claude-cli) is non-streaming at
+the agent-runner integration level — runCliAgent awaits the full response
+in one call, so no incremental tool/text deltas reach openclaw's typing
+pipeline. The built-in typing keepalive has a ~60s TTL that gets refreshed
+by those deltas; without them, "typing..." disappears mid-turn on long
+opus runs. This sidecar fills the gap externally without touching openclaw.
+
+Runs as root so it can read each agent's sessions.json (mode 0600) and bot
+token from ~/.config/openclaw/openclaw-secrets.env. Discovers agents
+dynamically — new agents added to the registry get coverage automatically
+without service changes.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+REGISTRY_PATH = "/etc/openclaw/agents.json"
+
+POLL_INTERVAL_S = 1.0      # how often we scan all agents' sessions.json
+TYPING_INTERVAL_S = 4.0    # how often we refresh sendChatAction (Telegram typing lasts ~5s)
+HTTP_TIMEOUT_S = 8.0
+
+TG_KEY_RE = re.compile(r"^agent:main:telegram:(direct|group):(-?\d+)$")
+
+
+def log(msg: str) -> None:
+    print(f"[typing-keepalive] {msg}", flush=True)
+
+
+def load_registry() -> list[dict]:
+    try:
+        return json.loads(Path(REGISTRY_PATH).read_text()).get("agents", []) or []
+    except (OSError, ValueError) as e:
+        log(f"could not read registry {REGISTRY_PATH}: {e}")
+        return []
+
+
+def load_bot_token(home: str) -> str | None:
+    secrets = Path(home) / ".config/openclaw/openclaw-secrets.env"
+    try:
+        for ln in secrets.read_text().splitlines():
+            if ln.startswith("TELEGRAM_BOT_TOKEN="):
+                return ln.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return None
+
+
+def load_sessions(home: str) -> dict | None:
+    sj = Path(home) / ".openclaw/agents/main/sessions/sessions.json"
+    try:
+        return json.loads(sj.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def send_typing(token: str, chat_id: str) -> bool:
+    url = f"https://api.telegram.org/bot{token}/sendChatAction"
+    data = urllib.parse.urlencode({"chat_id": chat_id, "action": "typing"}).encode()
+    try:
+        with urllib.request.urlopen(url, data=data, timeout=HTTP_TIMEOUT_S) as resp:
+            return resp.status == 200
+    except Exception as e:
+        log(f"sendChatAction failed chat={chat_id}: {e}")
+        return False
+
+
+def collect_active_chats(sessions: dict) -> list[tuple[str, str]]:
+    """Return [(chat_id, conversation_key)] for all telegram keys currently
+    on a claude-cli session with status=running."""
+    out: list[tuple[str, str]] = []
+    for key, entry in sessions.items():
+        m = TG_KEY_RE.match(key)
+        if not m or not isinstance(entry, dict):
+            continue
+        if entry.get("modelProvider") != "claude-cli":
+            continue
+        if entry.get("status") != "running":
+            continue
+        out.append((m.group(2), key))
+    return out
+
+
+def main() -> int:
+    log("started; scanning registry every tick")
+
+    # Per-agent state: user -> { token, last_typing_sent: {chat_id: ts}, last_status: {key: status} }
+    state: dict[str, dict] = {}
+    registry_loaded_at = 0.0
+    registry_reload_s = 30.0
+    agents: list[dict] = []
+
+    while True:
+        # Refresh registry periodically (catches new agents / re-enabled ones)
+        now = time.time()
+        if now - registry_loaded_at > registry_reload_s:
+            agents = load_registry()
+            registry_loaded_at = now
+
+        for agent in agents:
+            if not agent.get("enabled") or not agent.get("monitor"):
+                continue
+            user = agent.get("user")
+            home = agent.get("home") or (f"/home/{user}" if user else None)
+            tg = agent.get("telegram") or {}
+            if not user or not home or not tg.get("enabled"):
+                continue
+            ag = state.setdefault(user, {"token": None, "last_typing_sent": {}, "last_status": {}})
+            if ag["token"] is None:
+                ag["token"] = load_bot_token(home)
+                if ag["token"]:
+                    log(f"{user}: loaded TELEGRAM_BOT_TOKEN")
+                else:
+                    # No token — leave entry, will retry next tick.
+                    continue
+            sessions = load_sessions(home)
+            if sessions is None:
+                continue
+            # Log status transitions for telegram keys (noisy but useful in early days)
+            for key, entry in sessions.items():
+                m = TG_KEY_RE.match(key)
+                if not m or not isinstance(entry, dict):
+                    continue
+                status = entry.get("status")
+                prev = ag["last_status"].get(key)
+                if prev != status:
+                    log(f"{user}: {key} status {prev} -> {status} (provider={entry.get('modelProvider')})")
+                    ag["last_status"][key] = status
+            active = collect_active_chats(sessions)
+            active_chats = {chat for chat, _ in active}
+            # Refresh typing for each active chat that's due
+            for chat_id, _key in active:
+                if now - ag["last_typing_sent"].get(chat_id, 0.0) >= TYPING_INTERVAL_S:
+                    ok = send_typing(ag["token"], chat_id)
+                    log(f"{user}: sendChatAction(typing) chat={chat_id} -> {'ok' if ok else 'FAIL'}")
+                    ag["last_typing_sent"][chat_id] = now
+            # Forget chats no longer active so the next activation refires immediately
+            for chat_id in list(ag["last_typing_sent"].keys()):
+                if chat_id not in active_chats:
+                    ag["last_typing_sent"].pop(chat_id, None)
+
+        time.sleep(POLL_INTERVAL_S)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main() or 0)
+    except KeyboardInterrupt:
+        sys.exit(0)

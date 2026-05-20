@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic drift correction for per-agent monitor.json state
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=openclaw-monitor-sync.service
+
+[Install]
+WantedBy=timers.target

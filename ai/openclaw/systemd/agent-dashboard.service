@@ -1,0 +1,16 @@
+[Unit]
+Description=Real-time agent dashboard (loopback HTTP + SSE on 127.0.0.1:3013)
+After=network-online.target ai-monitor.timer
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node-24 /usr/local/bin/agent-dashboard
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=NODE_OPTIONS=--dns-result-order=ipv4first
+
+[Install]
+WantedBy=multi-user.target

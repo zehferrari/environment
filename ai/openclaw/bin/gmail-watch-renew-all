@@ -1,0 +1,85 @@
+#!/bin/bash
+# Renew Gmail watch for every agent that has integrations.gmail=true in
+# the OpenClaw registry. Run by gmail-watch-renew.timer once a day
+# (Gmail watches expire after ~7 days; daily renewal stays well inside
+# the window).
+#
+# Source of truth is /etc/openclaw/agents.json (symlinked from
+# /srv/agents/index.json). An agent is renewed if:
+#   - enabled: true
+#   - integrations.gmail: true
+#   - has a per-user gmail-watch.js at <home>/.openclaw/workspace/google/gmail-watch.js
+#   - has a watch-state.json telling us what topic+labels to use
+# Missing watch-state.json on an enabled-gmail agent is logged as a
+# setup gap (someone enabled gmail but never ran the initial gmail-watch.js).
+
+set -u
+
+REGISTRY="${OPENCLAW_AGENTS_JSON:-/etc/openclaw/agents.json}"
+LOG_TAG="gmail-watch-renew"
+
+log() { logger -t "$LOG_TAG" -- "$*"; echo "$*"; }
+
+if [ ! -r "$REGISTRY" ]; then
+    log "FATAL: cannot read registry $REGISTRY"
+    exit 2
+fi
+
+# Pull (user, home) for every enabled gmail-integrated agent.
+mapfile -t entries < <(jq -r '.agents[]
+    | select(.enabled == true)
+    | select(.integrations.gmail == true)
+    | "\(.user)\t\(.home // "/home/\(.user)")"' "$REGISTRY")
+
+if [ ${#entries[@]} -eq 0 ]; then
+    log "no agents with integrations.gmail=true; nothing to renew"
+    exit 0
+fi
+
+exit_rc=0
+for entry in "${entries[@]}"; do
+    user=$(echo "$entry" | cut -f1)
+    home=$(echo "$entry" | cut -f2)
+    google_dir="$home/.openclaw/workspace/google"
+    state="$google_dir/watch-state.json"
+    script="$google_dir/gmail-watch.js"
+
+    if ! id -u "$user" >/dev/null 2>&1; then
+        log "skip $user: registry says enabled but no system user"
+        exit_rc=1
+        continue
+    fi
+    if [ ! -d "$google_dir" ]; then
+        log "skip $user: missing $google_dir (gmail enabled in registry but skill not installed?)"
+        exit_rc=1
+        continue
+    fi
+    if [ ! -r "$state" ]; then
+        log "skip $user: missing $state (run gmail-watch.js once interactively to bootstrap)"
+        exit_rc=1
+        continue
+    fi
+    if [ ! -r "$script" ]; then
+        log "skip $user: missing $script"
+        exit_rc=1
+        continue
+    fi
+
+    topic=$(jq -r '.topicName // empty' "$state" 2>/dev/null)
+    labels=$(jq -r '(.labelIds // []) | join(" ")' "$state" 2>/dev/null)
+    if [ -z "$topic" ]; then
+        log "skip $user: watch-state.json has no topicName"
+        exit_rc=1
+        continue
+    fi
+
+    log "renew $user: topic=$topic labels=${labels:-INBOX}"
+    if sudo -n -u "$user" bash -lc "cd $google_dir && node gmail-watch.js $topic ${labels:-INBOX}" >/tmp/gmail-watch-renew-$user.out 2>&1; then
+        new_exp=$(jq -r '.expiration // "?"' "$state" 2>/dev/null)
+        log "renew $user: ok (new expiration=$new_exp)"
+    else
+        log "renew $user: FAILED ($(tail -1 /tmp/gmail-watch-renew-$user.out 2>/dev/null))"
+        exit_rc=1
+    fi
+done
+exit $exit_rc

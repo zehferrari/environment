@@ -1,0 +1,9 @@
+[Unit]
+Description=Reconcile per-agent project resources declared in ~/.local/openclaw/monitor.json
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/openclaw-monitor-sync
+StandardOutput=journal
+StandardError=journal

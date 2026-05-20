@@ -1,0 +1,18 @@
+[Unit]
+Description=Watch every per-agent ~/.local/openclaw/monitor.json for changes
+
+[Path]
+# install.sh generates the concrete .path unit by enumerating enabled
+# agents in /etc/openclaw/agents.json and emitting one PathChanged line
+# per agent. systemd Path units don't support globs, so this file IS
+# generated per host rather than shipped pre-populated.
+#
+# Example output after install on a host with three agents:
+#   PathChanged=/home/asdrubal/.local/openclaw/monitor.json
+#   PathChanged=/home/barekbaal/.local/openclaw/monitor.json
+#   PathChanged=/home/karen/.local/openclaw/monitor.json
+@PATH_CHANGED_LINES@
+Unit=openclaw-monitor-sync.service
+
+[Install]
+WantedBy=multi-user.target
