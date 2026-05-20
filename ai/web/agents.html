@@ -423,6 +423,12 @@
   /* AI Monitor panel */
   .monitor-line { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 13px; }
   .monitor-line .label { color: var(--text-muted); font-size: 11.5px; min-width: 80px; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 500; }
+  /* AI Monitor block embedded inside the monitor agent tile */
+  .monitor-embed { padding: 4px 0 0 0; }
+  .monitor-embed .monitor-summary { font-size: 12px; color: var(--text-dim); margin-bottom: 10px; padding: 6px 8px; background: var(--bg-elev); border-radius: 5px; border: 1px solid var(--line); }
+  .monitor-embed .monitor-line { margin-bottom: 4px; font-size: 12px; }
+  .monitor-embed .monitor-line .label { min-width: 70px; }
+  .monitor-embed .field-label.sub { margin-top: 12px; margin-bottom: 6px; }
   .decisions-list { display: flex; flex-direction: column; gap: 6px; max-height: 250px; overflow-y: auto; padding-right: 4px; }
   .decisions-list::-webkit-scrollbar { width: 6px; }
   .decisions-list::-webkit-scrollbar-track { background: transparent; }
@@ -498,22 +504,6 @@
   <div class="section-title"><h2>Agents</h2><span class="hint" id="agents-hint"></span></div>
   <div id="agents-grid" class="agents-grid"></div>
 
-  <div class="panels">
-    <div class="panel" id="monitor-panel">
-      <div class="panel-head">
-        <h3>AI Monitor</h3>
-        <span class="meta" id="monitor-meta">waiting…</span>
-      </div>
-      <div class="panel-body" id="monitor-body">
-        <div class="monitor-line"><span class="label">tick</span><span id="monitor-tick">—</span></div>
-        <div class="monitor-line"><span class="label">issues</span><span id="monitor-issues">—</span></div>
-        <div class="monitor-line"><span class="label">open events</span><span id="monitor-open">—</span></div>
-        <div class="section-title" style="margin: 12px 0 6px"><h2 style="font-size:11px">Recent decisions</h2><span class="hint" id="decisions-count"></span></div>
-        <div class="decisions-list" id="decisions-list"><div class="empty">no decisions yet</div></div>
-      </div>
-    </div>
-
-  </div>
 
   <div class="dash-footer">
     SSE <code>/agents/events</code> · registry <code>/agents/registry.json</code> · auto-reconnect on disconnect
@@ -775,54 +765,68 @@ function renderAgent(reg, live) {
   // Body sections
   const body = el('div', 'agent-body');
 
-  // — Current task
-  const inProgress = (live_.jira_tickets || []).filter(t => /in.progress/i.test(t.status || ''));
-  inProgress.sort((a, b) => String(b.updated || '').localeCompare(String(a.updated || '')));
-  const cur = inProgress[0];
-  const taskField = el('div', 'field');
-  taskField.append(el('div', 'field-label', '◆ Current task'));
-  if (cur) {
-    const row = el('div', 'task-row');
-    row.append(el('span', 'ticket-key', cur.key));
-    row.append(el('span', 'ticket-summary', cur.summary || ''));
-    row.append(el('span', `ticket-status ${statusClass(cur.status)}`, cur.status));
-    taskField.append(row);
-  } else if (reg.role === "coding") {
-    taskField.append(el('div', 'field-value dim', 'no in-progress ticket'));
+  if (reg.role === 'monitor') {
+    // Monitor agents don't take Jira tickets and their "activity" is the
+    // ai-monitor tick + decisions stream — render that here instead of
+    // the (always-empty) Current task / Activity blocks.
+    const aimField = el('div', 'field');
+    const aimLabel = el('div', 'field-label');
+    aimLabel.append(document.createTextNode('🤖 AI Monitor'));
+    const aimMeta = el('span', 'count', '');
+    aimLabel.append(aimMeta);
+    aimField.append(aimLabel);
+    const aimBody = el('div', 'monitor-embed');
+    renderMonitorInto(aimBody, aimMeta);
+    aimField.append(aimBody);
+    body.append(aimField);
   } else {
-    taskField.append(el('div', 'field-value dim', 'not a coding agent'));
-  }
-  body.append(taskField);
-
-  // — Last activity (top 2 items)
-  const lastAct = state.agentsActivity[reg.user];
-  const actField = el('div', 'field');
-  const actLabel = el('div', 'field-label');
-  actLabel.append(document.createTextNode('● Activity'));
-  if (lastAct?.ts) actLabel.append(el('span', 'count', `· ${fmtAgo(lastAct.ts)}`));
-  actField.append(actLabel);
-  if (lastAct?.items?.length) {
-    const log = el('div', 'activity-log');
-    for (const it of lastAct.items.slice(-2)) {
-      const item = el('div', `activity-item ${it.kind || 'text'}${lastAct.error ? ' error' : ''}`);
-      const meta = el('div', 'activity-meta');
-      const kindLabel =
-        it.kind === 'tool_call' ? `tool ${it.name || ''}` :
-        it.kind === 'tool_result' ? `← ${it.name || ''}` :
-        lastAct.role || 'message';
-      meta.append(el('span', 'activity-kind', kindLabel));
-      item.append(meta);
-      if (it.preview) {
-        const prev = el('div', 'activity-preview', String(it.preview).slice(0, 220));
-        item.append(prev);
-      }
-      log.append(item);
+    // — Current task
+    const inProgress = (live_.jira_tickets || []).filter(t => /in.progress/i.test(t.status || ''));
+    inProgress.sort((a, b) => String(b.updated || '').localeCompare(String(a.updated || '')));
+    const cur = inProgress[0];
+    const taskField = el('div', 'field');
+    taskField.append(el('div', 'field-label', '◆ Current task'));
+    if (cur) {
+      const row = el('div', 'task-row');
+      row.append(el('span', 'ticket-key', cur.key));
+      row.append(el('span', 'ticket-summary', cur.summary || ''));
+      row.append(el('span', `ticket-status ${statusClass(cur.status)}`, cur.status));
+      taskField.append(row);
+    } else {
+      taskField.append(el('div', 'field-value dim', 'no in-progress ticket'));
     }
-    actField.append(log);
-  } else {
-    actField.append(el('div', 'field-value dim', 'no activity captured yet'));
+    body.append(taskField);
+
+    // — Last activity (top 2 items)
+    const lastAct = state.agentsActivity[reg.user];
+    const actField = el('div', 'field');
+    const actLabel = el('div', 'field-label');
+    actLabel.append(document.createTextNode('● Activity'));
+    if (lastAct?.ts) actLabel.append(el('span', 'count', `· ${fmtAgo(lastAct.ts)}`));
+    actField.append(actLabel);
+    if (lastAct?.items?.length) {
+      const log = el('div', 'activity-log');
+      for (const it of lastAct.items.slice(-2)) {
+        const item = el('div', `activity-item ${it.kind || 'text'}${lastAct.error ? ' error' : ''}`);
+        const meta = el('div', 'activity-meta');
+        const kindLabel =
+          it.kind === 'tool_call' ? `tool ${it.name || ''}` :
+          it.kind === 'tool_result' ? `← ${it.name || ''}` :
+          lastAct.role || 'message';
+        meta.append(el('span', 'activity-kind', kindLabel));
+        item.append(meta);
+        if (it.preview) {
+          const prev = el('div', 'activity-preview', String(it.preview).slice(0, 220));
+          item.append(prev);
+        }
+        log.append(item);
+      }
+      actField.append(log);
+    } else {
+      actField.append(el('div', 'field-value dim', 'no activity captured yet'));
+    }
+    body.append(actField);
   }
-  body.append(actField);
 
   // — Open Jira tickets (coding agents only)
   if (reg.role === "coding") {
@@ -1378,32 +1382,58 @@ function renderAgents() {
   $('#agents-hint').textContent = `${order.length} registered`;
 }
 
-// ─── Render: AI monitor panel ─────────────────────────────────────────────
-function renderMonitor() {
+// ─── Render: AI monitor block (embedded in the monitor agent's tile) ──────
+//
+// Takes the container element to render into + an optional labelSpan that
+// gets the "✓ healthy · 0 issues" tally for the field-label header. Called
+// from renderAgent when role=monitor.
+function renderMonitorInto(root, labelSpan) {
+  clear(root);
   const t = state.monitor.last_tick;
-  $('#monitor-meta').textContent = t ? `${t.healthy ? '✓ healthy' : '✗ unhealthy'} · ${t.summary}` : 'waiting for tick';
-  $('#monitor-tick').textContent = t ? `${fmtAgo(t.ts * 1000)}` + (t.model ? ` · model=${t.model}` : '') : '—';
-  $('#monitor-issues').textContent = t?.issues != null ? String(t.issues) : '—';
-  $('#monitor-open').textContent  = String((state.monitor.open_events || []).length);
+  const head = t ? `${t.healthy ? '✓ healthy' : '✗ unhealthy'} · ${t.summary}` : 'waiting for tick';
+  if (labelSpan) labelSpan.textContent = t ? ` · ${t.healthy ? '✓' : '✗'} ${t.issues || 0} issues` : ' · waiting';
 
-  const list = $('#decisions-list');
-  clear(list);
+  const meta = el('div', 'monitor-line monitor-summary');
+  meta.append(el('span', 'value', head));
+  root.append(meta);
+
+  const tickLine = el('div', 'monitor-line');
+  tickLine.append(el('span', 'label', 'tick'));
+  tickLine.append(el('span', 'value', t ? `${fmtAgo(t.ts * 1000)}` + (t.model ? ` · model=${t.model}` : '') : '—'));
+  root.append(tickLine);
+
+  const issueLine = el('div', 'monitor-line');
+  issueLine.append(el('span', 'label', 'issues'));
+  issueLine.append(el('span', 'value', t?.issues != null ? String(t.issues) : '—'));
+  root.append(issueLine);
+
+  const openLine = el('div', 'monitor-line');
+  openLine.append(el('span', 'label', 'open events'));
+  openLine.append(el('span', 'value', String((state.monitor.open_events || []).length)));
+  root.append(openLine);
+
   const decisions = state.monitor.recent_decisions || [];
-  $('#decisions-count').textContent = decisions.length ? `· ${decisions.length}` : '';
+  const decTitle = el('div', 'field-label sub');
+  decTitle.append(document.createTextNode('Recent decisions'));
+  if (decisions.length) decTitle.append(el('span', 'count', ` · ${decisions.length}`));
+  root.append(decTitle);
+
+  const list = el('div', 'decisions-list');
   if (!decisions.length) {
     list.append(el('div', 'empty', 'no decisions yet'));
-    return;
+  } else {
+    for (const d of decisions.slice(0, 12)) {
+      const div = el('div', `decision ${d.decision === 'escalate' ? 'escalate' : ''}`);
+      const dHead = el('div', 'decision-head');
+      dHead.append(el('span', 'decision-tag', d.decision || '?'));
+      if (d.timestamp) dHead.append(el('span', 'decision-when', d.timestamp));
+      div.append(dHead);
+      if (d.reason) div.append(el('div', 'decision-reason', String(d.reason).slice(0, 200)));
+      if (d.actions_taken?.length) div.append(el('div', 'decision-actions', '↳ ' + d.actions_taken.join(' · ')));
+      list.append(div);
+    }
   }
-  for (const d of decisions.slice(0, 12)) {
-    const div = el('div', `decision ${d.decision === 'escalate' ? 'escalate' : ''}`);
-    const head = el('div', 'decision-head');
-    head.append(el('span', 'decision-tag', d.decision || '?'));
-    if (d.timestamp) head.append(el('span', 'decision-when', d.timestamp));
-    div.append(head);
-    if (d.reason) div.append(el('div', 'decision-reason', String(d.reason).slice(0, 200)));
-    if (d.actions_taken?.length) div.append(el('div', 'decision-actions', '↳ ' + d.actions_taken.join(' · ')));
-    list.append(div);
-  }
+  root.append(list);
 }
 
 // ─── Render: system services panel ────────────────────────────────────────
@@ -1489,7 +1519,6 @@ function renderSystemInto(root) {
 function renderAll() {
   renderSummary();
   renderAgents();
-  renderMonitor();
 }
 
 // ─── SSE ──────────────────────────────────────────────────────────────────
@@ -1558,17 +1587,17 @@ function handleEvent(d) {
       return;
     case 'ai_monitor_tick':
       state.monitor.last_tick = d.tick;
-      renderSummary(); renderMonitor();
+      renderSummary(); renderAgents();
       return;
     case 'ai_monitor_state':
       state.monitor.open_events = d.open_events;
-      renderSummary(); renderMonitor();
+      renderSummary(); renderAgents();
       return;
     case 'karen_decision':
       // Wire-format event name kept verbatim — payload is the monitoring agent's decision.
       state.monitor.last_decision = d.decision;
       state.monitor.recent_decisions = [d.decision].concat((state.monitor.recent_decisions || []).slice(0, 11));
-      renderMonitor();
+      renderAgents();
       return;
     case 'registry_updated':
       // Another browser (or a local toggle) modified agents.json. Refetch
@@ -1584,7 +1613,7 @@ setInterval(() => {
   // Light refresh: only the parts that show relative time
   renderSummary();
   renderAgents();
-  renderMonitor();
+  renderAgents();
 }, 1000);
 
 // ─── Periodic registry refresh ────────────────────────────────────────────
