@@ -172,6 +172,72 @@ if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     done < <(jq -r '.agents[] | select(.enabled == true) | "\(.user)\t\(.home // "")"' "$REGISTRY")
 fi
 
+# 4d. codeRoot drift check + git identity bootstrap
+# Read top-level codeRoot/codeOwner/codeGroup/gitName/gitEmail from the
+# registry. Warn (don't fail) if the filesystem doesn't match the declared
+# intent — operator can decide whether to fix manually or `chown -R` + ACL.
+# Auto-create per-coding-agent ~/.gitconfig if missing, with an includeIf
+# block that pulls codeRoot/.gitconfig-shared (where the [user] block lives,
+# generated from the registry). Idempotent: never clobbers existing config.
+log "[4d/7] codeRoot drift check + per-agent git identity"
+if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+    CODE_ROOT=$(jq -r '.codeRoot // empty' "$REGISTRY")
+    CODE_OWNER=$(jq -r '.codeOwner // empty' "$REGISTRY")
+    CODE_GROUP=$(jq -r '.codeGroup // empty' "$REGISTRY")
+    GIT_NAME=$(jq -r '.gitName // empty' "$REGISTRY")
+    GIT_EMAIL=$(jq -r '.gitEmail // empty' "$REGISTRY")
+
+    if [ -z "$CODE_ROOT" ]; then
+        log "  no codeRoot in registry; skipping (add codeRoot/codeOwner/etc to enable)"
+    elif [ ! -d "$CODE_ROOT" ]; then
+        warn "  codeRoot $CODE_ROOT does not exist on disk"
+    else
+        # Drift check: owner / group / setgid / ACL
+        actual_owner=$(stat -c '%U' "$CODE_ROOT")
+        actual_group=$(stat -c '%G' "$CODE_ROOT")
+        actual_mode=$(stat -c '%A' "$CODE_ROOT")
+        [ "$actual_owner" = "$CODE_OWNER" ] && ok "  $CODE_ROOT owner=$actual_owner" || warn "  $CODE_ROOT owner=$actual_owner (registry says $CODE_OWNER)"
+        [ "$actual_group" = "$CODE_GROUP" ] && ok "  $CODE_ROOT group=$actual_group" || warn "  $CODE_ROOT group=$actual_group (registry says $CODE_GROUP)"
+        case "$actual_mode" in
+            *s*) ok "  $CODE_ROOT setgid bit set (new dirs inherit group)" ;;
+            *)   warn "  $CODE_ROOT missing setgid bit ($actual_mode) — new dirs won't inherit $CODE_GROUP" ;;
+        esac
+        if getfacl -p "$CODE_ROOT" 2>/dev/null | grep -q "^group:$CODE_GROUP:rwx"; then
+            ok "  $CODE_ROOT ACL grants group:$CODE_GROUP:rwx"
+        else
+            warn "  $CODE_ROOT ACL missing group:$CODE_GROUP:rwx — agents may not have write access"
+        fi
+
+        # Per-coding-agent git identity drift check: when an agent runs
+        # `git config user.{name,email}` inside any repo under codeRoot,
+        # the effective values must match gitName/gitEmail from the
+        # registry. Otherwise their commits would be attributed to
+        # themselves rather than the host's canonical author.
+        #
+        # We don't auto-fix because each agent's git identity wiring
+        # could live in any number of files (~/.gitconfig includeIf,
+        # ~/.gitconfig-srv-code, codeRoot/.gitconfig-*, system git
+        # config, etc.) and clobbering would risk losing per-agent
+        # customizations. Drift here is operator-fixable.
+        if [ -n "$GIT_NAME" ] && [ -n "$GIT_EMAIL" ] && [ -d "$CODE_ROOT" ]; then
+            # Pick any existing repo under codeRoot to do the check in
+            probe_dir=$(find "$CODE_ROOT" -mindepth 1 -maxdepth 2 -name ".git" -print -quit 2>/dev/null | xargs -r dirname)
+            if [ -n "$probe_dir" ]; then
+                while IFS=$'\t' read -r u h; do
+                    [ -z "$u" ] && continue
+                    name=$(sudo -n -u "$u" git -C "$probe_dir" config --get user.name 2>/dev/null)
+                    email=$(sudo -n -u "$u" git -C "$probe_dir" config --get user.email 2>/dev/null)
+                    if [ "$name" = "$GIT_NAME" ] && [ "$email" = "$GIT_EMAIL" ]; then
+                        ok "  $u: git identity in $CODE_ROOT = $name <$email>"
+                    else
+                        warn "  $u: git identity in $CODE_ROOT = '$name <$email>' (registry wants '$GIT_NAME <$GIT_EMAIL>')"
+                    fi
+                done < <(jq -r '.agents[] | select(.enabled == true and .role == "coding") | "\(.user)\t\(.home // "")"' "$REGISTRY")
+            fi
+        fi
+    fi
+fi
+
 # 5. dashboard frontend symlink
 log "[5/7] dashboard frontend symlink"
 WEB_HTML="$REPO_ROOT/../web/agents.html"

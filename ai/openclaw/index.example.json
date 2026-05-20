@@ -2,6 +2,14 @@
   "version": 1,
   "description": "Example agents.json — single-record template. Copy to <host>:/srv/agents/index.json (live, NOT in repo), edit, restart agent-dashboard.service. Per-agent capabilities and services are derived at runtime from /etc/openclaw/agent-defaults.json (in this same repo, agent-defaults.json) based on role + integrations. This file carries only flags and host-specific data.",
   "sharedKnowledgeDir": "/srv/Code/environment/ai/openclaw",
+
+  "_doc_code_root": "Host-level operational settings for the shared code tree where coding agents create worktrees, edit projects, and commit. install.sh's drift-check reads these and warns if filesystem state diverges from declared intent. A future `openclaw add-agent` script will read them to know where to bootstrap a new coding agent's workspace + what git identity to wire in.",
+  "codeRoot": "/srv/Code",
+  "codeOwner": "zeh",
+  "codeGroup": "code-agents",
+  "gitName": "Zeh Ferrari",
+  "gitEmail": "e@zeh.me",
+
   "webhookRoutedUsers": ["example"],
   "agents": [
     {
