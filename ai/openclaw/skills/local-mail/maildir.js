@@ -446,6 +446,49 @@ async function watch() {
   setInterval(scan, 30000);
 }
 
+// Parse a body argument from a positional + optional --body-file / "-" stdin.
+// Mirrors gmail-send.js's contract. Refuses to send a literal absolute path
+// as the message body — that's the bug that produced the
+// "I got an email containing only /tmp/reply_*.txt" incident; the agent
+// almost certainly meant --body-file.
+function parseBodyArgs(positional) {
+  let bodyFile = null;
+  const rest = [];
+  for (let i = 0; i < positional.length; i++) {
+    const a = positional[i];
+    if (a === '--body-file' || a === '-f') {
+      bodyFile = positional[++i];
+      if (!bodyFile) throw new Error('--body-file requires a path');
+    } else if (a.startsWith('--body-file=')) {
+      bodyFile = a.slice('--body-file='.length);
+    } else {
+      rest.push(a);
+    }
+  }
+  if (bodyFile) {
+    if (!fs.existsSync(bodyFile)) throw new Error(`--body-file path does not exist: ${bodyFile}`);
+    return { body: fs.readFileSync(bodyFile, 'utf8').trim(), rest };
+  }
+  if (rest.length === 1 && rest[0] === '-') {
+    return { body: fs.readFileSync(0, 'utf8').trim(), rest: [] };
+  }
+  if (rest.length === 0) return { body: '', rest };
+  const raw = rest.join(' ').trim();
+  // Path-guard: single arg that looks like an absolute path to an existing
+  // file. Refuse, surface the mistake.
+  if (rest.length === 1
+      && /^\/[^\s]+$/.test(raw)
+      && fs.existsSync(raw)
+      && fs.statSync(raw).isFile()) {
+    throw new Error(
+      `Body "${raw}" looks like a path to an existing file, but the ` +
+      `body is taken literally as the message contents. ` +
+      `Use --body-file=${raw} to send the file contents instead.`
+    );
+  }
+  return { body: raw, rest };
+}
+
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   if (cmd === 'list') {
@@ -468,14 +511,18 @@ async function main() {
     return;
   }
   if (cmd === 'send') {
-    const [to, subject, ...body] = args;
-    if (!to || !subject || !body.length) throw new Error('usage: send <to> <subject> <body>');
-    console.log(JSON.stringify(sendMail({ to, subject, body: body.join(' ') }), null, 2));
+    const [to, subject, ...rest0] = args;
+    if (!to || !subject) throw new Error('usage: send <to> <subject> <body|--body-file=PATH|->');
+    const { body } = parseBodyArgs(rest0);
+    if (!body) throw new Error('usage: send <to> <subject> <body|--body-file=PATH|->');
+    console.log(JSON.stringify(sendMail({ to, subject, body }), null, 2));
     return;
   }
   if (cmd === 'reply') {
-    const [id, ...body] = args;
-    if (!id || !body.length) throw new Error('usage: reply <messageId> <body>');
+    const [id, ...rest0] = args;
+    if (!id) throw new Error('usage: reply <messageId> <body|--body-file=PATH|->');
+    const { body } = parseBodyArgs(rest0);
+    if (!body) throw new Error('usage: reply <messageId> <body|--body-file=PATH|->');
     const m = readMessage(id);
     const to = m.headers['reply-to'] || m.headers.from;
     const subject = /^re:/i.test(m.headers.subject || '') ? m.headers.subject : `Re: ${m.headers.subject || ''}`;
@@ -483,7 +530,7 @@ async function main() {
     console.log(JSON.stringify(sendMail({
       to,
       subject,
-      body: body.join(' '),
+      body,
       extraHeaders: { 'In-Reply-To': m.headers['message-id'] || '', References: refs }
     }), null, 2));
     return;

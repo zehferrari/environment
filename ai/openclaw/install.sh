@@ -149,6 +149,29 @@ if [ -d "$REPO_ROOT/webhooks" ] && [ -r "$REGISTRY" ] && command -v jq >/dev/nul
     fi
 fi
 
+# 4c. agent-self.js symlink → every agent's ~/.openclaw/skills/agent-self.js
+# Sender helpers (gmail-send.js, local-mail/maildir.js) require('../agent-self').
+# Agents invoke skill scripts via the symlinked ~/.openclaw/skills/<skill>/
+# tree with --preserve-symlinks (so per-agent node_modules resolves). That
+# resolution treats ../ relative to the symlink location — without an
+# agent-self symlink in the agent's own skills/ dir, the require fails.
+# Symlinking points back to the canonical repo copy so updates propagate.
+log "[4c/7] agent-self.js symlinks per agent"
+if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+    while IFS=$'\t' read -r user home; do
+        [ -z "$user" ] && continue
+        dst="${home:-/home/$user}/.openclaw/skills/agent-self.js"
+        src="$REPO_ROOT/skills/agent-self.js"
+        if [ "$DRY" -eq 1 ]; then
+            log "  would symlink $dst → $src"
+            continue
+        fi
+        # Mkdir as the agent (avoid root-owned skills dir).
+        sudo -u "$user" mkdir -p "$(dirname "$dst")" 2>/dev/null
+        sudo -u "$user" ln -snf "$src" "$dst" 2>/dev/null && ok "$dst"
+    done < <(jq -r '.agents[] | select(.enabled == true) | "\(.user)\t\(.home // "")"' "$REGISTRY")
+fi
+
 # 5. dashboard frontend symlink
 log "[5/7] dashboard frontend symlink"
 WEB_HTML="$REPO_ROOT/../web/agents.html"

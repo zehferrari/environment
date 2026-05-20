@@ -83,6 +83,32 @@ From: Karen Sideye <karen@…>
   (Gmail API, SMTP via local Maildir, automated replies). Telegram has no
   equivalent — its persona comes from the bot handle in `telegram.bot`.
 
+### Passing the body (do not pass a path as the body)
+
+Each sender takes the body **as the message contents itself**, not as a
+path to a file you want loaded. The mistake is easy:
+`gmail-send.js zeh@example.com "Subject" /tmp/reply.txt` sends an email
+whose body is the literal string `/tmp/reply.txt`. The recipient sees
+the path, not your message.
+
+Three correct ways to pass a body:
+
+```bash
+# 1) Literal string on the command line (small bodies)
+node gmail-send.js zeh@example.com "Subject" "Hi zeh, ..."
+
+# 2) From a file — use --body-file (recommended for multi-line / long)
+node gmail-send.js zeh@example.com "Subject" --body-file=/tmp/reply.txt
+
+# 3) From stdin — pass "-" as the body
+cat /tmp/reply.txt | node gmail-send.js zeh@example.com "Subject" -
+```
+
+`local-mail/maildir.js send` and `reply` accept the same three forms.
+If you accidentally pass a path-shaped argument as the body and the file
+exists, the script errors out with "looks like a path; use --body-file"
+rather than silently sending the path string as the body.
+
 ### Signature (mandatory)
 
 End every Jira/email outbound with this signature on its own paragraph:
