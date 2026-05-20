@@ -20,6 +20,7 @@
 
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawn, execFile, execFileSync } = require('child_process');
 
@@ -207,6 +208,7 @@ function snapshot() {
   return {
     type: 'snapshot',
     ts: Date.now(),
+    host: os.hostname().split('.')[0],   // short hostname for the brand title
     agents: agentState,
     system: systemState,
     monitor: monitorState,
