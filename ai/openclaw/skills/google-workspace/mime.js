@@ -106,4 +106,81 @@ function buildMultipartAlternative({ from, to, subject, text, extraHeaders = {} 
   return headers.join('\r\n') + '\r\n\r\n' + parts.join('\r\n');
 }
 
-module.exports = { b64url, buildMultipartAlternative, textToHtml };
+// ─── Sender identity ──────────────────────────────────────────────────────
+//
+// Build the From: header for the running agent — pulled from
+// /etc/openclaw/agents.json by os.userInfo().username. Per
+// TEAM_WORKFLOW.md "Email sender header (mandatory)", every outbound
+// email must use "Name <email>", never bare address. Inlined here
+// (instead of require('../agent-self')) so gmail-send.js / gmail-reply.js
+// are self-contained and can be deployed as copies to each agent's
+// workspace/google/ without setting up extra symlinks.
+const fs = require('fs');
+const os = require('os');
+
+function _agentRecord() {
+  const path = process.env.OPENCLAW_AGENTS_JSON || '/etc/openclaw/agents.json';
+  const reg = JSON.parse(fs.readFileSync(path, 'utf8'));
+  const u = os.userInfo().username;
+  const a = (reg.agents || []).find(x => x.user === u);
+  if (!a) throw new Error(`mime: no agent registered for user "${u}" in ${path}`);
+  return a;
+}
+
+function fromHeader() {
+  const a = _agentRecord();
+  if (!a.name || !a.email) {
+    throw new Error(`mime: cannot build From header — missing name (${a.name || 'unset'}) or email (${a.email || 'unset'}) for user "${a.user}" in agents.json`);
+  }
+  return `${a.name} <${a.email}>`;
+}
+
+// ─── Body argument parsing ─────────────────────────────────────────────────
+//
+// Three ways for callers to supply an email body:
+//   - literal:     positional argument(s) joined as the message text
+//   - --body-file: read body from a file
+//   - "-":         read body from stdin
+//
+// Path-guard: refuses to send when the body is a single positional that
+// matches an absolute path AND that path is an existing file. That's the
+// bug that produced "the recipient got an email saying /tmp/reply_*.txt"
+// — the agent meant --body-file but passed the path bare. Surface the
+// mistake instead of silently sending the wrong content.
+function parseBodyArgs(positional) {
+  let bodyFile = null;
+  const rest = [];
+  for (let i = 0; i < positional.length; i++) {
+    const a = positional[i];
+    if (a === '--body-file' || a === '-f') {
+      bodyFile = positional[++i];
+      if (!bodyFile) throw new Error('--body-file requires a path');
+    } else if (a.startsWith('--body-file=')) {
+      bodyFile = a.slice('--body-file='.length);
+    } else {
+      rest.push(a);
+    }
+  }
+  if (bodyFile) {
+    if (!fs.existsSync(bodyFile)) throw new Error(`--body-file path does not exist: ${bodyFile}`);
+    return { body: fs.readFileSync(bodyFile, 'utf8').trim(), rest };
+  }
+  if (rest.length === 1 && rest[0] === '-') {
+    return { body: fs.readFileSync(0, 'utf8').trim(), rest: [] };
+  }
+  if (rest.length === 0) return { body: '', rest };
+  const raw = rest.join(' ').trim();
+  if (rest.length === 1
+      && /^\/[^\s]+$/.test(raw)
+      && fs.existsSync(raw)
+      && fs.statSync(raw).isFile()) {
+    throw new Error(
+      `Body "${raw}" looks like a path to an existing file, but the ` +
+      `body is taken literally as the message contents. Use ` +
+      `--body-file=${raw} to send the file contents instead.`
+    );
+  }
+  return { body: raw, rest };
+}
+
+module.exports = { b64url, buildMultipartAlternative, textToHtml, fromHeader, parseBodyArgs };

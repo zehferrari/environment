@@ -325,6 +325,47 @@ if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     fi
 fi
 
+# 4e. sync gmail helpers (mime.js + gmail-send.js + gmail-reply.js) into
+# each gmail-integrated coding agent's workspace/google directories.
+#
+# Background: agents invoke gmail-send.js / gmail-reply.js from
+# /home/<u>/workspace/google/ (per the google-workspace skill description),
+# NOT from the symlinked /home/<u>/.openclaw/skills/google-workspace/.
+# Updates to the shared repo never reach the workspace copies on their
+# own, so we sync them here every install.sh run.
+#
+# We copy (not symlink) because each agent's workspace/google has its
+# own node_modules/, secrets/, package.json — symlinking the whole dir
+# would lose those. Symlinking individual files works in principle but
+# breaks Node's module resolution unless we also install node_modules
+# in the repo. Copying keeps each agent fully self-contained.
+log "[4e/7] sync gmail helpers to each gmail-integrated coding agent"
+if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+    while IFS=$'\t' read -r u h; do
+        [ -z "$u" ] && continue
+        home="${h:-/home/$u}"
+        for d in "$home/workspace/google" "$home/.openclaw/workspace/google"; do
+            [ -d "$d" ] || continue
+            for f in mime.js gmail-send.js gmail-reply.js; do
+                src="$REPO_ROOT/skills/google-workspace/$f"
+                dst="$d/$f"
+                [ -f "$src" ] || continue
+                if [ -L "$dst" ]; then
+                    continue  # symlink already in place — leave it
+                fi
+                if [ "$DRY" -eq 1 ]; then
+                    log "  would copy $src → $dst"
+                    continue
+                fi
+                if ! cmp -s "$src" "$dst" 2>/dev/null; then
+                    install -o "$u" -g "$u" -m 0644 "$src" "$dst"
+                    ok "  $u: $dst"
+                fi
+            done
+        done
+    done < <(jq -r '.agents[] | select(.enabled == true and .role == "coding" and (.integrations.gmail // false)) | "\(.user)\t\(.home // "")"' "$REGISTRY")
+fi
+
 # 5. dashboard frontend symlink
 log "[5/7] dashboard frontend symlink"
 WEB_HTML="$REPO_ROOT/../web/agents.html"
