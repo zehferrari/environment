@@ -23,6 +23,7 @@ the whole file every session.
 | Handle email | [Email](#email) |
 | Send a Telegram message | [Telegram](#telegram) |
 | Touch a system or service | [System / service operations](#system--service-operations) |
+| Close out a `tasks/current.md` entry | [Maintaining `tasks/current.md`](#maintaining-taskscurrentmd) |
 | Save what you learned | [Knowledge handling](#knowledge-handling) |
 | Escalate to another agent or to zeh | [Escalation](#escalation) |
 
@@ -248,6 +249,9 @@ feedback-first. Max one such Telegram per 24 h per agent.
     commit, tests, and residual risk. Sign it.
 16. Do **not** move tickets to `Done` unless explicitly instructed or
     the project workflow clearly assigns Done ownership to you.
+17. When you flip the matching `~/tasks/current.md` entry to a terminal
+    status, move it to `~/tasks/log.md` in the same edit — see
+    [Maintaining `tasks/current.md`](#maintaining-taskscurrentmd).
 
 ---
 
@@ -406,6 +410,30 @@ remaining risk. Sign the review handoff.
 - Restart / reload services only when required.
 - Verify service state and recent logs after restart.
 - Record durable service changes in `MEMORY.md`.
+
+---
+
+## Maintaining `tasks/current.md`
+
+`~/tasks/current.md` is your live queue, not a forever log. When an
+entry reaches a terminal status (`DONE`, `RESOLVED`, `CLOSED`,
+`CANCELLED`, `WONT_FIX`, `DUPLICATE_HANDLED`, `AUTO_RESOLVED`,
+`ARCHIVED`, etc.), move it out — keep `current.md` short and current.
+
+- **At completion**: when you flip an entry to a terminal status, in the
+  same edit move the whole heading-block to `~/tasks/log.md` (append at
+  the end). One operation: don't leave terminal entries sitting in
+  `current.md` "for context".
+- **Hygiene sweep**: on every fresh wake, scan `current.md` top-to-bottom
+  and archive anything terminal you find. If an entry has no explicit
+  `Status:` line, add one before deciding whether to archive.
+- **Why this matters**: the agents dashboard surfaces your *current
+  task* by reading the newest non-terminal entry in `current.md`. Stale
+  completed entries make the dashboard lie about what you're working on
+  and obscure real signal. Tools like `ai-monitor` also key off this
+  file — give them an accurate view.
+- **Do not delete** archived entries — `log.md` is the audit trail. Just
+  move them.
 
 ---
 
