@@ -1,3 +1,4 @@
+const fs = require('fs');
 const { jiraRequest } = require('./lib');
 
 // ─── Markdown → ADF ─────────────────────────────────────────────────────────
@@ -234,14 +235,79 @@ function markdownToAdf(md) {
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
-async function main() {
-  const issueKey = process.argv[2];
-  const comment = process.argv[3];
+function usage(extra) {
+  if (extra) console.error(extra + '\n');
+  console.error('Usage:');
+  console.error('  node jira-comment.js <ISSUE-KEY> "Markdown comment text"');
+  console.error('  node jira-comment.js <ISSUE-KEY> --body-file=<path>');
+  console.error('  node jira-comment.js <ISSUE-KEY> -                       # body from stdin');
+  console.error('');
+  console.error('Pass the actual comment text, --body-file=<path> to load it');
+  console.error('from a file, or "-" to read from stdin. NEVER pass a bare');
+  console.error('path as the comment — that would post the literal path text.');
+  process.exit(1);
+}
 
-  if (!issueKey || !comment) {
-    console.error('Usage: node jira-comment.js <ISSUE-KEY> "Markdown comment text"');
-    process.exit(1);
+// Same body-arg conventions as gmail-send.js / gmail-reply.js so agents
+// have one consistent pattern across senders. Path-guard refuses to post
+// a malformed comment when the body looks like a bare file path.
+function parseBodyArgs(argv) {
+  const positional = [];
+  let bodyFile = null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--body-file' || a === '-f') {
+      bodyFile = argv[++i];
+      if (!bodyFile) usage('--body-file requires a path');
+    } else if (a.startsWith('--body-file=')) {
+      bodyFile = a.slice('--body-file='.length);
+    } else {
+      positional.push(a);
+    }
   }
+  return { positional, bodyFile };
+}
+
+async function main() {
+  const { positional, bodyFile } = parseBodyArgs(process.argv.slice(2));
+  const [issueKey, ...rest] = positional;
+  if (!issueKey) usage('missing <ISSUE-KEY>');
+
+  let comment;
+  if (bodyFile) {
+    if (!fs.existsSync(bodyFile)) usage(`--body-file path does not exist: ${bodyFile}`);
+    comment = fs.readFileSync(bodyFile, 'utf8').trim();
+  } else if (rest.length === 1 && rest[0] === '-') {
+    comment = fs.readFileSync(0, 'utf8').trim();
+  } else if (rest.length === 0) {
+    usage('missing <comment text>');
+  } else {
+    const raw = rest.join(' ').trim();
+    // Path-guard: refuse to post a bare path as the comment text —
+    // agent almost certainly meant --body-file. This is the bug that
+    // produced "barekbaal posted '--body-file' as the literal comment".
+    if (rest.length === 1
+        && /^\/[^\s]+$/.test(raw)
+        && fs.existsSync(raw)
+        && fs.statSync(raw).isFile()) {
+      usage(
+        `Comment "${raw}" looks like a path to an existing file. ` +
+        `Use --body-file=${raw} to post the file contents, or pass ` +
+        `the actual markdown comment as a literal string.`
+      );
+    }
+    // Also reject a bare flag stub like "--body-file" with no path —
+    // that's how the original bug surfaced (literal "--body-file"
+    // ended up as the comment body).
+    if (/^--?body-file=?$/.test(raw)) {
+      usage(
+        `Comment "${raw}" looks like an incomplete --body-file flag. ` +
+        `Did you mean --body-file=<path>?`
+      );
+    }
+    comment = raw;
+  }
+  if (!comment) usage('missing <comment text>');
 
   try {
     const adf = markdownToAdf(comment);
