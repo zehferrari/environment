@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenClaw Jira webhook receiver (monitor agent)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/webhooks
+ExecStart=/usr/bin/node %h/webhooks/jira-receiver.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Webhook secret + (future) other env vars
+EnvironmentFile=%h/.config/openclaw/openclaw-webhook.env
+
+[Install]
+WantedBy=default.target

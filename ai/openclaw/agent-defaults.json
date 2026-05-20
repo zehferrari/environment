@@ -53,8 +53,12 @@
       "services": ["openclaw-mail-listener.service"],
       "capabilities": { "can_send_email": true }
     },
-    "webhook": {
-      "services": ["openclaw-webhook-receiver.service"],
+    "monitor": {
+      "_doc": "Monitor-agent integration: runs the inbound webhook receivers (Jira + Bitbucket events from Atlassian Cloud, routed by nginx). Split into two services so each integration can fail/restart independently and operators can disable one without affecting the other. Only the agent with role=monitor should have this turned on.",
+      "services": [
+        "openclaw-jira-receiver.service",
+        "openclaw-bitbucket-receiver.service"
+      ],
       "capabilities": {}
     },
     "jira": {

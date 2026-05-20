@@ -1,0 +1,44 @@
+# nginx webhook split — Atlassian Cloud → monitor agent receivers
+#
+# Drop these three `location` blocks inside the `server { … }` block of
+# the vhost that handles your public webhook URL. The monitor agent's
+# openclaw-jira-receiver.service and openclaw-bitbucket-receiver.service
+# (split from the legacy openclaw-webhook-receiver) listen on
+# 127.0.0.1:3014 and :3015 respectively. nginx splits the routes so
+# each receiver gets only its own traffic; either can be restarted
+# without affecting the other.
+#
+# Upstream Atlassian webhook URLs stay the same:
+#   https://<your-host>/webhooks/jira       (Jira webhook URL in admin)
+#   https://<your-host>/webhooks/bitbucket  (Bitbucket webhook URL in admin)
+# so no changes are needed in the Atlassian admin UIs.
+
+location = /webhooks/jira {
+    proxy_pass http://127.0.0.1:3014/jira;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;
+    proxy_read_timeout 90s;
+    proxy_connect_timeout 90s;
+}
+
+location = /webhooks/bitbucket {
+    proxy_pass http://127.0.0.1:3015/bitbucket;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_http_version 1.1;
+    proxy_read_timeout 90s;
+    proxy_connect_timeout 90s;
+}
+
+# Health probe — reports the routed user list (same shape as the
+# legacy /webhooks/health). The integrity check hits this URL to
+# verify the receiver pipeline is alive end-to-end.
+location = /webhooks/health {
+    proxy_pass http://127.0.0.1:3014/health;
+    proxy_set_header Host $host;
+}

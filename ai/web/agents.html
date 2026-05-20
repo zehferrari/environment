@@ -402,8 +402,7 @@
   .badge.integ { color: var(--text); border-color: var(--line-strong); }
 
   /* ─── Lower panels ──────────────────────────────────────────────────── */
-  .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
-  @media (max-width: 900px) { .panels { grid-template-columns: 1fr; } }
+  .panels { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 8px; }
   .panel {
     background: var(--panel);
     border: 1px solid var(--line);
@@ -514,15 +513,6 @@
       </div>
     </div>
 
-    <div class="panel" id="system-panel">
-      <div class="panel-head">
-        <h3>System Services</h3>
-        <span class="meta" id="system-meta">—</span>
-      </div>
-      <div class="panel-body">
-        <div class="services-grid" id="system-services"></div>
-      </div>
-    </div>
   </div>
 
   <div class="dash-footer">
@@ -945,6 +935,21 @@ function renderAgent(reg, live) {
     }
     svcField.append(wrap);
     body.append(svcField);
+  }
+
+  // — System Services (host infrastructure, only shown under the monitor
+  //   agent tile — that's the agent responsible for watching them)
+  if (reg.role === 'monitor') {
+    const sysField = el('div', 'field');
+    const sysLabel = el('div', 'field-label');
+    sysLabel.append(document.createTextNode('🖥 System Services'));
+    const sysCount = el('span', 'count', '');
+    sysLabel.append(sysCount);
+    sysField.append(sysLabel);
+    const sysRoot = el('div', 'system-services-grid');
+    sysCount.textContent = ' · ' + (renderSystemInto(sysRoot) || '—');
+    sysField.append(sysRoot);
+    body.append(sysField);
   }
 
   card.append(body);
@@ -1427,8 +1432,10 @@ function classifyService(name) {
   return 'Other';
 }
 
-function renderSystem() {
-  const root = $('#system-services');
+// Render the host's system services into the given container element.
+// Returns "<okN>/<totalN>" so the caller (the monitor agent tile) can
+// surface a tally next to the section label.
+function renderSystemInto(root) {
   clear(root);
 
   const entries = Object.entries(state.system);
@@ -1442,10 +1449,9 @@ function renderSystem() {
     if (st?.is_active === 'active') hostOk++;
   }
 
-  $('#system-meta').textContent = hostTot ? `${hostOk}/${hostTot} active` : '—';
   if (!hostTot) {
     root.append(el('div', 'empty', 'no host service data'));
-    return;
+    return '—';
   }
 
   // Render each group in display order, skipping empties
@@ -1476,6 +1482,7 @@ function renderSystem() {
     groupEl.append(grid);
     root.append(groupEl);
   }
+  return `${hostOk}/${hostTot} active`;
 }
 
 // ─── Master render ────────────────────────────────────────────────────────
@@ -1483,7 +1490,6 @@ function renderAll() {
   renderSummary();
   renderAgents();
   renderMonitor();
-  renderSystem();
 }
 
 // ─── SSE ──────────────────────────────────────────────────────────────────
@@ -1548,7 +1554,7 @@ function handleEvent(d) {
       if (state.pendingServices.has(d.service) && d.is_active === 'active') {
         state.pendingServices.delete(d.service);
       }
-      renderSummary(); renderSystem(); renderAgents();  // agent service pips depend on this
+      renderSummary(); renderAgents();  // monitor agent tile re-renders its embedded System Services block
       return;
     case 'ai_monitor_tick':
       state.monitor.last_tick = d.tick;

@@ -627,10 +627,12 @@ def find_monitor_user(agent_registry):
 
 def check_dev_shared_files(users_cfg, agent_registry=None, monitor_user=None, monitor_home=None):
     if not monitor_user or not monitor_home:
-        emit("WARN", "no monitor agent (role=monitor) in registry — skipping webhook-receiver file checks")
+        emit("WARN", "no monitor agent (role=monitor) in registry — skipping monitor-receiver file checks")
         return
     dev_paths = [
-        Path(f"{monitor_home}/webhooks/webhook-receiver.js"),
+        Path(f"{monitor_home}/webhooks/common.js"),
+        Path(f"{monitor_home}/webhooks/jira-receiver.js"),
+        Path(f"{monitor_home}/webhooks/bitbucket-receiver.js"),
         Path(f"{monitor_home}/webhooks/users.json"),
         Path(f"{monitor_home}/.config/openclaw/openclaw-webhook.env"),
     ]
@@ -677,8 +679,10 @@ def check_dev_env_drift(monitor_user=None, monitor_home=None, monitor_uid=None):
     env_file_path = Path(f"{monitor_home}/.config/openclaw/openclaw-webhook.env")
     file_env = parse_env_file(env_file_path)
     uid = monitor_uid or user_uid(monitor_user) or 1003
+    # Use jira-receiver as the representative — same env file is loaded by
+    # both receivers, so checking one is sufficient.
     rc, out, err = run(
-        user_systemctl_cmd(monitor_user, uid, "show", "openclaw-webhook-receiver", "-p", "Environment"),
+        user_systemctl_cmd(monitor_user, uid, "show", "openclaw-jira-receiver", "-p", "Environment"),
         timeout=10,
     )
     if rc != 0:
@@ -688,8 +692,9 @@ def check_dev_env_drift(monitor_user=None, monitor_home=None, monitor_uid=None):
 
     unit_text = ""
     unit_candidates = [
-        Path(f"{monitor_home}/.config/systemd/user/openclaw-webhook-receiver.service"),
-        Path("/usr/lib/systemd/user/openclaw-webhook-receiver.service"),
+        Path("/etc/systemd/user/openclaw-jira-receiver.service"),
+        Path(f"{monitor_home}/.config/systemd/user/openclaw-jira-receiver.service"),
+        Path("/usr/lib/systemd/user/openclaw-jira-receiver.service"),
     ]
     for candidate in unit_candidates:
         if candidate.exists():
@@ -867,17 +872,13 @@ def main():
         for service in agent.get("services") or []:
             check_user_service(user, service)
 
-        if integrations.get("webhook"):
-            port = detect_webhook_port(user)
-            if port is None:
-                emit("FAIL", f"{user}: unable to determine webhook port")
-            elif user == monitor_user:
-                # The monitor agent hosts the multi-tenant webhook receiver
-                # and its /webhooks/health endpoint returns the full routed
-                # user list — verify it matches users.json.
-                check_webhook_health(user, port, expected_users=list(users.keys()))
-            else:
-                check_webhook_health(user, port)
+        # Monitor integration: the agent runs jira-receiver:3014 and
+        # bitbucket-receiver:3015 (split from the legacy webhook-receiver:3010).
+        # Each /health endpoint returns the routed user list — verify both.
+        if integrations.get("monitor"):
+            for label, port in (("jira-receiver", 3014), ("bitbucket-receiver", 3015)):
+                check_webhook_health(f"{user}/{label}", port,
+                                     expected_users=list(users.keys()) if user == monitor_user else None)
 
         openclaw_cfg_path = Path(f"/home/{user}/.openclaw/openclaw.json")
         if not openclaw_cfg_path.exists():

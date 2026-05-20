@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenClaw Bitbucket webhook receiver (monitor agent)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/webhooks
+ExecStart=/usr/bin/node %h/webhooks/bitbucket-receiver.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+EnvironmentFile=%h/.config/openclaw/openclaw-webhook.env
+
+[Install]
+WantedBy=default.target
