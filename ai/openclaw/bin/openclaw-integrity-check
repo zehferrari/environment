@@ -585,6 +585,14 @@ def check_jira(user, user_cfg):
 
 
 def check_dev_public_ingress(expected_users, monitor_user="monitor"):
+    # Skip if the host can't even resolve `moonlight` — hosts that don't
+    # ingress through moonlight (yoga510, future stand-alone deployments)
+    # have no reason to probe it. Resolution is the cheap proxy for
+    # "this host is wired into the moonlight ingress path".
+    rc, _out, _err = run(["getent", "hosts", "moonlight"], timeout=5)
+    if rc != 0:
+        emit("OK", f"{monitor_user}: skipping public moonlight ingress probe (moonlight not in /etc/hosts or DNS)")
+        return
     rc, out, err = run(
         ["ssh", "moonlight", "curl", "-fsS", "-A", PUBLIC_DEV_HEALTH_UA, PUBLIC_DEV_HEALTH_URL],
         timeout=25,
@@ -644,8 +652,12 @@ def check_dev_shared_files(users_cfg, agent_registry=None, monitor_user=None, mo
             "home": cfg.get("home"),
             "tasksFile": cfg.get("tasksFile"),
             "logFile": cfg.get("logFile"),
-            "jiraTokenFile": cfg.get("jiraTokenFile"),
         }
+        # Token files are gated on the corresponding integration being enabled.
+        # Otherwise an agent that opts out (e.g. integrations.jira=false) still
+        # gets FAILs about missing token files they have no reason to have.
+        if integrations.get("jira"):
+            checks["jiraTokenFile"] = cfg.get("jiraTokenFile")
         if integrations.get("bitbucket"):
             checks["bitbucketTokenFile"] = cfg.get("bitbucketTokenFile")
         for label, raw_path in checks.items():
@@ -653,6 +665,8 @@ def check_dev_shared_files(users_cfg, agent_registry=None, monitor_user=None, mo
                 emit("OK", f"{monitor_user}: users.json route for {user} has existing {label}")
             else:
                 emit("FAIL", f"{monitor_user}: users.json route for {user} missing {label} ({raw_path})")
+        if not integrations.get("jira"):
+            emit("OK", f"{monitor_user}: users.json route for {user} skips jiraTokenFile (Jira integration disabled)")
         if not integrations.get("bitbucket"):
             emit("OK", f"{monitor_user}: users.json route for {user} skips bitbucketTokenFile (Bitbucket integration disabled)")
 
