@@ -584,39 +584,53 @@ def check_jira(user, user_cfg):
         emit("FAIL", f"{user}: Jira token file is empty")
 
 
-def check_dev_public_ingress(expected_users):
+def check_dev_public_ingress(expected_users, monitor_user="monitor"):
     rc, out, err = run(
         ["ssh", "moonlight", "curl", "-fsS", "-A", PUBLIC_DEV_HEALTH_UA, PUBLIC_DEV_HEALTH_URL],
         timeout=25,
     )
     if rc != 0:
-        emit("FAIL", f"karen: public moonlight ingress probe failed ({trim(err or out)})")
+        emit("FAIL", f"{monitor_user}: public moonlight ingress probe failed ({trim(err or out)})")
         return
     body = (out or "").strip()
     try:
         data = json.loads(body)
     except Exception:
-        emit("FAIL", f"karen: public moonlight ingress returned non-JSON payload ({trim(body)})")
+        emit("FAIL", f"{monitor_user}: public moonlight ingress returned non-JSON payload ({trim(body)})")
         return
     users = sorted(data.get("users") or [])
     want = sorted(expected_users)
     if data.get("status") == "ok" and users == want:
-        emit("OK", f"karen: public moonlight ingress health is ok with users {','.join(users)}")
+        emit("OK", f"{monitor_user}: public moonlight ingress health is ok with users {','.join(users)}")
     else:
-        emit("FAIL", f"karen: public moonlight ingress payload mismatch ({trim(body)})")
+        emit("FAIL", f"{monitor_user}: public moonlight ingress payload mismatch ({trim(body)})")
 
 
-def check_dev_shared_files(users_cfg, agent_registry=None):
+def find_monitor_user(agent_registry):
+    """Find the monitor agent in the registry (role=monitor). Returns
+    (user, home, uid) or (None, None, None) if no monitor agent."""
+    for a in ((agent_registry or {}).get("agents") or []):
+        if a.get("role") == "monitor" and a.get("enabled", True):
+            user = a.get("user")
+            home = a.get("home") or (f"/home/{user}" if user else None)
+            return user, home, a.get("uid")
+    return None, None, None
+
+
+def check_dev_shared_files(users_cfg, agent_registry=None, monitor_user=None, monitor_home=None):
+    if not monitor_user or not monitor_home:
+        emit("WARN", "no monitor agent (role=monitor) in registry — skipping webhook-receiver file checks")
+        return
     dev_paths = [
-        Path("/home/karen/webhooks/webhook-receiver.js"),
-        Path("/home/karen/webhooks/users.json"),
-        Path("/home/karen/.config/openclaw/openclaw-webhook.env"),
+        Path(f"{monitor_home}/webhooks/webhook-receiver.js"),
+        Path(f"{monitor_home}/webhooks/users.json"),
+        Path(f"{monitor_home}/.config/openclaw/openclaw-webhook.env"),
     ]
     for path in dev_paths:
         if path.exists():
-            emit("OK", f"karen: required file present ({path})")
+            emit("OK", f"{monitor_user}: required file present ({path})")
         else:
-            emit("FAIL", f"karen: required file missing ({path})")
+            emit("FAIL", f"{monitor_user}: required file missing ({path})")
 
     users = users_cfg.get("users") or {}
     registry_by_user = {
@@ -636,29 +650,31 @@ def check_dev_shared_files(users_cfg, agent_registry=None):
             checks["bitbucketTokenFile"] = cfg.get("bitbucketTokenFile")
         for label, raw_path in checks.items():
             if raw_path and Path(raw_path).exists():
-                emit("OK", f"karen: users.json route for {user} has existing {label}")
+                emit("OK", f"{monitor_user}: users.json route for {user} has existing {label}")
             else:
-                emit("FAIL", f"karen: users.json route for {user} missing {label} ({raw_path})")
+                emit("FAIL", f"{monitor_user}: users.json route for {user} missing {label} ({raw_path})")
         if not integrations.get("bitbucket"):
-            emit("OK", f"karen: users.json route for {user} skips bitbucketTokenFile (Bitbucket integration disabled)")
+            emit("OK", f"{monitor_user}: users.json route for {user} skips bitbucketTokenFile (Bitbucket integration disabled)")
 
 
-def check_dev_env_drift():
-    env_file_path = Path("/home/karen/.config/openclaw/openclaw-webhook.env")
+def check_dev_env_drift(monitor_user=None, monitor_home=None, monitor_uid=None):
+    if not monitor_user or not monitor_home:
+        return
+    env_file_path = Path(f"{monitor_home}/.config/openclaw/openclaw-webhook.env")
     file_env = parse_env_file(env_file_path)
-    uid = user_uid("karen") or 1003
+    uid = monitor_uid or user_uid(monitor_user) or 1003
     rc, out, err = run(
-        user_systemctl_cmd("karen", uid, "show", "openclaw-webhook-receiver", "-p", "Environment"),
+        user_systemctl_cmd(monitor_user, uid, "show", "openclaw-webhook-receiver", "-p", "Environment"),
         timeout=10,
     )
     if rc != 0:
-        emit("FAIL", f"karen: unable to inspect effective systemd environment ({trim(err or out)})")
+        emit("FAIL", f"{monitor_user}: unable to inspect effective systemd environment ({trim(err or out)})")
         return
     effective_env = parse_systemd_show_environment(out)
 
     unit_text = ""
     unit_candidates = [
-        Path("/home/karen/.config/systemd/user/openclaw-webhook-receiver.service"),
+        Path(f"{monitor_home}/.config/systemd/user/openclaw-webhook-receiver.service"),
         Path("/usr/lib/systemd/user/openclaw-webhook-receiver.service"),
     ]
     for candidate in unit_candidates:
@@ -669,30 +685,31 @@ def check_dev_env_drift():
             except Exception:
                 pass
     if not unit_text:
-        emit("WARN", "karen: unable to inspect unit file for EnvironmentFile wiring")
+        emit("WARN", f"{monitor_user}: unable to inspect unit file for EnvironmentFile wiring")
     envfile_wired = str(env_file_path) in unit_text
 
+    fallback_port = WEBHOOK_PORT_FALLBACKS.get(monitor_user, "?")
     for key in ("PORT", "JIRA_WEBHOOK_SECRET", "BITBUCKET_WEBHOOK_SECRET"):
         file_value = file_env.get(key, "")
         effective_value = effective_env.get(key, "")
         if key == "PORT":
             if file_value and effective_value and file_value != effective_value:
-                emit("WARN", f"karen: env file PORT={file_value} differs from effective PORT={effective_value}")
+                emit("WARN", f"{monitor_user}: env file PORT={file_value} differs from effective PORT={effective_value}")
             else:
-                emit("OK", f"karen: effective {key} is {effective_value or file_value or WEBHOOK_PORT_FALLBACKS['karen']}")
+                emit("OK", f"{monitor_user}: effective {key} is {effective_value or file_value or fallback_port}")
             continue
 
         if file_value and envfile_wired:
-            emit("OK", f"karen: {key} supplied via EnvironmentFile ({env_file_path})")
+            emit("OK", f"{monitor_user}: {key} supplied via EnvironmentFile ({env_file_path})")
             continue
 
         if file_value == effective_value:
-            emit("OK", f"karen: {key} env file matches effective service environment")
+            emit("OK", f"{monitor_user}: {key} env file matches effective service environment")
         else:
             if file_value and not effective_value:
-                emit("WARN", f"karen: {key} is set in env file but blank in effective service environment")
+                emit("WARN", f"{monitor_user}: {key} is set in env file but blank in effective service environment")
             else:
-                emit("WARN", f"karen: {key} env file/effective service mismatch")
+                emit("WARN", f"{monitor_user}: {key} env file/effective service mismatch")
 
 
 
@@ -779,9 +796,17 @@ def remediate_service(user, service):
 
 def main():
     print(f"[INFO] openclaw integrity check started at {datetime.now(timezone.utc).isoformat()}")
-    users_cfg_path = Path("/home/karen/webhooks/users.json")
-    if not users_cfg_path.exists():
-        emit("FAIL", f"missing shared users config {users_cfg_path}")
+
+    # Load registry first to locate the monitor agent (role=monitor) — the
+    # shared webhook receiver and its users.json live in that agent's home.
+    agent_registry_early = load_agent_registry() or {}
+    monitor_user, monitor_home, monitor_uid = find_monitor_user(agent_registry_early)
+    if not monitor_user:
+        emit("WARN", "no monitor agent (role=monitor) in registry — webhook checks will be limited")
+
+    users_cfg_path = Path(f"{monitor_home}/webhooks/users.json") if monitor_home else None
+    if users_cfg_path is None or not users_cfg_path.exists():
+        emit("FAIL", f"missing shared users config {users_cfg_path or '(monitor agent home unknown)'}")
         print(f"[SUMMARY] ok={ok_count} warn={warn_count} fail={fail_count}")
         return 1
     try:
@@ -797,7 +822,7 @@ def main():
         print(f"[SUMMARY] ok={ok_count} warn={warn_count} fail={fail_count}")
         return 1
 
-    agent_registry = load_agent_registry() or fallback_agent_registry(users_cfg)
+    agent_registry = agent_registry_early or fallback_agent_registry(users_cfg)
     monitor_agents = [
         a for a in agent_registry.get("agents", [])
         if a.get("enabled", True) and a.get("user")
@@ -816,9 +841,9 @@ def main():
     else:
         emit("FAIL", "shared Bitbucket target missing from users config")
 
-    check_dev_shared_files(users_cfg, agent_registry)
-    check_dev_env_drift()
-    check_dev_public_ingress(list(users.keys()))
+    check_dev_shared_files(users_cfg, agent_registry, monitor_user, monitor_home)
+    check_dev_env_drift(monitor_user, monitor_home, monitor_uid)
+    check_dev_public_ingress(list(users.keys()), monitor_user=monitor_user or "monitor")
 
     for agent in monitor_agents:
         user = agent["user"]
@@ -832,7 +857,10 @@ def main():
             port = detect_webhook_port(user)
             if port is None:
                 emit("FAIL", f"{user}: unable to determine webhook port")
-            elif user == "karen":
+            elif user == monitor_user:
+                # The monitor agent hosts the multi-tenant webhook receiver
+                # and its /webhooks/health endpoint returns the full routed
+                # user list — verify it matches users.json.
                 check_webhook_health(user, port, expected_users=list(users.keys()))
             else:
                 check_webhook_health(user, port)
