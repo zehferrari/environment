@@ -208,7 +208,11 @@ function snapshot() {
   return {
     type: 'snapshot',
     ts: Date.now(),
-    host: os.hostname().split('.')[0],   // short hostname for the brand title
+    // `host_label` in dashboard config wins (operator-controlled
+    // colloquial name like "yoga510"); otherwise fall back to the OS
+    // short hostname. Keeps the brand title stable even when the
+    // actual hostname is something else (mail.eurekafiles.com → yoga510).
+    host: (cfg && cfg.host_label) || os.hostname().split('.')[0],
     agents: agentState,
     system: systemState,
     monitor: monitorState,

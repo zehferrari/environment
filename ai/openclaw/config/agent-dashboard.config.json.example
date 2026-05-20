@@ -4,6 +4,9 @@
   "bind": "127.0.0.1",
   "port": 3013,
 
+  "_host_label_doc": "Colloquial host name surfaced in the dashboard brand title ('<host_label> Agent Dashboard') and tab title. Falls back to os.hostname().split('.')[0] if absent. Set to override when the OS hostname doesn't match the human-friendly name (e.g. mail.eurekafiles.com → yoga510).",
+  "host_label": "x1",
+
   "agents_registry": "/etc/openclaw/agents.json",
   "agent_defaults": "/etc/openclaw/agent-defaults.json",
   "html_path": "/usr/local/share/agent-dashboard/agents.html",
