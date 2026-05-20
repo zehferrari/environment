@@ -247,6 +247,30 @@ function pickLatestSessionJsonl(user) {
 //   - everything else    → tail the openclaw jsonl referenced by sessionFile
 // Falls back to the newest openclaw jsonl on disk if sessions.json can't be
 // read or has no usable entries.
+// Pick the newest claude-cli jsonl on disk by mtime — used as a fallback
+// when openclaw's sessions.json bookkeeping hasn't bound the active
+// conversation to a sessionId yet (happens briefly on fresh sessions
+// where status='running' but claudeCliSessionId is still null). The
+// busy probe uses the same signal, so this just lifts it into the
+// tail-picker too.
+function newestClaudeCliJsonl(user) {
+  const dir = `/home/${user}/.claude/projects/-home-${user}-workspace`;
+  try {
+    let best = null;
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.jsonl')) continue;
+      const full = path.join(dir, f);
+      try {
+        const m = fs.statSync(full).mtimeMs;
+        if (!best || m > best.mtime) best = { full, mtime: m };
+      } catch (_e) { /* ignore */ }
+    }
+    return best ? best.full : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
 function pickActiveSessionInfo(user) {
   try {
     const sjPath = `/home/${user}/.openclaw/agents/main/sessions/sessions.json`;
@@ -270,8 +294,18 @@ function pickActiveSessionInfo(user) {
       if (e.sessionFile && fs.existsSync(e.sessionFile)) {
         return { file: e.sessionFile, format: 'openclaw' };
       }
+      // Fallback: registry entry is unresolvable (no cliSid AND no
+      // existing sessionFile — typical of a brand-new running session
+      // where openclaw hasn't recorded the cliSid yet). If we can see
+      // a claude-cli jsonl freshly written on disk, tail that. The
+      // busy probe already uses this signal; the tail follows suit.
+      const cli = newestClaudeCliJsonl(user);
+      if (cli) return { file: cli, format: 'claude-cli' };
     }
   } catch (_e) { /* fall through */ }
+  // Last-resort fallback: try claude-cli first, then openclaw newest.
+  const cli = newestClaudeCliJsonl(user);
+  if (cli) return { file: cli, format: 'claude-cli' };
   const f = pickLatestSessionJsonl(user);
   if (f) return { file: f, format: 'openclaw' };
   return null;
