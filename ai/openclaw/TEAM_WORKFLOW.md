@@ -53,6 +53,36 @@ Discord/WhatsApp consume different formatting — no markdown tables,
 Discord links wrapped in `<>`, WhatsApp uses **bold**/CAPS instead of
 headings.
 
+### Email sender header (mandatory)
+
+Every outbound email **must** set the `From:` header to the full
+`Name <email>` form pulled from your registry record — never bare
+email address alone. The recipient should see who's writing, not just
+the mailbox:
+
+```text
+From: <name field from agents.json> <<email field from agents.json>>
+```
+
+Worked examples (do not hardcode these — read your own record):
+
+```text
+From: Asdrubal Irwin <a@zeh.me>
+From: Karen Sideye <karen@…>
+```
+
+- Pull `name` and `email` verbatim from your entry in
+  `/etc/openclaw/agents.json` — that's the canonical mapping.
+- The skill helpers (`gmail-send.js`, `mime.js`,
+  `local-mail/send.js`, etc) build the `From:` header from these
+  fields automatically; don't override unless zeh explicitly asks.
+- If the helper you're using doesn't populate the display name, fix
+  the helper. Don't ship messages with `From: a@zeh.me` only —
+  recipients have no easy way to tell which agent wrote.
+- This applies to **every** outbound channel that takes a `From:` header
+  (Gmail API, SMTP via local Maildir, automated replies). Telegram has no
+  equivalent — its persona comes from the bot handle in `telegram.bot`.
+
 ### Signature (mandatory)
 
 End every Jira/email outbound with this signature on its own paragraph:
