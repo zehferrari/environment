@@ -208,32 +208,119 @@ if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
             warn "  $CODE_ROOT ACL missing group:$CODE_GROUP:rwx — agents may not have write access"
         fi
 
-        # Per-coding-agent git identity drift check: when an agent runs
-        # `git config user.{name,email}` inside any repo under codeRoot,
-        # the effective values must match gitName/gitEmail from the
-        # registry. Otherwise their commits would be attributed to
-        # themselves rather than the host's canonical author.
+        # Per-coding-agent git identity bootstrap + drift check.
         #
-        # We don't auto-fix because each agent's git identity wiring
-        # could live in any number of files (~/.gitconfig includeIf,
-        # ~/.gitconfig-srv-code, codeRoot/.gitconfig-*, system git
-        # config, etc.) and clobbering would risk losing per-agent
-        # customizations. Drift here is operator-fixable.
-        if [ -n "$GIT_NAME" ] && [ -n "$GIT_EMAIL" ] && [ -d "$CODE_ROOT" ]; then
-            # Pick any existing repo under codeRoot to do the check in
+        # Two modes:
+        #   (1) HOST-level override: registry has top-level gitName/gitEmail.
+        #       Every coding agent's commits under codeRoot are attributed
+        #       to that single identity (e.g. x1: gitName="Zeh Ferrari").
+        #       install.sh maintains <codeRoot>/.gitconfig-registry with
+        #       [user] from those fields and links agent ~/.gitconfig to it
+        #       via includeIf.
+        #   (2) PER-AGENT identity: registry has NO host-level gitName/
+        #       gitEmail. Each agent commits as themselves — install.sh
+        #       writes the agent's own .name and .email (from the per-agent
+        #       record) directly into ~/.gitconfig.
+        #
+        # In both cases:
+        # - safe.directory = codeRoot/* is added BEFORE the [user] /
+        #   includeIf block so git can determine the gitdir on cross-user
+        #   repos (otherwise the includeIf can never resolve).
+        # - includeIf uses trailing-slash form `gitdir:codeRoot/` for
+        #   recursive match. `codeRoot/*` (single star) does NOT match
+        #   the .git dir one level deeper.
+        # - Existing ~/.gitconfig files are NEVER clobbered (almost
+        #   certainly operator-curated with sshCommand, signing key,
+        #   etc.) — drift surfaces as a warning instead.
+        REGISTRY_GITCFG="$CODE_ROOT/.gitconfig-registry"
+        if [ -d "$CODE_ROOT" ]; then
             probe_dir=$(find "$CODE_ROOT" -mindepth 1 -maxdepth 2 -name ".git" -print -quit 2>/dev/null | xargs -r dirname)
-            if [ -n "$probe_dir" ]; then
-                while IFS=$'\t' read -r u h; do
-                    [ -z "$u" ] && continue
-                    name=$(sudo -n -u "$u" git -C "$probe_dir" config --get user.name 2>/dev/null)
-                    email=$(sudo -n -u "$u" git -C "$probe_dir" config --get user.email 2>/dev/null)
-                    if [ "$name" = "$GIT_NAME" ] && [ "$email" = "$GIT_EMAIL" ]; then
-                        ok "  $u: git identity in $CODE_ROOT = $name <$email>"
-                    else
-                        warn "  $u: git identity in $CODE_ROOT = '$name <$email>' (registry wants '$GIT_NAME <$GIT_EMAIL>')"
-                    fi
-                done < <(jq -r '.agents[] | select(.enabled == true and .role == "coding") | "\(.user)\t\(.home // "")"' "$REGISTRY")
+
+            # Host-override mode: maintain the shared registry-managed file
+            # once before iterating agents. Skipped entirely if no host-level
+            # gitName/gitEmail in registry (per-agent mode).
+            if [ -n "$GIT_NAME" ] && [ -n "$GIT_EMAIL" ]; then
+                if [ "$DRY" -eq 1 ]; then
+                    log "  would reconcile $REGISTRY_GITCFG with [user] from registry"
+                elif [ ! -f "$REGISTRY_GITCFG" ]; then
+                    printf '# Managed by install.sh from /etc/openclaw/agents.json gitName/gitEmail.\n# Pulled into every repo under %s by per-agent ~/.gitconfig includeIf.\n# Operator-managed git files (e.g. .gitconfig-zeh with [core] sshCommand)\n# stay separate from this file and are not touched by install.sh.\n[user]\n\tname = %s\n\temail = %s\n' \
+                        "$CODE_ROOT" "$GIT_NAME" "$GIT_EMAIL" > "$REGISTRY_GITCFG"
+                    chown "$CODE_OWNER:$CODE_GROUP" "$REGISTRY_GITCFG" 2>/dev/null
+                    chmod 0644 "$REGISTRY_GITCFG"
+                    ok "  created $REGISTRY_GITCFG"
+                else
+                    git config --file "$REGISTRY_GITCFG" user.name  "$GIT_NAME"
+                    git config --file "$REGISTRY_GITCFG" user.email "$GIT_EMAIL"
+                fi
             fi
+
+            while IFS=$'\t' read -r u h name email; do
+                [ -z "$u" ] && continue
+                home="${h:-/home/$u}"
+                gcfg="$home/.gitconfig"
+
+                # Pick identity: host override wins if set; otherwise the
+                # agent's own name+email from their registry record.
+                if [ -n "$GIT_NAME" ] && [ -n "$GIT_EMAIL" ]; then
+                    want_name="$GIT_NAME"; want_email="$GIT_EMAIL"
+                    mode_label="host override"
+                else
+                    want_name="$name"; want_email="$email"
+                    mode_label="own identity"
+                fi
+                if [ -z "$want_name" ] || [ -z "$want_email" ]; then
+                    warn "  $u: no name/email to bootstrap git identity (registry missing fields)"
+                    continue
+                fi
+
+                # Bootstrap ~/.gitconfig if missing.
+                #
+                # safe.directory MUST appear before the [user] / includeIf
+                # block — without it, git refuses to determine the gitdir
+                # on repos owned by another user (rachael/zeh on the shared
+                # tree) and includeIf can never match because the gitdir
+                # lookup itself fails the safety check.
+                #
+                # Two layouts depending on mode:
+                #   host override: scoped via includeIf gitdir:codeRoot/ →
+                #     codeRoot/.gitconfig-registry (so identity only
+                #     applies to repos under codeRoot, not to the agent's
+                #     personal repos elsewhere).
+                #   per-agent:     [user] block written directly (agent's
+                #     own identity applies everywhere they commit).
+                #
+                # includeIf gitdir pattern uses TRAILING SLASH (no glob)
+                # for recursive match: `gitdir:/srv/Code/` matches any
+                # .git dir under /srv/Code/ at any depth.
+                if [ ! -f "$gcfg" ]; then
+                    if [ "$DRY" -eq 1 ]; then
+                        log "  would create $gcfg ($mode_label: $want_name <$want_email>)"
+                    else
+                        TMPG=$(mktemp)
+                        if [ -n "$GIT_NAME" ] && [ -n "$GIT_EMAIL" ]; then
+                            printf '# Generated by openclaw install.sh — commits under %s use\n# the host gitName/gitEmail from /etc/openclaw/agents.json.\n[safe]\n\tdirectory = %s/*\n[includeIf "gitdir:%s/"]\n\tpath = %s\n' \
+                                "$CODE_ROOT" "$CODE_ROOT" "$CODE_ROOT" "$REGISTRY_GITCFG" > "$TMPG"
+                        else
+                            printf '# Generated by openclaw install.sh — commits attributed to\n# this agent (name + email from /etc/openclaw/agents.json).\n[safe]\n\tdirectory = %s/*\n[user]\n\tname = %s\n\temail = %s\n' \
+                                "$CODE_ROOT" "$want_name" "$want_email" > "$TMPG"
+                        fi
+                        install -o "$u" -g "$u" -m 0644 "$TMPG" "$gcfg"
+                        rm -f "$TMPG"
+                        ok "  $u: created $gcfg ($mode_label: $want_name <$want_email>)"
+                    fi
+                fi
+
+                # Drift check: effective git identity inside a codeRoot repo
+                if [ -n "$probe_dir" ] && [ "$DRY" -eq 0 ]; then
+                    actual_name=$(sudo -n -u "$u" git -C "$probe_dir" config --get user.name 2>/dev/null)
+                    actual_email=$(sudo -n -u "$u" git -C "$probe_dir" config --get user.email 2>/dev/null)
+                    if [ "$actual_name" = "$want_name" ] && [ "$actual_email" = "$want_email" ]; then
+                        ok "  $u: git identity in $CODE_ROOT = $actual_name <$actual_email>"
+                    else
+                        warn "  $u: git identity in $CODE_ROOT = '$actual_name <$actual_email>' (registry wants '$want_name <$want_email>') — review $gcfg"
+                    fi
+                fi
+            done < <(jq -r '.agents[] | select(.enabled == true and .role == "coding") | "\(.user)\t\(.home // "")\t\(.name // "")\t\(.email // "")"' "$REGISTRY")
         fi
     fi
 fi
