@@ -1,0 +1,12 @@
+{"label":"trial-1","transport":"inprocess","n":200,"failures":0,"median_us":0,"p95_us":1,"p99_us":2,"min_us":0,"max_us":7}
+{"label":"trial-1","transport":"unix","n":200,"failures":0,"median_us":637,"p95_us":662,"p99_us":666,"min_us":383,"max_us":668}
+{"label":"trial-1","transport":"http","n":200,"failures":0,"median_us":59,"p95_us":106,"p99_us":135,"min_us":49,"max_us":318}
+{"label":"trial-1","transport":"file","n":199,"failures":1,"median_us":40,"p95_us":331,"p99_us":340,"min_us":7,"max_us":393}
+{"label":"trial-2","transport":"inprocess","n":200,"failures":0,"median_us":0,"p95_us":1,"p99_us":1,"min_us":0,"max_us":6}
+{"label":"trial-2","transport":"unix","n":200,"failures":0,"median_us":345,"p95_us":427,"p99_us":436,"min_us":283,"max_us":439}
+{"label":"trial-2","transport":"http","n":200,"failures":0,"median_us":58,"p95_us":110,"p99_us":149,"min_us":44,"max_us":3468}
+{"label":"trial-2","transport":"file","n":200,"failures":0,"median_us":11,"p95_us":335,"p99_us":341,"min_us":7,"max_us":343}
+{"label":"trial-3","transport":"inprocess","n":200,"failures":0,"median_us":0,"p95_us":1,"p99_us":1,"min_us":0,"max_us":6}
+{"label":"trial-3","transport":"unix","n":200,"failures":0,"median_us":573,"p95_us":592,"p99_us":595,"min_us":444,"max_us":598}
+{"label":"trial-3","transport":"http","n":200,"failures":0,"median_us":57,"p95_us":108,"p99_us":141,"min_us":49,"max_us":398}
+{"label":"trial-3","transport":"file","n":198,"failures":2,"median_us":27,"p95_us":494,"p99_us":517,"min_us":8,"max_us":529}
