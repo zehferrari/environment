@@ -9,6 +9,7 @@ export type ActivityKind =
   | "task.ack.auto"
   | "task.comment"
   | "task.assign"
+  | "task.acting_manager"
   | "task.create"
   | "project.create"
   | "agent.sync"
@@ -34,6 +35,13 @@ interface CommentPayload {
 // renders a stable label even if the assignee row is later deleted.
 // from/to are null for unassigned / unset.
 interface AssignPayload {
+  from?: string | null;
+  to?: string | null;
+}
+
+// task.acting_manager payload follows the same shape and rationale as
+// AssignPayload — usernames, not IDs, so the feed survives deletion.
+interface ActingManagerPayload {
   from?: string | null;
   to?: string | null;
 }
@@ -95,6 +103,21 @@ export function describeActivity(row: ActivityRow): string {
         }
       }
       return `${actor(row.actorName)} updated assignment on ${task(row.taskTitle)}`;
+    }
+    case "task.acting_manager": {
+      const p = parsePayload<ActingManagerPayload>(row.payload);
+      if (p) {
+        if (!p.from && p.to) {
+          return `${actor(row.actorName)} set @${p.to} as acting manager on ${task(row.taskTitle)}`;
+        }
+        if (p.from && !p.to) {
+          return `${actor(row.actorName)} cleared acting manager on ${task(row.taskTitle)} (was @${p.from})`;
+        }
+        if (p.from && p.to) {
+          return `${actor(row.actorName)} changed acting manager on ${task(row.taskTitle)} from @${p.from} to @${p.to}`;
+        }
+      }
+      return `${actor(row.actorName)} updated acting manager on ${task(row.taskTitle)}`;
     }
     default:
       return `${actor(row.actorName)} · ${row.kind}`;

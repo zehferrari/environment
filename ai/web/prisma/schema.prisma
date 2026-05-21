@@ -33,6 +33,7 @@ model User {
   passwordResetTokens PasswordResetToken[]
   projectMembers      ProjectMember[]
   assignedTasks       Task[]               @relation("TaskAssignee")
+  actingManagerOf     Task[]               @relation("TaskActingManager")
   comments            Comment[]
   activity            ActivityLog[]
 
@@ -141,29 +142,35 @@ model Epic {
 }
 
 model Task {
-  id           String   @id @default(cuid())
-  projectId    String
-  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  epicId       String?
-  epic         Epic?    @relation(fields: [epicId], references: [id])
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  epicId          String?
+  epic            Epic?    @relation(fields: [epicId], references: [id])
   // Sub-task hierarchy: a sub-task is a Task with parentTaskId set. Stage 2
   // keeps a single self-referential Task model (no parallel SubTask) per
   // HOMELAB-44 manager guardrail. epic > task > subtask is expressed as
   // epicId + parentTaskId.
-  parentTaskId String?
-  parent       Task?    @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
-  subtasks     Task[]   @relation("TaskSubtasks")
-  title        String
-  description  String?
+  parentTaskId    String?
+  parent          Task?    @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks        Task[]   @relation("TaskSubtasks")
+  title           String
+  description     String?
   // Status uses the verbatim Stage 0 labels — no Jira aliases.
   // Backlog | To Do | In Progress | Review | Done
-  status       String   @default("Backlog")
-  assigneeId   String?
-  assignee     User?    @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  status          String   @default("Backlog")
+  assigneeId      String?
+  assignee        User?    @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  // Acting manager: the User who is reviewing/owning the workflow for
+  // this task. Pulled from the same users/agents table as assignee per
+  // HOMELAB-44 description. Optional; agents may not set themselves as
+  // acting manager (see lib/workflow.ts checkActingManager).
+  actingManagerId String?
+  actingManager   User?    @relation("TaskActingManager", fields: [actingManagerId], references: [id])
   // Lexorank-style ordering within column; simple Int for v1.
-  rank         Int      @default(0)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  rank            Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   comments Comment[]
   activity ActivityLog[]
@@ -173,6 +180,7 @@ model Task {
   @@index([epicId])
   @@index([assigneeId])
   @@index([parentTaskId])
+  @@index([actingManagerId])
 }
 
 model Comment {

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { renderCommentBody, extractMentions } from "@/lib/markdown";
-import { checkAssignment, type ActorKind } from "@/lib/workflow";
+import { checkAssignment, checkActingManager, type ActorKind } from "@/lib/workflow";
 
 async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
   const session = await auth();
@@ -131,6 +131,72 @@ async function assignTask(formData: FormData) {
   revalidatePath(`/projects/${slug}`);
 }
 
+// Server-side acting-manager change. Mirrors assignTask: scope by URL
+// slug, no-op on same-target, call the rule layer (checkActingManager),
+// then verify the target user is active. Workflow rejection throws —
+// the only failure mode (agent self-set) is a true policy fault. The
+// activity row stores usernames so the feed remains stable even if
+// the manager row is later deleted.
+async function setActingManager(formData: FormData) {
+  "use server";
+  const actor = await requireActor();
+  const taskId = String(formData.get("taskId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  const raw = String(formData.get("actingManagerId") ?? "");
+  const newActingManagerId = raw === "" ? null : raw;
+  if (!taskId || !slug) return;
+
+  const task = await db.task.findUnique({
+    where: { id: taskId },
+    select: {
+      id: true,
+      projectId: true,
+      actingManagerId: true,
+      project: { select: { slug: true } },
+      actingManager: { select: { username: true } },
+    },
+  });
+  if (!task || task.project.slug !== slug) return;
+  if (task.actingManagerId === newActingManagerId) return;
+
+  const check = checkActingManager({ actor, newActingManagerId });
+  if (!check.ok) throw new Error(check.message);
+
+  let toUsername: string | null = null;
+  if (newActingManagerId !== null) {
+    const target = await db.user.findUnique({
+      where: { id: newActingManagerId },
+      select: { username: true, status: true },
+    });
+    if (!target || target.status !== "active") {
+      throw new Error("Acting manager not found or inactive");
+    }
+    toUsername = target.username;
+  }
+
+  await db.$transaction([
+    db.task.update({
+      where: { id: taskId },
+      data: { actingManagerId: newActingManagerId },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: task.projectId,
+        taskId,
+        userId: actor.id,
+        kind: "task.acting_manager",
+        payload: JSON.stringify({
+          from: task.actingManager?.username ?? null,
+          to: toUsername,
+        }),
+      },
+    }),
+  ]);
+
+  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
+  revalidatePath(`/projects/${slug}`);
+}
+
 export default async function TaskDetailPage({
   params,
 }: {
@@ -143,6 +209,7 @@ export default async function TaskDetailPage({
     include: {
       project: { select: { id: true, slug: true, name: true } },
       assignee: { select: { username: true } },
+      actingManager: { select: { username: true } },
       epic: { select: { id: true, title: true } },
       parent: { select: { id: true, title: true } },
       subtasks: {
@@ -191,6 +258,11 @@ export default async function TaskDetailPage({
               ? `Assigned to ${task.assignee.username}`
               : "Unassigned"}
           </span>
+          <span>
+            {task.actingManager
+              ? `Acting manager: ${task.actingManager.username}`
+              : "No acting manager"}
+          </span>
           {task.epic ? <span>Epic: {task.epic.title}</span> : null}
           {task.parent ? (
             <span>
@@ -225,6 +297,40 @@ export default async function TaskDetailPage({
           className="rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1 text-xs outline-none focus:border-[var(--color-accent)]"
         >
           <option value="">Unassigned</option>
+          {assignableUsers.map((u) => (
+            <option key={u.id} value={u.id}>
+              {u.username}
+              {u.kind === "agent" ? " (agent)" : ""}
+            </option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          className="rounded border border-[var(--color-line)] bg-[var(--color-panel)] px-2 py-1 text-xs hover:border-[var(--color-accent)]"
+        >
+          Save
+        </button>
+      </form>
+
+      <form
+        action={setActingManager}
+        className="mb-6 flex flex-wrap items-center gap-2 text-xs"
+      >
+        <input type="hidden" name="taskId" value={task.id} />
+        <input type="hidden" name="projectSlug" value={slug} />
+        <label
+          htmlFor="actingManagerId"
+          className="text-[var(--color-text-muted)]"
+        >
+          Acting manager
+        </label>
+        <select
+          id="actingManagerId"
+          name="actingManagerId"
+          defaultValue={task.actingManagerId ?? ""}
+          className="rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1 text-xs outline-none focus:border-[var(--color-accent)]"
+        >
+          <option value="">No acting manager</option>
           {assignableUsers.map((u) => (
             <option key={u.id} value={u.id}>
               {u.username}

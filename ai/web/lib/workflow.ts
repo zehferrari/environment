@@ -60,6 +60,7 @@ export type WorkflowErrorCode =
   | "INVALID_TRANSITION"
   | "EXPLICIT_USER_ACTION_REQUIRED"
   | "AGENT_SELF_ASSIGN"
+  | "AGENT_SELF_ACTING_MANAGER"
   | "PARENT_REQUIRED"
   | "PARENT_NOT_ALLOWED";
 
@@ -140,6 +141,32 @@ export function checkAssignment(input: AssignmentInput): RuleResult {
       ok: false,
       code: "AGENT_SELF_ASSIGN",
       message: "Agents cannot self-assign tasks.",
+    };
+  }
+  return { ok: true };
+}
+
+export interface ActingManagerInput {
+  actor: { id: string; kind: ActorKind };
+  newActingManagerId: string | null;
+}
+
+// Agents may not set themselves as a task's acting manager — the
+// acting manager is the workflow owner / reviewer for the task and
+// agents reviewing their own work would defeat the purpose. Mirrors
+// the no-self-assign rule. Unsetting (null) and human-driven changes
+// are allowed. Caller is responsible for verifying the target user
+// exists and is active.
+export function checkActingManager(input: ActingManagerInput): RuleResult {
+  if (input.newActingManagerId === null) return { ok: true };
+  if (
+    input.actor.kind === "agent" &&
+    input.newActingManagerId === input.actor.id
+  ) {
+    return {
+      ok: false,
+      code: "AGENT_SELF_ACTING_MANAGER",
+      message: "Agents cannot set themselves as a task's acting manager.",
     };
   }
   return { ok: true };
