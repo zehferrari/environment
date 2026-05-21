@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -13,6 +13,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
+import type { MoveTaskResult } from "./page";
 
 type Task = { id: string; title: string; status: string; rank: number };
 type Column = { id: string; label: string };
@@ -21,13 +22,26 @@ type BoardProps = {
   projectSlug: string;
   columns: ReadonlyArray<Column>;
   tasks: Task[];
-  moveTaskAction: (taskId: string, status: string, slug: string) => Promise<void>;
+  moveTaskAction: (
+    taskId: string,
+    status: string,
+    slug: string,
+  ) => Promise<MoveTaskResult>;
 };
 
 export default function Board({ projectSlug, columns, tasks, moveTaskAction }: BoardProps) {
   const [items, setItems] = useState<Task[]>(tasks);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
   const [, startTransition] = useTransition();
+
+  // Server is the source of truth: when revalidatePath re-renders this
+  // page with fresh tasks (status, rank), reset the local optimistic
+  // copy. Without this, a successful server move keeps showing the
+  // stale optimistic state until the user reloads.
+  useEffect(() => {
+    setItems(tasks);
+  }, [tasks]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -45,12 +59,25 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction }: B
     const task = items.find((t) => t.id === taskId);
     if (!task || task.status === overCol) return;
 
-    // Optimistic move + server persist.
+    const previousStatus = task.status;
+    // Optimistic move. If the server rejects (workflow rule violation,
+    // unknown column), the transition handler rolls this card back to
+    // previousStatus and surfaces the rejection message.
     setItems((prev) =>
       prev.map((t) => (t.id === taskId ? { ...t, status: overCol } : t)),
     );
+    setMoveError(null);
+
     startTransition(async () => {
-      await moveTaskAction(taskId, overCol, projectSlug);
+      const result = await moveTaskAction(taskId, overCol, projectSlug);
+      if (!result.ok) {
+        setItems((prev) =>
+          prev.map((t) =>
+            t.id === taskId ? { ...t, status: previousStatus } : t,
+          ),
+        );
+        setMoveError(result.message);
+      }
     });
   }
 
@@ -63,6 +90,22 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction }: B
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >
+      {moveError ? (
+        <div
+          role="alert"
+          className="mb-3 flex items-start justify-between gap-3 rounded border border-[var(--color-danger,#ff5d5d)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm"
+        >
+          <span>{moveError}</span>
+          <button
+            type="button"
+            onClick={() => setMoveError(null)}
+            className="text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          >
+            dismiss
+          </button>
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-5 gap-3">
         {columns.map((col) => {
           const colTasks = items

@@ -2,7 +2,12 @@ import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { checkStatusTransition, type ActorKind } from "@/lib/workflow";
+import {
+  checkStatusTransition,
+  type ActorKind,
+  type WorkflowErrorCode,
+} from "@/lib/workflow";
+import { describeActivity } from "@/lib/activity";
 import Board from "./board-client";
 import { COLUMNS, COLUMN_IDS } from "./columns";
 
@@ -36,18 +41,37 @@ async function createTask(formData: FormData) {
   revalidatePath(`/projects/${projectSlug}`);
 }
 
-async function moveTask(taskId: string, status: string, slug: string) {
+// Workflow rejections (invalid edge, agent-touches-Review/Done, unknown
+// column) are returned as data so the client can roll the optimistic
+// move back instead of swallowing a generic thrown Error. Authentication
+// failure still throws — that is a true server fault, not a rule
+// rejection.
+export type MoveTaskResult =
+  | { ok: true }
+  | { ok: false; code: WorkflowErrorCode | "UNKNOWN_COLUMN"; message: string };
+
+async function moveTask(
+  taskId: string,
+  status: string,
+  slug: string,
+): Promise<MoveTaskResult> {
   "use server";
   const actor = await requireActor();
   if (!COLUMN_IDS.includes(status)) {
-    throw new Error(`Unknown column: ${status}`);
+    return {
+      ok: false,
+      code: "UNKNOWN_COLUMN",
+      message: `Unknown column: ${status}`,
+    };
   }
   const current = await db.task.findUnique({
     where: { id: taskId },
     select: { id: true, status: true, projectId: true },
   });
-  if (!current) throw new Error("Task not found");
-  if (current.status === status) return;
+  if (!current) {
+    return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
+  }
+  if (current.status === status) return { ok: true };
 
   const check = checkStatusTransition({
     from: current.status,
@@ -55,7 +79,7 @@ async function moveTask(taskId: string, status: string, slug: string) {
     actor,
   });
   if (!check.ok) {
-    throw new Error(`workflow:${check.code}: ${check.message}`);
+    return { ok: false, code: check.code, message: check.message };
   }
 
   const maxRank = await db.task.aggregate({
@@ -78,7 +102,10 @@ async function moveTask(taskId: string, status: string, slug: string) {
     }),
   ]);
   revalidatePath(`/projects/${slug}`);
+  return { ok: true };
 }
+
+const ACTIVITY_FEED_LIMIT = 20;
 
 export default async function ProjectBoardPage({
   params,
@@ -93,6 +120,27 @@ export default async function ProjectBoardPage({
     },
   });
   if (!project) notFound();
+
+  const activity = await db.activityLog.findMany({
+    where: { projectId: project.id },
+    orderBy: { createdAt: "desc" },
+    take: ACTIVITY_FEED_LIMIT,
+    include: {
+      user: { select: { username: true } },
+      task: { select: { title: true } },
+    },
+  });
+
+  const feed = activity.map((row) => ({
+    id: row.id,
+    createdAt: row.createdAt.toISOString(),
+    label: describeActivity({
+      kind: row.kind,
+      payload: row.payload,
+      actorName: row.user?.username ?? null,
+      taskTitle: row.task?.title ?? null,
+    }),
+  }));
 
   return (
     <div>
@@ -130,6 +178,34 @@ export default async function ProjectBoardPage({
         }))}
         moveTaskAction={moveTask}
       />
+
+      <section className="mt-6">
+        <h2 className="mb-2 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
+          Recent activity
+        </h2>
+        {feed.length === 0 ? (
+          <div className="rounded border border-dashed border-[var(--color-line)] px-3 py-4 text-xs text-[var(--color-text-muted)]">
+            No activity yet. Move a task between columns to log the first row.
+          </div>
+        ) : (
+          <ul className="divide-y divide-[var(--color-line)] rounded border border-[var(--color-line)] bg-[var(--color-panel)]">
+            {feed.map((row) => (
+              <li
+                key={row.id}
+                className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+              >
+                <span>{row.label}</span>
+                <time
+                  dateTime={row.createdAt}
+                  className="shrink-0 text-xs text-[var(--color-text-muted)] tabular-nums"
+                >
+                  {row.createdAt.slice(0, 19).replace("T", " ")}
+                </time>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }
