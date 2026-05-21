@@ -1,11 +1,22 @@
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { checkStatusTransition, type ActorKind } from "@/lib/workflow";
 import Board from "./board-client";
 import { COLUMNS, COLUMN_IDS } from "./columns";
 
+async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
+  const session = await auth();
+  const id = session?.user?.id;
+  if (!id) throw new Error("Unauthenticated");
+  const kind: ActorKind = session.user?.kind === "agent" ? "agent" : "human";
+  return { id, kind };
+}
+
 async function createTask(formData: FormData) {
   "use server";
+  await requireActor();
   const projectId = String(formData.get("projectId") ?? "");
   const title = String(formData.get("title") ?? "").trim();
   if (!projectId || !title) return;
@@ -27,22 +38,45 @@ async function createTask(formData: FormData) {
 
 async function moveTask(taskId: string, status: string, slug: string) {
   "use server";
-  if (!COLUMN_IDS.includes(status)) return;
+  const actor = await requireActor();
+  if (!COLUMN_IDS.includes(status)) {
+    throw new Error(`Unknown column: ${status}`);
+  }
+  const current = await db.task.findUnique({
+    where: { id: taskId },
+    select: { id: true, status: true, projectId: true },
+  });
+  if (!current) throw new Error("Task not found");
+  if (current.status === status) return;
+
+  const check = checkStatusTransition({
+    from: current.status,
+    to: status,
+    actor,
+  });
+  if (!check.ok) {
+    throw new Error(`workflow:${check.code}: ${check.message}`);
+  }
+
   const maxRank = await db.task.aggregate({
     where: { status },
     _max: { rank: true },
   });
-  await db.task.update({
-    where: { id: taskId },
-    data: { status, rank: (maxRank._max.rank ?? 0) + 1 },
-  });
-  await db.activityLog.create({
-    data: {
-      taskId,
-      kind: "task.move",
-      payload: JSON.stringify({ status }),
-    },
-  });
+  await db.$transaction([
+    db.task.update({
+      where: { id: taskId },
+      data: { status, rank: (maxRank._max.rank ?? 0) + 1 },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: current.projectId,
+        taskId,
+        userId: actor.id,
+        kind: "task.move",
+        payload: JSON.stringify({ from: current.status, to: status }),
+      },
+    }),
+  ]);
   revalidatePath(`/projects/${slug}`);
 }
 

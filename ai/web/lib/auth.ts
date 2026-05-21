@@ -59,7 +59,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           id: user.id,
           name: user.username,
           email: user.email,
-          kind: user.kind,
+          // Coerce DB string into the ActorKind union — anything other
+          // than the literal "agent" is treated as a human actor for
+          // the purpose of workflow rule enforcement (HOMELAB-44).
+          kind: user.kind === "agent" ? ("agent" as const) : ("human" as const),
           mustRotatePassword: user.mustRotatePassword,
         };
       },
