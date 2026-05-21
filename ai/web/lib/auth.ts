@@ -45,7 +45,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           return null;
         }
 
-        const user = await db.user.findUnique({ where: { username } });
+        const user = await db.user.findFirst({
+          where: {
+            OR: [{ username }, { email: username }],
+          },
+        });
         if (!user || user.status !== "active" || !user.passwordHash) return null;
 
         const ok = await verifyPassword(password, user.passwordHash);

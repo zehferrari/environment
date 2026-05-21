@@ -46,7 +46,7 @@ export default async function LoginPage({
 
         <input type="hidden" name="next" value={next ?? "/projects"} />
 
-        <label className="block text-sm mb-1">Username</label>
+        <label className="block text-sm mb-1">Username or email</label>
         <input
           name="username"
           required
