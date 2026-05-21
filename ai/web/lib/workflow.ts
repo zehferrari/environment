@@ -32,8 +32,8 @@ export function isTaskStatus(value: unknown): value is TaskStatus {
 //   Done → Review        (re-open path; final close is still Done)
 //
 // "Reversible" edges exist for humans walking work back; agents are
-// further constrained by EXPLICIT_USER_TARGETS below so they cannot
-// reach Review/Done implicitly.
+// further constrained by EXPLICIT_USER_STATES below — agents may not
+// move INTO or OUT OF Review/Done (HOMELAB-44 commentId 12200).
 const ALLOWED: Record<TaskStatus, ReadonlySet<TaskStatus>> = {
   Backlog: new Set<TaskStatus>(["To Do"]),
   "To Do": new Set<TaskStatus>(["In Progress", "Backlog"]),
@@ -43,9 +43,12 @@ const ALLOWED: Record<TaskStatus, ReadonlySet<TaskStatus>> = {
 };
 
 // Review and Done are explicit human actions per TEAM_WORKFLOW.md and
-// HOMELAB-44 Steps. The agent-ack auto-transition (see below) is bounded
-// to To Do → In Progress and never crosses these.
-const EXPLICIT_USER_TARGETS: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+// HOMELAB-44 Steps. Agents may not transition INTO or OUT OF these
+// states — i.e. they cannot send a task to Review/Done and cannot
+// reopen Review/Done back into earlier states (HOMELAB-44 commentId
+// 12200). The agent-ack auto-transition (see autoTransitionOnAck) is
+// bounded to To Do → In Progress and never touches either side.
+const EXPLICIT_USER_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "Review",
   "Done",
 ]);
@@ -76,7 +79,8 @@ export interface TransitionInput {
 
 // Validate that `actor` may move a task from `from` to `to`.
 // Rejects unknown statuses (string fall-through), disallowed edges, and
-// agent attempts to reach Review/Done. A no-op (from === to) is OK.
+// agent attempts to enter or leave Review/Done. A no-op (from === to)
+// is OK.
 export function checkStatusTransition(input: TransitionInput): RuleResult {
   if (!isTaskStatus(input.from)) {
     return {
@@ -103,11 +107,15 @@ export function checkStatusTransition(input: TransitionInput): RuleResult {
     };
   }
 
-  if (input.actor.kind === "agent" && EXPLICIT_USER_TARGETS.has(input.to)) {
+  if (
+    input.actor.kind === "agent" &&
+    (EXPLICIT_USER_STATES.has(input.from) ||
+      EXPLICIT_USER_STATES.has(input.to))
+  ) {
     return {
       ok: false,
       code: "EXPLICIT_USER_ACTION_REQUIRED",
-      message: `Transition to ${input.to} requires an explicit human action.`,
+      message: `Transition ${input.from} → ${input.to} touches Review/Done and requires an explicit human action.`,
     };
   }
 
