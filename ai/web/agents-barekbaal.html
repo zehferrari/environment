@@ -1,0 +1,1134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Atlas — Agents · Barekbaal v2</title>
+<style>
+/*
+  Atlas v2 — by Barekbaal
+  Bento-magazine layout. Big type, real charts, breathing room.
+  Light by default; dark via [data-theme=dark]. No frameworks.
+*/
+:root {
+  --bg: #f6f4ee;
+  --paper: #ffffff;
+  --ink: #0c1014;
+  --ink-2: #3b4654;
+  --muted: #7a8593;
+  --line: #e7e3d8;
+  --line-2: #d8d3c4;
+  --accent: #0a7c66;        /* Barekbaal teal */
+  --hot: #d9482c;
+  --warm: #c48417;
+  --cool: #2b67c4;
+  --bg-grid: rgba(12,16,20,0.04);
+  --shadow-sm: 0 1px 0 rgba(12,16,20,0.04), 0 4px 14px -8px rgba(12,16,20,0.18);
+  --shadow-md: 0 1px 0 rgba(12,16,20,0.06), 0 14px 40px -18px rgba(12,16,20,0.25);
+  --shadow-lg: 0 30px 80px -28px rgba(12,16,20,0.40);
+  --r-sm: 10px;
+  --r-md: 18px;
+  --r-lg: 28px;
+}
+[data-theme="dark"] {
+  --bg: #0d0f12;
+  --paper: #161a20;
+  --ink: #f3f0e8;
+  --ink-2: #c4c8d0;
+  --muted: #8b92a0;
+  --line: #232932;
+  --line-2: #2c333d;
+  --accent: #34d8b4;
+  --hot: #ff7a5a;
+  --warm: #ffc25c;
+  --cool: #74a9ff;
+  --bg-grid: rgba(255,255,255,0.04);
+  --shadow-sm: 0 1px 0 rgba(0,0,0,0.40), 0 4px 14px -8px rgba(0,0,0,0.60);
+  --shadow-md: 0 1px 0 rgba(0,0,0,0.40), 0 14px 40px -18px rgba(0,0,0,0.70);
+  --shadow-lg: 0 30px 80px -28px rgba(0,0,0,0.80);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background:
+    radial-gradient(60% 90% at 50% -10%, color-mix(in srgb, var(--accent) 10%, transparent) 0%, transparent 60%),
+    linear-gradient(var(--bg-grid) 1px, transparent 1px) 0 0 / 32px 32px,
+    var(--bg);
+  color: var(--ink);
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-feature-settings: 'tnum' 1, 'ss01' 1;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { border: 0; cursor: pointer; background: transparent; }
+.mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* ============ Top stripe ============ */
+.stripe {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 28px;
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+}
+.brand { display: flex; align-items: baseline; gap: 12px; }
+.brand .mark {
+  font-family: 'Fraunces', 'Georgia', serif;
+  font-weight: 600; font-size: 28px; letter-spacing: -0.025em;
+}
+.brand .mark em { color: var(--accent); font-style: normal; }
+.brand .tag {
+  font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--muted);
+  padding: 4px 8px; border: 1px solid var(--line-2); border-radius: 999px;
+}
+.spacer { flex: 1; }
+.pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 7px 11px; border-radius: 999px;
+  border: 1px solid var(--line-2); background: var(--paper);
+  font-size: 13px; color: var(--ink-2);
+  box-shadow: var(--shadow-sm);
+}
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+.dot.live { background: var(--accent); box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+  70% { box-shadow: 0 0 0 10px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 13px; border-radius: 12px;
+  border: 1px solid var(--line-2); background: var(--paper);
+  color: var(--ink); font-size: 13px; font-weight: 500;
+  box-shadow: var(--shadow-sm);
+  transition: transform 80ms ease, border-color 80ms ease;
+}
+.btn:hover { border-color: var(--accent); transform: translateY(-1px); }
+.btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+.btn.primary { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.btn.primary:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.danger:hover { border-color: var(--hot); color: var(--hot); }
+.btn.ghost { background: transparent; box-shadow: none; }
+.btn .ic { width: 14px; height: 14px; display: inline-block; }
+
+/* ============ Layout ============ */
+.canvas { max-width: 1480px; margin: 0 auto; padding: 28px 28px 96px; }
+.hero-line {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 24px;
+  margin: 6px 0 22px;
+}
+.hero-line h1 {
+  font-family: 'Fraunces', 'Georgia', serif;
+  font-weight: 500; font-size: clamp(40px, 5.4vw, 76px);
+  letter-spacing: -0.04em; line-height: 1;
+  margin: 0;
+}
+.hero-line h1 em { font-style: italic; color: var(--accent); }
+.hero-sub { color: var(--muted); font-size: 14px; max-width: 50ch; }
+
+/* Bento stat row */
+.bento {
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(12, 1fr);
+  margin-bottom: 22px;
+}
+.tile {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 18px 20px;
+  box-shadow: var(--shadow-sm);
+}
+.tile.kpi { grid-column: span 3; min-height: 124px; display: flex; flex-direction: column; justify-content: space-between; }
+.tile .label { color: var(--muted); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
+.tile .val { font-family: 'Fraunces', serif; font-size: 56px; line-height: 1; letter-spacing: -0.03em; }
+.tile .val small { font-family: 'Inter', sans-serif; font-size: 14px; color: var(--muted); margin-left: 6px; letter-spacing: 0; }
+.tile .foot { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+
+/* Agent strip */
+.agent-strip {
+  display: grid; gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  margin-bottom: 26px;
+}
+.agent-card {
+  position: relative;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 22px;
+  box-shadow: var(--shadow-md);
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+  overflow: hidden;
+}
+.agent-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: color-mix(in srgb, var(--agent-hue) 50%, var(--line-2)); }
+.agent-card::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(90% 60% at -10% -10%, color-mix(in srgb, var(--agent-hue) 18%, transparent), transparent 60%);
+  pointer-events: none;
+}
+.agent-head { display: flex; align-items: center; gap: 14px; }
+.agent-head .ava {
+  width: 64px; height: 64px; border-radius: 22px;
+  background: color-mix(in srgb, var(--agent-hue) 14%, var(--paper));
+  border: 1px solid color-mix(in srgb, var(--agent-hue) 40%, var(--line-2));
+  display: grid; place-items: center;
+  overflow: hidden;
+  font-size: 28px;
+  flex-shrink: 0;
+}
+.agent-head .ava img { width: 100%; height: 100%; object-fit: cover; }
+.agent-head .id { flex: 1; min-width: 0; }
+.agent-head .name { font-family: 'Fraunces', serif; font-size: 26px; letter-spacing: -0.025em; line-height: 1; margin: 0; }
+.agent-head .role { font-size: 12px; color: var(--muted); margin-top: 4px; letter-spacing: 0.04em; }
+.agent-head .ring {
+  position: relative; width: 56px; height: 56px;
+}
+.agent-head .ring svg { transform: rotate(-90deg); }
+.agent-head .ring .center {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 11px; color: var(--ink-2); font-weight: 600;
+}
+.agent-body { margin-top: 18px; display: grid; grid-template-columns: 1fr; gap: 12px; }
+.kvs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.kv { display: flex; flex-direction: column; gap: 2px; }
+.kv .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.kv .v { font-size: 14px; color: var(--ink); font-weight: 500; }
+.kv .v.short {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.spark {
+  height: 38px; width: 100%;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--agent-hue) 8%, transparent);
+  padding: 6px 8px;
+}
+.spark svg { width: 100%; height: 100%; display: block; }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 8px; border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  border: 1px solid var(--line);
+  font-size: 11px; color: var(--ink-2);
+}
+.chip.ok    { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.chip.warn  { color: var(--warm); border-color: color-mix(in srgb, var(--warm) 35%, transparent); background: color-mix(in srgb, var(--warm) 8%, transparent); }
+.chip.cool  { color: var(--cool); border-color: color-mix(in srgb, var(--cool) 35%, transparent); background: color-mix(in srgb, var(--cool) 8%, transparent); }
+.chip.bad   { color: var(--hot); border-color: color-mix(in srgb, var(--hot) 35%, transparent); background: color-mix(in srgb, var(--hot) 8%, transparent); }
+
+/* Activity + services row */
+.row {
+  display: grid; grid-template-columns: 2fr 1fr; gap: 16px;
+}
+@media (max-width: 980px) { .row { grid-template-columns: 1fr; } .tile.kpi { grid-column: span 6; } .bento { grid-template-columns: repeat(6,1fr); } }
+@media (max-width: 620px) { .tile.kpi { grid-column: span 6; } .bento { grid-template-columns: repeat(1,1fr); } .canvas { padding: 18px; } }
+
+.panel {
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: var(--r-lg); padding: 18px 20px;
+  box-shadow: var(--shadow-sm);
+}
+.panel h3 { margin: 0 0 12px; font-family: 'Fraunces', serif; font-weight: 500; font-size: 22px; letter-spacing: -0.02em; }
+.feed { max-height: 360px; overflow: auto; }
+.evt {
+  display: grid; grid-template-columns: 70px 14px 1fr; gap: 8px;
+  padding: 9px 0; border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.evt:last-child { border: 0; }
+.evt .when { color: var(--muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+.evt .badge {
+  width: 10px; height: 10px; border-radius: 50%;
+  align-self: center;
+  background: var(--cool);
+}
+.evt .badge.snapshot { background: var(--muted); }
+.evt .badge.task { background: var(--accent); }
+.evt .badge.jira { background: var(--cool); }
+.evt .badge.activity { background: var(--warm); }
+.evt .badge.error { background: var(--hot); }
+.evt .badge.restart { background: var(--hot); }
+.evt .body { color: var(--ink-2); }
+.evt .body b { color: var(--ink); font-weight: 600; }
+
+/* Service grid */
+.svcgrid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.svc {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 12px; border-radius: 12px;
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+  font-size: 13px;
+}
+.svc .name { display: flex; align-items: center; gap: 8px; }
+.svc .name code { background: transparent; color: var(--ink-2); font-size: 12px; }
+.svc.bad  .dot { background: var(--hot); }
+.svc.ok   .dot { background: var(--accent); }
+
+/* ============ Stage (agent detail overlay) ============ */
+.stage {
+  position: fixed; inset: 0; z-index: 50;
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  backdrop-filter: blur(10px);
+  display: grid; grid-template-rows: auto 1fr;
+  overflow: hidden;
+  opacity: 0; pointer-events: none;
+  transition: opacity 180ms ease;
+}
+.stage.open { opacity: 1; pointer-events: auto; }
+.stage > .stage-inner {
+  max-width: 1320px; width: 100%;
+  margin: 32px auto; padding: 0 24px 32px;
+  display: grid; gap: 18px;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+}
+.stage-head {
+  display: grid; grid-template-columns: 1fr auto; gap: 20px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 22px 24px;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  overflow: hidden;
+}
+.stage-head::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(70% 120% at 100% 0%, color-mix(in srgb, var(--agent-hue) 22%, transparent), transparent 60%);
+  pointer-events: none;
+}
+.stage-head .who { display: flex; align-items: center; gap: 18px; position: relative; }
+.stage-head .ava { width: 84px; height: 84px; border-radius: 26px; border: 1px solid color-mix(in srgb, var(--agent-hue) 35%, var(--line-2)); overflow: hidden; background: color-mix(in srgb, var(--agent-hue) 14%, var(--paper)); }
+.stage-head .ava img { width: 100%; height: 100%; object-fit: cover; }
+.stage-head .hi { display: flex; flex-direction: column; gap: 6px; }
+.stage-head h2 { margin: 0; font-family: 'Fraunces', serif; font-weight: 500; font-size: 44px; letter-spacing: -0.03em; line-height: 1; }
+.stage-head .sub { color: var(--ink-2); font-size: 14px; }
+.stage-head .stage-x { position: relative; }
+
+.stage-body {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: 18px;
+  overflow: hidden;
+}
+.stage-col { display: grid; gap: 14px; align-content: start; min-width: 0; overflow: auto; padding-right: 4px; }
+.stage-col::-webkit-scrollbar { width: 8px; }
+.stage-col::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 8px; }
+
+/* MD editor card */
+.md-edit { display: grid; gap: 10px; }
+.md-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.md-tab {
+  padding: 7px 11px; border-radius: 10px;
+  background: transparent; color: var(--muted);
+  border: 1px solid transparent;
+  font-size: 12px; font-weight: 500;
+  cursor: pointer;
+}
+.md-tab.on { color: var(--ink); background: color-mix(in srgb, var(--accent) 10%, transparent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.md-area {
+  width: 100%; min-height: 220px; max-height: 320px;
+  border: 1px solid var(--line);
+  border-radius: 14px; padding: 14px;
+  background: color-mix(in srgb, var(--ink) 2%, var(--paper));
+  font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.6;
+  color: var(--ink); outline: none; resize: vertical;
+}
+.md-area:focus { border-color: var(--accent); }
+.md-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--muted); }
+.md-warn {
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--warm) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warm) 30%, transparent);
+  color: color-mix(in srgb, var(--warm) 70%, var(--ink));
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+/* Model + Operate */
+.field { display: grid; gap: 6px; }
+.field label { font-size: 11px; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; }
+.field select, .field input {
+  padding: 10px 12px; border-radius: 12px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink) 2%, var(--paper));
+  color: var(--ink); outline: none;
+  font-size: 13px;
+}
+.field select:focus, .field input:focus { border-color: var(--accent); }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+/* Toggles */
+.toggle-list { display: grid; gap: 8px; }
+.toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border-radius: 12px;
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+  font-size: 13px;
+}
+.tg {
+  width: 38px; height: 22px; border-radius: 999px;
+  background: var(--line-2); position: relative; transition: background 120ms;
+  cursor: pointer; border: 0;
+}
+.tg::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; transition: left 120ms;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
+.tg.on { background: var(--accent); }
+.tg.on::after { left: 18px; }
+
+/* Tickets */
+.ticket {
+  padding: 11px 13px; border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  margin-top: 8px;
+}
+.ticket .key { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--muted); }
+.ticket .sum { font-size: 13px; color: var(--ink); margin-top: 2px; }
+.ticket .st { font-size: 11px; color: var(--ink-2); margin-top: 4px; }
+
+/* Toast */
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  z-index: 100;
+  background: var(--ink); color: var(--paper);
+  padding: 12px 18px; border-radius: 14px;
+  font-size: 13px; font-weight: 500;
+  box-shadow: var(--shadow-lg);
+  opacity: 0; pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+.toast.err { background: var(--hot); }
+
+/* Utility */
+.hidden { display: none !important; }
+.row-h { display: flex; align-items: center; gap: 8px; }
+.muted { color: var(--muted); }
+hr.sep { border: 0; border-top: 1px dashed var(--line); margin: 10px 0; }
+.kbd {
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  padding: 2px 6px; border: 1px solid var(--line-2);
+  border-radius: 5px; background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+</style>
+</head>
+<body>
+
+<header class="stripe">
+  <div class="brand">
+    <div class="mark">atl<em>a</em>s</div>
+    <span class="tag">by Barekbaal · v2</span>
+  </div>
+  <div class="spacer"></div>
+  <div class="pill" id="connPill"><span class="dot" id="connDot"></span><span id="connText">connecting</span></div>
+  <div class="pill mono tnum" id="clock">--:--:--</div>
+  <button class="btn ghost" id="refreshBtn" title="Refresh snapshot (R)">⟳ refresh</button>
+  <button class="btn ghost" id="themeBtn" title="Toggle theme (T)">◐ theme</button>
+  <a class="btn ghost" href="/agents.html" title="Original dashboard">classic →</a>
+</header>
+
+<main class="canvas">
+  <div class="hero-line">
+    <h1>Live <em>operations</em>.</h1>
+    <div class="hero-sub">
+      Real signal from <span class="mono">x1</span>. Tap an agent for the full mission deck — files, model, controls.
+      Press <span class="kbd">/</span> to filter, <span class="kbd">Esc</span> to close.
+    </div>
+  </div>
+
+  <section class="bento" id="kpiRow">
+    <!-- KPI tiles injected by render -->
+  </section>
+
+  <section class="agent-strip" id="agentStrip">
+    <!-- Agent cards injected by render -->
+  </section>
+
+  <section class="row">
+    <div class="panel">
+      <h3>Activity stream</h3>
+      <div class="feed" id="feed"></div>
+    </div>
+    <div class="panel">
+      <h3>Host services</h3>
+      <div class="svcgrid" id="svcgrid"></div>
+    </div>
+  </section>
+</main>
+
+<!-- Agent detail stage -->
+<div class="stage" id="stage" role="dialog" aria-modal="true">
+  <div class="stage-inner">
+    <div class="stage-head" id="stageHead">
+      <div class="who">
+        <div class="ava" id="stageAva"></div>
+        <div class="hi">
+          <h2 id="stageName">—</h2>
+          <div class="sub" id="stageSub">—</div>
+          <div class="chips" id="stageChips" style="margin-top: 4px;"></div>
+        </div>
+      </div>
+      <div class="stage-x">
+        <button class="btn ghost" id="stageClose" title="Close (Esc)">close ✕</button>
+      </div>
+    </div>
+    <div class="stage-body">
+      <!-- Left col: identity + files -->
+      <div class="stage-col">
+        <div class="panel">
+          <h3>Identity files</h3>
+          <div class="md-edit">
+            <div class="md-tabs" id="mdTabs"></div>
+            <textarea class="md-area" id="mdArea" spellcheck="false" placeholder="Select a file…"></textarea>
+            <div class="md-foot">
+              <span id="mdMeta">—</span>
+              <div class="row-h">
+                <button class="btn ghost" id="mdReload">reload</button>
+                <button class="btn primary" id="mdSave">save changes</button>
+              </div>
+            </div>
+            <div class="md-warn" id="mdWarn">
+              Read/write of personal markdown needs the backend route
+              <code class="mono">GET/PUT /agents/profile-file?user=…&amp;file=…</code>.
+              Wire it in <code class="mono">agent-dashboard</code>; this UI calls it directly once present.
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>Current task</h3>
+          <div id="stageTask" class="muted">No active task pinned.</div>
+        </div>
+
+        <div class="panel">
+          <h3>Open tickets</h3>
+          <div id="stageTickets" class="muted">—</div>
+        </div>
+      </div>
+
+      <!-- Right col: operate -->
+      <div class="stage-col">
+        <div class="panel">
+          <h3>Brain · model</h3>
+          <div class="field">
+            <label>Active model (live)</label>
+            <input id="modelLive" readonly>
+          </div>
+          <div class="field" style="margin-top:10px;">
+            <label>Switch to</label>
+            <select id="modelSel"></select>
+          </div>
+          <div class="row-h" style="margin-top:12px; justify-content: space-between;">
+            <span class="muted" style="font-size:12px;">Requires <code class="mono">POST /agents/model</code>.</span>
+            <button class="btn primary" id="modelApply">apply</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>Lifecycle</h3>
+          <p class="muted" style="margin:0 0 12px; font-size:13px;">
+            Restart the agent's runtime (gateway service). All sessions reload; in-flight tools terminate.
+          </p>
+          <div class="row-h" style="justify-content: space-between;">
+            <span id="lifeStatus" class="muted" style="font-size:12px;">idle</span>
+            <div class="row-h">
+              <button class="btn" id="restartGw">restart gateway</button>
+              <button class="btn danger" id="restartAll">full restart</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>Integrations</h3>
+          <div class="toggle-list" id="integList"></div>
+        </div>
+
+        <div class="panel">
+          <h3>Capabilities</h3>
+          <div class="toggle-list" id="capList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+
+/* ---------- state ---------- */
+const state = {
+  registry: null,
+  snapshot: null,
+  connected: false,
+  filter: '',
+  focusUser: null,
+  events: [],
+  activity: {}, // user -> [{ts, busy}]
+  mdFiles: ['SOUL.md', 'USER.md', 'MEMORY.md', 'IDENTITY.md', 'TOOLS.md', 'HEARTBEAT.md'],
+  mdCurrent: 'SOUL.md',
+  mdLoaded: {}, // user -> {file -> {text, etag}}
+  theme: localStorage.getItem('atlas.theme') || 'light',
+};
+document.documentElement.dataset.theme = state.theme;
+
+/* per-agent accent palette */
+const PALETTE = {
+  asdrubal:  '#4f63ff',
+  barekbaal: '#0a7c66',
+  karen:     '#b34dd2',
+  default:   '#6b7280',
+};
+const accent = (user) => PALETTE[user] || PALETTE.default;
+
+/* model options surfaced in the switcher. ordered by current usage. */
+const MODEL_CATALOG = [
+  { id: 'claude-cli/claude-opus-4-7',           label: 'Claude · Opus 4.7' },
+  { id: 'claude-cli/claude-sonnet-4-6',         label: 'Claude · Sonnet 4.6' },
+  { id: 'claude-cli/claude-haiku-4-5-20251001', label: 'Claude · Haiku 4.5' },
+  { id: 'openai-codex/gpt-5.5',                 label: 'Codex · GPT-5.5' },
+  { id: 'ollama/kimi-k2.6:cloud',               label: 'Kimi · k2.6 (cloud)' },
+  { id: 'ollama/deepseek-v4-pro:cloud',         label: 'DeepSeek · V4 Pro' },
+  { id: 'ollama/deepseek-v4-flash:cloud',       label: 'DeepSeek · V4 Flash' },
+  { id: 'ollama/glm-5.1:cloud',                 label: 'GLM · 5.1' },
+  { id: 'openrouter/tencent/hy3-preview',       label: 'Tencent · HY3 (preview)' },
+  { id: 'openrouter/minimax/minimax-m2.7',      label: 'MiniMax · M2.7' },
+];
+
+/* ---------- helpers ---------- */
+const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => [...r.querySelectorAll(s)];
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function fmtTime(d=new Date()) {
+  return d.toLocaleTimeString('en-AU', { hour12: false });
+}
+function fmtAge(s) {
+  if (s == null) return '—';
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s/60) + 'm';
+  if (s < 86400) return Math.floor(s/3600) + 'h';
+  return Math.floor(s/86400) + 'd';
+}
+function shortModel(m) {
+  if (!m) return '—';
+  return m
+    .replace(/^claude-cli\/claude-/, 'claude-')
+    .replace(/^openai-codex\//, '')
+    .replace(/^ollama\//, '')
+    .replace(/^openrouter\//, '')
+    .replace(/:cloud$/, '');
+}
+function toast(msg, kind='ok') {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.toggle('err', kind === 'err');
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+function statusOf(live) {
+  if (!live) return 'offline';
+  if (live.gateway_up === false) return 'offline';
+  if (live.busy_state?.is_busy) return 'active';
+  const idle = live.session_idle_s ?? 999999;
+  if (idle < 90)  return 'active';
+  if (idle < 900) return 'idle';
+  return 'stale';
+}
+const statusChip = (s) => ({active:'ok', idle:'cool', stale:'warn', offline:'bad'})[s] || '';
+
+/* ---------- charts ---------- */
+function sparkline(values, accentCol) {
+  // values = [{busy:0/1, ts}]
+  const n = values.length || 1;
+  const w = 100, h = 32;
+  const path = values.map((v, i) => {
+    const x = (i/(n-1 || 1)) * w;
+    const y = v.busy ? 4 : (h - 4);
+    return (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y;
+  }).join(' ');
+  const area = path + ` L${w},${h} L0,${h} Z`;
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <path d="${area}" fill="${accentCol}" opacity="0.18"/>
+    <path d="${path}" fill="none" stroke="${accentCol}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+  </svg>`;
+}
+
+function ringSVG(pct, accentCol) {
+  // pct 0..1 (e.g. 1 - idle_ratio)
+  const r = 24, cx = 28, cy = 28, c = 2 * Math.PI * r;
+  const dash = (Math.max(0, Math.min(1, pct)) * c).toFixed(1);
+  return `<svg width="56" height="56" viewBox="0 0 56 56">
+    <circle cx="${cx}" cy="${cy}" r="${r}" stroke="currentColor" stroke-opacity="0.12" stroke-width="4" fill="none"/>
+    <circle cx="${cx}" cy="${cy}" r="${r}" stroke="${accentCol}" stroke-width="4" fill="none"
+      stroke-linecap="round" stroke-dasharray="${dash} ${c.toFixed(1)}"/>
+  </svg>`;
+}
+
+/* ---------- render: KPIs ---------- */
+function listAgents() {
+  const regs = state.registry?.agents || [];
+  const live = state.snapshot?.agents || {};
+  return regs.filter(a => a.enabled !== false).map(reg => ({
+    reg,
+    live: live[reg.user] || null,
+    user: reg.user,
+  }));
+}
+
+function renderKPIs() {
+  const ags = listAgents();
+  let active = 0, idle = 0, stale = 0, tickets = 0;
+  for (const a of ags) {
+    const s = statusOf(a.live);
+    if (s === 'active') active++;
+    else if (s === 'idle' || s === 'offline') idle++;
+    if (s === 'stale' || s === 'offline') stale++;
+    tickets += (a.live?.jira_tickets || []).length;
+  }
+  const sysOk = Object.values(state.snapshot?.system || {}).filter(s => s.is_active === 'active').length;
+  const sysTotal = Object.keys(state.snapshot?.system || {}).length;
+
+  $('#kpiRow').innerHTML = `
+    <div class="tile kpi">
+      <div class="label">Agents online</div>
+      <div class="val tnum">${active}<small>/ ${ags.length}</small></div>
+      <div class="foot"><span class="dot live"></span>${idle} idle · ${stale} attention</div>
+    </div>
+    <div class="tile kpi">
+      <div class="label">Open tickets</div>
+      <div class="val tnum">${tickets}</div>
+      <div class="foot">Across all agents in jira</div>
+    </div>
+    <div class="tile kpi">
+      <div class="label">Host services</div>
+      <div class="val tnum">${sysOk}<small>/ ${sysTotal}</small></div>
+      <div class="foot">${sysOk === sysTotal ? 'all active' : (sysTotal - sysOk) + ' down'}</div>
+    </div>
+    <div class="tile kpi">
+      <div class="label">Stream</div>
+      <div class="val tnum">${state.events.length}<small>events</small></div>
+      <div class="foot">${state.connected ? 'live · sse' : 'snapshot mode'}</div>
+    </div>
+  `;
+}
+
+/* ---------- render: agent strip ---------- */
+function renderAgents() {
+  const rows = listAgents().sort((a,b) => {
+    const rank = { active: 0, idle: 1, stale: 2, offline: 3 };
+    return rank[statusOf(a.live)] - rank[statusOf(b.live)] || a.user.localeCompare(b.user);
+  });
+  $('#agentStrip').innerHTML = rows.map(a => agentCard(a)).join('') || '<div class="panel muted">No agents enabled.</div>';
+  $$('.agent-card').forEach(c => c.addEventListener('click', () => openStage(c.dataset.user)));
+}
+
+function agentCard(a) {
+  const hue = accent(a.user);
+  const st = statusOf(a.live);
+  const idle = a.live?.session_idle_s;
+  const busy = a.live?.busy_state?.is_busy ? 1 : 0;
+  const pct = busy ? 1 : Math.max(0, 1 - Math.min(1, (idle ?? 9999) / 900));
+  const hist = (state.activity[a.user] || []).slice(-30);
+  while (hist.length < 30) hist.unshift({ busy: 0, ts: 0 });
+  const tickets = a.live?.jira_tickets || [];
+  const task = a.live?.current_task;
+  const avaSrc = a.live?.avatar_url || a.reg?.avatar_url || null;
+  const fallback = a.live?.avatar || (a.reg?.role === 'monitor' ? '👁' : '⌬');
+
+  return `
+    <article class="agent-card" data-user="${esc(a.user)}" style="--agent-hue:${hue};">
+      <div class="agent-head">
+        <div class="ava">${avaSrc
+          ? `<img src="${esc(avaSrc)}" alt="" onerror="this.replaceWith(document.createTextNode('${esc(fallback)}'))">`
+          : `<span>${esc(fallback)}</span>`}
+        </div>
+        <div class="id">
+          <h3 class="name">${esc(a.reg?.name || a.user)}</h3>
+          <div class="role">${esc(a.reg?.role || 'agent')} · @${esc(a.user)}</div>
+          <div class="chips" style="margin-top:8px;">
+            <span class="chip ${statusChip(st)}">${st}</span>
+            <span class="chip">idle ${fmtAge(idle)}</span>
+            ${a.live?.model_primary ? `<span class="chip cool" title="${esc(a.live.model_primary)}">${esc(shortModel(a.live.model_primary))}</span>` : ''}
+          </div>
+        </div>
+        <div class="ring" style="color:${hue}">
+          ${ringSVG(pct, hue)}
+          <div class="center">${busy ? 'busy' : (st==='active' ? 'live' : (st==='idle' ? 'idle' : st))}</div>
+        </div>
+      </div>
+      <div class="agent-body">
+        <div class="kvs">
+          <div class="kv"><span class="k">Task</span><span class="v short" title="${esc(task?.heading || '—')}">${esc(task?.heading || '—')}</span></div>
+          <div class="kv"><span class="k">Ticket</span><span class="v short">${esc(task?.ticket || '—')}</span></div>
+          <div class="kv"><span class="k">Tickets open</span><span class="v">${tickets.length}</span></div>
+          <div class="kv"><span class="k">Bot</span><span class="v short">${esc(a.live?.bot || '—')}</span></div>
+        </div>
+        <div class="spark">${sparkline(hist, hue)}</div>
+      </div>
+    </article>
+  `;
+}
+
+/* ---------- render: feed + services ---------- */
+function pushEvent(kind, body, meta={}) {
+  state.events.unshift({ ts: new Date(), kind, body, meta });
+  state.events = state.events.slice(0, 60);
+  renderFeed();
+}
+function renderFeed() {
+  $('#feed').innerHTML = state.events.map(e => `
+    <div class="evt">
+      <span class="when">${fmtTime(e.ts)}</span>
+      <span class="badge ${esc(e.kind)}"></span>
+      <span class="body">${e.body}</span>
+    </div>
+  `).join('') || '<div class="muted" style="font-size:13px;">Waiting for events…</div>';
+}
+
+function renderServices() {
+  const sys = state.snapshot?.system || {};
+  const keys = Object.keys(sys).sort();
+  $('#svcgrid').innerHTML = keys.map(k => {
+    const ok = sys[k].is_active === 'active';
+    return `<div class="svc ${ok ? 'ok' : 'bad'}">
+      <div class="name"><span class="dot"></span><code class="mono">${esc(k)}</code></div>
+      <div class="muted" style="font-size:12px;">${ok ? 'active' : esc(sys[k].is_active || 'unknown')}</div>
+    </div>`;
+  }).join('') || '<div class="muted">No services reported.</div>';
+}
+
+/* ---------- stage (agent detail) ---------- */
+function openStage(user) {
+  state.focusUser = user;
+  const a = listAgents().find(x => x.user === user);
+  if (!a) return;
+  const hue = accent(user);
+  document.documentElement.style.setProperty('--agent-hue', hue);
+  $('#stage').style.setProperty('--agent-hue', hue);
+  $('#stageHead').style.setProperty('--agent-hue', hue);
+
+  $('#stageName').textContent = a.reg?.name || user;
+  const sub = [];
+  sub.push(a.reg?.role || 'agent');
+  if (a.reg?.email) sub.push(a.reg.email);
+  if (a.live?.bot) sub.push(a.live.bot);
+  $('#stageSub').textContent = sub.join('  ·  ');
+
+  const ava = $('#stageAva');
+  ava.innerHTML = a.live?.avatar_url || a.reg?.avatar_url
+    ? `<img src="${esc(a.live?.avatar_url || a.reg?.avatar_url)}" alt="">`
+    : `<span style="display:grid;place-items:center;width:100%;height:100%;font-size:36px;">${esc(a.live?.avatar || '⌬')}</span>`;
+
+  const st = statusOf(a.live);
+  $('#stageChips').innerHTML = `
+    <span class="chip ${statusChip(st)}">${st}</span>
+    ${a.live?.model_primary ? `<span class="chip cool">${esc(shortModel(a.live.model_primary))}</span>` : ''}
+    <span class="chip">idle ${fmtAge(a.live?.session_idle_s)}</span>
+    ${(a.reg?.services || []).map(s => `<span class="chip">${esc(s.replace('.service',''))}</span>`).join('')}
+  `;
+
+  const task = a.live?.current_task;
+  $('#stageTask').innerHTML = task
+    ? `<div style="font-weight:600; font-size:15px;">${esc(task.ticket || task.heading || 'Task')}</div>
+       <div class="muted" style="margin-top:4px; font-size:13px;">${esc(task.heading || '')}</div>
+       <div class="muted" style="margin-top:6px; font-size:12px;">status: ${esc(task.status || '—')}</div>`
+    : '<div class="muted">No active task pinned.</div>';
+
+  const tickets = a.live?.jira_tickets || [];
+  $('#stageTickets').innerHTML = tickets.length
+    ? tickets.map(t => `
+        <div class="ticket">
+          <div class="key">${esc(t.key)}</div>
+          <div class="sum">${esc(t.summary || '')}</div>
+          <div class="st">${esc(t.status || '')}</div>
+        </div>`).join('')
+    : '<div class="muted">No open assigned tickets.</div>';
+
+  // MD tabs
+  renderMdTabs();
+  loadMd(user, state.mdCurrent);
+
+  // Model
+  $('#modelLive').value = a.live?.model_primary || '—';
+  const sel = $('#modelSel');
+  sel.innerHTML = MODEL_CATALOG.map(m => `<option value="${esc(m.id)}" ${a.live?.model_primary===m.id?'selected':''}>${esc(m.label)}</option>`).join('');
+
+  // Toggles
+  renderToggles(a.reg);
+
+  $('#stage').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeStage() {
+  $('#stage').classList.remove('open');
+  state.focusUser = null;
+  document.body.style.overflow = '';
+}
+$('#stageClose').addEventListener('click', closeStage);
+$('#stage').addEventListener('click', e => { if (e.target === $('#stage')) closeStage(); });
+
+/* MD tabs */
+function renderMdTabs() {
+  $('#mdTabs').innerHTML = state.mdFiles.map(f =>
+    `<button class="md-tab ${f===state.mdCurrent?'on':''}" data-f="${esc(f)}">${esc(f)}</button>`
+  ).join('');
+  $$('#mdTabs .md-tab').forEach(b => b.addEventListener('click', () => {
+    state.mdCurrent = b.dataset.f;
+    renderMdTabs();
+    loadMd(state.focusUser, state.mdCurrent);
+  }));
+}
+async function loadMd(user, file) {
+  if (!user || !file) return;
+  $('#mdMeta').textContent = `loading ${user}/${file}…`;
+  $('#mdWarn').classList.add('hidden');
+  try {
+    const r = await fetch(`/agents/profile-file?user=${encodeURIComponent(user)}&file=${encodeURIComponent(file)}`, { cache: 'no-store' });
+    if (r.status === 404) {
+      // route not present; show stub
+      $('#mdArea').value = `# ${file}\n\n(backend route GET /agents/profile-file is not wired yet)\n`;
+      $('#mdMeta').textContent = `${user} · ${file} · stub`;
+      $('#mdWarn').classList.remove('hidden');
+      return;
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    $('#mdArea').value = j.text || '';
+    $('#mdMeta').textContent = `${user} · ${file} · ${j.bytes ?? (j.text||'').length} bytes`;
+  } catch (e) {
+    $('#mdArea').value = '';
+    $('#mdMeta').textContent = `error: ${e.message}`;
+    $('#mdWarn').classList.remove('hidden');
+  }
+}
+$('#mdReload').addEventListener('click', () => loadMd(state.focusUser, state.mdCurrent));
+$('#mdSave').addEventListener('click', async () => {
+  if (!state.focusUser) return;
+  if (!confirm(`Save ${state.mdCurrent} for ${state.focusUser}?`)) return;
+  try {
+    const r = await fetch('/agents/profile-file', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: state.focusUser, file: state.mdCurrent, text: $('#mdArea').value }),
+    });
+    if (r.status === 404) { $('#mdWarn').classList.remove('hidden'); toast('save needs backend route PUT /agents/profile-file', 'err'); return; }
+    if (!r.ok) { const j = await r.json().catch(()=>({})); throw new Error(j.error || `HTTP ${r.status}`); }
+    toast(`saved ${state.mdCurrent}`);
+    pushEvent('activity', `<b>${esc(state.focusUser)}</b> · saved ${esc(state.mdCurrent)}`);
+  } catch (e) {
+    toast(`save failed: ${e.message}`, 'err');
+  }
+});
+
+/* Model apply */
+$('#modelApply').addEventListener('click', async () => {
+  if (!state.focusUser) return;
+  const m = $('#modelSel').value;
+  if (!confirm(`Switch ${state.focusUser} primary model to ${m}?\nAgent must reload to honour this.`)) return;
+  try {
+    const r = await fetch('/agents/model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: state.focusUser, model: m }),
+    });
+    if (r.status === 404) { toast('model switch needs backend route POST /agents/model', 'err'); return; }
+    if (!r.ok) { const j = await r.json().catch(()=>({})); throw new Error(j.error || `HTTP ${r.status}`); }
+    toast(`model switched · ${shortModel(m)}`);
+    pushEvent('activity', `<b>${esc(state.focusUser)}</b> · model → ${esc(shortModel(m))}`);
+  } catch (e) { toast(`model switch failed: ${e.message}`, 'err'); }
+});
+
+/* Lifecycle */
+async function restartService(user, service, label) {
+  $('#lifeStatus').textContent = `restarting ${label}…`;
+  try {
+    const r = await fetch('/agents/services/restart', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user, service }),
+    });
+    const j = await r.json().catch(()=>({}));
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    $('#lifeStatus').textContent = `requested ${label} at ${fmtTime()}`;
+    toast(`restart requested · ${label}`);
+    pushEvent('restart', `<b>${esc(user)}</b> · restart ${esc(service)}`);
+  } catch (e) {
+    $('#lifeStatus').textContent = `failed: ${e.message}`;
+    toast(`restart failed: ${e.message}`, 'err');
+  }
+}
+$('#restartGw').addEventListener('click', () => {
+  if (!state.focusUser) return;
+  if (!confirm(`Restart openclaw-gateway.service for ${state.focusUser}?`)) return;
+  restartService(state.focusUser, 'openclaw-gateway.service', 'gateway');
+});
+$('#restartAll').addEventListener('click', async () => {
+  if (!state.focusUser) return;
+  const a = listAgents().find(x => x.user === state.focusUser);
+  const services = a?.reg?.services || ['openclaw-gateway.service'];
+  if (!confirm(`Full restart for ${state.focusUser}? This restarts:\n  - ${services.join('\n  - ')}`)) return;
+  for (const s of services) {
+    // eslint-disable-next-line no-await-in-loop
+    await restartService(state.focusUser, s, s.replace('.service',''));
+  }
+});
+
+/* Toggles */
+function renderToggles(reg) {
+  const ints = reg?.integrations || {};
+  const caps = reg?.capabilities || {};
+  $('#integList').innerHTML = Object.keys(ints).sort().map(k => toggleRow(reg.user, 'integrations', k, !!ints[k])).join('') || '<div class="muted">none</div>';
+  $('#capList').innerHTML = Object.keys(caps).sort().map(k => toggleRow(reg.user, 'capabilities', k, !!caps[k])).join('') || '<div class="muted">none</div>';
+}
+function toggleRow(user, kind, key, val) {
+  return `<div class="toggle">
+    <span>${esc(key)}</span>
+    <button class="tg ${val?'on':''}" data-user="${esc(user)}" data-kind="${esc(kind)}" data-key="${esc(key)}" data-val="${val?'1':'0'}" aria-label="toggle ${esc(key)}"></button>
+  </div>`;
+}
+document.body.addEventListener('click', async (e) => {
+  const tg = e.target.closest('.tg');
+  if (!tg) return;
+  const user = tg.dataset.user, kind = tg.dataset.kind, key = tg.dataset.key;
+  const next = tg.dataset.val === '1' ? false : true;
+  if (!confirm(`Set ${kind}.${key} for ${user} to ${next}?`)) return;
+  try {
+    const r = await fetch('/agents/registry/toggle', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user, kind, key, value: next }),
+    });
+    const j = await r.json().catch(()=>({}));
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    toast(`${kind}.${key} → ${next}`);
+    pushEvent('activity', `<b>${esc(user)}</b> · ${esc(kind)}.${esc(key)} → ${next}`);
+    await loadRegistry();
+    if (state.focusUser === user) {
+      const a = listAgents().find(x => x.user === user);
+      if (a) renderToggles(a.reg);
+    }
+    renderAgents();
+  } catch (err) {
+    toast(`toggle failed: ${err.message}`, 'err');
+  }
+});
+
+/* ---------- data ---------- */
+async function loadRegistry() {
+  const r = await fetch('/agents/registry.json', { cache: 'no-store' });
+  state.registry = await r.json();
+}
+async function loadSnapshot() {
+  const r = await fetch('/agents/snapshot', { cache: 'no-store' });
+  state.snapshot = await r.json();
+  // record activity buckets
+  for (const u of Object.keys(state.snapshot.agents || {})) {
+    state.activity[u] = state.activity[u] || [];
+    state.activity[u].push({ ts: Date.now(), busy: state.snapshot.agents[u].busy_state?.is_busy ? 1 : 0 });
+    state.activity[u] = state.activity[u].slice(-60);
+  }
+  renderAll();
+}
+function renderAll() {
+  renderKPIs(); renderAgents(); renderServices();
+}
+
+/* ---------- SSE ---------- */
+function connect() {
+  const es = new EventSource('/agents/events');
+  es.onopen = () => {
+    state.connected = true;
+    $('#connDot').classList.add('live');
+    $('#connText').textContent = 'live';
+    pushEvent('snapshot', '<b>sse</b> connected');
+    renderAll();
+  };
+  es.onerror = () => {
+    state.connected = false;
+    $('#connDot').classList.remove('live');
+    $('#connText').textContent = 'reconnecting…';
+    renderAll();
+  };
+  es.onmessage = (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      if (d.type === 'snapshot') {
+        state.snapshot = d;
+        // record activity
+        for (const u of Object.keys(d.agents || {})) {
+          state.activity[u] = state.activity[u] || [];
+          state.activity[u].push({ ts: Date.now(), busy: d.agents[u].busy_state?.is_busy ? 1 : 0 });
+          state.activity[u] = state.activity[u].slice(-60);
+        }
+        renderAll();
+        pushEvent('snapshot', 'snapshot updated');
+        return;
+      }
+      if (d.type === 'registry_updated') {
+        loadRegistry().then(renderAll);
+        pushEvent('activity', `<b>${esc(d.user || 'registry')}</b> updated`);
+        return;
+      }
+      if (d.agent && state.snapshot?.agents?.[d.agent]) {
+        const a = state.snapshot.agents[d.agent];
+        if (d.type === 'agent_activity')     a.last_activity = { ts: d.ts, items: d.items || [], role: d.role };
+        if (d.type === 'agent_jira' || d.type === 'jira-tickets')   a.jira_tickets = d.tickets || a.jira_tickets;
+        if (d.type === 'agent_task_change' || d.type === 'current-task') a.current_task = d.task;
+        if (d.type === 'busy_state')         a.busy_state = d.busy_state || a.busy_state;
+        pushEvent(d.type === 'agent_jira' ? 'jira' : 'task', `<b>${esc(d.agent)}</b> · ${esc(d.event || d.type)}`);
+        renderAll();
+        return;
+      }
+      pushEvent('activity', esc(String(d.type || 'event')) + ' · ' + esc(JSON.stringify(d).slice(0, 140)));
+    } catch (err) {
+      pushEvent('error', esc(err.message));
+    }
+  };
+}
+
+/* ---------- input ---------- */
+$('#refreshBtn').addEventListener('click', async () => {
+  $('#refreshBtn').textContent = '… refreshing';
+  await loadSnapshot();
+  pushEvent('snapshot', 'manual refresh');
+  $('#refreshBtn').textContent = '⟳ refresh';
+});
+$('#themeBtn').addEventListener('click', () => {
+  state.theme = state.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = state.theme;
+  localStorage.setItem('atlas.theme', state.theme);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closeStage(); return; }
+  if (e.key === 't' || e.key === 'T') { $('#themeBtn').click(); return; }
+  if (e.key === 'r' || e.key === 'R') { $('#refreshBtn').click(); return; }
+});
+
+/* clock */
+function tickClock() { $('#clock').textContent = fmtTime(); }
+setInterval(tickClock, 1000); tickClock();
+
+/* ---------- boot ---------- */
+async function boot() {
+  try { await loadRegistry(); await loadSnapshot(); pushEvent('snapshot', 'initial load'); connect(); }
+  catch (e) { toast('boot failed: ' + e.message, 'err'); pushEvent('error', esc(e.message)); }
+  setInterval(loadSnapshot, 30000); // gentle resync alongside SSE
+}
+boot();
+</script>
+</body>
+</html>
