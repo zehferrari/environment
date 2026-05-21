@@ -11,7 +11,7 @@ set -euo pipefail
 #   Firefox   -> workspace 5 (DP-3)
 #   Brave     -> workspace 7 (HDMI-A-2)
 #   Chrome    -> workspace 9 (HDMI-A-3)
-#   Warp      -> workspace 10 (HDMI-A-3)
+#   Kitty     -> workspace 10 (HDMI-A-3)
 
 log() { printf '[loadSession] %s\n' "$*"; }
 err() { printf '[loadSession] ERROR: %s\n' "$*" >&2; }
@@ -185,14 +185,14 @@ FIREFOX_CMD=""
 CHROMIUM_CMD=""
 BRAVE_CMD=""
 PHPSTORM_CMD=""
-WARP_CMD=""
+KITTY_CMD=""
 
 # Whether each app should be relaunched after the close phase
 LAUNCH_CHROME=0
 LAUNCH_FIREFOX=0
 LAUNCH_CHROMIUM=0
 LAUNCH_BRAVE=0
-LAUNCH_WARP=0
+LAUNCH_KITTY=0
 LAUNCH_PHPSTORM=0
 
 CHROME_CMD=$(resolve_cmd google-chrome-stable google-chrome chrome || true)
@@ -218,12 +218,8 @@ else
   [[ -n "$PHPSTORM_CMD" ]] || PHPSTORM_CMD=$(resolve_cmd phpstorm || true)
 fi
 
-# Warp is usually installed at a fixed path on this machine
-if [[ -x /opt/warpdotdev/warp-terminal/warp ]]; then
-  WARP_CMD=/opt/warpdotdev/warp-terminal/warp
-else
-  WARP_CMD=$(resolve_cmd warp || true)
-fi
+# Kitty is usually installed via package manager
+KITTY_CMD=$(resolve_cmd kitty || true)
 
 clear_firefox_crash_recovery() {
   # Remove crash-recovery markers so Firefox won't show a restore prompt.
@@ -273,7 +269,7 @@ CHROMIUM_CLASS_RE='^(chromium|chromium-browser|Chromium-browser|Chromium)$'
 BRAVE_CLASS_RE='^(brave-browser|Brave-browser|Brave)$'
 FIREFOX_CLASS_RE='^(firefox|Firefox|org\.mozilla\.firefox)$'
 PHPSTORM_CLASS_RE='^(jetbrains-phpstorm|jetbrains-phpstorm-eap|jetbrains-.*phpstorm.*)$'
-WARP_CLASS_RE='^(dev\.warp\.Warp)$'
+KITTY_CLASS_RE='^(kitty|Kitty)$'
 
 
 if [[ "$MODE" == "hard" ]]; then
@@ -319,15 +315,15 @@ if [[ "$MODE" == "hard" ]]; then
     log "Brave not found; skipping."
   fi
 
-  if [[ -n "$WARP_CMD" ]]; then
-    # Warp usually exits cleanly on WM close.
-    if close_app_gracefully "Warp" "$WARP_CLASS_RE" 20; then
-      LAUNCH_WARP=1
+  if [[ -n "$KITTY_CMD" ]]; then
+    # Kitty usually exits cleanly on WM close.
+    if close_app_gracefully "Kitty" "$KITTY_CLASS_RE" 20; then
+      LAUNCH_KITTY=1
     else
-      err "Warp did not close cleanly; it will not be relaunched automatically."
+      err "Kitty did not close cleanly; it will not be relaunched automatically."
     fi
   else
-    log "Warp not found; skipping."
+    log "Kitty not found; skipping."
   fi
 
   if [[ -n "$PHPSTORM_CMD" ]]; then
@@ -376,8 +372,8 @@ if [[ "$MODE" == "hard" ]]; then
     launch_on_workspace 9 "$CHROME_CMD" --no-first-run --disable-session-crashed-bubble
   fi
 
-  if [[ -n "$WARP_CMD" && $LAUNCH_WARP -eq 1 ]]; then
-    launch_on_workspace 10 "$WARP_CMD"
+  if [[ -n "$KITTY_CMD" && $LAUNCH_KITTY -eq 1 ]]; then
+    launch_on_workspace 10 "$KITTY_CMD"
   fi
 
   # Launch PhpStorm last (as requested)
@@ -446,16 +442,16 @@ elif [[ "$MODE" == "soft" ]]; then
     launch_on_workspace 9 "$CHROME_CMD" --no-first-run --disable-session-crashed-bubble
   fi
 
-  # Warp
-  if is_process_running "warp"; then
-    log "Warp is running; checking for windows..."
-    if has_window_for_class_regex "$WARP_CLASS_RE"; then
-      move_first_window_of_class_to_workspace "$WARP_CLASS_RE" 10
+  # Kitty
+  if is_process_running "kitty"; then
+    log "Kitty is running; checking for windows..."
+    if has_window_for_class_regex "$KITTY_CLASS_RE"; then
+      move_first_window_of_class_to_workspace "$KITTY_CLASS_RE" 10
     else
-      launch_on_workspace 10 "$WARP_CMD"
+      launch_on_workspace 10 "$KITTY_CMD"
     fi
   else
-    launch_on_workspace 10 "$WARP_CMD"
+    launch_on_workspace 10 "$KITTY_CMD"
   fi
 
 # PhpStorm
