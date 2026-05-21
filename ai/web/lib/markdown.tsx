@@ -36,6 +36,24 @@ const INLINE_PATTERNS: InlinePattern[] = [
   { name: "mention", re: /(^|[^A-Za-z0-9_])@([A-Za-z0-9_]{1,64})/ },
 ];
 
+// Link href allowlist for v1. React JSX escaping protects against HTML
+// injection of the surrounding markup, but it does not neutralise
+// dangerous URL schemes (javascript:, data:, vbscript:, etc.) on an
+// anchor's href — those still execute on click. Restrict to schemes
+// that cannot script: http(s), root-relative, in-page anchors, mailto.
+// Everything else falls through to literal text in renderInline.
+function isSafeHref(href: string): boolean {
+  if (href.length === 0) return false;
+  // Protocol-relative ("//foo") is ambiguous and uncommon in comments;
+  // treat as unsafe so we don't inherit http:/https: at runtime.
+  if (href.startsWith("//")) return false;
+  if (href.startsWith("/")) return true;
+  if (href.startsWith("#")) return true;
+  if (/^https?:\/\//i.test(href)) return true;
+  if (/^mailto:[^\s]+@[^\s]+$/i.test(href)) return true;
+  return false;
+}
+
 function renderInline(
   text: string,
   mentionables: ReadonlySet<string>,
@@ -61,8 +79,12 @@ function renderInline(
     }
 
     const { p, m } = best;
-    let matchStart = m.index;
-    let matchEnd = m.index + m[0].length;
+    // `tokenStart` is where the styled token actually begins inside
+    // `slice` (i.e. past any non-greedy lead char that italic/mention
+    // pin against). Unmatched text up to tokenStart is emitted exactly
+    // once, immediately before the styled node.
+    let tokenStart = m.index;
+    const matchEnd = m.index + m[0].length;
     let inner: ReactNode;
     const k = `${keyPrefix}-${keyN++}`;
 
@@ -81,33 +103,43 @@ function renderInline(
         inner = <strong key={k}>{m[1]}</strong>;
         break;
       case "italic": {
-        // italic pattern keeps the preceding non-* char in m[1]; we want
-        // to keep that char as plain text and start the italic at the
-        // actual `*`.
-        const lead = m[1];
-        matchStart += lead.length;
-        if (lead) out.push(lead);
+        // italic pattern keeps the preceding non-* char in m[1]; the
+        // styled span begins at the actual `*`, after that lead char.
+        // The lead char is preserved as part of slice.slice(0,
+        // tokenStart) below, so we deliberately do NOT push it again
+        // here (see HOMELAB-44 review commentId 12219).
+        tokenStart += m[1].length;
         inner = <em key={k}>{m[2]}</em>;
         break;
       }
-      case "link":
+      case "link": {
+        const href = m[2];
+        if (!isSafeHref(href)) {
+          // Unsafe scheme — preserve the literal source so the reader
+          // can still see the intent, but don't render a live link.
+          if (tokenStart > 0) out.push(slice.slice(0, tokenStart));
+          out.push(`[${m[1]}](${href})`);
+          cursor += matchEnd;
+          continue;
+        }
         inner = (
           <a
             key={k}
-            href={m[2]}
+            href={href}
             className="underline decoration-dotted hover:text-[var(--color-accent)]"
             rel="noreferrer noopener"
-            target={m[2].startsWith("http") ? "_blank" : undefined}
+            target={/^https?:\/\//i.test(href) ? "_blank" : undefined}
           >
             {m[1]}
           </a>
         );
         break;
+      }
       case "mention": {
-        const lead = m[1];
         const username = m[2];
-        matchStart += lead.length;
-        if (lead) out.push(lead);
+        // mention pattern pins the preceding non-word char in m[1];
+        // same lead-preservation contract as italic above.
+        tokenStart += m[1].length;
         if (mentionables.has(username)) {
           inner = (
             <span
@@ -119,7 +151,9 @@ function renderInline(
           );
         } else {
           // Unknown mention — leave the literal text in so it's not
-          // visually misleading (no styled badge for a typo).
+          // visually misleading (no styled badge for a typo). Push the
+          // unmatched lead-up text first so it isn't dropped.
+          if (tokenStart > 0) out.push(slice.slice(0, tokenStart));
           out.push(`@${username}`);
           cursor += matchEnd;
           continue;
@@ -128,7 +162,7 @@ function renderInline(
       }
     }
 
-    if (matchStart > 0) out.push(slice.slice(0, matchStart));
+    if (tokenStart > 0) out.push(slice.slice(0, tokenStart));
     out.push(inner);
     cursor += matchEnd;
   }
