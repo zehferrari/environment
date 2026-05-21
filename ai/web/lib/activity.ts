@@ -8,6 +8,7 @@ export type ActivityKind =
   | "task.move"
   | "task.ack.auto"
   | "task.comment"
+  | "task.assign"
   | "task.create"
   | "project.create"
   | "agent.sync"
@@ -27,6 +28,14 @@ interface MovePayload {
 
 interface CommentPayload {
   mentions?: string[];
+}
+
+// task.assign payload uses usernames (never raw user IDs) so the feed
+// renders a stable label even if the assignee row is later deleted.
+// from/to are null for unassigned / unset.
+interface AssignPayload {
+  from?: string | null;
+  to?: string | null;
 }
 
 function parsePayload<T>(payload: string | null): T | null {
@@ -71,6 +80,21 @@ export function describeActivity(row: ActivityRow): string {
         return `${actor(row.actorName)} commented on ${task(row.taskTitle)} (mentioned ${list})`;
       }
       return `${actor(row.actorName)} commented on ${task(row.taskTitle)}`;
+    }
+    case "task.assign": {
+      const p = parsePayload<AssignPayload>(row.payload);
+      if (p) {
+        if (!p.from && p.to) {
+          return `${actor(row.actorName)} assigned ${task(row.taskTitle)} to @${p.to}`;
+        }
+        if (p.from && !p.to) {
+          return `${actor(row.actorName)} unassigned ${task(row.taskTitle)} (was @${p.from})`;
+        }
+        if (p.from && p.to) {
+          return `${actor(row.actorName)} reassigned ${task(row.taskTitle)} from @${p.from} to @${p.to}`;
+        }
+      }
+      return `${actor(row.actorName)} updated assignment on ${task(row.taskTitle)}`;
     }
     default:
       return `${actor(row.actorName)} · ${row.kind}`;

@@ -4,12 +4,18 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { renderCommentBody, extractMentions } from "@/lib/markdown";
+import { checkAssignment, type ActorKind } from "@/lib/workflow";
 
-async function requireActorId(): Promise<string> {
+async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
   const session = await auth();
   const id = session?.user?.id;
   if (!id) throw new Error("Unauthenticated");
-  return id;
+  const kind: ActorKind = session.user?.kind === "agent" ? "agent" : "human";
+  return { id, kind };
+}
+
+async function requireActorId(): Promise<string> {
+  return (await requireActor()).id;
 }
 
 async function createComment(formData: FormData) {
@@ -58,6 +64,73 @@ async function createComment(formData: FormData) {
   revalidatePath(`/projects/${slug}`);
 }
 
+// Server-side assignment. checkAssignment is the rule layer (see
+// HOMELAB-44 description: assignee + acting-manager pulled from
+// agents/users table). Rule rejection (agent self-assign) throws
+// because the UI only exposes the picker to authed users and the
+// rejection path is a true policy fault, not an optimistic UI rollback
+// like moveTask. Missing assignee row also throws — that means a stale
+// option in the dropdown.
+async function assignTask(formData: FormData) {
+  "use server";
+  const actor = await requireActor();
+  const taskId = String(formData.get("taskId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  const raw = String(formData.get("assigneeId") ?? "");
+  const newAssigneeId = raw === "" ? null : raw;
+  if (!taskId || !slug) return;
+
+  const task = await db.task.findUnique({
+    where: { id: taskId },
+    select: {
+      id: true,
+      projectId: true,
+      assigneeId: true,
+      project: { select: { slug: true } },
+      assignee: { select: { username: true } },
+    },
+  });
+  if (!task || task.project.slug !== slug) return;
+  if (task.assigneeId === newAssigneeId) return;
+
+  const check = checkAssignment({ actor, newAssigneeId });
+  if (!check.ok) throw new Error(check.message);
+
+  let toUsername: string | null = null;
+  if (newAssigneeId !== null) {
+    const target = await db.user.findUnique({
+      where: { id: newAssigneeId },
+      select: { username: true, status: true },
+    });
+    if (!target || target.status !== "active") {
+      throw new Error("Assignee not found or inactive");
+    }
+    toUsername = target.username;
+  }
+
+  await db.$transaction([
+    db.task.update({
+      where: { id: taskId },
+      data: { assigneeId: newAssigneeId },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: task.projectId,
+        taskId,
+        userId: actor.id,
+        kind: "task.assign",
+        payload: JSON.stringify({
+          from: task.assignee?.username ?? null,
+          to: toUsername,
+        }),
+      },
+    }),
+  ]);
+
+  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
+  revalidatePath(`/projects/${slug}`);
+}
+
 export default async function TaskDetailPage({
   params,
 }: {
@@ -84,13 +157,17 @@ export default async function TaskDetailPage({
   });
   if (!task || task.project.slug !== slug) notFound();
 
-  // For v1, anyone known to the system is mentionable. Future slice may
-  // narrow this to project members.
+  // For v1, anyone known to the system is mentionable / assignable.
+  // Future slice may narrow this to project members. Inactive users are
+  // excluded from the assignee picker so a deactivated account cannot
+  // become the new owner of a task, but they remain mentionable so
+  // historical comments still render their @ as a known mention.
   const users = await db.user.findMany({
-    select: { username: true },
+    select: { id: true, username: true, kind: true, status: true },
     orderBy: { username: "asc" },
   });
   const mentionables = users.map((u) => ({ username: u.username }));
+  const assignableUsers = users.filter((u) => u.status === "active");
 
   return (
     <div className="max-w-3xl">
@@ -128,6 +205,40 @@ export default async function TaskDetailPage({
           ) : null}
         </div>
       </header>
+
+      <form
+        action={assignTask}
+        className="mb-6 flex flex-wrap items-center gap-2 text-xs"
+      >
+        <input type="hidden" name="taskId" value={task.id} />
+        <input type="hidden" name="projectSlug" value={slug} />
+        <label
+          htmlFor="assigneeId"
+          className="text-[var(--color-text-muted)]"
+        >
+          Assignee
+        </label>
+        <select
+          id="assigneeId"
+          name="assigneeId"
+          defaultValue={task.assigneeId ?? ""}
+          className="rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1 text-xs outline-none focus:border-[var(--color-accent)]"
+        >
+          <option value="">Unassigned</option>
+          {assignableUsers.map((u) => (
+            <option key={u.id} value={u.id}>
+              {u.username}
+              {u.kind === "agent" ? " (agent)" : ""}
+            </option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          className="rounded border border-[var(--color-line)] bg-[var(--color-panel)] px-2 py-1 text-xs hover:border-[var(--color-accent)]"
+        >
+          Save
+        </button>
+      </form>
 
       {task.description ? (
         <section className="mb-6 whitespace-pre-wrap rounded border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-sm">
