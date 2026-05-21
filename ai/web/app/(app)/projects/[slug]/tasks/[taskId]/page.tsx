@@ -4,7 +4,12 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { renderCommentBody, extractMentions } from "@/lib/markdown";
-import { checkAssignment, checkActingManager, type ActorKind } from "@/lib/workflow";
+import {
+  checkAssignment,
+  checkActingManager,
+  checkHierarchy,
+  type ActorKind,
+} from "@/lib/workflow";
 
 async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
   const session = await auth();
@@ -197,6 +202,84 @@ async function setActingManager(formData: FormData) {
   revalidatePath(`/projects/${slug}`);
 }
 
+// Sub-task creation. Mirrors the project-level createTask shape but
+// always sets parentTaskId and inherits projectId + epicId from the
+// parent task so the hierarchy stays consistent (epic > task > subtask
+// per HOMELAB-44 description). checkHierarchy from lib/workflow is
+// called server-side so the UI is not the only enforcement layer —
+// matches the assignment/acting-manager pattern. Parent task is
+// re-scoped by URL slug to avoid creating sub-tasks against a task in
+// another project. New sub-tasks land in Backlog with the next rank
+// after the parent's existing Backlog tasks, same as createTask.
+async function createSubtask(formData: FormData) {
+  "use server";
+  const actor = await requireActor();
+  const parentTaskId = String(formData.get("parentTaskId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  const title = String(formData.get("title") ?? "").trim();
+  if (!parentTaskId || !slug || !title) return;
+  if (title.length > 200) return;
+
+  const parent = await db.task.findUnique({
+    where: { id: parentTaskId },
+    select: {
+      id: true,
+      title: true,
+      projectId: true,
+      epicId: true,
+      parentTaskId: true,
+      project: { select: { slug: true } },
+    },
+  });
+  if (!parent || parent.project.slug !== slug) return;
+
+  // A sub-task of a sub-task would violate the two-deep hierarchy
+  // (epic > task > subtask). Reject at the action layer so it never
+  // hits the DB; checkHierarchy itself only validates this row, not
+  // the parent's depth.
+  if (parent.parentTaskId !== null) {
+    throw new Error("Cannot create sub-task under another sub-task");
+  }
+
+  const check = checkHierarchy({ level: "subtask", parentTaskId });
+  if (!check.ok) throw new Error(check.message);
+
+  const maxRank = await db.task.aggregate({
+    where: { projectId: parent.projectId, status: "Backlog" },
+    _max: { rank: true },
+  });
+
+  const child = await db.task.create({
+    data: {
+      projectId: parent.projectId,
+      epicId: parent.epicId,
+      parentTaskId,
+      title,
+      status: "Backlog",
+      rank: (maxRank._max.rank ?? 0) + 1,
+    },
+    select: { id: true, title: true },
+  });
+
+  await db.activityLog.create({
+    data: {
+      projectId: parent.projectId,
+      taskId: child.id,
+      userId: actor.id,
+      kind: "task.create",
+      payload: JSON.stringify({
+        title: child.title,
+        parentTaskId,
+        parentTitle: parent.title,
+      }),
+    },
+  });
+
+  revalidatePath(`/projects/${slug}/tasks/${parentTaskId}`);
+  revalidatePath(`/projects/${slug}/tasks/${child.id}`);
+  revalidatePath(`/projects/${slug}`);
+}
+
 export default async function TaskDetailPage({
   params,
 }: {
@@ -352,11 +435,15 @@ export default async function TaskDetailPage({
         </section>
       ) : null}
 
-      {task.subtasks.length > 0 ? (
-        <section className="mb-6">
-          <h2 className="mb-2 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
-            Sub-tasks
-          </h2>
+      <section className="mb-6">
+        <h2 className="mb-2 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
+          Sub-tasks
+        </h2>
+        {task.subtasks.length === 0 ? (
+          <div className="rounded border border-dashed border-[var(--color-line)] px-3 py-4 text-xs text-[var(--color-text-muted)]">
+            No sub-tasks yet.
+          </div>
+        ) : (
           <ul className="divide-y divide-[var(--color-line)] rounded border border-[var(--color-line)] bg-[var(--color-panel)]">
             {task.subtasks.map((st) => (
               <li
@@ -375,8 +462,40 @@ export default async function TaskDetailPage({
               </li>
             ))}
           </ul>
-        </section>
-      ) : null}
+        )}
+
+        {/*
+          Sub-task creation is hidden when the current task is itself a
+          sub-task (parentTaskId !== null). The server action enforces
+          the same two-deep limit so this is a UI-only convenience —
+          createSubtask throws if asked to nest a sub-task under another
+          sub-task. Top-level tasks (parentTaskId === null) get the form.
+        */}
+        {task.parentTaskId === null ? (
+          <form action={createSubtask} className="mt-3 flex gap-2">
+            <input type="hidden" name="parentTaskId" value={task.id} />
+            <input type="hidden" name="projectSlug" value={slug} />
+            <input
+              name="title"
+              required
+              maxLength={200}
+              placeholder="New sub-task title"
+              className="flex-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+            />
+            <button
+              type="submit"
+              className="rounded bg-[var(--color-accent)] text-[var(--color-bg)] text-sm font-medium px-3 hover:opacity-90"
+            >
+              Add sub-task
+            </button>
+          </form>
+        ) : (
+          <p className="mt-3 text-xs text-[var(--color-text-muted)]">
+            Sub-tasks of sub-tasks are not allowed. Add sub-tasks on the
+            parent task instead.
+          </p>
+        )}
+      </section>
 
       <section>
         <h2 className="mb-2 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">

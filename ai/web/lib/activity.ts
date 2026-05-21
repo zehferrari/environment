@@ -46,6 +46,18 @@ interface ActingManagerPayload {
   to?: string | null;
 }
 
+// task.create payload: title is the new task's title at creation time
+// (so the feed reads correctly even if the row is later renamed or
+// deleted, in which case row.taskTitle would go null). parentTaskId +
+// parentTitle are set only when the row represents sub-task creation;
+// top-level creates may omit them so a later slice can backfill
+// top-level createTask without changing this contract.
+interface TaskCreatePayload {
+  title?: string;
+  parentTaskId?: string | null;
+  parentTitle?: string | null;
+}
+
 function parsePayload<T>(payload: string | null): T | null {
   if (!payload) return null;
   try {
@@ -118,6 +130,17 @@ export function describeActivity(row: ActivityRow): string {
         }
       }
       return `${actor(row.actorName)} updated acting manager on ${task(row.taskTitle)}`;
+    }
+    case "task.create": {
+      const p = parsePayload<TaskCreatePayload>(row.payload);
+      // Prefer the payload's frozen title so the label still reads
+      // correctly if the task row was later renamed; fall back to the
+      // current task title from the join when payload is missing.
+      const title = p?.title ?? row.taskTitle;
+      if (p?.parentTitle) {
+        return `${actor(row.actorName)} created sub-task ${task(title)} under ${p.parentTitle}`;
+      }
+      return `${actor(row.actorName)} created task ${task(title)}`;
     }
     default:
       return `${actor(row.actorName)} · ${row.kind}`;
