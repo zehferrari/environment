@@ -34,18 +34,18 @@ export default async function ProjectsPage() {
 
   return (
     <div className="max-w-4xl">
-      <h1 className="text-xl font-semibold mb-4">Projects</h1>
+      <h1 className="text-2xl font-semibold tracking-tight mb-4">Projects</h1>
 
       <form action={createProject} className="flex gap-2 mb-6">
         <input
           name="name"
           required
           placeholder="New project name"
-          className="flex-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
+          className="flex-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
         />
         <button
           type="submit"
-          className="rounded bg-[var(--color-accent)] text-[var(--color-bg)] text-sm font-medium px-4 hover:opacity-90"
+          className="rounded-lg bg-[var(--color-accent)] text-white text-sm font-medium px-4 shadow-sm hover:opacity-95"
         >
           Create
         </button>
@@ -59,7 +59,7 @@ export default async function ProjectsPage() {
             <li key={p.id}>
               <Link
                 href={`/projects/${p.slug}`}
-                className="block rounded border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 hover:border-[var(--color-line-strong)]"
+                className="block rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 hover:border-[var(--color-accent)] hover:shadow-sm"
               >
                 <div className="text-sm font-medium">{p.name}</div>
                 <div className="text-xs text-[var(--color-text-muted)]">/{p.slug}</div>

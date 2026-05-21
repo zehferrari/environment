@@ -163,7 +163,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction }: B
           type="button"
           onClick={() => setBacklogVisible((v) => !v)}
           aria-pressed={backlogVisible}
-          className="rounded border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
         >
           {backlogVisible
             ? "Hide Backlog"
@@ -234,7 +234,7 @@ function TaskCard({ task, projectSlug }: { task: Task; projectSlug: string }) {
       ref={setNodeRef}
       {...attributes}
       {...listeners}
-      className={`rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm cursor-grab select-none flex items-start justify-between gap-2 ${
+      className={`rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-sm cursor-grab select-none flex items-start justify-between gap-2 ${
         isDragging ? "opacity-30" : ""
       }`}
     >

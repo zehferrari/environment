@@ -10,7 +10,7 @@ export default async function AgentsPage() {
 
   return (
     <div className="max-w-3xl">
-      <h1 className="text-xl font-semibold mb-4">Agents</h1>
+      <h1 className="text-2xl font-semibold tracking-tight mb-4">Agents</h1>
       {agents.length === 0 ? (
         <p className="text-sm text-[var(--color-text-muted)]">
           No agents have been synced yet. Trigger {`/api/debug/sync`} or wait for the next cycle.

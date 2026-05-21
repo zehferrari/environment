@@ -146,7 +146,7 @@ export default async function ProjectBoardPage({
     <div>
       <header className="mb-4 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold">{project.name}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>
           <div className="text-xs text-[var(--color-text-muted)]">/{project.slug}</div>
         </div>
         <form action={createTask} className="flex gap-2">
@@ -156,11 +156,11 @@ export default async function ProjectBoardPage({
             name="title"
             required
             placeholder="New task title"
-            className="rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] w-72"
+            className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] w-72"
           />
           <button
             type="submit"
-            className="rounded bg-[var(--color-accent)] text-[var(--color-bg)] text-sm font-medium px-3 hover:opacity-90"
+            className="rounded-lg bg-[var(--color-accent)] text-white text-sm font-medium px-3 shadow-sm hover:opacity-95"
           >
             Add task
           </button>
@@ -188,7 +188,7 @@ export default async function ProjectBoardPage({
             No activity yet. Move a task between columns to log the first row.
           </div>
         ) : (
-          <ul className="divide-y divide-[var(--color-line)] rounded border border-[var(--color-line)] bg-[var(--color-panel)]">
+          <ul className="divide-y divide-[var(--color-line)] rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)]">
             {feed.map((row) => (
               <li
                 key={row.id}

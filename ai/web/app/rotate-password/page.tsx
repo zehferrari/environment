@@ -60,7 +60,7 @@ export default async function RotatePasswordPage({
     <main className="min-h-screen flex items-center justify-center px-4">
       <form
         action={rotateAction}
-        className="w-full max-w-sm rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] p-6 shadow-lg"
+        className="w-full max-w-sm rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-6 shadow-sm"
       >
         <h1 className="text-lg font-semibold mb-1">Set a new password</h1>
         <p className="text-sm text-[var(--color-text-muted)] mb-4">
@@ -77,7 +77,7 @@ export default async function RotatePasswordPage({
           type="password"
           required
           autoComplete="current-password"
-          className="w-full rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 mb-3 outline-none focus:border-[var(--color-accent)]"
+          className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 mb-3 outline-none focus:border-[var(--color-accent)]"
         />
 
         <label className="block text-sm mb-1">New password (min 12 chars)</label>
@@ -87,7 +87,7 @@ export default async function RotatePasswordPage({
           required
           minLength={12}
           autoComplete="new-password"
-          className="w-full rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 mb-3 outline-none focus:border-[var(--color-accent)]"
+          className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 mb-3 outline-none focus:border-[var(--color-accent)]"
         />
 
         <label className="block text-sm mb-1">Confirm new password</label>
@@ -97,12 +97,12 @@ export default async function RotatePasswordPage({
           required
           minLength={12}
           autoComplete="new-password"
-          className="w-full rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 mb-4 outline-none focus:border-[var(--color-accent)]"
+          className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 mb-4 outline-none focus:border-[var(--color-accent)]"
         />
 
         <button
           type="submit"
-          className="w-full rounded bg-[var(--color-accent)] text-[var(--color-bg)] font-medium py-2 hover:opacity-90"
+          className="w-full rounded-lg bg-[var(--color-accent)] text-white font-medium py-2 shadow-sm hover:opacity-95"
         >
           Rotate password
         </button>
