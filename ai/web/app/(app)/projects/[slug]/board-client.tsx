@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState, useTransition } from "react";
 import {
   DndContext,
@@ -114,7 +115,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction }: B
           return (
             <ColumnDroppable key={col.id} id={col.id} label={col.label} count={colTasks.length}>
               {colTasks.map((t) => (
-                <TaskCard key={t.id} task={t} />
+                <TaskCard key={t.id} task={t} projectSlug={projectSlug} />
               ))}
             </ColumnDroppable>
           );
@@ -162,18 +163,32 @@ function ColumnDroppable({
   );
 }
 
-function TaskCard({ task }: { task: Task }) {
+function TaskCard({ task, projectSlug }: { task: Task; projectSlug: string }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: task.id });
   return (
     <div
       ref={setNodeRef}
       {...attributes}
       {...listeners}
-      className={`rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm cursor-grab select-none ${
+      className={`rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm cursor-grab select-none flex items-start justify-between gap-2 ${
         isDragging ? "opacity-30" : ""
       }`}
     >
-      {task.title}
+      <span className="truncate">{task.title}</span>
+      {/* Open-detail link. stopPropagation on pointerdown keeps the drag
+          sensor from claiming the click on the link itself; the rest of
+          the card still drags normally. */}
+      <Link
+        href={`/projects/${projectSlug}/tasks/${task.id}`}
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+        className="shrink-0 text-[var(--color-text-muted)] hover:text-[var(--color-accent)]"
+        aria-label={`Open ${task.title}`}
+        title="Open task"
+      >
+        ↗
+      </Link>
     </div>
   );
 }

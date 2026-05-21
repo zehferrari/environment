@@ -7,6 +7,7 @@
 export type ActivityKind =
   | "task.move"
   | "task.ack.auto"
+  | "task.comment"
   | "task.create"
   | "project.create"
   | "agent.sync"
@@ -22,6 +23,10 @@ export interface ActivityRow {
 interface MovePayload {
   from?: string;
   to?: string;
+}
+
+interface CommentPayload {
+  mentions?: string[];
 }
 
 function parsePayload<T>(payload: string | null): T | null {
@@ -58,6 +63,14 @@ export function describeActivity(row: ActivityRow): string {
         return `${actor(row.actorName)} acknowledged ${task(row.taskTitle)} — auto ${p.from} → ${p.to}`;
       }
       return `${actor(row.actorName)} acknowledged ${task(row.taskTitle)}`;
+    }
+    case "task.comment": {
+      const p = parsePayload<CommentPayload>(row.payload);
+      if (p?.mentions && p.mentions.length > 0) {
+        const list = p.mentions.map((m) => `@${m}`).join(", ");
+        return `${actor(row.actorName)} commented on ${task(row.taskTitle)} (mentioned ${list})`;
+      }
+      return `${actor(row.actorName)} commented on ${task(row.taskTitle)}`;
     }
     default:
       return `${actor(row.actorName)} · ${row.kind}`;
