@@ -24,8 +24,10 @@ pnpm build
 cp -r .next/static .next/standalone/.next/static
 cp -r public .next/standalone/public
 
-# 2. Migrate the SQLite DB. The schema lives in prisma/schema.prisma.
-pnpm prisma db push
+# 2. Apply DB migrations. Schema lives in prisma/schema.prisma; the v1 initial
+#    migration is committed under prisma/migrations/. Use `migrate deploy` on
+#    every host — never `db push` against a real DB (no history, no rollback).
+pnpm prisma migrate deploy
 
 # 3. Drop the env file into /etc/default and the unit into systemd.
 sudo install -o root -g zeh -m 0640 deploy/pm.env.example /etc/default/pm
@@ -47,6 +49,17 @@ sudo $EDITOR /etc/default/pm
 sudo systemctl enable --now pm.service
 journalctl -u pm.service -f
 ```
+
+## Subsequent migrations
+
+For schema changes after Stage 1: generate the migration locally with
+`pnpm prisma migrate dev --name <change>`, commit the new directory under
+`prisma/migrations/`, and roll it forward on the host with
+`pnpm prisma migrate deploy`. Same command, idempotent — applies only what
+hasn't been applied yet.
+
+`pnpm prisma db push` is dev-only (rapid prototyping without a migration
+history) and **must not** be used against the production DB.
 
 ## Seeded credentials
 

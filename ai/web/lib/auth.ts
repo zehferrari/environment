@@ -4,6 +4,10 @@ import { PrismaAdapter } from "@auth/prisma-adapter";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { verifyPassword } from "@/lib/auth/password";
+import {
+  checkLoginRateLimit,
+  clientIpFromRequest,
+} from "@/lib/auth/rate-limit";
 
 const CredentialsSchema = z.object({
   username: z.string().min(1).max(64),
@@ -23,11 +27,24 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         username: { label: "Username", type: "text" },
         password: { label: "Password", type: "password" },
       },
-      async authorize(raw) {
+      async authorize(raw, request) {
         const parsed = CredentialsSchema.safeParse(raw);
         if (!parsed.success) return null;
 
         const { username, password } = parsed.data;
+
+        // Rate limit before any DB lookup. Per-IP 10/5min + per-username
+        // 5/5min, in-process sliding window (v1 single host). Blocks brute
+        // force without leaking which axis tripped.
+        const ip = clientIpFromRequest(request);
+        const rl = checkLoginRateLimit(ip, username);
+        if (!rl.ok) {
+          console.warn(
+            `[auth] login rate-limited reason=${rl.reason} ip=${ip ?? "unknown"} user=${username} retryAfter=${rl.retryAfterSec}s`,
+          );
+          return null;
+        }
+
         const user = await db.user.findUnique({ where: { username } });
         if (!user || user.status !== "active" || !user.passwordHash) return null;
 

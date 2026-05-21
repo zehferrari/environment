@@ -15,7 +15,7 @@ served by a long-lived Node process at `agents.vixi.au` — see
 pnpm install
 cp .env.example .env
 # edit DATABASE_URL / AUTH_SECRET as needed
-pnpm prisma db push
+pnpm prisma migrate dev   # applies committed migrations, regenerates client
 pnpm dev
 ```
 
@@ -35,17 +35,25 @@ the password, then visit `/agents` to see the (empty) table.
 | `app/api/auth/[...nextauth]` | NextAuth route. |
 | `app/api/debug/sync` | manual trigger for the agent sync (auth-only). |
 | `lib/auth.ts` | NextAuth credentials + JWT callbacks. |
+| `lib/auth/rate-limit.ts` | in-process login rate limit (per-IP + per-username). |
 | `lib/agents/sync.ts` | the canonical agent sync — boot + 5-min interval. |
 | `lib/agents/credentials.ts` | per-agent host-private credential seeding. |
 | `instrumentation.node.ts` | boot hook (runs only on the Node runtime). |
 | `middleware.ts` | auth gate + `must_rotate_password` redirect. |
 | `prisma/schema.prisma` | full v1 schema. |
+| `prisma/migrations/` | committed migration history; applied via `prisma migrate deploy`. |
 | `deploy/` | systemd unit, nginx vhost, env file template. |
 
 ## Stage 1 scope
 
-- Auth: password-only. Google SSO deferred to v1.1+.
-- DB: SQLite. Same schema can move to Postgres without changes.
+- Auth: password-only (Credentials provider + argon2id). No NextAuth Google
+  provider in v1; Google SSO deferred to v1.1+ per the live ticket
+  description.
+- DB: SQLite + Prisma migrations. Same schema can move to Postgres without
+  changes.
+- Login rate limit: in-process sliding-fixed-window, 10/5min per IP +
+  5/5min per username. Adequate for single-host v1; revisit if PM goes
+  multi-host.
 - Permissions: stub `RolePermission` table; enforcement lands in HOMELAB-44.
 - Agents: only those whose `codeOwner` matches this host's
   `/srv/agents/index.json` `codeOwner` are seeded as PM users. Remote-host
