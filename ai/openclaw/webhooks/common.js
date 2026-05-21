@@ -30,7 +30,9 @@ const USERS_JSON = path.join(MONITOR_HOME, 'webhooks', 'users.json');
 const SHARED_LOG = path.join(MONITOR_HOME, 'tasks', 'log.md');
 
 const PENDING_MENTIONS_DIR = '/var/lib/ai-monitor/pending-mentions';
+const PENDING_EPIC_COMMENTS_DIR = '/var/lib/ai-monitor/pending-epic-comments';
 try { fs.mkdirSync(PENDING_MENTIONS_DIR, { recursive: true }); } catch (_e) {}
+try { fs.mkdirSync(PENDING_EPIC_COMMENTS_DIR, { recursive: true }); } catch (_e) {}
 
 // ─── config + registry ──────────────────────────────────────────────────────
 
@@ -177,6 +179,36 @@ function recordPendingMention(userCfg, event) {
     userLog(userCfg, `Pending-mention recorded: ${issueKey} comment=${commentId}`);
   } catch (e) {
     sharedLog(`recordPendingMention failed: ${e.message}`);
+  }
+}
+
+function recordPendingEpicComment(event) {
+  try {
+    const wh = String(event.webhookEvent || '');
+    if (wh !== 'comment_created') return;
+    const issueKey = event.issue?.key;
+    const commentId = event.comment?.id;
+    const authorAccountId = event.comment?.author?.accountId || event.user?.accountId;
+    if (!issueKey || !commentId || !authorAccountId) return;
+    const authorCfg = jiraAccountIdToUser[authorAccountId];
+    if (!authorCfg) return;
+    const fname = `${issueKey}-${commentId}-${authorCfg.username}.json`;
+    const fpath = path.join(PENDING_EPIC_COMMENTS_DIR, fname);
+    const payload = {
+      author_agent: authorCfg.username,
+      author_name: event.comment?.author?.displayName || event.user?.displayName || authorCfg.jiraDisplayName || authorCfg.username,
+      author_account_id: authorAccountId,
+      issue_key: issueKey,
+      issue_summary: event.issue?.fields?.summary || '',
+      comment_id: String(commentId),
+      comment_created: event.comment?.created || new Date().toISOString(),
+      preview: adfToText(event.comment?.body || {}).slice(0, 240).replace(/\s+/g, ' ').trim(),
+      recorded_at: new Date().toISOString(),
+    };
+    fs.writeFileSync(fpath, JSON.stringify(payload, null, 2));
+    userLog(authorCfg, `Pending Epic-owner review recorded: ${issueKey} comment=${commentId}`);
+  } catch (e) {
+    sharedLog(`recordPendingEpicComment failed: ${e.message}`);
   }
 }
 
@@ -459,7 +491,7 @@ module.exports = {
   http, sharedLog, userLog, verifySignature,
   config, allUsers, jiraNameToUser, jiraAccountIdToUser,
   resolveJiraUsers, resolveBitbucketUsers, resolveJiraMentionedAgents,
-  recordPendingMention, queueJiraTask, queueBitbucketTask,
+  recordPendingMention, recordPendingEpicComment, queueJiraTask, queueBitbucketTask,
   wakeAgent, notifyDashboard, adfToText,
   KNOWN_RECEIVERS, isReceiverEnabled,
 };

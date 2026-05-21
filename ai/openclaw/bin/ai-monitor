@@ -911,9 +911,43 @@ def probe_pending_email_tasks(cfg, registry):
 def _iso_to_epoch(s):
     try:
         from datetime import datetime
-        return int(datetime.fromisoformat(s).timestamp())
+        if not s:
+            return None
+        raw = str(s).strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        return int(datetime.fromisoformat(raw).timestamp())
     except Exception:
         return None
+
+
+def _jira_fetch_issue(agent, cfg, issue_key, fields):
+    user = agent.get("user")
+    email = agent.get("email")
+    sc = cfg.get("stalled_tasks_check") or {}
+    host = sc.get("jira_host", "zeh-ferrari.atlassian.net")
+    http_timeout_s = int(sc.get("http_timeout_s", 15))
+    if not (user and email and issue_key):
+        return None, f"jira fetch missing user/email/issue_key for {issue_key}"
+    field_list = ",".join(fields)
+    url = f"https://{host}/rest/api/3/issue/{issue_key}?fields={field_list}"
+    cmd = [
+        "sudo", "-n", "-u", user, "bash", "-c",
+        f"T=$(cat ~/.ssh/jiraToken.txt 2>/dev/null); "
+        f"if [ -z \"$T\" ]; then echo NO_TOKEN >&2; exit 2; fi; "
+        f"curl -s --max-time {http_timeout_s} -u {shlex.quote(email)}:\"$T\" "
+        f"-H 'Accept: application/json' {shlex.quote(url)}",
+    ]
+    rc, out, err = run_cmd(cmd, timeout=http_timeout_s + 4)
+    if rc != 0 or not out.strip():
+        return None, f"jira issue fetch {user}/{issue_key}: rc={rc} {err.strip()[:120]}"
+    try:
+        d = json.loads(out)
+    except Exception as e:
+        return None, f"jira issue parse {user}/{issue_key}: {e}"
+    if d.get("errorMessages"):
+        return None, f"jira API error {user}/{issue_key}: {d['errorMessages']}"
+    return d, None
 
 
 def _agent_replied_since(agent, pending, cfg):
@@ -964,6 +998,179 @@ def _agent_replied_since(agent, pending, cfg):
             if c_s >= base_s:
                 return True, None
     return False, None
+
+
+def probe_pending_epic_comment_reviews(cfg, registry):
+    """When one known agent comments on a child Jira issue, the assignee of
+    the parent Epic is expected to read it and reply if required. Webhook
+    receivers write markers into this queue; this probe resolves the parent
+    Epic and watches for a later comment from the Epic owner."""
+    ecfg = cfg.get("pending_epic_comments") or {}
+    out = {"awaiting": [], "resolved": [], "errors": [], "enabled": ecfg.get("enabled", True)}
+    if not out["enabled"] or not registry:
+        return out
+    pdir = ecfg.get("dir", "/var/lib/ai-monitor/pending-epic-comments")
+    warn_s = int(ecfg.get("warn_minutes", 15)) * 60
+    crit_s = int(ecfg.get("crit_minutes", 60)) * 60
+    max_age_s = int(ecfg.get("max_age_hours", 168)) * 3600
+    if not os.path.isdir(pdir):
+        return out
+
+    by_user = {}
+    by_account = {}
+    fallback_agent = None
+    for a in (registry.get("agents") or []):
+        if not a.get("enabled"):
+            continue
+        u = a.get("user")
+        if u:
+            by_user[u] = a
+            fallback_agent = fallback_agent or a
+        acct = a.get("jira_account_id")
+        if acct:
+            by_account[acct] = a
+
+    for fn in sorted(os.listdir(pdir)):
+        if not fn.endswith(".json"):
+            continue
+        fpath = os.path.join(pdir, fn)
+        try:
+            with open(fpath) as f:
+                data = json.load(f)
+        except Exception as e:
+            out["errors"].append(f"unreadable {fn}: {e}")
+            continue
+
+        created_s = _iso_to_epoch(data.get("comment_created", ""))
+        if created_s is not None and (int(time.time()) - created_s) >= max_age_s:
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
+            out["resolved"].append({
+                "issue_key": data.get("issue_key"),
+                "comment_id": data.get("comment_id"),
+                "reason": f"stale-marker-age>{max_age_s}s",
+            })
+            continue
+
+        author_agent = by_user.get(data.get("author_agent"))
+        fetch_agent = author_agent or fallback_agent
+        if not fetch_agent:
+            out["errors"].append(f"{fn}: no Jira-capable agent available for lookup")
+            continue
+
+        issue_key = data.get("issue_key")
+        child, err = _jira_fetch_issue(
+            fetch_agent, cfg, issue_key,
+            ["summary", "status", "parent", "issuetype", "comment"],
+        )
+        if err:
+            out["errors"].append(err)
+            continue
+        fields = child.get("fields") or {}
+        child_cat = ((fields.get("status") or {}).get("statusCategory") or {}).get("key")
+        parent_ref = fields.get("parent") or {}
+        parent_key = parent_ref.get("key")
+        if child_cat == "done" or not parent_key:
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
+            out["resolved"].append({
+                "issue_key": issue_key,
+                "comment_id": data.get("comment_id"),
+                "reason": "child-done-or-no-parent",
+            })
+            continue
+
+        parent = None
+        parent_depth = 0
+        while parent_key and parent_depth < 3:
+            parent, err = _jira_fetch_issue(
+                fetch_agent, cfg, parent_key,
+                ["summary", "status", "assignee", "issuetype", "parent"],
+            )
+            if err:
+                out["errors"].append(err)
+                parent = None
+                break
+            pf = parent.get("fields") or {}
+            parent_type = ((pf.get("issuetype") or {}).get("name") or "").lower()
+            parent_cat = ((pf.get("status") or {}).get("statusCategory") or {}).get("key")
+            if parent_type == "epic" or parent_cat == "done":
+                break
+            parent_key = ((pf.get("parent") or {}).get("key"))
+            parent_depth += 1
+        if parent is None:
+            continue
+        pf = parent.get("fields") or {}
+        parent_type = ((pf.get("issuetype") or {}).get("name") or "").lower()
+        parent_cat = ((pf.get("status") or {}).get("statusCategory") or {}).get("key")
+        assignee = pf.get("assignee") or {}
+        target = by_account.get(assignee.get("accountId"))
+        if parent_cat == "done" or parent_type != "epic" or not target:
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
+            out["resolved"].append({
+                "issue_key": issue_key,
+                "comment_id": data.get("comment_id"),
+                "parent_key": parent_key,
+                "reason": "parent-done-not-epic-or-unowned",
+            })
+            continue
+        if target.get("user") == data.get("author_agent"):
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
+            out["resolved"].append({
+                "issue_key": issue_key,
+                "comment_id": data.get("comment_id"),
+                "parent_key": parent_key,
+                "agent": target.get("user"),
+                "reason": "epic-owner-authored-comment",
+            })
+            continue
+
+        resolved, err = _agent_replied_since(target, data, cfg)
+        if err:
+            out["errors"].append(err)
+            continue
+        if resolved:
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
+            out["resolved"].append({
+                "issue_key": issue_key,
+                "comment_id": data.get("comment_id"),
+                "parent_key": parent_key,
+                "agent": target.get("user"),
+                "reason": "child-done-or-epic-owner-replied",
+            })
+            continue
+        if created_s is None:
+            continue
+        age_s = int(time.time()) - created_s
+        if age_s >= crit_s:
+            severity = "crit"
+        elif age_s >= warn_s:
+            severity = "warn"
+        else:
+            continue
+        out["awaiting"].append({
+            **data,
+            "agent": target.get("user"),
+            "epic_key": parent_key,
+            "epic_summary": (pf.get("summary") or "")[:120],
+            "issue_summary": (fields.get("summary") or data.get("issue_summary") or "")[:120],
+            "age_s": age_s,
+            "severity": severity,
+        })
+    return out
 
 
 def probe_pending_mentions(cfg, registry):
@@ -2327,6 +2534,30 @@ def deterministic_issues(probes):
             "reason": f"pending-mentions probe error: {err}",
             "suggested_action": "investigate",
         })
+    ec = probes.get("pending_epic_comments", {})
+    for c in ec.get("awaiting", []) or []:
+        age_min = (c.get("age_s") or 0) // 60
+        preview = (c.get("preview") or "")[:140]
+        out.append({
+            "unit": f"jira:{c['agent']}/{c['issue_key']}#{c.get('comment_id','')}",
+            "kind": "epic-comment-awaiting-reply",
+            "severity": c.get("severity", "warn"),
+            "reason": (
+                f"{c['issue_key']} is under Epic {c.get('epic_key','?')} "
+                f"assigned to {c['agent']}; {c.get('author_agent') or c.get('author_name') or 'another agent'} "
+                f"commented {age_min}m ago and the Epic owner has not replied. "
+                f"Comment preview: \"{preview}\""
+            ),
+            "suggested_action": "investigate",
+        })
+    for err in ec.get("errors", []) or []:
+        out.append({
+            "unit": "jira:pending-epic-comments",
+            "kind": "pending-epic-comments-probe-failed",
+            "severity": "warn",
+            "reason": f"pending-epic-comments probe error: {err}",
+            "suggested_action": "investigate",
+        })
     mf = probes.get("model_fallback_health", {})
     for issue in mf.get("issues", []) or []:
         rl = issue.get("last_rate_limit") or {}
@@ -2676,7 +2907,7 @@ def restart_and_wake_stalled_agents(no_agent_issues):
         user, tail = rest.split("/", 1)
         bucket = by_user.setdefault(user, {
             "tickets": [], "queue_count": 0, "queue_keys": [], "emails": [],
-            "model_fallbacks": []
+            "model_fallbacks": [], "epic_comments": []
         })
         if kind == "task-stalled-no-agent":
             bucket["tickets"].append(tail)
@@ -2703,6 +2934,11 @@ def restart_and_wake_stalled_agents(no_agent_issues):
             bucket["model_fallbacks"].append({
                 "tail": tail,
                 "kind": kind,
+                "reason": (issue.get("reason") or "")[:240],
+            })
+        elif kind == "epic-comment-awaiting-reply":
+            bucket["epic_comments"].append({
+                "tail": tail,
                 "reason": (issue.get("reason") or "")[:240],
             })
 
@@ -2748,6 +2984,15 @@ def restart_and_wake_stalled_agents(no_agent_issues):
                 "observable fallback-model activity; restarting your session "
                 f"and waking you to continue on a usable fallback model ({reasons})"
             )
+        if b["epic_comments"]:
+            reasons = "; ".join(
+                m["reason"] for m in b["epic_comments"][:3] if m.get("reason")
+            )
+            parts.append(
+                "tier-2 escalation — wake-agent didn't take. comments from "
+                "another agent are waiting on a child issue under your Epic; "
+                f"read the Jira comment(s) and reply if required ({reasons})"
+            )
         reminder = "ai-monitor: " + "; ".join(parts) + "."
         cmd = [
             "sudo", "-n", "/usr/local/sbin/openclaw-control",
@@ -2767,6 +3012,7 @@ def restart_and_wake_stalled_agents(no_agent_issues):
             "queue_keys": b["queue_keys"],
             "emails": b["emails"],
             "model_fallbacks": b["model_fallbacks"],
+            "epic_comments": b["epic_comments"],
             "wake_rc": rc,
             "wake_err": (err.strip()[:200] if rc != 0 else ""),
             "post_idle_s": post_idle_s,
@@ -2803,7 +3049,7 @@ def auto_wake_stalled_agents(no_agent_issues):
         user, tail = rest.split("/", 1)
         bucket = by_user.setdefault(user, {
             "tickets": [], "queue_count": 0, "queue_keys": [], "emails": [],
-            "model_fallbacks": []
+            "model_fallbacks": [], "epic_comments": []
         })
         if kind == "task-stalled-no-agent":
             bucket["tickets"].append(tail)
@@ -2836,6 +3082,11 @@ def auto_wake_stalled_agents(no_agent_issues):
             bucket["model_fallbacks"].append({
                 "tail": tail,
                 "kind": kind,
+                "reason": (issue.get("reason") or "")[:240],
+            })
+        elif kind == "epic-comment-awaiting-reply":
+            bucket["epic_comments"].append({
+                "tail": tail,
                 "reason": (issue.get("reason") or "")[:240],
             })
 
@@ -2881,6 +3132,15 @@ def auto_wake_stalled_agents(no_agent_issues):
                 "on the next usable model in your configured fallback list "
                 f"({reasons})"
             )
+        if b["epic_comments"]:
+            reasons = "; ".join(
+                m["reason"] for m in b["epic_comments"][:3] if m.get("reason")
+            )
+            parts.append(
+                "another agent commented on a Jira issue under an Epic assigned "
+                "to you — read the comment and reply in Jira if required "
+                f"({reasons})"
+            )
         reminder = "ai-monitor: " + "; ".join(parts) + "."
         cmd = [
             "sudo", "-n", "/usr/local/sbin/openclaw-control",
@@ -2900,6 +3160,7 @@ def auto_wake_stalled_agents(no_agent_issues):
             "queue_keys": b["queue_keys"],
             "emails": b["emails"],
             "model_fallbacks": b["model_fallbacks"],
+            "epic_comments": b["epic_comments"],
             "wake_rc": rc,
             "wake_err": (err.strip()[:200] if rc != 0 else ""),
             "post_idle_s": post_idle_s,
@@ -3395,9 +3656,15 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                         "email-awaiting-action",
                         "model-fallback-not-used-after-rate-limit",
                         "model-fallback-disabled-after-rate-limit",
+                        "epic-comment-awaiting-reply",
                     ],
                 ),
             ))
+        AUTO_ACTION_KINDS.update({
+            "epic-comment-awaiting-reply",
+            "model-fallback-not-used-after-rate-limit",
+            "model-fallback-disabled-after-rate-limit",
+        })
         auto_issues = [i for i in new_alert_issues if i.get("kind") in AUTO_ACTION_KINDS]
         monitor_bound_issues = [
             i for i in new_alert_issues if i.get("kind") not in AUTO_ACTION_KINDS
@@ -3616,6 +3883,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                         "email-awaiting-action": ("wake-agent", "restart-and-wake"),
                         "model-fallback-not-used-after-rate-limit": ("wake-agent", "restart-and-wake"),
                         "model-fallback-disabled-after-rate-limit": ("wake-agent", "restart-and-wake"),
+                        "epic-comment-awaiting-reply": ("wake-agent", "restart-and-wake"),
                     }
                     actions_taken_lc = [a.lower() for a in (decision.get("actions_taken") or [])]
                     violations = []
@@ -3639,6 +3907,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                                 "email-awaiting-action",
                                 "model-fallback-not-used-after-rate-limit",
                                 "model-fallback-disabled-after-rate-limit",
+                                "epic-comment-awaiting-reply",
                             )
                         ]
                         wake_results = (
@@ -4082,6 +4351,7 @@ def gather_probes(cfg):
         "agent_queue": probe_agent_queue(cfg, registry),
         "pending_email_tasks": probe_pending_email_tasks(cfg, registry),
         "pending_mentions": probe_pending_mentions(cfg, registry),
+        "pending_epic_comments": probe_pending_epic_comment_reviews(cfg, registry),
         "model_fallback_health": probe_model_fallback_health(cfg, registry),
         "openclaw_security": probe_openclaw_security_status(cfg, registry),
         "service_log_security": probe_service_log_security(cfg, registry),

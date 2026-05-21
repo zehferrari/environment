@@ -58,6 +58,7 @@ const server = c.http.createServer(async (req, res) => {
 
         const event = JSON.parse(body);
         c.sharedLog(`Jira webhook received: ${event.webhookEvent}`);
+        c.recordPendingEpicComment(event);
 
         // Mention-routing wins over assignee — a comment that names
         // specific agents is a more precise signal than the assignee field.
