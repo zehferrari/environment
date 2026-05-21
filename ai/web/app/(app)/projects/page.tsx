@@ -1,0 +1,73 @@
+import Link from "next/link";
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { db } from "@/lib/db";
+
+function slugify(s: string) {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 64);
+}
+
+async function createProject(formData: FormData) {
+  "use server";
+  const name = String(formData.get("name") ?? "").trim();
+  if (!name) return;
+  const slug = slugify(name) || `proj-${Date.now()}`;
+  await db.project.upsert({
+    where: { slug },
+    update: { name },
+    create: { slug, name },
+  });
+  revalidatePath("/projects");
+  redirect(`/projects/${slug}`);
+}
+
+export default async function ProjectsPage() {
+  const projects = await db.project.findMany({
+    where: { archivedAt: null },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return (
+    <div className="max-w-4xl">
+      <h1 className="text-xl font-semibold mb-4">Projects</h1>
+
+      <form action={createProject} className="flex gap-2 mb-6">
+        <input
+          name="name"
+          required
+          placeholder="New project name"
+          className="flex-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
+        />
+        <button
+          type="submit"
+          className="rounded bg-[var(--color-accent)] text-[var(--color-bg)] text-sm font-medium px-4 hover:opacity-90"
+        >
+          Create
+        </button>
+      </form>
+
+      {projects.length === 0 ? (
+        <p className="text-sm text-[var(--color-text-muted)]">No projects yet.</p>
+      ) : (
+        <ul className="space-y-1">
+          {projects.map((p) => (
+            <li key={p.id}>
+              <Link
+                href={`/projects/${p.slug}`}
+                className="block rounded border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 hover:border-[var(--color-line-strong)]"
+              >
+                <div className="text-sm font-medium">{p.name}</div>
+                <div className="text-xs text-[var(--color-text-muted)]">/{p.slug}</div>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
