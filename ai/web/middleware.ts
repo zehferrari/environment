@@ -20,7 +20,11 @@ export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   if (isPublic(pathname)) return NextResponse.next();
 
-  const token = await getToken({ req, secret: process.env.AUTH_SECRET });
+  const token = await getToken({
+    req,
+    secret: process.env.AUTH_SECRET,
+    secureCookie: req.headers.get("x-forwarded-host") === "agents.vixi.au" || req.headers.get("host") === "agents.vixi.au",
+  });
   if (!token) {
     const url = forwardedUrl(req, "/login");
     url.searchParams.set("next", pathname);
