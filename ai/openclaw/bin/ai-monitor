@@ -1867,6 +1867,170 @@ def probe_service_log_security(cfg, registry):
     return out
 
 
+def _remove_cache_file(path):
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+
+def _restart_openclaw_user_services(registry, timeout_s=60):
+    results = []
+    if not registry:
+        return results
+    for agent in registry.get("agents", []) or []:
+        if not agent.get("enabled"):
+            continue
+        user = agent.get("user")
+        if not user:
+            continue
+        services = [
+            s for s in (agent.get("services") or ["openclaw-gateway.service"])
+            if str(s).startswith("openclaw-")
+        ]
+        if not services:
+            services = ["openclaw-gateway.service"]
+        for svc in services:
+            rc, out, err = run_cmd(
+                [
+                    "sudo", "-n", "systemctl", "--user",
+                    "-M", f"{user}@", "restart", svc,
+                ],
+                timeout=timeout_s,
+            )
+            results.append({
+                "user": user,
+                "service": svc,
+                "rc": rc,
+                "error": (err.strip() or out.strip())[:240] if rc != 0 else "",
+            })
+    return results
+
+
+def _openclaw_audit_summary_after_update(cfg, registry):
+    _remove_cache_file(_security_cache_path(cfg))
+    fresh = probe_openclaw_security_status(cfg, registry)
+    return {
+        "audit_results": [
+            {
+                "user": r.get("user"),
+                "ok": r.get("ok"),
+                "summary": r.get("summary"),
+                "error": r.get("error"),
+            }
+            for r in fresh.get("audit_results", []) or []
+        ],
+        "update_status": fresh.get("update_status"),
+        "errors": fresh.get("errors", []),
+    }
+
+
+def maybe_auto_update_openclaw(cfg, registry, new_alert_issues, state, dry_run=False):
+    """Guarded OpenClaw auto-remediation.
+
+    Only updates when a critical OpenClaw security finding and update
+    availability are present together. Config-only security findings still
+    continue to the monitor after the update attempt.
+    """
+    auto_cfg = cfg.get("openclaw_auto_update") or {}
+    if auto_cfg.get("enabled", True) is False:
+        return None
+    security_critical = [
+        i for i in new_alert_issues
+        if i.get("kind") == "openclaw-security-critical"
+    ]
+    update_issues = [
+        i for i in new_alert_issues
+        if i.get("kind") == "openclaw-update-available"
+    ]
+    if auto_cfg.get("only_when_security_critical", True):
+        if not security_critical or not update_issues:
+            return None
+    elif not update_issues:
+        return None
+
+    now = int(time.time())
+    cooldown_s = int(auto_cfg.get("cooldown_s", 6 * 60 * 60))
+    au_state = state.setdefault("openclaw_auto_update", {})
+    if not dry_run and now < int(au_state.get("next_attempt_after", 0)):
+        return {
+            "type": "openclaw_auto_update_skipped_cooldown",
+            "next_attempt_after": au_state.get("next_attempt_after"),
+            "security_issue_count": len(security_critical),
+            "update_issue_count": len(update_issues),
+        }
+
+    timeout_s = int(auto_cfg.get("timeout_s", 1800))
+    cmd = [
+        "openclaw", "update",
+        "--yes",
+        "--json",
+        "--timeout", str(timeout_s),
+    ]
+    if auto_cfg.get("tag"):
+        cmd.extend(["--tag", str(auto_cfg["tag"])])
+    if auto_cfg.get("channel"):
+        cmd.extend(["--channel", str(auto_cfg["channel"])])
+
+    if dry_run:
+        return {
+            "type": "would_openclaw_auto_update",
+            "cmd": " ".join(shlex.quote(x) for x in cmd),
+            "security_issue_count": len(security_critical),
+            "update_issue_count": len(update_issues),
+        }
+
+    pre_status_rc, pre_status_out, pre_status_err = run_cmd(
+        ["openclaw", "update", "status", "--json", "--timeout", "15"],
+        timeout=30,
+    )
+    pre_status = None
+    try:
+        pre_status = json.loads(pre_status_out) if pre_status_out.strip() else None
+    except Exception:
+        pre_status = {"parse_error": pre_status_out[:300]}
+
+    rc, out, err = run_cmd(cmd, timeout=timeout_s + 120)
+    update_json = None
+    try:
+        update_json = json.loads(out) if out.strip() else None
+    except Exception:
+        update_json = {"parse_error": out[:600]}
+
+    au_state["last_attempt"] = now
+    au_state["last_rc"] = rc
+    au_state["next_attempt_after"] = now + cooldown_s
+
+    restart_results = []
+    if rc == 0 and auto_cfg.get("restart_services", True):
+        restart_results = _restart_openclaw_user_services(
+            registry, timeout_s=int(auto_cfg.get("restart_timeout_s", 60))
+        )
+
+    post_audit = None
+    if rc == 0 and auto_cfg.get("post_audit", True):
+        post_audit = _openclaw_audit_summary_after_update(cfg, registry)
+
+    return {
+        "type": "openclaw_auto_update",
+        "cmd": " ".join(shlex.quote(x) for x in cmd),
+        "rc": rc,
+        "ok": rc == 0,
+        "stdout": out[:2000],
+        "stderr": err[:1200],
+        "pre_status_rc": pre_status_rc,
+        "pre_status": pre_status,
+        "pre_status_error": pre_status_err[:500],
+        "update_json": update_json,
+        "restart_results": restart_results,
+        "post_audit": post_audit,
+        "security_issue_count": len(security_critical),
+        "update_issue_count": len(update_issues),
+    }
+
+
 SYSTEM_PROMPT = """You are the AI judge for an OpenClaw agent host monitor.
 
 The host may run on different Linux distributions and with different service mixes. Treat the probes as the source of truth: tenant users come from the configured OpenClaw agents registry, systemd units and listeners come from ai-monitor config plus registry-derived agent services, and local model/service liveness probes describe what exists on this machine. The procedural watchdog `openclaw-integrity-check` has already run; you receive its output plus host resources and service probes.
@@ -3133,6 +3297,35 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
             continue
         new_alert_issues.append(issue)
         new_alert_keys.append(key)
+
+    auto_update_action = maybe_auto_update_openclaw(
+        cfg, registry, issues, state, dry_run=dry_run
+    )
+    if auto_update_action:
+        actions.append(auto_update_action)
+        if (
+            not dry_run
+            and auto_update_action.get("type") == "openclaw_auto_update"
+            and auto_update_action.get("ok")
+        ):
+            for issue in issues:
+                if issue.get("kind") != "openclaw-update-available":
+                    continue
+                k = event_key(issue)
+                ev = state["events"].get(k)
+                if not ev:
+                    continue
+                ev["alert_sent"] = True
+                ev.setdefault("attempt_history", []).append({
+                    "ts": now,
+                    "route": "bypass-monitor",
+                    "action": "openclaw-update",
+                    "result": {
+                        "rc": auto_update_action.get("rc"),
+                        "post_audit": auto_update_action.get("post_audit"),
+                    },
+                })
+                ev["next_attempt_after"] = now + confirmation_window_s
 
     if new_alert_issues:
         text = format_alerts_message(new_alert_issues)
