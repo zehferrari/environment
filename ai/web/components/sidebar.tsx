@@ -33,6 +33,12 @@ export default async function Sidebar() {
         >
           Agents
         </Link>
+        <Link
+          href="/system/activity"
+          className="block rounded-lg px-3 py-2 font-medium text-[var(--color-text-muted)] hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)]"
+        >
+          System activity
+        </Link>
       </nav>
 
       <form
