@@ -197,19 +197,27 @@ model Comment {
 }
 
 model ActivityLog {
-  id        String   @id @default(cuid())
-  projectId String?
-  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  taskId    String?
-  task      Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  kind      String // "task.move" | "project.create" | "agent.sync" | ...
-  payload   String? // JSON string
-  createdAt DateTime @default(now())
+  id          String   @id @default(cuid())
+  projectId   String?
+  project     Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  taskId      String?
+  task        Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  kind        String // "task.move" | "project.create" | "agent.sync" | ...
+  payload     String? // JSON string
+  // Optional denormalized target for cross-cutting audit events such as
+  // agent.profile.update (HOMELAB-52). Project/task/user relations stay
+  // nullable so agent-control-surface audit rows survive independently of
+  // PM project data.
+  targetAgent String?
+  targetFile  String?
+  createdAt   DateTime @default(now())
 
   @@index([projectId])
   @@index([taskId])
   @@index([userId])
+  @@index([targetAgent])
+  @@index([targetFile])
   @@index([createdAt])
 }
