@@ -1,7 +1,7 @@
 -- HOMELAB-44 Stage 2 schema migration
 --
 -- 1. Project.readmePath: optional path to the on-disk project README
---    (deploy/runtime data path; canonical /srv/Code/pm/data/projects/<id>/README.md).
+--    (deploy/runtime data path; canonical /srv/Data/projects/<id>/README.md).
 -- 2. Task.parentTaskId: self-referential FK so sub-tasks live in the same
 --    table as their parent task. Hierarchy is epic > task > subtask via
 --    epicId + parentTaskId (single Task model, no parallel SubTask).

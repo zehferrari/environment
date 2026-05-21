@@ -15,24 +15,24 @@ datasource db {
 // ------------------------------------------------------------------
 
 model User {
-  id                  String    @id @default(cuid())
-  username            String    @unique
-  email               String    @unique
-  kind                String    // "human" | "agent"
-  passwordHash        String?
-  passwordSetAt       DateTime?
-  mustRotatePassword  Boolean   @default(true)
-  status              String    @default("active") // "active" | "deactivated"
-  rolePermissionId    String?
-  rolePermission      RolePermission? @relation(fields: [rolePermissionId], references: [id])
-  agentId             String?   @unique
-  agent               Agent?    @relation(fields: [agentId], references: [id])
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  id                 String          @id @default(cuid())
+  username           String          @unique
+  email              String          @unique
+  kind               String // "human" | "agent"
+  passwordHash       String?
+  passwordSetAt      DateTime?
+  mustRotatePassword Boolean         @default(true)
+  status             String          @default("active") // "active" | "deactivated"
+  rolePermissionId   String?
+  rolePermission     RolePermission? @relation(fields: [rolePermissionId], references: [id])
+  agentId            String?         @unique
+  agent              Agent?          @relation(fields: [agentId], references: [id])
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
 
   passwordResetTokens PasswordResetToken[]
   projectMembers      ProjectMember[]
-  assignedTasks       Task[]    @relation("TaskAssignee")
+  assignedTasks       Task[]               @relation("TaskAssignee")
   comments            Comment[]
   activity            ActivityLog[]
 
@@ -41,8 +41,8 @@ model User {
 }
 
 model RolePermission {
-  id          String  @id @default(cuid())
-  name        String  @unique  // e.g. "developer", "manager", "admin"
+  id          String   @id @default(cuid())
+  name        String   @unique // e.g. "developer", "manager", "admin"
   description String?
   // Stage 2 (HOMELAB-44) will hang permission JSON / policy here.
   users       User[]
@@ -51,13 +51,13 @@ model RolePermission {
 }
 
 model PasswordResetToken {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tokenHash String   @unique
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   @@index([userId])
   @@index([expiresAt])
@@ -68,21 +68,21 @@ model PasswordResetToken {
 // ------------------------------------------------------------------
 
 model Agent {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   // slug from index.json (e.g. "asdrubal", "barekbaal", "karen")
-  slug          String   @unique
+  slug          String    @unique
   name          String
   email         String?
-  role          String   // "coding" | "monitor" | ...
-  codeOwner     String?  // codeOwner from index.json
-  gatewayPort   Int?     // listeners[?owner=='openclaw-gateway'].port
+  role          String // "coding" | "monitor" | ...
+  codeOwner     String? // codeOwner from index.json
+  gatewayPort   Int? // listeners[?owner=='openclaw-gateway'].port
   avatar        String?
-  rawJson       String?  // last-seen JSON entry (for debugging)
+  rawJson       String? // last-seen JSON entry (for debugging)
   deactivatedAt DateTime?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
-  user          User?
+  user User?
 
   @@index([role])
   @@index([deactivatedAt])
@@ -93,17 +93,17 @@ model Agent {
 // ------------------------------------------------------------------
 
 model Project {
-  id          String   @id @default(cuid())
-  slug        String   @unique
+  id          String    @id @default(cuid())
+  slug        String    @unique
   name        String
   description String?
   // On-disk README for the project (zeh decision in HOMELAB-44 / Stage 2):
-  // points at /srv/Code/pm/data/projects/<id>/README.md (deploy/runtime path,
+  // points at /srv/Data/projects/<id>/README.md (deploy/runtime path,
   // outside the app source tree). Server renders via lib/markdown.
   readmePath  String?
   archivedAt  DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
   members  ProjectMember[]
   epics    Epic[]
@@ -141,11 +141,11 @@ model Epic {
 }
 
 model Task {
-  id          String   @id @default(cuid())
-  projectId   String
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  epicId      String?
-  epic        Epic?    @relation(fields: [epicId], references: [id])
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  epicId       String?
+  epic         Epic?    @relation(fields: [epicId], references: [id])
   // Sub-task hierarchy: a sub-task is a Task with parentTaskId set. Stage 2
   // keeps a single self-referential Task model (no parallel SubTask) per
   // HOMELAB-44 manager guardrail. epic > task > subtask is expressed as
@@ -153,17 +153,17 @@ model Task {
   parentTaskId String?
   parent       Task?    @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
   subtasks     Task[]   @relation("TaskSubtasks")
-  title       String
-  description String?
+  title        String
+  description  String?
   // Status uses the verbatim Stage 0 labels — no Jira aliases.
   // Backlog | To Do | In Progress | Review | Done
-  status      String   @default("Backlog")
-  assigneeId  String?
-  assignee    User?    @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  status       String   @default("Backlog")
+  assigneeId   String?
+  assignee     User?    @relation("TaskAssignee", fields: [assigneeId], references: [id])
   // Lexorank-style ordering within column; simple Int for v1.
-  rank        Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  rank         Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   comments Comment[]
   activity ActivityLog[]
@@ -196,8 +196,8 @@ model ActivityLog {
   task      Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
   userId    String?
   user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  kind      String   // "task.move" | "project.create" | "agent.sync" | ...
-  payload   String?  // JSON string
+  kind      String // "task.move" | "project.create" | "agent.sync" | ...
+  payload   String? // JSON string
   createdAt DateTime @default(now())
 
   @@index([projectId])
