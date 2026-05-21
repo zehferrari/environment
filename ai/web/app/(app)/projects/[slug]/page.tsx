@@ -11,14 +11,14 @@ async function createTask(formData: FormData) {
   if (!projectId || !title) return;
   const projectSlug = String(formData.get("projectSlug") ?? "");
   const maxRank = await db.task.aggregate({
-    where: { projectId, status: "backlog" },
+    where: { projectId, status: "Backlog" },
     _max: { rank: true },
   });
   await db.task.create({
     data: {
       projectId,
       title,
-      status: "backlog",
+      status: "Backlog",
       rank: (maxRank._max.rank ?? 0) + 1,
     },
   });

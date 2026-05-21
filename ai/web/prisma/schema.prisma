@@ -97,6 +97,10 @@ model Project {
   slug        String   @unique
   name        String
   description String?
+  // On-disk README for the project (zeh decision in HOMELAB-44 / Stage 2):
+  // points at /srv/Code/pm/data/projects/<id>/README.md (deploy/runtime path,
+  // outside the app source tree). Server renders via lib/markdown.
+  readmePath  String?
   archivedAt  DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -142,10 +146,18 @@ model Task {
   project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   epicId      String?
   epic        Epic?    @relation(fields: [epicId], references: [id])
+  // Sub-task hierarchy: a sub-task is a Task with parentTaskId set. Stage 2
+  // keeps a single self-referential Task model (no parallel SubTask) per
+  // HOMELAB-44 manager guardrail. epic > task > subtask is expressed as
+  // epicId + parentTaskId.
+  parentTaskId String?
+  parent       Task?    @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks     Task[]   @relation("TaskSubtasks")
   title       String
   description String?
-  // Stage 1 columns: Backlog | To Do | In Progress | Review | Done
-  status      String   @default("backlog")
+  // Status uses the verbatim Stage 0 labels — no Jira aliases.
+  // Backlog | To Do | In Progress | Review | Done
+  status      String   @default("Backlog")
   assigneeId  String?
   assignee    User?    @relation("TaskAssignee", fields: [assigneeId], references: [id])
   // Lexorank-style ordering within column; simple Int for v1.
@@ -160,6 +172,7 @@ model Task {
   @@index([status])
   @@index([epicId])
   @@index([assigneeId])
+  @@index([parentTaskId])
 }
 
 model Comment {

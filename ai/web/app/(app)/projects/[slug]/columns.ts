@@ -1,9 +1,9 @@
 export const COLUMNS = [
-  { id: "backlog", label: "Backlog" },
-  { id: "todo", label: "To Do" },
-  { id: "in_progress", label: "In Progress" },
-  { id: "review", label: "Review" },
-  { id: "done", label: "Done" },
+  { id: "Backlog", label: "Backlog" },
+  { id: "To Do", label: "To Do" },
+  { id: "In Progress", label: "In Progress" },
+  { id: "Review", label: "Review" },
+  { id: "Done", label: "Done" },
 ] as const;
 
 export type ColumnId = (typeof COLUMNS)[number]["id"];
