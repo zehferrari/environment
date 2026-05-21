@@ -137,6 +137,8 @@ if [ -d "$REPO_ROOT/webhooks" ] && [ -r "$REGISTRY" ] && command -v jq >/dev/nul
         if [ "$DRY" -eq 1 ]; then
             log "  would install webhooks/*.js → $dst/ (owner=$m_user)"
         else
+            install -d -o "$m_user" -g "$m_user" -m 0775 /var/lib/ai-monitor/pending-mentions
+            install -d -o "$m_user" -g "$m_user" -m 0775 /var/lib/ai-monitor/pending-epic-comments
             for src in "$REPO_ROOT"/webhooks/*.js; do
                 [ -e "$src" ] || continue
                 mode=755; [ "$(basename "$src")" = "common.js" ] && mode=644

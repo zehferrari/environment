@@ -35,6 +35,13 @@ the entry-point overview.
   webhook receiver writes a marker per mention; ai-monitor's
   `probe_pending_mentions` resolves on agent reply or fires
   `mention-awaiting-reply` warn (≥15 min) / crit (≥60 min).
+- **Pending Epic-owner comment review** in
+  `/var/lib/ai-monitor/pending-epic-comments/`. When a known agent posts a new
+  Jira comment on an issue under an Epic, the webhook receiver records a
+  marker. `probe_pending_epic_comment_reviews` resolves the parent Epic owner,
+  clears the marker if the Epic is done/unowned or the owner has replied, and
+  otherwise fires `epic-comment-awaiting-reply` at warn 15 min / crit 60 min.
+  This kind bypasses monitor triage and wakes the Epic owner directly.
 - **Idle agent with non-empty queue** for any coding agent. `probe_agent_queue`
   fires `agent-idle-with-queue` when an agent has zero tickets In Progress
   but ≥1 in any of the configured `queue_statuses` (default
