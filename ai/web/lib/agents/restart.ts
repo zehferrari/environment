@@ -11,13 +11,16 @@ async function snapshotServices(agent: string) {
   }
 }
 
-export async function requestAgentRestart(agent: string, reason: string) {
+export type AgentRestartResult = { service: string; ok: boolean; status: number; error?: string };
+export type QueuedAgentRestart = { queued: true; agent: string; reason: string };
+
+export async function requestAgentRestart(agent: string, reason: string): Promise<AgentRestartResult[]> {
   const row = await db.agent.findUnique({ where: { slug: agent } });
   const raw = row?.rawJson ? JSON.parse(row.rawJson) as { services?: string[] } : {};
   const services = Array.from(new Set([...(raw.services ?? []), ...(await snapshotServices(agent))]));
   const targets = services.filter((service) => service.startsWith("openclaw-") && service.endsWith(".service"));
   const attempted = targets.length > 0 ? targets : ["openclaw-gateway.service"];
-  const results: Array<{ service: string; ok: boolean; status: number; error?: string }> = [];
+  const results: AgentRestartResult[] = [];
 
   for (const service of attempted) {
     try {
@@ -43,4 +46,20 @@ export async function requestAgentRestart(agent: string, reason: string) {
   });
 
   return results;
+}
+
+export function queueAgentRestart(agent: string, reason: string): QueuedAgentRestart {
+  const queued = { queued: true as const, agent, reason };
+  setImmediate(() => {
+    void requestAgentRestart(agent, reason).catch((err) => {
+      void db.activityLog.create({
+        data: {
+          kind: "agent.restart.failed",
+          targetAgent: agent,
+          payload: JSON.stringify({ reason, queued: true, error: err instanceof Error ? err.message : String(err) }),
+        },
+      }).catch(() => undefined);
+    });
+  });
+  return queued;
 }

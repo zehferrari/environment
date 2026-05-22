@@ -1,7 +1,7 @@
 import path from "node:path";
 import { rename, readFile, writeFile } from "node:fs/promises";
 import { db } from "@/lib/db";
-import { requestAgentRestart } from "@/lib/agents/restart";
+import { queueAgentRestart } from "@/lib/agents/restart";
 
 const AGENT_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 
@@ -37,6 +37,13 @@ function configPath(agent: string) {
   return path.join("/srv/agents/openclaw", agent, "openclaw.json");
 }
 
+function addConfiguredModel(labels: Map<string, string>, model: unknown) {
+  if (typeof model !== "string") return;
+  const id = model.trim();
+  if (!id || labels.has(id)) return;
+  labels.set(id, `${id} · configured`);
+}
+
 function collectAvailable(cfg: OpenClawConfig) {
   const labels = new Map<string, string>();
   for (const [id, meta] of Object.entries(cfg.agents?.defaults?.models ?? {})) labels.set(id, meta.alias ? `${meta.alias} · ${id}` : id);
@@ -47,6 +54,18 @@ function collectAvailable(cfg: OpenClawConfig) {
       labels.set(id, model.name ? `${model.name} · ${id}` : id);
     }
   }
+
+  // Preserve already-configured values even when the local model registry is
+  // incomplete/stale. Without this, saving only the current/default field can
+  // fail because an existing fallback is not in the select list, and operators
+  // cannot make a safe no-op save to recover settings.
+  addConfiguredModel(labels, cfg.agents?.defaults?.model?.primary);
+  for (const fallback of cfg.agents?.defaults?.model?.fallbacks ?? []) addConfiguredModel(labels, fallback);
+  for (const entry of cfg.agents?.list ?? []) {
+    addConfiguredModel(labels, entry.model);
+    for (const fallback of entry.fallbacks ?? []) addConfiguredModel(labels, fallback);
+  }
+
   return Array.from(labels, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label));
 }
 
@@ -161,7 +180,7 @@ export async function updateAgentModelSettings(agent: string, input: AgentModelU
   };
 
   await writeConfigAtomically(file, cfg);
-  const restart = await requestAgentRestart(agent, `models:${before.active ?? "unset"}->${after.active ?? "unset"}`);
+  const restart = queueAgentRestart(agent, `models:${before.active ?? "unset"}->${after.active ?? "unset"}`);
   await db.activityLog.create({
     data: {
       userId: actorUserId ?? undefined,
