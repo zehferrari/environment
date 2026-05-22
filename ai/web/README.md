@@ -216,7 +216,7 @@ post-persist `notifyDispatch(event)` then emits a typed `PmEvent` envelope
 | Driver | Selected via | Notes |
 | --- | --- | --- |
 | `unix-socket` (default) | `PM_DISPATCH_DRIVER=unix-socket` + `PM_DISPATCH_SOCKET` | NDJSON over AF_UNIX, primary per HOMELAB-45. |
-| `file-drop` | `PM_DISPATCH_DRIVER=file-drop` + `PM_DISPATCH_DROP_DIR` | one JSON file per envelope, atomic rename. |
+| `file-drop` | `PM_DISPATCH_DRIVER=file-drop` + `PM_DISPATCH_DROP_DIR=/var/lib/pm/drop` | one JSON file per envelope, atomic rename. |
 | `http-localhost` | constructed directly via `createHttpLocalhostDriver({ url })` — **not** env-selectable | loopback + Bearer; tests / explicit callers only. |
 
 `notifyDispatch` is the only call-site entry point and never throws —
@@ -325,9 +325,10 @@ curl -fsS -X POST "https://agents.vixi.au${payload.replyEndpoint.path}" \
 `openclaw/install.sh` (separate repo) is the install path for the
 agent runtime + consumer. To support `task.agent_chat`, it must:
 
-- Ensure `PM_DISPATCH_SOCKET` (or `PM_DISPATCH_DROP_DIR`) on the PM
-  host matches `PM_CONSUMER_SOCKET` / `PM_CONSUMER_DROP_DIR` on the
-  consumer side — both ends point at the same path.
+- Ensure `PM_DISPATCH_SOCKET` (or `PM_DISPATCH_DROP_DIR=/var/lib/pm/drop`)
+  on the PM host matches `PM_CONSUMER_SOCKET` /
+  `PM_CONSUMER_DROP_DIR=/var/lib/pm/drop` on the consumer side — both
+  ends point at the same path.
 - Drop the per-agent Bearer tokens into the file
   `lib/pm-consumer/README.md` documents (`PM_CONSUMER_HOOK_TOKEN_FILE`,
   default `/etc/openclaw/pm-consumer-tokens.json`).
@@ -338,8 +339,10 @@ agent runtime + consumer. To support `task.agent_chat`, it must:
   `event.kind === "task.agent_chat"` and route to the LLM call path
   documented above.
 
-This repo's `deploy/pm.env.example` carries the PM-host side; the
-OpenClaw-side equivalents live with the consumer install.
+This repo's `deploy/pm.env.example` carries the PM-host side, and
+`deploy/pm-consumer.service` carries the file-drop consumer side. The
+OpenClaw installer should create `/var/lib/pm/drop` and install/start
+the consumer service when the PM checkout is present.
 
 ## Schema highlights
 

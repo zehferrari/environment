@@ -35,6 +35,10 @@ DRY=0
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="${OPENCLAW_AGENTS_JSON:-/etc/openclaw/agents.json}"
 DEFAULTS="${OPENCLAW_AGENT_DEFAULTS:-/etc/openclaw/agent-defaults.json}"
+PM_WEB_ROOT="${PM_WEB_ROOT:-$REPO_ROOT/../web}"
+PM_ENV_FILE="${PM_ENV_FILE:-/etc/default/pm}"
+PM_DROP_DIR="${PM_DROP_DIR:-/var/lib/pm/drop}"
+PM_CONSUMER_TOKEN_FILE="${PM_CONSUMER_TOKEN_FILE:-/etc/openclaw/pm-consumer-tokens.json}"
 
 if [ -t 1 ]; then
     C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_DIM=$'\e[2m'; C_RST=$'\e[0m'
@@ -366,6 +370,57 @@ if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     done < <(jq -r '.agents[] | select(.enabled == true and .role == "coding" and (.integrations.gmail // false)) | "\(.user)\t\(.home // "")"' "$REGISTRY")
 fi
 
+# 4f. PM dispatch file-drop + consumer service
+log "[4f/7] PM dispatch drop + consumer"
+PM_WEB_ROOT="$(cd "$PM_WEB_ROOT" 2>/dev/null && pwd || printf '%s' "$PM_WEB_ROOT")"
+if [ ! -d "$PM_WEB_ROOT" ]; then
+    warn "  PM web root $PM_WEB_ROOT not found; skipping PM consumer install"
+else
+    pm_user="${PM_CONSUMER_USER:-$(stat -c %U "$PM_WEB_ROOT" 2>/dev/null || printf '%s' "${SUDO_USER:-zeh}")}"
+    pm_group="${PM_CONSUMER_GROUP:-$(stat -c %G "$PM_WEB_ROOT" 2>/dev/null || printf '%s' "$pm_user")}"
+    consumer_unit_src="$PM_WEB_ROOT/deploy/pm-consumer.service"
+
+    if [ "$DRY" -eq 1 ]; then
+        log "  would install -d -o $pm_user -g $pm_group -m 0700 $PM_DROP_DIR"
+        log "  would ensure $PM_CONSUMER_TOKEN_FILE exists (root:$pm_group 0640)"
+        if [ -f "$consumer_unit_src" ]; then
+            log "  would render $consumer_unit_src → /etc/systemd/system/pm-consumer.service"
+        else
+            warn "  missing $consumer_unit_src; skipping pm-consumer.service"
+        fi
+    else
+        install -d -o "$pm_user" -g "$pm_group" -m 0700 "$PM_DROP_DIR"
+        ok "$PM_DROP_DIR"
+
+        install -d -o root -g root -m 0755 "$(dirname "$PM_CONSUMER_TOKEN_FILE")"
+        if [ ! -e "$PM_CONSUMER_TOKEN_FILE" ]; then
+            tmp_tokens=$(mktemp)
+            printf '{}\n' > "$tmp_tokens"
+            install -o root -g "$pm_group" -m 0640 "$tmp_tokens" "$PM_CONSUMER_TOKEN_FILE"
+            rm -f "$tmp_tokens"
+            ok "$PM_CONSUMER_TOKEN_FILE"
+            warn "  $PM_CONSUMER_TOKEN_FILE is an empty token map; populate per-agent wake tokens before relying on live wakes"
+        fi
+
+        if [ -f "$consumer_unit_src" ]; then
+            tmp_unit=$(mktemp)
+            sed -e "s|^User=.*|User=$pm_user|" \
+                -e "s|^Group=.*|Group=$pm_group|" \
+                -e "s|^WorkingDirectory=.*|WorkingDirectory=$PM_WEB_ROOT|" \
+                -e "s|^EnvironmentFile=.*|EnvironmentFile=$PM_ENV_FILE|" \
+                -e "s|^Environment=PM_CONSUMER_DROP_DIR=.*|Environment=PM_CONSUMER_DROP_DIR=$PM_DROP_DIR|" \
+                -e "s|^Environment=PM_CONSUMER_HOOK_TOKEN_FILE=.*|Environment=PM_CONSUMER_HOOK_TOKEN_FILE=$PM_CONSUMER_TOKEN_FILE|" \
+                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_DROP_DIR|" \
+                "$consumer_unit_src" > "$tmp_unit"
+            install -o root -g root -m 0644 "$tmp_unit" /etc/systemd/system/pm-consumer.service
+            rm -f "$tmp_unit"
+            ok "/etc/systemd/system/pm-consumer.service"
+        else
+            warn "  missing $consumer_unit_src; skipping pm-consumer.service"
+        fi
+    fi
+fi
+
 # 5. dashboard frontend symlink
 log "[5/7] dashboard frontend symlink"
 WEB_HTML="$REPO_ROOT/../web/agents.html"
@@ -392,6 +447,7 @@ else
     systemctl daemon-reload
     ok "systemctl daemon-reload (system)"
     for u in agent-dashboard.service \
+             pm-consumer.service \
              openclaw-typing-keepalive.service \
              openclaw-monitor-sync.path \
              openclaw-monitor-sync.timer \

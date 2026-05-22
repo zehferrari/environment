@@ -9,6 +9,7 @@ zeh sees exactly what changes on the host.
 | File | Lands at | Owner | Notes |
 | --- | --- | --- | --- |
 | `pm.service` | `/etc/systemd/system/pm.service` | root | systemd unit; runs as `zeh`. |
+| `pm-consumer.service` | `/etc/systemd/system/pm-consumer.service` | root | drains `/var/lib/pm/drop` and wakes agent gateways. |
 | `pm.env.example` | copy → `/etc/default/pm` | `root:zeh`, `0640` | secrets file; not committed. |
 | `nginx-agents.vixi.au.conf` | `/etc/nginx/sites-available/agents.vixi.au` (+ symlink in `sites-enabled/`) | root | TLS via Let's Encrypt. |
 
@@ -32,10 +33,15 @@ pnpm prisma migrate deploy
 # 3. Drop the env file into /etc/default and the unit into systemd.
 sudo install -o root -g zeh -m 0640 deploy/pm.env.example /etc/default/pm
 sudo install -o root -g root -m 0644 deploy/pm.service /etc/systemd/system/pm.service
+sudo install -o root -g root -m 0644 deploy/pm-consumer.service /etc/systemd/system/pm-consumer.service
 sudo systemctl daemon-reload
 
-# 4. Create the agent-credential directory the seeder will write into.
+# 4. Create directories used by PM and the consumer.
 sudo install -d -o zeh -g zeh -m 0700 /etc/openclaw/pm-agent-credentials
+sudo install -d -o zeh -g zeh -m 0700 /var/lib/pm/drop
+sudo test -f /etc/openclaw/pm-consumer-tokens.json || echo '{}' | sudo tee /etc/openclaw/pm-consumer-tokens.json >/dev/null
+sudo chown root:zeh /etc/openclaw/pm-consumer-tokens.json
+sudo chmod 0640 /etc/openclaw/pm-consumer-tokens.json
 
 # 5. Bring up the nginx vhost (cert assumed already issued; certbot --nginx -d agents.vixi.au if not).
 sudo install -o root -g root -m 0644 deploy/nginx-agents.vixi.au.conf /etc/nginx/sites-available/agents.vixi.au
@@ -46,8 +52,9 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo $EDITOR /etc/default/pm
 
 # 7. Start.
-sudo systemctl enable --now pm.service
+sudo systemctl enable --now pm.service pm-consumer.service
 journalctl -u pm.service -f
+journalctl -u pm-consumer.service -f
 ```
 
 ## Subsequent migrations

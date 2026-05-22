@@ -27,7 +27,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/srv/Code/environment/ai/web/prisma /etc/openclaw/pm-agent-credentials
+ReadWritePaths=/srv/Code/environment/ai/web/prisma /etc/openclaw/pm-agent-credentials /var/lib/pm/drop
 ReadOnlyPaths=/srv/agents
 
 [Install]

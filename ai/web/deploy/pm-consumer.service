@@ -1,0 +1,31 @@
+[Unit]
+Description=PM consumer (agent dispatch wake bridge)
+Documentation=https://zeh-ferrari.atlassian.net/browse/HOMELAB-46
+After=network-online.target pm.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zeh
+Group=zeh
+WorkingDirectory=/srv/Code/environment/ai/web
+
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/default/pm
+Environment=PM_CONSUMER_DROP_DIR=/var/lib/pm/drop
+Environment=PM_CONSUMER_HOOK_TOKEN_FILE=/etc/openclaw/pm-consumer-tokens.json
+
+ExecStart=/usr/bin/pnpm pm-consumer
+
+Restart=on-failure
+RestartSec=3s
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/srv/Code/environment/ai/web/prisma /var/lib/pm/drop
+ReadOnlyPaths=/srv/agents /etc/openclaw/pm-consumer-tokens.json
+
+[Install]
+WantedBy=multi-user.target

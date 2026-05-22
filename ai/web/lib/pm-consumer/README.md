@@ -16,7 +16,7 @@ exposes three transports:
 | Transport     | Selection                                                | Role                                                     |
 |---------------|----------------------------------------------------------|----------------------------------------------------------|
 | AF_UNIX       | `PM_CONSUMER_SOCKET=<path>`                              | Primary. NDJSON over a per-host socket.                  |
-| File-drop     | `PM_CONSUMER_DROP_DIR=<dir>`                             | Fallback. One JSON file per envelope; consumed in order. |
+| File-drop     | `PM_CONSUMER_DROP_DIR=/var/lib/pm/drop`                  | Fallback. One JSON file per envelope; consumed in order. |
 | HTTP localhost| `PM_CONSUMER_HTTP_PORT=<port>` + `PM_CONSUMER_HTTP_TOKEN`| Explicit-opt-in only. Loopback bind, Bearer auth.        |
 
 Both socket and file-drop legs can run concurrently and an in-process
@@ -94,8 +94,7 @@ pnpm tsx scripts/pm-consumer-replay-test.ts
   process, not bundled into Next. The PM webapp (`pnpm dev` /
   `pnpm build`) is unaffected by Slice 4 and does not need a restart
   to keep emitting events.
-- Live consumer: restart the `pm-consumer` process (no daemon yet —
-  run it under `tmux`, systemd, or whatever process supervisor the
-  host uses) to pick up new code. Stopping it mid-flight is safe —
+- Live consumer: restart the `pm-consumer` process or
+  `pm-consumer.service` to pick up new code. Stopping it mid-flight is safe —
   unprocessed file-drop envelopes survive on disk and the socket leg
   re-binds on next start.
