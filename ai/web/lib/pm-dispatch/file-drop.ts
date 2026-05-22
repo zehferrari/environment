@@ -18,6 +18,15 @@ function safeStamp(occurredAt: string): string {
   return occurredAt.replace(/[:.]/g, "-");
 }
 
+// Defence-in-depth: builders today use UUIDs, but the wire-parser only
+// requires a non-empty string id. Restrict whatever lands in the
+// filename to a safe alphabet so a hostile or malformed id can never
+// escape the drop dir (no "/", "..", NUL, etc.).
+function safeId(id: string): string {
+  const cleaned = id.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 64);
+  return cleaned.length > 0 ? cleaned : "id";
+}
+
 export function createFileDropDriver(
   opts: FileDropDriverOptions,
 ): DispatchDriver {
@@ -30,7 +39,7 @@ export function createFileDropDriver(
           await mkdir(opts.dir, { recursive: true });
           dirEnsured = true;
         }
-        const base = `${safeStamp(event.occurredAt)}-${event.id}.json`;
+        const base = `${safeStamp(event.occurredAt)}-${safeId(event.id)}.json`;
         const tmp = path.join(opts.dir, `.${base}.tmp`);
         const dst = path.join(opts.dir, base);
         await writeFile(tmp, JSON.stringify(event) + "\n", { mode: 0o640 });

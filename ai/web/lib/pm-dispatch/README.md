@@ -9,17 +9,17 @@ Dispatch never affects rule outcomes — a failed `send` returns
 
 ## Drivers
 
-| Driver           | Selected via                  | Notes                                      |
-|------------------|-------------------------------|--------------------------------------------|
-| `unix-socket`    | `PM_DISPATCH_DRIVER=unix-socket` (default) | NDJSON over AF_UNIX; primary per HOMELAB-45 |
-| `file-drop`      | `PM_DISPATCH_DRIVER=file-drop` | One JSON file per event, atomic rename     |
-| `http-localhost` | constructed directly only      | Explicit opt-in; **not** wired into the selector |
+| Driver           | Selected via                                | Notes                                      |
+|------------------|---------------------------------------------|--------------------------------------------|
+| `unix-socket`    | `PM_DISPATCH_DRIVER=unix-socket` (default)  | NDJSON over AF_UNIX; primary per HOMELAB-45 |
+| `file-drop`      | `PM_DISPATCH_DRIVER=file-drop`              | One JSON file per event, atomic rename     |
+| `http-localhost` | constructed directly only — **not** env-selectable | Setting `PM_DISPATCH_DRIVER=http-localhost` throws. Callers/tests must build it via `createHttpLocalhostDriver({ url })`. |
 
 ## Required env
 
-- `PM_DISPATCH_SOCKET` — absolute path of the AF_UNIX socket.
+- `PM_DISPATCH_SOCKET` — absolute path of the AF_UNIX socket (unix-socket driver).
 - `PM_DISPATCH_DROP_DIR` — directory for the file-drop fallback.
-- `PM_DISPATCH_HTTP_URL` — only for direct `createHttpLocalhostDriver({ url })` use.
+- `PM_DISPATCH_HTTP_URL` — *not* read by `readDispatcherConfig`; only honoured if a caller passes it explicitly into `createHttpLocalhostDriver({ url })`.
 
 ## Prerequisite for live agent wake
 

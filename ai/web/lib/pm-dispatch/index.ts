@@ -5,16 +5,19 @@
 // isolation: enqueue an envelope, return a write receipt, surface
 // transport errors as rejected promises.
 //
-// Selection is config-driven via PM_DISPATCH_DRIVER:
+// Selection is config-driven via PM_DISPATCH_DRIVER and is restricted
+// to the two production-eligible transports:
 //   "unix-socket" (default, per HOMELAB-45 recommendation) — writes
-//     newline-delimited JSON to PM_DISPATCH_SOCKET. Falls back through
-//     onFatal so callers can quarantine if the listener is gone.
+//     newline-delimited JSON to PM_DISPATCH_SOCKET.
 //   "file-drop" — writes one JSON file per event into
 //     PM_DISPATCH_DROP_DIR using <occurredAt>-<id>.json (atomic via
 //     write-then-rename).
-//   "http-localhost" — explicit opt-in only; POSTs to PM_DISPATCH_HTTP_URL.
-//     Not wired into the default selector; callers must construct the
-//     driver directly.
+//
+// "http-localhost" is intentionally NOT selectable via env: it is an
+// explicit opt-in only, constructed directly by callers/tests as
+// `createHttpLocalhostDriver({ url })`. Setting
+// PM_DISPATCH_DRIVER=http-localhost throws — the env path will not
+// silently route production traffic over HTTP.
 //
 // HOMELAB-44 enforcement is unchanged: dispatch happens after the
 // workflow rule + persistence; failure to dispatch is logged and
@@ -36,33 +39,37 @@ export type DispatchDriverName =
   | "file-drop"
   | "http-localhost";
 
+// Drivers reachable through the env selector. http-localhost is
+// excluded by design — see header comment.
+export type SelectableDriverName = Exclude<DispatchDriverName, "http-localhost">;
+
 export interface DispatchDriver {
   readonly name: DispatchDriverName;
   send(event: PmEvent): Promise<DispatchResult>;
 }
 
 export interface DispatcherConfig {
-  driver: DispatchDriverName;
+  driver: SelectableDriverName;
   socketPath?: string;
   dropDir?: string;
-  httpUrl?: string;
 }
 
 export function readDispatcherConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): DispatcherConfig {
   const raw = (env.PM_DISPATCH_DRIVER ?? "unix-socket").toLowerCase();
-  const driver: DispatchDriverName =
-    raw === "file-drop"
-      ? "file-drop"
-      : raw === "http-localhost"
-        ? "http-localhost"
-        : "unix-socket";
+  if (raw === "http-localhost") {
+    throw new Error(
+      "pm-dispatch: http-localhost is not selectable via PM_DISPATCH_DRIVER; " +
+        "construct createHttpLocalhostDriver({ url }) directly if you need it.",
+    );
+  }
+  const driver: SelectableDriverName =
+    raw === "file-drop" ? "file-drop" : "unix-socket";
   return {
     driver,
     socketPath: env.PM_DISPATCH_SOCKET,
     dropDir: env.PM_DISPATCH_DROP_DIR,
-    httpUrl: env.PM_DISPATCH_HTTP_URL,
   };
 }
 
@@ -79,11 +86,6 @@ export function createDispatcher(
         throw new Error("pm-dispatch: PM_DISPATCH_DROP_DIR required for file-drop");
       }
       return createFileDropDriver({ dir: cfg.dropDir });
-    case "http-localhost":
-      if (!cfg.httpUrl) {
-        throw new Error("pm-dispatch: PM_DISPATCH_HTTP_URL required for http-localhost");
-      }
-      return createHttpLocalhostDriver({ url: cfg.httpUrl });
     case "unix-socket":
     default:
       if (!cfg.socketPath) {
