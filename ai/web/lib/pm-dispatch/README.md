@@ -1,0 +1,50 @@
+# `lib/pm-dispatch`
+
+PM event dispatch boundary (HOMELAB-46 Slice 1).
+
+The webapp's task mutation routes call `createDispatcher().send(event)`
+after a workflow rule + persistence step has accepted the change.
+Dispatch never affects rule outcomes — a failed `send` returns
+`{ ok: false }` and is logged; the persisted state stands.
+
+## Drivers
+
+| Driver           | Selected via                  | Notes                                      |
+|------------------|-------------------------------|--------------------------------------------|
+| `unix-socket`    | `PM_DISPATCH_DRIVER=unix-socket` (default) | NDJSON over AF_UNIX; primary per HOMELAB-45 |
+| `file-drop`      | `PM_DISPATCH_DRIVER=file-drop` | One JSON file per event, atomic rename     |
+| `http-localhost` | constructed directly only      | Explicit opt-in; **not** wired into the selector |
+
+## Required env
+
+- `PM_DISPATCH_SOCKET` — absolute path of the AF_UNIX socket.
+- `PM_DISPATCH_DROP_DIR` — directory for the file-drop fallback.
+- `PM_DISPATCH_HTTP_URL` — only for direct `createHttpLocalhostDriver({ url })` use.
+
+## Prerequisite for live agent wake
+
+The `unix-socket` driver needs **an OpenClaw-side AF_UNIX listener**
+bound to `PM_DISPATCH_SOCKET` before any agent ack-seam wiring can be
+turned on. That listener is **not** in this repo and is **not**
+delivered by HOMELAB-46 Slice 1 — it is the OpenClaw runtime work that
+follows Slice 1. Until that lands:
+
+- the dispatcher is safe to enable in non-prod environments using the
+  `file-drop` driver, with the harness in
+  `scripts/pm-dispatch-receiver.ts` standing in for the consumer;
+- call sites are wired through the seam but no live agent is woken;
+- failed sends are logged and surfaced via `DispatchResult.ok=false`
+  so observability is in place from day one.
+
+Surface this prereq to zeh as a follow-up before any agent-wake roll-out.
+
+## Smoke harness
+
+```bash
+pnpm tsx scripts/pm-dispatch-receiver.ts filedrop
+pnpm tsx scripts/pm-dispatch-receiver.ts socket
+pnpm tsx scripts/pm-dispatch-receiver.ts all
+```
+
+Each mode produces a synthetic `task.assigned` event, sends it through
+the relevant driver, reads it back, and exits 0 on round-trip success.
