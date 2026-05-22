@@ -2,15 +2,42 @@ import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
+type Snapshot = {
+  ts?: number;
+  host?: string;
+  agents?: Record<string, { busy_state?: { is_busy?: boolean }; jira_tickets?: unknown[] }>;
+  system?: Record<string, { is_active?: string }>;
+};
+
+async function readSnapshot(): Promise<Snapshot | null> {
+  try {
+    const res = await fetch("http://127.0.0.1:3013/agents/snapshot", {
+      cache: "no-store",
+      next: { revalidate: 0 },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as Snapshot;
+  } catch {
+    return null;
+  }
+}
+
 export default async function SystemActivityPage() {
-  const [events, agentSync] = await Promise.all([
+  const [events, agentSync, snapshot] = await Promise.all([
     db.activityLog.findMany({
       orderBy: { createdAt: "desc" },
       take: 60,
       include: { user: { select: { username: true } }, task: { select: { title: true } }, project: { select: { slug: true } } },
     }),
     db.activityLog.findFirst({ where: { kind: "agent.sync" }, orderBy: { createdAt: "desc" } }),
+    readSnapshot(),
   ]);
+
+  const system = snapshot?.system ?? {};
+  const agents = snapshot?.agents ?? {};
+  const activeServices = Object.values(system).filter((s) => s.is_active === "active").length;
+  const busyAgents = Object.values(agents).filter((a) => a.busy_state?.is_busy).length;
+  const openTickets = Object.values(agents).reduce((sum, a) => sum + (a.jira_tickets?.length ?? 0), 0);
 
   return (
     <div className="space-y-6">
@@ -18,14 +45,36 @@ export default async function SystemActivityPage() {
         <p className="text-xs uppercase tracking-[0.28em] text-[var(--color-text-muted)]">System</p>
         <h1 className="mt-2 text-4xl font-semibold tracking-[-0.04em]">Activity stream.</h1>
         <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--color-text-muted)]">
-          PM/server activity audit trail. Service-status wiring belongs here as the Atlas snapshot feed is ported into routed PM APIs.
+          PM audit trail plus live Atlas host signal: service status, busy agents, open tickets, and recent server activity.
         </p>
       </header>
 
-      <section className="grid gap-3 md:grid-cols-3">
+      <section className="grid gap-3 md:grid-cols-4">
         <Tile label="Events" value={String(events.length)} foot="Most recent rows" />
-        <Tile label="Last agent sync" value={agentSync ? agentSync.createdAt.toISOString().slice(11, 19) : "—"} foot={agentSync ? agentSync.createdAt.toISOString().slice(0, 10) : "No sync rows"} />
-        <Tile label="Service status" value="Next" foot="Wire Atlas snapshot feed" />
+        <Tile label="Busy agents" value={String(busyAgents)} foot={`/ ${Object.keys(agents).length} reported`} />
+        <Tile label="Open tickets" value={String(openTickets)} foot="From Atlas snapshot" />
+        <Tile label="Host services" value={String(activeServices)} foot={`/ ${Object.keys(system).length} active`} />
+      </section>
+
+      <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+        <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">Host services</h2>
+        {Object.keys(system).length === 0 ? (
+          <p className="text-sm text-[var(--color-text-muted)]">No service status reported by the Atlas snapshot feed.</p>
+        ) : (
+          <div className="grid gap-2 md:grid-cols-3">
+            {Object.entries(system).map(([name, svc]) => {
+              const ok = svc.is_active === "active";
+              return (
+                <div key={name} className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <code className="truncate text-xs">{name}</code>
+                    <span className={ok ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.is_active ?? "unknown"}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </section>
 
       <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">

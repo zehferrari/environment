@@ -3,13 +3,55 @@ import { db } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
+type SnapshotAgent = {
+  name?: string;
+  role?: string;
+  avatar?: string;
+  avatar_url?: string;
+  bot?: string;
+  gateway_listeners?: number[];
+  current_task?: { heading?: string; ticket?: string; status?: string } | null;
+  session_idle_s?: number | null;
+  model_primary?: string | null;
+  busy_state?: { is_busy?: boolean; signals?: string[] } | null;
+  jira_tickets?: Array<{ key?: string; summary?: string; status?: string; updated?: string }>;
+  last_activity?: string | null;
+};
+
+type Snapshot = {
+  ts?: number;
+  host?: string;
+  agents?: Record<string, SnapshotAgent>;
+  system?: Record<string, { is_active?: string }>;
+};
+
+async function readSnapshot(): Promise<Snapshot | null> {
+  try {
+    const res = await fetch("http://127.0.0.1:3013/agents/snapshot", {
+      cache: "no-store",
+      next: { revalidate: 0 },
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as Snapshot;
+  } catch {
+    return null;
+  }
+}
+
 function avatarUrl(name: string) {
   const first = name.split(" ")[0] || name;
   return `/agents/avatars/${encodeURIComponent(first)}`;
 }
 
-function statusFor(agent: { deactivatedAt: Date | null; user: { status: string } | null }) {
+function statusFor(agent: { deactivatedAt: Date | null; user: { status: string } | null }, live?: SnapshotAgent | null) {
   if (agent.deactivatedAt || agent.user?.status === "deactivated") return "offline";
+  if (live?.busy_state?.is_busy) return "active";
+  if (live) {
+    const idle = live.session_idle_s ?? 999999;
+    if (idle < 90) return "active";
+    if (idle < 900) return "idle";
+    return "stale";
+  }
   return agent.user ? "active" : "registered";
 }
 
@@ -20,8 +62,16 @@ function accentFor(slug: string) {
   return "#6b7280";
 }
 
+function formatIdle(seconds?: number | null) {
+  if (seconds == null) return "—";
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
 export default async function AgentsPage() {
-  const [agents, recentActivity] = await Promise.all([
+  const [agents, recentActivity, snapshot] = await Promise.all([
     db.agent.findMany({
       orderBy: { slug: "asc" },
       include: {
@@ -39,39 +89,39 @@ export default async function AgentsPage() {
     }),
     db.activityLog.findMany({
       orderBy: { createdAt: "desc" },
-      take: 8,
+      take: 12,
       include: { user: { select: { username: true } }, task: { select: { title: true } } },
     }),
+    readSnapshot(),
   ]);
 
-  const active = agents.filter((a) => statusFor(a) === "active").length;
+  const liveAgents = snapshot?.agents ?? {};
+  const active = agents.filter((a) => statusFor(a, liveAgents[a.slug]) === "active").length;
+  const openTickets = agents.reduce((sum, a) => sum + (liveAgents[a.slug]?.jira_tickets?.length ?? 0), 0);
   const openTasks = agents.reduce((sum, a) => sum + (a.user?.assignedTasks.length ?? 0), 0);
-  const profileEdits = recentActivity.filter((a) => a.kind === "agent.profile.update").length;
+  const system = snapshot?.system ?? {};
+  const activeServices = Object.values(system).filter((s) => s.is_active === "active").length;
 
   return (
     <div className="space-y-6">
-      <header className="overflow-hidden rounded-[28px] border border-[var(--color-line)] bg-[var(--color-panel)] p-6 shadow-sm">
-        <div className="flex flex-wrap items-start justify-between gap-6">
-          <div>
-            <p className="text-xs uppercase tracking-[0.28em] text-[var(--color-text-muted)]">Atlas v2 · agents-barekbaal inspired</p>
-            <h1 className="mt-2 text-5xl font-semibold tracking-[-0.045em]">Live operations.</h1>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--color-text-muted)]">
-              Agent status, avatars, active PM tasks, open tickets, profile editing, and recent operational activity in one routed PM module.
-            </p>
-          </div>
-          <Link
-            href="/system/activity"
-            className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-4 py-2 text-sm font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-          >
-            System activity →
-          </Link>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.28em] text-[var(--color-text-muted)]">Atlas v2 · agents-barekbaal inspired</p>
+          <h1 className="text-3xl font-semibold tracking-tight">Agents</h1>
         </div>
-      </header>
+        <Link
+          href="/system/activity"
+          className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-4 py-2 text-sm font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+        >
+          System activity →
+        </Link>
+      </div>
 
-      <section className="grid gap-3 md:grid-cols-4">
+      <section className="grid gap-3 md:grid-cols-5">
         <Kpi label="Agents online" value={`${active}`} foot={`/ ${agents.length} registered`} />
+        <Kpi label="Open tickets" value={`${openTickets}`} foot="From live Atlas snapshot" />
         <Kpi label="Open PM tasks" value={`${openTasks}`} foot="Assigned and not Done" />
-        <Kpi label="Profile audits" value={`${profileEdits}`} foot="Recent profile edits" />
+        <Kpi label="Host services" value={`${activeServices}`} foot={`/ ${Object.keys(system).length || 0} active`} />
         <Kpi label="Activity stream" value={`${recentActivity.length}`} foot="Latest PM events" />
       </section>
 
@@ -82,8 +132,11 @@ export default async function AgentsPage() {
       ) : (
         <section className="grid gap-4 xl:grid-cols-3">
           {agents.map((a) => {
-            const status = statusFor(a);
-            const currentTask = a.user?.assignedTasks.find((t) => t.status === "In Progress") ?? a.user?.assignedTasks[0] ?? null;
+            const live = liveAgents[a.slug];
+            const status = statusFor(a, live);
+            const liveTask = live?.current_task ?? null;
+            const pmTask = a.user?.assignedTasks.find((t) => t.status === "In Progress") ?? a.user?.assignedTasks[0] ?? null;
+            const tickets = live?.jira_tickets ?? [];
             return (
               <Link
                 key={a.id}
@@ -94,25 +147,28 @@ export default async function AgentsPage() {
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_0%_0%,color-mix(in_srgb,var(--agent-hue)_18%,transparent),transparent_45%)]" />
                 <div className="relative flex items-start gap-4">
                   <div className="grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-2xl border bg-[var(--color-panel-soft)] text-2xl font-semibold" style={{ borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))" }}>
-                    {a.avatar ? <img src={avatarUrl(a.name)} alt="" className="h-full w-full object-cover" /> : a.name.slice(0, 1)}
+                    {a.avatar || live?.avatar_url ? <img src={live?.avatar_url ?? avatarUrl(a.name)} alt={`${a.name} avatar`} className="h-full w-full object-cover" /> : (live?.avatar ?? a.name.slice(0, 1))}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h2 className="truncate text-xl font-semibold tracking-tight">{a.name}</h2>
-                      <span className={`h-2.5 w-2.5 rounded-full ${status === "active" ? "bg-[var(--color-ok)]" : status === "offline" ? "bg-[var(--color-crit)]" : "bg-[var(--color-warn)]"}`} />
+                      <span className={`h-2.5 w-2.5 rounded-full ${status === "active" ? "bg-[var(--color-ok)]" : status === "offline" ? "bg-[var(--color-crit)]" : status === "idle" ? "bg-[var(--color-warn)]" : "bg-[var(--color-text-dim)]"}`} />
                     </div>
                     <p className="font-mono text-xs text-[var(--color-text-muted)]">@{a.slug} · {a.role}</p>
                     <div className="mt-3 flex flex-wrap gap-2 text-xs">
                       <span className="rounded-full bg-[var(--color-accent-soft)] px-2 py-0.5 text-[var(--color-accent)]">{status}</span>
-                      <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">port {a.gatewayPort ?? "—"}</span>
-                      <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">{a.user?.assignedTasks.length ?? 0} open tasks</span>
+                      <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">idle {formatIdle(live?.session_idle_s)}</span>
+                      <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">port {(live?.gateway_listeners ?? [a.gatewayPort]).filter(Boolean).join(", ") || "—"}</span>
+                      <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">{tickets.length} tickets</span>
                     </div>
                   </div>
                 </div>
 
                 <div className="relative mt-5 grid gap-3 text-sm">
-                  <Metric label="Current task" value={currentTask?.title ?? "No active task pinned"} />
-                  <Metric label="Ticket/status" value={currentTask ? `${currentTask.project.slug} · ${currentTask.status}` : "—"} />
+                  <Metric label="Current task" value={liveTask?.heading ?? pmTask?.title ?? "No active task pinned"} />
+                  <Metric label="Ticket/status" value={liveTask?.ticket ? `${liveTask.ticket} · ${liveTask.status ?? "—"}` : pmTask ? `${pmTask.project.slug} · ${pmTask.status}` : "—"} />
+                  <Metric label="Busy/model" value={`${live?.busy_state?.is_busy ? "busy" : "available"} · ${live?.model_primary ?? "model unknown"}`} />
+                  <Metric label="Tickets open" value={tickets.length ? tickets.map((t) => `${t.key} ${t.status ?? ""}`).join(" · ") : "No open assigned tickets"} />
                   <Metric label="PM user" value={a.user ? `${a.user.username} · ${a.user.status}` : "not seeded"} />
                 </div>
 
@@ -146,9 +202,23 @@ export default async function AgentsPage() {
         </div>
         <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
           <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">Host services</h2>
-          <p className="text-sm leading-6 text-[var(--color-text-muted)]">
-            The dedicated system activity page is the right place for service health, stream events, and server-side operational state. This slice links it from Agents; the next pass can wire live service data from the existing Atlas snapshot feed instead of duplicating it in each agent card.
-          </p>
+          {Object.keys(system).length === 0 ? (
+            <p className="text-sm text-[var(--color-text-muted)]">No service status reported by the Atlas snapshot feed.</p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2">
+              {Object.entries(system).map(([name, svc]) => {
+                const ok = svc.is_active === "active";
+                return (
+                  <div key={name} className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <code className="truncate text-xs">{name}</code>
+                      <span className={ok ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.is_active ?? "unknown"}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </section>
     </div>
