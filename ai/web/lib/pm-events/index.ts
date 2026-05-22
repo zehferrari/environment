@@ -16,6 +16,12 @@ export const EVENT_KINDS = [
   "task.commented",
   "task.mentioned",
   "task.ack_ready",
+  // HOMELAB-48: directed chat-to-agent. Carries the chat message id +
+  // the agent the message is addressed to, plus (when granted) the
+  // contract the agent uses to write back a new description. Routed by
+  // payload.targetAgentSlug, NOT by task.assignee — chats can target
+  // any active agent regardless of who owns the task.
+  "task.agent_chat",
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
@@ -75,6 +81,37 @@ export interface TaskAckReadyPayload {
   toStatus: string;
 }
 
+// HOMELAB-48 — addressed chat to an agent on a task. Payload is
+// self-describing so the consumer side does not need PM-side schema
+// changes per chat variant: when allowDescriptionEdit is true, the
+// `replyEndpoint` tells the agent runtime which URL + method to POST
+// against, and `systemPrompt` carries the strict instruction
+// ("respond with ONLY the new description, no commentary") that the
+// runtime should pass to its LLM verbatim.
+export interface TaskAgentChatPayload {
+  chatMessageId: string;
+  targetAgentSlug: string;
+  userMessage: string;
+  allowDescriptionEdit: boolean;
+  currentDescription: string | null;
+  // Strict instruction the agent's LLM should follow. PM constructs
+  // this server-side from a known template so the contract stays in
+  // PM, not in agent-runtime code.
+  systemPrompt: string;
+  // Present iff allowDescriptionEdit is true. Tells the runtime where
+  // to write the description back and which messageId to pin the call
+  // to (one-shot grant, validated server-side).
+  replyEndpoint: {
+    method: "POST";
+    path: string; // e.g. /api/tasks/<taskId>/description
+    bodyShape: {
+      messageId: string;
+      // The runtime supplies the agent's reply text as `description`.
+      description: "<agent reply text>";
+    };
+  } | null;
+}
+
 export type TaskAssignedEvent = EventEnvelopeBase<
   "task.assigned",
   TaskAssignedPayload
@@ -91,12 +128,17 @@ export type TaskAckReadyEvent = EventEnvelopeBase<
   "task.ack_ready",
   TaskAckReadyPayload
 >;
+export type TaskAgentChatEvent = EventEnvelopeBase<
+  "task.agent_chat",
+  TaskAgentChatPayload
+>;
 
 export type PmEvent =
   | TaskAssignedEvent
   | TaskCommentedEvent
   | TaskMentionedEvent
-  | TaskAckReadyEvent;
+  | TaskAckReadyEvent
+  | TaskAgentChatEvent;
 
 interface BuilderCommon {
   id: string;
@@ -147,6 +189,13 @@ export function buildTaskAckReady(
   payload: TaskAckReadyPayload,
 ): TaskAckReadyEvent {
   return envelope("task.ack_ready", common, payload);
+}
+
+export function buildTaskAgentChat(
+  common: BuilderCommon,
+  payload: TaskAgentChatPayload,
+): TaskAgentChatEvent {
+  return envelope("task.agent_chat", common, payload);
 }
 
 // Defensive parser for events arriving from the wire (file-drop /

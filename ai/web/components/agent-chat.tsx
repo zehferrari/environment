@@ -9,7 +9,11 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { listChatTargets } from "@/lib/agents/chat-targets";
-import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
+import {
+  sendAgentChatMessage,
+  deleteChatMessage,
+} from "@/lib/agents/chat-actions";
+import { renderFullMarkdown } from "@/lib/markdown";
 
 interface CommonProps {
   projectSlug: string;
@@ -29,12 +33,23 @@ function timeAgo(d: Date): string {
   return d.toISOString().slice(0, 16).replace("T", " ");
 }
 
+// Dispatch is unconfigured when neither transport env is set; mirrors
+// the gate in lib/pm-dispatch/notify.ts. Read on the server during
+// render so the banner reflects the actual runtime state.
+function dispatchIsDisabled(): boolean {
+  return (
+    !process.env.PM_DISPATCH_SOCKET && !process.env.PM_DISPATCH_DROP_DIR
+  );
+}
+
 export default async function AgentChatSidebar(props: TargetProps) {
   const targets = await listChatTargets();
   const selected =
     props.selectedAgentSlug !== null
       ? targets.find((t) => t.agentSlug === props.selectedAgentSlug) ?? null
       : null;
+  const dispatchDisabled = dispatchIsDisabled();
+  const isTaskChat = "taskId" in props && props.taskId !== undefined;
 
   let messages: Array<{
     id: string;
@@ -76,6 +91,50 @@ export default async function AgentChatSidebar(props: TargetProps) {
       <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
         Talk to an agent
       </div>
+
+      {dispatchDisabled ? (
+        <div className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-[11px] leading-relaxed text-[var(--color-text-muted)]">
+          <strong className="text-[var(--color-text)]">
+            Dispatch disabled.
+          </strong>{" "}
+          Messages persist, but no agent wake fires because neither
+          <code className="mx-1">PM_DISPATCH_SOCKET</code>nor
+          <code className="mx-1">PM_DISPATCH_DROP_DIR</code>is set. The
+          agent will only see new messages when it polls on its own — set
+          either env var and restart the app to enable live wakes.
+        </div>
+      ) : null}
+
+      {isTaskChat ? (
+        <details className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-[11px] leading-relaxed text-[var(--color-text-muted)]">
+          <summary className="cursor-pointer font-medium text-[var(--color-text)]">
+            How the edit grant works
+          </summary>
+          <div className="mt-2 space-y-1">
+            <p>
+              Tick "Allow @… to edit the description" before sending. The
+              agent receives a <code>task.agent_chat</code> envelope with
+              <code className="mx-1">allowDescriptionEdit=true</code> and a
+              <code className="mx-1">chatMessageId</code> grant.
+            </p>
+            <p>
+              The agent's strict instruction is: respond with ONLY the new
+              description text — no commentary. It then calls
+              <code className="mx-1">
+                POST /api/tasks/&lt;id&gt;/description
+              </code>
+              with <code>{`{ messageId, description }`}</code>. The grant
+              is one-shot.
+            </p>
+          </div>
+        </details>
+      ) : (
+        <div className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-[11px] leading-relaxed text-[var(--color-text-muted)]">
+          Epic chat persists but does not fire a dispatch — the PmEvent
+          schema is task-scoped today. Use task chat for live agent
+          wakes.
+        </div>
+      )}
 
       {targets.length === 0 ? (
         <p className="text-xs text-[var(--color-text-muted)]">
@@ -119,7 +178,7 @@ export default async function AgentChatSidebar(props: TargetProps) {
                 return (
                   <div
                     key={m.id}
-                    className={`rounded-xl border px-3 py-2 text-xs ${
+                    className={`group relative rounded-xl border px-3 py-2 ${
                       fromAgent
                         ? "border-[var(--color-accent)]/40 bg-[var(--color-accent)]/10"
                         : "border-[var(--color-line)] bg-[var(--color-panel-soft)]"
@@ -130,16 +189,39 @@ export default async function AgentChatSidebar(props: TargetProps) {
                         {m.senderUsername}
                         {fromAgent ? " · agent" : ""}
                       </span>
-                      <time
-                        dateTime={m.createdAt.toISOString()}
-                        title={m.createdAt.toISOString()}
-                      >
-                        {timeAgo(m.createdAt)}
-                      </time>
+                      <div className="flex items-center gap-2">
+                        <time
+                          dateTime={m.createdAt.toISOString()}
+                          title={m.createdAt.toISOString()}
+                        >
+                          {timeAgo(m.createdAt)}
+                        </time>
+                        <form action={deleteChatMessage}>
+                          <input
+                            type="hidden"
+                            name="projectSlug"
+                            value={props.projectSlug}
+                          />
+                          <input
+                            type="hidden"
+                            name="messageId"
+                            value={m.id}
+                          />
+                          <button
+                            type="submit"
+                            aria-label="Delete message"
+                            title="Delete message"
+                            className="text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 hover:text-[var(--color-crit)]"
+                          >
+                            ✕
+                          </button>
+                        </form>
+                      </div>
                     </div>
-                    <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                      {m.body}
-                    </div>
+                    <div
+                      className="md md-compact"
+                      dangerouslySetInnerHTML={renderFullMarkdown(m.body)}
+                    />
                     {m.allowDescriptionEdit ? (
                       <div className="mt-1 inline-block rounded-full border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-0.5 text-[10px] uppercase tracking-wider">
                         {m.editGrantUsedAt

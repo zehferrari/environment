@@ -18,7 +18,7 @@ import type { PmEvent } from "@/lib/pm-events";
 export interface ResolvedTarget {
   slug: string;
   gatewayPort: number;
-  reason: "assignee" | "mentioned" | "task-assignee";
+  reason: "assignee" | "mentioned" | "task-assignee" | "chat-target";
 }
 
 export interface TargetResolverOptions {
@@ -92,6 +92,17 @@ export function createTargetResolver(opts: TargetResolverOptions = {}) {
         // Per-mention task.mentioned events handle the wake fanout;
         // the commented envelope itself is a no-op for wake routing.
         return null;
+      case "task.agent_chat": {
+        // HOMELAB-48 — chat wakes the addressed agent regardless of
+        // task assignee. The slug is authoritative; we re-resolve the
+        // gateway port via the host index so deactivated agents fall
+        // back to null and the consumer marks the delivery "unmatched".
+        const slug = event.payload.targetAgentSlug;
+        if (!slug) return null;
+        const port = await gatewayPortBySlug(slug);
+        if (!port) return null;
+        return { slug, gatewayPort: port, reason: "chat-target" };
+      }
     }
   }
 

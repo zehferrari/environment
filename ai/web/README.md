@@ -185,14 +185,17 @@ swept via `lib/attachments/storage.ts`.
 sidebar (`components/agent-chat.tsx`). The agent picker uses
 `lib/agents/chat-targets.ts` — broader than the principal pool so
 monitors are reachable. Messages persist as `AgentChatMessage` rows
-keyed by (taskId|epicId, agentSlug). Each compose box has an "Allow
-this agent to edit the description" checkbox; ticked, the message
-carries a one-shot grant the agent later spends against
+keyed by (taskId|epicId, agentSlug); message bodies render as full
+markdown (`lib/markdown.tsx::renderFullMarkdown`). Each compose box
+has an "Allow this agent to edit the description" checkbox; ticked,
+the message carries a one-shot grant the agent later spends against
 `POST /api/{tasks,epics}/[id]/description`. `editGrantUsedAt` makes
-the grant single-use — re-submission returns 410. Task-scoped chats
-fire a `task.commented` dispatch envelope so the agent gateway can
-wake; epic-scoped chats persist only (PmEvent v1 is task-scoped, epic
-envelopes are a follow-up).
+the grant single-use — re-submission returns 410. Per-message Delete
+hard-removes the row (chats don't go through the bin); an audit row
+records who/when. Task-scoped chats fire a `task.agent_chat` dispatch
+envelope (routed by `payload.targetAgentSlug`, NOT by task assignee);
+epic-scoped chats persist only — PmEvent v1 is task-scoped and an
+epic envelope variant is a deliberate follow-up.
 
 **Agents dashboard.** `/agents` merges the PM `Agent` table with the
 Atlas live snapshot at `http://127.0.0.1:3013/agents/snapshot` (busy /
@@ -226,6 +229,117 @@ host: dedupes by `${kind}:${task.id}:${event.id}` against the
 gateway port, and `POST`s `http://127.0.0.1:<port>/hooks/wake` with the
 per-agent Bearer. Truncating `PmEventDelivery` is safe — audit rows
 live independently on `ActivityLog`.
+
+## Agent runtime contract
+
+For chat-with-edit-grant (HOMELAB-48) to actually move a description,
+two halves must agree: this repo emits the envelope; the OpenClaw
+agent runtime (separate repo at `ai/openclaw/`) consumes it and calls
+back. The contract:
+
+### What PM emits
+
+When the user sends a chat message with the "Allow agent to edit
+description" box ticked, PM:
+
+1. Persists an `AgentChatMessage` row with `allowDescriptionEdit=true`.
+2. Calls `notifyDispatch` with a `task.agent_chat` envelope. Example:
+
+```json
+{
+  "schema": 1,
+  "id": "01J7ABCDEF...",
+  "kind": "task.agent_chat",
+  "occurredAt": "2026-05-22T20:30:00.000Z",
+  "actor": { "id": "usr_zeh", "kind": "human", "name": "zeh" },
+  "task": {
+    "id": "tsk_abc123",
+    "key": "tsk_abc123",
+    "projectKey": "homelab",
+    "title": "Rewrite README"
+  },
+  "payload": {
+    "chatMessageId": "msg_xyz789",
+    "targetAgentSlug": "asdrubal",
+    "userMessage": "USER REQUEST:\nMake this README more concise.\n\nCURRENT DESCRIPTION (verbatim, between the markers):\n<<<CURRENT_DESCRIPTION\n# Old README...\nCURRENT_DESCRIPTION>>>",
+    "allowDescriptionEdit": true,
+    "currentDescription": "# Old README...",
+    "systemPrompt": "You have been authorised to rewrite the description...",
+    "replyEndpoint": {
+      "method": "POST",
+      "path": "/api/tasks/tsk_abc123/description",
+      "bodyShape": {
+        "messageId": "msg_xyz789",
+        "description": "<agent reply text>"
+      }
+    }
+  }
+}
+```
+
+`lib/pm-consumer/target.ts` routes this by `payload.targetAgentSlug`
+(not by task assignee) and `POST`s `/hooks/wake` on the addressed
+agent's gateway with the per-agent Bearer.
+
+### What the agent runtime must implement
+
+1. **Subscribe to `task.agent_chat` on `/hooks/wake`.** Dispatch on
+   `kind`. Existing kinds (`task.assigned`, `task.commented`,
+   `task.mentioned`, `task.ack_ready`) keep their semantics; this is
+   additive.
+2. **Treat `payload.systemPrompt` as the LLM system message.** PM
+   constructs the strict template ("respond with ONLY the new
+   description text, no preamble, no fence wrapper; markdown content
+   INSIDE the description is encouraged"). The runtime should pass it
+   verbatim — do not paraphrase, do not append your own framing.
+3. **Use `payload.userMessage` as the user turn.** It already embeds
+   the current description between the `<<<CURRENT_DESCRIPTION`
+   markers, so the LLM has full context in conversation form.
+4. **Take the LLM reply text and POST it back.** Read
+   `payload.replyEndpoint`; do not hard-code the URL. The body is
+   exactly:
+
+```bash
+curl -fsS -X POST "https://agents.vixi.au${payload.replyEndpoint.path}" \
+  -H 'Content-Type: application/json' \
+  -H "Cookie: ${pm_session_cookie_for_this_agent}" \
+  -d "$(jq -n --arg id "${payload.chatMessageId}" --arg desc "${llm_reply}" \
+        '{messageId: $id, description: $desc}')"
+```
+
+   The grant is single-use. A second call returns `410 Gone`.
+
+5. **Auth.** The endpoint requires a PM session whose `user.kind` is
+   `agent` AND whose linked `Agent.slug` matches the message's
+   `targetAgentSlug`. The agent's seeded credential
+   (`/etc/openclaw/pm-agent-credentials/<slug>.json`) is the source of
+   that session; the runtime must log in with NextAuth once and reuse
+   the cookie. A future slice may swap this for a service token.
+6. **Mismatch handling.** 400 = wrong task/epic id in the message; 403
+   = not addressed to this agent; 404 = task/epic gone (likely soft-
+   deleted); 410 = grant already used. None should be retried — they
+   are policy faults, not transport faults.
+
+### What `install.sh` should provision
+
+`openclaw/install.sh` (separate repo) is the install path for the
+agent runtime + consumer. To support `task.agent_chat`, it must:
+
+- Ensure `PM_DISPATCH_SOCKET` (or `PM_DISPATCH_DROP_DIR`) on the PM
+  host matches `PM_CONSUMER_SOCKET` / `PM_CONSUMER_DROP_DIR` on the
+  consumer side — both ends point at the same path.
+- Drop the per-agent Bearer tokens into the file
+  `lib/pm-consumer/README.md` documents (`PM_CONSUMER_HOOK_TOKEN_FILE`,
+  default `/etc/openclaw/pm-consumer-tokens.json`).
+- Provision the agent's PM session — either by running the seeded
+  credential flow once and persisting the cookie jar under the agent's
+  workspace, or by issuing a service token (future work).
+- Configure each agent's `/hooks/wake` handler to dispatch on
+  `event.kind === "task.agent_chat"` and route to the LLM call path
+  documented above.
+
+This repo's `deploy/pm.env.example` carries the PM-host side; the
+OpenClaw-side equivalents live with the consumer install.
 
 ## Schema highlights
 

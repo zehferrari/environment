@@ -136,6 +136,12 @@ function wakeText(event: PmEvent): string {
       return `PM: new comment on ${taskKey} (${event.task.title})`;
     case "task.ack_ready":
       return `PM: ${taskKey} ready for ack (${event.task.title})`;
+    case "task.agent_chat": {
+      const grant = event.payload.allowDescriptionEdit
+        ? " [edit_grant]"
+        : "";
+      return `PM: chat for ${taskKey} (${event.task.title})${grant}`;
+    }
   }
 }
 

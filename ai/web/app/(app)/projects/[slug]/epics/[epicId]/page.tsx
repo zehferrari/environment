@@ -14,6 +14,7 @@ import {
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteEpic } from "@/lib/bin/actions";
 import AgentChatSidebar from "@/components/agent-chat";
+import { renderFullMarkdown } from "@/lib/markdown";
 import {
   listAssignablePrincipals,
   type AssignablePrincipal,
@@ -127,12 +128,23 @@ export default async function EpicDetailPage({
             className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1 text-2xl font-semibold tracking-tight outline-none transition focus:border-[var(--color-line)] focus:bg-[var(--color-bg)]"
             aria-label="Epic title"
           />
+          {epic.description ? (
+            <div className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-4 py-3">
+              <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                Preview
+              </div>
+              <div
+                className="md"
+                dangerouslySetInnerHTML={renderFullMarkdown(epic.description)}
+              />
+            </div>
+          ) : null}
           <textarea
             name="description"
             defaultValue={epic.description ?? ""}
             rows={12}
-            placeholder="Description — markdown supported"
-            className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm leading-relaxed outline-none focus:border-[var(--color-accent)]"
+            placeholder="Description — markdown supported (headings, lists, code fences, tables)"
+            className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[13px] leading-relaxed outline-none focus:border-[var(--color-accent)]"
           />
           <div className="flex items-center justify-between text-xs text-[var(--color-text-muted)]">
             <span>

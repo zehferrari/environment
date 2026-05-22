@@ -15,6 +15,7 @@
 // have working mentions", not "ship a markdown engine".
 
 import type { ReactNode } from "react";
+import { Marked } from "marked";
 
 export interface Mentionable {
   username: string;
@@ -52,6 +53,16 @@ function isSafeHref(href: string): boolean {
   if (/^https?:\/\//i.test(href)) return true;
   if (/^mailto:[^\s]+@[^\s]+$/i.test(href)) return true;
   return false;
+}
+
+function escapeHtml(input: string): string {
+  return input.replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;",
+  })[c] ?? c);
 }
 
 function renderInline(
@@ -203,6 +214,57 @@ export function renderCommentBody(
       {paragraphNodes(p, set, `p${i}`)}
     </p>
   ));
+}
+
+// ---- Full markdown rendering (HOMELAB-48) -------------------------
+//
+// Used for Task / Epic descriptions and chat messages — content that's
+// often a README.md or similar long-form document. Distinct from
+// renderCommentBody, which is intentionally inline-only for short
+// comments.
+//
+// Safety: marked passes raw HTML and dangerous link schemes through by
+// default. This renderer escapes raw HTML tokens and applies the same
+// link allowlist used by renderCommentBody before returning HTML for
+// dangerouslySetInnerHTML.
+//
+// The renderer is created once at module scope and reused — marked's
+// instance carries options and an inline cache.
+
+const marked = new Marked({
+  gfm: true,
+  breaks: false,
+  pedantic: false,
+  renderer: {
+    html({ text }) {
+      return escapeHtml(text);
+    },
+    link({ href, title, tokens }) {
+      const label = this.parser.parseInline(tokens);
+      if (!isSafeHref(href)) return escapeHtml(`[${label}](${href})`);
+      const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+      const externalAttrs = /^https?:\/\//i.test(href)
+        ? ' rel="noreferrer noopener" target="_blank"'
+        : "";
+      return `<a href="${escapeHtml(href)}"${titleAttr}${externalAttrs}>${label}</a>`;
+    },
+    image({ href, text }) {
+      if (!isSafeHref(href)) return escapeHtml(text);
+      return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text)}">`;
+    },
+  },
+});
+
+export interface RenderedMarkdown {
+  __html: string;
+}
+
+// Synchronous because Marked.parse is sync when no async extensions
+// are registered. Safe to call from Server Components.
+export function renderFullMarkdown(input: string): RenderedMarkdown {
+  if (!input) return { __html: "" };
+  const out = marked.parse(input, { async: false });
+  return { __html: typeof out === "string" ? out : "" };
 }
 
 // Extract usernames mentioned in `body` that exist in `mentionables`.

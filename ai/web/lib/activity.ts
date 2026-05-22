@@ -29,6 +29,8 @@ export type ActivityKind =
   | "bin.purge"
   | "task.chat.send"
   | "epic.chat.send"
+  | "task.chat.delete"
+  | "epic.chat.delete"
   | "task.description.agent_write"
   | "epic.description.agent_write"
   | "project.create"
@@ -259,6 +261,12 @@ export function describeActivity(row: ActivityRow): string {
       const target = row.kind === "task.chat.send" ? task(row.taskTitle) : "an epic";
       const tag = p?.allowDescriptionEdit ? " (edit grant)" : "";
       return `${actor(row.actorName)} messaged @${p?.agentSlug ?? "?"} on ${target}${tag}`;
+    }
+    case "task.chat.delete":
+    case "epic.chat.delete": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      const target = row.kind === "task.chat.delete" ? task(row.taskTitle) : "an epic";
+      return `${actor(row.actorName)} deleted a chat message to @${p?.agentSlug ?? "?"} on ${target}`;
     }
     case "task.description.agent_write": {
       const p = parsePayload<{ agentSlug?: string; length?: number }>(row.payload);
