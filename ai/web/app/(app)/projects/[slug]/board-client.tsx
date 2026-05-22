@@ -17,7 +17,14 @@ import {
 } from "@dnd-kit/core";
 import type { MoveTaskResult } from "./page";
 
-type Task = { id: string; title: string; status: string; rank: number };
+type Task = {
+  id: string;
+  title: string;
+  status: string;
+  rank: number;
+  updatedAt: string;
+  assigneeName: string | null;
+};
 type Column = { id: string; label: string };
 
 type BoardProps = {
@@ -411,27 +418,51 @@ function TaskCard({
       {...attributes}
       {...listeners}
       aria-selected={isSelected || undefined}
-      className={`rounded-lg border bg-[var(--color-panel)] px-3 py-2 text-sm cursor-grab select-none flex items-start justify-between gap-2 ${
+      className={`rounded-lg border bg-[var(--color-panel)] px-3 py-2 text-sm cursor-grab select-none ${
         isSelected
           ? "border-[var(--color-accent)] ring-2 ring-[var(--color-accent)]"
           : "border-[var(--color-line)]"
       } ${isDragging ? "opacity-30" : ""}`}
     >
-      <span className="truncate">{task.title}</span>
-      {/* Open-detail link. stopPropagation on pointerdown keeps the drag
-          sensor from claiming the click on the link itself; the rest of
-          the card still drags normally. */}
-      <Link
-        href={`/projects/${projectSlug}/tasks/${task.id}`}
-        onPointerDown={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
-        onTouchStart={(e) => e.stopPropagation()}
-        className="shrink-0 text-[var(--color-text-muted)] hover:text-[var(--color-accent)]"
-        aria-label={`Open ${task.title}`}
-        title="Open task"
-      >
-        ↗
-      </Link>
+      <div className="flex items-start justify-between gap-2">
+        <span className="truncate">{task.title}</span>
+        {/* Open-detail link. stopPropagation on pointerdown keeps the drag
+            sensor from claiming the click on the link itself; the rest of
+            the card still drags normally. */}
+        <Link
+          href={`/projects/${projectSlug}/tasks/${task.id}`}
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+          className="shrink-0 text-[var(--color-text-muted)] hover:text-[var(--color-accent)]"
+          aria-label={`Open ${task.title}`}
+          title="Open task"
+        >
+          ↗
+        </Link>
+      </div>
+      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-[var(--color-text-muted)]">
+        <span className="truncate">
+          {task.assigneeName ? `@${task.assigneeName}` : "unassigned"}
+        </span>
+        <time
+          dateTime={task.updatedAt}
+          title={task.updatedAt}
+          className="shrink-0 tabular-nums"
+        >
+          {relativeUpdated(task.updatedAt)}
+        </time>
+      </div>
     </div>
   );
+}
+
+function relativeUpdated(iso: string): string {
+  const d = new Date(iso);
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return "now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d`;
+  return iso.slice(0, 10);
 }

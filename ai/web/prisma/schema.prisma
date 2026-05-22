@@ -34,8 +34,14 @@ model User {
   projectMembers      ProjectMember[]
   assignedTasks       Task[]               @relation("TaskAssignee")
   actingManagerOf     Task[]               @relation("TaskActingManager")
+  deletedTasks        Task[]               @relation("TaskDeletedBy")
+  assignedEpics       Epic[]               @relation("EpicAssignee")
+  actingManagerOfEpic Epic[]               @relation("EpicActingManager")
+  deletedEpics        Epic[]               @relation("EpicDeletedBy")
   comments            Comment[]
   activity            ActivityLog[]
+  uploadedAttachments Attachment[]
+  agentChatMessages   AgentChatMessage[]   @relation("AgentChatSender")
 
   @@index([kind])
   @@index([status])
@@ -106,10 +112,12 @@ model Project {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  members  ProjectMember[]
-  epics    Epic[]
-  tasks    Task[]
-  activity ActivityLog[]
+  members      ProjectMember[]
+  epics        Epic[]
+  tasks        Task[]
+  activity     ActivityLog[]
+  attachments  Attachment[]
+  chatMessages AgentChatMessage[]
 }
 
 model ProjectMember {
@@ -126,19 +134,40 @@ model ProjectMember {
 }
 
 model Epic {
-  id          String   @id @default(cuid())
-  projectId   String
-  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  title       String
-  description String?
-  status      String   @default("open") // "open" | "done" | "archived"
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title           String
+  description     String?
+  status          String   @default("open") // "open" | "done" | "archived"
+  // Epic-level assignee + acting manager. Independent of any Task's
+  // assignee/actingManager — an Epic can be owned by one agent while its
+  // tasks are assigned to others (HOMELAB-47). Same User pool as Task
+  // (active humans + Users linked to Agent.role='coding'); enforced via
+  // lib/principals.ts on the read side and lib/workflow.ts on writes.
+  assigneeId      String?
+  assignee        User?    @relation("EpicAssignee", fields: [assigneeId], references: [id])
+  actingManagerId String?
+  actingManager   User?    @relation("EpicActingManager", fields: [actingManagerId], references: [id])
+  // Soft delete (HOMELAB-48). deletedAt != null means the row is in the
+  // bin; active reads filter deletedAt: null. Hard purge happens after
+  // 7 days via the instrumentation interval. deletedById captures the
+  // actor (User row, kind tells human vs agent).
+  deletedAt       DateTime?
+  deletedById     String?
+  deletedBy       User?    @relation("EpicDeletedBy", fields: [deletedById], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  tasks Task[]
+  tasks       Task[]
+  attachments Attachment[]
+  chats       AgentChatMessage[] @relation("EpicChat")
 
   @@index([projectId])
   @@index([status])
+  @@index([assigneeId])
+  @@index([actingManagerId])
+  @@index([deletedAt])
 }
 
 model Task {
@@ -169,11 +198,20 @@ model Task {
   actingManager   User?    @relation("TaskActingManager", fields: [actingManagerId], references: [id])
   // Lexorank-style ordering within column; simple Int for v1.
   rank            Int      @default(0)
+  // Soft delete (HOMELAB-48). See Epic.deletedAt for semantics. Sub-tasks
+  // cascade with their parent task; an Epic delete cascades to its
+  // non-deleted Tasks (and through them to sub-tasks). Active read
+  // queries filter deletedAt: null.
+  deletedAt       DateTime?
+  deletedById     String?
+  deletedBy       User?    @relation("TaskDeletedBy", fields: [deletedById], references: [id])
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  comments Comment[]
-  activity ActivityLog[]
+  comments    Comment[]
+  activity    ActivityLog[]
+  attachments Attachment[]
+  chats       AgentChatMessage[] @relation("TaskChat")
 
   @@index([projectId])
   @@index([status])
@@ -181,6 +219,38 @@ model Task {
   @@index([assigneeId])
   @@index([parentTaskId])
   @@index([actingManagerId])
+  @@index([deletedAt])
+}
+
+// ------------------------------------------------------------------
+// HOMELAB-47 attachments — file metadata; bytes live on disk under
+// /srv/Data/projects/<projectId>/attachments/<sha256> (deploy host) or
+// ./.data/attachments/<projectId>/<sha256> (local-dev fallback). One of
+// taskId | epicId must be set — enforced server-side in
+// lib/attachments.ts since SQLite has no portable XOR check.
+// ------------------------------------------------------------------
+
+model Attachment {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId      String?
+  task        Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  epicId      String?
+  epic        Epic?    @relation(fields: [epicId], references: [id], onDelete: Cascade)
+  uploaderId  String
+  uploader    User     @relation(fields: [uploaderId], references: [id])
+  filename    String
+  storagePath String   // path relative to the project's attachments dir
+  mimeType    String
+  sizeBytes   Int
+  sha256      String
+  createdAt   DateTime @default(now())
+
+  @@index([projectId])
+  @@index([taskId])
+  @@index([epicId])
+  @@index([sha256])
 }
 
 model Comment {
@@ -253,4 +323,41 @@ model PmEventDelivery {
   @@index([targetAgentSlug])
   @@index([deliveryStatus])
   @@index([receivedAt])
+}
+
+// ------------------------------------------------------------------
+// HOMELAB-48 agent chat — sidebar conversations between humans and a
+// specific agent, scoped to a Task XOR an Epic. The "allow description
+// edit" grant is per-message: when true, the targeted agent gets a
+// one-shot permission to overwrite the parent Task/Epic description via
+// POST /api/{tasks,epics}/[id]/description; editGrantUsedAt records the
+// moment that grant was consumed, so a single message can never grant
+// twice. XOR(taskId, epicId) is server-enforced — SQLite has no
+// portable check constraint.
+// ------------------------------------------------------------------
+
+model AgentChatMessage {
+  id                   String    @id @default(cuid())
+  projectId            String
+  project              Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId               String?
+  task                 Task?     @relation("TaskChat", fields: [taskId], references: [id], onDelete: Cascade)
+  epicId               String?
+  epic                 Epic?     @relation("EpicChat", fields: [epicId], references: [id], onDelete: Cascade)
+  // The agent this conversation is with (Agent.slug). Stored as a slug
+  // rather than agentId so chat history survives an Agent row being
+  // soft-deactivated and the index.json deciding to re-issue.
+  agentSlug            String
+  // The sender — a User row (humans send via their own row, agents
+  // reply via their own seeded User row).
+  senderUserId         String
+  sender               User      @relation("AgentChatSender", fields: [senderUserId], references: [id])
+  body                 String
+  allowDescriptionEdit Boolean   @default(false)
+  editGrantUsedAt      DateTime?
+  createdAt            DateTime  @default(now())
+
+  @@index([taskId, createdAt])
+  @@index([epicId, createdAt])
+  @@index([agentSlug])
 }

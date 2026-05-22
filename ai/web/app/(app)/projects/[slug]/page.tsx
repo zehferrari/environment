@@ -8,6 +8,7 @@ import {
   type WorkflowErrorCode,
 } from "@/lib/workflow";
 import { describeActivity } from "@/lib/activity";
+import Link from "next/link";
 import Board from "./board-client";
 import { COLUMNS, COLUMN_IDS } from "./columns";
 
@@ -27,7 +28,7 @@ async function createTask(formData: FormData) {
   if (!projectId || !title) return;
   const projectSlug = String(formData.get("projectSlug") ?? "");
   const maxRank = await db.task.aggregate({
-    where: { projectId, status: "Backlog" },
+    where: { projectId, status: "Backlog", deletedAt: null },
     _max: { rank: true },
   });
   await db.task.create({
@@ -66,9 +67,9 @@ async function moveTask(
   }
   const current = await db.task.findUnique({
     where: { id: taskId },
-    select: { id: true, status: true, projectId: true },
+    select: { id: true, status: true, projectId: true, deletedAt: true },
   });
-  if (!current) {
+  if (!current || current.deletedAt) {
     return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
   }
   if (current.status === status) return { ok: true };
@@ -83,7 +84,7 @@ async function moveTask(
   }
 
   const maxRank = await db.task.aggregate({
-    where: { status },
+    where: { status, deletedAt: null },
     _max: { rank: true },
   });
   await db.$transaction([
@@ -116,7 +117,17 @@ export default async function ProjectBoardPage({
   const project = await db.project.findUnique({
     where: { slug },
     include: {
-      tasks: { orderBy: [{ status: "asc" }, { rank: "asc" }] },
+      tasks: {
+        where: { deletedAt: null },
+        orderBy: [{ status: "asc" }, { rank: "asc" }],
+        include: { assignee: { select: { username: true } } },
+      },
+      _count: {
+        select: {
+          epics: { where: { status: "open", deletedAt: null } },
+          tasks: { where: { deletedAt: { not: null } } },
+        },
+      },
     },
   });
   if (!project) notFound();
@@ -144,27 +155,41 @@ export default async function ProjectBoardPage({
 
   return (
     <div>
-      <header className="mb-4 flex items-center justify-between">
+      <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>
           <div className="text-xs text-[var(--color-text-muted)]">/{project.slug}</div>
         </div>
-        <form action={createTask} className="flex gap-2">
-          <input type="hidden" name="projectId" value={project.id} />
-          <input type="hidden" name="projectSlug" value={project.slug} />
-          <input
-            name="title"
-            required
-            placeholder="New task title"
-            className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] w-72"
-          />
-          <button
-            type="submit"
-            className="rounded-lg bg-[var(--color-accent)] text-white text-sm font-medium px-3 shadow-sm hover:opacity-95"
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/projects/${project.slug}/epics`}
+            className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
           >
-            Add task
-          </button>
-        </form>
+            Epics{project._count.epics > 0 ? ` (${project._count.epics})` : ""}
+          </Link>
+          <Link
+            href={`/projects/${project.slug}/bin`}
+            className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+          >
+            Bin{project._count.tasks > 0 ? ` (${project._count.tasks})` : ""}
+          </Link>
+          <form action={createTask} className="flex gap-2">
+            <input type="hidden" name="projectId" value={project.id} />
+            <input type="hidden" name="projectSlug" value={project.slug} />
+            <input
+              name="title"
+              required
+              placeholder="New task title (no epic)"
+              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] w-72"
+            />
+            <button
+              type="submit"
+              className="rounded-lg bg-[var(--color-accent)] text-white text-sm font-medium px-3 shadow-sm hover:opacity-95"
+            >
+              Add task
+            </button>
+          </form>
+        </div>
       </header>
 
       <Board
@@ -175,6 +200,8 @@ export default async function ProjectBoardPage({
           title: t.title,
           status: t.status,
           rank: t.rank,
+          updatedAt: t.updatedAt.toISOString(),
+          assigneeName: t.assignee?.username ?? null,
         }))}
         moveTaskAction={moveTask}
       />

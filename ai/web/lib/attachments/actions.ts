@@ -1,0 +1,158 @@
+"use server";
+
+// Attachment server actions (HOMELAB-47).
+//
+// Wire-side glue between the form upload, the lib/attachments
+// filesystem helper, and the Attachment DB row. Targets are XOR
+// (taskId | epicId) — assertOneTarget throws before any I/O. Files are
+// content-addressed; metadata rows can outnumber on-disk blobs when
+// the same bytes are uploaded twice.
+
+import { revalidatePath } from "next/cache";
+import { auth } from "@/lib/auth";
+import { db } from "@/lib/db";
+import {
+  assertOneTarget,
+  attachmentMaxBytes,
+  deleteAttachmentFile,
+  writeAttachment,
+} from "@/lib/attachments/storage";
+
+async function requireActorId(): Promise<string> {
+  const session = await auth();
+  const id = session?.user?.id;
+  if (!id) throw new Error("Unauthenticated");
+  return id;
+}
+
+export async function uploadAttachment(formData: FormData) {
+  const actorId = await requireActorId();
+  const slug = String(formData.get("projectSlug") ?? "");
+  const taskIdRaw = String(formData.get("taskId") ?? "");
+  const epicIdRaw = String(formData.get("epicId") ?? "");
+  const taskId = taskIdRaw === "" ? null : taskIdRaw;
+  const epicId = epicIdRaw === "" ? null : epicIdRaw;
+  const file = formData.get("file");
+  if (!slug || !(file instanceof File) || file.size === 0) return;
+
+  const project = await db.project.findUnique({
+    where: { slug },
+    select: { id: true },
+  });
+  if (!project) return;
+
+  assertOneTarget({ projectId: project.id, taskId, epicId });
+
+  // Scope-check the target lives in the same project as the slug.
+  if (taskId) {
+    const t = await db.task.findUnique({
+      where: { id: taskId },
+      select: { projectId: true, title: true },
+    });
+    if (!t || t.projectId !== project.id) return;
+  } else if (epicId) {
+    const e = await db.epic.findUnique({
+      where: { id: epicId },
+      select: { projectId: true, title: true },
+    });
+    if (!e || e.projectId !== project.id) return;
+  }
+
+  if (file.size > attachmentMaxBytes()) {
+    throw new Error(
+      `Attachment exceeds size cap (${file.size} > ${attachmentMaxBytes()})`,
+    );
+  }
+
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const written = await writeAttachment({
+    projectId: project.id,
+    filename: file.name,
+    mimeType: file.type || "application/octet-stream",
+    data: buffer,
+  });
+
+  const row = await db.attachment.create({
+    data: {
+      projectId: project.id,
+      taskId,
+      epicId,
+      uploaderId: actorId,
+      filename: file.name,
+      storagePath: written.storagePath,
+      mimeType: written.mimeType,
+      sizeBytes: written.sizeBytes,
+      sha256: written.sha256,
+    },
+    select: { id: true },
+  });
+
+  await db.activityLog.create({
+    data: {
+      projectId: project.id,
+      taskId,
+      userId: actorId,
+      kind: taskId ? "task.attachment.add" : "epic.attachment.add",
+      payload: JSON.stringify({
+        attachmentId: row.id,
+        filename: file.name,
+        sizeBytes: written.sizeBytes,
+        sha256: written.sha256,
+      }),
+    },
+  });
+
+  if (taskId) {
+    revalidatePath(`/projects/${slug}/tasks/${taskId}`);
+  }
+  if (epicId) {
+    revalidatePath(`/projects/${slug}/epics/${epicId}`);
+  }
+  revalidatePath(`/projects/${slug}`);
+}
+
+export async function deleteAttachment(formData: FormData) {
+  const actorId = await requireActorId();
+  const slug = String(formData.get("projectSlug") ?? "");
+  const attachmentId = String(formData.get("attachmentId") ?? "");
+  if (!slug || !attachmentId) return;
+
+  const row = await db.attachment.findUnique({
+    where: { id: attachmentId },
+    include: { project: { select: { slug: true } } },
+  });
+  if (!row || row.project.slug !== slug) return;
+
+  const otherRefs = await db.attachment.count({
+    where: { storagePath: row.storagePath, id: { not: row.id } },
+  });
+
+  await db.$transaction([
+    db.attachment.delete({ where: { id: attachmentId } }),
+    db.activityLog.create({
+      data: {
+        projectId: row.projectId,
+        taskId: row.taskId,
+        userId: actorId,
+        kind: row.taskId ? "task.attachment.delete" : "epic.attachment.delete",
+        payload: JSON.stringify({
+          attachmentId,
+          filename: row.filename,
+        }),
+      },
+    }),
+  ]);
+
+  await deleteAttachmentFile({
+    storagePath: row.storagePath,
+    otherRefs,
+  });
+
+  if (row.taskId) {
+    revalidatePath(`/projects/${slug}/tasks/${row.taskId}`);
+  }
+  if (row.epicId) {
+    revalidatePath(`/projects/${slug}/epics/${row.epicId}`);
+  }
+  revalidatePath(`/projects/${slug}`);
+}

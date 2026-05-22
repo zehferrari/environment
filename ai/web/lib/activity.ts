@@ -11,6 +11,26 @@ export type ActivityKind =
   | "task.assign"
   | "task.acting_manager"
   | "task.create"
+  | "task.update"
+  | "task.epic"
+  | "task.attachment.add"
+  | "task.attachment.delete"
+  | "epic.create"
+  | "epic.update"
+  | "epic.assign"
+  | "epic.acting_manager"
+  | "epic.status"
+  | "epic.attachment.add"
+  | "epic.attachment.delete"
+  | "task.delete"
+  | "task.restore"
+  | "epic.delete"
+  | "epic.restore"
+  | "bin.purge"
+  | "task.chat.send"
+  | "epic.chat.send"
+  | "task.description.agent_write"
+  | "epic.description.agent_write"
   | "project.create"
   | "agent.sync"
   | string;
@@ -141,6 +161,112 @@ export function describeActivity(row: ActivityRow): string {
         return `${actor(row.actorName)} created sub-task ${task(title)} under ${p.parentTitle}`;
       }
       return `${actor(row.actorName)} created task ${task(title)}`;
+    }
+    case "task.update":
+      return `${actor(row.actorName)} updated ${task(row.taskTitle)}`;
+    case "task.epic": {
+      const p = parsePayload<{ from?: string | null; to?: string | null }>(row.payload);
+      if (p) {
+        if (!p.from && p.to) return `${actor(row.actorName)} linked ${task(row.taskTitle)} to epic ${p.to}`;
+        if (p.from && !p.to) return `${actor(row.actorName)} removed ${task(row.taskTitle)} from epic ${p.from}`;
+        if (p.from && p.to) return `${actor(row.actorName)} moved ${task(row.taskTitle)} from epic ${p.from} to ${p.to}`;
+      }
+      return `${actor(row.actorName)} changed epic on ${task(row.taskTitle)}`;
+    }
+    case "task.attachment.add": {
+      const p = parsePayload<{ filename?: string }>(row.payload);
+      return `${actor(row.actorName)} attached ${p?.filename ?? "a file"} to ${task(row.taskTitle)}`;
+    }
+    case "task.attachment.delete": {
+      const p = parsePayload<{ filename?: string }>(row.payload);
+      return `${actor(row.actorName)} removed ${p?.filename ?? "an attachment"} from ${task(row.taskTitle)}`;
+    }
+    case "epic.create": {
+      const p = parsePayload<{ title?: string }>(row.payload);
+      return `${actor(row.actorName)} created epic ${p?.title ?? ""}`.trim();
+    }
+    case "epic.update":
+      return `${actor(row.actorName)} updated an epic`;
+    case "epic.assign": {
+      const p = parsePayload<{ from?: string | null; to?: string | null }>(row.payload);
+      if (p?.to && !p?.from) return `${actor(row.actorName)} assigned an epic to @${p.to}`;
+      if (p?.from && !p?.to) return `${actor(row.actorName)} unassigned an epic (was @${p.from})`;
+      if (p?.from && p?.to) return `${actor(row.actorName)} reassigned an epic from @${p.from} to @${p.to}`;
+      return `${actor(row.actorName)} updated epic assignment`;
+    }
+    case "epic.acting_manager": {
+      const p = parsePayload<{ from?: string | null; to?: string | null }>(row.payload);
+      if (p?.to && !p?.from) return `${actor(row.actorName)} set @${p.to} as epic acting manager`;
+      if (p?.from && !p?.to) return `${actor(row.actorName)} cleared epic acting manager (was @${p.from})`;
+      if (p?.from && p?.to) return `${actor(row.actorName)} changed epic acting manager from @${p.from} to @${p.to}`;
+      return `${actor(row.actorName)} updated epic acting manager`;
+    }
+    case "epic.status": {
+      const p = parsePayload<{ from?: string; to?: string }>(row.payload);
+      if (p?.from && p?.to) return `${actor(row.actorName)} moved an epic from ${p.from} to ${p.to}`;
+      return `${actor(row.actorName)} updated epic status`;
+    }
+    case "epic.attachment.add": {
+      const p = parsePayload<{ filename?: string }>(row.payload);
+      return `${actor(row.actorName)} attached ${p?.filename ?? "a file"} to an epic`;
+    }
+    case "epic.attachment.delete": {
+      const p = parsePayload<{ filename?: string }>(row.payload);
+      return `${actor(row.actorName)} removed ${p?.filename ?? "an attachment"} from an epic`;
+    }
+    case "task.delete": {
+      const p = parsePayload<{ cascadedSubtaskIds?: string[] }>(row.payload);
+      const n = p?.cascadedSubtaskIds?.length ?? 0;
+      return n > 0
+        ? `${actor(row.actorName)} moved ${task(row.taskTitle)} to the bin (${n} sub-task${n === 1 ? "" : "s"} too)`
+        : `${actor(row.actorName)} moved ${task(row.taskTitle)} to the bin`;
+    }
+    case "task.restore": {
+      const p = parsePayload<{ restoredChildren?: string[]; withChildren?: boolean }>(row.payload);
+      const n = p?.restoredChildren?.length ?? 0;
+      return p?.withChildren && n > 0
+        ? `${actor(row.actorName)} restored ${task(row.taskTitle)} + ${n} sub-task${n === 1 ? "" : "s"}`
+        : `${actor(row.actorName)} restored ${task(row.taskTitle)}`;
+    }
+    case "epic.delete": {
+      const p = parsePayload<{ cascadedTaskIds?: string[] }>(row.payload);
+      const n = p?.cascadedTaskIds?.length ?? 0;
+      return n > 0
+        ? `${actor(row.actorName)} moved an epic to the bin (${n} task${n === 1 ? "" : "s"} too)`
+        : `${actor(row.actorName)} moved an epic to the bin`;
+    }
+    case "epic.restore": {
+      const p = parsePayload<{ restoredTasks?: string[]; withChildren?: boolean }>(row.payload);
+      const n = p?.restoredTasks?.length ?? 0;
+      return p?.withChildren && n > 0
+        ? `${actor(row.actorName)} restored an epic + ${n} task${n === 1 ? "" : "s"}`
+        : `${actor(row.actorName)} restored an epic`;
+    }
+    case "bin.purge": {
+      const p = parsePayload<{
+        purgedEpics?: number;
+        purgedTasks?: number;
+        removedBlobs?: number;
+      }>(row.payload);
+      const e = p?.purgedEpics ?? 0;
+      const t = p?.purgedTasks ?? 0;
+      const b = p?.removedBlobs ?? 0;
+      return `Bin purge — ${e} epic${e === 1 ? "" : "s"}, ${t} task${t === 1 ? "" : "s"}, ${b} blob${b === 1 ? "" : "s"}`;
+    }
+    case "task.chat.send":
+    case "epic.chat.send": {
+      const p = parsePayload<{ agentSlug?: string; allowDescriptionEdit?: boolean }>(row.payload);
+      const target = row.kind === "task.chat.send" ? task(row.taskTitle) : "an epic";
+      const tag = p?.allowDescriptionEdit ? " (edit grant)" : "";
+      return `${actor(row.actorName)} messaged @${p?.agentSlug ?? "?"} on ${target}${tag}`;
+    }
+    case "task.description.agent_write": {
+      const p = parsePayload<{ agentSlug?: string; length?: number }>(row.payload);
+      return `@${p?.agentSlug ?? "agent"} wrote the description for ${task(row.taskTitle)} (${p?.length ?? 0} chars)`;
+    }
+    case "epic.description.agent_write": {
+      const p = parsePayload<{ agentSlug?: string; length?: number }>(row.payload);
+      return `@${p?.agentSlug ?? "agent"} wrote an epic description (${p?.length ?? 0} chars)`;
     }
     default:
       return `${actor(row.actorName)} · ${row.kind}`;
