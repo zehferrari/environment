@@ -1,6 +1,6 @@
 # `lib/pm-dispatch`
 
-PM event dispatch boundary (HOMELAB-46 Slices 1–2).
+PM event dispatch boundary (HOMELAB-46 Slices 1–3).
 
 The webapp's task mutation routes / server actions call
 `notifyDispatch(event)` after a workflow rule + persistence step has
@@ -73,3 +73,19 @@ pnpm tsx scripts/pm-dispatch-receiver.ts all
 asserts the Slice 2 facade contract: `notifyDispatch` returns
 `ok=false` + `skipped="disabled"` when no env is set, and round-trips
 through the file-drop driver when `PM_DISPATCH_DROP_DIR` is set.
+
+## Integration smoke (Slice 3)
+
+```bash
+pnpm tsx scripts/pm-dispatch-integration.ts
+```
+
+End-to-end smoke against a throwaway sqlite (`prisma db push` into a
+temp `DATABASE_URL`) plus a temp `PM_DISPATCH_DROP_DIR`. Seeds a
+project + human actor + agent assignee + task, mirrors the
+`assignTask` server-action persistence + dispatch shape, then reads
+the dropped envelope and asserts envelope identity (`task.id`,
+`task.key`, `task.projectKey`, actor, payload assignee). `task.key`
+is asserted to equal `task.id` — that is the current contract flagged
+in HOMELAB-46 commentId 12265, and this assertion will fail loudly if
+that ever drifts before a PM-visible key is introduced for live wake.
