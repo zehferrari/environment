@@ -77,12 +77,10 @@ export async function startFileDropListener(
     inFlight = null;
     if (running) {
       timer = setTimeout(tick, intervalMs);
-      timer.unref?.();
     }
   }
 
   let timer: NodeJS.Timeout | null = setTimeout(tick, intervalMs);
-  timer.unref?.();
 
   return {
     async runOnce() {
