@@ -248,6 +248,10 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction }: B
       if (t.isContentEditable) return true;
       const tag = t.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      // Suppress on other interactive controls so keystrokes activate the
+      // focused button/link/disclosure instead of being intercepted by the
+      // board nav handler. Covers nested children via closest().
+      if (t.closest('button, a, summary, [role="button"], [role="link"]')) return true;
       return false;
     }
     function onKey(e: KeyboardEvent) {
