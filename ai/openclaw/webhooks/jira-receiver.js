@@ -64,6 +64,12 @@ const server = c.http.createServer(async (req, res) => {
         // specific agents is a more precise signal than the assignee field.
         const mentioned = c.resolveJiraMentionedAgents(event);
         const matchedUsers = c.resolveJiraUsers(event);
+        const mentionedUsers = new Set(mentioned.map(m => m.userCfg.username));
+        for (const userCfg of matchedUsers) {
+          if (!mentionedUsers.has(userCfg.username)) {
+            c.recordPendingAssigneeComment(userCfg, event);
+          }
+        }
 
         let targetUsers;
         const mentionContextByUser = {};

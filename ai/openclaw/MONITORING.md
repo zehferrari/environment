@@ -35,6 +35,13 @@ the entry-point overview.
   webhook receiver writes a marker per mention; ai-monitor's
   `probe_pending_mentions` resolves on agent reply or fires
   `mention-awaiting-reply` warn (≥15 min) / crit (≥60 min).
+- **Pending comments on assigned Jira issues** in
+  `/var/lib/ai-monitor/pending-assignee-comments/`. When a new Jira comment
+  lands on an issue assigned to a coding agent, the receiver records a marker
+  unless the assignee wrote the comment. `probe_pending_assignee_comments`
+  resolves on an assignee reply or Done status; otherwise it fires
+  `assignee-comment-awaiting-reply` and wakes the assignee to read the comment
+  and reply if required.
 - **Pending Epic-owner comment review** in
   `/var/lib/ai-monitor/pending-epic-comments/`. When a known agent posts a new
   Jira comment on an issue under an Epic, the webhook receiver records a

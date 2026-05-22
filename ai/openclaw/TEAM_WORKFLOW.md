@@ -50,6 +50,21 @@ if you actually write markdown:
 - Pipe tables for comparisons or summaries.
 - Cite Jira keys, PR numbers, and file paths verbatim.
 
+Every Jira comment must start by addressing the intended recipient on the
+first line:
+
+```text
+Hi @recipient,
+```
+
+- Use the Jira account/person who needs to read or act on the comment:
+  the requester, reviewer, mentioned agent, assignee, or handoff target.
+- Prefer the agent username or display name from `/etc/openclaw/agents.json`
+  (`@asdrubal`, `@Barekbaal Irwin`). `jira-comment.js` turns known local
+  agents into real Jira mentions.
+- If there is genuinely no single recipient, address the accountable owner
+  for the thread rather than posting an unaddressed status update.
+
 Discord/WhatsApp consume different formatting — no markdown tables,
 Discord links wrapped in `<>`, WhatsApp uses **bold**/CAPS instead of
 headings.

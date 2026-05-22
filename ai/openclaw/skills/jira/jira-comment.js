@@ -1,4 +1,5 @@
 const fs = require('fs');
+const self = require('../agent-self');
 const { jiraRequest } = require('./lib');
 
 // ─── Markdown → ADF ─────────────────────────────────────────────────────────
@@ -23,10 +24,91 @@ const INLINE_PATTERNS = [
   { name: 'italic', re: /(?:^|[^*])\*([^*\n]+)\*(?!\*)/ },
 ];
 
+function mentionAliases() {
+  const aliases = [];
+  for (const agent of (self.registry.agents || [])) {
+    if (!agent.jira_account_id) continue;
+    const labels = new Set([
+      agent.user,
+      agent.name,
+      (agent.name || '').split(/\s+/)[0],
+    ].filter(Boolean));
+    for (const label of labels) {
+      aliases.push({
+        label,
+        lower: label.toLowerCase(),
+        accountId: agent.jira_account_id,
+        text: `@${agent.name || agent.user}`,
+      });
+    }
+  }
+  return aliases.sort((a, b) => b.lower.length - a.lower.length);
+}
+
+const MENTION_ALIASES = mentionAliases();
+
+function lookupMention(label) {
+  const key = String(label || '').trim().toLowerCase();
+  return MENTION_ALIASES.find(a => a.lower === key) || null;
+}
+
+function findMention(str) {
+  const bracket = /@\[(.+?)\]/.exec(str);
+  let best = null;
+  if (bracket) {
+    const alias = lookupMention(bracket[1]);
+    if (alias) best = {
+      index: bracket.index,
+      length: bracket[0].length,
+      alias,
+    };
+  }
+
+  for (const alias of MENTION_ALIASES) {
+    const needle = `@${alias.lower}`;
+    const haystack = str.toLowerCase();
+    let pos = haystack.indexOf(needle);
+    while (pos !== -1) {
+      const before = pos === 0 ? '' : str[pos - 1];
+      const after = str[pos + needle.length] || '';
+      const validBefore = !before || /[\s([{:>,-]/.test(before);
+      const validAfter = !after || /[\s.,;:!?)}\]-]/.test(after);
+      if (validBefore && validAfter && (!best || pos < best.index)) {
+        best = { index: pos, length: needle.length, alias };
+        break;
+      }
+      pos = haystack.indexOf(needle, pos + 1);
+    }
+  }
+  return best;
+}
+
+function mentionNode(alias) {
+  return {
+    type: 'mention',
+    attrs: {
+      id: alias.accountId,
+      text: alias.text,
+      accessLevel: '',
+    },
+  };
+}
+
 function inlineToNodes(str, marks = []) {
   if (!str) return [];
 
   let earliest = null;
+  const mention = marks.length ? null : findMention(str);
+  if (mention) {
+    earliest = {
+      p: { name: 'mention' },
+      m: {
+        index: mention.index,
+        0: str.slice(mention.index, mention.index + mention.length),
+        mention,
+      },
+    };
+  }
   for (const p of INLINE_PATTERNS) {
     const m = p.re.exec(str);
     if (m && (!earliest || m.index < earliest.m.index)) {
@@ -62,6 +144,8 @@ function inlineToNodes(str, marks = []) {
     out.push(...inlineToNodes(captured, [...marks, { type: 'em' }]));
   } else if (p.name === 'link') {
     out.push(...inlineToNodes(captured, [...marks, { type: 'link', attrs: { href } }]));
+  } else if (p.name === 'mention') {
+    out.push(mentionNode(m.mention.alias));
   }
 
   out.push(...inlineToNodes(after, marks));
