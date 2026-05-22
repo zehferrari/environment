@@ -106,7 +106,6 @@ export default async function AgentsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-xs uppercase tracking-[0.28em] text-[var(--color-text-muted)]">Atlas v2 · agents-barekbaal inspired</p>
           <h1 className="text-3xl font-semibold tracking-tight">Agents</h1>
         </div>
         <Link
