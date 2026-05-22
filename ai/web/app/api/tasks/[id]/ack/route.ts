@@ -4,6 +4,7 @@
 // where an agent advances status without an explicit human action;
 // the rule itself lives in lib/workflow.ts (autoTransitionOnAck).
 
+import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -12,6 +13,8 @@ import {
   type ActorKind,
   type TaskStatus,
 } from "@/lib/workflow";
+import { buildTaskAckReady } from "@/lib/pm-events";
+import { notifyDispatch } from "@/lib/pm-dispatch";
 
 export async function POST(
   _req: Request,
@@ -32,6 +35,8 @@ export async function POST(
       status: true,
       assigneeId: true,
       projectId: true,
+      title: true,
+      project: { select: { slug: true } },
     },
   });
   if (!task) {
@@ -71,6 +76,30 @@ export async function POST(
       },
     }),
   ]);
+
+  // Dispatch is downstream of persistence (HOMELAB-44 contract). The
+  // notifier swallows transport / config errors and surfaces them via
+  // its own observability path — the ack response is unaffected.
+  await notifyDispatch(
+    buildTaskAckReady(
+      {
+        id: randomUUID(),
+        occurredAt: new Date().toISOString(),
+        actor: { id: userId, kind },
+        task: {
+          id: task.id,
+          key: task.id,
+          projectKey: task.project.slug,
+          title: task.title,
+        },
+      },
+      {
+        reason: "auto-transition",
+        fromStatus: task.status,
+        toStatus: next,
+      },
+    ),
+  );
 
   return NextResponse.json({
     taskId: task.id,

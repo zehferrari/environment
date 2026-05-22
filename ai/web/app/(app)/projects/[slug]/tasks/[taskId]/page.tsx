@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -10,6 +11,13 @@ import {
   checkHierarchy,
   type ActorKind,
 } from "@/lib/workflow";
+import {
+  buildTaskAssigned,
+  buildTaskCommented,
+  buildTaskMentioned,
+  type EventTaskRef,
+} from "@/lib/pm-events";
+import { notifyDispatch } from "@/lib/pm-dispatch";
 
 async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
   const session = await auth();
@@ -36,7 +44,12 @@ async function createComment(formData: FormData) {
 
   const task = await db.task.findUnique({
     where: { id: taskId },
-    select: { id: true, projectId: true, project: { select: { slug: true } } },
+    select: {
+      id: true,
+      projectId: true,
+      title: true,
+      project: { select: { slug: true } },
+    },
   });
   if (!task || task.project.slug !== slug) return;
 
@@ -44,15 +57,18 @@ async function createComment(formData: FormData) {
   // (notifications, agent wake) can consume the list without re-parsing
   // the body. Storage is the raw markdown — render-time parsing remains
   // the source of truth for what users see.
-  const users = await db.user.findMany({ select: { username: true } });
+  const users = await db.user.findMany({
+    select: { id: true, username: true, kind: true },
+  });
   const mentions = extractMentions(
     body,
     users.map((u) => ({ username: u.username })),
   );
 
-  await db.$transaction([
+  const created = await db.$transaction([
     db.comment.create({
       data: { taskId, userId: actorId, body },
+      select: { id: true },
     }),
     db.activityLog.create({
       data: {
@@ -64,9 +80,55 @@ async function createComment(formData: FormData) {
       },
     }),
   ]);
+  const commentId = created[0].id;
 
   revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   revalidatePath(`/projects/${slug}`);
+
+  // Persistence is committed; dispatch is downstream of HOMELAB-44
+  // rules. notifyDispatch logs and returns ok=false on transport
+  // failure — comment creation is never rolled back as a result.
+  const taskRef: EventTaskRef = {
+    id: task.id,
+    key: task.id,
+    projectKey: task.project.slug,
+    title: task.title,
+  };
+  const actor = {
+    id: actorId,
+    kind: (users.find((u) => u.id === actorId)?.kind === "agent"
+      ? "agent"
+      : "human") as "human" | "agent",
+  };
+  const occurredAt = new Date().toISOString();
+  const mentionedUsers = users.filter((u) =>
+    mentions.includes(u.username),
+  );
+  await notifyDispatch(
+    buildTaskCommented(
+      { id: randomUUID(), occurredAt, actor, task: taskRef },
+      {
+        commentId,
+        bodyMarkdown: body,
+        mentions: mentionedUsers.map((u) => ({
+          id: u.id,
+          kind: u.kind === "agent" ? "agent" : "human",
+        })),
+      },
+    ),
+  );
+  for (const u of mentionedUsers) {
+    await notifyDispatch(
+      buildTaskMentioned(
+        { id: randomUUID(), occurredAt, actor, task: taskRef },
+        {
+          commentId,
+          mentioned: { id: u.id, kind: u.kind === "agent" ? "agent" : "human" },
+          bodyMarkdown: body,
+        },
+      ),
+    );
+  }
 }
 
 // Server-side assignment. checkAssignment is the rule layer (see
@@ -91,8 +153,9 @@ async function assignTask(formData: FormData) {
       id: true,
       projectId: true,
       assigneeId: true,
+      title: true,
       project: { select: { slug: true } },
-      assignee: { select: { username: true } },
+      assignee: { select: { id: true, username: true, kind: true } },
     },
   });
   if (!task || task.project.slug !== slug) return;
@@ -102,15 +165,17 @@ async function assignTask(formData: FormData) {
   if (!check.ok) throw new Error(check.message);
 
   let toUsername: string | null = null;
+  let target: { id: string; username: string; kind: string } | null = null;
   if (newAssigneeId !== null) {
-    const target = await db.user.findUnique({
+    const row = await db.user.findUnique({
       where: { id: newAssigneeId },
-      select: { username: true, status: true },
+      select: { id: true, username: true, kind: true, status: true },
     });
-    if (!target || target.status !== "active") {
+    if (!row || row.status !== "active") {
       throw new Error("Assignee not found or inactive");
     }
-    toUsername = target.username;
+    target = { id: row.id, username: row.username, kind: row.kind };
+    toUsername = row.username;
   }
 
   await db.$transaction([
@@ -134,6 +199,41 @@ async function assignTask(formData: FormData) {
 
   revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   revalidatePath(`/projects/${slug}`);
+
+  // Dispatch is downstream of persistence — HOMELAB-44 enforcement
+  // already returned by this point. Transport failure is logged by
+  // notifyDispatch and does not roll the assignment back.
+  await notifyDispatch(
+    buildTaskAssigned(
+      {
+        id: randomUUID(),
+        occurredAt: new Date().toISOString(),
+        actor,
+        task: {
+          id: task.id,
+          key: task.id,
+          projectKey: task.project.slug,
+          title: task.title,
+        },
+      },
+      {
+        assignee: target
+          ? {
+              id: target.id,
+              kind: target.kind === "agent" ? "agent" : "human",
+              name: target.username,
+            }
+          : null,
+        previousAssignee: task.assignee
+          ? {
+              id: task.assignee.id,
+              kind: task.assignee.kind === "agent" ? "agent" : "human",
+              name: task.assignee.username,
+            }
+          : null,
+      },
+    ),
+  );
 }
 
 // Server-side acting-manager change. Mirrors assignTask: scope by URL

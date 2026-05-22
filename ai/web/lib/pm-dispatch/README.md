@@ -1,11 +1,28 @@
 # `lib/pm-dispatch`
 
-PM event dispatch boundary (HOMELAB-46 Slice 1).
+PM event dispatch boundary (HOMELAB-46 Slices 1–2).
 
-The webapp's task mutation routes call `createDispatcher().send(event)`
-after a workflow rule + persistence step has accepted the change.
-Dispatch never affects rule outcomes — a failed `send` returns
-`{ ok: false }` and is logged; the persisted state stands.
+The webapp's task mutation routes / server actions call
+`notifyDispatch(event)` after a workflow rule + persistence step has
+accepted the change. Dispatch never affects rule outcomes — a failed
+send returns `{ ok: false }` and is logged; the persisted state
+stands. `notifyDispatch` is the only call-site entry point and is
+guaranteed not to throw: transport, config, and disabled-env paths
+all resolve to a `DispatchResult` with `ok=false`.
+
+## Wired call sites (Slice 2)
+
+- `app/api/tasks/[id]/ack/route.ts` — emits `task.ack_ready` after the
+  auto To Do → In Progress transition is persisted.
+- `app/(app)/projects/[slug]/tasks/[taskId]/page.tsx`
+  - `createComment` — emits `task.commented` for the comment plus one
+    `task.mentioned` per resolved `@username` in the body.
+  - `assignTask` — emits `task.assigned` with the previous and new
+    assignee shape after the row is updated.
+
+HOMELAB-44 enforcement (`checkAssignment`, `checkStatusTransition`,
+`autoTransitionOnAck`) is unchanged: rule rejections still run before
+the DB write, dispatch only runs on the post-persist path.
 
 ## Drivers
 
@@ -20,6 +37,11 @@ Dispatch never affects rule outcomes — a failed `send` returns
 - `PM_DISPATCH_SOCKET` — absolute path of the AF_UNIX socket (unix-socket driver).
 - `PM_DISPATCH_DROP_DIR` — directory for the file-drop fallback.
 - `PM_DISPATCH_HTTP_URL` — *not* read by `readDispatcherConfig`; only honoured if a caller passes it explicitly into `createHttpLocalhostDriver({ url })`.
+
+If **neither** `PM_DISPATCH_SOCKET` nor `PM_DISPATCH_DROP_DIR` is set,
+`notifyDispatch` short-circuits to a disabled state: it logs once and
+returns `{ ok: false, skipped: "disabled" }`. This is the local-dev
+and unit-test default and keeps the workflow path noise-free.
 
 ## Prerequisite for live agent wake
 
@@ -43,8 +65,11 @@ Surface this prereq to zeh as a follow-up before any agent-wake roll-out.
 ```bash
 pnpm tsx scripts/pm-dispatch-receiver.ts filedrop
 pnpm tsx scripts/pm-dispatch-receiver.ts socket
+pnpm tsx scripts/pm-dispatch-receiver.ts notifier
 pnpm tsx scripts/pm-dispatch-receiver.ts all
 ```
 
-Each mode produces a synthetic `task.assigned` event, sends it through
-the relevant driver, reads it back, and exits 0 on round-trip success.
+`filedrop` and `socket` exercise the driver round-trip. `notifier`
+asserts the Slice 2 facade contract: `notifyDispatch` returns
+`ok=false` + `skipped="disabled"` when no env is set, and round-trips
+through the file-drop driver when `PM_DISPATCH_DROP_DIR` is set.

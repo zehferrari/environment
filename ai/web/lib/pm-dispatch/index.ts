@@ -96,3 +96,4 @@ export function createDispatcher(
 }
 
 export { createUnixSocketDriver, createFileDropDriver, createHttpLocalhostDriver };
+export { notifyDispatch, __resetPmDispatchNotifierForTests, type NotifyResult } from "./notify";

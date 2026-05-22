@@ -31,6 +31,8 @@ import {
 import {
   createDispatcher,
   createFileDropDriver,
+  notifyDispatch,
+  __resetPmDispatchNotifierForTests,
 } from "@/lib/pm-dispatch";
 
 function synthEvent(): PmEvent {
@@ -128,16 +130,53 @@ async function runFileDrop(): Promise<void> {
   }
 }
 
+
+async function runNotifier(): Promise<void> {
+  // Notifier path: HOMELAB-46 Slice 2. Two contracts to assert:
+  //   1. With no PM_DISPATCH_* env set, notifyDispatch must NOT throw
+  //      and must return ok=false with skipped="disabled".
+  //   2. With PM_DISPATCH_DROP_DIR pointed at a temp dir, the same
+  //      synthetic event must land on disk via the file-drop driver.
+  delete process.env.PM_DISPATCH_SOCKET;
+  delete process.env.PM_DISPATCH_DROP_DIR;
+  delete process.env.PM_DISPATCH_DRIVER;
+  __resetPmDispatchNotifierForTests();
+  const disabled = await notifyDispatch(synthEvent());
+  if (disabled.ok || disabled.skipped !== "disabled") {
+    fail(`notifier disabled-state contract broken: ${JSON.stringify(disabled)}`);
+  }
+
+  const dropDir = await mkdtemp(path.join(tmpdir(), "pm-dispatch-notify-"));
+  try {
+    process.env.PM_DISPATCH_DRIVER = "file-drop";
+    process.env.PM_DISPATCH_DROP_DIR = dropDir;
+    __resetPmDispatchNotifierForTests();
+    const event = synthEvent();
+    const result = await notifyDispatch(event);
+    if (!result.ok) fail(`notifier file-drop send failed: ${result.error}`);
+    const files = (await readdir(dropDir)).filter((f) => f.endsWith(".json"));
+    if (files.length !== 1) fail(`notifier expected 1 file, got ${files.length}`);
+    console.log("[receiver] notifier OK", { disabled: true, fileDrop: true });
+  } finally {
+    await rm(dropDir, { recursive: true, force: true });
+    delete process.env.PM_DISPATCH_DRIVER;
+    delete process.env.PM_DISPATCH_DROP_DIR;
+    __resetPmDispatchNotifierForTests();
+  }
+}
+
 async function main(): Promise<void> {
   const mode = process.argv[2];
   if (mode === "socket") return runSocket();
   if (mode === "filedrop") return runFileDrop();
+  if (mode === "notifier") return runNotifier();
   if (mode === "all" || !mode) {
     await runFileDrop();
     await runSocket();
+    await runNotifier();
     return;
   }
-  fail(`unknown mode: ${mode} (expected socket|filedrop|all)`);
+  fail(`unknown mode: ${mode} (expected socket|filedrop|notifier|all)`);
 }
 
 main().catch((err) => fail((err as Error).stack ?? String(err)));
