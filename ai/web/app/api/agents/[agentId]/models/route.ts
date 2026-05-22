@@ -23,8 +23,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
   const body = await request.json().catch(() => null) as { model?: unknown } | null;
   if (!body || typeof body.model !== "string") return NextResponse.json({ error: "model is required" }, { status: 400 });
   try {
-    await updateAgentActiveModel(agentId, body.model);
-    return NextResponse.json({ ok: true, model: body.model });
+    const result = await updateAgentActiveModel(agentId, body.model, session.user.id);
+    return NextResponse.json({ ok: true, model: body.model, ...result });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
   }

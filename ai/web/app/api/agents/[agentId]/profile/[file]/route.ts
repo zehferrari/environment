@@ -7,6 +7,7 @@ import {
   readProfileFile,
   writeProfileFile,
 } from "@/lib/agents/profile";
+import { requestAgentRestart } from "@/lib/agents/restart";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -57,7 +58,8 @@ export async function PUT(
       actorUserId: session.user.id,
       actorName: session.user.name ?? session.user.id,
     });
-    return NextResponse.json(saved);
+    const restart = await requestAgentRestart(agentId, `profile:${file}`);
+    return NextResponse.json({ ...saved, restart });
   } catch (err) {
     if (err instanceof ProfileError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

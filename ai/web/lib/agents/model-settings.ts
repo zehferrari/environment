@@ -1,5 +1,7 @@
 import path from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
+import { db } from "@/lib/db";
+import { requestAgentRestart } from "@/lib/agents/restart";
 
 const AGENT_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 
@@ -26,7 +28,7 @@ export type AgentModelSettings = {
 
 function configPath(agent: string) {
   if (!AGENT_RE.test(agent)) throw new Error("Invalid agent id");
-  return path.join("/home", agent, ".openclaw", "openclaw.json");
+  return path.join("/srv/agents/openclaw", agent, "openclaw.json");
 }
 
 function collectAvailable(cfg: OpenClawConfig) {
@@ -73,10 +75,12 @@ export async function readAgentModelSettings(agent: string): Promise<AgentModelS
   }
 }
 
-export async function updateAgentActiveModel(agent: string, model: string) {
+export async function updateAgentActiveModel(agent: string, model: string, actorUserId?: string | null) {
   const file = configPath(agent);
   const raw = await readFile(file, "utf8");
   const cfg = JSON.parse(raw) as OpenClawConfig;
+  const before = primaryFor(cfg);
+  const beforeFallbacks = cfg.agents?.defaults?.model?.fallbacks ?? [];
   const available = new Set(collectAvailable(cfg).map((entry) => entry.id));
   if (!available.has(model)) throw new Error("Model is not in this agent's available model list");
   cfg.agents ??= {};
@@ -86,4 +90,15 @@ export async function updateAgentActiveModel(agent: string, model: string) {
   const main = cfg.agents.list?.find((entry) => entry.default || entry.id === "main");
   if (main && Object.prototype.hasOwnProperty.call(main, "model")) main.model = model;
   await writeFile(file, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
+  const restart = await requestAgentRestart(agent, `model:${before ?? "unset"}->${model}`);
+  await db.activityLog.create({
+    data: {
+      userId: actorUserId ?? undefined,
+      kind: "agent.model.update",
+      targetAgent: agent,
+      targetFile: "openclaw.json",
+      payload: JSON.stringify({ before, after: model, fallbacks: beforeFallbacks, configPath: file, restart }),
+    },
+  });
+  return { before, after: model, restart };
 }
