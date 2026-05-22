@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { canEditProfile, readAgentProfile } from "@/lib/agents/profile";
 import ProfileEditor from "./profile-editor";
+import AtlasControls from "./atlas-controls";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +31,8 @@ type Snapshot = {
 type RawAgent = {
   telegram?: { bot?: string; enabled?: boolean };
   integrations?: Record<string, boolean>;
+  capabilities?: Record<string, boolean>;
+  services?: string[];
   listeners?: Array<{ owner?: string; host?: string; port?: number; expected?: boolean }>;
 };
 
@@ -108,7 +111,13 @@ export default async function AgentProfilePage({ params }: { params: Promise<{ a
   const tickets = live?.jira_tickets ?? [];
   const integrations = raw.integrations ?? {};
   const listeners = raw.listeners ?? [];
+  const capabilities = raw.capabilities ?? {};
+  const rawServices = raw.services ?? [];
   const services = Object.entries(snapshot?.system ?? {}).filter(([name]) => name.startsWith(`${slug}/`));
+  const controlServices = rawServices.map((name) => ({
+    name,
+    status: snapshot?.system?.[`${slug}/${name}`]?.is_active ?? snapshot?.system?.[name]?.is_active,
+  }));
 
   return (
     <div className="space-y-6">
@@ -193,17 +202,22 @@ export default async function AgentProfilePage({ params }: { params: Promise<{ a
             <Metric label="Busy state" value={live?.busy_state?.is_busy ? `busy · ${(live.busy_state.signals ?? []).join(", ")}` : "available"} />
           </Panel>
 
+          <AtlasControls
+            agent={slug}
+            canEdit={canEdit}
+            integrations={integrations}
+            capabilities={capabilities}
+            services={controlServices}
+            model={live?.model_primary}
+          />
+
           <Panel title="Lifecycle">
             <div className="grid gap-2 text-sm">
-              {services.length === 0 ? <p className="text-[var(--color-text-muted)]">No agent services reported.</p> : services.map(([name, svc]) => <div key={name} className="flex justify-between gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2"><code className="truncate text-xs">{name.replace(`${slug}/`, "")}</code><span className={svc.is_active === "active" ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.is_active ?? "unknown"}</span></div>)}
+              {services.length === 0 ? <p className="text-[var(--color-text-muted)]">No live agent services reported.</p> : services.map(([name, svc]) => <div key={name} className="flex justify-between gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2"><code className="truncate text-xs">{name.replace(`${slug}/`, "")}</code><span className={svc.is_active === "active" ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.is_active ?? "unknown"}</span></div>)}
             </div>
           </Panel>
 
-          <Panel title="Integrations">
-            <ChipGrid items={Object.entries(integrations).map(([k, v]) => `${k}: ${v ? "on" : "off"}`)} empty="No integrations reported." />
-          </Panel>
-
-          <Panel title="Capabilities">
+          <Panel title="Capabilities · listeners">
             <ChipGrid items={[raw.telegram?.enabled ? `telegram: ${raw.telegram.bot ?? "enabled"}` : null, ...listeners.map((l) => `${l.owner ?? "listener"}: ${l.host ?? "?"}:${l.port ?? "?"}`)].filter(Boolean) as string[]} empty="No capabilities reported." />
           </Panel>
 
