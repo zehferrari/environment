@@ -3,8 +3,11 @@ import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { canEditProfile, readAgentProfile } from "@/lib/agents/profile";
+import { readAgentModelSettings } from "@/lib/agents/model-settings";
 import ProfileEditor from "./profile-editor";
 import AtlasControls from "./atlas-controls";
+import AgentTabs from "./agent-tabs";
+import ModelsSettings from "./models-settings";
 
 export const dynamic = "force-dynamic";
 
@@ -90,7 +93,7 @@ export default async function AgentProfilePage({ params }: { params: Promise<{ a
 
   const profile = await readAgentProfile(slug);
   const canEdit = await canEditProfile({ name: session?.user?.name, kind: session?.user?.kind }, slug);
-  const [audit, activity] = await Promise.all([
+  const [audit, activity, modelSettings] = await Promise.all([
     db.activityLog.findMany({
       where: { kind: "agent.profile.update", targetAgent: slug },
       orderBy: { createdAt: "desc" },
@@ -103,6 +106,7 @@ export default async function AgentProfilePage({ params }: { params: Promise<{ a
       take: 12,
       include: { user: { select: { username: true } }, task: { select: { title: true } } },
     }),
+    readAgentModelSettings(slug),
   ]);
 
   const live = snapshot?.agents?.[slug];
@@ -114,7 +118,8 @@ export default async function AgentProfilePage({ params }: { params: Promise<{ a
   const capabilities = raw.capabilities ?? {};
   const rawServices = raw.services ?? [];
   const services = Object.entries(snapshot?.system ?? {}).filter(([name]) => name.startsWith(`${slug}/`));
-  const controlServices = rawServices.map((name) => ({
+  const serviceNames = Array.from(new Set([...rawServices, ...services.map(([name]) => name.replace(`${slug}/`, ""))]));
+  const controlServices = serviceNames.map((name) => ({
     name,
     status: snapshot?.system?.[`${slug}/${name}`]?.is_active ?? snapshot?.system?.[name]?.is_active,
   }));
@@ -149,87 +154,92 @@ export default async function AgentProfilePage({ params }: { params: Promise<{ a
         </div>
       </header>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
-        <div className="space-y-4">
-          <Panel title="Identity files">
-            <ProfileEditor agent={slug} files={profile.files} canEdit={canEdit} />
-          </Panel>
+      <AgentTabs
+        controls={(
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
+            <div className="space-y-4">
+              <Panel title="Identity files">
+                <ProfileEditor agent={slug} files={profile.files} canEdit={canEdit} />
+              </Panel>
 
-          <Panel title="Profile audit history">
-            {audit.length === 0 ? (
-              <p className="text-sm text-[var(--color-text-muted)]">No profile edits recorded yet.</p>
-            ) : (
-              <ul className="divide-y divide-[var(--color-line)] text-sm">
-                {audit.map((row) => {
-                  const payload = row.payload ? JSON.parse(row.payload) as { file?: string; shaBefore?: string; shaAfter?: string; byteDelta?: number; diff?: string } : {};
-                  return (
-                    <li key={row.id} className="py-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span><strong>{row.user?.username ?? "Someone"}</strong> edited <span className="font-mono">{payload.file ?? row.targetFile}</span></span>
-                        <time className="text-xs text-[var(--color-text-muted)]" dateTime={row.createdAt.toISOString()}>{row.createdAt.toISOString().slice(0, 19).replace("T", " ")}</time>
-                      </div>
-                      <div className="mt-1 font-mono text-xs text-[var(--color-text-muted)]">{payload.shaBefore?.slice(0, 8)} → {payload.shaAfter?.slice(0, 8)} · Δ {payload.byteDelta ?? 0} bytes</div>
-                      {payload.diff ? <details className="mt-2"><summary className="cursor-pointer text-xs text-[var(--color-accent)]">View diff</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--color-bg)] p-3 text-xs">{payload.diff}</pre></details> : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </Panel>
-        </div>
-
-        <aside className="space-y-4">
-          <Panel title="Current task">
-            {live?.current_task ? (
-              <div className="space-y-1 text-sm">
-                <div className="font-semibold">{live.current_task.ticket ?? live.current_task.heading}</div>
-                <div className="text-[var(--color-text-muted)]">{live.current_task.heading}</div>
-                <div className="text-xs text-[var(--color-text-muted)]">status: {live.current_task.status ?? "—"}</div>
-              </div>
-            ) : <p className="text-sm text-[var(--color-text-muted)]">No active task pinned.</p>}
-          </Panel>
-
-          <Panel title="Open tickets">
-            {tickets.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No open assigned tickets.</p> : (
-              <ul className="space-y-2 text-sm">
-                {tickets.map((t) => <li key={t.key} className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-2"><div className="font-mono text-xs text-[var(--color-text-muted)]">{t.key}</div><div className="font-medium">{t.summary}</div><div className="text-xs text-[var(--color-text-muted)]">{t.status}</div></li>)}
-              </ul>
-            )}
-          </Panel>
-
-          <Panel title="Brain · model">
-            <Metric label="Active model" value={live?.model_primary ?? "—"} />
-            <Metric label="Busy state" value={live?.busy_state?.is_busy ? `busy · ${(live.busy_state.signals ?? []).join(", ")}` : "available"} />
-          </Panel>
-
-          <AtlasControls
-            agent={slug}
-            canEdit={canEdit}
-            integrations={integrations}
-            capabilities={capabilities}
-            services={controlServices}
-            model={live?.model_primary}
-          />
-
-          <Panel title="Lifecycle">
-            <div className="grid gap-2 text-sm">
-              {services.length === 0 ? <p className="text-[var(--color-text-muted)]">No live agent services reported.</p> : services.map(([name, svc]) => <div key={name} className="flex justify-between gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2"><code className="truncate text-xs">{name.replace(`${slug}/`, "")}</code><span className={svc.is_active === "active" ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.is_active ?? "unknown"}</span></div>)}
+              <Panel title="Profile audit history">
+                {audit.length === 0 ? (
+                  <p className="text-sm text-[var(--color-text-muted)]">No profile edits recorded yet.</p>
+                ) : (
+                  <ul className="divide-y divide-[var(--color-line)] text-sm">
+                    {audit.map((row) => {
+                      const payload = row.payload ? JSON.parse(row.payload) as { file?: string; shaBefore?: string; shaAfter?: string; byteDelta?: number; diff?: string } : {};
+                      return (
+                        <li key={row.id} className="py-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span><strong>{row.user?.username ?? "Someone"}</strong> edited <span className="font-mono">{payload.file ?? row.targetFile}</span></span>
+                            <time className="text-xs text-[var(--color-text-muted)]" dateTime={row.createdAt.toISOString()}>{row.createdAt.toISOString().slice(0, 19).replace("T", " ")}</time>
+                          </div>
+                          <div className="mt-1 font-mono text-xs text-[var(--color-text-muted)]">{payload.shaBefore?.slice(0, 8)} → {payload.shaAfter?.slice(0, 8)} · Δ {payload.byteDelta ?? 0} bytes</div>
+                          {payload.diff ? <details className="mt-2"><summary className="cursor-pointer text-xs text-[var(--color-accent)]">View diff</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--color-bg)] p-3 text-xs">{payload.diff}</pre></details> : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </Panel>
             </div>
-          </Panel>
 
-          <Panel title="Capabilities · listeners">
-            <ChipGrid items={[raw.telegram?.enabled ? `telegram: ${raw.telegram.bot ?? "enabled"}` : null, ...listeners.map((l) => `${l.owner ?? "listener"}: ${l.host ?? "?"}:${l.port ?? "?"}`)].filter(Boolean) as string[]} empty="No capabilities reported." />
-          </Panel>
+            <aside className="space-y-4">
+              <AtlasControls
+                agent={slug}
+                canEdit={canEdit}
+                integrations={integrations}
+                capabilities={capabilities}
+                services={controlServices}
+              />
+            </aside>
+          </div>
+        )}
+        operations={(
+          <div className="grid gap-4 xl:grid-cols-2">
+            <Panel title="Current task">
+              {live?.current_task ? (
+                <div className="space-y-1 text-sm">
+                  <div className="font-semibold">{live.current_task.ticket ?? live.current_task.heading}</div>
+                  <div className="text-[var(--color-text-muted)]">{live.current_task.heading}</div>
+                  <div className="text-xs text-[var(--color-text-muted)]">status: {live.current_task.status ?? "—"}</div>
+                </div>
+              ) : <p className="text-sm text-[var(--color-text-muted)]">No active task pinned.</p>}
+            </Panel>
 
-          <Panel title="Activity">
-            {activity.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No activity recorded.</p> : (
-              <ul className="divide-y divide-[var(--color-line)] text-sm">
-                {activity.map((row) => <li key={row.id} className="py-2"><div className="font-medium">{row.kind}</div><div className="text-xs text-[var(--color-text-muted)]">{row.createdAt.toISOString().slice(0,19).replace("T", " ")}{row.task ? ` · ${row.task.title}` : ""}</div></li>)}
-              </ul>
-            )}
-          </Panel>
-        </aside>
-      </div>
+            <Panel title="Open tickets">
+              {tickets.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No open assigned tickets.</p> : (
+                <ul className="space-y-2 text-sm">
+                  {tickets.map((t) => <li key={t.key} className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-2"><div className="font-mono text-xs text-[var(--color-text-muted)]">{t.key}</div><div className="font-medium">{t.summary}</div><div className="text-xs text-[var(--color-text-muted)]">{t.status}</div></li>)}
+                </ul>
+              )}
+            </Panel>
+
+            <Panel title="Models Settings">
+              <ModelsSettings agent={slug} canEdit={canEdit} settings={modelSettings} liveModel={live?.model_primary} />
+            </Panel>
+
+            <Panel title="Activity">
+              {activity.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No activity recorded.</p> : (
+                <ul className="divide-y divide-[var(--color-line)] text-sm">
+                  {activity.map((row) => <li key={row.id} className="py-2"><div className="font-medium">{row.kind}</div><div className="text-xs text-[var(--color-text-muted)]">{row.createdAt.toISOString().slice(0,19).replace("T", " ")}{row.task ? ` · ${row.task.title}` : ""}</div></li>)}
+                </ul>
+              )}
+            </Panel>
+
+            <Panel title="Lifecycle">
+              <div className="grid gap-2 text-sm">
+                {services.length === 0 ? <p className="text-[var(--color-text-muted)]">No live agent services reported.</p> : services.map(([name, svc]) => <div key={name} className="flex justify-between gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2"><code className="truncate text-xs">{name.replace(`${slug}/`, "")}</code><span className={svc.is_active === "active" ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.is_active ?? "unknown"}</span></div>)}
+              </div>
+            </Panel>
+
+            <Panel title="Listeners">
+              <ChipGrid items={[raw.telegram?.enabled ? `telegram: ${raw.telegram.bot ?? "enabled"}` : null, ...listeners.map((l) => `${l.owner ?? "listener"}: ${l.host ?? "?"}:${l.port ?? "?"}`)].filter(Boolean) as string[]} empty="No listeners reported." />
+            </Panel>
+          </div>
+        )}
+      />
     </div>
   );
 }

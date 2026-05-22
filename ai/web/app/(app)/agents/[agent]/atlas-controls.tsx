@@ -2,13 +2,14 @@
 
 import { useState } from "react";
 
+type ServiceRow = { name: string; status?: string };
+
 type Props = {
   agent: string;
   canEdit: boolean;
   integrations: Record<string, boolean>;
   capabilities: Record<string, boolean>;
-  services: Array<{ name: string; status?: string }>;
-  model?: string | null;
+  services: ServiceRow[];
 };
 
 const CREDENTIAL_FIELDS: Record<string, Array<{ name: string; label: string; type?: string }>> = {
@@ -19,9 +20,19 @@ const CREDENTIAL_FIELDS: Record<string, Array<{ name: string; label: string; typ
   webhook: [{ name: "secret", label: "Shared secret", type: "password" }],
 };
 
-export default function AtlasControls({ agent, canEdit, integrations, capabilities, services, model }: Props) {
+const SERVICE_LABELS: Record<string, string> = { gateway: "telegram", "gmail-listener": "gmail", "webhook-receiver": "webhook" };
+
+function serviceLabel(name: string) {
+  const noExt = name.replace(/\.service$/, "");
+  if (name.startsWith("openclaw-")) return SERVICE_LABELS[noExt.replace(/^openclaw-/, "")] ?? noExt.replace(/^openclaw-/, "");
+  if (name.startsWith("wdt-")) return "wdt";
+  return noExt;
+}
+
+export default function AtlasControls({ agent, canEdit, integrations, capabilities, services }: Props) {
   const [localIntegrations, setLocalIntegrations] = useState(integrations);
   const [localCapabilities, setLocalCapabilities] = useState(capabilities);
+  const [localServices, setLocalServices] = useState(services);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [credIntegration, setCredIntegration] = useState<string | null>(null);
@@ -47,6 +58,30 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
       if (kind === "integrations") setLocalIntegrations((cur) => ({ ...cur, [key]: Boolean(prev) }));
       else setLocalCapabilities((cur) => ({ ...cur, [key]: Boolean(prev) }));
       setMessage(`Toggle failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function toggleService(service: ServiceRow, enabled: boolean) {
+    if (!canEdit) return;
+    const verb = enabled ? "enable/start" : "disable/stop";
+    if (!window.confirm(`${verb} ${service.name} for ${agent}?`)) return;
+    setBusy(`service-toggle:${service.name}`);
+    setMessage(null);
+    const prev = localServices;
+    setLocalServices((cur) => cur.map((svc) => svc.name === service.name ? { ...svc, status: enabled ? "active" : "inactive" } : svc));
+    try {
+      const res = await fetch(`/api/agents/${encodeURIComponent(agent)}/services/toggle`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ service: service.name, enabled }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setMessage(`${service.name} ${enabled ? "enabled" : "disabled"}.`);
+    } catch (err) {
+      setLocalServices(prev);
+      setMessage(`Service toggle failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy(null);
     }
@@ -82,9 +117,7 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
         const data = await res.json() as { fields?: Record<string, string> };
         setFields(data.fields ?? {});
       }
-    } catch {
-      // empty form fallback is fine
-    }
+    } catch {}
   }
 
   async function saveCredentials() {
@@ -108,40 +141,26 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
     }
   }
 
-  const editableHint = canEdit ? "Controls write through the existing Atlas dashboard endpoints." : "Read-only: you cannot change this agent.";
-
   return (
     <div className="space-y-4">
-      <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-        <h2 className="mb-2 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">Atlas controls</h2>
-        <p className="mb-3 text-sm text-[var(--color-text-muted)]">{editableHint}</p>
-        <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3 text-sm">
-          <div className="text-[11px] uppercase tracking-wider text-[var(--color-text-muted)]">Current model</div>
-          <div className="mt-1 break-words font-medium">{model ?? "—"}</div>
-          <p className="mt-2 text-xs text-[var(--color-text-muted)]">Atlas currently reports the running model; the original dashboard does not expose a model-change endpoint yet.</p>
-        </div>
-        {message ? <p className="mt-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-2 text-xs text-[var(--color-text-muted)]">{message}</p> : null}
-      </section>
-
+      {message ? <p className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-2 text-xs text-[var(--color-text-muted)]">{message}</p> : null}
       <ToggleSection title="Integrations" entries={localIntegrations} busy={busy} canEdit={canEdit} onToggle={(key, value) => toggle("integrations", key, value)} onCredentials={openCredentials} />
       <ToggleSection title="Capabilities" entries={localCapabilities} busy={busy} canEdit={canEdit} onToggle={(key, value) => toggle("capabilities", key, value)} />
 
       <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">Services</h2>
-          <span className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">↻ restart toggle</span>
-        </div>
-        {services.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No restartable services reported.</p> : (
-          <div className="grid gap-2 text-sm">
-            {services.map((svc) => (
-              <div key={svc.name} className="flex items-center justify-between gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2">
-                <div className="min-w-0">
-                  <code className="block truncate text-xs">{svc.name}</code>
-                  <span className={svc.status === "active" ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.status ?? "unknown"}</span>
-                </div>
-                <button type="button" disabled={!canEdit || busy === `service:${svc.name}`} onClick={() => restart(svc.name)} className="inline-flex items-center gap-1 rounded-full border border-[var(--color-line)] px-2 py-1 text-xs hover:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"><span aria-hidden="true">↻</span> Toggle/restart</button>
-              </div>
-            ))}
+        <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">🛠 Services</h2>
+        {localServices.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No services reported for this agent.</p> : (
+          <div className="flex flex-wrap gap-2 text-xs">
+            {localServices.map((svc) => {
+              const enabled = svc.status === "active";
+              const busyToggle = busy === `service-toggle:${svc.name}`;
+              return (
+                <span key={svc.name} className={`inline-flex items-center overflow-hidden rounded-full border ${enabled ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10 text-[var(--color-ok)]" : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]"}`} title={`${svc.name}: ${svc.status ?? "unknown"}`}>
+                  <button type="button" disabled={!canEdit || busyToggle} onClick={() => toggleService(svc, !enabled)} className="px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50">{serviceLabel(svc.name)}: {enabled ? "enabled" : "disabled"}</button>
+                  <button type="button" disabled={!canEdit || busy === `service:${svc.name}`} onClick={() => restart(svc.name)} className="border-l border-current/20 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50" title={`Restart ${svc.name}`}>↻</button>
+                </span>
+              );
+            })}
           </div>
         )}
       </section>
@@ -182,7 +201,7 @@ function ToggleSection({ title, entries, busy, canEdit, onToggle, onCredentials 
         <div className="flex flex-wrap gap-2 text-xs">
           {pairs.map(([key, enabled]) => (
             <span key={key} className={`inline-flex items-center overflow-hidden rounded-full border ${enabled ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10 text-[var(--color-ok)]" : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]"}`}>
-              <button type="button" disabled={!canEdit || busy === `${title.toLowerCase()}:${key}`} onClick={() => onToggle(key, !enabled)} className="px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50">{key}: {enabled ? "on" : "off"}</button>
+              <button type="button" disabled={!canEdit || busy === `${title.toLowerCase()}:${key}`} onClick={() => onToggle(key, !enabled)} className="px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50">{key}: {enabled ? "enabled" : "disabled"}</button>
               {onCredentials && CREDENTIAL_FIELDS[key] ? <button type="button" disabled={!canEdit} onClick={() => onCredentials(key)} className="border-l border-current/20 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50" title={`Edit ${key} credentials`}>⚙</button> : null}
             </span>
           ))}
