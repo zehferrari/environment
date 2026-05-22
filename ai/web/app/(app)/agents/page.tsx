@@ -45,14 +45,23 @@ function avatarUrl(name: string) {
 
 function statusFor(agent: { deactivatedAt: Date | null; user: { status: string } | null }, live?: SnapshotAgent | null) {
   if (agent.deactivatedAt || agent.user?.status === "deactivated") return "offline";
-  if (live?.busy_state?.is_busy) return "active";
+  if (live?.busy_state?.is_busy) return "busy";
   if (live) {
     const idle = live.session_idle_s ?? 999999;
-    if (idle < 90) return "active";
+    if (idle < 90) return "live";
     if (idle < 900) return "idle";
     return "stale";
   }
-  return agent.user ? "active" : "registered";
+  return agent.user ? "live" : "registered";
+}
+
+function ringFor(status: string) {
+  if (status === "busy") return { ring: "#22c55e", bg: "rgba(34,197,94,0.16)", label: "busy" };
+  if (status === "live") return { ring: "#2dd4bf", bg: "rgba(45,212,191,0.16)", label: "live" };
+  if (status === "idle") return { ring: "#f59e0b", bg: "rgba(245,158,11,0.16)", label: "idle" };
+  if (status === "stale") return { ring: "#64748b", bg: "rgba(100,116,139,0.16)", label: "stale" };
+  if (status === "offline") return { ring: "#ef4444", bg: "rgba(239,68,68,0.16)", label: "offline" };
+  return { ring: "#94a3b8", bg: "rgba(148,163,184,0.16)", label: status };
 }
 
 function accentFor(slug: string) {
@@ -96,7 +105,7 @@ export default async function AgentsPage() {
   ]);
 
   const liveAgents = snapshot?.agents ?? {};
-  const active = agents.filter((a) => statusFor(a, liveAgents[a.slug]) === "active").length;
+  const active = agents.filter((a) => ["busy", "live"].includes(statusFor(a, liveAgents[a.slug]))).length;
   const openTickets = agents.reduce((sum, a) => sum + (liveAgents[a.slug]?.jira_tickets?.length ?? 0), 0);
   const openTasks = agents.reduce((sum, a) => sum + (a.user?.assignedTasks.length ?? 0), 0);
   const system = snapshot?.system ?? {};
@@ -133,6 +142,7 @@ export default async function AgentsPage() {
           {agents.map((a) => {
             const live = liveAgents[a.slug];
             const status = statusFor(a, live);
+            const ring = ringFor(status);
             const liveTask = live?.current_task ?? null;
             const pmTask = a.user?.assignedTasks.find((t) => t.status === "In Progress") ?? a.user?.assignedTasks[0] ?? null;
             const tickets = live?.jira_tickets ?? [];
@@ -145,13 +155,17 @@ export default async function AgentsPage() {
               >
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_0%_0%,color-mix(in_srgb,var(--agent-hue)_18%,transparent),transparent_45%)]" />
                 <div className="relative flex items-start gap-4">
-                  <div className="grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-2xl border bg-[var(--color-panel-soft)] text-2xl font-semibold" style={{ borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))" }}>
-                    {a.avatar || live?.avatar_url ? <img src={live?.avatar_url ?? avatarUrl(a.name)} alt={`${a.name} avatar`} className="h-full w-full object-cover" /> : (live?.avatar ?? a.name.slice(0, 1))}
+                  <div className="relative shrink-0">
+                    <div className="absolute -inset-1.5 rounded-[24px]" style={{ border: `3px solid ${ring.ring}`, background: ring.bg, boxShadow: `0 0 0 4px ${ring.bg}` }} aria-hidden="true" />
+                    <div className="relative grid h-16 w-16 place-items-center overflow-hidden rounded-2xl border bg-[var(--color-panel-soft)] text-2xl font-semibold" style={{ borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))" }}>
+                      {a.avatar || live?.avatar_url ? <img src={live?.avatar_url ?? avatarUrl(a.name)} alt={`${a.name} avatar`} className="h-full w-full object-cover" /> : (live?.avatar ?? a.name.slice(0, 1))}
+                    </div>
+                    <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ color: ring.ring }}>{ring.label}</span>
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h2 className="truncate text-xl font-semibold tracking-tight">{a.name}</h2>
-                      <span className={`h-2.5 w-2.5 rounded-full ${status === "active" ? "bg-[var(--color-ok)]" : status === "offline" ? "bg-[var(--color-crit)]" : status === "idle" ? "bg-[var(--color-warn)]" : "bg-[var(--color-text-dim)]"}`} />
+                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: ring.ring }} />
                     </div>
                     <p className="font-mono text-xs text-[var(--color-text-muted)]">@{a.slug} · {a.role}</p>
                     <div className="mt-3 flex flex-wrap gap-2 text-xs">

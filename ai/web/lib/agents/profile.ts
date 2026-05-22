@@ -43,32 +43,26 @@ export function assertProfileFile(file: string): asserts file is ProfileFileName
   }
 }
 
-export async function agentWorkspace(agent: string): Promise<string> {
+export async function agentProfileDir(agent: string): Promise<string> {
   if (!AGENT_RE.test(agent)) throw new ProfileError(400, "Invalid agent id");
   const index = await readAgentIndex();
   const row = index.agents.find((a) => a.user === agent && a.enabled !== false);
   if (!row) throw new ProfileError(404, "Agent not found");
-  const rawWorkspace = (row as { workspace?: string }).workspace ?? path.join("/home", agent, "workspace");
-  const workspace = path.resolve(rawWorkspace);
-  const expectedPrefix = path.resolve("/home", agent) + path.sep;
-  if (!workspace.startsWith(expectedPrefix)) {
-    throw new ProfileError(400, "Agent workspace is outside expected home");
-  }
-  return workspace;
+  return path.resolve("/srv/agents/openclaw", agent);
 }
 
-async function safeProfilePath(agent: string, file: ProfileFileName): Promise<{ workspace: string; filePath: string }> {
-  const workspace = await agentWorkspace(agent);
-  const filePath = path.resolve(workspace, file);
-  if (!filePath.startsWith(workspace + path.sep)) {
-    throw new ProfileError(400, "Profile path escapes workspace");
+async function safeProfilePath(agent: string, file: ProfileFileName): Promise<{ profileDir: string; filePath: string }> {
+  const profileDir = await agentProfileDir(agent);
+  const filePath = path.resolve(profileDir, file);
+  if (!filePath.startsWith(profileDir + path.sep)) {
+    throw new ProfileError(400, "Profile path escapes profile directory");
   }
   const st = await lstat(filePath).catch((err: NodeJS.ErrnoException) => {
     if (err.code === "ENOENT") return null;
     throw err;
   });
   if (st?.isSymbolicLink()) throw new ProfileError(400, "Refusing to read or write symlinked profile file");
-  return { workspace, filePath };
+  return { profileDir, filePath };
 }
 
 export function sha256(content: string | Buffer): string {
@@ -160,9 +154,9 @@ export async function writeProfileFile(input: {
 }) {
   const bytes = Buffer.byteLength(input.content, "utf8");
   if (bytes > PROFILE_MAX_BYTES) throw new ProfileError(413, "Profile content exceeds 256 KiB limit");
-  const { workspace, filePath } = await safeProfilePath(input.agent, input.file);
-  await access(workspace, constants.W_OK).catch(() => {
-    throw new ProfileError(403, "Workspace is not writable by PM process");
+  const { profileDir, filePath } = await safeProfilePath(input.agent, input.file);
+  await access(profileDir, constants.W_OK).catch(() => {
+    throw new ProfileError(403, "Profile directory is not writable by PM process");
   });
 
   const before = await readProfileFile(input.agent, input.file);
@@ -170,7 +164,7 @@ export async function writeProfileFile(input: {
     throw new ProfileError(412, "Profile file changed since it was loaded");
   }
 
-  const backupDir = path.join(workspace, ".backups");
+  const backupDir = path.join(profileDir, ".backups");
   await mkdir(backupDir, { recursive: true, mode: 0o775 });
   const backupPath = path.join(backupDir, `${input.file}.${Date.now()}.bak`);
   await copyFile(filePath, backupPath).catch((err: NodeJS.ErrnoException) => {

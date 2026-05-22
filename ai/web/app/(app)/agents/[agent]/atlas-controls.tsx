@@ -127,13 +127,19 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
       <ToggleSection title="Capabilities" entries={localCapabilities} busy={busy} canEdit={canEdit} onToggle={(key, value) => toggle("capabilities", key, value)} />
 
       <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-        <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">Services</h2>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">Services</h2>
+          <span className="text-[10px] uppercase tracking-wide text-[var(--color-text-muted)]">↻ restart toggle</span>
+        </div>
         {services.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No restartable services reported.</p> : (
           <div className="grid gap-2 text-sm">
             {services.map((svc) => (
               <div key={svc.name} className="flex items-center justify-between gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2">
-                <div className="min-w-0"><code className="block truncate text-xs">{svc.name}</code><span className={svc.status === "active" ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.status ?? "unknown"}</span></div>
-                <button type="button" disabled={!canEdit || busy === `service:${svc.name}`} onClick={() => restart(svc.name)} className="rounded-lg border border-[var(--color-line)] px-2 py-1 text-xs hover:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40">Restart</button>
+                <div className="min-w-0">
+                  <code className="block truncate text-xs">{svc.name}</code>
+                  <span className={svc.status === "active" ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.status ?? "unknown"}</span>
+                </div>
+                <button type="button" disabled={!canEdit || busy === `service:${svc.name}`} onClick={() => restart(svc.name)} className="inline-flex items-center gap-1 rounded-full border border-[var(--color-line)] px-2 py-1 text-xs hover:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40"><span aria-hidden="true">↻</span> Toggle/restart</button>
               </div>
             ))}
           </div>
