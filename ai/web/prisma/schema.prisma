@@ -221,3 +221,36 @@ model ActivityLog {
   @@index([targetFile])
   @@index([createdAt])
 }
+
+// ------------------------------------------------------------------
+// HOMELAB-46 Slice 4: consumer-side delivery log.
+// UNIQUE(dedupeKey) drives the replay-test acceptance criterion —
+// re-firing the same envelope hits the unique index and the
+// downstream wake is suppressed. Truncating this table is safe;
+// HOMELAB-51 audit rows live on ActivityLog and survive separately.
+// ------------------------------------------------------------------
+
+model PmEventDelivery {
+  id                String   @id @default(cuid())
+  dedupeKey         String   @unique
+  eventId           String
+  kind              String
+  taskId            String
+  taskKey           String
+  projectKey        String
+  actorId           String
+  targetAgentSlug   String?
+  targetGatewayPort Int?
+  envelope          String   // JSON-stringified PmEvent for audit
+  receivedAt        DateTime @default(now())
+  deliveredAt       DateTime?
+  deliveryStatus    String?  // "delivered" | "failed" | "unmatched" | "skipped"
+  gatewayStatus     Int?
+  error             String?
+
+  @@index([eventId])
+  @@index([taskId])
+  @@index([targetAgentSlug])
+  @@index([deliveryStatus])
+  @@index([receivedAt])
+}
