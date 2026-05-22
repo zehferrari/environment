@@ -11,7 +11,7 @@ type OpenClawConfig = {
       model?: { primary?: string; fallbacks?: string[] };
       models?: Record<string, { alias?: string }>;
     };
-    list?: Array<{ id?: string; default?: boolean; model?: string; fallbacks?: string[] }>;
+    list?: Array<{ id?: string; default?: boolean; model?: string | { primary?: string; fallbacks?: string[] }; fallbacks?: string[] }>;
   };
   models?: { providers?: Record<string, { models?: Array<{ id?: string; name?: string }> }> };
 };
@@ -37,9 +37,23 @@ function configPath(agent: string) {
   return path.join("/srv/agents/openclaw", agent, "openclaw.json");
 }
 
+function modelPrimary(model: unknown) {
+  if (typeof model === "string") return model;
+  if (model && typeof model === "object" && typeof (model as { primary?: unknown }).primary === "string") return (model as { primary: string }).primary;
+  return null;
+}
+
+function modelFallbacks(model: unknown) {
+  if (model && typeof model === "object" && Array.isArray((model as { fallbacks?: unknown }).fallbacks)) {
+    return (model as { fallbacks: unknown[] }).fallbacks.filter((entry): entry is string => typeof entry === "string");
+  }
+  return [];
+}
+
 function addConfiguredModel(labels: Map<string, string>, model: unknown) {
-  if (typeof model !== "string") return;
-  const id = model.trim();
+  const primary = modelPrimary(model);
+  if (!primary) return;
+  const id = primary.trim();
   if (!id || labels.has(id)) return;
   labels.set(id, `${id} · configured`);
 }
@@ -63,6 +77,7 @@ function collectAvailable(cfg: OpenClawConfig) {
   for (const fallback of cfg.agents?.defaults?.model?.fallbacks ?? []) addConfiguredModel(labels, fallback);
   for (const entry of cfg.agents?.list ?? []) {
     addConfiguredModel(labels, entry.model);
+    for (const fallback of modelFallbacks(entry.model)) addConfiguredModel(labels, fallback);
     for (const fallback of entry.fallbacks ?? []) addConfiguredModel(labels, fallback);
   }
 
@@ -71,7 +86,7 @@ function collectAvailable(cfg: OpenClawConfig) {
 
 function primaryFor(cfg: OpenClawConfig) {
   const main = cfg.agents?.list?.find((entry) => entry.default || entry.id === "main");
-  return main?.model ?? cfg.agents?.defaults?.model?.primary ?? null;
+  return modelPrimary(main?.model) ?? cfg.agents?.defaults?.model?.primary ?? null;
 }
 
 function normalizeModel(value: unknown, field: string) {
@@ -166,11 +181,18 @@ export async function updateAgentModelSettings(agent: string, input: AgentModelU
   cfg.agents.defaults.model ??= {};
 
   if (next.defaultModel) cfg.agents.defaults.model.primary = next.defaultModel;
-  if (next.fallbacks) cfg.agents.defaults.model.fallbacks = next.fallbacks;
+  if (next.fallbacks) {
+    cfg.agents.defaults.model.fallbacks = next.fallbacks;
+    const main = cfg.agents.list?.find((entry) => entry.default || entry.id === "main");
+    if (main && modelPrimary(main.model)) main.model = { primary: modelPrimary(main.model)!, fallbacks: next.fallbacks };
+  }
   if (next.active) {
     const main = cfg.agents.list?.find((entry) => entry.default || entry.id === "main");
-    if (main) main.model = next.active;
-    else cfg.agents.defaults.model.primary = next.active;
+    if (main) {
+      const currentFallbacks = modelFallbacks(main.model);
+      const inheritedFallbacks = next.fallbacks ?? (currentFallbacks.length > 0 ? currentFallbacks : cfg.agents.defaults.model.fallbacks);
+      main.model = { primary: next.active, fallbacks: inheritedFallbacks ?? [] };
+    } else cfg.agents.defaults.model.primary = next.active;
   }
 
   const after = {

@@ -34,7 +34,7 @@ export default function ModelsSettings({ agent, canEdit, settings, liveModel }: 
         setDefaultModel(body.after.defaultModel ?? "");
         setFallbacks(body.after.fallbacks ?? []);
       }
-      setMessage("Model settings saved and agent restart requested.");
+      setMessage("Model settings saved and agent restart requested. Configured active/default update immediately; the live running-session value can lag until the current turn exits or the agent restart completes.");
     } catch (err) {
       setMessage(`Model settings update failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -80,8 +80,9 @@ export default function ModelsSettings({ agent, canEdit, settings, liveModel }: 
 
   return (
     <div className="space-y-4 text-sm">
-      <div className="grid gap-3 md:grid-cols-2">
-        <Metric label="Current live" value={liveModel ?? "—"} />
+      <div className="grid gap-3 md:grid-cols-3">
+        <Metric label="Configured active" value={settings.active ?? "—"} />
+        <Metric label="Live running session" value={liveModel ?? "—"} />
         <Metric label="Config source" value={settings.writablePath} />
       </div>
 

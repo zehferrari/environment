@@ -4,8 +4,15 @@ async function snapshotServices(agent: string) {
   try {
     const res = await fetch("http://127.0.0.1:3013/agents/snapshot", { cache: "no-store" });
     if (!res.ok) return [];
-    const data = await res.json() as { agents?: Record<string, { services?: string[] }> };
-    return data.agents?.[agent]?.services ?? [];
+    const data = await res.json() as {
+      agents?: Record<string, { services?: string[] }>;
+      system?: Record<string, unknown>;
+    };
+    const direct = data.agents?.[agent]?.services ?? [];
+    const fromSystem = Object.keys(data.system ?? {})
+      .filter((name) => name.startsWith(`${agent}/`))
+      .map((name) => name.slice(agent.length + 1));
+    return Array.from(new Set([...direct, ...fromSystem]));
   } catch {
     return [];
   }
