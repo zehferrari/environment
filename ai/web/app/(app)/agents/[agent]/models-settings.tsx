@@ -34,7 +34,7 @@ export default function ModelsSettings({ agent, canEdit, settings, liveModel }: 
         setDefaultModel(body.after.defaultModel ?? "");
         setFallbacks(body.after.fallbacks ?? []);
       }
-      setMessage("Model settings saved and agent restart requested. Configured active/default update immediately; the live running-session value can lag until the current turn exits or the agent restart completes.");
+      setMessage("Model settings saved and agent restart requested. The Current model value updates after the current turn exits or the agent restart completes.");
     } catch (err) {
       setMessage(`Model settings update failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -80,10 +80,15 @@ export default function ModelsSettings({ agent, canEdit, settings, liveModel }: 
 
   return (
     <div className="space-y-4 text-sm">
-      <div className="grid gap-3 md:grid-cols-3">
-        <Metric label="Configured active" value={settings.active ?? "—"} />
-        <Metric label="Live running session" value={liveModel ?? "—"} />
-        <Metric label="Config source" value={settings.writablePath} />
+      <div className="space-y-2 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
+        <div className="text-[11px] uppercase tracking-wider text-[var(--color-text-muted)]">Current model</div>
+        <div className="break-words font-medium">{liveModel ?? settings.active ?? "—"}</div>
+        {liveModel && settings.active && liveModel !== settings.active ? (
+          <p className="text-xs text-[var(--color-text-muted)]">
+            A model change is saved as <code>{settings.active}</code>, but the currently running turn is still on <code>{liveModel}</code>. The running value updates after the current turn exits or the agent restart completes.
+          </p>
+        ) : null}
+        <p className="text-xs text-[var(--color-text-muted)]">Config source: <code>{settings.writablePath}</code></p>
       </div>
 
       <label className="block">
