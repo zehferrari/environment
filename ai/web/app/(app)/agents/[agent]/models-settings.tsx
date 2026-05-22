@@ -3,8 +3,8 @@
 import { useMemo, useState } from "react";
 import type { AgentModelSettings } from "@/lib/agents/model-settings";
 
-export default function ModelsSettings({ agent, canEdit, settings, liveModel }: { agent: string; canEdit: boolean; settings: AgentModelSettings; liveModel?: string | null }) {
-  const [active, setActive] = useState(settings.active ?? liveModel ?? "");
+export default function ModelsSettings({ agent, canEdit, settings }: { agent: string; canEdit: boolean; settings: AgentModelSettings; liveModel?: string | null }) {
+  const [active, setActive] = useState(settings.active ?? "");
   const [defaultModel, setDefaultModel] = useState(settings.defaultModel ?? "");
   const [fallbacks, setFallbacks] = useState<string[]>(settings.fallbacks);
   const [busy, setBusy] = useState(false);
@@ -34,7 +34,7 @@ export default function ModelsSettings({ agent, canEdit, settings, liveModel }: 
         setDefaultModel(body.after.defaultModel ?? "");
         setFallbacks(body.after.fallbacks ?? []);
       }
-      setMessage("Model settings saved and agent restart requested. The Current model value updates after the current turn exits or the agent restart completes.");
+      setMessage("Model settings saved and agent restart requested.");
     } catch (err) {
       setMessage(`Model settings update failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
@@ -69,7 +69,7 @@ export default function ModelsSettings({ agent, canEdit, settings, liveModel }: 
   if (!settings.readable) {
     return (
       <div className="space-y-3 text-sm">
-        <Metric label="Current active" value={liveModel ?? "—"} />
+        <Metric label="Current model" value={settings.active ?? "—"} />
         <p className="rounded-xl border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 p-3 text-[var(--color-warn)]">
           Model config is not readable at <code>{settings.writablePath}</code>. Move or expose this config under a PM-writable shared location if you want the editor to update it for this agent.
         </p>
@@ -82,12 +82,7 @@ export default function ModelsSettings({ agent, canEdit, settings, liveModel }: 
     <div className="space-y-4 text-sm">
       <div className="space-y-2 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
         <div className="text-[11px] uppercase tracking-wider text-[var(--color-text-muted)]">Current model</div>
-        <div className="break-words font-medium">{liveModel ?? settings.active ?? "—"}</div>
-        {liveModel && settings.active && liveModel !== settings.active ? (
-          <p className="text-xs text-[var(--color-text-muted)]">
-            A model change is saved as <code>{settings.active}</code>, but the currently running turn is still on <code>{liveModel}</code>. The running value updates after the current turn exits or the agent restart completes.
-          </p>
-        ) : null}
+        <div className="break-words font-medium">{settings.active ?? "—"}</div>
         <p className="text-xs text-[var(--color-text-muted)]">Config source: <code>{settings.writablePath}</code></p>
       </div>
 
