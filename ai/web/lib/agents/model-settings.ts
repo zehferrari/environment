@@ -1,5 +1,5 @@
 import path from "node:path";
-import { readFile, writeFile } from "node:fs/promises";
+import { rename, readFile, writeFile } from "node:fs/promises";
 import { db } from "@/lib/db";
 import { requestAgentRestart } from "@/lib/agents/restart";
 
@@ -26,6 +26,12 @@ export type AgentModelSettings = {
   error?: string;
 };
 
+export type AgentModelUpdateInput = {
+  active?: string;
+  defaultModel?: string;
+  fallbacks?: string[];
+};
+
 function configPath(agent: string) {
   if (!AGENT_RE.test(agent)) throw new Error("Invalid agent id");
   return path.join("/srv/agents/openclaw", agent, "openclaw.json");
@@ -47,6 +53,41 @@ function collectAvailable(cfg: OpenClawConfig) {
 function primaryFor(cfg: OpenClawConfig) {
   const main = cfg.agents?.list?.find((entry) => entry.default || entry.id === "main");
   return main?.model ?? cfg.agents?.defaults?.model?.primary ?? null;
+}
+
+function normalizeModel(value: unknown, field: string) {
+  if (typeof value !== "string") throw new Error(`${field} must be a string`);
+  const model = value.trim();
+  if (!model) throw new Error(`${field} cannot be empty`);
+  if (model.length > 160) throw new Error(`${field} is too long`);
+  return model;
+}
+
+function normalizeFallbacks(value: unknown) {
+  if (!Array.isArray(value)) throw new Error("fallbacks must be an array");
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of value) {
+    const model = normalizeModel(item, "fallback model");
+    if (seen.has(model)) continue;
+    seen.add(model);
+    out.push(model);
+  }
+  if (out.length > 12) throw new Error("fallbacks cannot contain more than 12 models");
+  return out;
+}
+
+function assertAvailable(model: string, available: Set<string>, field: string) {
+  if (!available.has(model)) throw new Error(`${field} is not in this agent's available model list`);
+}
+
+async function writeConfigAtomically(file: string, cfg: OpenClawConfig) {
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(tmp, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
+  // Parse the exact bytes before replacing the live config. This prevents a
+  // malformed JSON write from taking the agent/PM process down on reload.
+  JSON.parse(await readFile(tmp, "utf8"));
+  await rename(tmp, file);
 }
 
 export async function readAgentModelSettings(agent: string): Promise<AgentModelSettings> {
@@ -75,30 +116,64 @@ export async function readAgentModelSettings(agent: string): Promise<AgentModelS
   }
 }
 
-export async function updateAgentActiveModel(agent: string, model: string, actorUserId?: string | null) {
+export async function updateAgentModelSettings(agent: string, input: AgentModelUpdateInput, actorUserId?: string | null) {
   const file = configPath(agent);
   const raw = await readFile(file, "utf8");
   const cfg = JSON.parse(raw) as OpenClawConfig;
-  const before = primaryFor(cfg);
-  const beforeFallbacks = cfg.agents?.defaults?.model?.fallbacks ?? [];
   const available = new Set(collectAvailable(cfg).map((entry) => entry.id));
-  if (!available.has(model)) throw new Error("Model is not in this agent's available model list");
+  const before = {
+    active: primaryFor(cfg),
+    defaultModel: cfg.agents?.defaults?.model?.primary ?? null,
+    fallbacks: cfg.agents?.defaults?.model?.fallbacks ?? [],
+  };
+
+  const next: AgentModelUpdateInput = {};
+  if (Object.prototype.hasOwnProperty.call(input, "active")) {
+    next.active = normalizeModel(input.active, "active model");
+    assertAvailable(next.active, available, "active model");
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "defaultModel")) {
+    next.defaultModel = normalizeModel(input.defaultModel, "default model");
+    assertAvailable(next.defaultModel, available, "default model");
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "fallbacks")) {
+    next.fallbacks = normalizeFallbacks(input.fallbacks);
+    for (const fallback of next.fallbacks) assertAvailable(fallback, available, "fallback model");
+  }
+  if (!next.active && !next.defaultModel && !next.fallbacks) throw new Error("No model settings supplied");
+
   cfg.agents ??= {};
   cfg.agents.defaults ??= {};
   cfg.agents.defaults.model ??= {};
-  cfg.agents.defaults.model.primary = model;
-  const main = cfg.agents.list?.find((entry) => entry.default || entry.id === "main");
-  if (main && Object.prototype.hasOwnProperty.call(main, "model")) main.model = model;
-  await writeFile(file, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
-  const restart = await requestAgentRestart(agent, `model:${before ?? "unset"}->${model}`);
+
+  if (next.defaultModel) cfg.agents.defaults.model.primary = next.defaultModel;
+  if (next.fallbacks) cfg.agents.defaults.model.fallbacks = next.fallbacks;
+  if (next.active) {
+    const main = cfg.agents.list?.find((entry) => entry.default || entry.id === "main");
+    if (main) main.model = next.active;
+    else cfg.agents.defaults.model.primary = next.active;
+  }
+
+  const after = {
+    active: primaryFor(cfg),
+    defaultModel: cfg.agents.defaults.model.primary ?? null,
+    fallbacks: cfg.agents.defaults.model.fallbacks ?? [],
+  };
+
+  await writeConfigAtomically(file, cfg);
+  const restart = await requestAgentRestart(agent, `models:${before.active ?? "unset"}->${after.active ?? "unset"}`);
   await db.activityLog.create({
     data: {
       userId: actorUserId ?? undefined,
       kind: "agent.model.update",
       targetAgent: agent,
       targetFile: "openclaw.json",
-      payload: JSON.stringify({ before, after: model, fallbacks: beforeFallbacks, configPath: file, restart }),
+      payload: JSON.stringify({ before, after, configPath: file, restart }),
     },
   });
-  return { before, after: model, restart };
+  return { before, after, restart };
+}
+
+export async function updateAgentActiveModel(agent: string, model: string, actorUserId?: string | null) {
+  return updateAgentModelSettings(agent, { active: model }, actorUserId);
 }
