@@ -15,12 +15,15 @@ EnvironmentFile=/etc/default/pm
 Environment=PM_CONSUMER_DROP_DIR=/var/lib/pm/drop
 Environment=PM_CONSUMER_HOOK_TOKEN_FILE=/etc/openclaw/pm-consumer-tokens.json
 
-ExecStart=/usr/bin/pnpm pm-consumer
+ExecStart=/usr/local/bin/pnpm pm-consumer
 
 Restart=on-failure
 RestartSec=3s
 
-NoNewPrivileges=true
+# Karen fallback uses a tightly-scoped passwordless sudo helper when a
+# target gateway hook is unavailable, so this service cannot set
+# NoNewPrivileges=true.
+NoNewPrivileges=false
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true

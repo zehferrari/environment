@@ -1,6 +1,7 @@
 import { seedZehUser } from "@/lib/agents/seed-zeh";
 import { syncAgents } from "@/lib/agents/sync";
 import { purgeBin } from "@/lib/bin/purge";
+import { purgeProjectBin } from "@/lib/bin/purge-projects";
 
 try {
   const zeh = await seedZehUser();
@@ -32,11 +33,23 @@ try {
 } catch (err) {
   console.error("[pm] boot bin purge failed:", err);
 }
+try {
+  const r = await purgeProjectBin();
+  console.log("[pm] boot project bin purge:", JSON.stringify(r));
+} catch (err) {
+  console.error("[pm] boot project bin purge failed:", err);
+}
 setInterval(async () => {
   try {
     const r = await purgeBin();
     console.log("[pm] periodic bin purge:", JSON.stringify(r));
   } catch (err) {
     console.error("[pm] periodic bin purge failed:", err);
+  }
+  try {
+    const r = await purgeProjectBin();
+    console.log("[pm] periodic project bin purge:", JSON.stringify(r));
+  } catch (err) {
+    console.error("[pm] periodic project bin purge failed:", err);
   }
 }, purgeIntervalMs).unref();

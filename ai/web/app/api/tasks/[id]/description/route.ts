@@ -3,9 +3,9 @@
 // One-shot endpoint consumed by an agent that received a chat message
 // with allowDescriptionEdit=true. Auth model:
 //
-//   - Caller must be authenticated as an agent (session.user.kind=='agent').
+//   - Caller must provide the signed one-shot token generated for the
+//     addressed message.
 //   - The provided messageId must reference an AgentChatMessage where:
-//     * agentSlug == session.user.agent.slug
 //     * taskId == route :id
 //     * allowDescriptionEdit == true
 //     * editGrantUsedAt == null  (not yet used)
@@ -14,7 +14,7 @@
 // ActivityLog. Re-using the same messageId returns 410.
 
 import { NextResponse, type NextRequest } from "next/server";
-import { auth } from "@/lib/auth";
+import { verifyTaskDescriptionWriteToken } from "@/lib/agents/task-chat-token";
 import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -24,28 +24,9 @@ export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const session = await auth();
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
-  }
-  if (session.user.kind !== "agent") {
-    return NextResponse.json(
-      { error: "Only agents may write descriptions via this endpoint" },
-      { status: 403 },
-    );
-  }
-
-  const agentRow = await db.agent.findFirst({
-    where: { user: { is: { id: session.user.id } } },
-    select: { slug: true },
-  });
-  if (!agentRow) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 403 });
-  }
-
   const { id: taskId } = await ctx.params;
 
-  let payload: { messageId?: unknown; description?: unknown };
+  let payload: { messageId?: unknown; token?: unknown; description?: unknown };
   try {
     payload = (await req.json()) as typeof payload;
   } catch {
@@ -53,11 +34,12 @@ export async function POST(
   }
   const messageId =
     typeof payload.messageId === "string" ? payload.messageId : "";
+  const token = typeof payload.token === "string" ? payload.token : "";
   const description =
     typeof payload.description === "string" ? payload.description : null;
-  if (!messageId || description === null) {
+  if (!messageId || !token || description === null) {
     return NextResponse.json(
-      { error: "messageId and description (string) are required" },
+      { error: "messageId, token, and description (string) are required" },
       { status: 400 },
     );
   }
@@ -80,12 +62,6 @@ export async function POST(
       { status: 400 },
     );
   }
-  if (grant.agentSlug !== agentRow.slug) {
-    return NextResponse.json(
-      { error: "Message was not addressed to this agent" },
-      { status: 403 },
-    );
-  }
   if (!grant.allowDescriptionEdit) {
     return NextResponse.json(
       { error: "Message did not grant description edit" },
@@ -97,6 +73,26 @@ export async function POST(
       { error: "Grant already used" },
       { status: 410 },
     );
+  }
+  if (
+    !verifyTaskDescriptionWriteToken(messageId, taskId, grant.agentSlug, token)
+  ) {
+    return NextResponse.json(
+      { error: "Invalid description token" },
+      { status: 403 },
+    );
+  }
+
+  const agent = await db.agent.findUnique({
+    where: { slug: grant.agentSlug },
+    select: {
+      slug: true,
+      deactivatedAt: true,
+      user: { select: { id: true, status: true } },
+    },
+  });
+  if (!agent?.user || agent.deactivatedAt || agent.user.status !== "active") {
+    return NextResponse.json({ error: "Agent not active" }, { status: 403 });
   }
 
   const task = await db.task.findUnique({
@@ -122,11 +118,11 @@ export async function POST(
       data: {
         projectId: task.projectId,
         taskId,
-        userId: session.user.id,
+        userId: agent.user.id,
         kind: "task.description.agent_write",
         payload: JSON.stringify({
           messageId,
-          agentSlug: agentRow.slug,
+          agentSlug: grant.agentSlug,
           length: newDescription?.length ?? 0,
         }),
       },

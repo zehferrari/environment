@@ -1,20 +1,27 @@
-"use client";
+import Link from "next/link";
+import type { ReactNode } from "react";
 
-import { useState, type ReactNode } from "react";
-
-export default function AgentTabs({ controls, operations }: { controls: ReactNode; operations: ReactNode }) {
-  const [tab, setTab] = useState<"controls" | "operations">("controls");
+export default function AgentTabs({
+  agent,
+  activeTab,
+  controls,
+  operations,
+}: {
+  agent: string;
+  activeTab: "controls" | "operations";
+  controls: ReactNode;
+  operations: ReactNode;
+}) {
   const active = "border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-accent)]";
   const idle = "border-[var(--color-line)] bg-[var(--color-panel)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]";
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2">
-        <button type="button" onClick={() => setTab("controls")} className={`rounded-full border px-3 py-1.5 text-sm font-medium ${tab === "controls" ? active : idle}`}>Profile & controls</button>
-        <button type="button" onClick={() => setTab("operations")} className={`rounded-full border px-3 py-1.5 text-sm font-medium ${tab === "operations" ? active : idle}`}>Operations & activity</button>
+        <Link href={`/agents/${agent}`} className={`rounded-full border px-3 py-1.5 text-sm font-medium ${activeTab === "controls" ? active : idle}`}>Profile & controls</Link>
+        <Link href={`/agents/${agent}?tab=operations`} className={`rounded-full border px-3 py-1.5 text-sm font-medium ${activeTab === "operations" ? active : idle}`}>Operations & activity</Link>
       </div>
-      <div hidden={tab !== "controls"}>{controls}</div>
-      <div hidden={tab !== "operations"}>{operations}</div>
+      {activeTab === "controls" ? controls : operations}
     </div>
   );
 }

@@ -1,0 +1,83 @@
+import { timingSafeEqual } from "crypto";
+import { NextResponse, type NextRequest } from "next/server";
+import {
+  parsePmChannelReplyTarget,
+  resolvePmChannelToken,
+} from "@/lib/agents/openclaw-pm-channel";
+import {
+  publishPmChannelStreamEvent,
+  type PmChannelStreamEventKind,
+} from "@/lib/agents/pm-channel-stream";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+const EVENTS = new Set<PmChannelStreamEventKind>([
+  "partial",
+  "reasoning",
+  "final",
+  "done",
+  "error",
+]);
+
+function configuredToken() {
+  return process.env.PM_OPENCLAW_CHANNEL_TOKEN
+    ?? process.env.PM_OPENCLAW_CHANNEL_CALLBACK_TOKEN
+    ?? "";
+}
+
+function bearerToken(req: NextRequest) {
+  const header = req.headers.get("authorization") ?? "";
+  const prefix = "Bearer ";
+  return header.startsWith(prefix) ? header.slice(prefix.length).trim() : "";
+}
+
+function tokenMatches(actual: string, expected: string) {
+  if (!actual || !expected) return false;
+  const a = Buffer.from(actual);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function stringField(value: unknown, max: number) {
+  if (typeof value !== "string") return undefined;
+  return value.length > max ? value.slice(0, max) : value;
+}
+
+export async function POST(req: NextRequest) {
+  let payload: Record<string, unknown>;
+  try {
+    payload = (await req.json()) as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const target = parsePmChannelReplyTarget(payload.target);
+  const event = typeof payload.event === "string" && EVENTS.has(payload.event as PmChannelStreamEventKind)
+    ? payload.event as PmChannelStreamEventKind
+    : null;
+  if (!target || !event) {
+    return NextResponse.json({ error: "target and supported event are required" }, { status: 400 });
+  }
+
+  const actualToken = bearerToken(req);
+  const expectedShared = configuredToken();
+  const expectedAgent = await resolvePmChannelToken(target.agentSlug);
+  if (
+    !tokenMatches(actualToken, expectedShared) &&
+    !tokenMatches(actualToken, expectedAgent ?? "")
+  ) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const state = publishPmChannelStreamEvent({
+    target,
+    event,
+    text: stringField(payload.text, 40_000),
+    delta: stringField(payload.delta, 8_000),
+    replace: payload.replace === true,
+    error: stringField(payload.error, 2_000),
+  });
+
+  return NextResponse.json({ ok: true, key: state.key, status: state.status });
+}

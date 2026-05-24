@@ -13,8 +13,10 @@ import {
   checkAssignment,
   checkActingManager,
   checkHierarchy,
+  checkStatusTransition,
   type ActorKind,
 } from "@/lib/workflow";
+import { COLUMN_IDS } from "../../columns";
 import {
   buildTaskAssigned,
   buildTaskCommented,
@@ -23,13 +25,22 @@ import {
 } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
 import {
+  buildTaskAgentUserMessage,
+  buildTaskNativeChannelPrompt,
+} from "@/lib/agents/task-chat-context";
+import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
+import { sendOpenClawPmChannelTurn } from "@/lib/agents/openclaw-pm-channel";
+import {
   listAssignablePrincipals,
   type AssignablePrincipal,
 } from "@/lib/principals";
 import { uploadAttachment, deleteAttachment } from "@/lib/attachments/actions";
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteTask } from "@/lib/bin/actions";
-import AgentChatSidebar from "@/components/agent-chat";
+import { reorderTasks } from "@/lib/tasks/reorder";
+import SortableTaskList from "@/components/sortable-task-list";
+import StreamingAgentReply from "@/components/streaming-agent-reply";
+import TaskRefresh from "./task-refresh";
 
 async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
   const session = await auth();
@@ -44,6 +55,102 @@ async function requireActorId(): Promise<string> {
 }
 
 // ---- Server actions -------------------------------------------------
+
+async function setTaskStatus(formData: FormData) {
+  "use server";
+  const actor = await requireActor();
+  const taskId = String(formData.get("taskId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  const newStatus = String(formData.get("status") ?? "");
+  if (!taskId || !slug || !COLUMN_IDS.includes(newStatus)) return;
+
+  const task = await db.task.findUnique({
+    where: { id: taskId },
+    select: {
+      id: true,
+      projectId: true,
+      status: true,
+      project: { select: { slug: true } },
+    },
+  });
+  if (!task || task.project.slug !== slug || task.status === newStatus) return;
+
+  const check = checkStatusTransition({
+    from: task.status,
+    to: newStatus,
+    actor,
+  });
+  if (!check.ok) throw new Error(check.message);
+
+  const maxRank = await db.task.aggregate({
+    where: { status: newStatus, deletedAt: null },
+    _max: { rank: true },
+  });
+
+  await db.$transaction([
+    db.task.update({
+      where: { id: taskId },
+      data: {
+        status: newStatus,
+        rank: (maxRank._max.rank ?? 0) + 1,
+        statusChangedAt: new Date(),
+      },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: task.projectId,
+        taskId,
+        userId: actor.id,
+        kind: "task.move",
+        payload: JSON.stringify({ from: task.status, to: newStatus }),
+      },
+    }),
+  ]);
+
+  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
+  revalidatePath(`/projects/${slug}`);
+}
+
+async function setTaskBranch(formData: FormData) {
+  "use server";
+  const actor = await requireActor();
+  const taskId = String(formData.get("taskId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  const raw = String(formData.get("branchName") ?? "").trim();
+  const branchName = raw === "" ? null : raw;
+  if (!taskId || !slug) return;
+  if (branchName !== null && branchName.length > 200) return;
+
+  const task = await db.task.findUnique({
+    where: { id: taskId },
+    select: {
+      id: true,
+      projectId: true,
+      branchName: true,
+      project: { select: { slug: true } },
+    },
+  });
+  if (!task || task.project.slug !== slug) return;
+  if ((task.branchName ?? null) === branchName) return;
+
+  await db.$transaction([
+    db.task.update({ where: { id: taskId }, data: { branchName } }),
+    db.activityLog.create({
+      data: {
+        projectId: task.projectId,
+        taskId,
+        userId: actor.id,
+        kind: "task.branch",
+        payload: JSON.stringify({
+          from: task.branchName ?? null,
+          to: branchName,
+        }),
+      },
+    }),
+  ]);
+
+  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
+}
 
 async function updateTask(formData: FormData) {
   "use server";
@@ -167,25 +274,95 @@ async function createComment(formData: FormData) {
       id: true,
       projectId: true,
       title: true,
+      description: true,
       project: { select: { slug: true } },
+      assignee: {
+        select: {
+          id: true,
+          username: true,
+          kind: true,
+          status: true,
+          agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+        },
+      },
     },
   });
   if (!task || task.project.slug !== slug) return;
 
   const users = await db.user.findMany({
-    select: { id: true, username: true, kind: true },
+    select: {
+      id: true,
+      username: true,
+      kind: true,
+      status: true,
+      agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+    },
   });
   const mentions = extractMentions(
     body,
     users.map((u) => ({ username: u.username })),
   );
+  const actorUser = users.find((u) => u.id === actorId);
+  const mentionedUsers = users.filter((u) => mentions.includes(u.username));
+  const targetAgents = new Map<
+    string,
+    {
+      slug: string;
+      userId: string;
+      username: string;
+      gatewayPort: number | null;
+      reasons: Set<"assigned" | "mentioned">;
+    }
+  >();
+  function addTargetAgent(
+    user:
+      | {
+          id: string;
+          username: string;
+          kind: string;
+          status: string;
+          agent: { slug: string; deactivatedAt: Date | null; gatewayPort: number | null } | null;
+        }
+      | null
+      | undefined,
+    reason: "assigned" | "mentioned",
+  ) {
+    if (
+      !user ||
+      user.kind !== "agent" ||
+      user.status !== "active" ||
+      !user.agent ||
+      user.agent.deactivatedAt
+    ) {
+      return;
+    }
+    const existing = targetAgents.get(user.agent.slug);
+    if (existing) {
+      existing.reasons.add(reason);
+      return;
+    }
+    targetAgents.set(user.agent.slug, {
+      slug: user.agent.slug,
+      userId: user.id,
+      username: user.username,
+      gatewayPort: user.agent.gatewayPort,
+      reasons: new Set([reason]),
+    });
+  }
+  addTargetAgent(task.assignee, "assigned");
+  for (const user of mentionedUsers) addTargetAgent(user, "mentioned");
+  const mirroredBody = [
+    `Task comment from @${actorUser?.username ?? "unknown"}:`,
+    "",
+    body,
+  ].join("\n");
 
-  const created = await db.$transaction([
-    db.comment.create({
+  const { commentId, mirroredMessages } = await db.$transaction(async (tx) => {
+    const comment = await tx.comment.create({
       data: { taskId, userId: actorId, body },
-      select: { id: true },
-    }),
-    db.activityLog.create({
+      select: { id: true, createdAt: true },
+    });
+    await tx.activityLog.create({
       data: {
         projectId: task.projectId,
         taskId,
@@ -193,9 +370,53 @@ async function createComment(formData: FormData) {
         kind: "task.comment",
         payload: mentions.length > 0 ? JSON.stringify({ mentions }) : null,
       },
-    }),
-  ]);
-  const commentId = created[0].id;
+    });
+    const mirrored: Array<{
+      id: string;
+      agentSlug: string;
+      reason: string[];
+      commentCreatedAt: Date;
+    }> = [];
+    for (const target of targetAgents.values()) {
+      const msg = await tx.agentChatMessage.create({
+        data: {
+          projectId: task.projectId,
+          taskId,
+          epicId: null,
+          agentSlug: target.slug,
+          senderUserId: actorId,
+          body: mirroredBody,
+          allowDescriptionEdit: false,
+          originChannel: "comment",
+          originCommentId: comment.id,
+        },
+        select: { id: true },
+      });
+      const reason = [...target.reasons];
+      mirrored.push({
+        id: msg.id,
+        agentSlug: target.slug,
+        reason,
+        commentCreatedAt: comment.createdAt,
+      });
+      await tx.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId,
+          userId: actorId,
+          kind: "task.chat.send",
+          targetAgent: target.slug,
+          payload: JSON.stringify({
+            messageId: msg.id,
+            agentSlug: target.slug,
+            mirroredFromCommentId: comment.id,
+            reason,
+          }),
+        },
+      });
+    }
+    return { commentId: comment.id, mirroredMessages: mirrored };
+  });
 
   revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   revalidatePath(`/projects/${slug}`);
@@ -213,7 +434,6 @@ async function createComment(formData: FormData) {
       : "human") as "human" | "agent",
   };
   const occurredAt = new Date().toISOString();
-  const mentionedUsers = users.filter((u) => mentions.includes(u.username));
   await notifyDispatch(
     buildTaskCommented(
       { id: randomUUID(), occurredAt, actor, task: taskRef },
@@ -227,7 +447,10 @@ async function createComment(formData: FormData) {
       },
     ),
   );
-  for (const u of mentionedUsers) {
+  const mentionedNonAgentUsers = mentionedUsers.filter(
+    (u) => u.kind !== "agent" || !u.agent || u.agent.deactivatedAt,
+  );
+  for (const u of mentionedNonAgentUsers) {
     await notifyDispatch(
       buildTaskMentioned(
         { id: randomUUID(), occurredAt, actor, task: taskRef },
@@ -239,6 +462,115 @@ async function createComment(formData: FormData) {
       ),
     );
   }
+  for (const msg of mirroredMessages) {
+    const userMessage = await buildTaskAgentUserMessage({
+      taskId: task.id,
+      agentSlug: msg.agentSlug,
+      currentTurn: {
+        id: commentId,
+        agentChatMessageId: msg.id,
+        source: "task comment",
+        actorUsername: actorUser?.username,
+        actorKind: actor.kind,
+        body,
+        createdAt: msg.commentCreatedAt,
+      },
+    });
+    const sessionBinding = await getOrCreateAgentSessionBinding({
+      scopeType: "task",
+      scopeId: task.id,
+      agentSlug: msg.agentSlug,
+    });
+    const target = targetAgents.get(msg.agentSlug);
+    const delivery = await sendOpenClawPmChannelTurn({
+      gatewayPort: target?.gatewayPort ?? null,
+      agentSlug: msg.agentSlug,
+      sessionKey: sessionBinding.openclawSessionKey,
+      kind: "task-comment",
+      text: body,
+      contextText: userMessage,
+      systemPrompt: buildTaskNativeChannelPrompt(task.title, msg.agentSlug),
+      actor: {
+        id: actor.id,
+        username: actorUser?.username,
+        kind: actor.kind,
+      },
+      replyTarget: {
+        kind: "task-comment",
+        agentSlug: msg.agentSlug,
+        taskId: task.id,
+        messageId: msg.id,
+        projectSlug: task.project.slug,
+      },
+    });
+    await db.activityLog.create({
+      data: {
+        projectId: task.projectId,
+        taskId: task.id,
+        userId: actor.id,
+        kind: delivery.ok ? "task.comment.dispatch" : "task.comment.dispatch_failed",
+        targetAgent: msg.agentSlug,
+        payload: JSON.stringify({
+          commentId,
+          messageId: msg.id,
+          agentSlug: msg.agentSlug,
+          reason: msg.reason,
+          driver: delivery.driver,
+          status: delivery.status ?? null,
+          error: delivery.error ?? null,
+        }),
+      },
+    });
+  }
+}
+
+// Human-only comment removal (HOMELAB-41). Agents post comments but
+// cannot delete them — moderation stays a human action. Scoped by the
+// URL slug + task so a comment id from another project can't be removed.
+async function deleteComment(formData: FormData) {
+  "use server";
+  const actor = await requireActor();
+  if (actor.kind !== "human") return;
+  const commentId = String(formData.get("commentId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  const taskId = String(formData.get("taskId") ?? "");
+  if (!commentId || !slug || !taskId) return;
+
+  const comment = await db.comment.findUnique({
+    where: { id: commentId },
+    select: {
+      id: true,
+      task: {
+        select: {
+          id: true,
+          projectId: true,
+          project: { select: { slug: true } },
+        },
+      },
+    },
+  });
+  if (
+    !comment ||
+    comment.task.id !== taskId ||
+    comment.task.project.slug !== slug
+  ) {
+    return;
+  }
+
+  await db.$transaction([
+    db.comment.delete({ where: { id: commentId } }),
+    db.activityLog.create({
+      data: {
+        projectId: comment.task.projectId,
+        taskId: comment.task.id,
+        userId: actor.id,
+        kind: "task.comment.delete",
+      },
+    }),
+  ]);
+
+  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
+  revalidatePath(`/projects/${slug}`);
 }
 
 async function assignTask(formData: FormData) {
@@ -415,7 +747,13 @@ async function createSubtask(formData: FormData) {
       projectId: true,
       epicId: true,
       parentTaskId: true,
-      project: { select: { slug: true } },
+      project: {
+        select: {
+          slug: true,
+          defaultAssigneeId: true,
+          defaultReviewerId: true,
+        },
+      },
     },
   });
   if (!parent || parent.project.slug !== slug) return;
@@ -440,6 +778,9 @@ async function createSubtask(formData: FormData) {
       title,
       status: "Backlog",
       rank: (maxRank._max.rank ?? 0) + 1,
+      statusChangedAt: new Date(),
+      assigneeId: parent.project.defaultAssigneeId ?? null,
+      actingManagerId: parent.project.defaultReviewerId ?? null,
     },
     select: { id: true, title: true },
   });
@@ -480,6 +821,24 @@ function timeAgo(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
+function activityMessageIds(rows: Array<{ kind: string; payload: string | null }>) {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (!row.payload) continue;
+    try {
+      const payload = JSON.parse(row.payload) as {
+        inReplyToMessageId?: unknown;
+        messageId?: unknown;
+      };
+      if (typeof payload.inReplyToMessageId === "string") ids.add(payload.inReplyToMessageId);
+      if (typeof payload.messageId === "string" && row.kind.endsWith(".dispatch_failed")) ids.add(payload.messageId);
+    } catch {
+      // Ignore old or malformed audit payloads.
+    }
+  }
+  return ids;
+}
+
 function PrincipalOption({ p }: { p: AssignablePrincipal }) {
   return (
     <option value={p.id}>
@@ -498,15 +857,22 @@ export default async function TaskDetailPage({
   params: Promise<{ slug: string; taskId: string }>;
   searchParams: Promise<{ chat?: string }>;
 }) {
-  const { slug, taskId } = await params;
-  const { chat } = await searchParams;
-  const chatAgentSlug = typeof chat === "string" && chat !== "" ? chat : null;
+  const [{ slug, taskId }, { chat = "" }] = await Promise.all([
+    params,
+    searchParams,
+  ]);
 
   const task = await db.task.findUnique({
     where: { id: taskId },
     include: {
       project: { select: { id: true, slug: true, name: true } },
-      assignee: { select: { username: true, kind: true } },
+      assignee: {
+        select: {
+          username: true,
+          kind: true,
+          agent: { select: { slug: true } },
+        },
+      },
       actingManager: { select: { username: true, kind: true } },
       epic: { select: { id: true, title: true } },
       parent: { select: { id: true, title: true } },
@@ -533,7 +899,11 @@ export default async function TaskDetailPage({
   });
   if (!task || task.project.slug !== slug || task.deletedAt) notFound();
 
-  const [principals, projectEpics, mentionableUsers] = await Promise.all([
+  // Only human viewers get comment-delete controls (see deleteComment).
+  const viewer = await requireActor();
+  const canDeleteComments = viewer.kind === "human";
+
+  const [principals, projectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity] = await Promise.all([
     listAssignablePrincipals(),
     db.epic.findMany({
       where: {
@@ -545,23 +915,71 @@ export default async function TaskDetailPage({
       select: { id: true, title: true, status: true },
     }),
     db.user.findMany({ select: { username: true } }),
+    db.agentChatMessage.findMany({
+      where: { taskId: task.id },
+      orderBy: { createdAt: "desc" },
+      take: 80,
+      select: {
+        id: true,
+        agentSlug: true,
+        originChannel: true,
+        originCommentId: true,
+        createdAt: true,
+        sender: { select: { kind: true } },
+      },
+    }),
+    db.activityLog.findMany({
+      where: {
+        taskId: task.id,
+        kind: {
+          in: [
+            "task.chat.reply",
+            "task.comment",
+            "task.chat.dispatch_failed",
+            "task.comment.dispatch_failed",
+          ],
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 160,
+      select: { kind: true, payload: true },
+    }),
   ]);
   const mentionables = mentionableUsers.map((u) => ({ username: u.username }));
+  const settledMessageIds = activityMessageIds(recentReplyActivity);
+  let pendingAgentSlug: string | null = null;
+  const seenChatAgents = new Set<string>();
+  for (const message of recentTaskChatMessages) {
+    if (seenChatAgents.has(message.agentSlug)) continue;
+    seenChatAgents.add(message.agentSlug);
+    if (message.sender.kind !== "agent" && !settledMessageIds.has(message.id)) {
+      pendingAgentSlug = message.agentSlug;
+      break;
+    }
+  }
+  const pendingAgentReply = pendingAgentSlug !== null;
+  const pendingCommentMessages = recentTaskChatMessages
+    .filter((message) => (
+      message.originChannel === "comment"
+      && message.sender.kind !== "agent"
+      && !settledMessageIds.has(message.id)
+    ))
+    .filter((message, index, all) => all.findIndex((item) => item.agentSlug === message.agentSlug) === index)
+    .slice(0, 4);
+  const selectedAgentSlug = chat || pendingAgentSlug || task.assignee?.agent?.slug || null;
+
+  async function reorderSubtasks(orderedIds: string[]): Promise<void> {
+    "use server";
+    await reorderTasks(orderedIds);
+    revalidatePath(`/projects/${slug}/tasks/${taskId}`);
+    revalidatePath(`/projects/${slug}`);
+  }
 
   return (
-    <div className="mx-auto grid max-w-[1600px] grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[320px_minmax(0,1fr)_320px]">
-      {/* ----- Chat sidebar (left) ----------------------------------- */}
-      <aside className="order-3 xl:order-1">
-        <AgentChatSidebar
-          projectSlug={slug}
-          taskId={task.id}
-          selectedAgentSlug={chatAgentSlug}
-          parentPath={`/projects/${slug}/tasks/${task.id}`}
-        />
-      </aside>
-
+    <div className="mx-auto grid max-w-[1400px] grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <TaskRefresh active={pendingAgentReply} />
       {/* ----- Main column ------------------------------------------- */}
-      <div className="order-1 min-w-0 space-y-6 xl:order-2">
+      <div className="min-w-0 space-y-6">
         <nav className="text-sm">
           <Link
             href={`/projects/${slug}`}
@@ -635,27 +1053,19 @@ export default async function TaskDetailPage({
               No sub-tasks yet.
             </p>
           ) : (
-            <ul className="divide-y divide-[var(--color-line)]">
-              {task.subtasks.map((st) => (
-                <li
-                  key={st.id}
-                  className="flex items-center justify-between gap-3 py-2 text-sm"
-                >
-                  <Link
-                    href={`/projects/${slug}/tasks/${st.id}`}
-                    className="truncate hover:underline"
-                  >
-                    {st.title}
-                  </Link>
-                  <div className="flex shrink-0 items-center gap-3 text-xs text-[var(--color-text-muted)]">
-                    {st.assignee ? <span>@{st.assignee.username}</span> : null}
-                    <span className="rounded border border-[var(--color-line)] px-1.5 py-0.5">
-                      {st.status}
-                    </span>
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <SortableTaskList
+              ariaLabel="Sub-tasks"
+              reorderAction={reorderSubtasks}
+              showAssignee
+              showStatusBadge
+              items={task.subtasks.map((st) => ({
+                id: st.id,
+                title: st.title,
+                status: st.status,
+                href: `/projects/${slug}/tasks/${st.id}`,
+                assigneeName: st.assignee?.username ?? null,
+              }))}
+            />
           )}
 
           {task.parentTaskId === null ? (
@@ -776,23 +1186,59 @@ export default async function TaskDetailPage({
                   key={c.id}
                   className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm"
                 >
-                  <div className="mb-1 flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
-                    <strong className="font-medium text-[var(--color-text)]">
-                      {c.user.username}
-                    </strong>
-                    <time
-                      dateTime={c.createdAt.toISOString()}
-                      title={c.createdAt.toISOString()}
-                      className="tabular-nums"
-                    >
-                      {timeAgo(c.createdAt)}
-                    </time>
+                  <div className="mb-1 flex items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
+                    <div className="flex items-center gap-2">
+                      <strong className="font-medium text-[var(--color-text)]">
+                        {c.user.username}
+                      </strong>
+                      <time
+                        dateTime={c.createdAt.toISOString()}
+                        title={c.createdAt.toISOString()}
+                        className="tabular-nums"
+                      >
+                        {timeAgo(c.createdAt)}
+                      </time>
+                    </div>
+                    {canDeleteComments ? (
+                      <form action={deleteComment}>
+                        <input type="hidden" name="commentId" value={c.id} />
+                        <input type="hidden" name="taskId" value={task.id} />
+                        <input
+                          type="hidden"
+                          name="projectSlug"
+                          value={slug}
+                        />
+                        <button
+                          type="submit"
+                          className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-text-muted)] hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+                          title="Delete comment"
+                          aria-label="Delete comment"
+                        >
+                          Delete
+                        </button>
+                      </form>
+                    ) : null}
                   </div>
                   <div>{renderCommentBody(c.body, mentionables)}</div>
                 </li>
               ))}
             </ul>
           )}
+
+          {pendingCommentMessages.length > 0 ? (
+            <div className="mt-3 space-y-2">
+              {pendingCommentMessages.map((message) => (
+                <StreamingAgentReply
+                  key={message.id}
+                  targetKind="task-comment"
+                  agentSlug={message.agentSlug}
+                  taskId={task.id}
+                  messageId={message.id}
+                  label={`@${message.agentSlug}`}
+                />
+              ))}
+            </div>
+          ) : null}
 
           <form action={createComment} className="mt-4 space-y-2">
             <input type="hidden" name="taskId" value={task.id} />
@@ -817,18 +1263,64 @@ export default async function TaskDetailPage({
       </div>
 
       {/* ----- Sidebar (right) --------------------------------------- */}
-      <aside className="order-2 space-y-4 xl:order-3">
-        <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+      <aside className="space-y-4">
+        <form
+          action={setTaskStatus}
+          className="space-y-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm"
+        >
+          <input type="hidden" name="taskId" value={task.id} />
+          <input type="hidden" name="projectSlug" value={slug} />
           <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
             Status
           </div>
-          <div className="mt-2 inline-block rounded-full border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-2.5 py-1 text-xs font-medium">
-            {task.status}
+          <select
+            name="status"
+            defaultValue={task.status}
+            className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
+            aria-label="Status"
+          >
+            {COLUMN_IDS.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1 text-xs font-medium hover:border-[var(--color-accent)]"
+            >
+              Save
+            </button>
           </div>
-          <p className="mt-2 text-xs text-[var(--color-text-muted)]">
-            Move on the board to change status.
-          </p>
-        </div>
+        </form>
+
+        <form
+          action={setTaskBranch}
+          className="space-y-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm"
+        >
+          <input type="hidden" name="taskId" value={task.id} />
+          <input type="hidden" name="projectSlug" value={slug} />
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+            Branch
+          </div>
+          <input
+            name="branchName"
+            defaultValue={task.branchName ?? ""}
+            maxLength={200}
+            placeholder="e.g. feature/HOMELAB-99"
+            className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs font-mono outline-none focus:border-[var(--color-accent)]"
+            aria-label="Branch name"
+          />
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1 text-xs font-medium hover:border-[var(--color-accent)]"
+            >
+              Save
+            </button>
+          </div>
+        </form>
 
         <SidebarPicker
           title="Assignee"

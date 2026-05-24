@@ -64,7 +64,11 @@ export async function POST(
   await db.$transaction([
     db.task.update({
       where: { id: task.id },
-      data: { status: next, rank: (maxRank._max.rank ?? 0) + 1 },
+      data: {
+        status: next,
+        rank: (maxRank._max.rank ?? 0) + 1,
+        statusChangedAt: new Date(),
+      },
     }),
     db.activityLog.create({
       data: {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import type { ControlValue } from "@/lib/agents/effective-config";
 
 type ServiceRow = { name: string; status?: string };
 
@@ -8,7 +9,7 @@ type Props = {
   agent: string;
   canEdit: boolean;
   integrations: Record<string, boolean>;
-  capabilities: Record<string, boolean>;
+  capabilities: Record<string, ControlValue>;
   services: ServiceRow[];
 };
 
@@ -150,12 +151,12 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
       <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
         <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">🛠 Services</h2>
         {localServices.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No services reported for this agent.</p> : (
-          <div className="flex flex-wrap gap-2 text-xs">
+          <div className="grid gap-2 text-xs">
             {localServices.map((svc) => {
               const enabled = svc.status === "active";
               const busyToggle = busy === `service-toggle:${svc.name}`;
               return (
-                <span key={svc.name} className={`inline-flex items-center overflow-hidden rounded-full border ${enabled ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10 text-[var(--color-ok)]" : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]"}`} title={`${svc.name}: ${svc.status ?? "unknown"}`}>
+                <span key={svc.name} className={`inline-flex items-center justify-between overflow-hidden rounded-lg border ${enabled ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10 text-[var(--color-ok)]" : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]"}`} title={`${svc.name}: ${svc.status ?? "unknown"}`}>
                   <button type="button" disabled={!canEdit || busyToggle} onClick={() => toggleService(svc, !enabled)} className="px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50">{serviceLabel(svc.name)}: {enabled ? "enabled" : "disabled"}</button>
                   <button type="button" disabled={!canEdit || busy === `service:${svc.name}`} onClick={() => restart(svc.name)} className="border-l border-current/20 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50" title={`Restart ${svc.name}`}>↻</button>
                 </span>
@@ -192,19 +193,27 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
   );
 }
 
-function ToggleSection({ title, entries, busy, canEdit, onToggle, onCredentials }: { title: string; entries: Record<string, boolean>; busy: string | null; canEdit: boolean; onToggle: (key: string, value: boolean) => void; onCredentials?: (key: string) => void }) {
+function ToggleSection({ title, entries, busy, canEdit, onToggle, onCredentials }: { title: string; entries: Record<string, ControlValue>; busy: string | null; canEdit: boolean; onToggle: (key: string, value: boolean) => void; onCredentials?: (key: string) => void }) {
   const pairs = Object.entries(entries);
   return (
     <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
       <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">{title}</h2>
       {pairs.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">None reported.</p> : (
-        <div className="flex flex-wrap gap-2 text-xs">
-          {pairs.map(([key, enabled]) => (
-            <span key={key} className={`inline-flex items-center overflow-hidden rounded-full border ${enabled ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10 text-[var(--color-ok)]" : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]"}`}>
-              <button type="button" disabled={!canEdit || busy === `${title.toLowerCase()}:${key}`} onClick={() => onToggle(key, !enabled)} className="px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50">{key}: {enabled ? "enabled" : "disabled"}</button>
-              {onCredentials && CREDENTIAL_FIELDS[key] ? <button type="button" disabled={!canEdit} onClick={() => onCredentials(key)} className="border-l border-current/20 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50" title={`Edit ${key} credentials`}>⚙</button> : null}
-            </span>
-          ))}
+        <div className="grid gap-2 text-xs">
+          {pairs.map(([key, value]) => {
+            const enabled = value === true;
+            const toggleable = typeof value === "boolean";
+            return (
+              <span key={key} className={`inline-flex items-center justify-between overflow-hidden rounded-lg border ${enabled ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10 text-[var(--color-ok)]" : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]"}`}>
+                {toggleable ? (
+                  <button type="button" disabled={!canEdit || busy === `${title.toLowerCase()}:${key}`} onClick={() => onToggle(key, !enabled)} className="px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50">{key}: {enabled ? "enabled" : "disabled"}</button>
+                ) : (
+                  <span className="px-2 py-1">{key}: {String(value)}</span>
+                )}
+                {onCredentials && CREDENTIAL_FIELDS[key] ? <button type="button" disabled={!canEdit} onClick={() => onCredentials(key)} className="border-l border-current/20 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50" title={`Edit ${key} credentials`}>⚙</button> : null}
+              </span>
+            );
+          })}
         </div>
       )}
     </section>

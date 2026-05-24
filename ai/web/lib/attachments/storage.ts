@@ -116,8 +116,11 @@ export async function writeAttachment(params: {
 export function attachmentReadStream(row: {
   storagePath: string;
 }): ReadStream {
-  const abs = path.join(attachmentsRoot(), row.storagePath);
-  return createReadStream(abs);
+  return createReadStream(attachmentAbsolutePath(row));
+}
+
+export function attachmentAbsolutePath(row: { storagePath: string }): string {
+  return path.join(attachmentsRoot(), row.storagePath);
 }
 
 // Removes the on-disk blob iff no other Attachment row still references

@@ -14,6 +14,7 @@ For broader context:
 ```
 .
 ├── README.md              this file (folder overview, layout, editing)
+├── install.sh             host bootstrap/reconcile script for OpenClaw services and PM wake hooks
 ├── AGENT_FILES.md         per-agent files (NOT in this repo) and what each is for
 ├── ENVIRONMENT.md         "where things live" map (source of truth + policy)
 ├── SERVICES.md            service catalog
@@ -83,6 +84,37 @@ sudo -u "$OWNER" git pull
 sudo -u "$OWNER" git commit -am "<message>"
 sudo -u "$OWNER" git push
 ```
+
+## Host install path
+
+Run `install.sh` after pulling changes on x1. Besides syncing scripts and
+systemd units, it reconciles the PM web/OpenClaw integration when the
+sibling PM checkout exists. The PM step creates `/var/lib/pm/drop`,
+renders the one host-wide `pm.service` and `pm-consumer.service`, binds
+every enabled agent gateway to loopback, enables its external
+`/hooks/wake` surface for non-chat PM events, installs the native
+OpenClaw `pm` channel plugin, and mirrors token maps into
+`/etc/openclaw/pm-consumer-tokens.json` and
+`/etc/openclaw/pm-channel-tokens.json`.
+
+Gateway hook config lives in `/srv/agents/openclaw/<agent>/openclaw.json`:
+`gateway.bind="loopback"`, `gateway.trustedProxies=["127.0.0.1","::1"]`,
+`gateway.auth.trustedProxy.allowLoopback=true`, `hooks.enabled=true`,
+`hooks.path="/hooks"`, `hooks.token=<secret>`,
+`hooks.allowRequestSessionKey=true`, and
+`hooks.allowedSessionKeyPrefixes=["hook:","pm:"]`. OpenClaw requires
+`hook:` when no hook default session key is configured; PM-owned sessions
+use `pm:` stable session keys. Chat and task-comment turns normally enter
+OpenClaw through `POST /pm-channel/ingest`, not `/hooks/wake`. The PM app
+sends a final reply callback (`/api/openclaw/pm-channel/reply`) and a
+live partial-reply stream callback (`/api/openclaw/pm-channel/stream`) in
+each native channel turn. The installer preserves `hooks.internal` and
+restarts `openclaw-gateway.service` when it changes hook or channel
+config. Do not expose hooks or the PM channel through nginx; PM calls
+them on `127.0.0.1`. Any nginx dashboard proxy for the gateway must use
+`127.0.0.1:<gateway_port>` as the upstream, not the host's LAN IP, and
+must explicitly block prefixed paths such as `/<agent>/hooks` and
+`/<agent>/pm-channel`.
 
 ## Agent identity in code
 

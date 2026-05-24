@@ -2,10 +2,30 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 
-const PUBLIC_PATHS = ["/login", "/api/auth", "/_next", "/favicon.ico"];
+const PUBLIC_PATHS = ["/login", "/api/auth", "/_next", "/favicon.ico", "/agents/avatars"];
 
 function isPublic(path: string) {
   return PUBLIC_PATHS.some((p) => path === p || path.startsWith(p + "/"));
+}
+
+function isTokenScopedAgentReply(path: string) {
+  return /^\/api\/agents\/[^/]+\/chat\/reply$/.test(path);
+}
+
+function isTokenScopedTaskReply(path: string) {
+  return /^\/api\/tasks\/[^/]+\/chat\/reply$/.test(path);
+}
+
+function isTokenScopedTaskDescription(path: string) {
+  return /^\/api\/tasks\/[^/]+\/description$/.test(path);
+}
+
+function isOpenClawPmChannelReply(path: string) {
+  return path === "/api/openclaw/pm-channel/reply";
+}
+
+function isOpenClawPmChannelStream(path: string) {
+  return path === "/api/openclaw/pm-channel/stream";
 }
 
 function forwardedUrl(req: NextRequest, pathname: string) {
@@ -18,7 +38,16 @@ function forwardedUrl(req: NextRequest, pathname: string) {
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  if (isPublic(pathname)) return NextResponse.next();
+  if (
+    isPublic(pathname) ||
+    isTokenScopedAgentReply(pathname) ||
+    isTokenScopedTaskReply(pathname) ||
+    isTokenScopedTaskDescription(pathname) ||
+    isOpenClawPmChannelReply(pathname) ||
+    isOpenClawPmChannelStream(pathname)
+  ) {
+    return NextResponse.next();
+  }
 
   const token = await getToken({
     req,

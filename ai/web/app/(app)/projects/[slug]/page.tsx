@@ -7,9 +7,10 @@ import {
   type ActorKind,
   type WorkflowErrorCode,
 } from "@/lib/workflow";
-import { describeActivity } from "@/lib/activity";
-import Link from "next/link";
+import { reorderTasks } from "@/lib/tasks/reorder";
+import { listAssignablePrincipals } from "@/lib/principals";
 import Board from "./board-client";
+import AddTaskFab from "./add-task-fab";
 import { COLUMNS, COLUMN_IDS } from "./columns";
 
 async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
@@ -22,23 +23,63 @@ async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
 
 async function createTask(formData: FormData) {
   "use server";
-  await requireActor();
+  const actor = await requireActor();
   const projectId = String(formData.get("projectId") ?? "");
   const title = String(formData.get("title") ?? "").trim();
   if (!projectId || !title) return;
+  if (title.length > 200) return;
   const projectSlug = String(formData.get("projectSlug") ?? "");
+  const description = String(formData.get("description") ?? "").trim() || null;
+  const epicRaw = String(formData.get("epicId") ?? "");
+  const assigneeRaw = String(formData.get("assigneeId") ?? "");
+  const reviewerRaw = String(formData.get("actingManagerId") ?? "");
+
   const maxRank = await db.task.aggregate({
     where: { projectId, status: "Backlog", deletedAt: null },
     _max: { rank: true },
   });
-  await db.task.create({
+
+  // Epic combobox: scope the chosen epic to this project; ignore anything
+  // that isn't a live epic here.
+  let epicId: string | null = epicRaw === "" ? null : epicRaw;
+  if (epicId) {
+    const epic = await db.epic.findFirst({
+      where: { id: epicId, projectId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!epic) epicId = null;
+  }
+
+  // Assignee / reviewer come pre-selected (to the project defaults) from
+  // the modal, so the submitted value is authoritative. Empty = unset.
+  const assigneeId = assigneeRaw === "" ? null : assigneeRaw;
+  const actingManagerId = reviewerRaw === "" ? null : reviewerRaw;
+
+  const task = await db.task.create({
     data: {
       projectId,
       title,
+      description,
       status: "Backlog",
       rank: (maxRank._max.rank ?? 0) + 1,
+      statusChangedAt: new Date(),
+      epicId,
+      assigneeId,
+      actingManagerId,
+    },
+    select: { id: true, title: true },
+  });
+
+  await db.activityLog.create({
+    data: {
+      projectId,
+      taskId: task.id,
+      userId: actor.id,
+      kind: "task.create",
+      payload: JSON.stringify({ title: task.title, epicId }),
     },
   });
+
   revalidatePath(`/projects/${projectSlug}`);
 }
 
@@ -90,7 +131,11 @@ async function moveTask(
   await db.$transaction([
     db.task.update({
       where: { id: taskId },
-      data: { status, rank: (maxRank._max.rank ?? 0) + 1 },
+      data: {
+        status,
+        rank: (maxRank._max.rank ?? 0) + 1,
+        statusChangedAt: new Date(),
+      },
     }),
     db.activityLog.create({
       data: {
@@ -106,8 +151,6 @@ async function moveTask(
   return { ok: true };
 }
 
-const ACTIVITY_FEED_LIMIT = 20;
-
 export default async function ProjectBoardPage({
   params,
 }: {
@@ -115,124 +158,81 @@ export default async function ProjectBoardPage({
 }) {
   const { slug } = await params;
   const project = await db.project.findUnique({
-    where: { slug },
+    where: { slug, deletedAt: null },
     include: {
       tasks: {
         where: { deletedAt: null },
         orderBy: [{ status: "asc" }, { rank: "asc" }],
-        include: { assignee: { select: { username: true } } },
-      },
-      _count: {
-        select: {
-          epics: { where: { status: "open", deletedAt: null } },
-          tasks: { where: { deletedAt: { not: null } } },
+        include: {
+          assignee: { select: { username: true } },
+          epic: { select: { title: true } },
         },
       },
     },
   });
   if (!project) notFound();
 
-  const activity = await db.activityLog.findMany({
-    where: { projectId: project.id },
-    orderBy: { createdAt: "desc" },
-    take: ACTIVITY_FEED_LIMIT,
-    include: {
-      user: { select: { username: true } },
-      task: { select: { title: true } },
-    },
+  // Done-column TTL filter: keep Done tasks only if statusChangedAt is
+  // within doneTtlDays of now. Other columns pass through unchanged.
+  // statusChangedAt is null for rows that pre-date the migration; treat
+  // null as "recently touched" so legacy Done items aren't auto-hidden.
+  const doneCutoff = new Date(
+    Date.now() - project.doneTtlDays * 24 * 60 * 60 * 1000,
+  );
+  const filteredTasks = project.tasks.filter((t) => {
+    if (t.status !== "Done") return true;
+    if (!t.statusChangedAt) return true;
+    return t.statusChangedAt >= doneCutoff;
   });
 
-  const feed = activity.map((row) => ({
-    id: row.id,
-    createdAt: row.createdAt.toISOString(),
-    label: describeActivity({
-      kind: row.kind,
-      payload: row.payload,
-      actorName: row.user?.username ?? null,
-      taskTitle: row.task?.title ?? null,
+  // Data for the New Task modal: principals for assignee/reviewer pickers,
+  // live epics for the Epic combobox.
+  const [principals, epicOptions] = await Promise.all([
+    listAssignablePrincipals(),
+    db.epic.findMany({
+      where: { projectId: project.id, status: { not: "archived" }, deletedAt: null },
+      orderBy: [{ status: "asc" }, { title: "asc" }],
+      select: { id: true, title: true },
     }),
-  }));
+  ]);
+
+  async function reorderBoardTasks(orderedIds: string[]): Promise<void> {
+    "use server";
+    await reorderTasks(orderedIds);
+    revalidatePath(`/projects/${slug}`);
+  }
 
   return (
     <div>
-      <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>
-          <div className="text-xs text-[var(--color-text-muted)]">/{project.slug}</div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Link
-            href={`/projects/${project.slug}/epics`}
-            className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-          >
-            Epics{project._count.epics > 0 ? ` (${project._count.epics})` : ""}
-          </Link>
-          <Link
-            href={`/projects/${project.slug}/bin`}
-            className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-          >
-            Bin{project._count.tasks > 0 ? ` (${project._count.tasks})` : ""}
-          </Link>
-          <form action={createTask} className="flex gap-2">
-            <input type="hidden" name="projectId" value={project.id} />
-            <input type="hidden" name="projectSlug" value={project.slug} />
-            <input
-              name="title"
-              required
-              placeholder="New task title (no epic)"
-              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] w-72"
-            />
-            <button
-              type="submit"
-              className="rounded-lg bg-[var(--color-accent)] text-white text-sm font-medium px-3 shadow-sm hover:opacity-95"
-            >
-              Add task
-            </button>
-          </form>
-        </div>
-      </header>
-
       <Board
         projectSlug={project.slug}
         columns={COLUMNS}
-        tasks={project.tasks.map((t) => ({
+        tasks={filteredTasks.map((t) => ({
           id: t.id,
           title: t.title,
           status: t.status,
           rank: t.rank,
           updatedAt: t.updatedAt.toISOString(),
           assigneeName: t.assignee?.username ?? null,
+          epicTitle: t.epic?.title ?? null,
         }))}
         moveTaskAction={moveTask}
+        reorderTasksAction={reorderBoardTasks}
       />
 
-      <section className="mt-6">
-        <h2 className="mb-2 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
-          Recent activity
-        </h2>
-        {feed.length === 0 ? (
-          <div className="rounded border border-dashed border-[var(--color-line)] px-3 py-4 text-xs text-[var(--color-text-muted)]">
-            No activity yet. Move a task between columns to log the first row.
-          </div>
-        ) : (
-          <ul className="divide-y divide-[var(--color-line)] rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)]">
-            {feed.map((row) => (
-              <li
-                key={row.id}
-                className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
-              >
-                <span>{row.label}</span>
-                <time
-                  dateTime={row.createdAt}
-                  className="shrink-0 text-xs text-[var(--color-text-muted)] tabular-nums"
-                >
-                  {row.createdAt.slice(0, 19).replace("T", " ")}
-                </time>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      <AddTaskFab
+        projectId={project.id}
+        projectSlug={project.slug}
+        principals={principals.map((p) => ({
+          id: p.id,
+          username: p.username,
+          kind: p.kind,
+        }))}
+        epics={epicOptions}
+        defaultAssigneeId={project.defaultAssigneeId}
+        defaultReviewerId={project.defaultReviewerId}
+        createTaskAction={createTask}
+      />
     </div>
   );
 }

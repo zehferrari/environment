@@ -1,25 +1,33 @@
-// OpenClaw gateway client for the per-agent /hooks/wake endpoint.
+// OpenClaw gateway client for per-agent wake delivery.
 //
 // Each agent on this host runs an openclaw-gateway process listening
 // on 127.0.0.1:<gateway_port>. /hooks/wake takes
-// { text, mode? } and enqueues a system event on the agent's main
-// session — the same surface OpenClaw cron jobs and webhook routers
-// already use (see docs/automation/cron-jobs.md POST /hooks/wake).
+// { text, mode?, sessionKey? } and enqueues a system event on the
+// addressed session — the same surface OpenClaw cron jobs and webhook
+// routers already use (see docs/automation/cron-jobs.md POST
+// /hooks/wake).
+// Newer local OpenClaw installs may omit that HTTP hook; in that case
+// the consumer falls back to Karen's host-local openclaw-control bridge.
 //
 // Bearer tokens are per-agent and must not be reused across agents.
 // We resolve them from a JSON map at PM_CONSUMER_HOOK_TOKEN_FILE
 // (default /etc/openclaw/pm-consumer-tokens.json), with a per-agent
 // env override PM_CONSUMER_HOOK_TOKEN_<UPPERCASE_SLUG> for local-dev
-// and test setups. An unresolved token surfaces as a delivery error
-// without falling back to an empty Authorization header.
+// and test setups. An unresolved token never produces an empty
+// Authorization header; it goes straight to the Karen fallback.
 
+import { execFile } from "child_process";
 import { readFile } from "fs/promises";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
 
 export interface WakeArgs {
   gatewayPort: number;
   slug: string;
   text: string;
   mode?: "now" | "next-heartbeat";
+  sessionKey?: string | null;
   // Test seam — fetch impl override.
   fetchImpl?: typeof fetch;
 }
@@ -28,6 +36,7 @@ export interface WakeResult {
   ok: boolean;
   status?: number;
   error?: string;
+  driver?: "gateway-http" | "karen-control";
 }
 
 const DEFAULT_TOKEN_FILE =
@@ -73,10 +82,10 @@ export async function resolveHookToken(slug: string): Promise<string | null> {
 export async function wakeAgent(args: WakeArgs): Promise<WakeResult> {
   const token = await resolveHookToken(args.slug);
   if (!token) {
-    return {
-      ok: false,
-      error: `missing hook token for agent "${args.slug}" (set PM_CONSUMER_HOOK_TOKEN_${args.slug.toUpperCase()} or add to PM_CONSUMER_HOOK_TOKEN_FILE)`,
-    };
+    return wakeViaKarenControl(
+      args,
+      `missing hook token for agent "${args.slug}"`,
+    );
   }
   const url = `http://127.0.0.1:${args.gatewayPort}/hooks/wake`;
   const f = args.fetchImpl ?? fetch;
@@ -87,16 +96,64 @@ export async function wakeAgent(args: WakeArgs): Promise<WakeResult> {
         "content-type": "application/json",
         authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ text: args.text, mode: args.mode ?? "now" }),
+      body: JSON.stringify({
+        text: args.text,
+        mode: args.mode ?? "now",
+        ...(args.sessionKey ? { sessionKey: args.sessionKey } : {}),
+      }),
     });
     if (!res.ok) {
-      return { ok: false, status: res.status, error: `gateway ${res.status}` };
+      return wakeViaKarenControl(args, `gateway ${res.status}`, res.status);
     }
-    return { ok: true, status: res.status };
+    return { ok: true, status: res.status, driver: "gateway-http" };
   } catch (err) {
+    return wakeViaKarenControl(
+      args,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
+function karenFallbackEnabled() {
+  return process.env.PM_CONSUMER_KAREN_WAKE_FALLBACK !== "off";
+}
+
+function karenWakeHelperPath() {
+  return process.env.PM_KAREN_WAKE_HELPER
+    ?? "/usr/local/sbin/pm-karen-wake-agent";
+}
+
+async function wakeViaKarenControl(
+  args: WakeArgs,
+  reason: string,
+  status?: number,
+): Promise<WakeResult> {
+  if (!karenFallbackEnabled()) {
+    return { ok: false, status, error: reason, driver: "gateway-http" };
+  }
+  try {
+    const commandArgs = [
+      "-n",
+      karenWakeHelperPath(),
+      args.slug,
+    ];
+    if (args.sessionKey) {
+      commandArgs.push("--session-key", args.sessionKey);
+    }
+    commandArgs.push(args.text);
+
+    await execFileAsync("sudo", commandArgs, {
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return { ok: true, status, driver: "karen-control" };
+  } catch (err) {
+    const fallbackError = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
-      error: err instanceof Error ? err.message : String(err),
+      status,
+      driver: "karen-control",
+      error: `${reason}; Karen wake fallback failed: ${fallbackError}`,
     };
   }
 }

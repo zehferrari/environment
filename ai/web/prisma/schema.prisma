@@ -30,18 +30,24 @@ model User {
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt
 
-  passwordResetTokens PasswordResetToken[]
-  projectMembers      ProjectMember[]
-  assignedTasks       Task[]               @relation("TaskAssignee")
-  actingManagerOf     Task[]               @relation("TaskActingManager")
-  deletedTasks        Task[]               @relation("TaskDeletedBy")
-  assignedEpics       Epic[]               @relation("EpicAssignee")
-  actingManagerOfEpic Epic[]               @relation("EpicActingManager")
-  deletedEpics        Epic[]               @relation("EpicDeletedBy")
-  comments            Comment[]
-  activity            ActivityLog[]
-  uploadedAttachments Attachment[]
-  agentChatMessages   AgentChatMessage[]   @relation("AgentChatSender")
+  passwordResetTokens         PasswordResetToken[]
+  projectMembers              ProjectMember[]
+  assignedTasks               Task[]               @relation("TaskAssignee")
+  actingManagerOf             Task[]               @relation("TaskActingManager")
+  deletedTasks                Task[]               @relation("TaskDeletedBy")
+  assignedEpics               Epic[]               @relation("EpicAssignee")
+  actingManagerOfEpic         Epic[]               @relation("EpicActingManager")
+  deletedEpics                Epic[]               @relation("EpicDeletedBy")
+  comments                    Comment[]
+  activity                    ActivityLog[]
+  uploadedAttachments         Attachment[]
+  agentChatMessages           AgentChatMessage[]   @relation("AgentChatSender")
+  directAgentChatMessages     DirectAgentChatMessage[] @relation("DirectAgentChatSender")
+  archivedDirectAgentChats    DirectAgentChatArchive[] @relation("DirectAgentChatArchivedBy")
+  deletedDirectAgentChatArchives DirectAgentChatArchive[] @relation("DirectAgentChatArchiveDeletedBy")
+  defaultAssigneeForProjects  Project[]            @relation("ProjectDefaultAssignee")
+  defaultReviewerForProjects  Project[]            @relation("ProjectDefaultReviewer")
+  deletedProjects             Project[]            @relation("ProjectDeletedBy")
 
   @@index([kind])
   @@index([status])
@@ -109,6 +115,22 @@ model Project {
   // outside the app source tree). Server renders via lib/markdown.
   readmePath  String?
   archivedAt  DateTime?
+  // Project settings tab fields. Repo + git identity drive agent
+  // commits; defaults seed Task pickers; doneTtlDays hides aged Done
+  // tasks from the board view.
+  repositoryPath      String?
+  defaultGitUserName  String?
+  defaultGitUserEmail String?
+  defaultAssigneeId   String?
+  defaultAssignee     User?     @relation("ProjectDefaultAssignee", fields: [defaultAssigneeId], references: [id])
+  defaultReviewerId   String?
+  defaultReviewer     User?     @relation("ProjectDefaultReviewer", fields: [defaultReviewerId], references: [id])
+  doneTtlDays         Int       @default(5)
+  // Soft-delete: project bin with 30-day TTL (hard-purge via the
+  // hourly job in instrumentation.node.ts).
+  deletedAt   DateTime?
+  deletedById String?
+  deletedBy   User?     @relation("ProjectDeletedBy", fields: [deletedById], references: [id])
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
@@ -118,6 +140,8 @@ model Project {
   activity     ActivityLog[]
   attachments  Attachment[]
   chatMessages AgentChatMessage[]
+
+  @@index([deletedAt])
 }
 
 model ProjectMember {
@@ -198,6 +222,12 @@ model Task {
   actingManager   User?    @relation("TaskActingManager", fields: [actingManagerId], references: [id])
   // Lexorank-style ordering within column; simple Int for v1.
   rank            Int      @default(0)
+  // Set on every status transition; drives the Done-column TTL filter
+  // (hide Done tasks older than project.doneTtlDays) so plain updates
+  // to title/description don't reset the clock.
+  statusChangedAt DateTime?
+  // Free-text branch name the agent will use for commits on this task.
+  branchName      String?
   // Soft delete (HOMELAB-48). See Epic.deletedAt for semantics. Sub-tasks
   // cascade with their parent task; an Epic delete cascades to its
   // non-deleted Tasks (and through them to sub-tasks). Active read
@@ -251,6 +281,26 @@ model Attachment {
   @@index([taskId])
   @@index([epicId])
   @@index([sha256])
+}
+
+// Cached, bounded text extraction for agent context. This is keyed by
+// content hash rather than Attachment.id so duplicate uploads reuse the
+// same extraction result.
+model AttachmentExtract {
+  id                 String   @id @default(cuid())
+  sourceAttachmentId String?
+  sha256             String
+  extractorVersion   String
+  status             String   // "ready" | "unsupported" | "failed"
+  text               String?
+  summary            String?
+  error              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([sha256, extractorVersion])
+  @@index([sourceAttachmentId])
+  @@index([status])
 }
 
 model Comment {
@@ -325,6 +375,27 @@ model PmEventDelivery {
   @@index([receivedAt])
 }
 
+// PM-owned binding between a PM conversation scope and OpenClaw session
+// routing. `openclawSessionKey` is what `/hooks/wake` and
+// `openclaw system event --session-key` use; `openclawSessionId` is
+// currently kept equal to the key for `openclaw agent --session-id`
+// callers until OpenClaw exposes a distinct persisted session id in the
+// reply metadata.
+model AgentSessionBinding {
+  id                 String   @id @default(cuid())
+  scopeType          String   // "task" | "epic" | "direct"
+  scopeId            String
+  agentSlug          String
+  openclawSessionKey String   @unique
+  openclawSessionId  String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([scopeType, scopeId, agentSlug])
+  @@index([agentSlug])
+  @@index([openclawSessionId])
+}
+
 // ------------------------------------------------------------------
 // HOMELAB-48 agent chat — sidebar conversations between humans and a
 // specific agent, scoped to a Task XOR an Epic. The "allow description
@@ -355,9 +426,66 @@ model AgentChatMessage {
   body                 String
   allowDescriptionEdit Boolean   @default(false)
   editGrantUsedAt      DateTime?
+  // Where an agent reply should be posted. "chat" means the message
+  // originated in the task/epic chat sidebar; "comment" means it was
+  // mirrored from a task comment so the reply should return to comments.
+  originChannel        String    @default("chat")
+  originCommentId      String?
   createdAt            DateTime  @default(now())
 
   @@index([taskId, createdAt])
   @@index([epicId, createdAt])
   @@index([agentSlug])
+  @@index([originCommentId])
+}
+
+// ------------------------------------------------------------------
+// Direct agent chat — conversations opened from the global sidebar CHAT
+// section. Unlike AgentChatMessage, these are not tied to a Task/Epic
+// and carry no description-edit grant.
+// ------------------------------------------------------------------
+
+model DirectAgentChatMessage {
+  id           String   @id @default(cuid())
+  agentSlug    String
+  senderUserId String
+  sender       User     @relation("DirectAgentChatSender", fields: [senderUserId], references: [id])
+  archiveId    String?
+  archive      DirectAgentChatArchive? @relation(fields: [archiveId], references: [id], onDelete: SetNull)
+  // Active child continuations keep the parent archive immutable while
+  // still using it as context for the new conversation.
+  baseArchiveId String?
+  body         String
+  createdAt    DateTime @default(now())
+
+  @@index([agentSlug, createdAt])
+  @@index([agentSlug, archiveId, createdAt])
+  @@index([agentSlug, baseArchiveId, createdAt])
+  @@index([archiveId, createdAt])
+  @@index([senderUserId])
+}
+
+model DirectAgentChatArchive {
+  id            String    @id @default(cuid())
+  agentSlug     String
+  archivedById  String
+  archivedBy    User      @relation("DirectAgentChatArchivedBy", fields: [archivedById], references: [id])
+  deletedById   String?
+  deletedBy     User?     @relation("DirectAgentChatArchiveDeletedBy", fields: [deletedById], references: [id])
+  // If this archived conversation was a continuation, parentArchiveId
+  // points to the frozen archive it used as its base.
+  parentArchiveId String?
+  summary       String
+  startedAt     DateTime
+  endedAt       DateTime
+  messageCount  Int       @default(0)
+  deletedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  messages      DirectAgentChatMessage[]
+
+  @@index([agentSlug, createdAt])
+  @@index([agentSlug, deletedAt, createdAt])
+  @@index([parentArchiveId])
+  @@index([archivedById])
+  @@index([deletedById])
 }

@@ -11,8 +11,10 @@
 #   3. install systemd/user/ user units to /etc/systemd/user (admin-installed
 #      user units, visible to every user's systemd instance — only the
 #      monitor agent enables them based on derived services)
-#   4. generate openclaw-monitor-sync.path from agents.json (host-specific:
-#      systemd Path units don't support globs, so one PathChanged= per agent)
+#   4. generate/sync host-specific assets from agents.json, including
+#      openclaw-monitor-sync.path, shared helpers, the host-wide PM web
+#      service, PM dispatch drop, the consumer service, local gateway
+#      /hooks/wake tokens, and the native PM channel plugin/token map
 #   5. symlink the frontend HTML for agent-dashboard
 #   6. systemctl daemon-reload (system + per-user) + restart running units
 #   7. reconcile per-agent user-systemd state against the derived services
@@ -38,7 +40,18 @@ DEFAULTS="${OPENCLAW_AGENT_DEFAULTS:-/etc/openclaw/agent-defaults.json}"
 PM_WEB_ROOT="${PM_WEB_ROOT:-$REPO_ROOT/../web}"
 PM_ENV_FILE="${PM_ENV_FILE:-/etc/default/pm}"
 PM_DROP_DIR="${PM_DROP_DIR:-/var/lib/pm/drop}"
+PM_AGENT_CREDENTIALS_DIR="${PM_AGENT_CREDENTIALS_DIR:-/etc/openclaw/pm-agent-credentials}"
 PM_CONSUMER_TOKEN_FILE="${PM_CONSUMER_TOKEN_FILE:-/etc/openclaw/pm-consumer-tokens.json}"
+PM_APP_USER="${PM_APP_USER:-${PM_CONSUMER_USER:-karen}}"
+PM_APP_GROUP="${PM_APP_GROUP:-${PM_CONSUMER_GROUP:-$PM_APP_USER}}"
+PM_NODE_BIN="${PM_NODE_BIN:-/usr/bin/node24}"
+PM_OPENCLAW_CHANNEL_TOKEN_FILE="${PM_OPENCLAW_CHANNEL_TOKEN_FILE:-/etc/openclaw/pm-channel-tokens.json}"
+PM_OPENCLAW_CHANNEL_TOKEN_GROUP="${PM_OPENCLAW_CHANNEL_TOKEN_GROUP:-$PM_APP_GROUP}"
+# Final durable reply callback configured into the OpenClaw pm channel plugin.
+# The live partial-reply stream callback is sent by PM per turn as
+# /api/openclaw/pm-channel/stream, derived from PM_AGENT_CALLBACK_URL or
+# PM_INTERNAL_APP_URL in /etc/default/pm.
+PM_OPENCLAW_CHANNEL_CALLBACK_URL="${PM_OPENCLAW_CHANNEL_CALLBACK_URL:-http://127.0.0.1:3000/api/openclaw/pm-channel/reply}"
 
 if [ -t 1 ]; then
     C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_DIM=$'\e[2m'; C_RST=$'\e[0m'
@@ -66,6 +79,29 @@ do_install() {
     fi
     install -o root -g root -m "$mode" "$src" "$dst"
     ok "$dst"
+}
+
+generate_hook_token() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 32
+        return
+    fi
+    LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 64
+    printf '\n'
+}
+
+hook_token_for_agent() {
+    local agent="$1" cfg="$2" token=""
+    if [ -r "$PM_CONSUMER_TOKEN_FILE" ] && command -v jq >/dev/null 2>&1; then
+        token=$(jq -r --arg agent "$agent" '.[$agent] // empty' "$PM_CONSUMER_TOKEN_FILE" 2>/dev/null || true)
+    fi
+    if [ -z "$token" ] && [ -r "$cfg" ] && command -v jq >/dev/null 2>&1; then
+        token=$(jq -r '.hooks.token // empty' "$cfg" 2>/dev/null || true)
+    fi
+    if [ -z "$token" ]; then
+        token=$(generate_hook_token)
+    fi
+    printf '%s\n' "$token"
 }
 
 # 1. bin scripts
@@ -370,36 +406,210 @@ if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     done < <(jq -r '.agents[] | select(.enabled == true and .role == "coding" and (.integrations.gmail // false)) | "\(.user)\t\(.home // "")"' "$REGISTRY")
 fi
 
-# 4f. PM dispatch file-drop + consumer service
-log "[4f/7] PM dispatch drop + consumer"
+# 4f. PM web service + dispatch file-drop + consumer + local gateway hooks/channel
+log "[4f/7] PM web service + dispatch + /hooks/wake + native channel"
 PM_WEB_ROOT="$(cd "$PM_WEB_ROOT" 2>/dev/null && pwd || printf '%s' "$PM_WEB_ROOT")"
 if [ ! -d "$PM_WEB_ROOT" ]; then
-    warn "  PM web root $PM_WEB_ROOT not found; skipping PM consumer install"
+    warn "  PM web root $PM_WEB_ROOT not found; skipping PM web/consumer install"
 else
-    pm_user="${PM_CONSUMER_USER:-$(stat -c %U "$PM_WEB_ROOT" 2>/dev/null || printf '%s' "${SUDO_USER:-zeh}")}"
-    pm_group="${PM_CONSUMER_GROUP:-$(stat -c %G "$PM_WEB_ROOT" 2>/dev/null || printf '%s' "$pm_user")}"
+    pm_app_user="$PM_APP_USER"
+    pm_app_group="$PM_APP_GROUP"
+    pm_user="${PM_CONSUMER_USER:-$pm_app_user}"
+    pm_group="${PM_CONSUMER_GROUP:-$pm_app_group}"
+    pm_unit_src="$PM_WEB_ROOT/deploy/pm.service"
     consumer_unit_src="$PM_WEB_ROOT/deploy/pm-consumer.service"
+    channel_installer="$PM_WEB_ROOT/deploy/install-openclaw-pm-channel.mjs"
 
     if [ "$DRY" -eq 1 ]; then
+        log "  would install -d -o $pm_app_user -g $pm_app_group -m 0700 $PM_AGENT_CREDENTIALS_DIR"
         log "  would install -d -o $pm_user -g $pm_group -m 0700 $PM_DROP_DIR"
-        log "  would ensure $PM_CONSUMER_TOKEN_FILE exists (root:$pm_group 0640)"
+        log "  would bind agent gateways to loopback, enable /hooks/wake with hook:/pm: session keys, and reconcile $PM_CONSUMER_TOKEN_FILE (root:$pm_group 0640)"
+        log "  would reconcile native PM channel tokens at $PM_OPENCLAW_CHANNEL_TOKEN_FILE (root:$PM_OPENCLAW_CHANNEL_TOKEN_GROUP 0640)"
+        log "  would configure native PM channel final callback $PM_OPENCLAW_CHANNEL_CALLBACK_URL"
+        log "  PM sends the live stream callback per turn as /api/openclaw/pm-channel/stream from its callback base"
+        if [ -f "$pm_unit_src" ]; then
+            log "  would render $pm_unit_src → /etc/systemd/system/pm.service"
+        else
+            warn "  missing $pm_unit_src; skipping pm.service"
+        fi
         if [ -f "$consumer_unit_src" ]; then
             log "  would render $consumer_unit_src → /etc/systemd/system/pm-consumer.service"
         else
             warn "  missing $consumer_unit_src; skipping pm-consumer.service"
         fi
+        if [ -f "$channel_installer" ]; then
+            log "  would run $PM_NODE_BIN $channel_installer --callback-url $PM_OPENCLAW_CHANNEL_CALLBACK_URL --restart"
+        else
+            warn "  missing $channel_installer; skipping native PM channel install"
+        fi
     else
+        install -d -o "$pm_app_user" -g "$pm_app_group" -m 0700 "$PM_AGENT_CREDENTIALS_DIR"
+        ok "$PM_AGENT_CREDENTIALS_DIR"
+        install -d -o "$pm_app_user" -g "$pm_app_group" -m 0770 "$PM_WEB_ROOT/.data"
+        ok "$PM_WEB_ROOT/.data"
         install -d -o "$pm_user" -g "$pm_group" -m 0700 "$PM_DROP_DIR"
         ok "$PM_DROP_DIR"
+        if command -v setfacl >/dev/null 2>&1; then
+            acl_path="$PM_WEB_ROOT"
+            while [ "$acl_path" != "/" ] && [ -n "$acl_path" ]; do
+                setfacl -m "u:$pm_app_user:x" "$acl_path" 2>/dev/null || true
+                acl_path=$(dirname "$acl_path")
+            done
+            setfacl -R -m "u:$pm_app_user:rx" "$PM_WEB_ROOT" 2>/dev/null || true
+            [ -d "$PM_WEB_ROOT/prisma" ] && setfacl -R -m "u:$pm_app_user:rwx" "$PM_WEB_ROOT/prisma" 2>/dev/null || true
+            [ -d "$PM_WEB_ROOT/prisma" ] && setfacl -dR -m "u:$pm_app_user:rwx" "$PM_WEB_ROOT/prisma" 2>/dev/null || true
+            [ -d "$PM_WEB_ROOT/.data" ] && setfacl -R -m "u:$pm_app_user:rwx" "$PM_WEB_ROOT/.data" 2>/dev/null || true
+            [ -d "$PM_WEB_ROOT/.data" ] && setfacl -dR -m "u:$pm_app_user:rwx" "$PM_WEB_ROOT/.data" 2>/dev/null || true
+            ok "runtime ACLs for $pm_app_user on PM bundle/data paths"
+        else
+            warn "  setfacl unavailable; ensure $pm_app_user can read .next/standalone and write prisma/.data"
+        fi
 
         install -d -o root -g root -m 0755 "$(dirname "$PM_CONSUMER_TOKEN_FILE")"
-        if [ ! -e "$PM_CONSUMER_TOKEN_FILE" ]; then
-            tmp_tokens=$(mktemp)
+        install -d -o root -g root -m 0755 "$(dirname "$PM_OPENCLAW_CHANNEL_TOKEN_FILE")"
+        if [ -f "$PM_ENV_FILE" ]; then
+            chown "root:$pm_app_group" "$PM_ENV_FILE" 2>/dev/null || true
+            chmod 0640 "$PM_ENV_FILE" 2>/dev/null || true
+            ok "$PM_ENV_FILE"
+            if grep -Eq '^(PM_AGENT_CALLBACK_URL|PM_INTERNAL_APP_URL)=' "$PM_ENV_FILE"; then
+                log "  PM callback base configured in $PM_ENV_FILE"
+            else
+                log "  PM callback base not set in $PM_ENV_FILE; PM defaults native reply/stream callbacks to http://127.0.0.1:3000"
+            fi
+        else
+            warn "  $PM_ENV_FILE does not exist; create it from deploy/pm.env.example before starting pm.service"
+        fi
+        tmp_tokens=$(mktemp)
+        if [ -r "$PM_CONSUMER_TOKEN_FILE" ]; then
+            if command -v jq >/dev/null 2>&1 && jq empty "$PM_CONSUMER_TOKEN_FILE" >/dev/null 2>&1; then
+                cp "$PM_CONSUMER_TOKEN_FILE" "$tmp_tokens"
+            elif ! command -v jq >/dev/null 2>&1; then
+                cp "$PM_CONSUMER_TOKEN_FILE" "$tmp_tokens"
+                warn "  jq unavailable; preserving $PM_CONSUMER_TOKEN_FILE without hook-token reconciliation"
+            else
+                printf '{}\n' > "$tmp_tokens"
+                warn "  $PM_CONSUMER_TOKEN_FILE is not valid JSON; replacing it with a regenerated token map"
+            fi
+        else
             printf '{}\n' > "$tmp_tokens"
-            install -o root -g "$pm_group" -m 0640 "$tmp_tokens" "$PM_CONSUMER_TOKEN_FILE"
-            rm -f "$tmp_tokens"
-            ok "$PM_CONSUMER_TOKEN_FILE"
-            warn "  $PM_CONSUMER_TOKEN_FILE is an empty token map; populate per-agent wake tokens before relying on live wakes"
+        fi
+
+        if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+            agent_files_root=$(jq -r '.agentFilesRoot // "/srv/agents/openclaw"' "$REGISTRY")
+            agent_config_group=$(jq -r '.codeGroup // empty' "$REGISTRY")
+            while IFS=$'\t' read -r user uid port; do
+                [ -z "$user" ] && continue
+                cfg="$agent_files_root/$user/openclaw.json"
+                if [ ! -f "$cfg" ]; then
+                    warn "  $user: missing $cfg; cannot enable /hooks/wake"
+                    continue
+                fi
+
+                token=$(hook_token_for_agent "$user" "$cfg")
+                tmp_cfg=$(mktemp)
+                if ! jq --arg token "$token" '
+                    .gateway = ((.gateway // {}) + {
+                        bind: "loopback",
+                        trustedProxies: ["127.0.0.1", "::1"]
+                    })
+                    | .gateway.auth = ((.gateway.auth // {}) + {
+                        trustedProxy: ((.gateway.auth.trustedProxy // {}) + {
+                            allowLoopback: true
+                        })
+                    })
+                    | .hooks = ((.hooks // {}) + {
+                        enabled: true,
+                        path: "/hooks",
+                        token: $token,
+                        allowRequestSessionKey: true
+                    })
+                    | .hooks.allowedSessionKeyPrefixes = (((.hooks.allowedSessionKeyPrefixes // []) + ["hook:", "pm:"]) | unique)
+                ' "$cfg" > "$tmp_cfg"; then
+                    warn "  $user: $cfg is not valid JSON; leaving gateway bind/hooks unchanged"
+                    rm -f "$tmp_cfg"
+                    continue
+                fi
+
+                cfg_group="$agent_config_group"
+                [ -n "$cfg_group" ] || cfg_group=$(id -gn "$user" 2>/dev/null || stat -c '%G' "$cfg" 2>/dev/null || printf '%s' "$user")
+                cfg_mode=$(stat -c '%a' "$cfg" 2>/dev/null || printf '0660')
+                changed=0
+                if ! cmp -s "$tmp_cfg" "$cfg"; then
+                    if install -o "$user" -g "$cfg_group" -m "$cfg_mode" "$tmp_cfg" "$cfg"; then
+                        ok "  $user: bound gateway to loopback and enabled /hooks/wake hook:/pm: session keys in $cfg"
+                        changed=1
+                    else
+                        warn "  $user: failed to write $cfg; leaving token map unchanged for this agent"
+                        rm -f "$tmp_cfg"
+                        continue
+                    fi
+                else
+                    chown "$user:$cfg_group" "$cfg" 2>/dev/null || true
+                    chmod "$cfg_mode" "$cfg" 2>/dev/null || true
+                    log "  $user: gateway already loopback-bound with /hooks/wake hook:/pm: session keys enabled"
+                fi
+                rm -f "$tmp_cfg"
+
+                next_tokens=$(mktemp)
+                jq --arg agent "$user" --arg token "$token" '. + {($agent): $token}' "$tmp_tokens" > "$next_tokens"
+                mv "$next_tokens" "$tmp_tokens"
+
+                if [ "$changed" -eq 1 ]; then
+                    [ -n "$uid" ] || uid=$(id -u "$user" 2>/dev/null || true)
+                    if [ -n "$uid" ]; then
+                        if sudo -n -u "$user" \
+                            env XDG_RUNTIME_DIR="/run/user/$uid" \
+                                DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+                            systemctl --user restart openclaw-gateway.service 2>/dev/null; then
+                            ok "  $user: restarted openclaw-gateway.service for hook config"
+                        else
+                            warn "  $user: hook config changed; restart openclaw-gateway.service manually if it is already running"
+                        fi
+                    fi
+                fi
+            done < <(jq -r '
+                .agents[]
+                | select(.enabled == true)
+                | . as $a
+                | ($a.listeners // [] | map(select(.owner == "openclaw-gateway")) | .[0].port // empty) as $port
+                | select($port != "")
+                | "\($a.user)\t\($a.uid // "")\t\($port)"
+            ' "$REGISTRY")
+        else
+            warn "  registry or jq unavailable; $PM_CONSUMER_TOKEN_FILE remains an empty/preserved token map"
+        fi
+
+        install -o root -g "$pm_group" -m 0640 "$tmp_tokens" "$PM_CONSUMER_TOKEN_FILE"
+        rm -f "$tmp_tokens"
+        ok "$PM_CONSUMER_TOKEN_FILE"
+
+        if [ ! -f "$PM_OPENCLAW_CHANNEL_TOKEN_FILE" ]; then
+            tmp_channel_tokens=$(mktemp)
+            printf '{}\n' > "$tmp_channel_tokens"
+            install -o root -g "$PM_OPENCLAW_CHANNEL_TOKEN_GROUP" -m 0640 "$tmp_channel_tokens" "$PM_OPENCLAW_CHANNEL_TOKEN_FILE"
+            rm -f "$tmp_channel_tokens"
+        else
+            chown "root:$PM_OPENCLAW_CHANNEL_TOKEN_GROUP" "$PM_OPENCLAW_CHANNEL_TOKEN_FILE" 2>/dev/null || true
+            chmod 0640 "$PM_OPENCLAW_CHANNEL_TOKEN_FILE" 2>/dev/null || true
+        fi
+        ok "$PM_OPENCLAW_CHANNEL_TOKEN_FILE"
+
+        if [ -f "$pm_unit_src" ]; then
+            tmp_unit=$(mktemp)
+            sed -e "s|^User=.*|User=$pm_app_user|" \
+                -e "s|^Group=.*|Group=$pm_app_group|" \
+                -e "s|^WorkingDirectory=.*|WorkingDirectory=$PM_WEB_ROOT/.next/standalone|" \
+                -e "s|^EnvironmentFile=.*|EnvironmentFile=$PM_ENV_FILE|" \
+                -e "s|^Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=.*|Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=$PM_OPENCLAW_CHANNEL_TOKEN_FILE|" \
+                -e "s|^ExecStart=.*|ExecStart=$PM_NODE_BIN server.js|" \
+                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_WEB_ROOT/.data $PM_AGENT_CREDENTIALS_DIR $PM_DROP_DIR -/srv/Data/projects|" \
+                -e "s|^ReadOnlyPaths=.*|ReadOnlyPaths=/srv/agents $PM_OPENCLAW_CHANNEL_TOKEN_FILE|" \
+                "$pm_unit_src" > "$tmp_unit"
+            install -o root -g root -m 0644 "$tmp_unit" /etc/systemd/system/pm.service
+            rm -f "$tmp_unit"
+            ok "/etc/systemd/system/pm.service"
+        else
+            warn "  missing $pm_unit_src; skipping pm.service"
         fi
 
         if [ -f "$consumer_unit_src" ]; then
@@ -417,6 +627,22 @@ else
             ok "/etc/systemd/system/pm-consumer.service"
         else
             warn "  missing $consumer_unit_src; skipping pm-consumer.service"
+        fi
+
+        if [ -f "$channel_installer" ]; then
+            if [ -x "$PM_NODE_BIN" ]; then
+                log "  native PM channel final callback: $PM_OPENCLAW_CHANNEL_CALLBACK_URL"
+                log "  native PM channel stream callback is supplied per turn by the PM app"
+                PM_OPENCLAW_CHANNEL_TOKEN_FILE="$PM_OPENCLAW_CHANNEL_TOKEN_FILE" \
+                PM_OPENCLAW_CHANNEL_TOKEN_GROUP="$PM_OPENCLAW_CHANNEL_TOKEN_GROUP" \
+                "$PM_NODE_BIN" "$channel_installer" \
+                    --callback-url "$PM_OPENCLAW_CHANNEL_CALLBACK_URL" \
+                    --restart || warn "  native PM channel installer failed (continuing)"
+            else
+                warn "  node not found/executable at $PM_NODE_BIN; skipping native PM channel installer"
+            fi
+        else
+            warn "  missing $channel_installer; skipping native PM channel installer"
         fi
     fi
 fi
@@ -447,6 +673,7 @@ else
     systemctl daemon-reload
     ok "systemctl daemon-reload (system)"
     for u in agent-dashboard.service \
+             pm.service \
              pm-consumer.service \
              openclaw-typing-keepalive.service \
              openclaw-monitor-sync.path \

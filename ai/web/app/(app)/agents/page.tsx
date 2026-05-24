@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
+import { resolveEffectiveAgentConfig } from "@/lib/agents/effective-config";
+import AgentServiceControls, { type AgentService } from "./agent-service-controls";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +43,12 @@ async function readSnapshot(): Promise<Snapshot | null> {
 function avatarUrl(name: string) {
   const first = name.split(" ")[0] || name;
   return `/agents/avatars/${encodeURIComponent(first)}`;
+}
+
+function localAvatarSrc(agentAvatar: string | null, liveAvatarUrl: string | undefined, name: string) {
+  if (liveAvatarUrl?.startsWith("/")) return liveAvatarUrl;
+  if (agentAvatar) return avatarUrl(name);
+  return null;
 }
 
 function statusFor(agent: { deactivatedAt: Date | null; user: { status: string } | null }, live?: SnapshotAgent | null) {
@@ -105,11 +113,22 @@ export default async function AgentsPage() {
   ]);
 
   const liveAgents = snapshot?.agents ?? {};
+  const system = snapshot?.system ?? {};
+  const effectiveConfigs = new Map(
+    await Promise.all(
+      agents.map(async (agent) => [agent.slug, await resolveEffectiveAgentConfig(agent.rawJson)] as const),
+    ),
+  );
+  const agentSlugs = new Set(agents.map((agent) => agent.slug));
+  const isAgentService = (name: string) => {
+    const [prefix] = name.split("/");
+    return name.includes("/") && agentSlugs.has(prefix);
+  };
+  const hostServices = Object.entries(system).filter(([name]) => !isAgentService(name));
   const active = agents.filter((a) => ["busy", "live"].includes(statusFor(a, liveAgents[a.slug]))).length;
   const openTickets = agents.reduce((sum, a) => sum + (liveAgents[a.slug]?.jira_tickets?.length ?? 0), 0);
   const openTasks = agents.reduce((sum, a) => sum + (a.user?.assignedTasks.length ?? 0), 0);
-  const system = snapshot?.system ?? {};
-  const activeServices = Object.values(system).filter((s) => s.is_active === "active").length;
+  const activeServices = hostServices.filter(([, s]) => s.is_active === "active").length;
 
   return (
     <div className="space-y-6">
@@ -129,7 +148,7 @@ export default async function AgentsPage() {
         <Kpi label="Agents online" value={`${active}`} foot={`/ ${agents.length} registered`} />
         <Kpi label="Open tickets" value={`${openTickets}`} foot="From live Atlas snapshot" />
         <Kpi label="Open PM tasks" value={`${openTasks}`} foot="Assigned and not Done" />
-        <Kpi label="Host services" value={`${activeServices}`} foot={`/ ${Object.keys(system).length || 0} active`} />
+        <Kpi label="Host services" value={`${activeServices}`} foot={`/ ${hostServices.length || 0} active`} />
         <Kpi label="Activity stream" value={`${recentActivity.length}`} foot="Latest PM events" />
       </section>
 
@@ -146,19 +165,32 @@ export default async function AgentsPage() {
             const liveTask = live?.current_task ?? null;
             const pmTask = a.user?.assignedTasks.find((t) => t.status === "In Progress") ?? a.user?.assignedTasks[0] ?? null;
             const tickets = live?.jira_tickets ?? [];
+            const avatarSrc = localAvatarSrc(a.avatar, live?.avatar_url, a.name);
+            const effective = effectiveConfigs.get(a.slug);
+            const configuredServices = effective?.services ?? [];
+            const liveServiceNames = Object.keys(system)
+              .filter((name) => name.startsWith(`${a.slug}/`))
+              .map((name) => name.slice(a.slug.length + 1));
+            const agentServices: AgentService[] = Array.from(new Set([...configuredServices, ...liveServiceNames])).map((name) => ({
+              name,
+              status: system[`${a.slug}/${name}`]?.is_active ?? system[name]?.is_active ?? null,
+            }));
             return (
-              <Link
+              <article
                 key={a.id}
-                href={`/agents/${a.slug}`}
-                className="group relative overflow-hidden rounded-[28px] border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-[var(--color-accent)] hover:shadow-md"
+                className="group relative overflow-hidden rounded-[18px] border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-[var(--color-accent)] hover:shadow-md"
                 style={{ "--agent-hue": accentFor(a.slug) } as React.CSSProperties}
               >
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_0%_0%,color-mix(in_srgb,var(--agent-hue)_18%,transparent),transparent_45%)]" />
-                <div className="relative flex items-start gap-4">
+                <div className="relative grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-4">
                   <div className="relative shrink-0">
                     <div className="absolute -inset-1.5 rounded-[24px]" style={{ border: `3px solid ${ring.ring}`, background: ring.bg, boxShadow: `0 0 0 4px ${ring.bg}` }} aria-hidden="true" />
                     <div className="relative grid h-16 w-16 place-items-center overflow-hidden rounded-2xl border bg-[var(--color-panel-soft)] text-2xl font-semibold" style={{ borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))" }}>
-                      {a.avatar || live?.avatar_url ? <img src={live?.avatar_url ?? avatarUrl(a.name)} alt={`${a.name} avatar`} className="h-full w-full object-cover" /> : (live?.avatar ?? a.name.slice(0, 1))}
+                      {avatarSrc ? (
+                        <img src={avatarSrc} alt={`${a.name} avatar`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
+                      ) : live?.avatar_url ? (
+                        <img src={live.avatar_url} alt={`${a.name} avatar`} className="h-full w-full object-cover" />
+                      ) : (live?.avatar ?? a.name.slice(0, 1))}
                     </div>
                     <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ color: ring.ring }}>{ring.label}</span>
                   </div>
@@ -175,20 +207,51 @@ export default async function AgentsPage() {
                       <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">{tickets.length} tickets</span>
                     </div>
                   </div>
+                  <div className="grid h-16 w-16 place-items-center rounded-2xl border border-[var(--color-line)] bg-[var(--color-bg)]">
+                    <div className="text-center">
+                      <div className="text-2xl font-semibold" style={{ color: ring.ring }}>
+                        {agentServices.filter((svc) => svc.status === "active").length}
+                      </div>
+                      <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">svc</div>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="relative mt-5 grid gap-3 text-sm">
-                  <Metric label="Current task" value={liveTask?.heading ?? pmTask?.title ?? "No active task pinned"} />
-                  <Metric label="Ticket/status" value={liveTask?.ticket ? `${liveTask.ticket} · ${liveTask.status ?? "—"}` : pmTask ? `${pmTask.project.slug} · ${pmTask.status}` : "—"} />
-                  <Metric label="Busy/model" value={`${live?.busy_state?.is_busy ? "busy" : "available"} · ${live?.model_primary ?? "model unknown"}`} />
-                  <Metric label="Tickets open" value={tickets.length ? tickets.map((t) => `${t.key} ${t.status ?? ""}`).join(" · ") : "No open assigned tickets"} />
-                  <Metric label="PM user" value={a.user ? `${a.user.username} · ${a.user.status}` : "not seeded"} />
+                <div className="relative mt-5 grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)]">
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-3 gap-2">
+                      <CockpitStat label="Load" value={live?.busy_state?.is_busy ? "BUSY" : "READY"} tone={live?.busy_state?.is_busy ? "warn" : "ok"} />
+                      <CockpitStat label="Idle" value={formatIdle(live?.session_idle_s)} />
+                      <CockpitStat label="Port" value={(live?.gateway_listeners ?? [a.gatewayPort]).filter(Boolean).join(", ") || "—"} />
+                    </div>
+                    <Metric label="Current task" value={liveTask?.heading ?? pmTask?.title ?? "No active task pinned"} />
+                    <Metric label="Ticket/status" value={liveTask?.ticket ? `${liveTask.ticket} · ${liveTask.status ?? "—"}` : pmTask ? `${pmTask.project.slug} · ${pmTask.status}` : "—"} />
+                    <Metric label="Model" value={live?.model_primary ?? "model unknown"} />
+                    <Metric label="PM user" value={a.user ? `${a.user.username} · ${a.user.status}` : "not seeded"} />
+                  </div>
+                  <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Services</div>
+                      <Link
+                        href={`/agents/${a.slug}`}
+                        className="text-[11px] font-medium text-[var(--color-accent)] hover:underline"
+                      >
+                        Deck
+                      </Link>
+                    </div>
+                    <AgentServiceControls agent={a.slug} services={agentServices} />
+                  </div>
                 </div>
 
-                <div className="relative mt-4 text-xs font-medium text-[var(--color-text-muted)] group-hover:text-[var(--color-accent)]">
-                  Open mission deck + profile editor →
+                <div className="relative mt-4 flex flex-wrap items-center gap-2 text-xs font-medium">
+                  <Link href={`/agents/${a.slug}`} className="text-[var(--color-text-muted)] hover:text-[var(--color-accent)] hover:underline">
+                    Open mission deck →
+                  </Link>
+                  <Link href={`/agents/${a.slug}/chat`} className="text-[var(--color-text-muted)] hover:text-[var(--color-accent)] hover:underline">
+                    Chat →
+                  </Link>
                 </div>
-              </Link>
+              </article>
             );
           })}
         </section>
@@ -215,11 +278,11 @@ export default async function AgentsPage() {
         </div>
         <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
           <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">Host services</h2>
-          {Object.keys(system).length === 0 ? (
+          {hostServices.length === 0 ? (
             <p className="text-sm text-[var(--color-text-muted)]">No service status reported by the Atlas snapshot feed.</p>
           ) : (
             <div className="grid gap-2 sm:grid-cols-2">
-              {Object.entries(system).map(([name, svc]) => {
+              {hostServices.map(([name, svc]) => {
                 const ok = svc.is_active === "active";
                 return (
                   <div key={name} className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm">
@@ -253,6 +316,16 @@ function Metric({ label, value }: { label: string; value: string }) {
     <div>
       <div className="text-[11px] uppercase tracking-wider text-[var(--color-text-muted)]">{label}</div>
       <div className="truncate font-medium" title={value}>{value}</div>
+    </div>
+  );
+}
+
+function CockpitStat({ label, value, tone }: { label: string; value: string; tone?: "ok" | "warn" }) {
+  const color = tone === "ok" ? "text-[var(--color-ok)]" : tone === "warn" ? "text-[var(--color-warn)]" : "text-[var(--color-text)]";
+  return (
+    <div className="rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-2">
+      <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">{label}</div>
+      <div className={`mt-1 truncate font-mono text-xs font-semibold ${color}`} title={value}>{value}</div>
     </div>
   );
 }

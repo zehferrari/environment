@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
-import { createEpic } from "@/lib/epics/actions";
 import { listAssignablePrincipals } from "@/lib/principals";
+import NewEpicFab from "./new-epic-fab";
 
 export const dynamic = "force-dynamic";
 
@@ -76,114 +76,68 @@ export default async function EpicsListPage({
         </div>
       </header>
 
-      <form
-        action={createEpic}
-        className="space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm"
-      >
-        <input type="hidden" name="projectSlug" value={slug} />
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-          New epic
-        </div>
-        <input
-          name="title"
-          required
-          maxLength={200}
-          placeholder="Epic title"
-          className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
-        />
-        <textarea
-          name="description"
-          rows={12}
-          placeholder="Description (optional) — markdown supported"
-          className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm leading-relaxed outline-none focus:border-[var(--color-accent)]"
-        />
-        <div className="flex flex-wrap items-end gap-3">
-          <label className="flex-1 min-w-[200px] text-xs">
-            <span className="mb-1 block text-[var(--color-text-muted)]">
-              Acting manager
-            </span>
-            <select
-              name="actingManagerId"
-              defaultValue=""
-              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
-            >
-              <option value="">No acting manager</option>
-              {principals.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.username}
-                  {p.kind === "agent" ? " (agent)" : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p className="flex-[2] text-xs text-[var(--color-text-muted)]">
-            After creating, you can upload attachments and set the assignee on
-            the epic page.
-          </p>
-          <button
-            type="submit"
-            className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
-          >
-            Create epic
-          </button>
-        </div>
-      </form>
-
       {epics.length === 0 ? (
         <p className="rounded-xl border border-dashed border-[var(--color-line)] p-6 text-center text-sm text-[var(--color-text-muted)]">
           No epics with status “{statusFilter}”.
         </p>
       ) : (
-        <ul className="grid gap-3 md:grid-cols-2">
-          {epics.map((e) => (
-            <li key={e.id}>
-              <Link
-                href={`/projects/${slug}/epics/${e.id}`}
-                className="block rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-[var(--color-accent)] hover:shadow-md"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <h2 className="truncate text-base font-semibold">{e.title}</h2>
-                  <span className="shrink-0 rounded-full border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider">
-                    {e.status}
+        <div className="overflow-hidden rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] shadow-sm">
+          <div className="grid grid-cols-[minmax(0,1fr)_6rem_8rem_8rem_4rem_4rem_7rem] items-center gap-3 border-b border-[var(--color-line)] px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+            <span>Epic</span>
+            <span>Status</span>
+            <span>Assignee</span>
+            <span>Acting mgr</span>
+            <span className="text-right">Tasks</span>
+            <span className="text-right">Files</span>
+            <span className="text-right">Updated</span>
+          </div>
+          <ul>
+            {epics.map((e) => (
+              <li key={e.id}>
+                <Link
+                  href={`/projects/${slug}/epics/${e.id}`}
+                  className="grid grid-cols-[minmax(0,1fr)_6rem_8rem_8rem_4rem_4rem_7rem] items-center gap-3 border-b border-[var(--color-line)] px-4 py-2.5 text-sm transition last:border-b-0 hover:bg-[var(--color-panel-soft)]"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium">{e.title}</span>
+                    {e.description ? (
+                      <span className="block truncate text-xs text-[var(--color-text-muted)]">
+                        {e.description}
+                      </span>
+                    ) : null}
                   </span>
-                </div>
-                {e.description ? (
-                  <p className="mt-1 line-clamp-2 text-xs text-[var(--color-text-muted)]">
-                    {e.description}
-                  </p>
-                ) : null}
-                <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-                  <div className="flex items-center gap-1">
-                    <dt className="text-[var(--color-text-muted)]">Assignee</dt>
-                    <dd>{e.assignee ? `@${e.assignee.username}` : "—"}</dd>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <dt className="text-[var(--color-text-muted)]">Acting mgr</dt>
-                    <dd>{e.actingManager ? `@${e.actingManager.username}` : "—"}</dd>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <dt className="text-[var(--color-text-muted)]">Tasks</dt>
-                    <dd>{e._count.tasks}</dd>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <dt className="text-[var(--color-text-muted)]">Files</dt>
-                    <dd>{e._count.attachments}</dd>
-                  </div>
-                </dl>
-                <div className="mt-3 text-[11px] text-[var(--color-text-muted)]">
-                  Updated{" "}
+                  <span>
+                    <span className="rounded-full border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider">
+                      {e.status}
+                    </span>
+                  </span>
+                  <span className="truncate text-xs text-[var(--color-text-muted)]">
+                    {e.assignee ? `@${e.assignee.username}` : "—"}
+                  </span>
+                  <span className="truncate text-xs text-[var(--color-text-muted)]">
+                    {e.actingManager ? `@${e.actingManager.username}` : "—"}
+                  </span>
+                  <span className="text-right text-xs tabular-nums">
+                    {e._count.tasks}
+                  </span>
+                  <span className="text-right text-xs tabular-nums">
+                    {e._count.attachments}
+                  </span>
                   <time
                     dateTime={e.updatedAt.toISOString()}
                     title={e.updatedAt.toISOString()}
+                    className="text-right text-xs tabular-nums text-[var(--color-text-muted)]"
                   >
                     {timeAgo(e.updatedAt)}
                   </time>
-                </div>
-              </Link>
-            </li>
-          ))}
-        </ul>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
+
+      <NewEpicFab projectSlug={slug} principals={principals} />
     </div>
   );
 }

@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import {
   renameEpic,
-  setEpicAssignee,
   setEpicActingManager,
   setEpicStatus,
+  createTaskInEpic,
 } from "@/lib/epics/actions";
 import {
   uploadAttachment,
@@ -13,7 +14,8 @@ import {
 } from "@/lib/attachments/actions";
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteEpic } from "@/lib/bin/actions";
-import AgentChatSidebar from "@/components/agent-chat";
+import { reorderTasks } from "@/lib/tasks/reorder";
+import SortableTaskList from "@/components/sortable-task-list";
 import { renderFullMarkdown } from "@/lib/markdown";
 import {
   listAssignablePrincipals,
@@ -52,16 +54,21 @@ export default async function EpicDetailPage({
   params: Promise<{ slug: string; epicId: string }>;
   searchParams: Promise<{ chat?: string }>;
 }) {
-  const { slug, epicId } = await params;
-  const { chat } = await searchParams;
-  const chatAgentSlug = typeof chat === "string" && chat !== "" ? chat : null;
+  const [{ slug, epicId }, { chat = "" }] = await Promise.all([
+    params,
+    searchParams,
+  ]);
 
   const epic = await db.epic.findUnique({
     where: { id: epicId },
     include: {
       project: { select: { id: true, slug: true, name: true } },
-      assignee: { select: { username: true } },
-      actingManager: { select: { username: true } },
+      actingManager: {
+        select: {
+          username: true,
+          agent: { select: { slug: true } },
+        },
+      },
       tasks: {
         where: { deletedAt: null },
         orderBy: [{ status: "asc" }, { rank: "asc" }],
@@ -82,6 +89,7 @@ export default async function EpicDetailPage({
   if (!epic || epic.project.slug !== slug || epic.deletedAt) notFound();
 
   const principals = await listAssignablePrincipals();
+  const selectedAgentSlug = chat || epic.actingManager?.agent?.slug || null;
 
   const tasksByStatus = new Map<string, typeof epic.tasks>();
   for (const s of TASK_STATUS_ORDER) tasksByStatus.set(s, []);
@@ -91,20 +99,17 @@ export default async function EpicDetailPage({
     tasksByStatus.set(t.status, list);
   }
 
-  return (
-    <div className="mx-auto grid max-w-[1600px] grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px] xl:grid-cols-[320px_minmax(0,1fr)_320px]">
-      {/* ----- Chat sidebar (left) ----------------------------------- */}
-      <aside className="order-3 xl:order-1">
-        <AgentChatSidebar
-          projectSlug={slug}
-          epicId={epic.id}
-          selectedAgentSlug={chatAgentSlug}
-          parentPath={`/projects/${slug}/epics/${epic.id}`}
-        />
-      </aside>
+  async function reorderEpicTasks(orderedIds: string[]): Promise<void> {
+    "use server";
+    await reorderTasks(orderedIds);
+    revalidatePath(`/projects/${slug}/epics/${epicId}`);
+    revalidatePath(`/projects/${slug}`);
+  }
 
+  return (
+    <div className="mx-auto grid max-w-[1400px] grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
       {/* ----- Main -------------------------------------------------- */}
-      <div className="order-1 min-w-0 space-y-6 xl:order-2">
+      <div className="min-w-0 space-y-6">
         <nav className="text-sm">
           <Link
             href={`/projects/${slug}/epics`}
@@ -181,8 +186,7 @@ export default async function EpicDetailPage({
           </div>
           {epic.tasks.length === 0 ? (
             <p className="text-xs text-[var(--color-text-muted)]">
-              No tasks linked to this epic yet. Link an existing task from its
-              detail page, or create a new task on the board.
+              No tasks linked to this epic yet. Add one below.
             </p>
           ) : (
             <div className="space-y-3">
@@ -194,35 +198,42 @@ export default async function EpicDetailPage({
                     <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                       {s} ({list.length})
                     </div>
-                    <ul className="divide-y divide-[var(--color-line)] rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]">
-                      {list.map((t) => (
-                        <li
-                          key={t.id}
-                          className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
-                        >
-                          <Link
-                            href={`/projects/${slug}/tasks/${t.id}`}
-                            className="truncate hover:underline"
-                          >
-                            {t.title}
-                          </Link>
-                          <div className="flex shrink-0 items-center gap-3 text-xs text-[var(--color-text-muted)]">
-                            {t.assignee ? <span>@{t.assignee.username}</span> : null}
-                            <time
-                              dateTime={t.updatedAt.toISOString()}
-                              title={t.updatedAt.toISOString()}
-                            >
-                              {timeAgo(t.updatedAt)}
-                            </time>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
+                    <SortableTaskList
+                      ariaLabel={`Tasks in ${s}`}
+                      reorderAction={reorderEpicTasks}
+                      showAssignee
+                      showUpdated
+                      items={list.map((t) => ({
+                        id: t.id,
+                        title: t.title,
+                        href: `/projects/${slug}/tasks/${t.id}`,
+                        assigneeName: t.assignee?.username ?? null,
+                        updatedAt: t.updatedAt.toISOString(),
+                      }))}
+                    />
                   </div>
                 );
               })}
             </div>
           )}
+
+          <form action={createTaskInEpic} className="mt-4 flex gap-2">
+            <input type="hidden" name="projectSlug" value={slug} />
+            <input type="hidden" name="epicId" value={epic.id} />
+            <input
+              name="title"
+              required
+              maxLength={200}
+              placeholder="New task title"
+              className="flex-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+            />
+            <button
+              type="submit"
+              className="rounded-lg bg-[var(--color-accent)] px-3 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
+            >
+              Add
+            </button>
+          </form>
         </section>
 
         {/* Attachments */}
@@ -303,7 +314,7 @@ export default async function EpicDetailPage({
       </div>
 
       {/* ----- Sidebar (right) --------------------------------------- */}
-      <aside className="order-2 space-y-4 xl:order-3">
+      <aside className="space-y-4">
         <form
           action={setEpicStatus}
           className="space-y-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm"
@@ -331,18 +342,6 @@ export default async function EpicDetailPage({
             </button>
           </div>
         </form>
-
-        <EpicSidebarPicker
-          title="Assignee"
-          name="assigneeId"
-          formAction={setEpicAssignee}
-          slug={slug}
-          epicId={epic.id}
-          selectedId={epic.assigneeId}
-          selectedLabel={epic.assignee?.username ?? null}
-          principals={principals}
-          emptyOption="Unassigned"
-        />
 
         <EpicSidebarPicker
           title="Acting manager"
@@ -428,7 +427,7 @@ function EpicSidebarPicker({
   emptyOption,
 }: {
   title: string;
-  name: "assigneeId" | "actingManagerId";
+  name: "actingManagerId";
   formAction: (formData: FormData) => Promise<void>;
   slug: string;
   epicId: string;

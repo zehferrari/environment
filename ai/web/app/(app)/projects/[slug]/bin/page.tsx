@@ -66,21 +66,10 @@ export default async function BinPage({
 
   return (
     <div className="space-y-6">
-      <header>
-        <nav className="text-sm">
-          <Link
-            href={`/projects/${slug}`}
-            className="text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:underline"
-          >
-            ← {project.name}
-          </Link>
-        </nav>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">Bin</h1>
-        <p className="mt-1 text-xs text-[var(--color-text-muted)]">
-          Soft-deleted Epics and Tasks. Anything left here for more than{" "}
-          {PURGE_TTL_DAYS} days is hard-deleted by the hourly purge job.
-        </p>
-      </header>
+      <p className="text-xs text-[var(--color-text-muted)]">
+        Soft-deleted Epics and Tasks. Anything left here for more than{" "}
+        {PURGE_TTL_DAYS} days is hard-deleted by the hourly purge job.
+      </p>
 
       {deletedEpics.length === 0 && deletedTasks.length === 0 ? (
         <p className="rounded-xl border border-dashed border-[var(--color-line)] p-6 text-center text-sm text-[var(--color-text-muted)]">

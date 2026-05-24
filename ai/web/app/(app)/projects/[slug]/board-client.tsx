@@ -1,20 +1,25 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import {
   DndContext,
   DragOverlay,
   PointerSensor,
   closestCorners,
-  useDraggable,
   useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type { MoveTaskResult } from "./page";
 
 type Task = {
@@ -24,6 +29,7 @@ type Task = {
   rank: number;
   updatedAt: string;
   assigneeName: string | null;
+  epicTitle: string | null;
 };
 type Column = { id: string; label: string };
 
@@ -36,6 +42,7 @@ type BoardProps = {
     status: string,
     slug: string,
   ) => Promise<MoveTaskResult>;
+  reorderTasksAction: (orderedIds: string[]) => Promise<void>;
 };
 
 // Per Stage 0 sign-off (HOMELAB-44 description): the Backlog column has a
@@ -43,17 +50,10 @@ type BoardProps = {
 // localStorage so each board remembers its own state across reloads.
 const BACKLOG_VISIBLE_KEY_PREFIX = "pm.board.backlogVisible.";
 
-export default function Board({ projectSlug, columns, tasks, moveTaskAction }: BoardProps) {
-  const router = useRouter();
+export default function Board({ projectSlug, columns, tasks, moveTaskAction, reorderTasksAction }: BoardProps) {
   const [items, setItems] = useState<Task[]>(tasks);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
-  // Keyboard selection: the focused card's id, plus an explicit "show
-  // ring" flag so we only paint the selection indicator after the user
-  // has actually interacted with a hotkey. Avoids a stray ring appearing
-  // on first render before the user knows hotkeys exist.
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [showSelection, setShowSelection] = useState(false);
   const [, startTransition] = useTransition();
   // Server-render and first client-render both start hidden so React
   // hydration matches; the stored preference (if any) is applied in a
@@ -107,26 +107,47 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction }: B
   function handleDragEnd(e: DragEndEvent) {
     setActiveId(null);
     const taskId = String(e.active.id);
-    const overCol = e.over?.id ? String(e.over.id) : null;
-    if (!overCol || !columns.some((c) => c.id === overCol)) return;
-    const task = items.find((t) => t.id === taskId);
-    if (!task || task.status === overCol) return;
+    const overId = e.over?.id ? String(e.over.id) : null;
+    if (!overId || overId === taskId) return;
 
+    const task = items.find((t) => t.id === taskId);
+    if (!task) return;
+
+    // Drop target is a column (header / empty space) — cross-column move
+    // with append-to-end. The existing moveTask handler enforces workflow
+    // rules and computes rank.
+    if (columns.some((c) => c.id === overId)) {
+      if (task.status === overId) return;
+      crossColumnMove(task, overId);
+      return;
+    }
+
+    // Drop target is another card. If same status → reorder within
+    // column. If different status → move into that card's column
+    // (workflow check, append). Insert-at-position across columns is
+    // intentionally out of scope here — once moved, the user can
+    // reorder within the destination column.
+    const over = items.find((t) => t.id === overId);
+    if (!over) return;
+    if (task.status === over.status) {
+      reorderWithinColumn(task, over);
+    } else {
+      crossColumnMove(task, over.status);
+    }
+  }
+
+  function crossColumnMove(task: Task, newStatus: string) {
     const previousStatus = task.status;
-    // Optimistic move. If the server rejects (workflow rule violation,
-    // unknown column), the transition handler rolls this card back to
-    // previousStatus and surfaces the rejection message.
     setItems((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, status: overCol } : t)),
+      prev.map((t) => (t.id === task.id ? { ...t, status: newStatus } : t)),
     );
     setMoveError(null);
-
     startTransition(async () => {
-      const result = await moveTaskAction(taskId, overCol, projectSlug);
+      const result = await moveTaskAction(task.id, newStatus, projectSlug);
       if (!result.ok) {
         setItems((prev) =>
           prev.map((t) =>
-            t.id === taskId ? { ...t, status: previousStatus } : t,
+            t.id === task.id ? { ...t, status: previousStatus } : t,
           ),
         );
         setMoveError(result.message);
@@ -134,162 +155,56 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction }: B
     });
   }
 
+  function reorderWithinColumn(active: Task, over: Task) {
+    const colTasks = items
+      .filter((t) => t.status === active.status)
+      .sort((a, b) => a.rank - b.rank);
+    const oldIdx = colTasks.findIndex((t) => t.id === active.id);
+    const newIdx = colTasks.findIndex((t) => t.id === over.id);
+    if (oldIdx === -1 || newIdx === -1 || oldIdx === newIdx) return;
+    const reordered = arrayMove(colTasks, oldIdx, newIdx);
+    // Rewrite optimistic ranks 0..N within this column; other columns
+    // are untouched. Server-side reorderTasks does the same write.
+    const rankByTask = new Map(reordered.map((t, i) => [t.id, i]));
+    setItems((prev) =>
+      prev.map((t) =>
+        rankByTask.has(t.id) ? { ...t, rank: rankByTask.get(t.id)! } : t,
+      ),
+    );
+    startTransition(() => {
+      void reorderTasksAction(reordered.map((t) => t.id));
+    });
+  }
+
   const active = items.find((t) => t.id === activeId);
 
-  const visibleColumns = useMemo(
-    () => (backlogVisible ? columns : columns.filter((c) => c.id !== "Backlog")),
-    [backlogVisible, columns],
+  // Backlog is no longer a board column: the four workflow columns render
+  // as the board grid, and Backlog renders below as its own card grid
+  // (HOMELAB-41). Drag-and-drop still works across both because the move
+  // logic keys off task status / droppable id, not layout.
+  const workflowColumns = useMemo(
+    () => columns.filter((c) => c.id !== "Backlog"),
+    [columns],
   );
-  const backlogCount = useMemo(
-    () => items.filter((t) => t.status === "Backlog").length,
+  const backlogTasks = useMemo(
+    () =>
+      items
+        .filter((t) => t.status === "Backlog")
+        .sort((a, b) => a.rank - b.rank),
     [items],
   );
-  // Tailwind v4 scans source for literal class names, so both literals
-  // need to appear in the file — keep this as a switch on two strings,
-  // not a template.
-  const gridColsClass =
-    visibleColumns.length === 5 ? "grid-cols-5" : "grid-cols-4";
+  const backlogCount = backlogTasks.length;
 
-  // Pre-bucket the visible board into [column][sorted tasks] so the
-  // hotkey handler can index into it in O(1) without re-filtering on
-  // every keypress. Memoised against the same inputs the render uses so
-  // navigation always agrees with what's on screen.
   const columnLanes = useMemo(
     () =>
-      visibleColumns.map((col) => ({
+      workflowColumns.map((col) => ({
         col,
         tasks: items
           .filter((t) => t.status === col.id)
           .sort((a, b) => a.rank - b.rank),
       })),
-    [visibleColumns, items],
+    [workflowColumns, items],
   );
-
-  // If the currently-selected card disappears (deleted, filtered out by
-  // hiding Backlog, moved off-screen by another agent), drop the
-  // selection rather than leaving a stale invisible target. The ring
-  // also disappears since there is nothing to draw it on.
-  useEffect(() => {
-    if (!selectedId) return;
-    const stillVisible = columnLanes.some((lane) =>
-      lane.tasks.some((t) => t.id === selectedId),
-    );
-    if (!stillVisible) {
-      setSelectedId(null);
-      setShowSelection(false);
-    }
-  }, [columnLanes, selectedId]);
-
-  // Keep a ref to the selected card so we can scroll it into view when
-  // the user hops between columns (the target may be outside the
-  // viewport on tall boards).
-  const selectedCardRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!showSelection) return;
-    selectedCardRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [selectedId, showSelection]);
-
-  const moveSelection = useCallback(
-    (dx: number, dy: number) => {
-      if (columnLanes.length === 0) return;
-      // Find current (col, row); if nothing is selected yet, seed at
-      // the first card of the first non-empty column.
-      let colIdx = -1;
-      let rowIdx = -1;
-      if (selectedId) {
-        for (let c = 0; c < columnLanes.length; c++) {
-          const r = columnLanes[c].tasks.findIndex((t) => t.id === selectedId);
-          if (r !== -1) {
-            colIdx = c;
-            rowIdx = r;
-            break;
-          }
-        }
-      }
-      if (colIdx === -1) {
-        const seedCol = columnLanes.findIndex((lane) => lane.tasks.length > 0);
-        if (seedCol === -1) return;
-        setSelectedId(columnLanes[seedCol].tasks[0].id);
-        setShowSelection(true);
-        return;
-      }
-
-      if (dy !== 0) {
-        const lane = columnLanes[colIdx].tasks;
-        const next = rowIdx + dy;
-        if (next < 0 || next >= lane.length) return;
-        setSelectedId(lane[next].id);
-        setShowSelection(true);
-        return;
-      }
-
-      if (dx !== 0) {
-        // Step across columns until we hit one with at least one card;
-        // clamp the row to that column's length so the selection lands
-        // on a real card instead of an empty index.
-        let target = colIdx + dx;
-        while (target >= 0 && target < columnLanes.length && columnLanes[target].tasks.length === 0) {
-          target += dx;
-        }
-        if (target < 0 || target >= columnLanes.length) return;
-        const lane = columnLanes[target].tasks;
-        const clamped = Math.min(rowIdx, lane.length - 1);
-        setSelectedId(lane[clamped].id);
-        setShowSelection(true);
-      }
-    },
-    [columnLanes, selectedId],
-  );
-
-  // Window-scoped hotkeys: J/K move within column, H/L move across
-  // columns, Enter opens the selected task. The first qualifying key
-  // also seeds the selection if none exists.
-  //
-  // Suppress when the user is typing into a text field or contenteditable
-  // surface so the title input / future inline editors are not hijacked.
-  // Modifier-bearing keystrokes are ignored too (Ctrl-J, Cmd-K, etc.)
-  // so we do not collide with browser/OS shortcuts.
-  useEffect(() => {
-    function isEditableTarget(t: EventTarget | null): boolean {
-      if (!(t instanceof HTMLElement)) return false;
-      if (t.isContentEditable) return true;
-      const tag = t.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-      // Suppress on other interactive controls so keystrokes activate the
-      // focused button/link/disclosure instead of being intercepted by the
-      // board nav handler. Covers nested children via closest().
-      if (t.closest('button, a, summary, [role="button"], [role="link"]')) return true;
-      return false;
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.defaultPrevented) return;
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (isEditableTarget(e.target)) return;
-      const k = e.key;
-      if (k === "j" || k === "J" || k === "ArrowDown") {
-        moveSelection(0, 1);
-        e.preventDefault();
-      } else if (k === "k" || k === "K" || k === "ArrowUp") {
-        moveSelection(0, -1);
-        e.preventDefault();
-      } else if (k === "h" || k === "H" || k === "ArrowLeft") {
-        moveSelection(-1, 0);
-        e.preventDefault();
-      } else if (k === "l" || k === "L" || k === "ArrowRight") {
-        moveSelection(1, 0);
-        e.preventDefault();
-      } else if (k === "Enter" && selectedId) {
-        router.push(`/projects/${projectSlug}/tasks/${selectedId}`);
-        e.preventDefault();
-      } else if (k === "Escape" && showSelection) {
-        setShowSelection(false);
-        setSelectedId(null);
-        e.preventDefault();
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [moveSelection, projectSlug, router, selectedId, showSelection]);
 
   return (
     <DndContext
@@ -314,41 +229,61 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction }: B
         </div>
       ) : null}
 
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <p className="text-xs text-[var(--color-text-muted)]">
-          <kbd className="rounded border border-[var(--color-line)] px-1">J</kbd>
-          /<kbd className="rounded border border-[var(--color-line)] px-1">K</kbd> move within column ·{" "}
-          <kbd className="rounded border border-[var(--color-line)] px-1">H</kbd>
-          /<kbd className="rounded border border-[var(--color-line)] px-1">L</kbd> across columns ·{" "}
-          <kbd className="rounded border border-[var(--color-line)] px-1">Enter</kbd> open
-        </p>
-        <button
-          type="button"
-          onClick={() => setBacklogVisible((v) => !v)}
-          aria-pressed={backlogVisible}
-          className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-        >
-          {backlogVisible
-            ? "Hide Backlog"
-            : `Show Backlog${backlogCount ? ` (${backlogCount})` : ""}`}
-        </button>
-      </div>
+      <section className="mb-6">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
+            Backlog{backlogCount ? ` (${backlogCount})` : ""}
+          </h2>
+          <button
+            type="button"
+            onClick={() => setBacklogVisible((v) => !v)}
+            aria-pressed={backlogVisible}
+            className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          >
+            {backlogVisible ? "Hide Backlog" : "Show Backlog"}
+          </button>
+        </div>
 
-      <div className={`grid ${gridColsClass} gap-3`}>
+        {backlogVisible ? (
+          <BacklogDroppable>
+            {backlogTasks.length === 0 ? (
+              <p className="px-1 py-6 text-center text-xs text-[var(--color-text-muted)]">
+                Backlog is empty. Drag a row here or add a task.
+              </p>
+            ) : (
+              <div>
+                <div className="grid grid-cols-[minmax(0,1fr)_10rem_8rem_4rem_1.5rem] items-center gap-3 border-b border-[var(--color-line)] px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                  <span>Task</span>
+                  <span>Epic</span>
+                  <span>Assignee</span>
+                  <span className="text-right">Updated</span>
+                  <span className="sr-only">Open</span>
+                </div>
+                <SortableContext
+                  items={backlogTasks.map((t) => t.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {backlogTasks.map((t) => (
+                    <BacklogRow key={t.id} task={t} projectSlug={projectSlug} />
+                  ))}
+                </SortableContext>
+              </div>
+            )}
+          </BacklogDroppable>
+        ) : null}
+      </section>
+
+      <div className="grid grid-cols-4 gap-3">
         {columnLanes.map(({ col, tasks: colTasks }) => (
           <ColumnDroppable key={col.id} id={col.id} label={col.label} count={colTasks.length}>
-            {colTasks.map((t) => {
-              const isSelected = showSelection && t.id === selectedId;
-              return (
-                <TaskCard
-                  key={t.id}
-                  task={t}
-                  projectSlug={projectSlug}
-                  isSelected={isSelected}
-                  cardRef={isSelected ? selectedCardRef : null}
-                />
-              );
-            })}
+            <SortableContext
+              items={colTasks.map((t) => t.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              {colTasks.map((t) => (
+                <TaskCard key={t.id} task={t} projectSlug={projectSlug} />
+              ))}
+            </SortableContext>
           </ColumnDroppable>
         ))}
       </div>
@@ -397,32 +332,27 @@ function ColumnDroppable({
 function TaskCard({
   task,
   projectSlug,
-  isSelected,
-  cardRef,
 }: {
   task: Task;
   projectSlug: string;
-  isSelected: boolean;
-  cardRef: React.RefObject<HTMLDivElement | null> | null;
 }) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: task.id });
-  // Combine the dnd-kit ref with our scroll-into-view ref. dnd-kit owns
-  // the real DOM node; we just observe it through cardRef.
-  function refCallback(node: HTMLDivElement | null) {
-    setNodeRef(node);
-    if (cardRef) cardRef.current = node;
-  }
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: task.id });
   return (
     <div
-      ref={refCallback}
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
       {...attributes}
       {...listeners}
-      aria-selected={isSelected || undefined}
-      className={`rounded-lg border bg-[var(--color-panel)] px-3 py-2 text-sm cursor-grab select-none ${
-        isSelected
-          ? "border-[var(--color-accent)] ring-2 ring-[var(--color-accent)]"
-          : "border-[var(--color-line)]"
-      } ${isDragging ? "opacity-30" : ""}`}
+      className={`rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-sm cursor-grab select-none ${
+        isDragging ? "opacity-30" : ""
+      }`}
     >
       <div className="flex items-start justify-between gap-2">
         <span className="truncate">{task.title}</span>
@@ -453,6 +383,89 @@ function TaskCard({
           {relativeUpdated(task.updatedAt)}
         </time>
       </div>
+    </div>
+  );
+}
+
+// Droppable wrapper for the Backlog grid. Shares the "Backlog" id with
+// the status column, so dragging a card onto this region routes through
+// the same crossColumnMove path (status → "Backlog").
+function BacklogDroppable({ children }: { children: React.ReactNode }) {
+  const { isOver, setNodeRef } = useDroppable({ id: "Backlog" });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`rounded-lg border py-2 transition-colors ${
+        isOver
+          ? "border-[var(--color-accent)] bg-[var(--color-panel-soft)]"
+          : "border-[var(--color-line)] bg-[var(--color-panel)]"
+      }`}
+    >
+      {children}
+    </div>
+  );
+}
+
+// One backlog row in the table-style grid. The drag activator is the
+// handle only (not the whole row), so the open-detail link and text stay
+// clickable/selectable.
+function BacklogRow({
+  task,
+  projectSlug,
+}: {
+  task: Task;
+  projectSlug: string;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: task.id });
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`grid grid-cols-[minmax(0,1fr)_10rem_8rem_4rem_1.5rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-sm last:border-b-0 ${
+        isDragging ? "bg-[var(--color-panel-soft)] opacity-40" : ""
+      }`}
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          aria-label="Drag to reorder or move"
+          className="shrink-0 cursor-grab touch-none select-none px-0.5 text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          title="Drag"
+        >
+          ⠿
+        </button>
+        <span className="truncate">{task.title}</span>
+      </div>
+      <span className="truncate text-xs text-[var(--color-text-muted)]">
+        {task.epicTitle ?? "—"}
+      </span>
+      <span className="truncate text-xs text-[var(--color-text-muted)]">
+        {task.assigneeName ? `@${task.assigneeName}` : "unassigned"}
+      </span>
+      <time
+        dateTime={task.updatedAt}
+        title={task.updatedAt}
+        className="text-right text-xs tabular-nums text-[var(--color-text-muted)]"
+      >
+        {relativeUpdated(task.updatedAt)}
+      </time>
+      <Link
+        href={`/projects/${projectSlug}/tasks/${task.id}`}
+        className="text-right text-[var(--color-text-muted)] hover:text-[var(--color-accent)]"
+        aria-label={`Open ${task.title}`}
+        title="Open task"
+      >
+        ↗
+      </Link>
     </div>
   );
 }

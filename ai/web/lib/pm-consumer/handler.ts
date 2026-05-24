@@ -86,6 +86,9 @@ export function createHandler(opts: HandlerOptions = {}) {
       slug: target.slug,
       text: wakeText(event),
       mode: "now",
+      sessionKey: event.kind === "task.agent_chat"
+        ? event.payload.openclawSessionKey ?? null
+        : null,
     });
     if (!wakeRes.ok) {
       await markDelivered({
@@ -140,9 +143,55 @@ function wakeText(event: PmEvent): string {
       const grant = event.payload.allowDescriptionEdit
         ? " [edit_grant]"
         : "";
-      return `PM: chat for ${taskKey} (${event.task.title})${grant}`;
+      const lines = [
+        `PM: chat for ${taskKey} (${event.task.title})${grant}`,
+        event.payload.openclawSessionKey
+          ? `OpenClaw session key: ${event.payload.openclawSessionKey}`
+          : "OpenClaw session key: (not provided)",
+        "",
+        "SYSTEM INSTRUCTIONS:",
+        event.payload.systemPrompt,
+        "",
+        "CALLBACK CONTRACT:",
+        "A final reply inside this private OpenClaw session is not visible in PM.",
+        "Use the callback endpoint(s) below to write visible PM results.",
+        "",
+        "USER MESSAGE AND TASK CONTEXT:",
+        event.payload.userMessage,
+      ];
+      if (event.payload.chatReplyEndpoint) {
+        lines.push(
+          "",
+          "Required visible reply: POST JSON to the origin-channel callback:",
+          absoluteCallbackUrl(event.payload.chatReplyEndpoint.path),
+          "",
+          "Body shape:",
+          JSON.stringify(event.payload.chatReplyEndpoint.bodyShape),
+        );
+      }
+      if (event.payload.replyEndpoint) {
+        lines.push(
+          "",
+          "Description edit grant: POST JSON to:",
+          absoluteCallbackUrl(event.payload.replyEndpoint.path),
+          "",
+          "Body shape:",
+          JSON.stringify(event.payload.replyEndpoint.bodyShape),
+        );
+      }
+      return lines.join("\n");
     }
   }
 }
 
 export type ConsumerHandler = ReturnType<typeof createHandler>;
+
+function callbackBaseUrl() {
+  return process.env.PM_AGENT_CALLBACK_URL
+    ?? process.env.PM_INTERNAL_APP_URL
+    ?? "http://127.0.0.1:3000";
+}
+
+function absoluteCallbackUrl(path: string) {
+  return new URL(path, callbackBaseUrl()).toString();
+}

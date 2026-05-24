@@ -85,12 +85,12 @@ export interface TaskAckReadyPayload {
 // self-describing so the consumer side does not need PM-side schema
 // changes per chat variant: when allowDescriptionEdit is true, the
 // `replyEndpoint` tells the agent runtime which URL + method to POST
-// against, and `systemPrompt` carries the strict instruction
-// ("respond with ONLY the new description, no commentary") that the
-// runtime should pass to its LLM verbatim.
+// against with a signed one-shot token, and `systemPrompt` carries the
+// callback contract that the runtime should pass to its LLM verbatim.
 export interface TaskAgentChatPayload {
   chatMessageId: string;
   targetAgentSlug: string;
+  openclawSessionKey?: string;
   userMessage: string;
   allowDescriptionEdit: boolean;
   currentDescription: string | null;
@@ -106,8 +106,22 @@ export interface TaskAgentChatPayload {
     path: string; // e.g. /api/tasks/<taskId>/description
     bodyShape: {
       messageId: string;
+      token: string;
       // The runtime supplies the agent's reply text as `description`.
       description: "<agent reply text>";
+    };
+  } | null;
+  // Token-scoped endpoint for storing an ordinary conversational reply
+  // back into the origin channel. Hand-written task chat messages reply
+  // to task chat; task comments mirrored into agent chat reply to task
+  // comments.
+  chatReplyEndpoint?: {
+    method: "POST";
+    path: string; // e.g. /api/tasks/<taskId>/chat/reply
+    bodyShape: {
+      messageId: string;
+      token: string;
+      body: "<agent reply text>";
     };
   } | null;
 }

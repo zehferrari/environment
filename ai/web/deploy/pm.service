@@ -1,34 +1,34 @@
 [Unit]
-Description=PM (agents.vixi.au) — Next.js project workspace
+Description=PM (agents.vixi.au) - Next.js project workspace
 Documentation=https://zeh-ferrari.atlassian.net/browse/HOMELAB-43
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-# Run as the host's main Linux user (x1 → zeh; no dedicated pm user per spec).
-User=zeh
-Group=zeh
-WorkingDirectory=/srv/Code/environment/ai/web
+# The checkout is built by the code owner, but runtime secrets are owned by
+# the PM app user on x1.
+User=karen
+Group=karen
+WorkingDirectory=/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/.next/standalone
 
-# Env file is host-private (mode 0600, owner zeh) — contains AUTH_SECRET, etc.
 EnvironmentFile=/etc/default/pm
-# DATABASE_URL points at a writable per-host SQLite file (see pm.env.example).
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3000
+Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=/etc/openclaw/pm-channel-tokens.json
 
-# Standalone Next.js output is built at ai/web/.next/standalone/server.js.
-# Static + public assets are copied alongside by the post-build deploy step.
-ExecStart=/usr/bin/node /srv/Code/environment/ai/web/.next/standalone/server.js
+ExecStart=/usr/bin/node24 server.js
 
 Restart=on-failure
 RestartSec=3s
 
-# Reasonable hardening — relax only if a feature breaks.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/srv/Code/environment/ai/web/prisma /etc/openclaw/pm-agent-credentials /var/lib/pm/drop
-ReadOnlyPaths=/srv/agents
+ReadWritePaths=/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma /srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/.data /etc/openclaw/pm-agent-credentials /var/lib/pm/drop -/srv/Data/projects
+ReadOnlyPaths=/srv/agents /etc/openclaw/pm-channel-tokens.json
 
 [Install]
 WantedBy=multi-user.target

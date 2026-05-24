@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { resolveEffectiveAgentConfig } from "@/lib/agents/effective-config";
 
 async function snapshotServices(agent: string) {
   try {
@@ -23,8 +24,8 @@ export type QueuedAgentRestart = { queued: true; agent: string; reason: string }
 
 export async function requestAgentRestart(agent: string, reason: string): Promise<AgentRestartResult[]> {
   const row = await db.agent.findUnique({ where: { slug: agent } });
-  const raw = row?.rawJson ? JSON.parse(row.rawJson) as { services?: string[] } : {};
-  const services = Array.from(new Set([...(raw.services ?? []), ...(await snapshotServices(agent))]));
+  const effective = await resolveEffectiveAgentConfig(row?.rawJson ?? null);
+  const services = Array.from(new Set([...effective.services, ...(await snapshotServices(agent))]));
   const targets = services.filter((service) => service.startsWith("openclaw-") && service.endsWith(".service"));
   const attempted = targets.length > 0 ? targets : ["openclaw-gateway.service"];
   const results: AgentRestartResult[] = [];

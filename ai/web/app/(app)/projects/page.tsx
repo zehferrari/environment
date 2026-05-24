@@ -27,14 +27,25 @@ async function createProject(formData: FormData) {
 }
 
 export default async function ProjectsPage() {
-  const projects = await db.project.findMany({
-    where: { archivedAt: null },
-    orderBy: { createdAt: "desc" },
-  });
+  const [projects, deletedCount] = await Promise.all([
+    db.project.findMany({
+      where: { archivedAt: null, deletedAt: null },
+      orderBy: { createdAt: "desc" },
+    }),
+    db.project.count({ where: { deletedAt: { not: null } } }),
+  ]);
 
   return (
     <div className="max-w-4xl">
-      <h1 className="text-2xl font-semibold tracking-tight mb-4">Projects</h1>
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
+        <Link
+          href="/projects/bin"
+          className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+        >
+          Bin{deletedCount > 0 ? ` (${deletedCount})` : ""}
+        </Link>
+      </div>
 
       <form action={createProject} className="flex gap-2 mb-6">
         <input

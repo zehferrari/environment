@@ -8,10 +8,26 @@ zeh sees exactly what changes on the host.
 
 | File | Lands at | Owner | Notes |
 | --- | --- | --- | --- |
-| `pm.service` | `/etc/systemd/system/pm.service` | root | systemd unit; runs as `zeh`. |
+| `pm.service` | `/etc/systemd/system/pm.service` | root | systemd unit; runs the one host-wide standalone Next server as the PM app user (`karen` on x1). |
 | `pm-consumer.service` | `/etc/systemd/system/pm-consumer.service` | root | drains `/var/lib/pm/drop` and wakes agent gateways. |
-| `pm.env.example` | copy → `/etc/default/pm` | `root:zeh`, `0640` | secrets file; not committed. |
+| `pm.env.example` | copy -> `/etc/default/pm` | `root:<pm-user-group>`, `0640` | secrets file; not committed. |
+| `/etc/openclaw/pm-consumer-tokens.json` | host-created | `root:<pm-consumer-group>`, `0640` | per-agent `/hooks/wake` Bearer map; never commit. |
+| `/etc/openclaw/pm-channel-tokens.json` | host-created | `root:<pm-user-group>`, `0640` | per-agent native PM channel Bearer map; never commit. |
 | `nginx-agents.vixi.au.conf` | `/etc/nginx/sites-available/agents.vixi.au` (+ symlink in `sites-enabled/`) | root | TLS via Let's Encrypt. |
+
+## Service Model
+
+`pm.service` is one host-wide web service for `agents.vixi.au`. It is
+not started once per agent. The single PM process owns the UI, DB,
+task/comment persistence, and native `pm` channel callbacks, then
+routes work to each agent through that agent's loopback OpenClaw
+gateway.
+
+On x1 the service user is `karen`, because Karen is the monitor agent
+with host-level visibility into the local agent fleet. A future
+dedicated `pm` Unix user is still the cleaner long-term option; set
+`PM_APP_USER` / `PM_APP_GROUP` when running `openclaw/install.sh` to
+render the units for a different service account.
 
 ## First-time install (x1)
 
@@ -21,35 +37,53 @@ cd /srv/Code/environment/ai/web
 pnpm install
 pnpm build
 # Standalone output: .next/standalone/server.js
-# Copy assets the standalone server expects but doesn't bundle.
-cp -r .next/static .next/standalone/.next/static
-cp -r public .next/standalone/public
+# pnpm build copies .next/static and public into .next/standalone.
 
 # 2. Apply DB migrations. Schema lives in prisma/schema.prisma; the v1 initial
 #    migration is committed under prisma/migrations/. Use `migrate deploy` on
 #    every host — never `db push` against a real DB (no history, no rollback).
 pnpm prisma migrate deploy
 
-# 3. Drop the env file into /etc/default and the unit into systemd.
-sudo install -o root -g zeh -m 0640 deploy/pm.env.example /etc/default/pm
+# 3. Drop the env file into /etc/default and edit host secrets/paths.
+sudo install -o root -g karen -m 0640 deploy/pm.env.example /etc/default/pm
+sudo $EDITOR /etc/default/pm
+
+# 4. Install/reconcile PM units, PM token files, OpenClaw gateway hooks,
+#    and the native OpenClaw pm channel plugin.
+sudo PM_WEB_ROOT="$PWD" /srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/openclaw/install.sh
+
+# Equivalent manual unit install, if you are not using openclaw/install.sh:
 sudo install -o root -g root -m 0644 deploy/pm.service /etc/systemd/system/pm.service
 sudo install -o root -g root -m 0644 deploy/pm-consumer.service /etc/systemd/system/pm-consumer.service
 sudo systemctl daemon-reload
 
-# 4. Create directories used by PM and the consumer.
-sudo install -d -o zeh -g zeh -m 0700 /etc/openclaw/pm-agent-credentials
-sudo install -d -o zeh -g zeh -m 0700 /var/lib/pm/drop
+# 4a. Create directories used by PM and the consumer when doing manual unit install.
+sudo install -d -o karen -g karen -m 0700 /etc/openclaw/pm-agent-credentials
+sudo install -d -o karen -g karen -m 0700 /var/lib/pm/drop
 sudo test -f /etc/openclaw/pm-consumer-tokens.json || echo '{}' | sudo tee /etc/openclaw/pm-consumer-tokens.json >/dev/null
-sudo chown root:zeh /etc/openclaw/pm-consumer-tokens.json
+sudo chown root:karen /etc/openclaw/pm-consumer-tokens.json
 sudo chmod 0640 /etc/openclaw/pm-consumer-tokens.json
+sudo test -f /etc/openclaw/pm-channel-tokens.json || echo '{}' | sudo tee /etc/openclaw/pm-channel-tokens.json >/dev/null
+sudo chown root:karen /etc/openclaw/pm-channel-tokens.json
+sudo chmod 0640 /etc/openclaw/pm-channel-tokens.json
+
+# 4b. Reconcile local OpenClaw gateway hooks when doing manual unit install.
+#     This populates each agent's hooks.token and mirrors the values into
+#     /etc/openclaw/pm-consumer-tokens.json for the PM consumer.
+sudo PM_WEB_ROOT=/srv/Code/environment/ai/web /srv/Code/environment/ai/openclaw/install.sh
+
+# 4c. Install/configure the native PM channel plugin for local agents.
+#     The helper stages a root-owned plugin copy at
+#     /usr/local/share/openclaw/plugins/pm-channel, links that copy into
+#     each agent's OpenClaw config, writes per-agent PM channel tokens,
+#     keeps the token file readable by the PM web service group, and
+#     removes stale worktree plugin paths from plugins.load.paths.
+sudo node deploy/install-openclaw-pm-channel.mjs --restart
 
 # 5. Bring up the nginx vhost (cert assumed already issued; certbot --nginx -d agents.vixi.au if not).
 sudo install -o root -g root -m 0644 deploy/nginx-agents.vixi.au.conf /etc/nginx/sites-available/agents.vixi.au
 sudo ln -sf /etc/nginx/sites-available/agents.vixi.au /etc/nginx/sites-enabled/agents.vixi.au
 sudo nginx -t && sudo systemctl reload nginx
-
-# 6. Edit /etc/default/pm — generate AUTH_SECRET and confirm DATABASE_URL.
-sudo $EDITOR /etc/default/pm
 
 # 7. Start.
 sudo systemctl enable --now pm.service pm-consumer.service
@@ -68,13 +102,111 @@ hasn't been applied yet.
 `pnpm prisma db push` is dev-only (rapid prototyping without a migration
 history) and **must not** be used against the production DB.
 
+## Native OpenClaw PM channel
+
+PM direct chat, task chat, and task-comment replies use the native
+OpenClaw `pm` channel. Each agent gateway must load the staged plugin
+at `/usr/local/share/openclaw/plugins/pm-channel` and have a channel
+config similar to:
+
+```json
+{
+  "channels": {
+    "pm": {
+      "enabled": true,
+      "token": "env:PM_OPENCLAW_CHANNEL_TOKEN",
+      "callbackToken": "env:PM_OPENCLAW_CHANNEL_TOKEN",
+      "callbackUrl": "http://127.0.0.1:3000/api/openclaw/pm-channel/reply",
+      "agentId": "main"
+    }
+  }
+}
+```
+
+PM posts accepted turns to:
+
+```text
+POST http://127.0.0.1:<gateway_port>/pm-channel/ingest
+Authorization: Bearer <PM_OPENCLAW_CHANNEL_TOKEN>
+```
+
+The route uses `auth: "plugin"` and performs its own Bearer check, so
+it does not require gateway operator credentials. Keep gateways bound to
+loopback and do not expose `/pm-channel/ingest` through nginx.
+
+For live chat UX, PM includes a stream callback URL in each turn. The
+plugin posts partial reply chunks to
+`http://127.0.0.1:3000/api/openclaw/pm-channel/stream`; browsers subscribe
+to PM over same-origin SSE while final durable replies still land at
+`/api/openclaw/pm-channel/reply`.
+
+PM resolves channel tokens in this order:
+`PM_OPENCLAW_CHANNEL_TOKEN_<AGENT_SLUG>`,
+`/etc/openclaw/pm-channel-tokens.json`, then
+`PM_OPENCLAW_CHANNEL_TOKEN`. The installer writes the per-agent token
+file and mirrors those values into the gateway configs.
+
+## Local OpenClaw wake hooks
+
+The PM consumer should wake agents through each local gateway's external
+hook:
+
+```text
+POST http://127.0.0.1:<gateway_port>/hooks/wake
+Authorization: Bearer <agent hooks.token>
+```
+
+`openclaw/install.sh` is responsible for enabling this on the host. For
+every enabled agent with an `openclaw-gateway` listener in
+`/etc/openclaw/agents.json`, it should bind the gateway to loopback,
+preserve the existing `hooks.internal` config, and set:
+
+```json
+{
+  "gateway": {
+    "bind": "loopback",
+    "trustedProxies": ["127.0.0.1", "::1"]
+  },
+  "hooks": {
+    "enabled": true,
+    "path": "/hooks",
+    "token": "<per-agent secret>",
+    "allowRequestSessionKey": true,
+    "allowedSessionKeyPrefixes": ["hook:", "pm:"]
+  }
+}
+```
+
+The same token must be mirrored into
+`/etc/openclaw/pm-consumer-tokens.json` under that agent's slug. The
+token file should be `0640` and owned by `root:<pm-consumer-group>`
+(`root:karen` on x1 when using the default installer settings). The
+committed service file is only a template; `openclaw/install.sh` renders
+the installed unit with `PM_CONSUMER_USER` / `PM_CONSUMER_GROUP` or the
+PM app user/group defaults.
+OpenClaw requires `hook:` in the allowed session-key prefixes when no
+default hook session key is configured; PM chat/comment routing uses
+`pm:` keys created in `AgentSessionBinding`.
+
+After hook changes, restart the affected `openclaw-gateway.service`.
+Expected checks per gateway are: `GET /health` returns 200,
+`GET /hooks` returns 405, unauthenticated `POST /hooks/wake` returns
+401, and authenticated `POST /hooks/wake` returns 200. `ss -ltnp`
+should show `127.0.0.1:<gateway_port>`, not
+`0.0.0.0:<gateway_port>`. If the OpenClaw dashboard is exposed through
+nginx, proxy it to `127.0.0.1:<gateway_port>` and explicitly block the
+prefixed hook path (`/<agent>/hooks`), because the dashboard proxy strips
+the public prefix before forwarding to the gateway.
+Karen's `pm-karen-wake-agent` helper remains only as a fallback for old
+hosts or temporary hook failures.
+
 ## Seeded credentials
 
 - **zeh (human)** — password `password1`, `must_rotate_password=1`. First login forces rotation.
 - **Each co-located agent** — random password written to
-  `/etc/openclaw/pm-agent-credentials/<agent>.json` (mode `0600`, owner `zeh`).
-  The agent process reads that file out-of-band, signs in once, and is forced
-  to rotate.
+  `/etc/openclaw/pm-agent-credentials/<agent>.json` (mode `0600`, owner
+  `<pm-app-user>`, `karen` on x1). The credential is host-private, never
+  logged, and used only for the agent's first login + forced rotation flow.
 
 The boot-time sync (in `instrumentation.node.ts`) reads `/srv/agents/index.json`,
 reconciles the `Agent` table, and seeds the user rows + credential files. The

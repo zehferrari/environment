@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { canEditProfile, readAgentProfile } from "@/lib/agents/profile";
 import { readAgentModelSettings } from "@/lib/agents/model-settings";
+import { resolveEffectiveAgentConfig } from "@/lib/agents/effective-config";
 import ProfileEditor from "./profile-editor";
 import AtlasControls from "./atlas-controls";
 import AgentTabs from "./agent-tabs";
@@ -33,9 +34,6 @@ type Snapshot = {
 
 type RawAgent = {
   telegram?: { bot?: string; enabled?: boolean };
-  integrations?: Record<string, boolean>;
-  capabilities?: Record<string, boolean>;
-  services?: string[];
   listeners?: Array<{ owner?: string; host?: string; port?: number; expected?: boolean }>;
 };
 
@@ -62,6 +60,12 @@ function avatarUrl(name: string) {
   return `/agents/avatars/${encodeURIComponent(first)}`;
 }
 
+function localAvatarSrc(agentAvatar: string | null, liveAvatarUrl: string | undefined, name: string) {
+  if (liveAvatarUrl?.startsWith("/")) return liveAvatarUrl;
+  if (agentAvatar) return avatarUrl(name);
+  return null;
+}
+
 function statusFor(agent: { deactivatedAt: Date | null; user: { status: string } | null }, live?: SnapshotAgent | null) {
   if (agent.deactivatedAt || agent.user?.status === "deactivated") return "offline";
   if (live?.busy_state?.is_busy) return "active";
@@ -82,8 +86,15 @@ function formatIdle(seconds?: number | null) {
   return `${Math.floor(seconds / 86400)}d`;
 }
 
-export default async function AgentProfilePage({ params }: { params: Promise<{ agent: string }> }) {
+export default async function AgentProfilePage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ agent: string }>;
+  searchParams?: Promise<{ tab?: string }>;
+}) {
   const { agent: slug } = await params;
+  const requestedTab = (await searchParams)?.tab === "operations" ? "operations" : "controls";
   const session = await auth();
   const [agent, snapshot] = await Promise.all([
     db.agent.findUnique({ where: { slug }, include: { user: true } }),
@@ -111,18 +122,18 @@ export default async function AgentProfilePage({ params }: { params: Promise<{ a
 
   const live = snapshot?.agents?.[slug];
   const raw = parseRaw(agent.rawJson);
+  const effective = await resolveEffectiveAgentConfig(agent.rawJson);
   const status = statusFor(agent, live);
   const tickets = live?.jira_tickets ?? [];
-  const integrations = raw.integrations ?? {};
   const listeners = raw.listeners ?? [];
-  const capabilities = raw.capabilities ?? {};
-  const rawServices = raw.services ?? [];
+  const rawServices = effective.services;
   const services = Object.entries(snapshot?.system ?? {}).filter(([name]) => name.startsWith(`${slug}/`));
   const serviceNames = Array.from(new Set([...rawServices, ...services.map(([name]) => name.replace(`${slug}/`, ""))]));
   const controlServices = serviceNames.map((name) => ({
     name,
     status: snapshot?.system?.[`${slug}/${name}`]?.is_active ?? snapshot?.system?.[name]?.is_active,
   }));
+  const avatarSrc = localAvatarSrc(agent.avatar, live?.avatar_url, agent.name);
 
   return (
     <div className="space-y-6">
@@ -134,7 +145,11 @@ export default async function AgentProfilePage({ params }: { params: Promise<{ a
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-4">
             <div className="grid h-20 w-20 shrink-0 place-items-center overflow-hidden rounded-3xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-3xl font-semibold">
-              {agent.avatar || live?.avatar_url ? <img src={live?.avatar_url ?? avatarUrl(agent.name)} alt={`${agent.name} avatar`} className="h-full w-full object-cover" /> : (live?.avatar ?? agent.name.slice(0, 1))}
+              {avatarSrc ? (
+                <img src={avatarSrc} alt={`${agent.name} avatar`} decoding="async" className="h-full w-full object-cover" />
+              ) : live?.avatar_url ? (
+                <img src={live.avatar_url} alt={`${agent.name} avatar`} className="h-full w-full object-cover" />
+              ) : (live?.avatar ?? agent.name.slice(0, 1))}
             </div>
             <div className="min-w-0">
               <p className="font-mono text-xs text-[var(--color-text-muted)]">@{agent.slug}</p>
@@ -155,8 +170,10 @@ export default async function AgentProfilePage({ params }: { params: Promise<{ a
       </header>
 
       <AgentTabs
+        agent={slug}
+        activeTab={requestedTab}
         controls={(
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.75fr)]">
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
             <div className="space-y-4">
               <Panel title="Identity files">
                 <ProfileEditor agent={slug} files={profile.files} canEdit={canEdit} />
@@ -189,54 +206,58 @@ export default async function AgentProfilePage({ params }: { params: Promise<{ a
               <AtlasControls
                 agent={slug}
                 canEdit={canEdit}
-                integrations={integrations}
-                capabilities={capabilities}
+                integrations={effective.integrations}
+                capabilities={effective.capabilities}
                 services={controlServices}
               />
             </aside>
           </div>
         )}
         operations={(
-          <div className="grid gap-4 xl:grid-cols-2">
-            <Panel title="Current task">
-              {live?.current_task ? (
-                <div className="space-y-1 text-sm">
-                  <div className="font-semibold">{live.current_task.ticket ?? live.current_task.heading}</div>
-                  <div className="text-[var(--color-text-muted)]">{live.current_task.heading}</div>
-                  <div className="text-xs text-[var(--color-text-muted)]">status: {live.current_task.status ?? "—"}</div>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="space-y-4">
+              <Panel title="Models Settings">
+                <ModelsSettings agent={slug} canEdit={canEdit} settings={modelSettings} liveModel={live?.model_primary} />
+              </Panel>
+            </div>
+
+            <div className="space-y-4">
+              <Panel title="Open tickets">
+                {tickets.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No open assigned tickets.</p> : (
+                  <ul className="space-y-2 text-sm">
+                    {tickets.map((t) => <li key={t.key} className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-2"><div className="font-mono text-xs text-[var(--color-text-muted)]">{t.key}</div><div className="font-medium">{t.summary}</div><div className="text-xs text-[var(--color-text-muted)]">{t.status}</div></li>)}
+                  </ul>
+                )}
+              </Panel>
+
+              <Panel title="Current task">
+                {live?.current_task ? (
+                  <div className="space-y-1 text-sm">
+                    <div className="font-semibold">{live.current_task.ticket ?? live.current_task.heading}</div>
+                    <div className="text-[var(--color-text-muted)]">{live.current_task.heading}</div>
+                    <div className="text-xs text-[var(--color-text-muted)]">status: {live.current_task.status ?? "—"}</div>
+                  </div>
+                ) : <p className="text-sm text-[var(--color-text-muted)]">No active task pinned.</p>}
+              </Panel>
+
+              <Panel title="Lifecycle">
+                <div className="grid gap-2 text-sm">
+                  {services.length === 0 ? <p className="text-[var(--color-text-muted)]">No live agent services reported.</p> : services.map(([name, svc]) => <div key={name} className="flex justify-between gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2"><code className="truncate text-xs">{name.replace(`${slug}/`, "")}</code><span className={svc.is_active === "active" ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.is_active ?? "unknown"}</span></div>)}
                 </div>
-              ) : <p className="text-sm text-[var(--color-text-muted)]">No active task pinned.</p>}
-            </Panel>
+              </Panel>
 
-            <Panel title="Open tickets">
-              {tickets.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No open assigned tickets.</p> : (
-                <ul className="space-y-2 text-sm">
-                  {tickets.map((t) => <li key={t.key} className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-2"><div className="font-mono text-xs text-[var(--color-text-muted)]">{t.key}</div><div className="font-medium">{t.summary}</div><div className="text-xs text-[var(--color-text-muted)]">{t.status}</div></li>)}
-                </ul>
-              )}
-            </Panel>
+              <Panel title="Listeners">
+                <ChipGrid items={[raw.telegram?.enabled ? `telegram: ${raw.telegram.bot ?? "enabled"}` : null, ...listeners.map((l) => `${l.owner ?? "listener"}: ${l.host ?? "?"}:${l.port ?? "?"}`)].filter(Boolean) as string[]} empty="No listeners reported." />
+              </Panel>
 
-            <Panel title="Models Settings">
-              <ModelsSettings agent={slug} canEdit={canEdit} settings={modelSettings} liveModel={live?.model_primary} />
-            </Panel>
-
-            <Panel title="Activity">
-              {activity.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No activity recorded.</p> : (
-                <ul className="divide-y divide-[var(--color-line)] text-sm">
-                  {activity.map((row) => <li key={row.id} className="py-2"><div className="font-medium">{row.kind}</div><div className="text-xs text-[var(--color-text-muted)]">{row.createdAt.toISOString().slice(0,19).replace("T", " ")}{row.task ? ` · ${row.task.title}` : ""}</div></li>)}
-                </ul>
-              )}
-            </Panel>
-
-            <Panel title="Lifecycle">
-              <div className="grid gap-2 text-sm">
-                {services.length === 0 ? <p className="text-[var(--color-text-muted)]">No live agent services reported.</p> : services.map(([name, svc]) => <div key={name} className="flex justify-between gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2"><code className="truncate text-xs">{name.replace(`${slug}/`, "")}</code><span className={svc.is_active === "active" ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.is_active ?? "unknown"}</span></div>)}
-              </div>
-            </Panel>
-
-            <Panel title="Listeners">
-              <ChipGrid items={[raw.telegram?.enabled ? `telegram: ${raw.telegram.bot ?? "enabled"}` : null, ...listeners.map((l) => `${l.owner ?? "listener"}: ${l.host ?? "?"}:${l.port ?? "?"}`)].filter(Boolean) as string[]} empty="No listeners reported." />
-            </Panel>
+              <Panel title="Activity">
+                {activity.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No activity recorded.</p> : (
+                  <ul className="divide-y divide-[var(--color-line)] text-sm">
+                    {activity.map((row) => <li key={row.id} className="py-2"><div className="font-medium">{row.kind}</div><div className="text-xs text-[var(--color-text-muted)]">{row.createdAt.toISOString().slice(0,19).replace("T", " ")}{row.task ? ` · ${row.task.title}` : ""}</div></li>)}
+                  </ul>
+                )}
+              </Panel>
+            </div>
           </div>
         )}
       />

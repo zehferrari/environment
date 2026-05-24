@@ -4,9 +4,17 @@ PM consumer / dispatcher (HOMELAB-46 Slice 4).
 
 Long-running OpenClaw-side service that reads PmEvents from the
 dispatch boundary (`lib/pm-dispatch`), validates them, resolves the
-target agent, and wakes that agent's OpenClaw gateway via
-`POST /hooks/wake`. Slices 1-3 produced the envelope + emitter side;
-this slice closes the loop on the consumer end.
+target agent, and wakes that agent's local OpenClaw gateway via
+`POST /hooks/wake`. On same-host installs without the hook, or during a
+hook outage, it can fall back to Karen's `openclaw-control wake-agent`
+bridge. Slices 1-3 produced the envelope and emitter side; this slice
+closes the loop on the consumer end.
+
+Direct PM chat, task chat, and task-comment agent replies no longer use
+this consumer path. They enter OpenClaw through the native `pm` channel
+plugin at `/pm-channel/ingest`, which owns session recording and final
+reply delivery. The consumer remains for non-chat PM events such as task
+assignment and ack notifications.
 
 ## Transports
 
@@ -39,8 +47,14 @@ For each received envelope:
 4. Target resolution — User → Agent (PM DB) → gateway port
    (`/srv/agents/index.json`). No agent target ⇒ "unmatched".
 5. Wake — `POST http://127.0.0.1:<gateway_port>/hooks/wake` with the
-   per-agent Bearer token. Non-2xx ⇒ "failed", network error ⇒
-   "failed".
+   per-agent Bearer token. This is the primary path on the local host:
+   each agent gateway must be bound to loopback and expose external
+   hooks with `hooks.enabled=true`, `hooks.path="/hooks"`, and
+   `hooks.token`.
+   If the token is missing, the endpoint is unavailable, or the request
+   fails, the consumer tries Karen's same-host helper unless
+   `PM_CONSUMER_KAREN_WAKE_FALLBACK=off`.
+   Exhausting both paths ⇒ "failed".
 6. Audit — exactly one `ActivityLog{ kind: "agent.wake.<outcome>" }`
    row per envelope, with `targetAgent` set so HOMELAB-51's
    agent-action audit trail can be queried per-slug.
@@ -71,7 +85,57 @@ truncation" property.
    `/etc/openclaw/pm-consumer-tokens.json`).
 
 A missing token surfaces as a `failed` outcome — the consumer never
-falls back to an empty bearer.
+falls back to an empty bearer. On the single-host deployment,
+`openclaw/install.sh` should reconcile this file from each agent's
+`hooks.token` and keep it readable only by the PM consumer service
+group:
+
+```json
+{
+  "asdrubal": "<same secret as asdrubal hooks.token>",
+  "barekbaal": "<same secret as barekbaal hooks.token>",
+  "karen": "<same secret as karen hooks.token>"
+}
+```
+
+Gateways that receive PM-owned wake events may allow caller-provided PM
+session keys:
+
+```json
+{
+  "hooks": {
+    "allowRequestSessionKey": true,
+    "allowedSessionKeyPrefixes": ["hook:", "pm:"]
+  }
+}
+```
+
+Do not allow unrestricted request session keys. OpenClaw requires the
+`hook:` prefix when no hook default session key is configured; PM-owned
+session keys use `pm:<scope>:<scope-id>:agent:<slug>` and are persisted
+in `AgentSessionBinding`.
+
+After changing hook config, restart the affected `openclaw-gateway.service`.
+Healthy local checks are: `GET /health` returns 200, `GET /hooks`
+returns 405, unauthenticated `POST /hooks/wake` returns 401, and
+authenticated `POST /hooks/wake` returns 200. The gateway listener
+should show `127.0.0.1:<gateway_port>` in `ss -ltnp`, not
+`0.0.0.0:<gateway_port>`.
+
+## Karen wake fallback
+
+Set `PM_CONSUMER_KAREN_WAKE_FALLBACK=off` to disable the fallback. The
+helper path defaults to `/usr/local/sbin/pm-karen-wake-agent` and can be
+overridden with `PM_KAREN_WAKE_HELPER`.
+
+The helper should be narrowly scoped: the PM consumer user runs it with
+passwordless sudo, and the helper delegates to Karen's existing
+`openclaw-control wake-agent` permission. This is a degraded same-host
+fallback; normal task-chat and mention delivery should hit each target
+agent's `/hooks/wake` endpoint directly. When the fallback is used for a
+PM chat wake, the consumer passes `--session-key <pm:...>` through
+Karen's helper so `openclaw system event` still lands in the PM-bound
+session.
 
 ## Running
 

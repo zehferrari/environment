@@ -8,6 +8,7 @@ export type ActivityKind =
   | "task.move"
   | "task.ack.auto"
   | "task.comment"
+  | "task.comment.delete"
   | "task.assign"
   | "task.acting_manager"
   | "task.create"
@@ -29,8 +30,15 @@ export type ActivityKind =
   | "bin.purge"
   | "task.chat.send"
   | "epic.chat.send"
+  | "agent.direct_chat.send"
+  | "agent.direct_chat.wake"
+  | "agent.direct_chat.wake_failed"
+  | "agent.direct_chat.reply"
+  | "agent.direct_chat.archive"
+  | "agent.direct_chat.archive_delete"
   | "task.chat.delete"
   | "epic.chat.delete"
+  | "agent.direct_chat.delete"
   | "task.description.agent_write"
   | "epic.description.agent_write"
   | "project.create"
@@ -123,6 +131,8 @@ export function describeActivity(row: ActivityRow): string {
       }
       return `${actor(row.actorName)} commented on ${task(row.taskTitle)}`;
     }
+    case "task.comment.delete":
+      return `${actor(row.actorName)} deleted a comment on ${task(row.taskTitle)}`;
     case "task.assign": {
       const p = parsePayload<AssignPayload>(row.payload);
       if (p) {
@@ -262,11 +272,40 @@ export function describeActivity(row: ActivityRow): string {
       const tag = p?.allowDescriptionEdit ? " (edit grant)" : "";
       return `${actor(row.actorName)} messaged @${p?.agentSlug ?? "?"} on ${target}${tag}`;
     }
+    case "agent.direct_chat.send": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      return `${actor(row.actorName)} messaged @${p?.agentSlug ?? "?"}`;
+    }
+    case "agent.direct_chat.wake": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      return `PM woke @${p?.agentSlug ?? "?"} for direct chat`;
+    }
+    case "agent.direct_chat.wake_failed": {
+      const p = parsePayload<{ agentSlug?: string; error?: string }>(row.payload);
+      return `PM could not wake @${p?.agentSlug ?? "?"}: ${p?.error ?? "unknown error"}`;
+    }
+    case "agent.direct_chat.reply": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      return `@${p?.agentSlug ?? "agent"} replied in direct chat`;
+    }
+    case "agent.direct_chat.archive": {
+      const p = parsePayload<{ agentSlug?: string; messageCount?: number }>(row.payload);
+      const count = p?.messageCount ?? 0;
+      return `${actor(row.actorName)} archived direct chat with @${p?.agentSlug ?? "?"} (${count} message${count === 1 ? "" : "s"})`;
+    }
+    case "agent.direct_chat.archive_delete": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      return `${actor(row.actorName)} removed an archived direct chat with @${p?.agentSlug ?? "?"}`;
+    }
     case "task.chat.delete":
     case "epic.chat.delete": {
       const p = parsePayload<{ agentSlug?: string }>(row.payload);
       const target = row.kind === "task.chat.delete" ? task(row.taskTitle) : "an epic";
       return `${actor(row.actorName)} deleted a chat message to @${p?.agentSlug ?? "?"} on ${target}`;
+    }
+    case "agent.direct_chat.delete": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      return `${actor(row.actorName)} deleted a chat message to @${p?.agentSlug ?? "?"}`;
     }
     case "task.description.agent_write": {
       const p = parsePayload<{ agentSlug?: string; length?: number }>(row.payload);

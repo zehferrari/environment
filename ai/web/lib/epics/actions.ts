@@ -55,6 +55,8 @@ export async function createEpic(formData: FormData) {
   const description = String(formData.get("description") ?? "").trim();
   const actingManagerRaw = String(formData.get("actingManagerId") ?? "");
   const actingManagerId = actingManagerRaw === "" ? null : actingManagerRaw;
+  const assigneeRaw = String(formData.get("assigneeId") ?? "");
+  const assigneeId = assigneeRaw === "" ? null : assigneeRaw;
   if (!slug || !title) return;
   if (title.length > 200) return;
 
@@ -81,12 +83,27 @@ export async function createEpic(formData: FormData) {
     }
   }
 
+  // Assignee picker follows the same rule as the edit picker —
+  // agents can't self-assign.
+  if (assigneeId !== null) {
+    const check = checkAssignment({ actor, newAssigneeId: assigneeId });
+    if (!check.ok) throw new Error(check.message);
+    const target = await db.user.findUnique({
+      where: { id: assigneeId },
+      select: { status: true },
+    });
+    if (!target || target.status !== "active") {
+      throw new Error("Assignee not found or inactive");
+    }
+  }
+
   const epic = await db.epic.create({
     data: {
       projectId: project.id,
       title,
       description: description || null,
       actingManagerId,
+      assigneeId,
     },
     select: { id: true, title: true },
   });
@@ -100,6 +117,7 @@ export async function createEpic(formData: FormData) {
         epicId: epic.id,
         title: epic.title,
         actingManagerId,
+        assigneeId,
       }),
     },
   });
@@ -250,6 +268,64 @@ export async function setEpicActingManager(formData: FormData) {
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}/epics`);
+}
+
+export async function createTaskInEpic(formData: FormData) {
+  const actor = await requireActor();
+  const slug = String(formData.get("projectSlug") ?? "");
+  const epicId = String(formData.get("epicId") ?? "");
+  const title = String(formData.get("title") ?? "").trim();
+  if (!slug || !epicId || !title) return;
+  if (title.length > 200) return;
+
+  const epic = await db.epic.findUnique({
+    where: { id: epicId },
+    select: {
+      id: true,
+      projectId: true,
+      deletedAt: true,
+      project: {
+        select: {
+          slug: true,
+          defaultAssigneeId: true,
+          defaultReviewerId: true,
+        },
+      },
+    },
+  });
+  if (!epic || epic.project.slug !== slug || epic.deletedAt) return;
+
+  const maxRank = await db.task.aggregate({
+    where: { projectId: epic.projectId, status: "Backlog", deletedAt: null },
+    _max: { rank: true },
+  });
+
+  const task = await db.task.create({
+    data: {
+      projectId: epic.projectId,
+      epicId: epic.id,
+      title,
+      status: "Backlog",
+      rank: (maxRank._max.rank ?? 0) + 1,
+      statusChangedAt: new Date(),
+      assigneeId: epic.project.defaultAssigneeId ?? null,
+      actingManagerId: epic.project.defaultReviewerId ?? null,
+    },
+    select: { id: true, title: true },
+  });
+
+  await db.activityLog.create({
+    data: {
+      projectId: epic.projectId,
+      taskId: task.id,
+      userId: actor.id,
+      kind: "task.create",
+      payload: JSON.stringify({ title: task.title, epicId: epic.id }),
+    },
+  });
+
+  revalidatePath(`/projects/${slug}/epics/${epicId}`);
+  revalidatePath(`/projects/${slug}`);
 }
 
 export async function setEpicStatus(formData: FormData) {

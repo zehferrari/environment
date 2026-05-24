@@ -4,17 +4,57 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { canEditProfile } from "@/lib/agents/profile";
 import { db } from "@/lib/db";
+import { resolveEffectiveAgentConfig } from "@/lib/agents/effective-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const execFileAsync = promisify(execFile);
 
-type RawAgent = { uid?: number; services?: string[] };
+function uidFromRaw(raw: string | null): number | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { uid?: unknown };
+    return typeof parsed.uid === "number" ? parsed.uid : null;
+  } catch {
+    return null;
+  }
+}
 
-function parseRaw(raw: string | null): RawAgent {
-  if (!raw) return {};
-  try { return JSON.parse(raw) as RawAgent; } catch { return {}; }
+async function snapshotServices(agent: string) {
+  try {
+    const res = await fetch("http://127.0.0.1:3013/agents/snapshot", {
+      cache: "no-store",
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return [];
+    const data = await res.json() as {
+      agents?: Record<string, { services?: string[] }>;
+      system?: Record<string, unknown>;
+    };
+    const direct = data.agents?.[agent]?.services ?? [];
+    const fromSystem = Object.keys(data.system ?? {})
+      .filter((name) => name.startsWith(`${agent}/`))
+      .map((name) => name.slice(agent.length + 1));
+    return Array.from(new Set([...direct, ...fromSystem]));
+  } catch {
+    return [];
+  }
+}
+
+async function toggleViaSystemctl(agentId: string, uid: number, service: string, enabled: boolean) {
+  await execFileAsync("sudo", [
+    "-n",
+    "-u",
+    agentId,
+    "env",
+    `XDG_RUNTIME_DIR=/run/user/${uid}`,
+    `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus`,
+    "systemctl",
+    "--user",
+    enabled ? "start" : "stop",
+    service,
+  ], { timeout: 30000 });
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ agentId: string }> }) {
@@ -31,21 +71,39 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
 
   const row = await db.agent.findUnique({ where: { slug: agentId } });
   if (!row) return NextResponse.json({ error: "agent not found" }, { status: 404 });
-  const raw = parseRaw(row.rawJson);
-  if (!(raw.services ?? []).includes(body.service)) {
+  const effective = await resolveEffectiveAgentConfig(row.rawJson);
+  const allowedServices = new Set([...effective.services, ...(await snapshotServices(agentId))]);
+  if (!allowedServices.has(body.service)) {
     return NextResponse.json({ error: "service not listed for this agent" }, { status: 404 });
   }
-  if (!raw.uid) return NextResponse.json({ error: "agent uid missing from registry" }, { status: 400 });
 
-  const action = body.enabled ? "start" : "stop";
   try {
-    await execFileAsync("sudo", [
-      "-n", "-u", agentId, "env",
-      `XDG_RUNTIME_DIR=/run/user/${raw.uid}`,
-      `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${raw.uid}/bus`,
-      "systemctl", "--user", action, body.service,
-    ], { timeout: 30000 });
-    return NextResponse.json({ ok: true, service: body.service, enabled: body.enabled });
+    const res = await fetch("http://127.0.0.1:3013/agents/services/toggle", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ user: agentId, service: body.service, enabled: body.enabled }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(10000),
+    });
+    const text = await res.text();
+    if (res.status === 404) {
+      const uid = uidFromRaw(row.rawJson);
+      if (uid == null) return NextResponse.json({ error: "agent uid missing from registry" }, { status: 400 });
+      await toggleViaSystemctl(agentId, uid, body.service, body.enabled);
+      await db.activityLog.create({
+        data: {
+          userId: session.user.id,
+          kind: "agent.service.toggle",
+          targetAgent: agentId,
+          payload: JSON.stringify({ service: body.service, enabled: body.enabled, driver: "systemctl-user" }),
+        },
+      });
+      return NextResponse.json({ ok: true, service: body.service, enabled: body.enabled, driver: "systemctl-user" });
+    }
+    return new NextResponse(text, {
+      status: res.status,
+      headers: { "content-type": res.headers.get("content-type") ?? "application/json" },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 500 });
