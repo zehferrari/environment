@@ -141,7 +141,7 @@ async function persistTaskReply(
   if (!original || original.taskId !== target.taskId || original.task?.deletedAt) {
     return { status: 404, body: { error: "Message not found" } };
   }
-  if (original.agentSlug !== target.agentSlug) {
+  if (original.agentSlug !== "room" && original.agentSlug !== target.agentSlug) {
     return { status: 403, body: { error: "Agent mismatch" } };
   }
 
@@ -193,7 +193,7 @@ async function persistTaskReply(
         projectId: original.projectId,
         taskId: target.taskId,
         epicId: null,
-        agentSlug: target.agentSlug,
+        agentSlug: original.agentSlug,
         senderUserId: agentUser.id,
         body,
         allowDescriptionEdit: false,
@@ -220,6 +220,69 @@ async function persistTaskReply(
   });
 
   revalidatePath(`/projects/${original.project.slug}/tasks/${target.taskId}`);
+  return { status: 200, body: { ok: true, id: reply.id, channel: reply.channel } };
+}
+
+async function persistEpicReply(
+  target: Extract<PmChannelReplyTarget, { kind: "epic-chat" }>,
+  body: string,
+) {
+  const original = await db.agentChatMessage.findUnique({
+    where: { id: target.messageId },
+    select: {
+      id: true,
+      projectId: true,
+      epicId: true,
+      agentSlug: true,
+      originChannel: true,
+      project: { select: { slug: true } },
+      epic: { select: { deletedAt: true } },
+    },
+  });
+  if (!original || original.epicId !== target.epicId || original.epic?.deletedAt) {
+    return { status: 404, body: { error: "Message not found" } };
+  }
+  if (original.agentSlug !== "room" && original.agentSlug !== target.agentSlug) {
+    return { status: 403, body: { error: "Agent mismatch" } };
+  }
+
+  const agentUser = await activeAgentUser(target.agentSlug);
+  if (!agentUser) {
+    return { status: 403, body: { error: "Agent not active" } };
+  }
+
+  const reply = await db.$transaction(async (tx) => {
+    const created = await tx.agentChatMessage.create({
+      data: {
+        projectId: original.projectId,
+        taskId: null,
+        epicId: target.epicId,
+        agentSlug: original.agentSlug,
+        senderUserId: agentUser.id,
+        body,
+        allowDescriptionEdit: false,
+        originChannel: "chat",
+      },
+      select: { id: true },
+    });
+    await tx.activityLog.create({
+      data: {
+        projectId: original.projectId,
+        userId: agentUser.id,
+        kind: "epic.chat.reply",
+        targetAgent: target.agentSlug,
+        payload: JSON.stringify({
+          driver: "openclaw-pm-channel",
+          messageId: created.id,
+          inReplyToMessageId: target.messageId,
+          agentSlug: target.agentSlug,
+        }),
+      },
+    });
+    return { id: created.id, channel: "chat" as const };
+  });
+
+  revalidatePath(`/projects/${original.project.slug}/epics/${target.epicId}`);
   return { status: 200, body: { ok: true, id: reply.id, channel: reply.channel } };
 }
 
@@ -252,6 +315,8 @@ export async function POST(req: NextRequest) {
 
   const result = target.kind === "direct"
     ? await persistDirectReply(target, body)
+    : target.kind === "epic-chat"
+    ? await persistEpicReply(target, body)
     : await persistTaskReply(target, body);
 
   if (result.status >= 200 && result.status < 300) {

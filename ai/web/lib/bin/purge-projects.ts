@@ -10,17 +10,9 @@
 
 import { db } from "@/lib/db";
 import { deleteAttachmentFile } from "@/lib/attachments/storage";
+import { resolveBinTtlMs } from "@/lib/settings/system";
 
 const DEFAULT_TTL_DAYS = 30;
-
-function ttlMs(): number {
-  const raw = process.env.PM_PROJECT_BIN_TTL_DAYS;
-  if (raw) {
-    const n = Number(raw);
-    if (Number.isFinite(n) && n > 0) return n * 86400_000;
-  }
-  return DEFAULT_TTL_DAYS * 86400_000;
-}
 
 export interface ProjectPurgeResult {
   purgedProjects: number;
@@ -29,7 +21,7 @@ export interface ProjectPurgeResult {
 }
 
 export async function purgeProjectBin(): Promise<ProjectPurgeResult> {
-  const cutoff = new Date(Date.now() - ttlMs());
+  const cutoff = new Date(Date.now() - (await resolveBinTtlMs("PM_PROJECT_BIN_TTL_DAYS", DEFAULT_TTL_DAYS)));
   const result: ProjectPurgeResult = {
     purgedProjects: 0,
     removedBlobs: 0,

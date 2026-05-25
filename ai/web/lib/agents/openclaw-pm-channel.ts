@@ -12,9 +12,16 @@ export type PmChannelReplyTarget =
       taskId: string;
       messageId: string;
       projectSlug?: string | null;
+    }
+  | {
+      kind: "epic-chat";
+      agentSlug: string;
+      epicId: string;
+      messageId: string;
+      projectSlug?: string | null;
     };
 
-export type PmChannelTurnKind = "direct" | "task-chat" | "task-comment";
+export type PmChannelTurnKind = "direct" | "task-chat" | "task-comment" | "epic-chat";
 
 export interface SendPmChannelTurnArgs {
   gatewayPort: number | null;
@@ -60,6 +67,18 @@ export function parsePmChannelReplyTarget(value: unknown): PmChannelReplyTarget 
       kind,
       agentSlug,
       taskId,
+      messageId,
+      projectSlug: typeof target.projectSlug === "string" ? target.projectSlug : null,
+    };
+  }
+
+  if (kind === "epic-chat") {
+    const epicId = typeof target.epicId === "string" ? target.epicId : "";
+    if (!epicId) return null;
+    return {
+      kind,
+      agentSlug,
+      epicId,
       messageId,
       projectSlug: typeof target.projectSlug === "string" ? target.projectSlug : null,
     };

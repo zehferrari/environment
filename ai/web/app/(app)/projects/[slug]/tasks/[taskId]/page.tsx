@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { Prisma } from "@prisma/client";
 import {
   renderCommentBody,
   renderFullMarkdown,
@@ -40,7 +41,15 @@ import { deleteTask } from "@/lib/bin/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
 import SortableTaskList from "@/components/sortable-task-list";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
+import ChatRoom from "@/components/chat-room";
+import {
+  actorDisplayName,
+  MessageAvatar,
+  MessageTimestamp,
+} from "@/components/message-avatar";
 import TaskRefresh from "./task-refresh";
+import DescriptionField from "@/components/description-field";
+import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
 
 async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
   const session = await auth();
@@ -56,111 +65,39 @@ async function requireActorId(): Promise<string> {
 
 // ---- Server actions -------------------------------------------------
 
-async function setTaskStatus(formData: FormData) {
-  "use server";
-  const actor = await requireActor();
-  const taskId = String(formData.get("taskId") ?? "");
-  const slug = String(formData.get("projectSlug") ?? "");
-  const newStatus = String(formData.get("status") ?? "");
-  if (!taskId || !slug || !COLUMN_IDS.includes(newStatus)) return;
-
-  const task = await db.task.findUnique({
-    where: { id: taskId },
-    select: {
-      id: true,
-      projectId: true,
-      status: true,
-      project: { select: { slug: true } },
-    },
-  });
-  if (!task || task.project.slug !== slug || task.status === newStatus) return;
-
-  const check = checkStatusTransition({
-    from: task.status,
-    to: newStatus,
-    actor,
-  });
-  if (!check.ok) throw new Error(check.message);
-
-  const maxRank = await db.task.aggregate({
-    where: { status: newStatus, deletedAt: null },
-    _max: { rank: true },
-  });
-
-  await db.$transaction([
-    db.task.update({
-      where: { id: taskId },
-      data: {
-        status: newStatus,
-        rank: (maxRank._max.rank ?? 0) + 1,
-        statusChangedAt: new Date(),
-      },
-    }),
-    db.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId,
-        userId: actor.id,
-        kind: "task.move",
-        payload: JSON.stringify({ from: task.status, to: newStatus }),
-      },
-    }),
-  ]);
-
-  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-  revalidatePath(`/projects/${slug}`);
-}
-
-async function setTaskBranch(formData: FormData) {
-  "use server";
-  const actor = await requireActor();
-  const taskId = String(formData.get("taskId") ?? "");
-  const slug = String(formData.get("projectSlug") ?? "");
-  const raw = String(formData.get("branchName") ?? "").trim();
-  const branchName = raw === "" ? null : raw;
-  if (!taskId || !slug) return;
-  if (branchName !== null && branchName.length > 200) return;
-
-  const task = await db.task.findUnique({
-    where: { id: taskId },
-    select: {
-      id: true,
-      projectId: true,
-      branchName: true,
-      project: { select: { slug: true } },
-    },
-  });
-  if (!task || task.project.slug !== slug) return;
-  if ((task.branchName ?? null) === branchName) return;
-
-  await db.$transaction([
-    db.task.update({ where: { id: taskId }, data: { branchName } }),
-    db.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId,
-        userId: actor.id,
-        kind: "task.branch",
-        payload: JSON.stringify({
-          from: task.branchName ?? null,
-          to: branchName,
-        }),
-      },
-    }),
-  ]);
-
-  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-}
-
+// Single task-form save. Persists title, description, status, epic,
+// branch, commit prefix, assignee and reviewer in one transaction, with
+// each field keeping the validation its standalone action used to do
+// (workflow transition rules, project-scoped epic, no agent self-assign /
+// self-review). Only changed fields are written + activity-logged; a hard
+// rule violation throws (whole save fails) the same way the old per-field
+// actions did. The assignment wake fires after commit, non-throwing.
 async function updateTask(formData: FormData) {
   "use server";
   const actor = await requireActor();
   const taskId = String(formData.get("taskId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
+  if (!taskId || !slug) return;
+
   const titleRaw = String(formData.get("title") ?? "").trim();
+  if (!titleRaw || titleRaw.length > 200) return;
   const descriptionRaw = String(formData.get("description") ?? "");
-  if (!taskId || !slug || !titleRaw) return;
-  if (titleRaw.length > 200) return;
+  const newDescription = descriptionRaw.trim() === "" ? null : descriptionRaw;
+  const newStatus = String(formData.get("status") ?? "");
+  const epicRaw = String(formData.get("epicId") ?? "");
+  const newEpicId = epicRaw === "" ? null : epicRaw;
+  const branchRaw = String(formData.get("branchName") ?? "").trim();
+  const newBranch = branchRaw === "" ? null : branchRaw;
+  const commitRaw = String(formData.get("commitPrefix") ?? "").trim();
+  const newCommitPrefix = commitRaw === "" ? null : commitRaw;
+  const assigneeRaw = String(formData.get("assigneeId") ?? "");
+  const newAssigneeId = assigneeRaw === "" ? null : assigneeRaw;
+  const reviewerRaw = String(formData.get("actingManagerId") ?? "");
+  const newActingManagerId = reviewerRaw === "" ? null : reviewerRaw;
+
+  if (newStatus !== "" && !COLUMN_IDS.includes(newStatus)) return;
+  if (newBranch !== null && newBranch.length > 200) return;
+  if (newCommitPrefix !== null && newCommitPrefix.length > 200) return;
 
   const task = await db.task.findUnique({
     where: { id: taskId },
@@ -169,94 +106,215 @@ async function updateTask(formData: FormData) {
       projectId: true,
       title: true,
       description: true,
+      status: true,
+      epicId: true,
+      branchName: true,
+      commitPrefix: true,
+      assigneeId: true,
+      actingManagerId: true,
       project: { select: { slug: true } },
+      epic: { select: { title: true } },
+      assignee: { select: { id: true, username: true, kind: true } },
+      actingManager: { select: { username: true } },
     },
   });
   if (!task || task.project.slug !== slug) return;
 
-  const newDescription = descriptionRaw.trim() === "" ? null : descriptionRaw;
+  const data: Prisma.TaskUpdateInput = {};
+  const activity: { kind: string; payload: string }[] = [];
+  let assignmentTarget: { id: string; kind: string; username: string } | null =
+    null;
+  let assignmentChanged = false;
+
+  // Title / description
   const titleChanged = task.title !== titleRaw;
   const descChanged = (task.description ?? null) !== newDescription;
-  if (!titleChanged && !descChanged) return;
-
-  await db.$transaction([
-    db.task.update({
-      where: { id: taskId },
-      data: { title: titleRaw, description: newDescription },
-    }),
-    db.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId,
-        userId: actor.id,
-        kind: "task.update",
-        payload: JSON.stringify({
-          titleChanged,
-          descChanged,
-          from: { title: task.title, hasDescription: task.description !== null },
-          to: { title: titleRaw, hasDescription: newDescription !== null },
-        }),
-      },
-    }),
-  ]);
-
-  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-  revalidatePath(`/projects/${slug}`);
-}
-
-async function setTaskEpic(formData: FormData) {
-  "use server";
-  const actor = await requireActor();
-  const taskId = String(formData.get("taskId") ?? "");
-  const slug = String(formData.get("projectSlug") ?? "");
-  const raw = String(formData.get("epicId") ?? "");
-  const newEpicId = raw === "" ? null : raw;
-  if (!taskId || !slug) return;
-
-  const task = await db.task.findUnique({
-    where: { id: taskId },
-    select: {
-      id: true,
-      projectId: true,
-      epicId: true,
-      project: { select: { slug: true } },
-      epic: { select: { id: true, title: true, projectId: true } },
-    },
-  });
-  if (!task || task.project.slug !== slug) return;
-  if (task.epicId === newEpicId) return;
-
-  // Scope-check: target epic must belong to the same project.
-  let newEpicTitle: string | null = null;
-  if (newEpicId !== null) {
-    const target = await db.epic.findUnique({
-      where: { id: newEpicId },
-      select: { title: true, projectId: true },
+  if (titleChanged || descChanged) {
+    data.title = titleRaw;
+    data.description = newDescription;
+    activity.push({
+      kind: "task.update",
+      payload: JSON.stringify({
+        titleChanged,
+        descChanged,
+        from: { title: task.title, hasDescription: task.description !== null },
+        to: { title: titleRaw, hasDescription: newDescription !== null },
+      }),
     });
-    if (!target || target.projectId !== task.projectId) {
-      throw new Error("Epic not found in this project");
-    }
-    newEpicTitle = target.title;
   }
 
+  // Status (workflow-validated, recomputes rank like the board move)
+  if (newStatus !== "" && newStatus !== task.status) {
+    const check = checkStatusTransition({
+      from: task.status,
+      to: newStatus,
+      actor,
+    });
+    if (!check.ok) throw new Error(check.message);
+    const maxRank = await db.task.aggregate({
+      where: { status: newStatus, deletedAt: null },
+      _max: { rank: true },
+    });
+    data.status = newStatus;
+    data.rank = (maxRank._max.rank ?? 0) + 1;
+    data.statusChangedAt = new Date();
+    activity.push({
+      kind: "task.move",
+      payload: JSON.stringify({ from: task.status, to: newStatus }),
+    });
+  }
+
+  // Epic (must belong to the same project)
+  if (newEpicId !== task.epicId) {
+    let newEpicTitle: string | null = null;
+    if (newEpicId !== null) {
+      const target = await db.epic.findUnique({
+        where: { id: newEpicId },
+        select: { title: true, projectId: true },
+      });
+      if (!target || target.projectId !== task.projectId) {
+        throw new Error("Epic not found in this project");
+      }
+      newEpicTitle = target.title;
+    }
+    data.epic =
+      newEpicId === null ? { disconnect: true } : { connect: { id: newEpicId } };
+    activity.push({
+      kind: "task.epic",
+      payload: JSON.stringify({
+        from: task.epic?.title ?? null,
+        to: newEpicTitle,
+      }),
+    });
+  }
+
+  // Branch
+  if ((task.branchName ?? null) !== newBranch) {
+    data.branchName = newBranch;
+    activity.push({
+      kind: "task.branch",
+      payload: JSON.stringify({ from: task.branchName ?? null, to: newBranch }),
+    });
+  }
+
+  // Commit prefix (HOMELAB task-form redesign)
+  if ((task.commitPrefix ?? null) !== newCommitPrefix) {
+    data.commitPrefix = newCommitPrefix;
+    activity.push({
+      kind: "task.commit_prefix",
+      payload: JSON.stringify({
+        from: task.commitPrefix ?? null,
+        to: newCommitPrefix,
+      }),
+    });
+  }
+
+  // Assignee (no agent self-assign; target must be active)
+  if (newAssigneeId !== task.assigneeId) {
+    const check = checkAssignment({ actor, newAssigneeId });
+    if (!check.ok) throw new Error(check.message);
+    if (newAssigneeId !== null) {
+      const row = await db.user.findUnique({
+        where: { id: newAssigneeId },
+        select: { id: true, username: true, kind: true, status: true },
+      });
+      if (!row || row.status !== "active") {
+        throw new Error("Assignee not found or inactive");
+      }
+      assignmentTarget = { id: row.id, username: row.username, kind: row.kind };
+    }
+    data.assignee =
+      newAssigneeId === null
+        ? { disconnect: true }
+        : { connect: { id: newAssigneeId } };
+    assignmentChanged = true;
+    activity.push({
+      kind: "task.assign",
+      payload: JSON.stringify({
+        from: task.assignee?.username ?? null,
+        to: assignmentTarget?.username ?? null,
+      }),
+    });
+  }
+
+  // Reviewer / acting manager (no agent self-review; target must be active)
+  if (newActingManagerId !== task.actingManagerId) {
+    const check = checkActingManager({ actor, newActingManagerId });
+    if (!check.ok) throw new Error(check.message);
+    let toUsername: string | null = null;
+    if (newActingManagerId !== null) {
+      const target = await db.user.findUnique({
+        where: { id: newActingManagerId },
+        select: { username: true, status: true },
+      });
+      if (!target || target.status !== "active") {
+        throw new Error("Reviewer not found or inactive");
+      }
+      toUsername = target.username;
+    }
+    data.actingManager =
+      newActingManagerId === null
+        ? { disconnect: true }
+        : { connect: { id: newActingManagerId } };
+    activity.push({
+      kind: "task.acting_manager",
+      payload: JSON.stringify({
+        from: task.actingManager?.username ?? null,
+        to: toUsername,
+      }),
+    });
+  }
+
+  if (activity.length === 0) return; // nothing changed
+
   await db.$transaction([
-    db.task.update({ where: { id: taskId }, data: { epicId: newEpicId } }),
-    db.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId,
-        userId: actor.id,
-        kind: "task.epic",
-        payload: JSON.stringify({
-          from: task.epic?.title ?? null,
-          to: newEpicTitle,
-        }),
-      },
-    }),
+    db.task.update({ where: { id: taskId }, data }),
+    ...activity.map((a) =>
+      db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId,
+          userId: actor.id,
+          kind: a.kind,
+          payload: a.payload,
+        },
+      }),
+    ),
   ]);
 
   revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   revalidatePath(`/projects/${slug}`);
+
+  // Assignment wake fires after the commit, non-throwing (mirrors the old
+  // standalone assignTask path).
+  if (assignmentChanged) {
+    await notifyDispatch(
+      buildTaskAssigned(
+        {
+          id: randomUUID(),
+          occurredAt: new Date().toISOString(),
+          actor,
+          task: { id: task.id, key: task.id, projectKey: slug, title: titleRaw },
+        },
+        {
+          assignee: assignmentTarget
+            ? {
+                id: assignmentTarget.id,
+                kind: assignmentTarget.kind === "agent" ? "agent" : "human",
+                name: assignmentTarget.username,
+              }
+            : null,
+          previousAssignee: task.assignee
+            ? {
+                id: task.assignee.id,
+                kind: task.assignee.kind === "agent" ? "agent" : "human",
+                name: task.assignee.username,
+              }
+            : null,
+        },
+      ),
+    );
+  }
 }
 
 async function createComment(formData: FormData) {
@@ -551,6 +609,7 @@ async function deleteComment(formData: FormData) {
   });
   if (
     !comment ||
+    !comment.task ||
     comment.task.id !== taskId ||
     comment.task.project.slug !== slug
   ) {
@@ -565,163 +624,6 @@ async function deleteComment(formData: FormData) {
         taskId: comment.task.id,
         userId: actor.id,
         kind: "task.comment.delete",
-      },
-    }),
-  ]);
-
-  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-  revalidatePath(`/projects/${slug}`);
-}
-
-async function assignTask(formData: FormData) {
-  "use server";
-  const actor = await requireActor();
-  const taskId = String(formData.get("taskId") ?? "");
-  const slug = String(formData.get("projectSlug") ?? "");
-  const raw = String(formData.get("assigneeId") ?? "");
-  const newAssigneeId = raw === "" ? null : raw;
-  if (!taskId || !slug) return;
-
-  const task = await db.task.findUnique({
-    where: { id: taskId },
-    select: {
-      id: true,
-      projectId: true,
-      assigneeId: true,
-      title: true,
-      project: { select: { slug: true } },
-      assignee: { select: { id: true, username: true, kind: true } },
-    },
-  });
-  if (!task || task.project.slug !== slug) return;
-  if (task.assigneeId === newAssigneeId) return;
-
-  const check = checkAssignment({ actor, newAssigneeId });
-  if (!check.ok) throw new Error(check.message);
-
-  let toUsername: string | null = null;
-  let target: { id: string; username: string; kind: string } | null = null;
-  if (newAssigneeId !== null) {
-    const row = await db.user.findUnique({
-      where: { id: newAssigneeId },
-      select: { id: true, username: true, kind: true, status: true },
-    });
-    if (!row || row.status !== "active") {
-      throw new Error("Assignee not found or inactive");
-    }
-    target = { id: row.id, username: row.username, kind: row.kind };
-    toUsername = row.username;
-  }
-
-  await db.$transaction([
-    db.task.update({
-      where: { id: taskId },
-      data: { assigneeId: newAssigneeId },
-    }),
-    db.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId,
-        userId: actor.id,
-        kind: "task.assign",
-        payload: JSON.stringify({
-          from: task.assignee?.username ?? null,
-          to: toUsername,
-        }),
-      },
-    }),
-  ]);
-
-  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-  revalidatePath(`/projects/${slug}`);
-
-  await notifyDispatch(
-    buildTaskAssigned(
-      {
-        id: randomUUID(),
-        occurredAt: new Date().toISOString(),
-        actor,
-        task: {
-          id: task.id,
-          key: task.id,
-          projectKey: task.project.slug,
-          title: task.title,
-        },
-      },
-      {
-        assignee: target
-          ? {
-              id: target.id,
-              kind: target.kind === "agent" ? "agent" : "human",
-              name: target.username,
-            }
-          : null,
-        previousAssignee: task.assignee
-          ? {
-              id: task.assignee.id,
-              kind: task.assignee.kind === "agent" ? "agent" : "human",
-              name: task.assignee.username,
-            }
-          : null,
-      },
-    ),
-  );
-}
-
-async function setReviewer(formData: FormData) {
-  "use server";
-  const actor = await requireActor();
-  const taskId = String(formData.get("taskId") ?? "");
-  const slug = String(formData.get("projectSlug") ?? "");
-  const raw = String(formData.get("actingManagerId") ?? "");
-  const newActingManagerId = raw === "" ? null : raw;
-  if (!taskId || !slug) return;
-
-  const task = await db.task.findUnique({
-    where: { id: taskId },
-    select: {
-      id: true,
-      projectId: true,
-      actingManagerId: true,
-      project: { select: { slug: true } },
-      actingManager: { select: { username: true } },
-    },
-  });
-  if (!task || task.project.slug !== slug) return;
-  if (task.actingManagerId === newActingManagerId) return;
-
-  const check = checkActingManager({ actor, newActingManagerId });
-  if (!check.ok) throw new Error(check.message);
-
-  let toUsername: string | null = null;
-  if (newActingManagerId !== null) {
-    const target = await db.user.findUnique({
-      where: { id: newActingManagerId },
-      select: { username: true, status: true },
-    });
-    if (!target || target.status !== "active") {
-      throw new Error("Reviewer not found or inactive");
-    }
-    toUsername = target.username;
-  }
-
-  await db.$transaction([
-    db.task.update({
-      where: { id: taskId },
-      data: { actingManagerId: newActingManagerId },
-    }),
-    db.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId,
-        userId: actor.id,
-        // Activity kind stays "task.acting_manager" so the historical
-        // feed renders unchanged; UI labels it "Reviewer" only.
-        kind: "task.acting_manager",
-        payload: JSON.stringify({
-          from: task.actingManager?.username ?? null,
-          to: toUsername,
-        }),
       },
     }),
   ]);
@@ -840,12 +742,7 @@ function activityMessageIds(rows: Array<{ kind: string; payload: string | null }
 }
 
 function PrincipalOption({ p }: { p: AssignablePrincipal }) {
-  return (
-    <option value={p.id}>
-      {p.username}
-      {p.kind === "agent" ? " (agent)" : ""}
-    </option>
-  );
+  return <option value={p.id}>{p.name}</option>;
 }
 
 // ---- Page -----------------------------------------------------------
@@ -870,11 +767,32 @@ export default async function TaskDetailPage({
         select: {
           username: true,
           kind: true,
-          agent: { select: { slug: true } },
+          status: true,
+          agent: { select: { slug: true, deactivatedAt: true, name: true } },
         },
       },
-      actingManager: { select: { username: true, kind: true } },
-      epic: { select: { id: true, title: true } },
+      actingManager: {
+        select: {
+          username: true,
+          kind: true,
+          status: true,
+          agent: { select: { slug: true, deactivatedAt: true, name: true } },
+        },
+      },
+      epic: {
+        select: {
+          id: true,
+          title: true,
+          actingManager: {
+            select: {
+              username: true,
+              kind: true,
+              status: true,
+              agent: { select: { slug: true, deactivatedAt: true, name: true } },
+            },
+          },
+        },
+      },
       parent: { select: { id: true, title: true } },
       subtasks: {
         where: { deletedAt: null },
@@ -889,7 +807,18 @@ export default async function TaskDetailPage({
       },
       comments: {
         orderBy: { createdAt: "asc" },
-        include: { user: { select: { username: true } } },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              kind: true,
+              name: true,
+              avatarUpdatedAt: true,
+              agent: { select: { slug: true, name: true, avatar: true } },
+            },
+          },
+        },
       },
       attachments: {
         orderBy: { createdAt: "desc" },
@@ -968,6 +897,84 @@ export default async function TaskDetailPage({
     .slice(0, 4);
   const selectedAgentSlug = chat || pendingAgentSlug || task.assignee?.agent?.slug || null;
 
+  const chatMessages = await db.agentChatMessage.findMany({
+    where: {
+      taskId: task.id,
+      agentSlug: "room",
+    },
+    orderBy: { createdAt: "asc" },
+    include: {
+      sender: {
+        select: {
+          id: true,
+          username: true,
+          kind: true,
+          name: true,
+          avatarUpdatedAt: true,
+          agent: { select: { slug: true, name: true, avatar: true } },
+        },
+      },
+    },
+  });
+
+  const latestMessage = chatMessages.at(-1) ?? null;
+  const pendingAgents: Array<{ slug: string; username: string }> = [];
+
+  if (latestMessage && latestMessage.sender.kind !== "agent") {
+    const users = await db.user.findMany({
+      select: {
+        id: true,
+        username: true,
+        kind: true,
+        status: true,
+        agent: { select: { slug: true, deactivatedAt: true, name: true } },
+      },
+    });
+    const mentions = extractMentions(
+      latestMessage.body,
+      users.map((u) => ({ username: u.username })),
+    );
+
+    const targetAgents = new Map<string, { slug: string; username: string }>();
+    if (mentions.length > 0) {
+      for (const u of users) {
+        if (
+          mentions.includes(u.username) &&
+          u.kind === "agent" &&
+          u.status === "active" &&
+          u.agent &&
+          !u.agent.deactivatedAt
+        ) {
+          targetAgents.set(u.agent.slug, {
+            slug: u.agent.slug,
+            username: u.agent.name || u.username,
+          });
+        }
+      }
+    } else {
+      const candidates = [
+        task.assignee,
+        task.actingManager,
+        task.epic?.actingManager,
+      ];
+      for (const cand of candidates) {
+        if (
+          cand &&
+          cand.kind === "agent" &&
+          cand.status === "active" &&
+          cand.agent &&
+          !cand.agent.deactivatedAt
+        ) {
+          targetAgents.set(cand.agent.slug, {
+            slug: cand.agent.slug,
+            username: cand.agent.name || cand.username,
+          });
+        }
+      }
+    }
+    pendingAgents.push(...targetAgents.values());
+  }
+
   async function reorderSubtasks(orderedIds: string[]): Promise<void> {
     "use server";
     await reorderTasks(orderedIds);
@@ -979,24 +986,84 @@ export default async function TaskDetailPage({
     <div className="mx-auto grid max-w-[1400px] grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
       <TaskRefresh active={pendingAgentReply} />
       {/* ----- Main column ------------------------------------------- */}
-      <div className="min-w-0 space-y-6">
-        <nav className="text-sm">
-          <Link
-            href={`/projects/${slug}`}
-            className="text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:underline"
-          >
-            ← {task.project.name}
-          </Link>
-        </nav>
+      <div className="min-w-0">
+        <section className="space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm">
+          {/* Sticky header bar — the single Save lives here (top-right) so it
+              stays visible and is tab-independent: it saves the whole card,
+              not just the Description tab. */}
+          <div className="sticky top-0 z-10 -mx-5 -mt-5 flex items-center justify-between gap-3 rounded-t-2xl border-b border-[var(--color-line)] bg-[var(--color-panel)] px-5 py-3">
+            <span className="text-xs text-[var(--color-text-muted)]">
+              Updated{" "}
+              <time
+                dateTime={task.updatedAt.toISOString()}
+                title={task.updatedAt.toISOString()}
+              >
+                {timeAgo(task.updatedAt)}
+              </time>
+            </span>
+            <button
+              form="taskMain"
+              type="submit"
+              className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
+            >
+              Save changes
+            </button>
+          </div>
+          {/* One edit form for the whole card: every control below carries
+              form="taskMain" so the single "Save changes" button persists
+              Epic, Status, Title, Description, Branch, Commit Prefix,
+              Assignee and Reviewer together. The form element itself is
+              empty so the tab panels' own forms (sub-task/comment/upload)
+              are never nested inside it. */}
+          <form id="taskMain" action={updateTask} />
+          <input form="taskMain" type="hidden" name="taskId" value={task.id} />
+          <input form="taskMain" type="hidden" name="projectSlug" value={slug} />
 
-        {/* Title + description editor */}
-        <form
-          action={updateTask}
-          className="space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm"
-        >
-          <input type="hidden" name="taskId" value={task.id} />
-          <input type="hidden" name="projectSlug" value={slug} />
+          {/* Epic + Status — above the title */}
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <label className="min-w-[12rem] flex-1">
+              <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                Epic
+              </span>
+              <select
+                form="taskMain"
+                name="epicId"
+                defaultValue={task.epicId ?? ""}
+                className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
+                aria-label="Epic"
+              >
+                <option value="">No epic</option>
+                {projectEpics.map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.title}
+                    {e.status !== "open" ? ` · ${e.status}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="w-32 shrink-0">
+              <span className="mb-1 block text-right text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                Status
+              </span>
+              <select
+                form="taskMain"
+                name="status"
+                defaultValue={task.status}
+                className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
+                aria-label="Status"
+              >
+                {COLUMN_IDS.map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {/* Title */}
           <input
+            form="taskMain"
             name="title"
             defaultValue={task.title}
             required
@@ -1004,42 +1071,27 @@ export default async function TaskDetailPage({
             className="w-full rounded-lg border border-transparent bg-transparent px-2 py-1 text-2xl font-semibold tracking-tight outline-none transition focus:border-[var(--color-line)] focus:bg-[var(--color-bg)]"
             aria-label="Task title"
           />
-          {task.description ? (
-            <div className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-4 py-3">
-              <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                Preview
-              </div>
-              <div
-                className="md"
-                dangerouslySetInnerHTML={renderFullMarkdown(task.description)}
-              />
-            </div>
-          ) : null}
-          <textarea
-            name="description"
-            defaultValue={task.description ?? ""}
-            // Sub-tasks (parentTaskId !== null) get a taller editor —
-            // they're where most of the day-to-day work detail lands,
-            // so the larger box matches actual use (HOMELAB-48).
-            rows={task.parentTaskId !== null ? 24 : 12}
-            placeholder="Add a description — markdown supported (headings, lists, code fences, tables)"
-            className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[13px] leading-relaxed outline-none focus:border-[var(--color-accent)]"
-          />
-          <div className="flex items-center justify-between text-xs text-[var(--color-text-muted)]">
-            <span>
-              Last updated <time dateTime={task.updatedAt.toISOString()} title={task.updatedAt.toISOString()}>{timeAgo(task.updatedAt)}</time>
-            </span>
-            <button
-              type="submit"
-              className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
-            >
-              Save changes
-            </button>
-          </div>
-        </form>
 
-        {/* Sub-tasks */}
-        <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm">
+          {/* Tabbed content */}
+          <TabsProvider defaultTab="Description">
+            <TabsNav
+              tabs={["Description", "Sub-Tasks", "Attachments", "Comments", "Chat"]}
+            />
+            <div className="pt-4">
+              <TabPanel name="Description">
+                <DescriptionField
+                  formId="taskMain"
+                  previewHtml={renderFullMarkdown(task.description ?? "").__html}
+                  defaultValue={task.description ?? ""}
+                  // Sub-tasks (parentTaskId !== null) get a taller editor —
+                  // they're where most of the day-to-day work detail lands,
+                  // so the larger box matches actual use (HOMELAB-48).
+                  rows={task.parentTaskId !== null ? 24 : 12}
+                />
+              </TabPanel>
+
+              <TabPanel name="Sub-Tasks">
+                <div>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold tracking-wide text-[var(--color-text)]">
               Sub-tasks
@@ -1092,10 +1144,11 @@ export default async function TaskDetailPage({
               parent task.
             </p>
           )}
-        </section>
+                </div>
+              </TabPanel>
 
-        {/* Attachments */}
-        <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm">
+              <TabPanel name="Attachments">
+                <div>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold tracking-wide text-[var(--color-text)]">
               Attachments
@@ -1168,13 +1221,14 @@ export default async function TaskDetailPage({
               Upload
             </button>
           </form>
-        </section>
+                </div>
+              </TabPanel>
 
-        {/* Comments */}
-        <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm">
-          <h2 className="mb-3 text-sm font-semibold tracking-wide text-[var(--color-text)]">
-            Comments
-          </h2>
+              <TabPanel name="Comments">
+                <div>
+                  <h2 className="mb-3 text-sm font-semibold tracking-wide text-[var(--color-text)]">
+                    Comments
+                  </h2>
           {task.comments.length === 0 ? (
             <p className="text-xs text-[var(--color-text-muted)]">
               No comments yet.
@@ -1184,42 +1238,39 @@ export default async function TaskDetailPage({
               {task.comments.map((c) => (
                 <li
                   key={c.id}
-                  className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm"
+                  className="flex items-start gap-3 text-sm"
                 >
-                  <div className="mb-1 flex items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
-                    <div className="flex items-center gap-2">
-                      <strong className="font-medium text-[var(--color-text)]">
-                        {c.user.username}
-                      </strong>
-                      <time
-                        dateTime={c.createdAt.toISOString()}
-                        title={c.createdAt.toISOString()}
-                        className="tabular-nums"
-                      >
-                        {timeAgo(c.createdAt)}
-                      </time>
+                  <MessageAvatar actor={c.user} size="sm" />
+                  <div className="min-w-0 flex-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2">
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <strong className="truncate font-medium text-[var(--color-text)]">
+                          {actorDisplayName(c.user)}
+                        </strong>
+                        <MessageTimestamp value={c.createdAt} />
+                      </div>
+                      {canDeleteComments ? (
+                        <form action={deleteComment}>
+                          <input type="hidden" name="commentId" value={c.id} />
+                          <input type="hidden" name="taskId" value={task.id} />
+                          <input
+                            type="hidden"
+                            name="projectSlug"
+                            value={slug}
+                          />
+                          <button
+                            type="submit"
+                            className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-text-muted)] hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+                            title="Delete comment"
+                            aria-label="Delete comment"
+                          >
+                            Delete
+                          </button>
+                        </form>
+                      ) : null}
                     </div>
-                    {canDeleteComments ? (
-                      <form action={deleteComment}>
-                        <input type="hidden" name="commentId" value={c.id} />
-                        <input type="hidden" name="taskId" value={task.id} />
-                        <input
-                          type="hidden"
-                          name="projectSlug"
-                          value={slug}
-                        />
-                        <button
-                          type="submit"
-                          className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-text-muted)] hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
-                          title="Delete comment"
-                          aria-label="Delete comment"
-                        >
-                          Delete
-                        </button>
-                      </form>
-                    ) : null}
+                    <div>{renderCommentBody(c.body, mentionables)}</div>
                   </div>
-                  <div>{renderCommentBody(c.body, mentionables)}</div>
                 </li>
               ))}
             </ul>
@@ -1259,149 +1310,29 @@ export default async function TaskDetailPage({
               </button>
             </div>
           </form>
+                </div>
+              </TabPanel>
+
+              <TabPanel name="Chat">
+                <div className="pt-2">
+                  <ChatRoom
+                    projectSlug={slug}
+                    taskId={task.id}
+                    messages={chatMessages}
+                    pendingAgents={pendingAgents}
+                    latestMessageId={latestMessage?.id ?? null}
+                    currentUserId={viewer.id}
+                  />
+                </div>
+              </TabPanel>
+            </div>
+          </TabsProvider>
         </section>
       </div>
 
       {/* ----- Sidebar (right) --------------------------------------- */}
       <aside className="space-y-4">
-        <form
-          action={setTaskStatus}
-          className="space-y-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm"
-        >
-          <input type="hidden" name="taskId" value={task.id} />
-          <input type="hidden" name="projectSlug" value={slug} />
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-            Status
-          </div>
-          <select
-            name="status"
-            defaultValue={task.status}
-            className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
-            aria-label="Status"
-          >
-            {COLUMN_IDS.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
-          </select>
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1 text-xs font-medium hover:border-[var(--color-accent)]"
-            >
-              Save
-            </button>
-          </div>
-        </form>
-
-        <form
-          action={setTaskBranch}
-          className="space-y-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm"
-        >
-          <input type="hidden" name="taskId" value={task.id} />
-          <input type="hidden" name="projectSlug" value={slug} />
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-            Branch
-          </div>
-          <input
-            name="branchName"
-            defaultValue={task.branchName ?? ""}
-            maxLength={200}
-            placeholder="e.g. feature/HOMELAB-99"
-            className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs font-mono outline-none focus:border-[var(--color-accent)]"
-            aria-label="Branch name"
-          />
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1 text-xs font-medium hover:border-[var(--color-accent)]"
-            >
-              Save
-            </button>
-          </div>
-        </form>
-
-        <SidebarPicker
-          title="Assignee"
-          name="assigneeId"
-          formAction={assignTask}
-          slug={slug}
-          taskId={task.id}
-          selectedId={task.assigneeId}
-          selectedLabel={task.assignee?.username ?? null}
-          principals={principals}
-          emptyOption="Unassigned"
-        />
-
-        <SidebarPicker
-          title="Reviewer"
-          name="actingManagerId"
-          formAction={setReviewer}
-          slug={slug}
-          taskId={task.id}
-          selectedId={task.actingManagerId}
-          selectedLabel={task.actingManager?.username ?? null}
-          principals={principals}
-          emptyOption="No reviewer"
-        />
-
-        {/* Epic picker — independent of any Epic.assignee. Tasks may
-            live without an Epic, and switching epics is reversible. */}
-        <form
-          action={setTaskEpic}
-          className="space-y-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm"
-        >
-          <input type="hidden" name="taskId" value={task.id} />
-          <input type="hidden" name="projectSlug" value={slug} />
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-            Epic
-          </div>
-          <select
-            name="epicId"
-            defaultValue={task.epicId ?? ""}
-            className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
-          >
-            <option value="">No epic</option>
-            {projectEpics.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.title}
-                {e.status !== "open" ? ` · ${e.status}` : ""}
-              </option>
-            ))}
-          </select>
-          <div className="flex justify-end">
-            <button
-              type="submit"
-              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1 text-xs font-medium hover:border-[var(--color-accent)]"
-            >
-              Save
-            </button>
-          </div>
-          {task.epic ? (
-            <Link
-              href={`/projects/${slug}/epics/${task.epic.id}`}
-              className="block text-xs text-[var(--color-text-muted)] hover:text-[var(--color-accent)]"
-            >
-              Open epic →
-            </Link>
-          ) : null}
-        </form>
-
-        {task.parent ? (
-          <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-              Parent task
-            </div>
-            <Link
-              href={`/projects/${slug}/tasks/${task.parent.id}`}
-              className="mt-2 block text-sm hover:underline"
-            >
-              {task.parent.title}
-            </Link>
-          </div>
-        ) : null}
-
+        {/* Dates */}
         <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
           <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
             Dates
@@ -1434,8 +1365,102 @@ export default async function TaskDetailPage({
           </dl>
         </div>
 
-        {/* Soft delete — moves the task (and any sub-tasks) to the bin
-            for 7 days, then hard-deletes. Restore from /projects/<slug>/bin. */}
+        {/* Branch + Commit prefix — persisted by the card's single Save. */}
+        <div className="space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              Branch
+            </span>
+            <input
+              form="taskMain"
+              name="branchName"
+              defaultValue={task.branchName ?? ""}
+              maxLength={200}
+              placeholder="e.g. feature/HOMELAB-99"
+              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs font-mono outline-none focus:border-[var(--color-accent)]"
+              aria-label="Branch name"
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              Commit prefix
+            </span>
+            <input
+              form="taskMain"
+              name="commitPrefix"
+              defaultValue={task.commitPrefix ?? ""}
+              maxLength={200}
+              placeholder="e.g. HOMELAB-99"
+              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs font-mono outline-none focus:border-[var(--color-accent)]"
+              aria-label="Commit prefix"
+            />
+          </label>
+        </div>
+
+        {/* Assignee + Reviewer — side by side, persisted by the card's Save. */}
+        <div className="grid grid-cols-2 gap-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              Assignee
+            </span>
+            <select
+              form="taskMain"
+              name="assigneeId"
+              defaultValue={task.assigneeId ?? ""}
+              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
+              aria-label="Assignee"
+            >
+              <option value="">Unassigned</option>
+              {principals.map((p) => (
+                <PrincipalOption key={p.id} p={p} />
+              ))}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              Reviewer
+            </span>
+            <select
+              form="taskMain"
+              name="actingManagerId"
+              defaultValue={task.actingManagerId ?? ""}
+              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
+              aria-label="Reviewer"
+            >
+              <option value="">No reviewer</option>
+              {principals.map((p) => (
+                <PrincipalOption key={p.id} p={p} />
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {task.epic ? (
+          <Link
+            href={`/projects/${slug}/epics/${task.epic.id}`}
+            className="block rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 text-xs text-[var(--color-text-muted)] shadow-sm hover:text-[var(--color-accent)]"
+          >
+            Open epic →
+          </Link>
+        ) : null}
+
+        {task.parent ? (
+          <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              Parent task
+            </div>
+            <Link
+              href={`/projects/${slug}/tasks/${task.parent.id}`}
+              className="mt-2 block text-sm hover:underline"
+            >
+              {task.parent.title}
+            </Link>
+          </div>
+        ) : null}
+
+        {/* Danger zone — soft delete moves the task (and any sub-tasks) to
+            the bin for 7 days, then hard-deletes. Its own form, separate
+            from the main edit form. Restore from /projects/<slug>/bin. */}
         <form
           action={deleteTask}
           className="space-y-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm"
@@ -1458,70 +1483,5 @@ export default async function TaskDetailPage({
         </form>
       </aside>
     </div>
-  );
-}
-
-// Sidebar picker shell — used for Assignee + Reviewer so both look
-// identical and pull from the same principal pool. Server action
-// references stay in the page so Next can pick them up as server
-// actions (vs. importing from a client module).
-function SidebarPicker({
-  title,
-  name,
-  formAction,
-  slug,
-  taskId,
-  selectedId,
-  selectedLabel,
-  principals,
-  emptyOption,
-}: {
-  title: string;
-  name: "assigneeId" | "actingManagerId";
-  formAction: (formData: FormData) => Promise<void>;
-  slug: string;
-  taskId: string;
-  selectedId: string | null;
-  selectedLabel: string | null;
-  principals: AssignablePrincipal[];
-  emptyOption: string;
-}) {
-  return (
-    <form
-      action={formAction}
-      className="space-y-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm"
-    >
-      <input type="hidden" name="taskId" value={taskId} />
-      <input type="hidden" name="projectSlug" value={slug} />
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-        {title}
-      </div>
-      <div className="text-sm">
-        {selectedLabel ? (
-          <span className="font-medium">@{selectedLabel}</span>
-        ) : (
-          <span className="text-[var(--color-text-muted)]">{emptyOption}</span>
-        )}
-      </div>
-      <select
-        name={name}
-        defaultValue={selectedId ?? ""}
-        className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
-        aria-label={title}
-      >
-        <option value="">{emptyOption}</option>
-        {principals.map((p) => (
-          <PrincipalOption key={p.id} p={p} />
-        ))}
-      </select>
-      <div className="flex justify-end">
-        <button
-          type="submit"
-          className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1 text-xs font-medium hover:border-[var(--color-accent)]"
-        >
-          Save
-        </button>
-      </div>
-    </form>
   );
 }

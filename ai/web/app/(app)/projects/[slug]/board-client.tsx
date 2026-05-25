@@ -6,10 +6,12 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
-  closestCorners,
+  pointerWithin,
+  rectIntersection,
   useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
@@ -49,6 +51,21 @@ type BoardProps = {
 // show/hide toggle, defaults to hidden. Preference persists per project in
 // localStorage so each board remembers its own state across reloads.
 const BACKLOG_VISIBLE_KEY_PREFIX = "pm.board.backlogVisible.";
+
+// Backlog rows are full-width while the four workflow columns are
+// quarter-width. closestCorners can't disambiguate here: a full-width drag
+// rect ties across all four columns (their summed corner-distance is the
+// same constant) and the full-width Backlog droppable wins outright because
+// it x-aligns with the dragged row. The result was that a backlog→To Do
+// drop resolved its `over` back to "Backlog", hit the same-status no-op, and
+// snapped the card back. Pointer-based detection targets whatever sits under
+// the cursor, which is unambiguous regardless of element width; fall back to
+// rectIntersection for the rare frame where the pointer is over a gap.
+// Pointer-only is safe because the board uses just the PointerSensor.
+const boardCollisionDetection: CollisionDetection = (args) => {
+  const pointer = pointerWithin(args);
+  return pointer.length > 0 ? pointer : rectIntersection(args);
+};
 
 export default function Board({ projectSlug, columns, tasks, moveTaskAction, reorderTasksAction }: BoardProps) {
   const [items, setItems] = useState<Task[]>(tasks);
@@ -208,8 +225,14 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
 
   return (
     <DndContext
+      // Stable id keeps dnd-kit's generated aria ids deterministic across
+      // SSR and hydration. Without it, dnd-kit falls back to a module-global
+      // counter that drifts on the long-lived server (incrementing per
+      // request) while the client starts from zero, producing a hydration
+      // mismatch on the draggables' aria-describedby.
+      id={`board-${projectSlug}`}
       sensors={sensors}
-      collisionDetection={closestCorners}
+      collisionDetection={boardCollisionDetection}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >
@@ -379,6 +402,14 @@ function TaskCard({
           dateTime={task.updatedAt}
           title={task.updatedAt}
           className="shrink-0 tabular-nums"
+          // relativeUpdated() reads Date.now() at render, so the server and
+          // client can land in different buckets ("now" vs "1m") and throw a
+          // (recoverable) React #418 text-hydration error on an aged board.
+          // React recovers by re-rendering, so this is console noise rather
+          // than a hard break — suppressing tells React the timestamp text is
+          // expected to differ. (The hard break was the DndContext aria-id
+          // mismatch, fixed by the stable id above.)
+          suppressHydrationWarning
         >
           {relativeUpdated(task.updatedAt)}
         </time>
@@ -455,6 +486,9 @@ function BacklogRow({
         dateTime={task.updatedAt}
         title={task.updatedAt}
         className="text-right text-xs tabular-nums text-[var(--color-text-muted)]"
+        // See TaskCard's <time>: suppress the timestamp hydration mismatch so
+        // an aged backlog row can't break hydration of the whole board.
+        suppressHydrationWarning
       >
         {relativeUpdated(task.updatedAt)}
       </time>

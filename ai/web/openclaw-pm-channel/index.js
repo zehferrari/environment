@@ -185,6 +185,7 @@ function createPmStreamPublisher({ account, target, logger }) {
   let queued = null;
   let timer = null;
   let chain = Promise.resolve();
+  let lastReasoningText = "";
 
   const post = (body) => postJson(streamUrl, account.callbackToken, {
     version: 1,
@@ -207,7 +208,9 @@ function createPmStreamPublisher({ account, target, logger }) {
   };
 
   const queue = (body) => {
-    if (body.event === "partial" && queued?.event === "partial" && !body.replace && !queued.replace) {
+    if ((body.event === "partial" || body.event === "reasoning") &&
+        queued?.event === body.event &&
+        !body.replace && !queued.replace) {
       queued = {
         ...body,
         delta: `${queued.delta ?? ""}${body.delta ?? ""}`,
@@ -247,14 +250,31 @@ function createPmStreamPublisher({ account, target, logger }) {
       });
     },
     reasoning: (payload) => {
-      const delta = streamPayloadDelta(payload);
-      const text = streamPayloadText(payload);
-      if (!delta && !text) return;
+      const deltaVal = streamPayloadDelta(payload);
+      const textVal = streamPayloadText(payload);
+      if (!deltaVal && !textVal) return;
+
+      let delta = "";
+      if (deltaVal) {
+        delta = deltaVal;
+        lastReasoningText = lastReasoningText + deltaVal;
+      } else {
+        if (textVal.startsWith(lastReasoningText)) {
+          delta = textVal.slice(lastReasoningText.length);
+          lastReasoningText = textVal;
+        } else {
+          delta = textVal;
+          lastReasoningText = lastReasoningText + textVal;
+        }
+      }
+
+      if (!delta) return;
+
       queue({
         event: "reasoning",
-        delta: delta || undefined,
-        text: delta ? undefined : text,
-        replace: payload?.replace === true || (!delta && Boolean(text)),
+        delta: delta,
+        text: undefined,
+        replace: false,
       });
     },
     final: async (text) => {
@@ -554,6 +574,8 @@ async function runPmTurn({ cfg, payload, accountId, logger }) {
       },
       replyPipeline: {},
       replyOptions: {
+        sourceReplyDeliveryMode: "automatic",
+        allowProgressCallbacksWhenSourceDeliverySuppressed: true,
         onPartialReply: (replyPayload) => stream.partial(replyPayload),
         onReasoningStream: (replyPayload) => stream.reasoning(replyPayload),
       },

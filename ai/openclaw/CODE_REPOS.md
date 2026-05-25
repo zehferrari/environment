@@ -40,20 +40,30 @@ created via `claim-branch`.
 
 The implementer flow is:
 
-1. Read the Jira ticket, note the designated branch (e.g. `feature/HOMELAB-12-foo`).
-2. `claim-branch <repo> <branch>` — checks the branch exists on origin,
-   creates a worktree on it, prints the worktree path.
+1. Read the Jira or Zero Latency ticket, note the designated branch (e.g. `feature/HOMELAB-12-foo`).
+2. `claim-branch <repo> <branch>` — checks if the branch exists on origin and creates a worktree on it. If it does not exist, it automatically creates it on origin from `origin/master` (or `origin/main` on origin) and checks out locally.
 3. `cd "$(claim-branch <repo> <branch>)"` and work there.
-4. Make your changes; `git add` + `git commit` as normal. Identity is
-   already wired (`Zeh Ferrari <e@zeh.me>`).
-5. **Push the branch to origin** — `git push` works as-is on a freshly
+4. Make sure the git user name and email match the project settings.
+   - If the project settings define a custom git identity, you MUST configure them locally in the worktree:
+     ```bash
+     git config extensions.worktreeConfig true
+     git config --worktree user.name "Project.defaultGitUserName"
+     git config --worktree user.email "Project.defaultGitUserEmail"
+     ```
+   - Also write the expected identity JSON to the git directory to allow the pre-commit hook to validate it:
+     ```bash
+     echo '{"name": "Project.defaultGitUserName", "email": "Project.defaultGitUserEmail"}' > "$(git rev-parse --git-dir)/expected-identity"
+     ```
+   - If no project-specific identity is configured, it defaults to the host identity `Zeh Ferrari <e@zeh.me>`.
+5. Make your changes; `git add` + `git commit` as normal.
+6. **Push the branch to origin** — `git push` works as-is on a freshly
    claimed branch (the worktree was created with upstream tracking).
-   For a brand-new branch from `--from`, the helper has already done
+   For a brand-new branch, the helper has already done
    the initial `git push -u origin <branch>` for you. Auth resolves
    as zeh via `bbZeh` — no flags or env needed.
-6. Stop. Do **not** create a pull request. Report the branch, commit, tests,
+7. Stop. Do **not** create a pull request. Report the branch, commit, tests,
    and residual risk in the source channel so zeh can create the PR.
-7. After zeh confirms the PR has landed, `claim-branch --release <repo>
+8. After zeh confirms the PR has landed, `claim-branch --release <repo>
    <branch>` to tear down the worktree. The remote branch is cleaned up on
    Bitbucket separately by whoever lands the PR.
 
@@ -193,9 +203,17 @@ where their tree is.
 
 ```
 # Inside any /srv/Code/* tree:
-git config user.email          # → e@zeh.me
+git config user.name           # → Project-specific name OR Zeh Ferrari
+git config user.email          # → Project-specific email OR e@zeh.me
 git config core.sshCommand     # → ssh -i $HOME/.ssh/bbZeh -o IdentitiesOnly=yes
 
 # Outside /srv/Code:
 git config user.email          # → agent's own (a@zeh.me / b@zeh.me)
 ```
+
+## Automated Enforcement (Pre-commit hook)
+
+Every repository and worktree under `/srv/Code/` is monitored by a global pre-commit hook (configured via `/srv/Code/.gitconfig-zeh` setting `core.hooksPath = /srv/Code/git-hooks`). The hook automatically validates:
+1. **Mandatory Worktree**: Commits directly to the primary repository `/srv/Code/<repo>/` are blocked. You MUST use a branch worktree.
+2. **Branch Match**: The current git branch name (slugified) must match the worktree directory name.
+3. **Identity Verification**: If an `expected-identity` file exists in the worktree's git directory (written by `claim-branch` or updated by you with project settings), the active `user.name` and `user.email` must match it exactly.

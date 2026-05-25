@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const TABS = [
+const BASE_TABS = [
   { href: "", label: "Board" },
   { href: "/epics", label: "Epics" },
   { href: "/library", label: "Library" },
@@ -11,10 +11,20 @@ const TABS = [
   { href: "/bin", label: "Bin" },
 ] as const;
 
-export default function ProjectTabs({ slug }: { slug: string }) {
+export default function ProjectTabs({
+  slug,
+  hasSummary = false,
+}: {
+  slug: string;
+  hasSummary?: boolean;
+}) {
   const pathname = usePathname() ?? "";
   const base = `/projects/${slug}`;
   const sub = pathname.startsWith(base) ? pathname.slice(base.length) : "";
+  // Summary (the repo README) leads, before Board, when present.
+  const tabs = hasSummary
+    ? [{ href: "/summary", label: "Summary" }, ...BASE_TABS]
+    : BASE_TABS;
   // The board is the only tab whose href is the bare base — match it
   // when sub is empty OR points at a tasks/[id] subroute (those open
   // from board cards and conceptually belong to the board view).
@@ -29,7 +39,7 @@ export default function ProjectTabs({ slug }: { slug: string }) {
   }
   return (
     <nav className="mb-4 flex items-center gap-1 border-b border-[var(--color-line)] text-sm">
-      {TABS.map((t) => {
+      {tabs.map((t) => {
         const active = isActive(t.href);
         return (
           <Link

@@ -36,8 +36,10 @@ export async function setProjectSettings(formData: FormData) {
   const defaultGitUserEmail = trimOrNull(formData.get("defaultGitUserEmail"));
   const defaultAssigneeId = trimOrNull(formData.get("defaultAssigneeId"));
   const defaultReviewerId = trimOrNull(formData.get("defaultReviewerId"));
-  const doneTtlDaysRaw = String(formData.get("doneTtlDays") ?? "5").trim();
-  const doneTtlDays = Math.max(1, Math.min(365, Number(doneTtlDaysRaw) || 5));
+  // Blank Done-TTL inherits the system default (resolved on read).
+  const doneTtlDaysRaw = String(formData.get("doneTtlDays") ?? "").trim();
+  const doneTtlDays =
+    doneTtlDaysRaw === "" ? null : Math.max(1, Math.min(365, Number(doneTtlDaysRaw) || 5));
 
   await db.$transaction([
     db.project.update({

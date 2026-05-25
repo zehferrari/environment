@@ -2,6 +2,7 @@ import { seedZehUser } from "@/lib/agents/seed-zeh";
 import { syncAgents } from "@/lib/agents/sync";
 import { purgeBin } from "@/lib/bin/purge";
 import { purgeProjectBin } from "@/lib/bin/purge-projects";
+import { purgeDirectAgentChatBin } from "@/lib/bin/purge-chats";
 
 try {
   const zeh = await seedZehUser();
@@ -39,6 +40,12 @@ try {
 } catch (err) {
   console.error("[pm] boot project bin purge failed:", err);
 }
+try {
+  const r = await purgeDirectAgentChatBin();
+  console.log("[pm] boot direct chat bin purge:", JSON.stringify(r));
+} catch (err) {
+  console.error("[pm] boot direct chat bin purge failed:", err);
+}
 setInterval(async () => {
   try {
     const r = await purgeBin();
@@ -51,5 +58,11 @@ setInterval(async () => {
     console.log("[pm] periodic project bin purge:", JSON.stringify(r));
   } catch (err) {
     console.error("[pm] periodic project bin purge failed:", err);
+  }
+  try {
+    const r = await purgeDirectAgentChatBin();
+    console.log("[pm] periodic direct chat bin purge:", JSON.stringify(r));
+  } catch (err) {
+    console.error("[pm] periodic direct chat bin purge failed:", err);
   }
 }, purgeIntervalMs).unref();

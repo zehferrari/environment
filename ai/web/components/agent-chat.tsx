@@ -1,12 +1,19 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
+import { auth } from "@/lib/auth";
 import { listChatTargets } from "@/lib/agents/chat-targets";
 import {
   deleteChatMessage,
-  sendAgentChatMessage,
 } from "@/lib/agents/chat-actions";
 import { renderFullMarkdown } from "@/lib/markdown";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
+import AgentChatInput from "./agent-chat-input";
+import {
+  actorDisplayName,
+  MessageAvatar,
+  MessageTimestamp,
+  type MessageActor,
+} from "@/components/message-avatar";
 
 interface CommonProps {
   projectSlug: string;
@@ -18,14 +25,6 @@ type TargetProps =
   | (CommonProps & { taskId: string; epicId?: undefined })
   | (CommonProps & { epicId: string; taskId?: undefined });
 
-function timeAgo(d: Date): string {
-  const diff = (Date.now() - d.getTime()) / 1000;
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return d.toISOString().slice(0, 16).replace("T", " ");
-}
-
 function dispatchIsDisabled(): boolean {
   return !process.env.PM_DISPATCH_SOCKET && !process.env.PM_DISPATCH_DROP_DIR;
 }
@@ -36,6 +35,8 @@ export default async function AgentChatSidebar(props: TargetProps) {
     ? targets.find((t) => t.agentSlug === props.selectedAgentSlug) ?? null
     : null;
   const isTaskChat = "taskId" in props && props.taskId !== undefined;
+  const session = await auth();
+  const currentUserId = session?.user?.id ?? null;
 
   const rows = selected
     ? await db.agentChatMessage.findMany({
@@ -45,7 +46,18 @@ export default async function AgentChatSidebar(props: TargetProps) {
         },
         orderBy: { createdAt: "desc" },
         take: 50,
-        include: { sender: { select: { username: true, kind: true } } },
+        include: {
+          sender: {
+            select: {
+              id: true,
+              username: true,
+              kind: true,
+              name: true,
+              avatarUpdatedAt: true,
+              agent: { select: { slug: true, name: true, avatar: true } },
+            },
+          },
+        },
       })
     : [];
   const messages = rows.reverse();
@@ -103,45 +115,57 @@ export default async function AgentChatSidebar(props: TargetProps) {
             ) : (
               messages.map((m) => {
                 const fromAgent = m.sender.kind === "agent";
+                const fromCurrentUser = Boolean(currentUserId && m.sender.id === currentUserId);
+                const bubbleTone = fromCurrentUser
+                  ? "border-[var(--color-accent)]/35 bg-[var(--color-accent)]/[0.09]"
+                  : fromAgent
+                    ? "border-[var(--color-accent)]/25 bg-[var(--color-panel-soft)]"
+                    : "border-[var(--color-line)] bg-[var(--color-panel-soft)]";
                 return (
-                  <article
+                  <div
                     key={m.id}
-                    className={`group rounded-xl border px-3 py-2 ${
-                      fromAgent
-                        ? "border-[var(--color-accent)]/40 bg-[var(--color-accent)]/10"
-                        : "border-[var(--color-line)] bg-[var(--color-panel-soft)]"
-                    }`}
+                    className={`flex items-start gap-2.5 ${fromCurrentUser ? "justify-end" : ""}`}
                   >
-                    <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-                      <span>
-                        {m.sender.username}
-                        {fromAgent ? " / agent" : ""}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <time dateTime={m.createdAt.toISOString()} title={m.createdAt.toISOString()}>
-                          {timeAgo(m.createdAt)}
-                        </time>
-                        <form action={deleteChatMessage}>
-                          <input type="hidden" name="projectSlug" value={props.projectSlug} />
-                          <input type="hidden" name="messageId" value={m.id} />
-                          <button
-                            type="submit"
-                            aria-label="Delete message"
-                            title="Delete message"
-                            className="text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 hover:text-[var(--color-crit)]"
-                          >
-                            x
-                          </button>
-                        </form>
+                    {!fromCurrentUser ? <MessageAvatar actor={m.sender as MessageActor} size="sm" /> : null}
+                    <article
+                      className={`group relative w-fit min-w-[10rem] max-w-[min(30rem,82%)] rounded-2xl border px-3.5 py-2.5 shadow-sm ${bubbleTone}`}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`absolute top-4 h-3 w-3 rotate-45 ${bubbleTone} ${
+                          fromCurrentUser ? "-right-1.5 border-r border-t" : "-left-1.5 border-b border-l"
+                        }`}
+                      />
+                      <div className="relative mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
+                        <span className="truncate font-semibold text-[var(--color-text)]">
+                          {actorDisplayName(m.sender)}
+                          {fromAgent ? " / agent" : ""}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          <MessageTimestamp value={m.createdAt} />
+                          <form action={deleteChatMessage}>
+                            <input type="hidden" name="projectSlug" value={props.projectSlug} />
+                            <input type="hidden" name="messageId" value={m.id} />
+                            <button
+                              type="submit"
+                              aria-label="Delete message"
+                              title="Delete message"
+                              className="text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 hover:text-[var(--color-crit)]"
+                            >
+                              x
+                            </button>
+                          </form>
+                        </div>
                       </div>
-                    </div>
-                    <div className="md md-compact" dangerouslySetInnerHTML={renderFullMarkdown(m.body)} />
-                    {m.allowDescriptionEdit ? (
-                      <div className="mt-1 inline-block rounded-full border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-0.5 text-[10px] uppercase tracking-wider">
-                        {m.editGrantUsedAt ? "edit grant used" : "edit grant active"}
-                      </div>
-                    ) : null}
-                  </article>
+                      <div className="relative md md-compact" dangerouslySetInnerHTML={renderFullMarkdown(m.body)} />
+                      {m.allowDescriptionEdit ? (
+                        <div className="relative mt-1 inline-block rounded-full border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-0.5 text-[10px] uppercase tracking-wider">
+                          {m.editGrantUsedAt ? "edit grant used" : "edit grant active"}
+                        </div>
+                      ) : null}
+                    </article>
+                    {fromCurrentUser ? <MessageAvatar actor={m.sender as MessageActor} size="sm" /> : null}
+                  </div>
                 );
               })
             )}
@@ -156,41 +180,14 @@ export default async function AgentChatSidebar(props: TargetProps) {
             ) : null}
           </div>
 
-          <form action={sendAgentChatMessage} className="space-y-2">
-            <input type="hidden" name="projectSlug" value={props.projectSlug} />
-            {props.taskId ? (
-              <input type="hidden" name="taskId" value={props.taskId} />
-            ) : (
-              <input type="hidden" name="epicId" value={props.epicId} />
-            )}
-            <input type="hidden" name="agentSlug" value={selected.agentSlug} />
-            <textarea
-              name="body"
-              required
-              rows={3}
-              maxLength={8000}
-              placeholder={`Message @${selected.username}...`}
-              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-xs outline-none focus:border-[var(--color-accent)]"
-            />
-            {isTaskChat ? (
-              <label className="flex items-center gap-2 text-[11px] text-[var(--color-text-muted)]">
-                <input
-                  type="checkbox"
-                  name="allowDescriptionEdit"
-                  className="h-3.5 w-3.5 accent-[var(--color-accent)]"
-                />
-                Allow description edit
-              </label>
-            ) : null}
-            <div className="flex justify-end">
-              <button
-                type="submit"
-                className="rounded-lg bg-[var(--color-accent)] px-3 py-1 text-xs font-medium text-[var(--color-bg)] hover:opacity-90"
-              >
-                Send
-              </button>
-            </div>
-          </form>
+          <AgentChatInput
+            projectSlug={props.projectSlug}
+            taskId={props.taskId}
+            epicId={props.epicId}
+            agentSlug={selected.agentSlug}
+            agentUsername={selected.username}
+            isTaskChat={isTaskChat}
+          />
         </>
       ) : (
         <p className="text-xs text-[var(--color-text-muted)]">

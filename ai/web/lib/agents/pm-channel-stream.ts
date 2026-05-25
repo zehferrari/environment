@@ -58,6 +58,9 @@ export function pmChannelStreamKey(target: PmChannelReplyTarget): string {
   if (target.kind === "direct") {
     return `direct:${target.agentSlug}:${target.messageId}`;
   }
+  if (target.kind === "epic-chat") {
+    return `epic-chat:${target.agentSlug}:${target.epicId}:${target.messageId}`;
+  }
   return `${target.kind}:${target.agentSlug}:${target.taskId}:${target.messageId}`;
 }
 

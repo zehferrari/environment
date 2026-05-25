@@ -94,12 +94,31 @@ export async function POST(
     return NextResponse.json({ error: "Message not found" }, { status: 404 });
   }
 
-  if (!verifyTaskChatReplyToken(messageId, taskId, original.agentSlug, token)) {
+  let agentSlug = original.agentSlug;
+  let verified = false;
+
+  if (original.agentSlug === "room") {
+    const activeAgents = await db.agent.findMany({
+      where: { deactivatedAt: null },
+      select: { slug: true },
+    });
+    for (const a of activeAgents) {
+      if (verifyTaskChatReplyToken(messageId, taskId, a.slug, token)) {
+        agentSlug = a.slug;
+        verified = true;
+        break;
+      }
+    }
+  } else {
+    verified = verifyTaskChatReplyToken(messageId, taskId, original.agentSlug, token);
+  }
+
+  if (!verified) {
     return NextResponse.json({ error: "Invalid reply token" }, { status: 403 });
   }
 
   const agent = await db.agent.findUnique({
-    where: { slug: original.agentSlug },
+    where: { slug: agentSlug },
     select: {
       slug: true,
       deactivatedAt: true,

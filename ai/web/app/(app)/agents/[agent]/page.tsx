@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { canEditProfile, readAgentProfile } from "@/lib/agents/profile";
+import { canEditProfile, ProfileError, readAgentProfile } from "@/lib/agents/profile";
 import { readAgentModelSettings } from "@/lib/agents/model-settings";
 import { resolveEffectiveAgentConfig } from "@/lib/agents/effective-config";
 import ProfileEditor from "./profile-editor";
@@ -78,6 +78,16 @@ function statusFor(agent: { deactivatedAt: Date | null; user: { status: string }
   return agent.user ? "active" : "registered";
 }
 
+async function readProfileForPage(slug: string) {
+  try {
+    return { profile: await readAgentProfile(slug), error: null };
+  } catch (err) {
+    if (err instanceof ProfileError) return { profile: null, error: err.message };
+    if (err instanceof Error) return { profile: null, error: err.message };
+    return { profile: null, error: String(err) };
+  }
+}
+
 function formatIdle(seconds?: number | null) {
   if (seconds == null) return "—";
   if (seconds < 60) return `${seconds}s`;
@@ -102,7 +112,7 @@ export default async function AgentProfilePage({
   ]);
   if (!agent) notFound();
 
-  const profile = await readAgentProfile(slug);
+  const profileResult = await readProfileForPage(slug);
   const canEdit = await canEditProfile({ name: session?.user?.name, kind: session?.user?.kind }, slug);
   const [audit, activity, modelSettings] = await Promise.all([
     db.activityLog.findMany({
@@ -176,7 +186,11 @@ export default async function AgentProfilePage({
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
             <div className="space-y-4">
               <Panel title="Identity files">
-                <ProfileEditor agent={slug} files={profile.files} canEdit={canEdit} />
+                {profileResult.profile ? (
+                  <ProfileEditor agent={slug} files={profileResult.profile.files} canEdit={canEdit} />
+                ) : (
+                  <ProfileUnavailable agent={slug} error={profileResult.error} />
+                )}
               </Panel>
 
               <Panel title="Profile audit history">
@@ -267,6 +281,18 @@ export default async function AgentProfilePage({
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm"><h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">{title}</h2>{children}</section>;
+}
+
+function ProfileUnavailable({ agent, error }: { agent: string; error: string | null }) {
+  return (
+    <div className="rounded-xl border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 p-3 text-sm text-[var(--color-warn)]">
+      <div className="font-medium">Profile files are not readable by PM.</div>
+      <p className="mt-1 text-xs">
+        Check read/traverse permissions for <code>/srv/agents/openclaw/{agent}</code>.
+        {error ? ` ${error}` : ""}
+      </p>
+    </div>
+  );
 }
 
 function Metric({ label, value }: { label: string; value: string }) {

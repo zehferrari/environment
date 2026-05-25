@@ -17,11 +17,13 @@ function targetFromSearch(params: URLSearchParams): PmChannelReplyTarget | null 
   const agentSlug = params.get("agentSlug") ?? "";
   const messageId = params.get("messageId") ?? "";
   const taskId = params.get("taskId") ?? "";
+  const epicId = params.get("epicId") ?? "";
   return parsePmChannelReplyTarget({
     kind,
     agentSlug,
     messageId,
     taskId,
+    epicId,
     projectSlug: params.get("projectSlug"),
   });
 }
@@ -35,10 +37,22 @@ async function targetExists(target: PmChannelReplyTarget) {
     return Boolean(row);
   }
 
+  if (target.kind === "epic-chat") {
+    const row = await db.agentChatMessage.findFirst({
+      where: {
+        id: target.messageId,
+        agentSlug: { in: [target.agentSlug, "room"] },
+        epicId: target.epicId,
+      },
+      select: { id: true },
+    });
+    return Boolean(row);
+  }
+
   const row = await db.agentChatMessage.findFirst({
     where: {
       id: target.messageId,
-      agentSlug: target.agentSlug,
+      agentSlug: { in: [target.agentSlug, "room"] },
       taskId: target.taskId,
     },
     select: { id: true },

@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PM — Agents",
-  description: "Agent + project workspace for zehferrari/environment",
+  title: "Zero Latency — Mission Control",
+  description: "Zero Latency — Mission Control for zehferrari/environment",
 };
 
 export default function RootLayout({

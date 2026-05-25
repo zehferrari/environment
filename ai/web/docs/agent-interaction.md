@@ -127,22 +127,59 @@ should say which attachment needs inspection instead of inventing
 details. Binary, unsupported, failed, or too-large attachments are
 identified by filename and `/api/attachments/<id>` path.
 
+## Work-Item Proposals (propose → approve)
+
+Implemented for direct PM chats attached to a project. On
+`/agents/<slug>/chat` the user selects a target project and ticks "let
+@agent propose work-item changes"; the planning turn then carries the
+project environment (repo path, git identity, picker defaults, existing
+epics + open tasks) plus a single-use grant. The agent does NOT mutate
+the board — it submits a typed change-set:
+
+```text
+POST http://127.0.0.1:3000/api/agent/projects/<projectId>/proposals
+Content-Type: application/json
+{
+  "grantMessageId": "<DirectAgentChatMessage id supplied in the turn>",
+  "token": "<one-shot HMAC grant token supplied in the turn>",
+  "planId": "<unique id for this proposal; re-POST is idempotent>",
+  "summary": "<one-line summary>",
+  "operations": [ /* typed ops, applied in order, all-or-nothing */ ]
+}
+```
+
+Operations: `create_epic`, `create_task`, `create_subtask`,
+`update_epic`, `update_task`, `comment_task`. New items take a `ref`
+that must start with `tmp:` and that later ops reference (epic / parent);
+existing items are addressed by their real id from the project-environment
+block. `assignee` / `actingManager` are usernames (or `null` to unset).
+
+PM validates the grant (single-use, bound to project + agent + message),
+then dry-run-validates every op against `lib/workflow.ts` **as the
+agent** — no self-assign, no self-review, no moving a task into/out of
+Review/Done; new tasks land in Backlog, new epics open. A valid
+change-set is stored as a pending `WorkItemProposal`; nothing on the
+board changes yet. A human reviews it in the chat and clicks Apply (the
+whole set commits in one transaction) or Reject. Applied mutations are
+attributed to the agent in `ActivityLog`, while the human's approval is
+recorded by `WorkItemProposal.appliedById` + a `workitem.proposal.apply`
+row. Re-validation runs again at apply time, so a stale proposal aborts
+without writing.
+
 ## Future Agent Actions
 
-Future agent write actions should be added as explicit native channel
-tools or service-token API endpoints. Do not let agents mutate the
-database directly.
+Further agent write actions should follow the same shape (typed endpoint,
+scoped token, server-side validation, `ActivityLog`). Do not let agents
+mutate the database directly.
 
-Expected future capabilities:
+Still future:
 
 - create projects;
-- create, update, assign, and archive epics;
-- create, update, assign, comment on, and transition tasks;
-- upload or attach files;
-- link tasks to epics and parent tasks;
-- request human approval for sensitive operations.
+- upload or attach files from an agent turn;
+- agent-initiated transitions into Review/Done (these remain explicit
+  human actions today, even via a proposal).
 
-Each future action should follow the same shape:
+Each such action should follow the same shape:
 
 - PM provides a typed endpoint and required body shape.
 - The agent authenticates with a token scoped to the intended action.

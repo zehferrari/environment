@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { db } from "@/lib/db";
+import { repoHasReadme } from "@/lib/projects/repo-readme";
 import ProjectTabs from "./project-tabs";
 
 export default async function ProjectLayout({
@@ -13,9 +14,18 @@ export default async function ProjectLayout({
   const { slug } = await params;
   const project = await db.project.findUnique({
     where: { slug },
-    select: { id: true, slug: true, name: true, deletedAt: true },
+    select: {
+      id: true,
+      slug: true,
+      name: true,
+      deletedAt: true,
+      repositoryPath: true,
+    },
   });
   if (!project || project.deletedAt) notFound();
+
+  // Show the Summary tab only when the configured repo folder has a README.
+  const hasSummary = repoHasReadme(project.repositoryPath);
 
   return (
     <div>
@@ -25,9 +35,14 @@ export default async function ProjectLayout({
             {project.name}
           </Link>
         </h1>
-        <div className="text-xs text-[var(--color-text-muted)]">/{project.slug}</div>
+        <Link
+          href={`/projects/${project.slug}`}
+          className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:underline"
+        >
+          /{project.slug}
+        </Link>
       </header>
-      <ProjectTabs slug={project.slug} />
+      <ProjectTabs slug={project.slug} hasSummary={hasSummary} />
       {children}
     </div>
   );

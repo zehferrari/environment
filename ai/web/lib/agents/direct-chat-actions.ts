@@ -6,12 +6,20 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import path from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, rename, rm, stat, writeFile, readdir, readFile, chmod, chown } from "node:fs/promises";
 import {
   getOrCreateAgentSessionBinding,
   type AgentSessionBinding,
 } from "@/lib/agents/session-bindings";
 import { wakeAgent as wakeGatewayAgent } from "@/lib/pm-consumer/gateway-client";
 import { sendOpenClawPmChannelTurn } from "@/lib/agents/openclaw-pm-channel";
+import {
+  buildProjectEnvContext,
+  buildWorkItemPlanningPrompt,
+} from "@/lib/agents/context/project";
+import { createWorkItemGrantToken } from "@/lib/agents/work-item-token";
 
 const execFileAsync = promisify(execFile);
 
@@ -61,6 +69,78 @@ function archiveContextMessages() {
 
 function archiveChainLimit() {
   return intEnv("PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT", DEFAULT_ARCHIVE_CHAIN_LIMIT, 1, 6);
+}
+
+export async function getAgentChatUploadDir(agentSlug: string, chatId: string): Promise<string> {
+  const basePattern = process.env.PM_AGENT_SAMBA_ROOT ?? "/srv/samba/shared/[agent]";
+  const baseDir = basePattern.replace("[agent]", agentSlug);
+  return path.join(baseDir, "chats", chatId);
+}
+
+export async function getConversationFolderIds(agentSlug: string, baseArchiveId: string | null): Promise<string[]> {
+  const folders: string[] = [];
+  let currentId = baseArchiveId;
+  const seen = new Set<string>();
+  while (currentId && !seen.has(currentId)) {
+    seen.add(currentId);
+    const archive = await db.directAgentChatArchive.findFirst({
+      where: { id: currentId, agentSlug, deletedAt: null },
+      select: { id: true, parentArchiveId: true },
+    });
+    if (!archive) break;
+    folders.push(archive.id);
+    currentId = archive.parentArchiveId;
+  }
+  return folders;
+}
+
+export async function appendFilesContext(agentSlug: string, folderIds: string[]): Promise<string> {
+  const lines: string[] = [];
+  const limit = intEnv("PM_AGENT_CONTEXT_ATTACHMENT_TEXT_MAX_BYTES", 98304, 1024, 512 * 1024);
+  let totalBytes = 0;
+
+  for (const folderId of folderIds) {
+    const dir = await getAgentChatUploadDir(agentSlug, folderId);
+    if (!existsSync(dir)) continue;
+
+    try {
+      const entries = await readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        const filePath = path.join(dir, entry.name);
+        const stats = await stat(filePath);
+        
+        lines.push(`- File: ${entry.name} (${stats.size} bytes)`);
+        lines.push(`  Path: ${filePath}`);
+
+        // Read content if it's text-like and within limits
+        const ext = path.extname(entry.name).toLowerCase();
+        const isText = [".txt", ".md", ".js", ".ts", ".py", ".json", ".csv", ".yml", ".yaml", ".sh", ".html", ".css"].includes(ext);
+        if (isText && stats.size < 50000 && totalBytes + stats.size < limit) {
+          try {
+            const content = await readFile(filePath, "utf8");
+            lines.push("  Content:");
+            lines.push("  ```");
+            lines.push(content.slice(0, 10000));
+            lines.push("  ```");
+            totalBytes += stats.size;
+          } catch {
+            lines.push("  [Error reading content]");
+          }
+        }
+        lines.push("");
+      }
+    } catch (e) {
+      console.error(`Error reading files context for ${dir}`, e);
+    }
+  }
+
+  if (lines.length === 0) return "";
+  return [
+    "ATTACHED CONTEXT FILES (accessible in your local environment):",
+    ...lines,
+    "",
+  ].join("\n");
 }
 
 function formatTranscript(
@@ -448,22 +528,67 @@ async function handleDirectAgentMessage(args: {
   userId: string;
   gatewayPort: number | null;
   sessionBinding: AgentSessionBinding;
+  projectId: string | null;
+  allowWorkItemManagement: boolean;
 }) {
   const sessionContext = await buildDirectSessionContext(args);
+  const original = await db.directAgentChatMessage.findUnique({
+    where: { id: args.messageId },
+    select: { baseArchiveId: true, archiveId: true },
+  });
+  const baseArchiveId = original?.baseArchiveId ?? null;
+  const parentFolders = await getConversationFolderIds(args.agentSlug, baseArchiveId);
+  const folderIds = [args.sessionBinding.scopeId, ...parentFolders];
+  const filesContext = await appendFilesContext(args.agentSlug, folderIds);
+
+  // Project-scoped planning: when a project is attached, include its
+  // environment packet; when the user also granted work-item management,
+  // hand the agent the propose endpoint + a one-shot grant token bound to
+  // this message (the sanctioned write-action pattern).
+  const systemPromptParts = [
+    `Direct PM chat message for @${args.agentSlug} from ${args.actorName}.`,
+    `OpenClaw session key: ${args.sessionBinding.openclawSessionKey}`,
+    "This turn arrived through the native OpenClaw PM channel.",
+    "Reply normally; OpenClaw will deliver your visible response back to the PM chat window.",
+    "Keep the answer useful and concise unless the user asked for detail.",
+  ];
+  let projectContextText = "";
+  if (args.projectId) {
+    const env = await buildProjectEnvContext(args.projectId);
+    if (env) {
+      projectContextText = env.text;
+      if (args.allowWorkItemManagement) {
+        const token = createWorkItemGrantToken(args.projectId, args.agentSlug, args.messageId);
+        const proposeUrl = new URL(
+          `/api/agent/projects/${args.projectId}/proposals`,
+          agentCallbackBaseUrl(),
+        ).toString();
+        systemPromptParts.push(
+          "",
+          buildWorkItemPlanningPrompt({
+            agentSlug: args.agentSlug,
+            projectSlug: env.projectSlug,
+            proposeUrl,
+            grantMessageId: args.messageId,
+            token,
+          }),
+        );
+      }
+    }
+  }
+
+  const contextText = [sessionContext, filesContext, projectContextText]
+    .filter(Boolean)
+    .join("\n\n");
+
   const delivery = await sendOpenClawPmChannelTurn({
     gatewayPort: args.gatewayPort,
     agentSlug: args.agentSlug,
     sessionKey: args.sessionBinding.openclawSessionKey,
     kind: "direct",
     text: args.body,
-    contextText: sessionContext,
-    systemPrompt: [
-      `Direct PM chat message for @${args.agentSlug} from ${args.actorName}.`,
-      `OpenClaw session key: ${args.sessionBinding.openclawSessionKey}`,
-      "This turn arrived through the native OpenClaw PM channel.",
-      "Reply normally; OpenClaw will deliver your visible response back to the PM chat window.",
-      "Keep the answer useful and concise unless the user asked for detail.",
-    ].join("\n"),
+    contextText,
+    systemPrompt: systemPromptParts.join("\n"),
     actor: {
       id: args.userId,
       username: args.actorName,
@@ -499,12 +624,32 @@ async function handleDirectAgentMessage(args: {
   }
 }
 
+function getGidByName(groupName: string): number | null {
+  try {
+    const content = readFileSync("/etc/group", "utf8");
+    for (const line of content.split("\n")) {
+      const parts = line.split(":");
+      if (parts[0] === groupName) {
+        const gid = parseInt(parts[2], 10);
+        if (!isNaN(gid)) return gid;
+      }
+    }
+  } catch (e) {
+    console.error("Failed to read /etc/group", e);
+  }
+  return null;
+}
+
 export async function sendDirectAgentMessage(formData: FormData) {
   const { userId, userName } = await requireUserId();
   const agentSlug = String(formData.get("agentSlug") ?? "").trim();
   const requestedBaseArchiveId = String(formData.get("baseArchiveId") ?? "").trim() || null;
   const continueFromArchive = formData.get("continueFromArchive") === "1";
   const body = String(formData.get("body") ?? "").trim();
+  const requestedProjectId = String(formData.get("projectId") ?? "").trim() || null;
+  const allowWorkItemManagement =
+    formData.get("allowWorkItemManagement") === "on" ||
+    formData.get("allowWorkItemManagement") === "1";
   if (!agentSlug || !body || body.length > 8000) return;
 
   const agent = await db.agent.findUnique({
@@ -517,6 +662,18 @@ export async function sendDirectAgentMessage(formData: FormData) {
     },
   });
   if (!agent?.user || agent.deactivatedAt || agent.user.status !== "active") return;
+
+  // Optional project attachment for planning. A direct chat message carries
+  // at most one project; the work-item grant is meaningful only with one.
+  let projectId: string | null = requestedProjectId;
+  if (projectId) {
+    const proj = await db.project.findFirst({
+      where: { id: projectId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!proj) projectId = null;
+  }
+  const grantWorkItems = allowWorkItemManagement && projectId !== null;
 
   let baseArchiveId = requestedBaseArchiveId;
   if (baseArchiveId) {
@@ -541,6 +698,8 @@ export async function sendDirectAgentMessage(formData: FormData) {
         senderUserId: userId,
         baseArchiveId,
         body,
+        projectId,
+        allowWorkItemManagement: grantWorkItems,
       },
       select: { id: true },
     });
@@ -549,7 +708,13 @@ export async function sendDirectAgentMessage(formData: FormData) {
         userId,
         kind: "agent.direct_chat.send",
         targetAgent: agentSlug,
-        payload: JSON.stringify({ agentSlug, messageId: created.id, baseArchiveId }),
+        payload: JSON.stringify({
+          agentSlug,
+          messageId: created.id,
+          baseArchiveId,
+          projectId,
+          allowWorkItemManagement: grantWorkItems,
+        }),
       },
     });
     return created;
@@ -565,6 +730,52 @@ export async function sendDirectAgentMessage(formData: FormData) {
     scopeId: activeAnchor?.id ?? msg.id,
     agentSlug,
   });
+
+  // Handle files upload to Samba chats folder
+  const attachments = formData.getAll("attachments") as unknown as Array<{
+    name: string;
+    size: number;
+    arrayBuffer: () => Promise<ArrayBuffer>;
+  }>;
+  const chatId = activeAnchor?.id ?? msg.id;
+  const uploadDir = await getAgentChatUploadDir(agentSlug, chatId);
+  for (const file of attachments) {
+    if (file && file.size > 0 && file.name) {
+      await mkdir(uploadDir, { recursive: true });
+      const chatsDir = path.dirname(uploadDir);
+      const gid = getGidByName(agentSlug);
+      try {
+        await chmod(chatsDir, 0o770);
+        await chmod(uploadDir, 0o770);
+        if (gid !== null) {
+          const chatsDirStats = await stat(chatsDir);
+          await chown(chatsDir, chatsDirStats.uid, gid);
+          const uploadDirStats = await stat(uploadDir);
+          await chown(uploadDir, uploadDirStats.uid, gid);
+          
+          await execFileAsync("setfacl", ["-m", "g::rwx", chatsDir]);
+          await execFileAsync("setfacl", ["-m", "g::rwx", uploadDir]);
+        }
+      } catch (e) {
+        console.error(`Failed to set permissions/owner on directories for ${agentSlug}`, e);
+      }
+      const filePath = path.join(uploadDir, file.name);
+      const buffer = Buffer.from(await file.arrayBuffer());
+      await writeFile(filePath, buffer);
+      try {
+        await chmod(filePath, 0o660);
+        if (gid !== null) {
+          const fileStats = await stat(filePath);
+          await chown(filePath, fileStats.uid, gid);
+          
+          await execFileAsync("setfacl", ["-m", "g::rw-", filePath]);
+        }
+      } catch (e) {
+        console.error(`Failed to set permissions/owner on file ${filePath}`, e);
+      }
+    }
+  }
+
   void handleDirectAgentMessage({
     agentSlug,
     actorName: userName,
@@ -573,6 +784,8 @@ export async function sendDirectAgentMessage(formData: FormData) {
     userId,
     gatewayPort: agent.gatewayPort,
     sessionBinding,
+    projectId,
+    allowWorkItemManagement: grantWorkItems,
   });
 
   revalidatePath(`/agents/${agentSlug}/chat`);
@@ -582,6 +795,8 @@ export async function sendDirectAgentMessage(formData: FormData) {
 export async function archiveDirectAgentChat(formData: FormData) {
   const { userId } = await requireUserId();
   const agentSlug = String(formData.get("agentSlug") ?? "").trim();
+  const customTitle = String(formData.get("customTitle") ?? "").trim() || null;
+  const deleteToBin = formData.get("deleteToBin") === "1" || formData.get("deleteToBin") === "true";
   if (!agentSlug) return;
 
   const messages = await db.directAgentChatMessage.findMany({
@@ -594,16 +809,19 @@ export async function archiveDirectAgentChat(formData: FormData) {
   const first = messages[0]!;
   const last = messages[messages.length - 1]!;
   const parentArchiveId = messages.find((m) => m.baseArchiveId)?.baseArchiveId ?? null;
-  await db.$transaction(async (tx) => {
+  const summary = customTitle || summarizeMessages(messages);
+  const created = await db.$transaction(async (tx) => {
     const created = await tx.directAgentChatArchive.create({
       data: {
         agentSlug,
         archivedById: userId,
         parentArchiveId,
-        summary: summarizeMessages(messages),
+        summary,
         startedAt: first.createdAt,
         endedAt: last.createdAt,
         messageCount: messages.length,
+        deletedAt: deleteToBin ? new Date() : null,
+        deletedById: deleteToBin ? userId : null,
       },
       select: { id: true },
     });
@@ -614,7 +832,7 @@ export async function archiveDirectAgentChat(formData: FormData) {
     await tx.activityLog.create({
       data: {
         userId,
-        kind: "agent.direct_chat.archive",
+        kind: deleteToBin ? "agent.direct_chat.delete_to_bin" : "agent.direct_chat.archive",
         targetAgent: agentSlug,
         payload: JSON.stringify({
           agentSlug,
@@ -624,7 +842,19 @@ export async function archiveDirectAgentChat(formData: FormData) {
         }),
       },
     });
+    return created;
   });
+
+  // Rename folder from active anchor ID to archive ID
+  const oldDir = await getAgentChatUploadDir(agentSlug, first.id);
+  const newDir = await getAgentChatUploadDir(agentSlug, created.id);
+  if (existsSync(oldDir)) {
+    try {
+      await rename(oldDir, newDir);
+    } catch (e) {
+      console.error(`Failed to rename active folder ${oldDir} to archive ${newDir}`, e);
+    }
+  }
 
   revalidatePath(`/agents/${agentSlug}/chat`);
   redirect(`/agents/${agentSlug}/chat`);
@@ -641,6 +871,14 @@ export async function deleteDirectAgentArchive(formData: FormData) {
     select: { id: true, agentSlug: true, deletedAt: true },
   });
   if (!archive || archive.agentSlug !== agentSlug || archive.deletedAt) return;
+
+  const hasChild = await db.directAgentChatArchive.findFirst({
+    where: { parentArchiveId: archiveId, deletedAt: null },
+    select: { id: true },
+  });
+  if (hasChild) {
+    throw new Error("Cannot delete an archive that has active continuation children.");
+  }
 
   await db.$transaction([
     db.directAgentChatArchive.update({
@@ -684,6 +922,132 @@ export async function deleteDirectAgentMessage(formData: FormData) {
         kind: "agent.direct_chat.delete",
         targetAgent: agentSlug,
         payload: JSON.stringify({ messageId }),
+      },
+    }),
+  ]);
+
+  revalidatePath(`/agents/${agentSlug}/chat`);
+}
+
+export async function restoreDirectAgentArchive(formData: FormData) {
+  const { userId } = await requireUserId();
+  const agentSlug = String(formData.get("agentSlug") ?? "").trim();
+  const archiveId = String(formData.get("archiveId") ?? "").trim();
+  if (!agentSlug || !archiveId) return;
+
+  const archive = await db.directAgentChatArchive.findUnique({
+    where: { id: archiveId },
+    select: { id: true, agentSlug: true, deletedAt: true, parentArchiveId: true },
+  });
+  if (!archive || archive.agentSlug !== agentSlug || !archive.deletedAt) return;
+
+  const restoreIds: string[] = [archiveId];
+  let currentParentId = archive.parentArchiveId;
+  const seen = new Set<string>([archiveId]);
+
+  while (currentParentId && !seen.has(currentParentId)) {
+    seen.add(currentParentId);
+    const parent = await db.directAgentChatArchive.findFirst({
+      where: { id: currentParentId, agentSlug },
+      select: { id: true, parentArchiveId: true, deletedAt: true },
+    });
+    if (!parent) break;
+    if (parent.deletedAt) {
+      restoreIds.push(parent.id);
+    }
+    currentParentId = parent.parentArchiveId;
+  }
+
+  await db.$transaction([
+    db.directAgentChatArchive.updateMany({
+      where: { id: { in: restoreIds } },
+      data: {
+        deletedAt: null,
+        deletedById: null,
+      },
+    }),
+    db.activityLog.create({
+      data: {
+        userId,
+        kind: "agent.direct_chat.archive_restore",
+        targetAgent: agentSlug,
+        payload: JSON.stringify({ agentSlug, archiveId, restoreIds }),
+      },
+    }),
+  ]);
+
+  revalidatePath(`/agents/${agentSlug}/chat`);
+}
+
+export async function emptyDirectAgentChatBin(formData: FormData) {
+  const { userId } = await requireUserId();
+  const agentSlug = String(formData.get("agentSlug") ?? "").trim();
+  if (!agentSlug) return;
+
+  const deletedArchives = await db.directAgentChatArchive.findMany({
+    where: { agentSlug, deletedAt: { not: null } },
+    select: { id: true },
+  });
+
+  if (deletedArchives.length === 0) return;
+
+  const archiveIds = deletedArchives.map((a) => a.id);
+
+  await db.$transaction([
+    db.directAgentChatMessage.deleteMany({
+      where: { archiveId: { in: archiveIds } },
+    }),
+    db.directAgentChatArchive.deleteMany({
+      where: { id: { in: archiveIds } },
+    }),
+    db.activityLog.create({
+      data: {
+        userId,
+        kind: "agent.direct_chat.bin_empty",
+        targetAgent: agentSlug,
+        payload: JSON.stringify({ agentSlug, archiveIds }),
+      },
+    }),
+  ]);
+
+  for (const archiveId of archiveIds) {
+    const uploadDir = await getAgentChatUploadDir(agentSlug, archiveId);
+    if (existsSync(uploadDir)) {
+      try {
+        await rm(uploadDir, { recursive: true, force: true });
+      } catch (e) {
+        console.error(`Failed to delete archive files at ${uploadDir} during bin empty`, e);
+      }
+    }
+  }
+
+  revalidatePath(`/agents/${agentSlug}/chat`);
+}
+
+export async function updateDirectAgentArchiveTitle(formData: FormData) {
+  const { userId } = await requireUserId();
+  const agentSlug = String(formData.get("agentSlug") ?? "").trim();
+  const archiveId = String(formData.get("archiveId") ?? "").trim();
+  const title = String(formData.get("title") ?? "").trim();
+  if (!agentSlug || !archiveId || !title) return;
+
+  const archive = await db.directAgentChatArchive.findFirst({
+    where: { id: archiveId, agentSlug },
+    select: { id: true },
+  });
+  if (!archive) return;
+
+  await db.$transaction([
+    db.directAgentChatArchive.update({
+      where: { id: archiveId },
+      data: { summary: title },
+    }),
+    db.activityLog.create({
+      data: {
+        userId,
+        kind: "agent.direct_chat.archive_rename",
+        targetAgent: agentSlug,
+        payload: JSON.stringify({ agentSlug, archiveId, title }),
       },
     }),
   ]);

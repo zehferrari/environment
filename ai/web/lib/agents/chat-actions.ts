@@ -20,6 +20,12 @@ import {
   buildTaskNativeChannelPrompt,
   buildTaskNativeEditGrantPrompt,
 } from "@/lib/agents/task-chat-context";
+import {
+  buildEpicAgentUserMessage,
+  buildEpicNativeChannelPrompt,
+  buildEpicNativeEditGrantPrompt,
+} from "@/lib/agents/epic-chat-context";
+import { extractMentions } from "@/lib/markdown";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
 import { sendOpenClawPmChannelTurn } from "@/lib/agents/openclaw-pm-channel";
 
@@ -38,11 +44,10 @@ export async function sendAgentChatMessage(formData: FormData) {
   const epicIdRaw = String(formData.get("epicId") ?? "");
   const taskId = taskIdRaw === "" ? null : taskIdRaw;
   const epicId = epicIdRaw === "" ? null : epicIdRaw;
-  const agentSlug = String(formData.get("agentSlug") ?? "").trim();
   const body = String(formData.get("body") ?? "").trim();
   const allowDescriptionEdit = formData.get("allowDescriptionEdit") === "on";
 
-  if (!slug || !agentSlug || !body) return;
+  if (!slug || !body) return;
   if ((taskId === null) === (epicId === null)) {
     throw new Error("Chat target must be exactly one of taskId or epicId");
   }
@@ -54,25 +59,26 @@ export async function sendAgentChatMessage(formData: FormData) {
   });
   if (!project) return;
 
-  // Verify the agent slug resolves to an active agent on this host.
-  const agent = await db.agent.findUnique({
-    where: { slug: agentSlug },
-    select: { id: true, slug: true, deactivatedAt: true, gatewayPort: true },
+  const users = await db.user.findMany({
+    select: {
+      id: true,
+      username: true,
+      kind: true,
+      status: true,
+      agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+    },
   });
-  if (!agent || agent.deactivatedAt) {
-    throw new Error("Unknown or deactivated agent");
-  }
 
-  // Scope-check the target. We also load the current description so it
-  // can be embedded in the dispatch payload as context for the agent.
-  let task: {
-    id: string;
-    title: string;
-    projectId: string;
-    description: string | null;
-  } | null = null;
+  const mentions = extractMentions(
+    body,
+    users.map((u) => ({ username: u.username })),
+  );
+
+  let task: any = null;
+  let epic: any = null;
+
   if (taskId) {
-    const t = await db.task.findUnique({
+    task = await db.task.findUnique({
       where: { id: taskId },
       select: {
         id: true,
@@ -80,29 +86,74 @@ export async function sendAgentChatMessage(formData: FormData) {
         projectId: true,
         description: true,
         deletedAt: true,
+        assignee: {
+          select: {
+            id: true,
+            username: true,
+            kind: true,
+            status: true,
+            agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+          },
+        },
+        actingManager: {
+          select: {
+            id: true,
+            username: true,
+            kind: true,
+            status: true,
+            agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+          },
+        },
+        epic: {
+          select: {
+            id: true,
+            title: true,
+            actingManager: {
+              select: {
+                id: true,
+                username: true,
+                kind: true,
+                status: true,
+                agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+              },
+            },
+          },
+        },
       },
     });
-    if (!t || t.projectId !== project.id || t.deletedAt) return;
-    task = {
-      id: t.id,
-      title: t.title,
-      projectId: t.projectId,
-      description: t.description,
-    };
+    if (!task || task.projectId !== project.id || task.deletedAt) return;
   } else if (epicId) {
-    const e = await db.epic.findUnique({
+    epic = await db.epic.findUnique({
       where: { id: epicId },
-      select: { id: true, projectId: true, deletedAt: true },
+      select: {
+        id: true,
+        title: true,
+        projectId: true,
+        description: true,
+        deletedAt: true,
+        actingManager: {
+          select: {
+            id: true,
+            username: true,
+            kind: true,
+            status: true,
+            agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+          },
+        },
+      },
     });
-    if (!e || e.projectId !== project.id || e.deletedAt) return;
+    if (!epic || epic.projectId !== project.id || epic.deletedAt) return;
   }
+
+  // Unified Chat Room groups all messages under the agentSlug "room"
+  const dbAgentSlug = "room";
 
   const msg = await db.agentChatMessage.create({
     data: {
       projectId: project.id,
       taskId,
       epicId,
-      agentSlug,
+      agentSlug: dbAgentSlug,
       senderUserId: actor.id,
       body,
       allowDescriptionEdit,
@@ -118,44 +169,124 @@ export async function sendAgentChatMessage(formData: FormData) {
       kind: taskId ? "task.chat.send" : "epic.chat.send",
       payload: JSON.stringify({
         messageId: msg.id,
-        agentSlug,
+        agentSlug: dbAgentSlug,
         allowDescriptionEdit,
       }),
     },
   });
 
-  // Task chats enter OpenClaw as native PM-channel turns. OpenClaw
-  // records the session and owns final reply delivery back into PM.
-  // Epic chats persist only for now.
-  if (task) {
-    const actorUser = await db.user.findUnique({
-      where: { id: actor.id },
-      select: { username: true },
-    });
-    const systemPrompt = allowDescriptionEdit
-      ? buildTaskNativeEditGrantPrompt(task.title)
-      : buildTaskNativeChannelPrompt(task.title, agentSlug);
-    const userMessage = await buildTaskAgentUserMessage({
-      taskId: task.id,
-      agentSlug,
-      currentTurn: {
-        id: msg.id,
-        source: "task chat",
-        actorUsername: actorUser?.username,
-        actorKind: actor.kind,
-        body,
-      },
-    });
+  const targetAgents = new Map<string, { slug: string; gatewayPort: number | null }>();
+
+  if (mentions.length > 0) {
+    for (const u of users) {
+      if (
+        mentions.includes(u.username) &&
+        u.kind === "agent" &&
+        u.status === "active" &&
+        u.agent &&
+        !u.agent.deactivatedAt
+      ) {
+        targetAgents.set(u.agent.slug, {
+          slug: u.agent.slug,
+          gatewayPort: u.agent.gatewayPort ?? null,
+        });
+      }
+    }
+  } else {
+    // Default targets when no mentions are present
+    if (task) {
+      const candidates = [
+        task.assignee,
+        task.actingManager,
+        task.epic?.actingManager,
+      ];
+      for (const cand of candidates) {
+        if (
+          cand &&
+          cand.kind === "agent" &&
+          cand.status === "active" &&
+          cand.agent &&
+          !cand.agent.deactivatedAt
+        ) {
+          targetAgents.set(cand.agent.slug, {
+            slug: cand.agent.slug,
+            gatewayPort: cand.agent.gatewayPort ?? null,
+          });
+        }
+      }
+    } else if (epic) {
+      const candidates = [
+        epic.actingManager,
+      ];
+      for (const cand of candidates) {
+        if (
+          cand &&
+          cand.kind === "agent" &&
+          cand.status === "active" &&
+          cand.agent &&
+          !cand.agent.deactivatedAt
+        ) {
+          targetAgents.set(cand.agent.slug, {
+            slug: cand.agent.slug,
+            gatewayPort: cand.agent.gatewayPort ?? null,
+          });
+        }
+      }
+    }
+  }
+
+  const actorUser = await db.user.findUnique({
+    where: { id: actor.id },
+    select: { username: true },
+  });
+
+  for (const target of targetAgents.values()) {
+    const agentSlug = target.slug;
+    const gatewayPort = target.gatewayPort;
+
+    const systemPrompt = taskId
+      ? (allowDescriptionEdit
+          ? buildTaskNativeEditGrantPrompt(task.title)
+          : buildTaskNativeChannelPrompt(task.title, agentSlug))
+      : (allowDescriptionEdit
+          ? buildEpicNativeEditGrantPrompt(epic.title)
+          : buildEpicNativeChannelPrompt(epic.title, agentSlug));
+
+    const userMessage = taskId
+      ? await buildTaskAgentUserMessage({
+          taskId: task.id,
+          agentSlug,
+          currentTurn: {
+            id: msg.id,
+            source: "task chat",
+            actorUsername: actorUser?.username,
+            actorKind: actor.kind,
+            body,
+          },
+        })
+      : await buildEpicAgentUserMessage({
+          epicId: epic.id,
+          agentSlug,
+          currentTurn: {
+            id: msg.id,
+            source: "epic chat",
+            actorUsername: actorUser?.username,
+            actorKind: actor.kind,
+            body,
+          },
+        });
+
     const sessionBinding = await getOrCreateAgentSessionBinding({
-      scopeType: "task",
-      scopeId: task.id,
+      scopeType: taskId ? "task" : "epic",
+      scopeId: taskId ? task.id : epic.id,
       agentSlug,
     });
+
     const delivery = await sendOpenClawPmChannelTurn({
-      gatewayPort: agent.gatewayPort,
+      gatewayPort,
       agentSlug,
       sessionKey: sessionBinding.openclawSessionKey,
-      kind: "task-chat",
+      kind: taskId ? "task-chat" : "epic-chat",
       text: body,
       contextText: userMessage,
       systemPrompt,
@@ -164,20 +295,31 @@ export async function sendAgentChatMessage(formData: FormData) {
         username: actorUser?.username,
         kind: actor.kind,
       },
-      replyTarget: {
-        kind: "task-chat",
-        agentSlug,
-        taskId: task.id,
-        messageId: msg.id,
-        projectSlug: slug,
-      },
+      replyTarget: taskId
+        ? {
+            kind: "task-chat",
+            agentSlug,
+            taskId: task.id,
+            messageId: msg.id,
+            projectSlug: slug,
+          }
+        : {
+            kind: "epic-chat",
+            agentSlug,
+            epicId: epic.id,
+            messageId: msg.id,
+            projectSlug: slug,
+          },
     });
+
     await db.activityLog.create({
       data: {
         projectId: project.id,
-        taskId,
+        taskId: taskId ?? null,
         userId: actor.id,
-        kind: delivery.ok ? "task.chat.dispatch" : "task.chat.dispatch_failed",
+        kind: taskId
+          ? (delivery.ok ? "task.chat.dispatch" : "task.chat.dispatch_failed")
+          : (delivery.ok ? "epic.chat.dispatch" : "epic.chat.dispatch_failed"),
         targetAgent: agentSlug,
         payload: JSON.stringify({
           messageId: msg.id,

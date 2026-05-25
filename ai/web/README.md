@@ -13,11 +13,20 @@ Library · Settings · Bin), project settings (repo path, git identity,
 picker defaults, Done-card TTL), project soft-delete with its own 30-day
 bin, direct per-agent chat with archive/continuation threads, and the
 move of all chat/comment turns onto the native OpenClaw `pm` channel.
+Most recently, agents can **propose work items** from a project-attached
+direct chat — a grant-gated change-set of epics/tasks/sub-tasks the human
+reviews and applies (propose → approve).
 
 Served by one host-wide `pm.service` standalone Next process at
 `agents.vixi.au` — see [deploy/README.md](./deploy/README.md). The legacy static `agents.html`
 mission-control page (HOMELAB-42) sat next to this README until HOMELAB-52
 folded it into the live `/agents` deck.
+
+> **Naming.** The web UI is branded **Zero Latency** (workspace title)
+> with a **Mission Control** subtitle and a `Z` mark. *PM* remains the
+> internal codename everywhere else — the `pm.service` /
+> `pm-consumer.service` units, the `pm-web` package, the `PM_*` env
+> vars, and the OpenClaw `pm` channel — so the rename is display-only.
 
 ## Stack
 
@@ -61,7 +70,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/login`, `app/rotate-password` | unauthenticated routes (forced rotation on first login). |
 | `app/(app)/projects` | projects list + inline create. |
 | `app/(app)/projects/bin` | project-level soft-delete bin — restores whole projects within the 30-day TTL. |
-| `app/(app)/projects/[slug]` | kanban board (5 columns, drag + keyboard nav, Backlog toggle); per-project tab bar (`project-tabs.tsx` in `layout.tsx`: Board · Epics · Library · Settings · Bin). Done cards older than `doneTtlDays` drop off the board. Task cards show assignee + `updated` time. |
+| `app/(app)/projects/[slug]` | kanban board (four workflow columns + a separate Backlog table, drag-and-drop, Backlog show/hide toggle); per-project tab bar (`project-tabs.tsx` in `layout.tsx`: Board · Epics · Library · Settings · Bin). Done cards older than `doneTtlDays` drop off the board. Task cards show assignee + `updated` time. |
 | `app/(app)/projects/[slug]/tasks/[taskId]` | task editor — two-column. Main: inline title, description editor, sub-tasks, attachments, comments. Sidebar: status, assignee, reviewer, epic picker, parent, dates. |
 | `app/(app)/projects/[slug]/epics` | epic list with status filter (open/done/archived) + inline create (title + description + Acting Manager picker, then redirects into detail for attachments). |
 | `app/(app)/projects/[slug]/epics/[epicId]` | epic detail — assignee + acting manager (Epic keeps that label), status, attachments, tasks grouped by their own status, chat sidebar, Delete. |
@@ -77,6 +86,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/api/tasks/[id]/ack` | agent ack endpoint — auto To Do → In Progress, emits `task.ack_ready`. |
 | `app/api/tasks/[id]/description` | agent description write-back. One-shot grant validated against the `allowDescriptionEdit` chat message. |
 | `app/api/epics/[id]/description` | agent description write-back for Epics. Same one-shot model. |
+| `app/api/agent/projects/[projectId]/proposals` | agent work-item proposal submission — grant-gated change-set (epics/tasks/sub-tasks + updates/comments), dry-run-validated and stored pending for human apply. Idempotent on `planId`. |
 | `app/api/attachments/[id]` | streamed attachment download (auth-gated). |
 | `app/api/agents/[agentId]/profile/...` | per-agent profile read/write (HOMELAB-52). |
 | `app/api/agents/[agentId]/models` | model settings read/write. |
@@ -120,9 +130,16 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `lib/projects/actions.ts` | project settings write + soft-delete / restore server actions (`setProjectSettings`, `deleteProject`, `restoreProject`). |
 | `lib/tasks/reorder.ts` | persists drag reorder of the board's `Task.rank` column. |
 | `lib/epics/actions.ts` | Epic CRUD server actions (create/rename/assign/acting-manager/status). |
+| `lib/work-items/proposal.ts` | agent work-item proposal change-set validator (create/update epics·tasks·sub-tasks·comments; `tmp:` temp-refs; runs `lib/workflow.ts` rules as the agent). |
+| `lib/work-items/apply.ts` | transactional commit core for an approved proposal (auth-free; topo-orders temp-refs, mirrors createTask/createEpic, attributes mutations to the agent). |
+| `lib/work-items/actions.ts` | human apply/reject server actions wrapping the commit core (auth + revalidate). |
+| `lib/agents/work-item-token.ts` | one-shot HMAC grant token for the proposal endpoint (mirrors `task-chat-token.ts`). |
+| `lib/agents/context/project.ts` | project-environment context packet (repo path, git identity, defaults, existing epics/open tasks) + the planning prompt handed to the agent. |
 | `lib/attachments/storage.ts` | filesystem write/read/delete under `/srv/Data/projects/<id>/attachments/<sha256>` (dev fallback `./.data/attachments`). |
 | `lib/attachments/actions.ts` | upload/delete server actions; enforces XOR(taskId, epicId) target. |
 | `components/agent-chat.tsx` | shared chat sidebar mounted on Task + Epic editors. |
+| `components/chat-input.tsx` | direct-chat composer — message + Samba file uploads + project picker + "propose work-item changes" grant checkbox. |
+| `app/(app)/agents/[agent]/chat/proposal-review.tsx` | review card for pending agent work-item proposals — per-op validation badges + Apply/Reject. |
 | `components/streaming-agent-reply.tsx` | client SSE subscriber that renders the live reply bubble while OpenClaw is still generating. |
 | `components/sortable-task-list.tsx` | `@dnd-kit` drag-reorder list used for sub-tasks / grouped task views, backed by `lib/tasks/reorder.ts`. |
 | `components/activity-agenda.tsx` | compact recent-activity feed rendered on the project settings page. |
@@ -134,7 +151,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `openclaw-pm-channel/` | external OpenClaw channel plugin that receives PM chat/comment turns, streams partial replies, and posts final replies back through the native channel lifecycle. |
 | `lib/db.ts` | Prisma singleton. |
 | `instrumentation.node.ts` | boot hook (Node runtime only); runs seed + first sync, then schedules the periodic agent sync and the two hourly purge jobs (Task/Epic bin + project bin). |
-| `middleware.ts` | auth gate + `mustRotatePassword` redirect + forwarded-host handling. |
+| `middleware.ts` | auth gate + `mustRotatePassword` redirect + forwarded-host handling. Excludes SSE routes to prevent Edge proxy response buffering. |
 | `prisma/schema.prisma` | full schema (Stage 1 + Stage 2 + HOMELAB-46 delivery log). |
 | `prisma/migrations/` | committed migration history; applied via `prisma migrate deploy`. |
 | `deploy/` | systemd unit, nginx vhost, env file template. |
@@ -200,18 +217,19 @@ username. Forced password rotation on first login is enforced by
 `middleware.ts`. Behind nginx the middleware uses `x-forwarded-host` to
 keep the secure cookie + redirect host correct.
 
-**Projects + board (Stage 2 / HOMELAB-44).** Five verbatim status
-columns — Backlog · To Do · In Progress · Review · Done. Drag-and-drop
-(`@dnd-kit`) plus J/K/H/L/Enter/Esc keyboard navigation with a
-selection ring; hotkeys back off inside text inputs and interactive
-controls. Backlog column has a per-project localStorage show/hide
-toggle (hidden by default). Server-side enforcement lives in
-`lib/workflow.ts`: `checkStatusTransition`, `checkAssignment`,
-`checkHierarchy`, `checkActingManager`. Agents are blocked from
-transitioning out of Review or Done. Client rolls back optimistic
-moves on rejection. Done cards older than the project's `doneTtlDays`
-(default 5) are filtered out of the board server-side so the column
-doesn't grow without bound.
+**Projects + board (Stage 2 / HOMELAB-44; board layout reworked in
+HOMELAB-48).** Five verbatim task statuses — Backlog · To Do · In
+Progress · Review · Done. The board renders the four workflow statuses
+(To Do · In Progress · Review · Done) as drag-and-drop columns
+(`@dnd-kit`); Backlog is a separate full-width table below the board
+with a per-project localStorage show/hide toggle (hidden by default).
+Dragging a backlog row onto a column moves the task into that status.
+Server-side enforcement lives in `lib/workflow.ts`:
+`checkStatusTransition`, `checkAssignment`, `checkHierarchy`,
+`checkActingManager`. Agents are blocked from transitioning out of
+Review or Done. Client rolls back optimistic moves on rejection. Done
+cards older than the project's `doneTtlDays` (default 5) are filtered
+out of the board server-side so the column doesn't grow without bound.
 
 **Project tabs, settings & library.** Every project is wrapped in a
 shared layout (`app/(app)/projects/[slug]/layout.tsx`) carrying a tab
@@ -309,25 +327,36 @@ then posts a native `direct` turn to the agent's OpenClaw `pm` channel.
 OpenClaw records the session, streams partial reply chunks back to
 `POST /api/openclaw/pm-channel/stream` for the live browser projection,
 and delivers the durable final reply back to
-`POST /api/openclaw/pm-channel/reply` with the shared PM channel token;
-the model no longer receives callback URLs or per-message reply tokens.
-The page supports archiving the current active conversation into a
-read-only archive, then starting a fresh active chat. Restarting an
-archived chat keeps the archive frozen and opens a child active chat
-that uses the archived transcript as base context; if that child is
-archived later, it records the parent archive relationship. The
-archive sidebar shows the conversation period plus a short summary;
-archived threads can be removed from the list. Pending replies open a
-same-origin SSE subscription and show partial answer text as it arrives,
-with a typing fallback until the first chunk; the page auto-refreshes
-when the durable final callback lands. OpenClaw exposes the selected
-thinking budget and run metadata, not private chain-of-thought text. To
-keep reply latency down, the PM channel context includes a bounded recent transcript and
-bounded parent-archive excerpt (`PM_DIRECT_CHAT_CONTEXT_MESSAGES`,
-`PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT`).
-Because PM and OpenClaw run on the same host, channel callbacks default
-to `http://127.0.0.1:3000`; set `PM_AGENT_CALLBACK_URL` or
-`PM_INTERNAL_APP_URL` to override that.
+`POST /api/openclaw/pm-channel/reply` with the shared PM channel token.
+To ensure responsive streaming, `/api/openclaw/pm-channel/events` is 
+excluded from middleware proxy buffering.
+
+The UI supports several key enhancements:
+- **Send Box & Keyboard Shortcuts**: Fixed at the bottom of the layout. Pressing `Enter` sends the message immediately; `Shift+Enter` inserts a newline.
+- **Collapsible Sidebar**: The archive sidebar can be toggled using an icon button at the top-right of the chat header (persisted in `localStorage`).
+- **Interactive Calendar & Lineage**: The sidebar includes a monthly calendar displaying highlight indicators on dates with active chats, syncing on hover. Clicking on a highlighted date filters the list to show only conversations from that day. Archive cards in the sidebar are designed to be extremely compact, displaying dates in a modern format (e.g., `Today · 15:30` or `25 May · 15:30`), along with paperclip attachment indicators, cumulative message counts, and total memory sizes in KB. Relationships are no longer displayed on the cards; instead, viewing an archive with parents displays a **Chat Initial Context** button at the top of the chat which dynamically prepends the parent conversation history each time it is clicked, showing **Chat Start...** once the oldest ancestor is reached. Parent archives with active continuation children cannot be deleted.
+- **Smart Scroll**: When sending or receiving messages, the chat auto-scrolls. If a message is taller than the viewport, the top of the message is aligned with the top of the chat area.
+- **Samba Attachments**: Supports file uploads inside the compose box. Selected files are uploaded and saved to the agent's Samba drive under `/srv/samba/shared/[agent]/chats/[chatId]/`. Supported text-like attachments have their content extracted and appended as context in the prompt payload sent to the agent. Deleting an archive automatically purges its uploads folder.
+
+OpenClaw exposes the selected thinking budget and run metadata inside a collapsible `<details>` panel, not private chain-of-thought text. To keep reply latency down, the PM channel context includes a bounded recent transcript and bounded parent-archive excerpt (`PM_DIRECT_CHAT_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT`). Because PM and OpenClaw run on the same host, channel callbacks default to `http://127.0.0.1:3000`; set `PM_AGENT_CALLBACK_URL` or `PM_INTERNAL_APP_URL` to override that.
+
+**Agent work-item proposals.** A direct chat (`/agents/<slug>/chat`) can
+be attached to a project; ticking "let @agent propose work-item changes"
+on a message turns that turn into a planning turn. PM hands the agent the
+project environment (repo path, git identity, picker defaults, existing
+epics/open tasks via `lib/agents/context/project.ts`) plus a single-use
+HMAC grant + the propose endpoint, and the agent POSTs a typed change-set
+to `POST /api/agent/projects/<id>/proposals` — it never writes the board
+directly. PM dry-run-validates every op against `lib/workflow.ts` **as the
+agent** (no self-assign, no self-review, no moving into/out of Review/Done;
+new tasks land in Backlog, new epics open) and stores a pending
+`WorkItemProposal`. The human reviews it in the chat
+(`proposal-review.tsx`) and clicks Apply — the whole change-set commits in
+one transaction (`lib/work-items/apply.ts`), attributed to the agent in
+`ActivityLog`, with the approval recorded by `WorkItemProposal.appliedById`
++ a `workitem.proposal.apply` row — or Reject. `@unique(planId)` makes a
+re-submitted proposal idempotent. Full contract:
+[docs/agent-interaction.md](./docs/agent-interaction.md).
 
 **Agents dashboard.** `/agents` merges the PM `Agent` table with the
 Atlas live snapshot at `http://127.0.0.1:3013/agents/snapshot` (busy /
@@ -515,7 +544,14 @@ the consumer service when the PM checkout is present.
   `baseArchiveId` (the frozen archive a continuation builds on). An
   archive freezes a transcript with a `summary`, period, `messageCount`,
   and an optional `parentArchiveId` linking continuation chains; archives
-  soft-delete via their own `deletedAt`.
+  soft-delete via their own `deletedAt`. Gains `projectId` (attached
+  project), `allowWorkItemManagement` (per-message work-item grant), and
+  `workItemGrantUsedAt` (single-use stamp).
+- `WorkItemProposal` — agent work-item proposals (propose → approve). One
+  row per submitted change-set: `operations` (JSON), `validation`
+  (dry-run snapshot), `status` (`pending|applied|rejected`), `agentSlug` +
+  `proposedByUserId`, `appliedById` / `rejectedById`, and
+  `@unique(planId)` for idempotency.
 - `ActivityLog` — audit trail. `targetAgent` + `targetFile` keep
   agent-control-surface rows independent of project/task lifecycles.
 - `PmEventDelivery` (HOMELAB-46 Slice 4) — consumer-side delivery log.
@@ -548,6 +584,9 @@ Migrations under `prisma/migrations/`:
   PM-owned agent context packets.
 - `20260524133000_agent_session_bindings` — `AgentSessionBinding`
   table for PM-owned OpenClaw session routing.
+- `20260525081816_agent_work_item_proposals` — `WorkItemProposal` table +
+  `DirectAgentChatMessage.projectId` / `allowWorkItemManagement` /
+  `workItemGrantUsedAt` for project-attached agent planning.
 
 ## Environment
 

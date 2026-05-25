@@ -1,15 +1,26 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
+import { auth } from "@/lib/auth";
 import { renderFullMarkdown } from "@/lib/markdown";
 import {
   archiveDirectAgentChat,
   deleteDirectAgentArchive,
   deleteDirectAgentMessage,
-  sendDirectAgentMessage,
+  getConversationFolderIds,
+  getAgentChatUploadDir,
 } from "@/lib/agents/direct-chat-actions";
 import ChatRefresh from "./chat-refresh";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
+import ChatLayoutClient from "./chat-layout-client";
+import ChatInput from "@/components/chat-input";
+import ProposalReview from "./proposal-review";
+import ChatMessagesContainer from "./chat-messages-container";
+import ArchiveSidebarClient from "./archive-sidebar-client";
+import NewChatButton from "@/components/new-chat-button";
+import { existsSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
+import path from "node:path";
 
 export const dynamic = "force-dynamic";
 
@@ -42,6 +53,33 @@ function TypingDots() {
       <span className="h-1 w-1 animate-bounce rounded-full bg-current" />
     </span>
   );
+}
+
+const messageSenderSelect = {
+  id: true,
+  username: true,
+  kind: true,
+  name: true,
+  avatarUpdatedAt: true,
+  agent: { select: { slug: true, name: true, avatar: true } },
+} as const;
+
+function serializeSender(sender: {
+  id: string;
+  username: string;
+  kind: string;
+  name: string | null;
+  avatarUpdatedAt: Date | null;
+  agent: { slug: string; name: string; avatar: string | null } | null;
+}) {
+  return {
+    id: sender.id,
+    username: sender.username,
+    kind: sender.kind,
+    name: sender.name,
+    avatarUpdatedAt: sender.avatarUpdatedAt?.toISOString() ?? null,
+    agent: sender.agent,
+  };
 }
 
 type DirectStatus = {
@@ -122,48 +160,102 @@ function ArchiveTree({
   depth?: number;
 }) {
   return (
-    <div className={depth === 0 ? "space-y-2" : "ml-3 mt-2 space-y-2 border-l border-[var(--color-line)] pl-3"}>
+    <div className={`relative ${depth === 0 ? "space-y-3" : "ml-4 mt-2.5 space-y-3 border-l-2 border-[var(--color-accent)]/20 pl-4"}`}>
       {nodes.map((archive) => {
         const period = formatArchivePeriod(archive.startedAt, archive.endedAt);
         const selected = selectedArchiveId === archive.id;
+        const hasChildren = archive.children.length > 0;
+        
         return (
-          <div key={archive.id} className="relative">
+          <div key={archive.id} className="relative group/node">
+            {/* Horizontal branch line connecting nested children */}
             {depth > 0 ? (
-              <span className="absolute -left-3 top-5 h-px w-3 bg-[var(--color-line)]" aria-hidden="true" />
+              <div 
+                className="absolute -left-4 top-[1.35rem] h-px w-4 bg-[var(--color-accent)]/20" 
+                aria-hidden="true" 
+              />
             ) : null}
-            <div
-              className={`rounded-lg border p-2 ${
-                selected
-                  ? "border-[var(--color-accent)] bg-[var(--color-accent-soft)]"
-                  : "border-[var(--color-line)] bg-[var(--color-panel-soft)]"
+
+            {/* Tree node dot indicator */}
+            <div 
+              className={`absolute top-[1rem] z-10 h-3 w-3 rounded-full border-2 bg-[var(--color-panel)] transition-all ${
+                depth > 0 ? "-left-[22px]" : "-left-1.5"
+              } ${
+                selected 
+                  ? "border-[var(--color-accent)] scale-110 shadow-sm shadow-[var(--color-accent)]/20" 
+                  : "border-[var(--color-line)] group-hover/node:border-[var(--color-accent)]/40"
               }`}
-              title={`${period} - ${archive.summary}`}
+              aria-hidden="true"
+            />
+
+            <div
+              className={`rounded-xl border p-3 transition-all duration-200 shadow-sm ${
+                selected
+                  ? "border-[var(--color-accent)] bg-[var(--color-accent)]/[0.04] shadow-[var(--color-accent)]/[0.02]"
+                  : "border-[var(--color-line)] bg-[var(--color-panel-soft)] hover:border-[var(--color-accent)]/30 hover:bg-[var(--color-panel)]"
+              }`}
             >
               <Link href={`/agents/${slug}/chat?archive=${archive.id}`} className="block">
-                <p className="text-xs font-medium text-[var(--color-text-muted)]">{period}</p>
-                <p className="mt-1 line-clamp-2 text-sm font-medium">{archive.summary}</p>
-                <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">
-                  {archive.parentArchiveId ? "Child continuation / " : ""}
-                  {archive.messageCount} message{archive.messageCount === 1 ? "" : "s"}
-                  {archive.children.length > 0
-                    ? ` / ${archive.children.length} child${archive.children.length === 1 ? "" : "ren"}`
-                    : ""}
+                <div className="flex items-center justify-between gap-1.5">
+                  <span className="text-[10px] font-semibold text-[var(--color-text-muted)] tracking-wider">
+                    {period}
+                  </span>
+                  
+                  {/* Relationship Badges */}
+                  {archive.parentArchiveId ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-[var(--color-panel-soft)] border border-[var(--color-line)] px-1 py-0.5 text-[8px] font-medium text-[var(--color-text-muted)]">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                      Continuation
+                    </span>
+                  ) : hasChildren ? (
+                    <span className="inline-flex items-center gap-1 rounded bg-[var(--color-accent-soft)] border border-[var(--color-accent)]/20 px-1 py-0.5 text-[8px] font-medium text-[var(--color-accent)]">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12 2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/></svg>
+                      Root
+                    </span>
+                  ) : null}
+                </div>
+
+                <p className="mt-1.5 line-clamp-2 text-xs font-semibold text-[var(--color-text)] leading-relaxed">
+                  {archive.summary}
                 </p>
+
+                <div className="mt-2 flex items-center justify-between text-[10px] text-[var(--color-text-muted)] border-t border-[var(--color-line)]/40 pt-2">
+                  <span>
+                    {archive.messageCount} msg{archive.messageCount === 1 ? "" : "s"}
+                  </span>
+                  
+                  {hasChildren && (
+                    <span className="text-[9px] text-[var(--color-text-muted)] opacity-80 flex items-center gap-0.5">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                      {archive.children.length} child{archive.children.length === 1 ? "" : "ren"}
+                    </span>
+                  )}
+                </div>
               </Link>
-              <form action={deleteDirectAgentArchive} className="mt-2 flex justify-end">
-                <input type="hidden" name="agentSlug" value={slug} />
-                <input type="hidden" name="archiveId" value={archive.id} />
-                <button
-                  type="submit"
-                  aria-label="Remove archived chat"
-                  title="Remove archived chat"
-                  className="rounded-md border border-[var(--color-line)] px-2 py-1 text-xs text-[var(--color-text-muted)] hover:border-[var(--color-crit)] hover:text-[var(--color-crit)]"
-                >
-                  Delete
-                </button>
-              </form>
+              
+              <div className="mt-2.5 flex justify-end">
+                <form action={deleteDirectAgentArchive}>
+                  <input type="hidden" name="agentSlug" value={slug} />
+                  <input type="hidden" name="archiveId" value={archive.id} />
+                  <button
+                    type="submit"
+                    disabled={hasChildren}
+                    aria-label={hasChildren ? "Cannot delete parent of a continuation" : "Delete archived chat"}
+                    title={hasChildren ? "Cannot delete: this archive has active continuation children" : "Delete archived chat"}
+                    className={`rounded px-1.5 py-0.5 text-[9px] font-medium transition-all ${
+                      hasChildren 
+                        ? "bg-[var(--color-line)]/20 text-[var(--color-text-muted)]/40 border border-transparent cursor-not-allowed" 
+                        : "border border-[var(--color-line)] text-[var(--color-text-muted)] hover:border-[var(--color-crit)] hover:bg-[var(--color-crit)]/[0.04] hover:text-[var(--color-crit)] cursor-pointer"
+                    }`}
+                  >
+                    {hasChildren ? "Locked" : "Delete"}
+                  </button>
+                </form>
+              </div>
             </div>
-            {archive.children.length > 0 ? (
+            
+            {/* Recursive children tree */}
+            {hasChildren ? (
               <ArchiveTree
                 nodes={archive.children}
                 slug={slug}
@@ -187,18 +279,20 @@ export default async function DirectAgentChatPage({
 }) {
   const { agent: slug } = await params;
   const { archive: selectedArchiveId = "" } = await searchParams;
+  const session = await auth();
+  const currentUserId = session?.user?.id ?? null;
   const agent = await db.agent.findUnique({
     where: { slug },
     include: { user: { select: { username: true, status: true } } },
   });
   if (!agent || agent.deactivatedAt || agent.user?.status !== "active") notFound();
 
-  const [activeMessages, archives, selectedArchive] = await Promise.all([
+  const [activeMessages, archives, binArchives, selectedArchive] = await Promise.all([
     db.directAgentChatMessage.findMany({
       where: { agentSlug: slug, archiveId: null },
       orderBy: { createdAt: "asc" },
       take: 120,
-      include: { sender: { select: { username: true, kind: true } } },
+      include: { sender: { select: messageSenderSelect } },
     }),
     db.directAgentChatArchive.findMany({
       where: { agentSlug: slug, deletedAt: null },
@@ -213,21 +307,59 @@ export default async function DirectAgentChatPage({
         messageCount: true,
       },
     }),
+    db.directAgentChatArchive.findMany({
+      where: { agentSlug: slug, deletedAt: { not: null } },
+      orderBy: { deletedAt: "desc" },
+      take: 50,
+      select: {
+        id: true,
+        summary: true,
+        startedAt: true,
+        endedAt: true,
+        parentArchiveId: true,
+        messageCount: true,
+        deletedAt: true,
+      },
+    }),
     selectedArchiveId
       ? db.directAgentChatArchive.findFirst({
-        where: { id: selectedArchiveId, agentSlug: slug, deletedAt: null },
+        where: { id: selectedArchiveId, agentSlug: slug },
         include: {
           messages: {
             orderBy: { createdAt: "asc" },
-            include: { sender: { select: { username: true, kind: true } } },
+            include: { sender: { select: messageSenderSelect } },
           },
         },
       })
       : Promise.resolve(null),
   ]);
   const viewingArchive = Boolean(selectedArchive);
-  const archiveTree = buildArchiveTree(archives);
   const activeBaseArchiveId = activeMessages.find((m) => m.baseArchiveId)?.baseArchiveId ?? null;
+  // The project the active conversation is attached to (carried forward),
+  // the project list for the picker, and any pending work-item proposals
+  // this agent submitted that are awaiting review.
+  const attachedProjectId =
+    [...activeMessages].reverse().find((m) => m.projectId)?.projectId ?? null;
+  const [projects, pendingProposals] = await Promise.all([
+    db.project.findMany({
+      where: { deletedAt: null },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    }),
+    db.workItemProposal.findMany({
+      where: { agentSlug: slug, status: "pending" },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: {
+        id: true,
+        summary: true,
+        operations: true,
+        validation: true,
+        createdAt: true,
+        project: { select: { name: true } },
+      },
+    }),
+  ]);
   const activeBaseArchive = activeBaseArchiveId
     ? archives.find((archive) => archive.id === activeBaseArchiveId)
       ?? await db.directAgentChatArchive.findFirst({
@@ -274,211 +406,309 @@ export default async function DirectAgentChatPage({
     && activeMessages.length > 0;
   const canStartChildFromArchive = viewingArchive && selectedArchive && activeMessages.length === 0;
 
-  return (
-    <div className="mx-auto flex min-h-[calc(100vh-2.5rem)] max-w-7xl flex-col gap-4">
-      <ChatRefresh active={showAgentProcessing} />
-      <nav className="flex items-center justify-between gap-3 text-sm">
-        <Link
-          href="/agents"
-          className="text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:underline"
-        >
-          ← Agents
-        </Link>
-        <Link
-          href={`/agents/${slug}`}
-          className="rounded-lg border border-[var(--color-line)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-        >
-          Profile
-        </Link>
-      </nav>
+  // Load parent archives and messages for prepending in the chat view
+  const parentArchivesProp: Array<{
+    id: string;
+    summary: string;
+    messages: Array<{
+      id: string;
+      body: string;
+      createdAt: string;
+      sender: ReturnType<typeof serializeSender>;
+    }>;
+  }> = [];
 
-      <header className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-2xl font-semibold">
+  if (viewingArchive && selectedArchive) {
+    const parentArchiveIds = await getConversationFolderIds(slug, selectedArchive.parentArchiveId);
+    for (const id of parentArchiveIds) {
+      const arc = await db.directAgentChatArchive.findFirst({
+        where: { id, agentSlug: slug, deletedAt: null },
+        include: {
+          messages: {
+            orderBy: { createdAt: "asc" },
+            include: { sender: { select: messageSenderSelect } },
+          },
+        },
+      });
+      if (arc) {
+        parentArchivesProp.push({
+          id: arc.id,
+          summary: arc.summary,
+          messages: arc.messages.map(m => ({
+            id: m.id,
+            body: m.body,
+            createdAt: m.createdAt.toISOString(),
+            sender: serializeSender(m.sender),
+          }))
+        });
+      }
+    }
+  }
+
+  // Load Context Files from Samba drive chats folders
+  const baseArchiveIdForFiles = selectedArchive
+    ? selectedArchive.parentArchiveId
+    : activeBaseArchiveId;
+  const parentFolders = await getConversationFolderIds(slug, baseArchiveIdForFiles);
+  const activeAnchor = activeMessages[0];
+  const currentFolderId = selectedArchive
+    ? selectedArchive.id
+    : (activeAnchor?.id ?? null);
+  const folderIds = currentFolderId ? [currentFolderId, ...parentFolders] : parentFolders;
+
+  const contextFiles: Array<{ name: string; folderId: string; size: number }> = [];
+  for (const folderId of folderIds) {
+    const dir = await getAgentChatUploadDir(slug, folderId);
+    if (existsSync(dir)) {
+      try {
+        const entries = await readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isFile()) {
+            const stats = await stat(path.join(dir, entry.name));
+            contextFiles.push({
+              name: entry.name,
+              folderId,
+              size: stats.size,
+            });
+          }
+        }
+      } catch (e) {
+        console.error(`Failed to read files in directory ${dir}`, e);
+      }
+    }
+  }
+
+  const allArchives = [...archives, ...binArchives];
+
+  // Fetch character sizes of all archives to estimate memory sizes
+  const archivedMessages = await db.directAgentChatMessage.findMany({
+    where: {
+      agentSlug: slug,
+      archiveId: { in: allArchives.map((a) => a.id) },
+    },
+    select: {
+      archiveId: true,
+      body: true,
+    },
+  });
+
+  const archiveTextSizes = new Map<string, number>();
+  for (const msg of archivedMessages) {
+    if (msg.archiveId) {
+      const current = archiveTextSizes.get(msg.archiveId) ?? 0;
+      archiveTextSizes.set(msg.archiveId, current + Buffer.byteLength(msg.body, "utf8"));
+    }
+  }
+
+  // Fetch attachment counts and sizes from Samba folders for all archives
+  const allArchivesWithMeta = await Promise.all(
+    allArchives.map(async (arc) => {
+      const uploadDir = await getAgentChatUploadDir(slug, arc.id);
+      let fileCount = 0;
+      let attachmentsSize = 0;
+      if (existsSync(uploadDir)) {
+        try {
+          const files = await readdir(uploadDir, { withFileTypes: true });
+          for (const f of files) {
+            if (f.isFile()) {
+              const fileStats = await stat(path.join(uploadDir, f.name));
+              fileCount++;
+              attachmentsSize += fileStats.size;
+            }
+          }
+        } catch {}
+      }
+      const textSize = archiveTextSizes.get(arc.id) ?? 0;
+      return {
+        ...arc,
+        fileCount,
+        attachmentsSize,
+        textSize,
+      };
+    })
+  );
+
+  const metaMap = new Map<string, typeof allArchivesWithMeta[0]>();
+  for (const arc of allArchivesWithMeta) {
+    metaMap.set(arc.id, arc);
+  }
+
+  // Helper to build cumulative metrics for a list of archives
+  const buildFinalArchives = (list: any[]) => {
+    return list.map((item: any) => {
+      const arc = metaMap.get(item.id)!;
+      let current: typeof arc | undefined = arc;
+      let cumulativeMessageCount = 0;
+      let cumulativeTextSize = 0;
+      let cumulativeAttachmentsSize = 0;
+      let hasAttachments = false;
+      const seen = new Set<string>();
+
+      while (current && !seen.has(current.id)) {
+        seen.add(current.id);
+        cumulativeMessageCount += current.messageCount;
+        cumulativeTextSize += current.textSize;
+        cumulativeAttachmentsSize += current.attachmentsSize;
+        if (current.fileCount > 0) {
+          hasAttachments = true;
+        }
+        current = current.parentArchiveId ? metaMap.get(current.parentArchiveId) : undefined;
+      }
+
+      const totalMemorySizeBytes = cumulativeTextSize + cumulativeAttachmentsSize;
+      const totalMemorySizeKB = Number((totalMemorySizeBytes / 1024).toFixed(1));
+
+      return {
+        id: item.id,
+        summary: item.summary,
+        startedAt: item.startedAt.toISOString(),
+        endedAt: item.endedAt.toISOString(),
+        parentArchiveId: item.parentArchiveId,
+        messageCount: cumulativeMessageCount,
+        hasAttachments,
+        totalSizeKB: totalMemorySizeKB,
+        deletedAt: 'deletedAt' in item && item.deletedAt ? (item.deletedAt as Date).toISOString() : null,
+      };
+    });
+  };
+
+  const finalArchives = buildFinalArchives(archives);
+  const finalBinArchives = buildFinalArchives(binArchives);
+
+  return (
+    <div className="mx-auto flex h-[calc(100vh-2.5rem)] max-w-7xl flex-col gap-4 overflow-hidden">
+      <ChatRefresh active={showAgentProcessing} />
+      {/* Sticky Header Banner */}
+      <header className="sticky top-[-1.25rem] z-10 -mx-6 bg-[var(--color-bg)] pt-[1.25rem] pb-3 px-6 lg:-mx-8 lg:px-8 border-b border-[var(--color-line)] flex items-center justify-between gap-4 shrink-0">
+        <Link href={`/agents/${slug}`} className="flex items-center gap-3 hover:opacity-80 transition shrink-min min-w-0">
+          <div className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-sm font-semibold">
             {avatarSrc ? (
               <img src={avatarSrc} alt={`${agent.name} avatar`} decoding="async" className="h-full w-full object-cover" />
             ) : (
               agent.name.slice(0, 1)
             )}
           </div>
-          <div className="min-w-0 flex-1">
-            <p className="font-mono text-xs text-[var(--color-text-muted)]">@{slug}</p>
-            <div className="mt-1 flex flex-wrap items-center gap-3">
-              <h1 className="min-w-0 truncate text-2xl font-semibold tracking-tight">{agent.name}</h1>
-              {showAgentProcessing ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-accent)]/30 bg-[var(--color-accent-soft)] px-2 py-0.5 text-xs font-medium text-[var(--color-accent)]">
-                  typing<TypingDots />
-                </span>
-              ) : null}
-            </div>
-            <div className="mt-2 flex flex-wrap gap-2 text-xs">
-              <span className="rounded-full bg-[var(--color-accent-soft)] px-2 py-0.5 text-[var(--color-accent)]">
-                {agent.role}
-              </span>
-              <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">
-                {agent.user.username}
-              </span>
-            </div>
+          <div className="min-w-0">
+            <h1 className="truncate text-base font-semibold tracking-tight">
+              {agent.name}
+            </h1>
+            <p className="font-mono text-[10px] text-[var(--color-text-muted)]">@{slug} · {agent.role}</p>
           </div>
+        </Link>
+        
+        <div className="shrink-0">
           {viewingArchive ? (
             <Link
               href={`/agents/${slug}/chat`}
-              className="rounded-lg border border-[var(--color-line)] px-3 py-2 text-sm font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
             >
               Current chat
             </Link>
           ) : (
-            <form action={archiveDirectAgentChat}>
-              <input type="hidden" name="agentSlug" value={slug} />
-              <button
-                type="submit"
-                disabled={activeMessages.length === 0}
-                className="rounded-lg border border-[var(--color-line)] px-3 py-2 text-sm font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                Archive + New Chat
-              </button>
-            </form>
+            <NewChatButton
+              agentSlug={slug}
+              hasActiveHistory={activeMessages.length > 0}
+            />
           )}
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <section className="flex min-h-0 flex-1 flex-col rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] shadow-sm">
-          <div className="border-b border-[var(--color-line)] px-4 py-3">
-            <p className="text-sm font-medium">{viewingArchive ? "Archived chat" : "Current chat"}</p>
-            <p className="mt-1 text-xs text-[var(--color-text-muted)]">
-              {viewingArchive && selectedArchive
-                ? `${formatArchivePeriod(selectedArchive.startedAt, selectedArchive.endedAt)} · ${selectedArchive.messageCount} messages`
-                : activeBaseArchive
-                  ? `Continuation of "${activeBaseArchive.summary}" · ${activeMessages.length} active message${activeMessages.length === 1 ? "" : "s"}`
-                  : `${activeMessages.length} active message${activeMessages.length === 1 ? "" : "s"}`}
-            </p>
-          </div>
-          <div className="min-h-[420px] flex-1 space-y-3 overflow-y-auto p-4">
-            {messages.length === 0 ? (
-              <p className="text-sm text-[var(--color-text-muted)]">No messages yet.</p>
-            ) : (
-              messages.map((m) => {
-                const fromAgent = m.sender.kind === "agent";
-                return (
-                  <div
-                    key={m.id}
-                    className={`group max-w-3xl rounded-xl border px-3 py-2 ${
-                      fromAgent
-                        ? "ml-auto border-[var(--color-accent)]/40 bg-[var(--color-accent)]/10"
-                        : "border-[var(--color-line)] bg-[var(--color-panel-soft)]"
-                    }`}
-                  >
-                    <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-                      <span>
-                        {m.sender.username}
-                        {fromAgent ? " · agent" : ""}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <time dateTime={m.createdAt.toISOString()} title={m.createdAt.toISOString()}>
-                          {timeAgo(m.createdAt)}
-                        </time>
-                        {!viewingArchive ? (
-                          <form action={deleteDirectAgentMessage}>
-                            <input type="hidden" name="agentSlug" value={slug} />
-                            <input type="hidden" name="messageId" value={m.id} />
-                            <button
-                              type="submit"
-                              aria-label="Delete message"
-                              title="Delete message"
-                              className="text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 hover:text-[var(--color-crit)]"
-                            >
-                              ×
-                            </button>
-                          </form>
-                        ) : null}
-                      </div>
-                    </div>
-                    <div className="md md-compact" dangerouslySetInnerHTML={renderFullMarkdown(m.body)} />
-                  </div>
-                );
-              })
-            )}
-            {showAgentProcessing ? (
-              latest ? (
-                <StreamingAgentReply
-                  targetKind="direct"
-                  agentSlug={slug}
-                  messageId={latest.id}
-                  label={agent.user.username}
-                />
-              ) : null
-            ) : null}
-          </div>
-
-          {viewingArchive && !canStartChildFromArchive ? (
-            <div className="border-t border-[var(--color-line)] p-4 text-sm text-[var(--color-text-muted)]">
-              {activeChildAlreadyOpen
-                ? "A child continuation from this archive is already active."
-                : "Archive the current active chat before starting a child continuation from this archive."}{" "}
-              <Link href={`/agents/${slug}/chat`} className="font-medium text-[var(--color-accent)] hover:underline">
-                Open current chat
-              </Link>
+      <ChatLayoutClient
+        chatSection={
+          <section className="flex min-h-0 h-full flex-col rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] shadow-sm">
+            <div className="border-b border-[var(--color-line)] px-4 py-3 shrink-0">
+              <p className="text-sm font-medium">{viewingArchive ? "Archived chat" : "Current chat"}</p>
+              <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+                {viewingArchive && selectedArchive
+                  ? `${formatArchivePeriod(selectedArchive.startedAt, selectedArchive.endedAt)} · ${selectedArchive.messageCount} messages`
+                  : activeBaseArchive
+                    ? `Continuation of "${activeBaseArchive.summary}" · ${activeMessages.length} active message${activeMessages.length === 1 ? "" : "s"}`
+                    : `${activeMessages.length} active message${activeMessages.length === 1 ? "" : "s"}`}
+              </p>
             </div>
-          ) : (
-            <form action={sendDirectAgentMessage} className="border-t border-[var(--color-line)] p-4">
-              <input type="hidden" name="agentSlug" value={slug} />
-              {selectedArchive ? (
-                <>
-                  <input type="hidden" name="baseArchiveId" value={selectedArchive.id} />
-                  <input type="hidden" name="continueFromArchive" value="1" />
-                </>
-              ) : activeBaseArchiveId ? (
-                <input type="hidden" name="baseArchiveId" value={activeBaseArchiveId} />
-              ) : null}
-              <textarea
-                name="body"
-                required
-                rows={4}
-                maxLength={8000}
-                placeholder={viewingArchive ? `Start a child chat from this archive with @${agent.user.username}...` : `Message @${agent.user.username}...`}
-                className="w-full resize-none rounded-xl border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
-              />
-              <div className="mt-2 flex justify-end">
-                <button
-                  type="submit"
-                  className="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white hover:opacity-90"
-                >
-                  {viewingArchive ? "Start Child Chat" : "Send"}
-                </button>
-              </div>
-            </form>
-          )}
-        </section>
-
-        <aside className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-3 shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <div>
-              <p className="text-sm font-semibold">Archived chats</p>
-              <p className="text-xs text-[var(--color-text-muted)]">Latest conversations</p>
-            </div>
-            <Link
-              href={`/agents/${slug}/chat`}
-              className={`rounded-md border px-2 py-1 text-xs ${
-                viewingArchive
-                  ? "border-[var(--color-line)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-                  : "border-[var(--color-accent)]/30 bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-              }`}
-            >
-              Active
-            </Link>
-          </div>
-          {archives.length === 0 ? (
-            <p className="text-sm text-[var(--color-text-muted)]">No archived chats yet.</p>
-          ) : (
-            <ArchiveTree
-              nodes={archiveTree}
+            
+            <ChatMessagesContainer
+              messages={messages.map((m: any) => ({
+                id: m.id,
+                body: m.body,
+                createdAt: m.createdAt.toISOString(),
+                sender: serializeSender(m.sender),
+              }))}
+              parentArchives={parentArchivesProp}
+              showAgentProcessing={showAgentProcessing}
+              agentSlug={slug}
+              agentUsername={agent.user.username}
+              viewingArchive={viewingArchive}
               slug={slug}
-              selectedArchiveId={selectedArchive?.id ?? null}
+              currentUserId={currentUserId}
             />
-          )}
-        </aside>
-      </div>
+
+            {/* Attached Context Files List */}
+            {contextFiles.length > 0 && (
+              <div className="border-t border-[var(--color-line)] bg-[var(--color-panel-soft)] px-4 py-2 flex flex-wrap gap-2 items-center shrink-0">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] select-none">
+                  Context Files ({contextFiles.length}):
+                </span>
+                {contextFiles.map((file) => (
+                  <div
+                    key={`${file.folderId}-${file.name}`}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-2 py-0.5 text-xs font-semibold text-[var(--color-text)] shadow-sm"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+                    <span className="truncate max-w-[150px]" title={file.name}>
+                      {file.name}
+                    </span>
+                    <span className="text-[9px] text-[var(--color-text-muted)] font-normal">
+                      ({(file.size / 1024).toFixed(1)} KB)
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <ProposalReview
+              agentSlug={slug}
+              proposals={pendingProposals.map((p) => ({
+                id: p.id,
+                summary: p.summary,
+                operations: p.operations,
+                validation: p.validation,
+                createdAt: p.createdAt.toISOString(),
+                projectName: p.project.name,
+              }))}
+            />
+
+            {viewingArchive && !canStartChildFromArchive ? (
+              <div className="border-t border-[var(--color-line)] p-4 text-sm text-[var(--color-text-muted)] shrink-0 bg-[var(--color-panel)]">
+                {activeChildAlreadyOpen
+                  ? "A child continuation from this archive is already active."
+                  : "Archive the current active chat before starting a child continuation from this archive."}{" "}
+                <Link href={`/agents/${slug}/chat`} className="font-medium text-[var(--color-accent)] hover:underline">
+                  Open current chat
+                </Link>
+              </div>
+            ) : (
+              <ChatInput
+                agentSlug={slug}
+                agentUsername={agent.user.username}
+                viewingArchive={viewingArchive}
+                selectedArchiveId={selectedArchive?.id}
+                activeBaseArchiveId={activeBaseArchiveId}
+                projects={projects}
+                attachedProjectId={attachedProjectId}
+              />
+            )}
+          </section>
+        }
+        asideSection={
+          <ArchiveSidebarClient
+            archives={finalArchives}
+            binArchives={finalBinArchives}
+            slug={slug}
+            selectedArchiveId={selectedArchive?.id ?? null}
+          />
+        }
+      />
     </div>
   );
 }

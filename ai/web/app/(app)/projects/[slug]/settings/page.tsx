@@ -143,15 +143,16 @@ export default async function ProjectSettingsPage({
 
           <SettingsRow
             label="Days to keep Done"
-            hint="Tasks in Done older than this many days are hidden from the board. They stay reachable via direct links."
+            hint="Tasks in Done older than this many days are hidden from the board. They stay reachable via direct links. Leave blank to use the system default."
           >
             <input
               type="number"
               name="doneTtlDays"
               min={1}
               max={365}
-              defaultValue={project.doneTtlDays}
-              className="w-32 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+              defaultValue={project.doneTtlDays ?? ""}
+              placeholder="System default"
+              className="w-40 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
             />
           </SettingsRow>
 

@@ -19,6 +19,12 @@ model User {
   username           String          @unique
   email              String          @unique
   kind               String // "human" | "agent"
+  // Human profile (admin-editable). Display name + uploaded avatar (a
+  // resized PNG stored inline; small, few human users). Agents take their
+  // name/avatar from the Agent registry instead, so these stay null for them.
+  name               String?
+  avatar             Bytes?
+  avatarUpdatedAt    DateTime?
   passwordHash       String?
   passwordSetAt      DateTime?
   mustRotatePassword Boolean         @default(true)
@@ -48,6 +54,9 @@ model User {
   defaultAssigneeForProjects  Project[]            @relation("ProjectDefaultAssignee")
   defaultReviewerForProjects  Project[]            @relation("ProjectDefaultReviewer")
   deletedProjects             Project[]            @relation("ProjectDeletedBy")
+  workItemProposalsProposed   WorkItemProposal[]   @relation("WorkItemProposalProposedBy")
+  workItemProposalsApplied    WorkItemProposal[]   @relation("WorkItemProposalAppliedBy")
+  workItemProposalsRejected   WorkItemProposal[]   @relation("WorkItemProposalRejectedBy")
 
   @@index([kind])
   @@index([status])
@@ -125,7 +134,8 @@ model Project {
   defaultAssignee     User?     @relation("ProjectDefaultAssignee", fields: [defaultAssigneeId], references: [id])
   defaultReviewerId   String?
   defaultReviewer     User?     @relation("ProjectDefaultReviewer", fields: [defaultReviewerId], references: [id])
-  doneTtlDays         Int       @default(5)
+  // Null inherits the system default (SystemSettings.doneTtlDays → 5).
+  doneTtlDays         Int?
   // Soft-delete: project bin with 30-day TTL (hard-purge via the
   // hourly job in instrumentation.node.ts).
   deletedAt   DateTime?
@@ -140,6 +150,8 @@ model Project {
   activity     ActivityLog[]
   attachments  Attachment[]
   chatMessages AgentChatMessage[]
+  directChatMessages DirectAgentChatMessage[] @relation("DirectChatProject")
+  workItemProposals  WorkItemProposal[]
 
   @@index([deletedAt])
 }
@@ -185,6 +197,7 @@ model Epic {
 
   tasks       Task[]
   attachments Attachment[]
+  comments    Comment[]
   chats       AgentChatMessage[] @relation("EpicChat")
 
   @@index([projectId])
@@ -228,6 +241,9 @@ model Task {
   statusChangedAt DateTime?
   // Free-text branch name the agent will use for commits on this task.
   branchName      String?
+  // Free-text commit-message prefix (e.g. a ticket key) the agent prepends
+  // to commits on this task. Edited alongside branchName on the task form.
+  commitPrefix    String?
   // Soft delete (HOMELAB-48). See Epic.deletedAt for semantics. Sub-tasks
   // cascade with their parent task; an Epic delete cascades to its
   // non-deleted Tasks (and through them to sub-tasks). Active read
@@ -305,14 +321,19 @@ model AttachmentExtract {
 
 model Comment {
   id        String   @id @default(cuid())
-  taskId    String
-  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  // A comment belongs to a Task XOR an Epic (mirrors Attachment). Both FKs
+  // are nullable; exactly one is set, enforced in the server actions.
+  taskId    String?
+  task      Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  epicId    String?
+  epic      Epic?    @relation(fields: [epicId], references: [id], onDelete: Cascade)
   userId    String
   user      User     @relation(fields: [userId], references: [id])
   body      String
   createdAt DateTime @default(now())
 
   @@index([taskId])
+  @@index([epicId])
   @@index([userId])
 }
 
@@ -456,6 +477,15 @@ model DirectAgentChatMessage {
   // still using it as context for the new conversation.
   baseArchiveId String?
   body         String
+  // A direct chat can be attached to a project (agent planning): the agent
+  // then gets that project's environment + board as context and may propose
+  // work-item changes scoped to it. allowWorkItemManagement is the per-message
+  // grant — generalises AgentChatMessage.allowDescriptionEdit; workItemGrantUsedAt
+  // stamps it single-use once a proposal is stored.
+  projectId               String?
+  project                 Project?  @relation("DirectChatProject", fields: [projectId], references: [id], onDelete: SetNull)
+  allowWorkItemManagement Boolean   @default(false)
+  workItemGrantUsedAt     DateTime?
   createdAt    DateTime @default(now())
 
   @@index([agentSlug, createdAt])
@@ -463,6 +493,7 @@ model DirectAgentChatMessage {
   @@index([agentSlug, baseArchiveId, createdAt])
   @@index([archiveId, createdAt])
   @@index([senderUserId])
+  @@index([projectId])
 }
 
 model DirectAgentChatArchive {
@@ -488,4 +519,65 @@ model DirectAgentChatArchive {
   @@index([parentArchiveId])
   @@index([archivedById])
   @@index([deletedById])
+}
+
+// ------------------------------------------------------------------
+// Agent work-item proposals (propose → approve). An agent granted
+// "manage work items" on a direct chat message submits a change-set of
+// typed operations (create/update epics, tasks, sub-tasks; comment)
+// against one project via POST /api/agent/projects/[id]/proposals. PM
+// stores it pending; a human applies or rejects it. Nothing touches the
+// board until approval. `operations` is the JSON change-set; `validation`
+// is the per-op dry-run snapshot taken at submit time. `planId` is unique
+// so a retried agent turn is idempotent (mirrors PmEventDelivery.dedupeKey).
+// `grantMessageId` is a plain pointer (no FK) so the proposal survives the
+// originating chat message being deleted.
+// ------------------------------------------------------------------
+
+model WorkItemProposal {
+  id               String    @id @default(cuid())
+  planId           String    @unique
+  projectId        String
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agentSlug        String
+  grantMessageId   String?
+  proposedByUserId String
+  proposedBy       User      @relation("WorkItemProposalProposedBy", fields: [proposedByUserId], references: [id])
+  status           String    @default("pending") // pending | applied | rejected | superseded
+  summary          String?
+  operations       String // JSON change-set (ProposalOp[])
+  validation       String? // JSON ProposalValidation snapshot at submit time
+  appliedById      String?
+  appliedBy        User?     @relation("WorkItemProposalAppliedBy", fields: [appliedById], references: [id])
+  appliedAt        DateTime?
+  rejectedById     String?
+  rejectedBy       User?     @relation("WorkItemProposalRejectedBy", fields: [rejectedById], references: [id])
+  rejectedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([projectId, status])
+  @@index([agentSlug])
+  @@index([grantMessageId])
+}
+
+// ------------------------------------------------------------------
+// System-wide settings — a single row (id "system") holding the global
+// fallbacks used when a project leaves the matching field blank:
+//   - defaultGitUserName / defaultGitUserEmail → project git identity
+//   - doneTtlDays → project Done-column TTL (a null project value inherits)
+//   - binTtlDays → days before ANY soft-delete bin (Task/Epic, Project,
+//     direct-chat) is auto-emptied; overrides the PM_*_BIN_TTL_DAYS env
+//     defaults when set.
+// Edited at /system/settings. Singleton enforced by the fixed id default.
+// ------------------------------------------------------------------
+
+model SystemSettings {
+  id                  String   @id @default("system")
+  defaultGitUserName  String?
+  defaultGitUserEmail String?
+  doneTtlDays         Int?
+  binTtlDays          Int?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 }

@@ -28,6 +28,10 @@ function isOpenClawPmChannelStream(path: string) {
   return path === "/api/openclaw/pm-channel/stream";
 }
 
+function isOpenClawPmChannelEvents(path: string) {
+  return path === "/api/openclaw/pm-channel/events";
+}
+
 function forwardedUrl(req: NextRequest, pathname: string) {
   const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? req.nextUrl.host;
   const proto = host === "agents.vixi.au"
@@ -44,7 +48,8 @@ export async function middleware(req: NextRequest) {
     isTokenScopedTaskReply(pathname) ||
     isTokenScopedTaskDescription(pathname) ||
     isOpenClawPmChannelReply(pathname) ||
-    isOpenClawPmChannelStream(pathname)
+    isOpenClawPmChannelStream(pathname) ||
+    isOpenClawPmChannelEvents(pathname)
   ) {
     return NextResponse.next();
   }
@@ -70,6 +75,6 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  // Avoid running middleware on Next internals + the rotate page itself.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/auth).*)"],
+  // Avoid running middleware on Next internals + the rotate page itself + the events streaming route.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/auth|api/openclaw/pm-channel/events).*)"],
 };

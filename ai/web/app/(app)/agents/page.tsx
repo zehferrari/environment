@@ -88,7 +88,7 @@ function formatIdle(seconds?: number | null) {
 }
 
 export default async function AgentsPage() {
-  const [agents, recentActivity, snapshot] = await Promise.all([
+  const [agents, recentActivity, snapshot, totalOpenTasks, totalActivityLogs] = await Promise.all([
     db.agent.findMany({
       orderBy: { slug: "asc" },
       include: {
@@ -110,6 +110,13 @@ export default async function AgentsPage() {
       include: { user: { select: { username: true } }, task: { select: { title: true } } },
     }),
     readSnapshot(),
+    db.task.count({
+      where: {
+        status: { not: "Done" },
+        deletedAt: null,
+      },
+    }),
+    db.activityLog.count(),
   ]);
 
   const liveAgents = snapshot?.agents ?? {};
@@ -125,9 +132,8 @@ export default async function AgentsPage() {
     return name.includes("/") && agentSlugs.has(prefix);
   };
   const hostServices = Object.entries(system).filter(([name]) => !isAgentService(name));
-  const active = agents.filter((a) => ["busy", "live"].includes(statusFor(a, liveAgents[a.slug]))).length;
+  const onlineCount = agents.filter((a) => statusFor(a, liveAgents[a.slug]) !== "offline").length;
   const openTickets = agents.reduce((sum, a) => sum + (liveAgents[a.slug]?.jira_tickets?.length ?? 0), 0);
-  const openTasks = agents.reduce((sum, a) => sum + (a.user?.assignedTasks.length ?? 0), 0);
   const activeServices = hostServices.filter(([, s]) => s.is_active === "active").length;
 
   return (
@@ -145,11 +151,11 @@ export default async function AgentsPage() {
       </div>
 
       <section className="grid gap-3 md:grid-cols-5">
-        <Kpi label="Agents online" value={`${active}`} foot={`/ ${agents.length} registered`} />
+        <Kpi label="Agents online" value={`${onlineCount}`} foot={`/ ${agents.length} registered`} />
         <Kpi label="Open tickets" value={`${openTickets}`} foot="From live Atlas snapshot" />
-        <Kpi label="Open PM tasks" value={`${openTasks}`} foot="Assigned and not Done" />
-        <Kpi label="Host services" value={`${activeServices}`} foot={`/ ${hostServices.length || 0} active`} />
-        <Kpi label="Activity stream" value={`${recentActivity.length}`} foot="Latest PM events" />
+        <Kpi label="Open PM tasks" value={`${totalOpenTasks}`} foot="Assigned and not Done" />
+        <Kpi label="Host services" value={`${activeServices}`} foot={`/ ${hostServices.length || 0} total`} />
+        <Kpi label="Activity stream" value={`${totalActivityLogs}`} foot="Total logged PM events" />
       </section>
 
       {agents.length === 0 ? (
@@ -256,47 +262,6 @@ export default async function AgentsPage() {
           })}
         </section>
       )}
-
-      <section className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-          <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">Activity stream</h2>
-          {recentActivity.length === 0 ? (
-            <p className="text-sm text-[var(--color-text-muted)]">No activity recorded yet.</p>
-          ) : (
-            <ul className="divide-y divide-[var(--color-line)] text-sm">
-              {recentActivity.map((row) => (
-                <li key={row.id} className="py-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <span><strong>{row.kind}</strong>{row.task ? ` · ${row.task.title}` : row.targetAgent ? ` · ${row.targetAgent}` : ""}</span>
-                    <time className="shrink-0 text-xs text-[var(--color-text-muted)]" dateTime={row.createdAt.toISOString()}>{row.createdAt.toISOString().slice(0, 19).replace("T", " ")}</time>
-                  </div>
-                  <div className="text-xs text-[var(--color-text-muted)]">{row.user?.username ?? "system"}{row.targetFile ? ` · ${row.targetFile}` : ""}</div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-        <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-          <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">Host services</h2>
-          {hostServices.length === 0 ? (
-            <p className="text-sm text-[var(--color-text-muted)]">No service status reported by the Atlas snapshot feed.</p>
-          ) : (
-            <div className="grid gap-2 sm:grid-cols-2">
-              {hostServices.map(([name, svc]) => {
-                const ok = svc.is_active === "active";
-                return (
-                  <div key={name} className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm">
-                    <div className="flex items-center justify-between gap-3">
-                      <code className="truncate text-xs">{name}</code>
-                      <span className={ok ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.is_active ?? "unknown"}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </section>
     </div>
   );
 }

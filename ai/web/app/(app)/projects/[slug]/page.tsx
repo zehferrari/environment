@@ -9,6 +9,7 @@ import {
 } from "@/lib/workflow";
 import { reorderTasks } from "@/lib/tasks/reorder";
 import { listAssignablePrincipals } from "@/lib/principals";
+import { resolveDoneTtlDays } from "@/lib/settings/system";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
 import { COLUMNS, COLUMN_IDS } from "./columns";
@@ -176,9 +177,8 @@ export default async function ProjectBoardPage({
   // within doneTtlDays of now. Other columns pass through unchanged.
   // statusChangedAt is null for rows that pre-date the migration; treat
   // null as "recently touched" so legacy Done items aren't auto-hidden.
-  const doneCutoff = new Date(
-    Date.now() - project.doneTtlDays * 24 * 60 * 60 * 1000,
-  );
+  const doneTtlDays = await resolveDoneTtlDays(project.doneTtlDays);
+  const doneCutoff = new Date(Date.now() - doneTtlDays * 24 * 60 * 60 * 1000);
   const filteredTasks = project.tasks.filter((t) => {
     if (t.status !== "Done") return true;
     if (!t.statusChangedAt) return true;

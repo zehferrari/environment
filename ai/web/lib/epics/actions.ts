@@ -11,6 +11,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { Prisma } from "@prisma/client";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import {
@@ -270,6 +271,109 @@ export async function setEpicActingManager(formData: FormData) {
   revalidatePath(`/projects/${slug}/epics`);
 }
 
+// Single epic-form save (mirrors the task form's unified updateTask):
+// persists title, description, status, assignee and acting manager in one
+// transaction, each keeping the validation its standalone action did
+// (epic status enum, no agent self-assign / self-acting-manager). Only
+// changed fields are written + activity-logged; a rule violation throws.
+export async function updateEpic(formData: FormData) {
+  const actor = await requireActor();
+  const slug = String(formData.get("projectSlug") ?? "");
+  const epicId = String(formData.get("epicId") ?? "");
+  if (!slug || !epicId) return;
+
+  const title = String(formData.get("title") ?? "").trim();
+  if (!title || title.length > 200) return;
+  const descriptionRaw = String(formData.get("description") ?? "");
+  const newDescription = descriptionRaw.trim() === "" ? null : descriptionRaw;
+  const status = String(formData.get("status") ?? "");
+  const acmRaw = String(formData.get("actingManagerId") ?? "");
+  const newActingManagerId = acmRaw === "" ? null : acmRaw;
+
+  if (status !== "" && !isEpicStatus(status)) return;
+
+  const epic = await loadEpicScoped(epicId, slug);
+  if (!epic || epic.project.slug !== slug) return;
+
+  const data: Prisma.EpicUpdateInput = {};
+  const activity: { kind: string; payload: string }[] = [];
+
+  // Title / description
+  if (
+    epic.title !== title ||
+    (epic.description ?? null) !== newDescription
+  ) {
+    data.title = title;
+    data.description = newDescription;
+    activity.push({
+      kind: "epic.update",
+      payload: JSON.stringify({
+        epicId,
+        from: { title: epic.title, description: epic.description },
+        to: { title, description: newDescription },
+      }),
+    });
+  }
+
+  // Status
+  if (status !== "" && status !== epic.status) {
+    data.status = status;
+    activity.push({
+      kind: "epic.status",
+      payload: JSON.stringify({ epicId, from: epic.status, to: status }),
+    });
+  }
+
+  // Acting manager (no agent self-set; target must be active)
+  if (newActingManagerId !== epic.actingManagerId) {
+    const check = checkActingManager({ actor, newActingManagerId });
+    if (!check.ok) throw new Error(check.message);
+    let toUsername: string | null = null;
+    if (newActingManagerId !== null) {
+      const row = await db.user.findUnique({
+        where: { id: newActingManagerId },
+        select: { username: true, status: true },
+      });
+      if (!row || row.status !== "active") {
+        throw new Error("Acting manager not found or inactive");
+      }
+      toUsername = row.username;
+    }
+    data.actingManager =
+      newActingManagerId === null
+        ? { disconnect: true }
+        : { connect: { id: newActingManagerId } };
+    activity.push({
+      kind: "epic.acting_manager",
+      payload: JSON.stringify({
+        epicId,
+        from: epic.actingManager?.username ?? null,
+        to: toUsername,
+      }),
+    });
+  }
+
+  if (activity.length === 0) return;
+
+  await db.$transaction([
+    db.epic.update({ where: { id: epicId }, data }),
+    ...activity.map((a) =>
+      db.activityLog.create({
+        data: {
+          projectId: epic.project.id,
+          userId: actor.id,
+          kind: a.kind,
+          payload: a.payload,
+        },
+      }),
+    ),
+  ]);
+
+  revalidatePath(`/projects/${slug}/epics/${epicId}`);
+  revalidatePath(`/projects/${slug}/epics`);
+  revalidatePath(`/projects/${slug}`);
+}
+
 export async function createTaskInEpic(formData: FormData) {
   const actor = await requireActor();
   const slug = String(formData.get("projectSlug") ?? "");
@@ -360,4 +464,66 @@ export async function setEpicStatus(formData: FormData) {
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}/epics`);
+}
+
+// Epic comments (Comment.epicId, XOR with taskId). Mirrors the task
+// comment actions but without agent dispatch — epic comments are notes,
+// they don't wake agents.
+export async function createEpicComment(formData: FormData) {
+  const actor = await requireActor();
+  const slug = String(formData.get("projectSlug") ?? "");
+  const epicId = String(formData.get("epicId") ?? "");
+  const body = String(formData.get("body") ?? "").trim();
+  if (!slug || !epicId || !body) return;
+  if (body.length > 8000) return;
+
+  const epic = await db.epic.findUnique({
+    where: { id: epicId },
+    select: {
+      id: true,
+      projectId: true,
+      deletedAt: true,
+      project: { select: { slug: true } },
+    },
+  });
+  if (!epic || epic.project.slug !== slug || epic.deletedAt) return;
+
+  await db.$transaction([
+    db.comment.create({ data: { epicId, userId: actor.id, body } }),
+    db.activityLog.create({
+      data: {
+        projectId: epic.projectId,
+        userId: actor.id,
+        kind: "epic.comment",
+        payload: JSON.stringify({ epicId }),
+      },
+    }),
+  ]);
+
+  revalidatePath(`/projects/${slug}/epics/${epicId}`);
+}
+
+export async function deleteEpicComment(formData: FormData) {
+  const actor = await requireActor();
+  // Comment delete is a human-only control (mirrors the task rule).
+  if (actor.kind !== "human") return;
+  const slug = String(formData.get("projectSlug") ?? "");
+  const epicId = String(formData.get("epicId") ?? "");
+  const commentId = String(formData.get("commentId") ?? "");
+  if (!slug || !epicId || !commentId) return;
+
+  const comment = await db.comment.findUnique({
+    where: { id: commentId },
+    select: {
+      id: true,
+      epicId: true,
+      epic: { select: { project: { select: { slug: true } } } },
+    },
+  });
+  if (!comment || comment.epicId !== epicId || comment.epic?.project.slug !== slug) {
+    return;
+  }
+
+  await db.comment.delete({ where: { id: commentId } });
+  revalidatePath(`/projects/${slug}/epics/${epicId}`);
 }

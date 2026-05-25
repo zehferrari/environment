@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { MessageAvatar, type MessageActor } from "@/components/message-avatar";
 
-type TargetKind = "direct" | "task-chat" | "task-comment";
+type TargetKind = "direct" | "task-chat" | "task-comment" | "epic-chat";
 
 type StreamState = {
   text?: string;
+  reasoning?: string;
   status?: "streaming" | "done" | "error";
   error?: string | null;
 };
@@ -16,6 +18,7 @@ interface StreamingAgentReplyProps {
   agentSlug: string;
   messageId: string;
   taskId?: string;
+  epicId?: string;
   label: string;
   className?: string;
 }
@@ -33,9 +36,11 @@ function TypingDots() {
 function applyStreamState(
   incoming: StreamState,
   setText: (value: string | ((prev: string) => string)) => void,
+  setReasoning: (value: string | ((prev: string) => string)) => void,
   setStatus: (value: "connecting" | "streaming" | "done" | "error") => void,
 ) {
   if (typeof incoming.text === "string") setText(incoming.text);
+  if (typeof incoming.reasoning === "string") setReasoning(incoming.reasoning);
   if (incoming.status === "done") setStatus("done");
   else if (incoming.status === "error") setStatus("error");
   else setStatus("streaming");
@@ -46,11 +51,13 @@ export default function StreamingAgentReply({
   agentSlug,
   messageId,
   taskId,
+  epicId,
   label,
   className = "",
 }: StreamingAgentReplyProps) {
   const router = useRouter();
   const [text, setText] = useState("");
+  const [reasoning, setReasoning] = useState("");
   const [status, setStatus] = useState<"connecting" | "streaming" | "done" | "error">("connecting");
   const [error, setError] = useState<string | null>(null);
 
@@ -61,8 +68,9 @@ export default function StreamingAgentReply({
       messageId,
     });
     if (taskId) params.set("taskId", taskId);
+    if (epicId) params.set("epicId", epicId);
     return `/api/openclaw/pm-channel/events?${params.toString()}`;
-  }, [agentSlug, messageId, targetKind, taskId]);
+  }, [agentSlug, messageId, targetKind, taskId, epicId]);
 
   useEffect(() => {
     let refreshTimer: number | undefined;
@@ -85,7 +93,7 @@ export default function StreamingAgentReply({
       const payload = parse(event);
       if (!payload) return;
       setError(payload.error ?? null);
-      applyStreamState(payload, setText, setStatus);
+      applyStreamState(payload, setText, setReasoning, setStatus);
       if (payload.status === "done") refreshSoon();
     };
 
@@ -97,6 +105,7 @@ export default function StreamingAgentReply({
 
     source.addEventListener("snapshot", onState);
     source.addEventListener("partial", onState);
+    source.addEventListener("reasoning", onState);
     source.addEventListener("final", onState);
     source.addEventListener("done", onState);
     source.addEventListener("stream-error", onErrorEvent);
@@ -110,22 +119,74 @@ export default function StreamingAgentReply({
     };
   }, [router, url]);
 
-  if (!text.trim()) {
+  const [showReasoning, setShowReasoning] = useState(true);
+  const actor: MessageActor = {
+    username: agentSlug,
+    kind: "agent",
+    name: label,
+    agent: { slug: agentSlug, name: label, avatar: null },
+  };
+
+  if (!text.trim() && !reasoning.trim()) {
     return (
-      <div className={`inline-flex max-w-xs items-center rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm text-[var(--color-text-muted)] ${className}`}>
-        {status === "error" ? (error ?? "Agent stream failed") : `${label} is typing`}
-        {status === "error" ? null : <TypingDots />}
+      <div className={`flex items-start gap-2.5 ${className}`}>
+        <MessageAvatar actor={actor} />
+        <div className="relative inline-flex max-w-xs items-center rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3.5 py-2 text-sm text-[var(--color-text-muted)] shadow-sm">
+          <span
+            aria-hidden="true"
+            className="absolute -left-1.5 top-4 h-3 w-3 rotate-45 border-b border-l border-[var(--color-line)] bg-[var(--color-panel-soft)]"
+          />
+          {status === "error" ? (error ?? "Agent stream failed") : "typing"}
+          {status === "error" ? null : <TypingDots />}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className={`max-w-3xl rounded-xl border border-[var(--color-accent)]/40 bg-[var(--color-accent)]/10 px-3 py-2 ${className}`}>
-      <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-        <span>{label} / streaming</span>
-        <span>{status === "done" ? "finalizing" : status === "error" ? "stream error" : "live"}</span>
+    <div className={`flex items-start gap-2.5 ${className}`}>
+      <MessageAvatar actor={actor} />
+      <div className="relative w-fit min-w-[11rem] max-w-[min(36rem,78%)] rounded-2xl border border-[var(--color-accent)]/25 bg-[var(--color-panel-soft)] px-4 py-3 shadow-sm">
+        <span
+          aria-hidden="true"
+          className="absolute -left-1.5 top-4 h-3 w-3 rotate-45 border-b border-l border-[var(--color-accent)]/25 bg-[var(--color-panel-soft)]"
+        />
+        <div className="mb-2 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+          <span>{label} / streaming</span>
+          <span>{status === "done" ? "finalizing" : status === "error" ? "stream error" : "live"}</span>
+        </div>
+
+        {/* Collapsible Reasoning Thought Process Block */}
+        {reasoning.trim() ? (
+          <details
+            className="mb-3 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3 text-xs text-[var(--color-text-muted)] font-mono group"
+            open={showReasoning}
+            onToggle={(e) => setShowReasoning(e.currentTarget.open)}
+          >
+            <summary className="flex items-center justify-between gap-1.5 font-semibold text-[10px] uppercase tracking-wider mb-2 border-b border-[var(--color-line)] pb-1 cursor-pointer outline-none list-none [&::-webkit-details-marker]:hidden select-none">
+              <span className="flex items-center gap-1.5">
+                <span>Thought Process</span>
+                {status === "streaming" && !text && <TypingDots />}
+              </span>
+              <span className="text-[9px] font-normal normal-case text-[var(--color-text-muted)] opacity-60">
+                {showReasoning ? "click to hide" : "click to show"}
+              </span>
+            </summary>
+            <div className="whitespace-pre-wrap leading-relaxed mt-2">{reasoning}</div>
+          </details>
+        ) : null}
+
+        {/* Main Message Content */}
+        {text.trim() ? (
+          <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+            {text}
+          </div>
+        ) : status !== "error" && !reasoning.trim() ? (
+          <div className="text-xs text-[var(--color-text-muted)] flex items-center gap-1">
+            Writing response <TypingDots />
+          </div>
+        ) : null}
       </div>
-      <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{text}</div>
     </div>
   );
 }

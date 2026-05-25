@@ -41,6 +41,10 @@ export type ActivityKind =
   | "agent.direct_chat.delete"
   | "task.description.agent_write"
   | "epic.description.agent_write"
+  | "workitem.proposal.propose"
+  | "workitem.proposal.apply"
+  | "workitem.proposal.reject"
+  | "system.settings"
   | "project.create"
   | "agent.sync"
   | string;
@@ -315,6 +319,22 @@ export function describeActivity(row: ActivityRow): string {
       const p = parsePayload<{ agentSlug?: string; length?: number }>(row.payload);
       return `@${p?.agentSlug ?? "agent"} wrote an epic description (${p?.length ?? 0} chars)`;
     }
+    case "workitem.proposal.propose": {
+      const p = parsePayload<{ agentSlug?: string; opCount?: number }>(row.payload);
+      const n = p?.opCount ?? 0;
+      return `@${p?.agentSlug ?? "agent"} proposed ${n} work-item change${n === 1 ? "" : "s"} for review`;
+    }
+    case "workitem.proposal.apply": {
+      const p = parsePayload<{ agentSlug?: string; opCount?: number }>(row.payload);
+      const n = p?.opCount ?? 0;
+      return `${actor(row.actorName)} applied ${n} proposed change${n === 1 ? "" : "s"} from @${p?.agentSlug ?? "agent"}`;
+    }
+    case "workitem.proposal.reject": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      return `${actor(row.actorName)} rejected a work-item proposal from @${p?.agentSlug ?? "agent"}`;
+    }
+    case "system.settings":
+      return `${actor(row.actorName)} updated system settings`;
     default:
       return `${actor(row.actorName)} · ${row.kind}`;
   }

@@ -18,6 +18,10 @@ import { db } from "@/lib/db";
 export interface AssignablePrincipal {
   id: string;
   username: string;
+  // Display name shown in pickers: the agent's full name for agents,
+  // falling back to username for humans (the User row has no separate
+  // name column).
+  name: string;
   kind: "human" | "agent";
   agentSlug: string | null;
   agentRole: string | null;
@@ -41,14 +45,18 @@ export async function listAssignablePrincipals(): Promise<
     select: {
       id: true,
       username: true,
+      name: true,
       kind: true,
-      agent: { select: { slug: true, role: true } },
+      agent: { select: { slug: true, role: true, name: true } },
     },
   });
 
   return rows.map((u) => ({
     id: u.id,
     username: u.username,
+    // Agent's registry name for agents; the human's editable display name
+    // for humans; username as the final fallback.
+    name: u.agent?.name ?? u.name ?? u.username,
     kind: u.kind === "agent" ? "agent" : "human",
     agentSlug: u.agent?.slug ?? null,
     agentRole: u.agent?.role ?? null,

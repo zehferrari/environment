@@ -17,6 +17,7 @@
 // in the bin.
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 
@@ -68,6 +69,11 @@ export async function deleteTask(formData: FormData) {
 
   revalidatePath(`/projects/${slug}`);
   revalidatePath(`/projects/${slug}/bin`);
+
+  // The task page we were on now points at a binned task — send the user
+  // back to the board. redirect() throws NEXT_REDIRECT, so it must come
+  // after all DB work + revalidation.
+  redirect(`/projects/${slug}`);
 }
 
 export async function deleteEpic(formData: FormData) {
@@ -119,6 +125,9 @@ export async function deleteEpic(formData: FormData) {
   revalidatePath(`/projects/${slug}`);
   revalidatePath(`/projects/${slug}/epics`);
   revalidatePath(`/projects/${slug}/bin`);
+
+  // Back to the board — the epic page we were on is now binned.
+  redirect(`/projects/${slug}`);
 }
 
 // ---- Restore -------------------------------------------------------

@@ -287,7 +287,7 @@ export async function buildTaskAgentContextPacket(args: {
         },
       },
       chats: {
-        where: { agentSlug: args.agentSlug },
+        where: { agentSlug: { in: [args.agentSlug, "room"] } },
         orderBy: { createdAt: "desc" },
         take: 30,
         select: {

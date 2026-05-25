@@ -35,7 +35,7 @@ export default async function LoginPage({
       >
         <h1 className="text-lg font-semibold mb-1">Sign in</h1>
         <p className="text-sm text-[var(--color-text-muted)] mb-4">
-          PM workspace for zehferrari/environment
+          Zero Latency workspace for zehferrari/environment
         </p>
 
         {error === "invalid" && (
