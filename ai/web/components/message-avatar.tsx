@@ -19,7 +19,13 @@ function avatarStamp(value: Date | string | null | undefined): number | null {
 }
 
 function agentAvatarUrl(name: string) {
-  const first = name.split(" ")[0] || name;
+  let first = name.split(" ")[0] || name;
+  if (first.startsWith("@")) {
+    first = first.slice(1);
+  }
+  if (first.length > 0) {
+    first = first.charAt(0).toUpperCase() + first.slice(1);
+  }
   return `/agents/avatars/${encodeURIComponent(first)}`;
 }
 

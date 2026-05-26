@@ -8,6 +8,8 @@ function isPublic(path: string) {
   return PUBLIC_PATHS.some((p) => path === p || path.startsWith(p + "/"));
 }
 
+// Agent callbacks are not browser-session routes. They authenticate inside
+// the route handler with a per-agent Bearer token or a one-shot HMAC grant.
 function isTokenScopedAgentReply(path: string) {
   return /^\/api\/agents\/[^/]+\/chat\/reply$/.test(path);
 }
@@ -18,6 +20,24 @@ function isTokenScopedTaskReply(path: string) {
 
 function isTokenScopedTaskDescription(path: string) {
   return /^\/api\/tasks\/[^/]+\/description$/.test(path);
+}
+
+function isTokenScopedEpicDescription(path: string) {
+  return /^\/api\/epics\/[^/]+\/description$/.test(path);
+}
+
+function isTokenScopedProjectProposal(path: string) {
+  return /^\/api\/agent\/projects\/[^/]+\/proposals$/.test(path);
+}
+
+function isTokenScopedAgentCallback(path: string) {
+  return (
+    isTokenScopedAgentReply(path) ||
+    isTokenScopedTaskReply(path) ||
+    isTokenScopedTaskDescription(path) ||
+    isTokenScopedEpicDescription(path) ||
+    isTokenScopedProjectProposal(path)
+  );
 }
 
 function isOpenClawPmChannelReply(path: string) {
@@ -44,9 +64,7 @@ export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   if (
     isPublic(pathname) ||
-    isTokenScopedAgentReply(pathname) ||
-    isTokenScopedTaskReply(pathname) ||
-    isTokenScopedTaskDescription(pathname) ||
+    isTokenScopedAgentCallback(pathname) ||
     isOpenClawPmChannelReply(pathname) ||
     isOpenClawPmChannelStream(pathname) ||
     isOpenClawPmChannelEvents(pathname)

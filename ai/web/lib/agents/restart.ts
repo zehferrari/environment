@@ -23,8 +23,11 @@ export type AgentRestartResult = { service: string; ok: boolean; status: number;
 export type QueuedAgentRestart = { queued: true; agent: string; reason: string };
 
 export async function requestAgentRestart(agent: string, reason: string): Promise<AgentRestartResult[]> {
-  const row = await db.agent.findUnique({ where: { slug: agent } });
-  const effective = await resolveEffectiveAgentConfig(row?.rawJson ?? null);
+  const [row, allRows] = await Promise.all([
+    db.agent.findUnique({ where: { slug: agent } }),
+    db.agent.findMany({ select: { rawJson: true } }),
+  ]);
+  const effective = await resolveEffectiveAgentConfig(row?.rawJson ?? null, allRows.map((r) => r.rawJson));
   const services = Array.from(new Set([...effective.services, ...(await snapshotServices(agent))]));
   const targets = services.filter((service) => service.startsWith("openclaw-") && service.endsWith(".service"));
   const attempted = targets.length > 0 ? targets : ["openclaw-gateway.service"];

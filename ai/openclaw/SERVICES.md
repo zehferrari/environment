@@ -19,14 +19,23 @@ x1 uses systemd timers for active automation. Cron references in old migration n
 - `php-fpm.service`: local PHP runtime.
 - `agent-dashboard.service`: real-time per-agent dashboard backend on `127.0.0.1:3013` (HTTP + SSE). Front-end at `https://dev.vixi.au/agents.html` behind nginx basic auth.
 - `pm.service`: one host-wide PM web app for `agents.vixi.au`, normally
-  running as Karen on x1. It serves the Next.js standalone app, persists
-  PM tasks/comments/chats, sends chat/comment turns into each agent's
-  native OpenClaw `pm` channel, receives partial reply streams at
+  running as Karen on x1. This is a system unit under
+  `/etc/systemd/system` with `User=karen`, not a per-agent user unit. It
+  serves the Next.js standalone app, persists PM tasks/comments/chats,
+  sends chat/comment turns into each agent's native OpenClaw `pm`
+  channel, receives partial reply streams at
   `/api/openclaw/pm-channel/stream`, and persists final replies from
-  `/api/openclaw/pm-channel/reply`.
+  `/api/openclaw/pm-channel/reply`. The service needs read access to the
+  PM checkout/bundle and write access to `prisma/`, `.data`,
+  `/etc/openclaw/pm-agent-credentials`, `/var/lib/pm/drop`,
+  `/srv/Data/projects`, and `/srv/samba/shared`.
 - `pm-consumer.service`: PM event consumer for non-chat automation. Reads
   `/var/lib/pm/drop` and wakes local agent gateways through `/hooks/wake`
-  for assignment/ack-style events.
+  for assignment/ack-style events. It is also a system unit running as
+  Karen on x1. It keeps `ProtectHome=true`; `pnpm` config/cache/home are
+  redirected to `/var/lib/pm/pnpm-{home,config,cache}` to avoid probing
+  hidden `/home/karen` paths. Stale per-agent user units named
+  `pm.service` or `pm-consumer.service` should be removed.
 - OpenClaw Control UIs: per-agent gateway dashboards exposed through nginx behind basic auth. x1 exposes primary, secondary, and monitoring gateway dashboards through role-based nginx routes. OpenClaw uses trusted-proxy auth with `X-Forwarded-User` from nginx, so nginx basic auth is the browser login. Gateway ports bind to LAN but remain blocked from direct network access by firewalld. This is an admin surface; do not expose without auth.
   - OpenClaw 2026.5.7 dashboard note: nginx also sends X-OpenClaw-Scopes: operator.admin. Coding agents set gateway.controlUi.dangerouslyDisableDeviceAuth=true so trusted-proxy WebSocket sessions keep operator scope; this depends on nginx basic auth and firewalld remaining in place.
   - No-slash dashboard paths redirect to trailing-slash paths. Do not proxy exact no-slash paths directly, or OpenClaw emits root-relative assets (/assets/...) that 404.
@@ -43,9 +52,9 @@ x1 uses systemd timers for active automation. Cron references in old migration n
   required by OpenClaw when no default hook session key is configured,
   and PM-owned sessions use `pm:` stable session keys. It then mirrors
   those tokens into `/etc/openclaw/pm-consumer-tokens.json` for the PM
-  consumer. Chat and task-comment turns normally use the native
-  `POST /pm-channel/ingest` route instead; `install.sh` stages that
-  plugin and mirrors per-agent channel tokens into
+  consumer. Chat, Epic chat, and task-comment turns normally use the
+  native `POST /pm-channel/ingest` route instead; `install.sh` stages that
+  plugin for every enabled registry agent and mirrors per-agent channel tokens into
   `/etc/openclaw/pm-channel-tokens.json`. Keep both surfaces local; nginx
   should not proxy `/hooks` or `/pm-channel`, and any nginx dashboard
   proxy must use `127.0.0.1:<gateway_port>` as the upstream and block
@@ -64,6 +73,11 @@ x1 uses systemd timers for active automation. Cron references in old migration n
 - `/usr/local/bin/openclaw-registry-check --runtime`: also validates declared user services and listener ports.
 - `/usr/local/bin/openclaw-boot-readiness`: post-reboot readiness check; runs registry runtime validation, linger checks, integrity check, and ai-monitor probe.
 - `/usr/local/bin/openclaw-backup`: creates a root-only tarball of critical OpenClaw state under `/var/backups/openclaw`.
+- `/usr/local/sbin/openclaw-patch-session-fence`: idempotent OpenClaw
+  runtime patch applied by `install.sh`. It prevents provider timeout
+  transcript markers from being treated as external session takeovers,
+  preserving normal model fallback behavior for PM channel turns after
+  a primary model stalls.
 - `/usr/local/sbin/openclaw-control`: restart/wake helper used by ai-monitor,
   the monitor agent, and mail intake listeners. Before every wake it clears
   stale non-running `pendingFinalDelivery*` state and quarantines a broken
@@ -88,14 +102,14 @@ Derived from enabled integrations (`agent-defaults.json` `byIntegration[k]`):
 
 - `openclaw-gmail-listener.service` — Gmail Pub/Sub listener (`integrations.gmail: true`)
 - `openclaw-mail-listener.service` — Maildir/local-mail listener (`integrations.maildir: true`)
-- `openclaw-webhook-receiver.service` — per-agent webhook receiver (`integrations.webhook: true`)
 
 Per-agent project resources (services that come from a side project the agent has installed) live in `~/<user>/.local/openclaw/monitor.json`. Each resource declares `services[]` and a single `enabled` flag — when `enabled: true`, `openclaw-monitor-sync` keeps the services running and the loaders add them to the monitoring sweep. When `enabled: false`, the services are stopped and dropped from the sweep. See `MONITORING.md` → *Per-agent project resources* for the schema.
 
 ### Monitoring agent (`role: monitoring agent`, runs as user `karen`)
 
 - `openclaw-gateway.service`
-- `openclaw-webhook-receiver.service`
+- `openclaw-jira-receiver.service` — Jira webhook receiver (`integrations.monitor: true` & `integrations.jira: true` on coding agents)
+- `openclaw-bitbucket-receiver.service` — Bitbucket webhook receiver (`integrations.monitor: true` & `integrations.bitbucket: true` on coding agents)
 - `ai-monitor.service` / `ai-monitor.timer` are **system** units (not per-user); the monitoring agent is the Telegram persona used for monitor alerts.
 
 The monitoring agent does not run Gmail/Jira/Bitbucket task intake yet.

@@ -6,7 +6,8 @@
 # repo working tree, or on a fresh host as part of bootstrap.
 #
 # What it does:
-#   1. install bin/ scripts to /usr/local/bin and /usr/local/sbin
+#   1. install bin/ scripts to /usr/local/bin and /usr/local/sbin and
+#      apply the OpenClaw session-fence runtime patch when present
 #   2. install systemd/ system units to /etc/systemd/system
 #   3. install systemd/user/ user units to /etc/systemd/user (admin-installed
 #      user units, visible to every user's systemd instance — only the
@@ -40,6 +41,12 @@ DEFAULTS="${OPENCLAW_AGENT_DEFAULTS:-/etc/openclaw/agent-defaults.json}"
 PM_WEB_ROOT="${PM_WEB_ROOT:-$REPO_ROOT/../web}"
 PM_ENV_FILE="${PM_ENV_FILE:-/etc/default/pm}"
 PM_DROP_DIR="${PM_DROP_DIR:-/var/lib/pm/drop}"
+PM_STATE_DIR="${PM_STATE_DIR:-$(dirname "$PM_DROP_DIR")}"
+PM_ATTACHMENT_ROOT="${PM_ATTACHMENT_ROOT:-/srv/Data/projects}"
+PM_SAMBA_SHARED_ROOT="${PM_SAMBA_SHARED_ROOT:-/srv/samba/shared}"
+PM_CONSUMER_PNPM_HOME="${PM_CONSUMER_PNPM_HOME:-$PM_STATE_DIR/pnpm-home}"
+PM_CONSUMER_PNPM_CONFIG_HOME="${PM_CONSUMER_PNPM_CONFIG_HOME:-$PM_STATE_DIR/pnpm-config}"
+PM_CONSUMER_PNPM_CACHE_HOME="${PM_CONSUMER_PNPM_CACHE_HOME:-$PM_STATE_DIR/pnpm-cache}"
 PM_AGENT_CREDENTIALS_DIR="${PM_AGENT_CREDENTIALS_DIR:-/etc/openclaw/pm-agent-credentials}"
 PM_CONSUMER_TOKEN_FILE="${PM_CONSUMER_TOKEN_FILE:-/etc/openclaw/pm-consumer-tokens.json}"
 PM_APP_USER="${PM_APP_USER:-${PM_CONSUMER_USER:-karen}}"
@@ -47,6 +54,8 @@ PM_APP_GROUP="${PM_APP_GROUP:-${PM_CONSUMER_GROUP:-$PM_APP_USER}}"
 PM_NODE_BIN="${PM_NODE_BIN:-/usr/bin/node24}"
 PM_OPENCLAW_CHANNEL_TOKEN_FILE="${PM_OPENCLAW_CHANNEL_TOKEN_FILE:-/etc/openclaw/pm-channel-tokens.json}"
 PM_OPENCLAW_CHANNEL_TOKEN_GROUP="${PM_OPENCLAW_CHANNEL_TOKEN_GROUP:-$PM_APP_GROUP}"
+OPENCLAW_SESSION_FENCE_PATCH="${OPENCLAW_SESSION_FENCE_PATCH:-1}"
+OPENCLAW_SESSION_FENCE_PATCH_FILE="${OPENCLAW_SESSION_FENCE_PATCH_FILE:-/usr/local/lib/node_modules/openclaw/dist/selection-hR-AeOeU.js}"
 # Final durable reply callback configured into the OpenClaw pm channel plugin.
 # The live partial-reply stream callback is sent by PM per turn as
 # /api/openclaw/pm-channel/stream, derived from PM_AGENT_CALLBACK_URL or
@@ -109,10 +118,23 @@ log "[1/7] bin scripts"
 do_install 755 "$REPO_ROOT/bin/ai-monitor"                /usr/local/bin/ai-monitor
 do_install 755 "$REPO_ROOT/bin/openclaw-integrity-check"  /usr/local/bin/openclaw-integrity-check
 do_install 755 "$REPO_ROOT/bin/openclaw-control"          /usr/local/sbin/openclaw-control
+do_install 755 "$REPO_ROOT/bin/openclaw-patch-session-fence" /usr/local/sbin/openclaw-patch-session-fence
 do_install 755 "$REPO_ROOT/bin/agent-dashboard"           /usr/local/bin/agent-dashboard
 do_install 755 "$REPO_ROOT/bin/openclaw-monitor-sync"     /usr/local/sbin/openclaw-monitor-sync
 do_install 755 "$REPO_ROOT/bin/openclaw-typing-keepalive" /usr/local/bin/openclaw-typing-keepalive
 do_install 755 "$REPO_ROOT/bin/gmail-watch-renew-all"     /usr/local/sbin/gmail-watch-renew-all
+if [ "$OPENCLAW_SESSION_FENCE_PATCH" != "0" ] && [ "$OPENCLAW_SESSION_FENCE_PATCH" != "false" ]; then
+    if [ "$DRY" -eq 1 ]; then
+        log "  would patch OpenClaw session fence at $OPENCLAW_SESSION_FENCE_PATCH_FILE"
+    elif [ -x "$PM_NODE_BIN" ]; then
+        "$PM_NODE_BIN" "$REPO_ROOT/bin/openclaw-patch-session-fence" --file "$OPENCLAW_SESSION_FENCE_PATCH_FILE" \
+            || warn "  OpenClaw session-fence patch failed (continuing)"
+    else
+        warn "  node not found/executable at $PM_NODE_BIN; skipping OpenClaw session-fence patch"
+    fi
+else
+    log "  OpenClaw session-fence patch disabled by OPENCLAW_SESSION_FENCE_PATCH=$OPENCLAW_SESSION_FENCE_PATCH"
+fi
 
 # 2. system-wide systemd units (host-portable)
 log "[2/7] systemd system units"
@@ -419,13 +441,29 @@ else
     pm_unit_src="$PM_WEB_ROOT/deploy/pm.service"
     consumer_unit_src="$PM_WEB_ROOT/deploy/pm-consumer.service"
     channel_installer="$PM_WEB_ROOT/deploy/install-openclaw-pm-channel.mjs"
+    pm_channel_agent_root="${PM_OPENCLAW_AGENT_ROOT:-/srv/agents/openclaw}"
+    pm_channel_agents=""
+    if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+        registry_agent_root=$(jq -r '.agentFilesRoot // empty' "$REGISTRY" 2>/dev/null || true)
+        [ -n "$registry_agent_root" ] && pm_channel_agent_root="$registry_agent_root"
+        pm_channel_agents=$(jq -r '[.agents[] | select(.enabled == true and (.user // "") != "") | .user] | join(",")' "$REGISTRY" 2>/dev/null || true)
+    fi
 
     if [ "$DRY" -eq 1 ]; then
         log "  would install -d -o $pm_app_user -g $pm_app_group -m 0700 $PM_AGENT_CREDENTIALS_DIR"
         log "  would install -d -o $pm_user -g $pm_group -m 0700 $PM_DROP_DIR"
+        log "  would install -d -o $pm_app_user -g $pm_app_group -m 0700 $PM_ATTACHMENT_ROOT"
+        log "  would install -d -o root -g root -m 0755 $PM_SAMBA_SHARED_ROOT and grant $pm_app_user ACL write access"
+        log "  would provision pm-consumer pnpm home/config/cache under $PM_STATE_DIR"
+        log "  would remove stale per-agent user pm.service / pm-consumer.service units"
         log "  would bind agent gateways to loopback, enable /hooks/wake with hook:/pm: session keys, and reconcile $PM_CONSUMER_TOKEN_FILE (root:$pm_group 0640)"
         log "  would reconcile native PM channel tokens at $PM_OPENCLAW_CHANNEL_TOKEN_FILE (root:$PM_OPENCLAW_CHANNEL_TOKEN_GROUP 0640)"
         log "  would configure native PM channel final callback $PM_OPENCLAW_CHANNEL_CALLBACK_URL"
+        if [ -n "$pm_channel_agents" ]; then
+            log "  would configure native PM channel for enabled agents: $pm_channel_agents"
+        else
+            log "  would let native PM channel installer discover enabled agents from $REGISTRY"
+        fi
         log "  PM sends the live stream callback per turn as /api/openclaw/pm-channel/stream from its callback base"
         if [ -f "$pm_unit_src" ]; then
             log "  would render $pm_unit_src → /etc/systemd/system/pm.service"
@@ -438,7 +476,7 @@ else
             warn "  missing $consumer_unit_src; skipping pm-consumer.service"
         fi
         if [ -f "$channel_installer" ]; then
-            log "  would run $PM_NODE_BIN $channel_installer --callback-url $PM_OPENCLAW_CHANNEL_CALLBACK_URL --restart"
+            log "  would run $PM_NODE_BIN $channel_installer --registry $REGISTRY --agent-root $pm_channel_agent_root --callback-url $PM_OPENCLAW_CHANNEL_CALLBACK_URL --restart"
         else
             warn "  missing $channel_installer; skipping native PM channel install"
         fi
@@ -449,6 +487,28 @@ else
         ok "$PM_WEB_ROOT/.data"
         install -d -o "$pm_user" -g "$pm_group" -m 0700 "$PM_DROP_DIR"
         ok "$PM_DROP_DIR"
+        install -d -o "$pm_app_user" -g "$pm_app_group" -m 0700 "$PM_ATTACHMENT_ROOT"
+        ok "$PM_ATTACHMENT_ROOT"
+        install -d -o root -g root -m 0755 "$PM_SAMBA_SHARED_ROOT"
+        ok "$PM_SAMBA_SHARED_ROOT"
+        install -d -o "$pm_user" -g "$pm_group" -m 0700 \
+            "$PM_CONSUMER_PNPM_HOME" \
+            "$PM_CONSUMER_PNPM_CONFIG_HOME" \
+            "$PM_CONSUMER_PNPM_CACHE_HOME" \
+            "$PM_CONSUMER_PNPM_CONFIG_HOME/pnpm"
+        if [ ! -f "$PM_CONSUMER_PNPM_HOME/.npmrc" ]; then
+            install -o "$pm_user" -g "$pm_group" -m 0600 /dev/null "$PM_CONSUMER_PNPM_HOME/.npmrc"
+        else
+            chown "$pm_user:$pm_group" "$PM_CONSUMER_PNPM_HOME/.npmrc" 2>/dev/null || true
+            chmod 0600 "$PM_CONSUMER_PNPM_HOME/.npmrc" 2>/dev/null || true
+        fi
+        if [ ! -f "$PM_CONSUMER_PNPM_CONFIG_HOME/pnpm/rc" ]; then
+            install -o "$pm_user" -g "$pm_group" -m 0600 /dev/null "$PM_CONSUMER_PNPM_CONFIG_HOME/pnpm/rc"
+        else
+            chown "$pm_user:$pm_group" "$PM_CONSUMER_PNPM_CONFIG_HOME/pnpm/rc" 2>/dev/null || true
+            chmod 0600 "$PM_CONSUMER_PNPM_CONFIG_HOME/pnpm/rc" 2>/dev/null || true
+        fi
+        ok "pm-consumer pnpm home/config/cache under $PM_STATE_DIR"
         if command -v setfacl >/dev/null 2>&1; then
             acl_path="$PM_WEB_ROOT"
             while [ "$acl_path" != "/" ] && [ -n "$acl_path" ]; do
@@ -460,9 +520,36 @@ else
             [ -d "$PM_WEB_ROOT/prisma" ] && setfacl -dR -m "u:$pm_app_user:rwx" "$PM_WEB_ROOT/prisma" 2>/dev/null || true
             [ -d "$PM_WEB_ROOT/.data" ] && setfacl -R -m "u:$pm_app_user:rwx" "$PM_WEB_ROOT/.data" 2>/dev/null || true
             [ -d "$PM_WEB_ROOT/.data" ] && setfacl -dR -m "u:$pm_app_user:rwx" "$PM_WEB_ROOT/.data" 2>/dev/null || true
+            [ -d "$PM_SAMBA_SHARED_ROOT" ] && find "$PM_SAMBA_SHARED_ROOT" -type d -exec setfacl -m "u:$pm_app_user:rwx,d:u:$pm_app_user:rwx" {} + 2>/dev/null || true
+            [ -d "$PM_SAMBA_SHARED_ROOT" ] && find "$PM_SAMBA_SHARED_ROOT" -type f -exec setfacl -m "u:$pm_app_user:rw" {} + 2>/dev/null || true
             ok "runtime ACLs for $pm_app_user on PM bundle/data paths"
         else
-            warn "  setfacl unavailable; ensure $pm_app_user can read .next/standalone and write prisma/.data"
+            warn "  setfacl unavailable; ensure $pm_app_user can read .next/standalone and write prisma/.data plus $PM_SAMBA_SHARED_ROOT"
+        fi
+
+        if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+            while IFS=$'\t' read -r user uid home; do
+                [ -z "$user" ] && continue
+                [ -n "$home" ] || home="/home/$user"
+                unit_dir="$home/.config/systemd/user"
+                rm -rf \
+                    "$unit_dir/pm.service" \
+                    "$unit_dir/pm-consumer.service" \
+                    "$unit_dir/pm.service.d" \
+                    "$unit_dir/pm-consumer.service.d" \
+                    "$unit_dir/default.target.wants/pm.service" \
+                    "$unit_dir/default.target.wants/pm-consumer.service"
+                [ -n "$uid" ] || uid=$(id -u "$user" 2>/dev/null || true)
+                if [ -n "$uid" ]; then
+                    sudo -n -u "$user" \
+                        env XDG_RUNTIME_DIR="/run/user/$uid" \
+                            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+                        systemctl --user daemon-reload 2>/dev/null || true
+                fi
+            done < <(jq -r '.agents[] | select(.enabled == true) | "\(.user)\t\(.uid // "")\t\(.home // "")"' "$REGISTRY")
+            ok "removed stale per-agent user pm.service / pm-consumer.service units"
+        else
+            warn "  registry or jq unavailable; cannot remove stale per-agent PM user units"
         fi
 
         install -d -o root -g root -m 0755 "$(dirname "$PM_CONSUMER_TOKEN_FILE")"
@@ -602,7 +689,7 @@ else
                 -e "s|^EnvironmentFile=.*|EnvironmentFile=$PM_ENV_FILE|" \
                 -e "s|^Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=.*|Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=$PM_OPENCLAW_CHANNEL_TOKEN_FILE|" \
                 -e "s|^ExecStart=.*|ExecStart=$PM_NODE_BIN server.js|" \
-                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_WEB_ROOT/.data $PM_AGENT_CREDENTIALS_DIR $PM_DROP_DIR -/srv/Data/projects|" \
+                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_WEB_ROOT/.data $PM_AGENT_CREDENTIALS_DIR $PM_DROP_DIR -$PM_ATTACHMENT_ROOT -$PM_SAMBA_SHARED_ROOT|" \
                 -e "s|^ReadOnlyPaths=.*|ReadOnlyPaths=/srv/agents $PM_OPENCLAW_CHANNEL_TOKEN_FILE|" \
                 "$pm_unit_src" > "$tmp_unit"
             install -o root -g root -m 0644 "$tmp_unit" /etc/systemd/system/pm.service
@@ -620,7 +707,13 @@ else
                 -e "s|^EnvironmentFile=.*|EnvironmentFile=$PM_ENV_FILE|" \
                 -e "s|^Environment=PM_CONSUMER_DROP_DIR=.*|Environment=PM_CONSUMER_DROP_DIR=$PM_DROP_DIR|" \
                 -e "s|^Environment=PM_CONSUMER_HOOK_TOKEN_FILE=.*|Environment=PM_CONSUMER_HOOK_TOKEN_FILE=$PM_CONSUMER_TOKEN_FILE|" \
-                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_DROP_DIR|" \
+                -e "s|^Environment=HOME=.*|Environment=HOME=$PM_CONSUMER_PNPM_HOME|" \
+                -e "s|^Environment=XDG_CONFIG_HOME=.*|Environment=XDG_CONFIG_HOME=$PM_CONSUMER_PNPM_CONFIG_HOME|" \
+                -e "s|^Environment=XDG_CACHE_HOME=.*|Environment=XDG_CACHE_HOME=$PM_CONSUMER_PNPM_CACHE_HOME|" \
+                -e "s|^Environment=PNPM_HOME=.*|Environment=PNPM_HOME=$PM_CONSUMER_PNPM_HOME|" \
+                -e "s|^Environment=NPM_CONFIG_USERCONFIG=.*|Environment=NPM_CONFIG_USERCONFIG=$PM_CONSUMER_PNPM_HOME/.npmrc|" \
+                -e "s|^Environment=npm_config_userconfig=.*|Environment=npm_config_userconfig=$PM_CONSUMER_PNPM_HOME/.npmrc|" \
+                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_DROP_DIR $PM_CONSUMER_PNPM_HOME $PM_CONSUMER_PNPM_CONFIG_HOME $PM_CONSUMER_PNPM_CACHE_HOME|" \
                 "$consumer_unit_src" > "$tmp_unit"
             install -o root -g root -m 0644 "$tmp_unit" /etc/systemd/system/pm-consumer.service
             rm -f "$tmp_unit"
@@ -633,11 +726,21 @@ else
             if [ -x "$PM_NODE_BIN" ]; then
                 log "  native PM channel final callback: $PM_OPENCLAW_CHANNEL_CALLBACK_URL"
                 log "  native PM channel stream callback is supplied per turn by the PM app"
+                channel_args=(
+                    --registry "$REGISTRY"
+                    --agent-root "$pm_channel_agent_root"
+                    --token-file "$PM_OPENCLAW_CHANNEL_TOKEN_FILE"
+                    --token-group "$PM_OPENCLAW_CHANNEL_TOKEN_GROUP"
+                    --callback-url "$PM_OPENCLAW_CHANNEL_CALLBACK_URL"
+                    --restart
+                )
+                if [ -n "$pm_channel_agents" ]; then
+                    channel_args+=(--agents "$pm_channel_agents")
+                fi
                 PM_OPENCLAW_CHANNEL_TOKEN_FILE="$PM_OPENCLAW_CHANNEL_TOKEN_FILE" \
                 PM_OPENCLAW_CHANNEL_TOKEN_GROUP="$PM_OPENCLAW_CHANNEL_TOKEN_GROUP" \
-                "$PM_NODE_BIN" "$channel_installer" \
-                    --callback-url "$PM_OPENCLAW_CHANNEL_CALLBACK_URL" \
-                    --restart || warn "  native PM channel installer failed (continuing)"
+                "$PM_NODE_BIN" "$channel_installer" "${channel_args[@]}" \
+                    || warn "  native PM channel installer failed (continuing)"
             else
                 warn "  node not found/executable at $PM_NODE_BIN; skipping native PM channel installer"
             fi
@@ -700,17 +803,20 @@ if [ ! -r "$REGISTRY" ] || [ ! -r "$DEFAULTS" ]; then
 elif ! command -v jq >/dev/null 2>&1; then
     warn "  jq not available; skipping reconcile"
 else
-    # Derive expected openclaw-*.service set per agent, emit "<user> <uid> <svc>" lines.
     DERIVE=$(jq -r --slurpfile defs "$DEFAULTS" '
+      any(.agents[]; .enabled == true and .role == "coding" and .integrations.jira == true) as $has_jira |
+      any(.agents[]; .enabled == true and .role == "coding" and .integrations.bitbucket == true) as $has_bb |
       .agents[] | select(.enabled == true) | . as $a |
-      ($defs[0].core.services // []) +
-      (($defs[0].byRole[$a.role].services // [])) +
-      ([ ($a.integrations // {}) | to_entries[]
-         | select(.value == true)
-         | $defs[0].byIntegration[.key].services // [] ] | add // []) +
-      ($a.services // [])
+      (($defs[0].core.services // []) +
+       (($defs[0].byRole[$a.role].services // [])) +
+       ([ ($a.integrations // {}) | to_entries[]
+          | select(.value == true)
+          | $defs[0].byIntegration[.key].services // [] ] | add // []) +
+       ($a.services // []))
       | unique
       | map(select(startswith("openclaw-")))
+      | map(select(. != "openclaw-jira-receiver.service" or $has_jira))
+      | map(select(. != "openclaw-bitbucket-receiver.service" or $has_bb))
       | .[] as $svc
       | "\($a.user)\t\($a.uid)\t\($svc)"
     ' "$REGISTRY")
@@ -786,5 +892,5 @@ log "  sudo systemctl enable --now openclaw-typing-keepalive.service   # claude-
 log "  sudo systemctl enable --now gmail-watch-renew.timer            # gmail-integrated hosts only"
 log
 log "Per-agent user units (openclaw-gateway, gmail-listener, mail-listener,"
-log "jira-receiver, bitbucket-receiver, webhook-receiver) are reconciled"
+log "jira-receiver, bitbucket-receiver) are reconciled"
 log "automatically by step [7/7] above based on each agent's derived service set."

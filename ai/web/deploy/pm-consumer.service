@@ -6,14 +6,20 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=zeh
-Group=zeh
-WorkingDirectory=/srv/Code/environment/ai/web
+User=karen
+Group=karen
+WorkingDirectory=/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web
 
 Environment=NODE_ENV=production
 EnvironmentFile=/etc/default/pm
 Environment=PM_CONSUMER_DROP_DIR=/var/lib/pm/drop
 Environment=PM_CONSUMER_HOOK_TOKEN_FILE=/etc/openclaw/pm-consumer-tokens.json
+Environment=HOME=/var/lib/pm/pnpm-home
+Environment=XDG_CONFIG_HOME=/var/lib/pm/pnpm-config
+Environment=XDG_CACHE_HOME=/var/lib/pm/pnpm-cache
+Environment=PNPM_HOME=/var/lib/pm/pnpm-home
+Environment=NPM_CONFIG_USERCONFIG=/var/lib/pm/pnpm-home/.npmrc
+Environment=npm_config_userconfig=/var/lib/pm/pnpm-home/.npmrc
 
 ExecStart=/usr/local/bin/pnpm pm-consumer
 
@@ -27,7 +33,7 @@ NoNewPrivileges=false
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/srv/Code/environment/ai/web/prisma /var/lib/pm/drop
+ReadWritePaths=/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma /var/lib/pm/drop /var/lib/pm/pnpm-home /var/lib/pm/pnpm-config /var/lib/pm/pnpm-cache
 ReadOnlyPaths=/srv/agents /etc/openclaw/pm-consumer-tokens.json
 
 [Install]

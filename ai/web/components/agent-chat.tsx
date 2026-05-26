@@ -158,11 +158,6 @@ export default async function AgentChatSidebar(props: TargetProps) {
                         </div>
                       </div>
                       <div className="relative md md-compact" dangerouslySetInnerHTML={renderFullMarkdown(m.body)} />
-                      {m.allowDescriptionEdit ? (
-                        <div className="relative mt-1 inline-block rounded-full border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-0.5 text-[10px] uppercase tracking-wider">
-                          {m.editGrantUsedAt ? "edit grant used" : "edit grant active"}
-                        </div>
-                      ) : null}
                     </article>
                     {fromCurrentUser ? <MessageAvatar actor={m.sender as MessageActor} size="sm" /> : null}
                   </div>
@@ -186,7 +181,6 @@ export default async function AgentChatSidebar(props: TargetProps) {
             epicId={props.epicId}
             agentSlug={selected.agentSlug}
             agentUsername={selected.username}
-            isTaskChat={isTaskChat}
           />
         </>
       ) : (

@@ -433,12 +433,20 @@ Runtime notes:
 
 `karen` still owns the shared webhook dispatcher. It does not own Gmail polling, because Gmail polling uses each coding agent's Google OAuth state, task files, gateway token, and per-agent memory. Keeping Gmail under each coding agent preserves least privilege and prevents cross-agent mailbox confusion.
 
+`karen` also owns the PM runtime. `pm.service` and
+`pm-consumer.service` are host-wide **system** services in
+`/etc/systemd/system` with runtime `User=karen`; they must not be
+installed or enabled as per-agent user services under a coding agent's
+`~/.config/systemd/user`. The PM consumer keeps `ProtectHome=true` and
+uses service-private `pnpm` home/config/cache directories under
+`/var/lib/pm` so it never probes hidden `/home/karen` config paths.
+
 Expected enabled user services/timers, by role (concrete user → services map is in `/etc/openclaw/agents.json` `services`):
 
 | Role | Services / timers |
 |---|---|
-| Monitoring agent (user `karen`) | `openclaw-gateway.service`, `openclaw-webhook-receiver.service` |
-| Each coding agent (one row per agent in registry) | Core: `openclaw-gateway.service`, `openclaw-gmail-listener.service`, `openclaw-webhook-receiver.service` (derived from `role` + `integrations` via `agent-defaults.json`). Plus any project resources the agent has enabled in `~/.local/openclaw/monitor.json` (e.g. `wdt-<user>.service`). |
+| Monitoring agent (user `karen`) | `openclaw-gateway.service`, `openclaw-jira-receiver.service`, `openclaw-bitbucket-receiver.service` |
+| Each coding agent (one row per agent in registry) | Core: `openclaw-gateway.service`, `openclaw-gmail-listener.service` (derived from `role` + `integrations` via `agent-defaults.json`). Plus any project resources the agent has enabled in `~/.local/openclaw/monitor.json` (e.g. `wdt-<user>.service`). |
 
 Expected listeners on `x1` (concrete `user → port` map is in `agents.json` `listeners`):
 
@@ -447,13 +455,40 @@ Expected listeners on `x1` (concrete `user → port` map is in `agents.json` `li
 | `18789–1879N` (one per coding agent) | Coding agent | OpenClaw gateway |
 | `18791, 18792, …` (one per coding agent) | Coding agent | OpenClaw browser sidecar |
 | `18793` | Monitoring agent (`karen`) | OpenClaw gateway |
-| `3010` | Monitoring agent (`karen`) | Multi-tenant OpenClaw webhook receiver |
-| `3011, 3012, …` (one per coding agent) | Coding agent | Per-agent OpenClaw webhook receiver |
+| `3000` | Project Manager (`karen`) | PM (Zero Latency) web server, Next.js loopback |
+| `3014` | Monitoring agent (`karen`) | OpenClaw Jira webhook receiver |
+| `3015` | Monitoring agent (`karen`) | OpenClaw Bitbucket webhook receiver |
 | Per-agent project resources (e.g. `3001, 3002, …`) | Coding agent | Declared in that agent's `~/.local/openclaw/monitor.json` (e.g. WDT Next.js standalone, loopback). Each resource's `enabled` flag controls both whether it runs and whether it's monitored. |
 | `11434` | system (`ollama`) | Ollama API, loopback |
 | `3013` | system (`root`, `agent-dashboard.service`) | Agent dashboard backend (HTTP + SSE), loopback only — public access via nginx at `https://dev.vixi.au/agents.html` with basic auth |
 
 The exact port numbers per registered user live in `agents.json` (`listeners[].host:port`); `openclaw-registry-check --runtime` validates that the listed ports are actually bound.
+
+### Project Manager (Zero Latency) Services
+
+The Project Manager (Zero Latency) web interface and queue processor run as host-wide system-level services on `x1` under user `karen`.
+
+- **`pm.service`**: A system-wide `systemd` service running the Next.js production standalone server on `127.0.0.1:3000`.
+  - Env configuration loads from `/etc/default/pm`.
+  - Serves the Zero Latency web interface at `https://agents.vixi.au` (via Nginx reverse proxy).
+  - Background intervals (periodic agent sync, hourly soft-delete bin purges, and orphaned attachment cleanup) are scheduled in-process via Next.js `instrumentation.node.ts` scheduler.
+- **`pm-consumer.service`**: A system-wide `systemd` service that watches for events dropped by the web application into `/var/lib/pm/drop/`.
+  - Runs in a loop using `pnpm tsx` to execute `scripts/pm-consumer-loop.ts`.
+  - Reads dropped event files and triggers loopback wake requests (`POST /hooks/wake`) to target agent gateways (e.g. `http://127.0.0.1:18789/hooks/wake` with Bearer tokens).
+  - Configured with `ProtectHome=true` and service-private cache/config directories under `/var/lib/pm/` (`pnpm-home`, `pnpm-config`, `pnpm-cache`, `.npmrc`) to avoid home directory configuration leaks.
+
+#### Database and Data Storage
+- **Database**: A Prisma SQLite database located at `ai/web/prisma/prisma/dev.db` (under the `/srv/Code/environment.worktrees/...` checkout).
+- **Attachments**: Task and Epic file attachments are saved to `/srv/Data/projects/<projectId>/attachments/<sha256>`.
+- **Private Credentials**: Stored securely in `/etc/openclaw/pm-agent-credentials/` (owned by `karen:karen`, mode `0700`).
+
+#### Integration and Security Tokens
+To securely interface with local agent gateways without exposing credentials, PM uses configuration files mapping agent users to token strings:
+- `/etc/openclaw/pm-consumer-tokens.json` (owned by `root:karen`, mode `0640`): Map of `/hooks/wake` gateway Bearer tokens.
+- `/etc/openclaw/pm-channel-tokens.json` (owned by `root:karen`, mode `0640`): Map of native `pm` channel Bearer tokens.
+
+#### Webhook and Ingress Routing
+Incoming webhooks from Atlassian (Jira/Bitbucket) flow from public URLs through `moonlight` and `x1` nginx, routing to `openclaw-jira-receiver.service` (port `3014`) and `openclaw-bitbucket-receiver.service` (port `3015`) running under `karen`.
 
 ### OpenClaw Architecture
 
@@ -507,13 +542,14 @@ The Z.ai provider/plugin was intentionally removed/disabled on 2026-05-06.
 https://dev.vixi.au/webhooks/*
   -> moonlight nginx
   -> x1 nginx
-  -> karen openclaw-webhook-receiver on 127.0.0.1:3010
+  -> karen openclaw-jira-receiver on 127.0.0.1:3014
+  -> karen openclaw-bitbucket-receiver on 127.0.0.1:3015
   -> /usr/local/sbin/openclaw-control <coding-agent-user> ...
 ```
 
 Webhook and integration facts:
 
-- Shared webhook dispatcher: `/home/karen/webhooks/webhook-receiver.js`.
+- Shared webhook receivers: `/home/karen/webhooks/jira-receiver.js` and `/home/karen/webhooks/bitbucket-receiver.js`.
 - Routing config: `/home/karen/webhooks/users.json`.
 - Endpoints: `GET /health`, `POST /jira`, `POST /bitbucket`.
 - `karen` may run `/usr/local/sbin/openclaw-control *` via `/etc/sudoers.d/karen-openclaw-control`.
@@ -621,7 +657,7 @@ systemctl is-active ollama openclaw-integrity.timer
 # For each coding agent (substitute <user>/<uid> from /etc/openclaw/agents.json):
 sudo -u <user> XDG_RUNTIME_DIR=/run/user/<uid> DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus systemctl --user status openclaw-gateway.service openclaw-gmail-listener.service
 # For the monitoring agent:
-sudo -u karen XDG_RUNTIME_DIR=/run/user/1003 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1003/bus systemctl --user status openclaw-gateway.service openclaw-webhook-receiver.service
+sudo -u karen XDG_RUNTIME_DIR=/run/user/1003 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1003/bus systemctl --user status openclaw-gateway.service openclaw-jira-receiver.service openclaw-bitbucket-receiver.service
 /usr/local/bin/ollama list
 /usr/local/bin/openclaw-registry-check --runtime
 /usr/local/bin/openclaw-integrity-check
@@ -740,7 +776,7 @@ Second consolidated note covering changes since the 2026-05-08 entry. Each bulle
 
 - **Dashboard HTML lives in the environment repo** (/srv/Code/environment/ai/web/). nginx serves the main dashboard and experiment HTML copies directly via alias from /etc/nginx/vhosts.d/dev.conf. The Node service still handles /agents/events, /agents/snapshot, registry toggles, service restarts, and /agents/health.
 
-- **Webhook @-mention routing** (`/home/karen/webhooks/webhook-receiver.js` + `users.json`). `comment_*` events are parsed for both ADF and wiki-markup mentions (`[~accountid:712020:...]`). Jira Cloud delivers webhook `comment.body` as a wiki-markup string (not ADF — the REST API does ADF, webhooks do not), so `extractWikiMentions()` is the path that fires in practice. Mentioned agents are routed by `jiraAccountId` lookup (per-user map built at startup from `users.json`); the wake message gets a "You were @-mentioned in <KEY> by <Mentioner>" prefix invoking the TEAM_WORKFLOW.md "Receiving an @-mention" rule. Comment author is excluded (no self-wake). Otherwise routing is assignee-only; unassigned Jira updates are not broadcast to all agents and are not executable work.
+- **Webhook @-mention routing** (`/home/karen/webhooks/jira-receiver.js` + `users.json`). `comment_*` events are parsed for both ADF and wiki-markup mentions (`[~accountid:712020:...]`). Jira Cloud delivers webhook `comment.body` as a wiki-markup string (not ADF — the REST API does ADF, webhooks do not), so `extractWikiMentions()` is the path that fires in practice. Mentioned agents are routed by `jiraAccountId` lookup (per-user map built at startup from `users.json`); the wake message gets a "You were @-mentioned in <KEY> by <Mentioner>" prefix invoking the TEAM_WORKFLOW.md "Receiving an @-mention" rule. Comment author is excluded (no self-wake). Otherwise routing is assignee-only; unassigned Jira updates are not broadcast to all agents and are not executable work.
 
 - **Pending-mention queue** (`/var/lib/ai-monitor/pending-mentions/`, root:karen 0775). Receiver writes one JSON per `(issue_key, comment_id, agent)` recording mention metadata. ai-monitor's new `probe_pending_mentions` walks the queue every tick, queries Jira for an agent reply on the issue dated ≥ the mention's `created`, and either deletes the resolved entry or surfaces a `mention-awaiting-reply` warn (≥15 min) or crit (≥60 min). Configured under `/etc/ai-monitor/config.json` → `pending_mentions` block.
 
@@ -911,7 +947,8 @@ Each agent should normally have these user services:
 
 - `openclaw-gateway.service`
 - `openclaw-mail-listener.service` when using local Maildir
-- `openclaw-webhook-receiver.service` if webhooks are required
+- `openclaw-gmail-listener.service` for Gmail integrations
+- `openclaw-jira-receiver.service` and `openclaw-bitbucket-receiver.service` (monitor agent only, when enabled)
 
 Host-level services/timers to install:
 

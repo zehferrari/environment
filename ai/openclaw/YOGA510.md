@@ -90,13 +90,13 @@ Token files are mode `0600` and owned by the agent user. The config shape is:
 }
 ```
 
-Validate with `openclaw channels list` as each user, then restart `openclaw-gateway.service`, `openclaw-mail-listener.service`, and `openclaw-webhook-receiver.service`.
+Validate with `openclaw channels list` as each user, then restart `openclaw-gateway.service`, `openclaw-mail-listener.service`, and the relevant monitor webhook receivers (`openclaw-jira-receiver.service` / `openclaw-bitbucket-receiver.service`).
 
 ## Jira and Webhooks
 
 Yoga510 now uses the x1-style monitor-owned webhook dispatcher for Jira routing:
 
-- Main local receiver: `/home/emery/webhooks/webhook-receiver.js` on `127.0.0.1:3010`.
+- Main local receivers: `/home/emery/webhooks/jira-receiver.js` (port `3014`) and `/home/emery/webhooks/bitbucket-receiver.js` (port `3015`).
 - Routing config: `/home/emery/webhooks/users.json`.
 - Routed coding users: `ada` and `claudia`.
 - Task queues: `/home/ada/tasks/current.md` and `/home/claudia/tasks/current.md`.
@@ -111,7 +111,7 @@ Per agent user services:
 
 - `openclaw-gateway.service`
 - `openclaw-mail-listener.service`
-- `openclaw-webhook-receiver.service`
+- `openclaw-jira-receiver.service` and `openclaw-bitbucket-receiver.service` (monitor agent only, when enabled)
 
 Host services:
 

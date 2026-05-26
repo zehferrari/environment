@@ -46,6 +46,9 @@ function applyStreamState(
   else setStatus("streaming");
 }
 
+const RESPONSE_TIMEOUT_MS = 10 * 60_000;
+const REFRESH_FALLBACK_MS = 15_000;
+
 export default function StreamingAgentReply({
   targetKind,
   agentSlug,
@@ -74,12 +77,21 @@ export default function StreamingAgentReply({
 
   useEffect(() => {
     let refreshTimer: number | undefined;
+    let refreshInterval: number | undefined;
+    let responseTimer: number | undefined;
     const source = new EventSource(url);
+
+    responseTimer = window.setTimeout(() => {
+      setError("Agent response timed out");
+      setStatus("error");
+      source.close();
+    }, RESPONSE_TIMEOUT_MS);
 
     const refreshSoon = () => {
       window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(() => router.refresh(), 180);
     };
+    refreshInterval = window.setInterval(() => router.refresh(), REFRESH_FALLBACK_MS);
 
     const parse = (event: MessageEvent<string>) => {
       try {
@@ -94,13 +106,26 @@ export default function StreamingAgentReply({
       if (!payload) return;
       setError(payload.error ?? null);
       applyStreamState(payload, setText, setReasoning, setStatus);
-      if (payload.status === "done") refreshSoon();
+      if (payload.status === "done") {
+        window.clearInterval(refreshInterval);
+        window.clearTimeout(responseTimer);
+        refreshSoon();
+      } else if (payload.status === "error") {
+        window.clearInterval(refreshInterval);
+        window.clearTimeout(responseTimer);
+      }
     };
 
     const onErrorEvent = (event: MessageEvent<string>) => {
       const payload = parse(event);
       setError(payload?.error ?? "Agent stream failed");
       setStatus("error");
+      window.clearInterval(refreshInterval);
+      window.clearTimeout(responseTimer);
+    };
+
+    const onHeartbeat = () => {
+      setStatus((current) => current === "connecting" ? "streaming" : current);
     };
 
     source.addEventListener("snapshot", onState);
@@ -109,12 +134,22 @@ export default function StreamingAgentReply({
     source.addEventListener("final", onState);
     source.addEventListener("done", onState);
     source.addEventListener("stream-error", onErrorEvent);
+    source.addEventListener("heartbeat", onHeartbeat);
     source.onerror = () => {
-      setStatus((current) => (current === "done" ? current : "connecting"));
+      setStatus((current) => {
+        if (current === "done" || current === "error") {
+          window.clearInterval(refreshInterval);
+          window.clearTimeout(responseTimer);
+          return current;
+        }
+        return "connecting";
+      });
     };
 
     return () => {
       window.clearTimeout(refreshTimer);
+      window.clearInterval(refreshInterval);
+      window.clearTimeout(responseTimer);
       source.close();
     };
   }, [router, url]);
@@ -124,7 +159,7 @@ export default function StreamingAgentReply({
     username: agentSlug,
     kind: "agent",
     name: label,
-    agent: { slug: agentSlug, name: label, avatar: null },
+    agent: { slug: agentSlug, name: label, avatar: "placeholder" },
   };
 
   if (!text.trim() && !reasoning.trim()) {

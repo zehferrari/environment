@@ -106,9 +106,10 @@ export default async function AgentProfilePage({
   const { agent: slug } = await params;
   const requestedTab = (await searchParams)?.tab === "operations" ? "operations" : "controls";
   const session = await auth();
-  const [agent, snapshot] = await Promise.all([
+  const [agent, snapshot, allAgents] = await Promise.all([
     db.agent.findUnique({ where: { slug }, include: { user: true } }),
     readSnapshot(),
+    db.agent.findMany({ select: { rawJson: true } }),
   ]);
   if (!agent) notFound();
 
@@ -132,7 +133,7 @@ export default async function AgentProfilePage({
 
   const live = snapshot?.agents?.[slug];
   const raw = parseRaw(agent.rawJson);
-  const effective = await resolveEffectiveAgentConfig(agent.rawJson);
+  const effective = await resolveEffectiveAgentConfig(agent.rawJson, allAgents.map(a => a.rawJson));
   const status = statusFor(agent, live);
   const tickets = live?.jira_tickets ?? [];
   const listeners = raw.listeners ?? [];

@@ -191,12 +191,29 @@ export function buildTaskNativeChannelPrompt(taskTitle: string, slug: string): s
   ].join("\n");
 }
 
-export function buildTaskNativeEditGrantPrompt(taskTitle: string): string {
+export function buildTaskNativeEditGrantPrompt(args: {
+  taskTitle: string;
+  descriptionUrl: string;
+  messageId: string;
+  token: string;
+}): string {
+  const exampleBody = JSON.stringify({
+    messageId: args.messageId,
+    token: args.token,
+    description: "<complete replacement markdown description>",
+  });
+
   return [
-    `The PM user allowed description editing for task "${taskTitle}".`,
-    "This turn arrived through the native OpenClaw PM channel.",
-    "For now, reply with the proposed complete description in markdown and explain that it is ready for PM review.",
-    "Do not call legacy callback URLs. OpenClaw delivers your visible response through the PM channel.",
+    `DESCRIPTION WRITE CAPABILITY for task "${args.taskTitle}".`,
+    "A human-authored message on this task gives you a one-shot capability to replace the task description.",
+    "Use it only when the current human message directly asks you to update, rewrite, reformat, or replace this task description. If the message is only a question, discussion, or status check, do not call this endpoint.",
+    "",
+    "To write the description, POST application/json to:",
+    args.descriptionUrl,
+    "Body shape:",
+    exampleBody,
+    "",
+    "The description field must contain the complete final markdown description and nothing else. After a successful POST, reply normally through the PM channel with a concise confirmation.",
   ].join("\n");
 }
 

@@ -8,6 +8,7 @@ import process from "node:process";
 
 const DEFAULT_AGENTS = ["asdrubal", "barekbaal", "karen"];
 const DEFAULT_AGENT_ROOT = "/srv/agents/openclaw";
+const DEFAULT_REGISTRY = "/etc/openclaw/agents.json";
 const DEFAULT_TOKEN_FILE = "/etc/openclaw/pm-channel-tokens.json";
 const DEFAULT_CALLBACK_URL = "http://127.0.0.1:3000/api/openclaw/pm-channel/reply";
 const DEFAULT_OPENCLAW_BIN = "/usr/local/bin/openclaw";
@@ -57,7 +58,39 @@ function uidFor(user) {
 }
 
 function gidFor(group) {
-  return Number(execFileSync("id", ["-g", group], { encoding: "utf8" }).trim());
+  try {
+    return Number(execFileSync("id", ["-g", group], { encoding: "utf8" }).trim());
+  } catch {
+    const entry = execFileSync("getent", ["group", group], { encoding: "utf8" }).trim();
+    const gid = Number(entry.split(":")[2]);
+    if (!Number.isFinite(gid)) throw new Error(`Unable to resolve group: ${group}`);
+    return gid;
+  }
+}
+
+function parseAgentList(value) {
+  return String(value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function agentsFromRegistry(registryPath) {
+  try {
+    const registry = readJson(registryPath, null);
+    if (!registry || !Array.isArray(registry.agents)) return [];
+    return registry.agents
+      .filter((agent) => agent && agent.enabled === true && typeof agent.user === "string")
+      .map((agent) => ({
+        user: agent.user.trim(),
+        home: typeof agent.home === "string" && agent.home.trim()
+          ? agent.home.trim()
+          : `/home/${agent.user.trim()}`,
+      }))
+      .filter((agent) => agent.user);
+  } catch {
+    return [];
+  }
 }
 
 async function stagePlugin(sourcePath, deployPath) {
@@ -130,14 +163,14 @@ async function configureAgentConfig({
   return true;
 }
 
-function runOpenClawInstall(agent, pluginPath, openclawBin) {
+function runOpenClawInstall(agent, home, pluginPath, openclawBin) {
   const uid = uidFor(agent);
   execFileSync("sudo", [
     "-n",
     "-u",
     agent,
     "env",
-    `HOME=/home/${agent}`,
+    `HOME=${home}`,
     `XDG_RUNTIME_DIR=/run/user/${uid}`,
     openclawBin,
     "plugins",
@@ -147,14 +180,14 @@ function runOpenClawInstall(agent, pluginPath, openclawBin) {
   ], { stdio: "inherit" });
 }
 
-function restartGateway(agent) {
+function restartGateway(agent, home) {
   const uid = uidFor(agent);
   execFileSync("sudo", [
     "-n",
     "-u",
     agent,
     "env",
-    `HOME=/home/${agent}`,
+    `HOME=${home}`,
     `XDG_RUNTIME_DIR=/run/user/${uid}`,
     "systemctl",
     "--user",
@@ -166,15 +199,17 @@ function restartGateway(agent) {
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const pluginPath = path.resolve(argValue("--plugin", path.join(repoRoot, "openclaw-pm-channel")));
 const agentRoot = argValue("--agent-root", process.env.PM_OPENCLAW_AGENT_ROOT ?? DEFAULT_AGENT_ROOT);
+const registryPath = argValue("--registry", process.env.OPENCLAW_AGENTS_JSON ?? DEFAULT_REGISTRY);
 const tokenFile = argValue("--token-file", process.env.PM_OPENCLAW_CHANNEL_TOKEN_FILE ?? DEFAULT_TOKEN_FILE);
 const callbackUrl = argValue("--callback-url", process.env.PM_OPENCLAW_CHANNEL_CALLBACK_URL ?? DEFAULT_CALLBACK_URL);
 const openclawBin = argValue("--openclaw-bin", process.env.OPENCLAW_BIN ?? DEFAULT_OPENCLAW_BIN);
 const deployPath = path.resolve(argValue("--deploy-path", process.env.PM_OPENCLAW_CHANNEL_DEPLOY_PATH ?? DEFAULT_DEPLOY_PATH));
 const tokenGroup = argValue("--token-group", process.env.PM_OPENCLAW_CHANNEL_TOKEN_GROUP ?? DEFAULT_TOKEN_GROUP);
-const agents = (argValue("--agents", process.env.PM_CHANNEL_AGENTS) ?? DEFAULT_AGENTS.join(","))
-  .split(",")
-  .map((entry) => entry.trim())
-  .filter(Boolean);
+const requestedAgents = parseAgentList(argValue("--agents", process.env.PM_CHANNEL_AGENTS));
+const registryAgents = agentsFromRegistry(registryPath);
+const registryHomes = new Map(registryAgents.map((agent) => [agent.user, agent.home]));
+const agents = requestedAgents.length ? requestedAgents : registryAgents.map((agent) => agent.user);
+const uniqueAgents = [...new Set(agents.length ? agents : DEFAULT_AGENTS)];
 const restart = hasFlag("--restart");
 
 if (!existsSync(pluginPath)) {
@@ -184,15 +219,16 @@ if (!existsSync(pluginPath)) {
 const installedPluginPath = await stagePlugin(pluginPath, deployPath);
 
 const tokenMap = readJson(tokenFile, {});
-for (const agent of agents) {
+for (const agent of uniqueAgents) {
   tokenMap[agent] ||= randomBytes(32).toString("hex");
 }
 await writeJsonAtomic(tokenFile, tokenMap, 0o640, { uid: 0, gid: gidFor(tokenGroup) });
 
-for (const agent of agents) {
+for (const agent of uniqueAgents) {
+  const home = registryHomes.get(agent) ?? `/home/${agent}`;
   const agentConfigPaths = [
     path.join(agentRoot, agent, "openclaw.json"),
-    `/home/${agent}/.openclaw/openclaw.json`,
+    path.join(home, ".openclaw/openclaw.json"),
   ];
   const uniqueConfigPaths = [...new Set(agentConfigPaths.map((entry) => path.resolve(entry)))];
   let configured = false;
@@ -211,10 +247,11 @@ for (const agent of agents) {
     continue;
   }
 
-  runOpenClawInstall(agent, installedPluginPath, openclawBin);
-  if (restart) restartGateway(agent);
+  runOpenClawInstall(agent, home, installedPluginPath, openclawBin);
+  if (restart) restartGateway(agent, home);
   console.log(`[pm-channel] configured ${agent}`);
 }
 
 console.log(`[pm-channel] plugin path: ${installedPluginPath}`);
 console.log(`[pm-channel] token file: ${tokenFile}`);
+console.log(`[pm-channel] agents: ${uniqueAgents.join(", ")}`);

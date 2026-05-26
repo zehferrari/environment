@@ -100,6 +100,14 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/api/tasks/[id]/chat/reply` | legacy token-scoped task chat/comment reply endpoint; replies route back to the origin channel (chat vs comment). Native PM channel is the normal path. |
 | `app/agents/avatars/[name]` | avatar proxy. |
 
+Agent-facing callbacks are deliberately not browser-session routes.
+`middleware.ts` lets token-scoped callbacks reach their route handlers:
+native PM channel reply/stream callbacks use per-agent Bearer tokens,
+legacy chat replies and description writes use one-shot HMAC tokens, and
+project proposals use a one-shot work-item grant token. Browser-only
+surfaces, including the SSE `/api/openclaw/pm-channel/events` route,
+still require a signed-in PM user.
+
 ## Library layout
 
 | Path | Purpose |
@@ -138,7 +146,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `lib/attachments/storage.ts` | filesystem write/read/delete under `/srv/Data/projects/<id>/attachments/<sha256>` (dev fallback `./.data/attachments`). |
 | `lib/attachments/actions.ts` | upload/delete server actions; enforces XOR(taskId, epicId) target. |
 | `components/agent-chat.tsx` | shared chat sidebar mounted on Task + Epic editors. |
-| `components/chat-input.tsx` | direct-chat composer — message + Samba file uploads + project picker + "propose work-item changes" grant checkbox. |
+| `components/chat-input.tsx` | direct-chat composer — message + Samba file uploads + project picker; human project-scoped messages automatically carry a one-shot proposal grant. |
 | `app/(app)/agents/[agent]/chat/proposal-review.tsx` | review card for pending agent work-item proposals — per-op validation badges + Apply/Reject. |
 | `components/streaming-agent-reply.tsx` | client SSE subscriber that renders the live reply bubble while OpenClaw is still generating. |
 | `components/sortable-task-list.tsx` | `@dnd-kit` drag-reorder list used for sub-tasks / grouped task views, backed by `lib/tasks/reorder.ts`. |
@@ -300,19 +308,22 @@ sidebar (`components/agent-chat.tsx`). The agent picker uses
 `lib/agents/chat-targets.ts` — broader than the principal pool so
 monitors are reachable. Messages persist as `AgentChatMessage` rows
 keyed by (taskId|epicId, agentSlug); message bodies render as full
-markdown (`lib/markdown.tsx::renderFullMarkdown`). Each compose box
-has an "Allow this agent to edit the description" checkbox; ticked,
-the native channel currently asks the agent to return a proposed
-description in markdown rather than using the legacy callback path.
+markdown (`lib/markdown.tsx::renderFullMarkdown`). Human-authored task
+and Epic chat messages automatically carry a one-shot description write
+capability. The capability is a token-scoped endpoint in the native
+channel prompt, and agents are instructed to call it only when the
+current human message directly asks to update, rewrite, reformat, or
+replace the description.
 Per-message Delete
 hard-removes the row (chats don't go through the bin); an audit row
 records who/when. Task-scoped chats are sent directly to the native
 OpenClaw `pm` channel on the target agent's loopback gateway
-(`/pm-channel/ingest`); epic-scoped chats persist only until the
-channel contract grows an Epic scope. Agent replies return only to the
-origin channel: messages started in task chat stay in task chat, while
-messages mirrored from task comments are posted back as task comments.
-Task chat and task-comment turns still use the PM context packet
+(`/pm-channel/ingest`); Epic-scoped chats use the same native channel
+with an `epic-chat` reply target. Agent replies return only to the
+origin channel: messages started in task chat stay in task chat,
+messages started in Epic chat stay in Epic chat, and messages mirrored
+from task comments are posted back as task comments.
+Task chat, Epic chat, and task-comment turns still use the PM context packet
 builder in `lib/agents/context/`: the current turn is kept explicit,
 and the packet includes live task + Epic descriptions, recent
 comments, relevant agent chat, task activity, attachment metadata, and
@@ -341,13 +352,18 @@ The UI supports several key enhancements:
 OpenClaw exposes the selected thinking budget and run metadata inside a collapsible `<details>` panel, not private chain-of-thought text. To keep reply latency down, the PM channel context includes a bounded recent transcript and bounded parent-archive excerpt (`PM_DIRECT_CHAT_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT`). Because PM and OpenClaw run on the same host, channel callbacks default to `http://127.0.0.1:3000`; set `PM_AGENT_CALLBACK_URL` or `PM_INTERNAL_APP_URL` to override that.
 
 **Agent work-item proposals.** A direct chat (`/agents/<slug>/chat`) can
-be attached to a project; ticking "let @agent propose work-item changes"
-on a message turns that turn into a planning turn. PM hands the agent the
+be attached to a project. Every human-authored project-scoped direct
+message becomes a planning-capable turn by default: PM hands the agent the
 project environment (repo path, git identity, picker defaults, existing
-epics/open tasks via `lib/agents/context/project.ts`) plus a single-use
-HMAC grant + the propose endpoint, and the agent POSTs a typed change-set
-to `POST /api/agent/projects/<id>/proposals` — it never writes the board
-directly. PM dry-run-validates every op against `lib/workflow.ts` **as the
+epics/open tasks and their descriptions via `lib/agents/context/project.ts`)
+plus a single-use HMAC grant + the propose endpoint. The prompt tells the
+agent to submit a proposal only when the current human message directly
+asks for project work-item changes. The agent POSTs a typed change-set to
+`POST /api/agent/projects/<id>/proposals` — it never writes the board
+directly. That route is token-scoped and intentionally bypasses browser
+session middleware; the route handler validates the grant, token, active
+agent, project binding, and single-use stamp. PM dry-run-validates every
+op against `lib/workflow.ts` **as the
 agent** (no self-assign, no self-review, no moving into/out of Review/Done;
 new tasks land in Backlog, new epics open) and stores a pending
 `WorkItemProposal`. The human reviews it in the chat
@@ -389,7 +405,7 @@ host: dedupes by `${kind}:${task.id}:${event.id}` against the
 `PmEventDelivery.dedupeKey` unique index, resolves the target agent's
 gateway port, and wakes the local gateway with
 `POST http://127.0.0.1:<port>/hooks/wake` plus that agent's Bearer
-token for non-chat automation. Chat and task-comment turns bypass this
+token for non-chat automation. Chat, Epic chat, and task-comment turns bypass this
 consumer path and enter OpenClaw through the native `pm` channel at
 `POST http://127.0.0.1:<port>/pm-channel/ingest`. OpenClaw gateway
 configs must still set `hooks.allowRequestSessionKey=true` and
@@ -408,32 +424,34 @@ Truncating `PmEventDelivery` is safe — audit rows live independently on
 
 ## Agent runtime contract
 
-Direct PM chat, task chat, and task-comment turns now use the native
-OpenClaw `pm` channel, not the legacy prompt-visible callback contract.
+Direct PM chat, task chat, task-comment, and Epic chat turns now use the
+native OpenClaw `pm` channel, not the legacy prompt-visible callback
+contract.
 The full agent-facing guide lives in
 [docs/agent-interaction.md](./docs/agent-interaction.md).
 
-When a user sends a direct chat message, task chat message, or task
-comment that targets an agent, PM:
+When a user sends a direct chat message, task chat message, Epic chat
+message, or task comment that targets an agent, PM:
 
 1. Persists the PM-side row (`DirectAgentChatMessage`, `AgentChatMessage`,
    or `Comment` plus mirrored `AgentChatMessage` for comment origins).
 2. Builds a bounded context packet with the current turn, relevant
-   session/task/Epic/comment/activity history, and attachment extracts.
+   session/task/Epic/comment/activity history, project context where
+   applicable, and attachment extracts.
 3. Resolves an `AgentSessionBinding` and sends the turn to the target
    agent gateway:
 
 ```json
 {
   "version": 1,
-  "kind": "direct | task-chat | task-comment",
+  "kind": "direct | task-chat | task-comment | epic-chat",
   "agentSlug": "asdrubal",
   "sessionKey": "pm:...",
   "text": "<latest user message>",
   "contextText": "<PM context packet>",
   "systemPrompt": "<channel guidance>",
   "actor": { "id": "usr_...", "username": "zeh", "kind": "human" },
-  "replyTarget": { "kind": "direct | task-chat | task-comment", "...": "origin metadata" },
+  "replyTarget": { "kind": "direct | task-chat | task-comment | epic-chat", "...": "origin metadata" },
   "callbackUrl": "http://127.0.0.1:3000/api/openclaw/pm-channel/reply",
   "streamUrl": "http://127.0.0.1:3000/api/openclaw/pm-channel/stream"
 }
@@ -444,8 +462,8 @@ OpenClaw channel turn kernel, records the turn in the supplied `pm:`
 session, streams partial visible text to `/api/openclaw/pm-channel/stream`,
 and posts the durable final answer to `/api/openclaw/pm-channel/reply`.
 PM writes the final answer only to the origin channel: direct chat stays
-direct, task chat stays task chat, and task-comment replies become task
-comments.
+direct, task chat stays task chat, Epic chat stays Epic chat, and
+task-comment replies become task comments.
 
 `/hooks/wake` remains installed for generic PM events such as assignment
 and ack-ready automation. It is no longer the normal chat/comment path.
@@ -458,10 +476,24 @@ integration. With a PM checkout present it must:
 - Ensure `PM_DISPATCH_SOCKET` (or `PM_DISPATCH_DROP_DIR=/var/lib/pm/drop`)
   on the PM host matches the consumer side for non-chat PM events.
 - Install and enable the one host-wide `pm.service` and `pm-consumer.service`
-  as the configured PM app user/group (`karen` on x1 by default).
+  as system services with runtime `User=` / `Group=` set to the configured
+  PM app user/group (`karen` on x1 by default). These are **not**
+  per-agent user units; stale
+  `/home/<agent>/.config/systemd/user/pm*.service` files should be
+  removed so a coding agent cannot accidentally own the PM port or
+  consumer.
 - Ensure the PM app user can traverse/read the checkout and standalone
   bundle and can write `prisma/`, `.data/`, `/var/lib/pm/drop`, and
   `/etc/openclaw/pm-agent-credentials`.
+- Ensure production attachment storage exists and is writable by the PM
+  app user: `/srv/Data/projects` for task/Epic attachments and
+  `/srv/samba/shared` (plus child agent share directories) for direct-chat
+  Samba uploads. The service sandbox must include both paths.
+- Provision service-private `pnpm` home/config/cache directories for
+  `pm-consumer.service` under `/var/lib/pm` and point `HOME`,
+  `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `PNPM_HOME`, and
+  `NPM_CONFIG_USERCONFIG` there. This keeps `ProtectHome=true` without
+  noisy `/home/<pm-user>/.npmrc` warnings.
 - Enable the external hook surface in every enabled agent gateway config
   under `/srv/agents/openclaw/<slug>/openclaw.json`:
   `gateway.bind="loopback"`, loopback trusted-proxy config,
@@ -481,6 +513,10 @@ integration. With a PM checkout present it must:
   in `/etc/openclaw/pm-channel-tokens.json`, and set the plugin's final
   reply callback URL to
   `http://127.0.0.1:3000/api/openclaw/pm-channel/reply`.
+- Apply the OpenClaw session-fence runtime patch via
+  `/usr/local/sbin/openclaw-patch-session-fence`. This keeps primary
+  model timeout markers from masking the provider timeout as a local
+  session takeover, which allows configured model fallbacks to run.
 - Leave the streaming callback as PM-owned per-turn data. PM derives
   both `callbackUrl` and `streamUrl` from `PM_AGENT_CALLBACK_URL` or
   `PM_INTERNAL_APP_URL`, defaulting to `http://127.0.0.1:3000`.

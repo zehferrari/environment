@@ -28,10 +28,9 @@ export default function ChatInput({
   const [selectedFilesCount, setSelectedFilesCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Project attachment is carried forward across the conversation; the
-  // work-item grant is per-message (one-shot), like the description-edit grant.
+  // Project attachment is carried forward across the conversation. Human
+  // project-scoped requests automatically carry the one-shot proposal capability.
   const [projectId, setProjectId] = useState(attachedProjectId ?? "");
-  const [allowWorkItems, setAllowWorkItems] = useState(false);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -49,7 +48,6 @@ export default function ChatInput({
       textareaRef.current.value = "";
     }
     setSelectedFilesCount(0);
-    setAllowWorkItems(false); // grant is single-use per message
     await sendDirectAgentMessage(formData);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -87,7 +85,7 @@ export default function ChatInput({
         className="w-full resize-none rounded-xl border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
       />
 
-      {/* Project attachment + work-item planning grant */}
+      {/* Project attachment */}
       {projects.length > 0 ? (
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
           <label className="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
@@ -105,28 +103,6 @@ export default function ChatInput({
                 </option>
               ))}
             </select>
-          </label>
-          <label
-            className={`flex items-center gap-1.5 text-xs ${
-              projectId
-                ? "cursor-pointer text-[var(--color-text)]"
-                : "cursor-not-allowed text-[var(--color-text-muted)] opacity-50"
-            }`}
-            title={
-              projectId
-                ? "The agent may propose epics/tasks/sub-tasks; you approve before anything changes."
-                : "Select a project to allow work-item proposals."
-            }
-          >
-            <input
-              type="checkbox"
-              name="allowWorkItemManagement"
-              checked={allowWorkItems && !!projectId}
-              disabled={!projectId}
-              onChange={(e) => setAllowWorkItems(e.target.checked)}
-              className="accent-[var(--color-accent)]"
-            />
-            <span className="select-none">Let @{agentUsername} propose work-item changes</span>
           </label>
         </div>
       ) : null}

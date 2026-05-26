@@ -3,14 +3,14 @@
 // Agent-chat server actions (HOMELAB-48).
 //
 // sendAgentChatMessage persists a message in the per-(target, agent)
-// thread. Task-scoped chats are delivered through the native OpenClaw
-// PM channel, so OpenClaw owns session recording and visible reply
-// delivery. Epic-scoped chats still persist only until the channel
-// contract grows an Epic scope.
+// thread. Task- and Epic-scoped chats are delivered through the native
+// OpenClaw PM channel, so OpenClaw owns session recording and visible
+// reply delivery.
 //
-// The `allowDescriptionEdit` boolean per message is the grant token
-// the agent later uses against POST /api/{tasks,epics}/[id]/description
-// to write back. One-shot: editGrantUsedAt is stamped on first use.
+// Human-authored task/epic chat messages carry a one-shot description
+// write capability by default. The agent gets the signed token in the
+// native-channel prompt and must only use it for an explicit human update
+// request. editGrantUsedAt is stamped on first use.
 
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
@@ -28,6 +28,8 @@ import {
 import { extractMentions } from "@/lib/markdown";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
 import { sendOpenClawPmChannelTurn } from "@/lib/agents/openclaw-pm-channel";
+import { createTaskDescriptionWriteToken } from "@/lib/agents/task-chat-token";
+import { createEpicDescriptionWriteToken } from "@/lib/agents/epic-chat-token";
 
 async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> {
   const session = await auth();
@@ -35,6 +37,12 @@ async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> 
   if (!id) throw new Error("Unauthenticated");
   const kind = session.user?.kind === "agent" ? "agent" : "human";
   return { id, kind };
+}
+
+function agentCallbackBaseUrl() {
+  return process.env.PM_AGENT_CALLBACK_URL
+    ?? process.env.PM_INTERNAL_APP_URL
+    ?? "http://127.0.0.1:3000";
 }
 
 export async function sendAgentChatMessage(formData: FormData) {
@@ -45,7 +53,7 @@ export async function sendAgentChatMessage(formData: FormData) {
   const taskId = taskIdRaw === "" ? null : taskIdRaw;
   const epicId = epicIdRaw === "" ? null : epicIdRaw;
   const body = String(formData.get("body") ?? "").trim();
-  const allowDescriptionEdit = formData.get("allowDescriptionEdit") === "on";
+  const allowDescriptionEdit = actor.kind === "human";
 
   if (!slug || !body) return;
   if ((taskId === null) === (epicId === null)) {
@@ -244,13 +252,27 @@ export async function sendAgentChatMessage(formData: FormData) {
     const agentSlug = target.slug;
     const gatewayPort = target.gatewayPort;
 
-    const systemPrompt = taskId
-      ? (allowDescriptionEdit
-          ? buildTaskNativeEditGrantPrompt(task.title)
-          : buildTaskNativeChannelPrompt(task.title, agentSlug))
-      : (allowDescriptionEdit
-          ? buildEpicNativeEditGrantPrompt(epic.title)
-          : buildEpicNativeChannelPrompt(epic.title, agentSlug));
+    const baseSystemPrompt = taskId
+      ? buildTaskNativeChannelPrompt(task.title, agentSlug)
+      : buildEpicNativeChannelPrompt(epic.title, agentSlug);
+
+    const descriptionPrompt = allowDescriptionEdit
+      ? taskId
+        ? buildTaskNativeEditGrantPrompt({
+            taskTitle: task.title,
+            descriptionUrl: new URL(`/api/tasks/${task.id}/description`, agentCallbackBaseUrl()).toString(),
+            messageId: msg.id,
+            token: createTaskDescriptionWriteToken(msg.id, task.id, agentSlug),
+          })
+        : buildEpicNativeEditGrantPrompt({
+            epicTitle: epic.title,
+            descriptionUrl: new URL(`/api/epics/${epic.id}/description`, agentCallbackBaseUrl()).toString(),
+            messageId: msg.id,
+            token: createEpicDescriptionWriteToken(msg.id, epic.id, agentSlug),
+          })
+      : "";
+
+    const systemPrompt = [baseSystemPrompt, descriptionPrompt].filter(Boolean).join("\n\n");
 
     const userMessage = taskId
       ? await buildTaskAgentUserMessage({

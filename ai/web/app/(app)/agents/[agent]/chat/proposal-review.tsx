@@ -43,6 +43,77 @@ function str(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function hasOwn(op: Op, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(op, key);
+}
+
+function previewValue(value: unknown): string {
+  if (value === null) return "none";
+  if (value === undefined) return "";
+  if (typeof value === "string") return value.trim() || "(empty)";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function fieldRows(op: Op): Array<{ label: string; value: string }> {
+  const rows: Array<{ label: string; value: string }> = [];
+  const add = (label: string, key: string) => {
+    if (!hasOwn(op, key)) return;
+    rows.push({ label, value: previewValue(op[key]) });
+  };
+
+  switch (op.op) {
+    case "create_epic":
+      add("Ref", "ref");
+      add("Description", "description");
+      add("Assignee", "assignee");
+      add("Acting manager", "actingManager");
+      break;
+    case "create_task":
+      add("Ref", "ref");
+      add("Epic", "epic");
+      add("Description", "description");
+      add("Assignee", "assignee");
+      add("Acting manager", "actingManager");
+      break;
+    case "create_subtask":
+      add("Ref", "ref");
+      add("Parent", "parent");
+      add("Description", "description");
+      add("Assignee", "assignee");
+      add("Acting manager", "actingManager");
+      break;
+    case "update_epic":
+      add("Target", "target");
+      add("Title", "title");
+      add("Description", "description");
+      add("Assignee", "assignee");
+      add("Acting manager", "actingManager");
+      add("Status", "status");
+      break;
+    case "update_task":
+      add("Target", "target");
+      add("Title", "title");
+      add("Description", "description");
+      add("Epic", "epic");
+      add("Parent", "parent");
+      add("Assignee", "assignee");
+      add("Acting manager", "actingManager");
+      add("Status", "status");
+      break;
+    case "comment_task":
+      add("Target", "target");
+      add("Comment", "body");
+      break;
+  }
+
+  return rows;
+}
+
 function opLabel(op: Op): { kind: string; title: string; detail: string } {
   switch (op.op) {
     case "create_epic":
@@ -129,33 +200,60 @@ export default function ProposalReview({
               </div>
             </div>
 
-            <ul className="mt-2 space-y-1">
-              {ops.map((op, i) => {
-                const label = opLabel(op);
-                const result = results[i];
-                const ok = result ? result.ok : true;
-                return (
-                  <li key={i} className="flex items-start gap-2 text-xs">
-                    <span
-                      className={`mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
-                        ok ? "bg-[var(--color-accent)]" : "bg-[var(--color-crit)]"
-                      }`}
-                      aria-hidden="true"
-                    />
-                    <span className="min-w-0">
-                      <span className="font-medium text-[var(--color-text)]">{label.kind}:</span>{" "}
-                      <span className="text-[var(--color-text)]">{label.title}</span>
-                      {label.detail ? (
-                        <span className="text-[var(--color-text-muted)]"> — {label.detail}</span>
-                      ) : null}
-                      {!ok && result?.errors.length ? (
-                        <span className="block text-[var(--color-crit)]">⚠ {result.errors.join("; ")}</span>
-                      ) : null}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
+            <details className="mt-3 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]">
+              <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-3 py-2 text-xs font-medium text-[var(--color-text)] marker:text-[var(--color-text-muted)]">
+                <span>Preview changes</span>
+                <span className="text-[10px] font-normal text-[var(--color-text-muted)]">
+                  {ops.length} operation{ops.length === 1 ? "" : "s"}
+                </span>
+              </summary>
+              <div className="max-h-[min(24rem,45vh)] overflow-y-auto border-t border-[var(--color-line)] p-3">
+                <ul className="space-y-3">
+                  {ops.map((op, i) => {
+                    const label = opLabel(op);
+                    const result = results[i];
+                    const ok = result ? result.ok : true;
+                    const rows = fieldRows(op);
+                    return (
+                      <li key={i} className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] p-2.5 text-xs">
+                        <div className="flex items-start gap-2">
+                          <span
+                            className={`mt-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
+                              ok ? "bg-[var(--color-accent)]" : "bg-[var(--color-crit)]"
+                            }`}
+                            aria-hidden="true"
+                          />
+                          <div className="min-w-0">
+                            <p>
+                              <span className="font-medium text-[var(--color-text)]">{label.kind}:</span>{" "}
+                              <span className="text-[var(--color-text)]">{label.title}</span>
+                              {label.detail ? (
+                                <span className="text-[var(--color-text-muted)]"> — {label.detail}</span>
+                              ) : null}
+                            </p>
+                            {!ok && result?.errors.length ? (
+                              <p className="mt-1 text-[var(--color-crit)]">⚠ {result.errors.join("; ")}</p>
+                            ) : null}
+                          </div>
+                        </div>
+                        {rows.length > 0 ? (
+                          <dl className="mt-2 grid gap-1.5 border-t border-[var(--color-line)] pt-2">
+                            {rows.map((row) => (
+                              <div key={`${i}-${row.label}`} className="grid gap-1 sm:grid-cols-[8rem_minmax(0,1fr)]">
+                                <dt className="font-medium text-[var(--color-text-muted)]">{row.label}</dt>
+                                <dd className="min-w-0 whitespace-pre-wrap break-words text-[var(--color-text)]">
+                                  {row.value}
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            </details>
           </div>
         );
       })}

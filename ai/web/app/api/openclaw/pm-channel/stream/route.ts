@@ -1,7 +1,9 @@
 import { timingSafeEqual } from "crypto";
 import { NextResponse, type NextRequest } from "next/server";
+import { db } from "@/lib/db";
 import {
   parsePmChannelReplyTarget,
+  type PmChannelReplyTarget,
   resolvePmChannelToken,
 } from "@/lib/agents/openclaw-pm-channel";
 import {
@@ -44,6 +46,45 @@ function stringField(value: unknown, max: number) {
   return value.length > max ? value.slice(0, max) : value;
 }
 
+async function recordStreamError(target: PmChannelReplyTarget, error: string | undefined) {
+  const payload = JSON.stringify({
+    driver: "openclaw-pm-channel",
+    target,
+    error: error || "OpenClaw stream failed",
+  });
+
+  try {
+    if (target.kind === "direct") {
+      await db.activityLog.create({
+        data: {
+          kind: "agent.direct_chat.stream_error",
+          targetAgent: target.agentSlug,
+          payload,
+        },
+      });
+      return;
+    }
+
+    const original = await db.agentChatMessage.findUnique({
+      where: { id: target.messageId },
+      select: { projectId: true, taskId: true, epicId: true },
+    });
+    await db.activityLog.create({
+      data: {
+        projectId: original?.projectId ?? undefined,
+        taskId: target.kind === "task-chat" || target.kind === "task-comment"
+          ? original?.taskId ?? target.taskId
+          : undefined,
+        kind: target.kind === "epic-chat" ? "epic.chat.stream_error" : "task.chat.stream_error",
+        targetAgent: target.agentSlug,
+        payload,
+      },
+    });
+  } catch (err) {
+    console.warn("[pm-channel] failed to record stream error", err);
+  }
+}
+
 export async function POST(req: NextRequest) {
   let payload: Record<string, unknown>;
   try {
@@ -78,6 +119,9 @@ export async function POST(req: NextRequest) {
     replace: payload.replace === true,
     error: stringField(payload.error, 2_000),
   });
+  if (event === "error") {
+    await recordStreamError(target, state.error ?? stringField(payload.error, 2_000));
+  }
 
   return NextResponse.json({ ok: true, key: state.key, status: state.status });
 }

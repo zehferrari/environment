@@ -93,9 +93,17 @@ sibling PM checkout exists. The PM step creates `/var/lib/pm/drop`,
 renders the one host-wide `pm.service` and `pm-consumer.service`, binds
 every enabled agent gateway to loopback, enables its external
 `/hooks/wake` surface for non-chat PM events, installs the native
-OpenClaw `pm` channel plugin, and mirrors token maps into
+OpenClaw `pm` channel plugin for every enabled registry agent, and mirrors token maps into
 `/etc/openclaw/pm-consumer-tokens.json` and
 `/etc/openclaw/pm-channel-tokens.json`.
+
+The installer also runs `/usr/local/sbin/openclaw-patch-session-fence`
+against the installed OpenClaw runtime. That patch keeps provider timeout
+records written during a PM channel turn from being misclassified as an
+external session takeover, so OpenClaw can continue into the configured
+model fallback chain instead of returning a generic PM failure. Re-run
+`install.sh` after upgrading or reinstalling the global `openclaw`
+package.
 
 Gateway hook config lives in `/srv/agents/openclaw/<agent>/openclaw.json`:
 `gateway.bind="loopback"`, `gateway.trustedProxies=["127.0.0.1","::1"]`,
@@ -104,11 +112,12 @@ Gateway hook config lives in `/srv/agents/openclaw/<agent>/openclaw.json`:
 `hooks.allowRequestSessionKey=true`, and
 `hooks.allowedSessionKeyPrefixes=["hook:","pm:"]`. OpenClaw requires
 `hook:` when no hook default session key is configured; PM-owned sessions
-use `pm:` stable session keys. Chat and task-comment turns normally enter
-OpenClaw through `POST /pm-channel/ingest`, not `/hooks/wake`. The PM app
-sends a final reply callback (`/api/openclaw/pm-channel/reply`) and a
-live partial-reply stream callback (`/api/openclaw/pm-channel/stream`) in
-each native channel turn. The installer preserves `hooks.internal` and
+use `pm:` stable session keys. Chat, Epic chat, and task-comment turns
+normally enter OpenClaw through `POST /pm-channel/ingest`, not
+`/hooks/wake`. The PM app sends a final reply callback
+(`/api/openclaw/pm-channel/reply`) and a live partial-reply stream
+callback (`/api/openclaw/pm-channel/stream`) in each native channel turn.
+The installer preserves `hooks.internal` and
 restarts `openclaw-gateway.service` when it changes hook or channel
 config. Do not expose hooks or the PM channel through nginx; PM calls
 them on `127.0.0.1`. Any nginx dashboard proxy for the gateway must use

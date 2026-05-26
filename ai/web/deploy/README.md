@@ -9,7 +9,7 @@ zeh sees exactly what changes on the host.
 | File | Lands at | Owner | Notes |
 | --- | --- | --- | --- |
 | `pm.service` | `/etc/systemd/system/pm.service` | root | systemd unit; runs the one host-wide standalone Next server as the PM app user (`karen` on x1). |
-| `pm-consumer.service` | `/etc/systemd/system/pm-consumer.service` | root | drains `/var/lib/pm/drop` and wakes agent gateways. |
+| `pm-consumer.service` | `/etc/systemd/system/pm-consumer.service` | root | systemd unit; runs as the PM consumer user (`karen` on x1), drains `/var/lib/pm/drop`, and wakes agent gateways. |
 | `pm.env.example` | copy -> `/etc/default/pm` | `root:<pm-user-group>`, `0640` | secrets file; not committed. |
 | `/etc/openclaw/pm-consumer-tokens.json` | host-created | `root:<pm-consumer-group>`, `0640` | per-agent `/hooks/wake` Bearer map; never commit. |
 | `/etc/openclaw/pm-channel-tokens.json` | host-created | `root:<pm-user-group>`, `0640` | per-agent native PM channel Bearer map; never commit. |
@@ -28,6 +28,19 @@ with host-level visibility into the local agent fleet. A future
 dedicated `pm` Unix user is still the cleaner long-term option; set
 `PM_APP_USER` / `PM_APP_GROUP` when running `openclaw/install.sh` to
 render the units for a different service account.
+
+The PM units are host-wide system services. Their unit files are
+root-owned under `/etc/systemd/system`, while the runtime processes use
+`User=karen` / `Group=karen` on x1. Do not install or enable
+`pm.service` or `pm-consumer.service` under
+`/home/<agent>/.config/systemd/user`; `openclaw/install.sh` removes
+those stale per-agent user units during PM reconciliation.
+
+`pm-consumer.service` keeps `ProtectHome=true`. To avoid `pnpm`
+probing hidden `/home/karen` config files, the unit points `HOME`,
+`XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `PNPM_HOME`, and
+`NPM_CONFIG_USERCONFIG` at service-private directories under
+`/var/lib/pm`.
 
 ## First-time install (x1)
 
@@ -60,12 +73,28 @@ sudo systemctl daemon-reload
 # 4a. Create directories used by PM and the consumer when doing manual unit install.
 sudo install -d -o karen -g karen -m 0700 /etc/openclaw/pm-agent-credentials
 sudo install -d -o karen -g karen -m 0700 /var/lib/pm/drop
+sudo install -d -o karen -g karen -m 0700 /var/lib/pm/pnpm-home /var/lib/pm/pnpm-config /var/lib/pm/pnpm-cache
+sudo install -d -o karen -g karen -m 0700 /var/lib/pm/pnpm-config/pnpm
+sudo install -o karen -g karen -m 0600 /dev/null /var/lib/pm/pnpm-home/.npmrc
+sudo install -o karen -g karen -m 0600 /dev/null /var/lib/pm/pnpm-config/pnpm/rc
+sudo install -d -o karen -g karen -m 0700 /srv/Data/projects
+sudo install -d -o root -g root -m 0755 /srv/samba/shared
+sudo find /srv/samba/shared -type d -exec setfacl -m u:karen:rwx,d:u:karen:rwx {} +
+sudo find /srv/samba/shared -type f -exec setfacl -m u:karen:rw {} +
 sudo test -f /etc/openclaw/pm-consumer-tokens.json || echo '{}' | sudo tee /etc/openclaw/pm-consumer-tokens.json >/dev/null
 sudo chown root:karen /etc/openclaw/pm-consumer-tokens.json
 sudo chmod 0640 /etc/openclaw/pm-consumer-tokens.json
 sudo test -f /etc/openclaw/pm-channel-tokens.json || echo '{}' | sudo tee /etc/openclaw/pm-channel-tokens.json >/dev/null
 sudo chown root:karen /etc/openclaw/pm-channel-tokens.json
 sudo chmod 0640 /etc/openclaw/pm-channel-tokens.json
+
+# Remove stale per-agent PM user units if they were ever installed.
+sudo rm -rf /home/*/.config/systemd/user/pm.service \
+            /home/*/.config/systemd/user/pm-consumer.service \
+            /home/*/.config/systemd/user/pm.service.d \
+            /home/*/.config/systemd/user/pm-consumer.service.d \
+            /home/*/.config/systemd/user/default.target.wants/pm.service \
+            /home/*/.config/systemd/user/default.target.wants/pm-consumer.service
 
 # 4b. Reconcile local OpenClaw gateway hooks when doing manual unit install.
 #     This populates each agent's hooks.token and mirrors the values into
@@ -75,10 +104,10 @@ sudo PM_WEB_ROOT=/srv/Code/environment/ai/web /srv/Code/environment/ai/openclaw/
 # 4c. Install/configure the native PM channel plugin for local agents.
 #     The helper stages a root-owned plugin copy at
 #     /usr/local/share/openclaw/plugins/pm-channel, links that copy into
-#     each agent's OpenClaw config, writes per-agent PM channel tokens,
+#     each enabled registry agent's OpenClaw config, writes per-agent PM channel tokens,
 #     keeps the token file readable by the PM web service group, and
 #     removes stale worktree plugin paths from plugins.load.paths.
-sudo node deploy/install-openclaw-pm-channel.mjs --restart
+sudo node deploy/install-openclaw-pm-channel.mjs --registry /etc/openclaw/agents.json --restart
 
 # 5. Bring up the nginx vhost (cert assumed already issued; certbot --nginx -d agents.vixi.au if not).
 sudo install -o root -g root -m 0644 deploy/nginx-agents.vixi.au.conf /etc/nginx/sites-available/agents.vixi.au
@@ -104,8 +133,8 @@ history) and **must not** be used against the production DB.
 
 ## Native OpenClaw PM channel
 
-PM direct chat, task chat, and task-comment replies use the native
-OpenClaw `pm` channel. Each agent gateway must load the staged plugin
+PM direct chat, task chat, task-comment, and Epic chat replies use the
+native OpenClaw `pm` channel. Each enabled local agent gateway must load the staged plugin
 at `/usr/local/share/openclaw/plugins/pm-channel` and have a channel
 config similar to:
 
@@ -144,7 +173,16 @@ PM resolves channel tokens in this order:
 `PM_OPENCLAW_CHANNEL_TOKEN_<AGENT_SLUG>`,
 `/etc/openclaw/pm-channel-tokens.json`, then
 `PM_OPENCLAW_CHANNEL_TOKEN`. The installer writes the per-agent token
-file and mirrors those values into the gateway configs.
+file and mirrors those values into the gateway configs. When no
+`--agents` override is passed, the installer discovers enabled agents
+from `/etc/openclaw/agents.json`; `openclaw/install.sh` passes that
+registry explicitly.
+
+`openclaw/install.sh` also applies the host runtime patch
+`openclaw-patch-session-fence`. Without it, an OpenClaw provider timeout
+can append an empty assistant error record, trip the embedded session
+takeover guard, and bypass configured model fallbacks. Re-run the
+OpenClaw installer after any global `openclaw` package update.
 
 ## Local OpenClaw wake hooks
 

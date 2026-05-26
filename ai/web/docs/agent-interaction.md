@@ -7,8 +7,8 @@ land.
 
 ## Current Contract
 
-Direct PM chat, task chat, and task-comment agent replies use the
-native OpenClaw `pm` channel. PM posts the user turn to the target
+Direct PM chat, task chat, task-comment, and epic chat agent replies use
+the native OpenClaw `pm` channel. PM posts the user turn to the target
 agent's local OpenClaw gateway:
 
 ```text
@@ -16,7 +16,7 @@ POST http://127.0.0.1:<gateway_port>/pm-channel/ingest
 Authorization: Bearer <pm channel token>
 Body: {
   "version": 1,
-  "kind": "direct" | "task-chat" | "task-comment",
+  "kind": "direct" | "task-chat" | "task-comment" | "epic-chat",
   "agentSlug": "<agent slug>",
   "sessionKey": "pm:...",
   "text": "<latest user message>",
@@ -37,16 +37,16 @@ token, runs the standard channel turn kernel, records the turn against
 and posts final visible replies back to PM.
 
 `/hooks/wake` remains useful for generic automation and legacy PM
-events, but chat and task-comment replies should not use `/hooks/wake`
-or prompt-visible callback contracts.
+events, but chat, task-comment, and epic-chat replies should not use
+`/hooks/wake` or prompt-visible callback contracts.
 
-## Task Comments And Chat
+## Task, Epic, And Comment Chat
 
-PM creates an `AgentSessionBinding` for every direct/task conversation
-and sends that `pm:` key to the OpenClaw `pm` channel. OpenClaw owns the
-chat session from there: inbound recording, model dispatch, and final
-reply delivery are channel behavior, not instructions shown to the
-model.
+PM creates an `AgentSessionBinding` for every direct/task/epic
+conversation and sends that `pm:` key to the OpenClaw `pm` channel.
+OpenClaw owns the chat session from there: inbound recording, model
+dispatch, and final reply delivery are channel behavior, not
+instructions shown to the model.
 
 Task chat/comment payloads still include a PM context packet in
 `contextText`. PM is the source of truth for task, Epic, comments,
@@ -56,6 +56,7 @@ session and communication lifecycle.
 Replies must stay in the origin channel:
 
 - User wrote in task chat -> agent reply is stored in task chat only.
+- User wrote in epic chat -> agent reply is stored in epic chat only.
 - User wrote a task comment -> agent reply is stored as a task comment
   only.
 
@@ -71,7 +72,7 @@ is running:
   "version": 1,
   "channel": "pm",
   "target": {
-    "kind": "direct | task-chat | task-comment",
+    "kind": "direct | task-chat | task-comment | epic-chat",
     "agentSlug": "<agent slug>",
     "messageId": "<origin PM message id>"
   },
@@ -91,7 +92,7 @@ The OpenClaw `pm` channel posts final visible replies to PM:
   "version": 1,
   "channel": "pm",
   "target": {
-    "kind": "direct | task-chat | task-comment",
+    "kind": "direct | task-chat | task-comment | epic-chat",
     "agentSlug": "<agent slug>",
     "messageId": "<origin PM message id>"
   },
@@ -102,7 +103,7 @@ The OpenClaw `pm` channel posts final visible replies to PM:
 The route is `POST /api/openclaw/pm-channel/reply` with
 `Authorization: Bearer <PM_OPENCLAW_CHANNEL_TOKEN>`. PM validates the
 target and active agent user before writing the reply to direct chat,
-task chat, or task comments.
+task chat, epic chat, or task comments.
 
 ## Context Requirements
 
@@ -130,11 +131,13 @@ identified by filename and `/api/attachments/<id>` path.
 ## Work-Item Proposals (propose → approve)
 
 Implemented for direct PM chats attached to a project. On
-`/agents/<slug>/chat` the user selects a target project and ticks "let
-@agent propose work-item changes"; the planning turn then carries the
-project environment (repo path, git identity, picker defaults, existing
-epics + open tasks) plus a single-use grant. The agent does NOT mutate
-the board — it submits a typed change-set:
+`/agents/<slug>/chat` the user selects a target project; every
+human-authored project-scoped direct message then carries the project
+environment (repo path, git identity, picker defaults, existing epics +
+open tasks) plus a single-use proposal grant. The agent must use that
+grant only when the current human message directly asks for project
+work-item changes. The agent does NOT mutate the board — it submits a
+typed change-set:
 
 ```text
 POST http://127.0.0.1:3000/api/agent/projects/<projectId>/proposals
@@ -157,14 +160,41 @@ block. `assignee` / `actingManager` are usernames (or `null` to unset).
 PM validates the grant (single-use, bound to project + agent + message),
 then dry-run-validates every op against `lib/workflow.ts` **as the
 agent** — no self-assign, no self-review, no moving a task into/out of
-Review/Done; new tasks land in Backlog, new epics open. A valid
-change-set is stored as a pending `WorkItemProposal`; nothing on the
-board changes yet. A human reviews it in the chat and clicks Apply (the
-whole set commits in one transaction) or Reject. Applied mutations are
-attributed to the agent in `ActivityLog`, while the human's approval is
-recorded by `WorkItemProposal.appliedById` + a `workitem.proposal.apply`
-row. Re-validation runs again at apply time, so a stale proposal aborts
+Review/Done; new tasks land in Backlog, new epics open. The proposal
+endpoint is token-scoped and intentionally does not require a browser
+session; middleware lets the request reach the route handler, where the
+HMAC grant and active agent are verified. A valid change-set is stored
+as a pending `WorkItemProposal`; nothing on the board changes yet. A
+human reviews it in the chat and clicks Apply (the whole set commits in
+one transaction) or Reject. Applied mutations are attributed to the
+agent in `ActivityLog`, while the human's approval is recorded by
+`WorkItemProposal.appliedById` + a `workitem.proposal.apply` row.
+Re-validation runs again at apply time, so a stale proposal aborts
 without writing.
+
+## Description Writes
+
+Human-authored task and epic chat messages carry a one-shot description
+write capability by default. PM sends the agent a token-scoped endpoint
+only in the native-channel system prompt:
+
+```text
+POST http://127.0.0.1:3000/api/tasks/<taskId>/description
+POST http://127.0.0.1:3000/api/epics/<epicId>/description
+Content-Type: application/json
+{
+  "messageId": "<AgentChatMessage id supplied in the turn>",
+  "token": "<one-shot HMAC description token supplied in the turn>",
+  "description": "<complete replacement markdown description>"
+}
+```
+
+The agent must call this endpoint only when the current human message
+directly asks to update, rewrite, reformat, or replace the description.
+The endpoint validates the message grant, target id, token, active
+agent, and single-use stamp before replacing the description. For
+room-scoped chat rows, each addressed agent receives its own token; any
+active addressed agent can use only its own token.
 
 ## Future Agent Actions
 

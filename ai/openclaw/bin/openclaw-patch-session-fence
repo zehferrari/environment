@@ -1,0 +1,105 @@
+#!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+
+const DEFAULT_TARGET = "/usr/local/lib/node_modules/openclaw/dist/selection-hR-AeOeU.js";
+const PATCH_MARKER = "isPromptAbortAssistantErrorLine";
+const BACKUP_SUFFIX = ".pre-pm-fallback-fence-fix";
+
+function argValue(name) {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
+const checkOnly = process.argv.includes("--check");
+const target = path.resolve(
+  argValue("--file") ??
+  process.env.OPENCLAW_SESSION_FENCE_PATCH_FILE ??
+  DEFAULT_TARGET,
+);
+
+function fail(message) {
+  console.error(`[session-fence-patch] ${message}`);
+  process.exit(1);
+}
+
+function patchSource(source) {
+  if (source.includes(PATCH_MARKER)) {
+    return { source, changed: false };
+  }
+
+  const anchor = `function isTranscriptOnlyOpenClawAssistantLine(line) {
+\ttry {
+\t\tconst parsed = JSON.parse(line);
+\t\tif (!isJsonRecord(parsed)) return false;
+\t\tconst message = parsed.message;
+\t\tif (!isJsonRecord(message)) return false;
+\t\treturn message.role === "assistant" && message.provider === "openclaw" && typeof message.model === "string" && TRANSCRIPT_ONLY_OPENCLAW_ASSISTANT_MODELS.has(message.model);
+\t} catch {
+\t\treturn false;
+\t}
+}`;
+  const inserted = `${anchor}
+function isPromptAbortAssistantErrorLine(line) {
+\ttry {
+\t\tconst parsed = JSON.parse(line);
+\t\tif (!isJsonRecord(parsed)) return false;
+\t\tconst message = parsed.message;
+\t\tif (!isJsonRecord(message)) return false;
+\t\tif (message.role !== "assistant" || message.stopReason !== "aborted") return false;
+\t\tif (typeof message.errorMessage !== "string" || !message.errorMessage.trim()) return false;
+\t\tconst content = message.content;
+\t\tif (!Array.isArray(content)) return true;
+\t\treturn content.every((part) => isJsonRecord(part) && part.type === "text" && typeof part.text === "string" && part.text.trim() === "");
+\t} catch {
+\t\treturn false;
+\t}
+}
+function isBenignSessionFenceAdvanceLine(line) {
+\treturn isTranscriptOnlyOpenClawAssistantLine(line) || isPromptAbortAssistantErrorLine(line);
+}`;
+
+  if (!source.includes(anchor)) {
+    fail(`target does not match the expected OpenClaw session-fence shape: ${target}`);
+  }
+
+  let next = source.replace(anchor, inserted);
+  const replaced = (next.match(/\.every\(isTranscriptOnlyOpenClawAssistantLine\)/g) ?? []).length;
+  if (replaced < 2) {
+    fail(`target does not contain the expected session-fence checks: ${target}`);
+  }
+  next = next.replaceAll(
+    ".every(isTranscriptOnlyOpenClawAssistantLine)",
+    ".every(isBenignSessionFenceAdvanceLine)",
+  );
+  return { source: next, changed: true };
+}
+
+if (!fs.existsSync(target)) {
+  fail(`target file not found: ${target}`);
+}
+
+const before = fs.readFileSync(target, "utf8");
+const result = patchSource(before);
+
+if (!result.changed) {
+  console.log(`[session-fence-patch] already patched: ${target}`);
+  process.exit(0);
+}
+
+if (checkOnly) {
+  console.log(`[session-fence-patch] would patch: ${target}`);
+  process.exit(0);
+}
+
+const backup = `${target}${BACKUP_SUFFIX}`;
+if (!fs.existsSync(backup)) {
+  fs.copyFileSync(target, backup);
+}
+
+const tmp = `${target}.tmp-${process.pid}`;
+fs.writeFileSync(tmp, result.source, { mode: fs.statSync(target).mode & 0o777 });
+fs.renameSync(tmp, target);
+
+console.log(`[session-fence-patch] patched: ${target}`);
+console.log(`[session-fence-patch] backup: ${backup}`);

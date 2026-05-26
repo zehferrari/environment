@@ -87,7 +87,10 @@ function mergeLayer(layer: Layer | undefined, services: Set<string>, capabilitie
   Object.assign(capabilities, controlRecord(layer?.capabilities));
 }
 
-export async function resolveEffectiveAgentConfig(rawJson: string | null): Promise<EffectiveAgentConfig> {
+export async function resolveEffectiveAgentConfig(
+  rawJson: string | null,
+  allAgentsJson?: (string | null)[]
+): Promise<EffectiveAgentConfig> {
   const raw = parseRawAgentConfig(rawJson);
   const defaults = await readDefaults();
   const services = new Set<string>();
@@ -103,9 +106,31 @@ export async function resolveEffectiveAgentConfig(rawJson: string | null): Promi
   for (const service of raw.services ?? []) services.add(service);
   Object.assign(capabilities, raw.capabilities ?? {});
 
+  const activeIntegrations: Record<string, boolean> = {};
+  if (allAgentsJson) {
+    for (const json of allAgentsJson) {
+      const a = parseRawAgentConfig(json);
+      if (a.role === "coding") {
+        for (const [k, on] of Object.entries(a.integrations ?? {})) {
+          if (on) activeIntegrations[k] = true;
+        }
+      }
+    }
+  }
+
+  const RECEIVER_RE = /^openclaw-([a-z0-9-]+)-receiver\.service$/;
+  const filteredServices = Array.from(services).filter((s) => {
+    const m = s.match(RECEIVER_RE);
+    if (!m) return true;
+    const gate = m[1];
+    if (!raw.integrations?.[gate] || !raw.integrations?.monitor) return false;
+    if (raw.role === "monitor" && !activeIntegrations[gate]) return false;
+    return true;
+  });
+
   return {
     integrations: raw.integrations ?? {},
     capabilities,
-    services: Array.from(services),
+    services: filteredServices,
   };
 }

@@ -16,6 +16,8 @@ import { resolveGitIdentity } from "@/lib/settings/system";
 
 const MAX_EPICS = 40;
 const MAX_TASKS = 80;
+const MAX_EPIC_DESCRIPTION = 6000;
+const MAX_TASK_DESCRIPTION = 1600;
 
 function clip(value: string, max = 2000) {
   const text = value.trim();
@@ -56,13 +58,20 @@ export async function buildProjectEnvContext(
       where: { projectId, deletedAt: null },
       orderBy: { createdAt: "asc" },
       take: MAX_EPICS,
-      select: { id: true, title: true, status: true },
+      select: { id: true, title: true, status: true, description: true },
     }),
     db.task.findMany({
       where: { projectId, deletedAt: null, status: { not: "Done" } },
       orderBy: [{ status: "asc" }, { rank: "asc" }],
       take: MAX_TASKS,
-      select: { id: true, title: true, status: true, epicId: true, parentTaskId: true },
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        description: true,
+        epicId: true,
+        parentTaskId: true,
+      },
     }),
     listAssignablePrincipals(),
   ]);
@@ -96,7 +105,19 @@ export async function buildProjectEnvContext(
 
   lines.push("", `EXISTING EPICS (${epics.length}):`);
   if (epics.length === 0) lines.push("(none)");
-  else for (const e of epics) lines.push(`- [${e.status}] ${e.title} (id: ${e.id})`);
+  else for (const e of epics) {
+    lines.push(`- [${e.status}] ${e.title} (id: ${e.id})`);
+    if (e.description?.trim()) {
+      lines.push(
+        `  Description for epic ${e.id}:`,
+        `<<<EPIC_DESCRIPTION_${e.id}`,
+        clip(e.description, MAX_EPIC_DESCRIPTION),
+        `EPIC_DESCRIPTION_${e.id}>>>`,
+      );
+    } else {
+      lines.push(`  Description for epic ${e.id}: (empty)`);
+    }
+  }
 
   lines.push("", `EXISTING OPEN TASKS (${tasks.length}; excludes Done):`);
   if (tasks.length === 0) lines.push("(none)");
@@ -106,6 +127,14 @@ export async function buildProjectEnvContext(
       t.parentTaskId ? `parent: ${t.parentTaskId}` : "",
     ].filter(Boolean).join(", ");
     lines.push(`- [${t.status}] ${t.title} (id: ${t.id}${rel ? `, ${rel}` : ""})`);
+    if (t.description?.trim()) {
+      lines.push(
+        `  Description for task ${t.id}:`,
+        `<<<TASK_DESCRIPTION_${t.id}`,
+        clip(t.description, MAX_TASK_DESCRIPTION),
+        `TASK_DESCRIPTION_${t.id}>>>`,
+      );
+    }
   }
 
   return {
@@ -144,8 +173,10 @@ export function buildWorkItemPlanningPrompt(args: {
 
   return [
     `WORK-ITEM PLANNING GRANT for @${args.agentSlug} on project "${args.projectSlug}".`,
-    "The user authorised you to PROPOSE work-item changes for this project.",
-    "Nothing changes on the board until the user reviews and approves your proposal — so propose freely, but make the breakdown clear and well structured.",
+    "A human-authored message in this project-scoped chat gives you a one-shot capability to PROPOSE work-item changes.",
+    "Use it only when the current human message directly asks you to create, update, reorganize, comment on, or otherwise change project work items. If the message is only a question, discussion, or status check, do not submit a proposal.",
+    "Use the PROJECT ENVIRONMENT block as the source of truth. Do not try to fetch PM's local web UI or internal API; the proposal endpoint below is the only project-write endpoint you should call from this turn.",
+    "Nothing changes on the board until the user reviews and approves your proposal, so make the breakdown clear and well structured when you do propose.",
     "",
     "HOW TO SUBMIT (do this in addition to your normal chat reply):",
     `POST application/json to: ${args.proposeUrl}`,

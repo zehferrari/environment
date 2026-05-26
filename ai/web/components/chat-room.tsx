@@ -151,11 +151,6 @@ export default function ChatRoom({
                     </div>
                   </div>
                   <div className={`relative md md-compact text-sm ${fromCurrentUser ? "text-left" : ""}`} dangerouslySetInnerHTML={renderFullMarkdown(m.body)} />
-                  {m.allowDescriptionEdit ? (
-                    <div className="relative mt-1.5 inline-block rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-0.5 text-[9px] uppercase tracking-wider text-[var(--color-text-muted)] font-medium">
-                      {m.editGrantUsedAt ? "edit grant used" : "edit grant active"}
-                    </div>
-                  ) : null}
                 </article>
                 {fromCurrentUser ? <MessageAvatar actor={m.sender} /> : null}
               </div>
@@ -202,20 +197,7 @@ export default function ChatRoom({
           className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-xs outline-none focus:border-[var(--color-accent)] resize-none"
         />
 
-        <div className="flex items-center justify-between gap-4">
-          {taskId ? (
-            <label className="flex items-center gap-2 text-[10px] text-[var(--color-text-muted)] cursor-pointer uppercase tracking-wider font-semibold select-none">
-              <input
-                type="checkbox"
-                name="allowDescriptionEdit"
-                className="h-3.5 w-3.5 accent-[var(--color-accent)] rounded border-[var(--color-line)]"
-              />
-              Allow description edit
-            </label>
-          ) : (
-            <div />
-          )}
-
+        <div className="flex items-center justify-end gap-4">
           <button
             type="submit"
             className="rounded-lg bg-[var(--color-accent)] px-4 py-1.5 text-xs font-semibold text-[var(--color-bg)] hover:opacity-90 transition cursor-pointer select-none"

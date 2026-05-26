@@ -23,7 +23,7 @@ def load_agent_defaults():
                 "byRole": {}, "byIntegration": {}}
 
 
-def derive_effective_agent(agent, defaults):
+def derive_effective_agent(agent, defaults, all_agents=None):
     """Merge defaults (core, byRole[role], byIntegration[k]) into agent.
     Per-agent services append (dedup); capabilities override key-by-key.
     Returns shallow copy with derived services/capabilities."""
@@ -86,10 +86,30 @@ def derive_effective_agent(agent, defaults):
     import re as _re_recv
     _integ = agent.get("integrations") or {}
     _recv_re = _re_recv.compile(r"^openclaw-([a-z0-9-]+)-receiver\.service$")
-    services = [
-        s for s in services
-        if not _recv_re.match(s) or _integ.get(_recv_re.match(s).group(1))
-    ]
+
+    # Check if there is any coding agent with this integration
+    has_active_integration = {}
+    if all_agents:
+        for a in all_agents:
+            if a.get("enabled", True) and a.get("role") == "coding":
+                a_integ = a.get("integrations") or {}
+                for k, v in a_integ.items():
+                    if v:
+                        has_active_integration[k] = True
+
+    services_filtered = []
+    for s in services:
+        m = _recv_re.match(s)
+        if m:
+            gate = m.group(1)
+            # If the agent itself doesn't have the monitor integration or the specific gate enabled, drop it.
+            # Additionally, if role == "monitor", only keep the receiver if at least one coding agent uses it.
+            if not _integ.get("monitor") or not _integ.get(gate):
+                continue
+            if agent.get("role") == "monitor" and not has_active_integration.get(gate):
+                continue
+        services_filtered.append(s)
+    services = services_filtered
 
     eff["services"] = services
     eff["capabilities"] = caps
@@ -151,9 +171,10 @@ def load_agent_registry():
         emit("FAIL", f"unable to parse {AGENT_REGISTRY_PATH} ({trim(str(exc))})")
         return None
     defaults = load_agent_defaults()
+    raw_agents = registry.get("agents") or []
     registry["agents"] = [
-        derive_effective_agent(a, defaults)
-        for a in (registry.get("agents") or [])
+        derive_effective_agent(a, defaults, raw_agents)
+        for a in raw_agents
     ]
     agents = [
         a for a in registry["agents"]
@@ -174,8 +195,9 @@ def fallback_agent_registry(users_cfg):
     keeps the integrity check from crashing during transient outages."""
     defaults = load_agent_defaults()
     agents = []
+    raw_agents = []
     for user in sorted((users_cfg.get("users") or {}).keys()):
-        agents.append(derive_effective_agent({
+        raw_agents.append({
             "user": user,
             "enabled": True,
             "role": "coding",
@@ -187,7 +209,9 @@ def fallback_agent_registry(users_cfg):
                 "bitbucket": True,
                 "openaiAuth": True,
             },
-        }, defaults))
+        })
+    for a in raw_agents:
+        agents.append(derive_effective_agent(a, defaults, raw_agents))
     return {"version": 0, "agents": agents}
 
 

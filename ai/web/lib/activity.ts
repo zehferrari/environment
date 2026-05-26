@@ -271,10 +271,9 @@ export function describeActivity(row: ActivityRow): string {
     }
     case "task.chat.send":
     case "epic.chat.send": {
-      const p = parsePayload<{ agentSlug?: string; allowDescriptionEdit?: boolean }>(row.payload);
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
       const target = row.kind === "task.chat.send" ? task(row.taskTitle) : "an epic";
-      const tag = p?.allowDescriptionEdit ? " (edit grant)" : "";
-      return `${actor(row.actorName)} messaged @${p?.agentSlug ?? "?"} on ${target}${tag}`;
+      return `${actor(row.actorName)} messaged @${p?.agentSlug ?? "?"} on ${target}`;
     }
     case "agent.direct_chat.send": {
       const p = parsePayload<{ agentSlug?: string }>(row.payload);

@@ -31,7 +31,8 @@ async function requireUserId() {
   const session = await auth();
   const userId = session?.user?.id;
   if (!userId) throw new Error("Unauthenticated");
-  return { userId, userName: session.user.name ?? "PM user" };
+  const userKind = session.user.kind === "agent" ? "agent" : "human";
+  return { userId, userName: session.user.name ?? "PM user", userKind };
 }
 
 function agentCallbackBaseUrl() {
@@ -641,15 +642,12 @@ function getGidByName(groupName: string): number | null {
 }
 
 export async function sendDirectAgentMessage(formData: FormData) {
-  const { userId, userName } = await requireUserId();
+  const { userId, userName, userKind } = await requireUserId();
   const agentSlug = String(formData.get("agentSlug") ?? "").trim();
   const requestedBaseArchiveId = String(formData.get("baseArchiveId") ?? "").trim() || null;
   const continueFromArchive = formData.get("continueFromArchive") === "1";
   const body = String(formData.get("body") ?? "").trim();
   const requestedProjectId = String(formData.get("projectId") ?? "").trim() || null;
-  const allowWorkItemManagement =
-    formData.get("allowWorkItemManagement") === "on" ||
-    formData.get("allowWorkItemManagement") === "1";
   if (!agentSlug || !body || body.length > 8000) return;
 
   const agent = await db.agent.findUnique({
@@ -663,8 +661,8 @@ export async function sendDirectAgentMessage(formData: FormData) {
   });
   if (!agent?.user || agent.deactivatedAt || agent.user.status !== "active") return;
 
-  // Optional project attachment for planning. A direct chat message carries
-  // at most one project; the work-item grant is meaningful only with one.
+  // Optional project attachment for planning. A human-authored direct chat
+  // scoped to a project carries the one-shot proposal capability by default.
   let projectId: string | null = requestedProjectId;
   if (projectId) {
     const proj = await db.project.findFirst({
@@ -673,7 +671,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
     });
     if (!proj) projectId = null;
   }
-  const grantWorkItems = allowWorkItemManagement && projectId !== null;
+  const grantWorkItems = userKind === "human" && projectId !== null;
 
   let baseArchiveId = requestedBaseArchiveId;
   if (baseArchiveId) {

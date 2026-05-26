@@ -69,9 +69,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
     return NextResponse.json({ error: "service and boolean enabled are required" }, { status: 400 });
   }
 
-  const row = await db.agent.findUnique({ where: { slug: agentId } });
+  const [row, allRows] = await Promise.all([
+    db.agent.findUnique({ where: { slug: agentId } }),
+    db.agent.findMany({ select: { rawJson: true } }),
+  ]);
   if (!row) return NextResponse.json({ error: "agent not found" }, { status: 404 });
-  const effective = await resolveEffectiveAgentConfig(row.rawJson);
+  const effective = await resolveEffectiveAgentConfig(row.rawJson, allRows.map((r) => r.rawJson));
   const allowedServices = new Set([...effective.services, ...(await snapshotServices(agentId))]);
   if (!allowedServices.has(body.service)) {
     return NextResponse.json({ error: "service not listed for this agent" }, { status: 404 });

@@ -74,25 +74,37 @@ export async function POST(
       { status: 410 },
     );
   }
-  if (
-    !verifyTaskDescriptionWriteToken(messageId, taskId, grant.agentSlug, token)
-  ) {
-    return NextResponse.json(
-      { error: "Invalid description token" },
-      { status: 403 },
-    );
-  }
-
-  const agent = await db.agent.findUnique({
-    where: { slug: grant.agentSlug },
+  const activeAgents = await db.agent.findMany({
+    where: { deactivatedAt: null, user: { is: { status: "active" } } },
     select: {
       slug: true,
-      deactivatedAt: true,
-      user: { select: { id: true, status: true } },
+      user: { select: { id: true } },
     },
   });
-  if (!agent?.user || agent.deactivatedAt || agent.user.status !== "active") {
-    return NextResponse.json({ error: "Agent not active" }, { status: 403 });
+
+  let resolvedAgent = null;
+  if (grant.agentSlug === "room") {
+    for (const agent of activeAgents) {
+      if (verifyTaskDescriptionWriteToken(messageId, taskId, agent.slug, token)) {
+        resolvedAgent = agent;
+        break;
+      }
+    }
+  } else {
+    const matchingAgent = activeAgents.find((a) => a.slug === grant.agentSlug);
+    if (
+      matchingAgent &&
+      verifyTaskDescriptionWriteToken(messageId, taskId, grant.agentSlug, token)
+    ) {
+      resolvedAgent = matchingAgent;
+    }
+  }
+
+  if (!resolvedAgent || !resolvedAgent.user) {
+    return NextResponse.json(
+      { error: "Invalid description token or agent not active" },
+      { status: 403 },
+    );
   }
 
   const task = await db.task.findUnique({
@@ -118,11 +130,11 @@ export async function POST(
       data: {
         projectId: task.projectId,
         taskId,
-        userId: agent.user.id,
+        userId: resolvedAgent.user.id,
         kind: "task.description.agent_write",
         payload: JSON.stringify({
           messageId,
-          agentSlug: grant.agentSlug,
+          agentSlug: resolvedAgent.slug,
           length: newDescription?.length ?? 0,
         }),
       },

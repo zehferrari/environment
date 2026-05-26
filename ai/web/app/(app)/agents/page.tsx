@@ -121,9 +121,10 @@ export default async function AgentsPage() {
 
   const liveAgents = snapshot?.agents ?? {};
   const system = snapshot?.system ?? {};
+  const rawAgentJsons = agents.map((agent) => agent.rawJson);
   const effectiveConfigs = new Map(
     await Promise.all(
-      agents.map(async (agent) => [agent.slug, await resolveEffectiveAgentConfig(agent.rawJson)] as const),
+      agents.map(async (agent) => [agent.slug, await resolveEffectiveAgentConfig(agent.rawJson, rawAgentJsons)] as const),
     ),
   );
   const agentSlugs = new Set(agents.map((agent) => agent.slug));

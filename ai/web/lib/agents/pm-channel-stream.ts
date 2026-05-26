@@ -76,11 +76,24 @@ function emptyState(target: PmChannelReplyTarget): PmChannelStreamState {
   };
 }
 
+const INACTIVE_STREAMING_TIMEOUT_MS = 10 * 60 * 1000;
+
 function sweepExpired(now = Date.now()) {
   const s = store();
   for (const [key, state] of s.states) {
-    if (state.status === "streaming") continue;
-    if (now - state.updatedAt > STREAM_TTL_MS) s.states.delete(key);
+    if (state.status === "streaming") {
+      if (now - state.updatedAt > INACTIVE_STREAMING_TIMEOUT_MS) {
+        state.status = "error";
+        state.error = "Agent response timed out (no activity for 10 minutes)";
+        state.updatedAt = now;
+        s.states.set(key, state);
+        notify(key, "stream-error", state);
+      }
+    } else {
+      if (now - state.updatedAt > STREAM_TTL_MS) {
+        s.states.delete(key);
+      }
+    }
   }
 }
 
@@ -138,6 +151,7 @@ export function createPmChannelEventStream(key: string): ReadableStream<Uint8Arr
 
   return new ReadableStream<Uint8Array>({
     start(controller) {
+      sweepExpired();
       const s = store();
       const send = (event: string, state: PmChannelStreamState) => {
         try {
@@ -159,7 +173,7 @@ export function createPmChannelEventStream(key: string): ReadableStream<Uint8Arr
 
       const keepAlive = setInterval(() => {
         try {
-          controller.enqueue(encoder.encode(": ping\n\n"));
+          controller.enqueue(encoder.encode("event: heartbeat\ndata: {}\n\n"));
         } catch {
           clearInterval(keepAlive);
         }
