@@ -29,6 +29,12 @@ export async function applyWorkItemProposal(formData: FormData) {
   if (result.ok && result.projectSlug) {
     revalidatePath(`/projects/${result.projectSlug}`);
     revalidatePath(`/projects/${result.projectSlug}/epics`);
+    if (result.taskId) {
+      revalidatePath(`/projects/${result.projectSlug}/tasks/${result.taskId}`);
+    }
+    if (result.epicId) {
+      revalidatePath(`/projects/${result.projectSlug}/epics/${result.epicId}`);
+    }
   }
 
   // Re-validation failure is the only case worth surfacing loudly (state
@@ -46,9 +52,22 @@ export async function rejectWorkItemProposal(formData: FormData) {
 
   const proposal = await db.workItemProposal.findUnique({
     where: { id: proposalId },
-    select: { id: true, status: true, agentSlug: true, projectId: true },
+    select: { id: true, status: true, agentSlug: true, projectId: true, grantMessageId: true },
   });
   if (!proposal || proposal.status !== "pending") return;
+
+  let taskId: string | null = null;
+  let epicId: string | null = null;
+  if (proposal.grantMessageId) {
+    const msg = await db.agentChatMessage.findUnique({
+      where: { id: proposal.grantMessageId },
+      select: { taskId: true, epicId: true },
+    });
+    if (msg) {
+      taskId = msg.taskId;
+      epicId = msg.epicId;
+    }
+  }
 
   await db.$transaction([
     db.workItemProposal.update({
@@ -67,4 +86,18 @@ export async function rejectWorkItemProposal(formData: FormData) {
   ]);
 
   revalidatePath(`/agents/${proposal.agentSlug}/chat`);
+  const project = await db.project.findUnique({
+    where: { id: proposal.projectId },
+    select: { slug: true },
+  });
+  if (project) {
+    revalidatePath(`/projects/${project.slug}`);
+    revalidatePath(`/projects/${project.slug}/epics`);
+    if (taskId) {
+      revalidatePath(`/projects/${project.slug}/tasks/${taskId}`);
+    }
+    if (epicId) {
+      revalidatePath(`/projects/${project.slug}/epics/${epicId}`);
+    }
+  }
 }

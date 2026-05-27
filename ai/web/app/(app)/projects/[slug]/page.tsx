@@ -11,6 +11,8 @@ import { reorderTasks } from "@/lib/tasks/reorder";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { resolveDoneTtlDays } from "@/lib/settings/system";
 import { binTask } from "@/lib/bin/actions";
+import { sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
+import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
 import { COLUMNS, COLUMN_IDS } from "./columns";
@@ -117,6 +119,20 @@ async function createTask(formData: FormData) {
     },
   });
 
+  if (assigneeId) {
+    await sendTaskWorkflowNotification({
+      taskId: task.id,
+      targetUserId: assigneeId,
+      actor,
+      reason: "backlog_plan_requested",
+      body: [
+        `You have been assigned to "${task.title}" while it is in Backlog.`,
+        "Read the full task context and existing comments. Post a task comment with your implementation plan or opinion.",
+        "Do not change task status and do not start work until the task is moved to To Do.",
+      ].join("\n"),
+    });
+  }
+
   revalidatePath(`/projects/${projectSlug}`);
 }
 
@@ -145,7 +161,17 @@ async function moveTask(
   }
   const current = await db.task.findUnique({
     where: { id: taskId },
-    select: { id: true, status: true, projectId: true, deletedAt: true },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      projectId: true,
+      assigneeId: true,
+      actingManagerId: true,
+      reporterId: true,
+      deletedAt: true,
+      epic: { select: { status: true, actingManagerId: true } },
+    },
   });
   if (!current || current.deletedAt) {
     return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
@@ -184,6 +210,33 @@ async function moveTask(
       },
     }),
   ]);
+  if (status === "To Do" && current.assigneeId) {
+    await sendTaskWorkflowNotification({
+      taskId,
+      targetUserId: current.assigneeId,
+      actor,
+      reason: "todo_start_required",
+      body: [
+        `Task "${current.title}" is now in To Do and assigned to you.`,
+        "Read the full task context, move it to In Progress through the workflow endpoint, and start work immediately.",
+      ].join("\n"),
+    });
+  }
+  if (status === "Review") {
+    const reviewerId = resolveReviewOwnerId(current);
+    if (reviewerId) {
+      await sendTaskWorkflowNotification({
+        taskId,
+        targetUserId: reviewerId,
+        actor,
+        reason: "review_requested",
+        body: [
+          `Task "${current.title}" was moved to Review.`,
+          "Review the completed work, read the full task context and comments, then either leave feedback/blockers or move the task to Done through the workflow endpoint.",
+        ].join("\n"),
+      });
+    }
+  }
   revalidatePath(`/projects/${slug}`);
   return { ok: true };
 }

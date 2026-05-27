@@ -15,6 +15,7 @@ export type ProposalForReview = {
   validation: string | null;
   createdAt: string;
   projectName: string;
+  agentSlug: string;
 };
 
 type Op = Record<string, unknown>;
@@ -145,7 +146,7 @@ export default function ProposalReview({
   agentSlug,
   proposals,
 }: {
-  agentSlug: string;
+  agentSlug?: string;
   proposals: ProposalForReview[];
 }) {
   if (proposals.length === 0) return null;
@@ -160,6 +161,7 @@ export default function ProposalReview({
         const ops = parseOps(proposal.operations);
         const results = parseResults(proposal.validation);
         const errorCount = results.filter((r) => !r.ok).length;
+        const resolvedAgentSlug = proposal.agentSlug || agentSlug;
 
         return (
           <div
@@ -179,7 +181,7 @@ export default function ProposalReview({
               <div className="flex shrink-0 gap-2">
                 <form action={applyWorkItemProposal}>
                   <input type="hidden" name="proposalId" value={proposal.id} />
-                  <input type="hidden" name="agentSlug" value={agentSlug} />
+                  {resolvedAgentSlug ? <input type="hidden" name="agentSlug" value={resolvedAgentSlug} /> : null}
                   <button
                     type="submit"
                     className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-bg)] hover:opacity-90"
@@ -189,7 +191,7 @@ export default function ProposalReview({
                 </form>
                 <form action={rejectWorkItemProposal}>
                   <input type="hidden" name="proposalId" value={proposal.id} />
-                  <input type="hidden" name="agentSlug" value={agentSlug} />
+                  {resolvedAgentSlug ? <input type="hidden" name="agentSlug" value={resolvedAgentSlug} /> : null}
                   <button
                     type="submit"
                     className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-crit)] hover:text-[var(--color-crit)]"

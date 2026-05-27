@@ -13,6 +13,7 @@ import {
   MessageAvatar,
   type MessageActor,
 } from "@/components/message-avatar";
+import ProposalReview from "@/app/(app)/agents/[agent]/chat/proposal-review";
 
 interface Message {
   id: string;
@@ -61,6 +62,7 @@ interface ChatRoomProps {
   pendingAgents: Array<{ slug: string; username: string }>;
   latestMessageId: string | null;
   currentUserId?: string | null;
+  pendingProposals?: any[];
 }
 
 function formatModernDate(value: Date | string) {
@@ -302,6 +304,7 @@ export default function ChatRoom({
   pendingAgents,
   latestMessageId,
   currentUserId = null,
+  pendingProposals = [],
 }: ChatRoomProps) {
   const pathname = usePathname();
   const formRef = useRef<HTMLFormElement>(null);
@@ -348,6 +351,7 @@ export default function ChatRoom({
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       }
       formRef.current?.scrollIntoView({ block: "end" });
+      window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "auto" });
     };
 
     const frame = window.requestAnimationFrame(scrollToLatest);
@@ -697,6 +701,23 @@ export default function ChatRoom({
             label={agent.username}
           />
         ))}
+
+        {/* Proposal Reviews */}
+        {!viewingArchive && pendingProposals.length > 0 && (
+          <div className="mt-4 border-t border-[var(--color-line)] pt-4">
+            <ProposalReview
+              proposals={pendingProposals.map((p: any) => ({
+                id: p.id,
+                summary: p.summary,
+                operations: p.operations,
+                validation: p.validation,
+                createdAt: p.createdAt instanceof Date ? p.createdAt.toISOString() : p.createdAt,
+                projectName: p.project.name,
+                agentSlug: p.agentSlug,
+              }))}
+            />
+          </div>
+        )}
       </div>
 
       {/* Input Form */}

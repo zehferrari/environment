@@ -1,0 +1,490 @@
+import { db } from "@/lib/db";
+import { extractMentions } from "@/lib/markdown";
+import {
+  buildTaskAgentUserMessage,
+  buildTaskNativeChannelPrompt,
+} from "@/lib/agents/task-chat-context";
+import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
+import {
+  buildPmTurnSessionKey,
+  sendOpenClawPmChannelTurn,
+} from "@/lib/agents/openclaw-pm-channel";
+import { createTaskWorkflowToken } from "@/lib/agents/task-workflow-token";
+
+type Actor = {
+  id: string;
+  kind: "human" | "agent";
+  username?: string | null;
+};
+
+type AgentTarget = {
+  slug: string;
+  userId: string;
+  username: string;
+  gatewayPort: number | null;
+  reasons: Set<string>;
+};
+
+type AgentUser = {
+  id: string;
+  username: string;
+  kind: string;
+  status: string;
+  agent: { slug: string; deactivatedAt: Date | null; gatewayPort: number | null } | null;
+};
+
+export type TaskWorkflowNotificationReason =
+  | "backlog_plan_requested"
+  | "todo_start_required"
+  | "review_requested"
+  | "review_feedback"
+  | "review_done"
+  | "policy_update";
+
+function agentCallbackBaseUrl() {
+  return process.env.PM_AGENT_CALLBACK_URL
+    ?? process.env.PM_INTERNAL_APP_URL
+    ?? "http://127.0.0.1:3000";
+}
+
+function addTargetAgent(
+  targetAgents: Map<string, AgentTarget>,
+  user: AgentUser | null | undefined,
+  reason: string,
+  excludeAgentSlugs: ReadonlySet<string>,
+) {
+  if (
+    !user ||
+    user.kind !== "agent" ||
+    user.status !== "active" ||
+    !user.agent ||
+    user.agent.deactivatedAt ||
+    excludeAgentSlugs.has(user.agent.slug)
+  ) {
+    return;
+  }
+
+  const existing = targetAgents.get(user.agent.slug);
+  if (existing) {
+    existing.reasons.add(reason);
+    return;
+  }
+
+  targetAgents.set(user.agent.slug, {
+    slug: user.agent.slug,
+    userId: user.id,
+    username: user.username,
+    gatewayPort: user.agent.gatewayPort,
+    reasons: new Set([reason]),
+  });
+}
+
+function workflowPrompt(args: {
+  taskTitle: string;
+  taskId: string;
+  agentSlug: string;
+  messageId: string;
+  reason: TaskWorkflowNotificationReason;
+}) {
+  const token = createTaskWorkflowToken(args.messageId, args.taskId, args.agentSlug);
+  const workflowUrl = new URL(
+    `/api/agent/tasks/${encodeURIComponent(args.taskId)}/workflow`,
+    agentCallbackBaseUrl(),
+  ).toString();
+  const bodyShape = JSON.stringify(
+    {
+      messageId: args.messageId,
+      token,
+      action: "<start | ready_for_review | review_feedback | review_done | triage_to_todo>",
+      comment: "<required only for review_feedback>",
+    },
+    null,
+    2,
+  );
+
+  return [
+    `PM WORKFLOW CAPABILITY for task "${args.taskTitle}".`,
+    `This notification is addressed to @${args.agentSlug}. Its workflow reason is ${args.reason}.`,
+    "",
+    "Workflow rules:",
+    "- Backlog is for planning and opinions only. If you are the assignee and the task is in Backlog, reply with your implementation plan/opinion as a task comment. Do not change task status and do not start work.",
+    "- To Do means the plan/request is approved for execution. If you are the assignee and the task is in To Do, call the workflow endpoint with action=start, then begin work immediately.",
+    "- In Progress means active implementation. When implementation is complete, call the workflow endpoint with action=ready_for_review.",
+    "- Review means the completed work is waiting for reviewer feedback. If you are the resolved reviewer and are satisfied, call action=review_done. If changes or blockers remain, call action=review_feedback with a clear comment.",
+    "- If you are the reviewer or Open Epic acting manager and accept a Backlog plan, call action=triage_to_todo.",
+    "- For tasks under an Epic, do not start or advance work unless the Epic status in the context is Open.",
+    "",
+    "Workflow endpoint:",
+    `POST application/json to: ${workflowUrl}`,
+    "Body shape:",
+    bodyShape,
+    "",
+    "Replies to this PM-channel turn are stored as normal task comments. Use a visible comment whenever you are giving a plan, an opinion, feedback, or status context.",
+  ].join("\n");
+}
+
+export async function sendTaskWorkflowNotification(args: {
+  taskId: string;
+  targetUserId: string;
+  actor: Actor;
+  reason: TaskWorkflowNotificationReason;
+  body: string;
+}) {
+  const [task, actorUser, targetUser] = await Promise.all([
+    db.task.findUnique({
+      where: { id: args.taskId },
+      select: {
+        id: true,
+        title: true,
+        projectId: true,
+        deletedAt: true,
+        project: { select: { slug: true } },
+      },
+    }),
+    db.user.findUnique({
+      where: { id: args.actor.id },
+      select: { username: true },
+    }),
+    db.user.findUnique({
+      where: { id: args.targetUserId },
+      select: {
+        id: true,
+        username: true,
+        kind: true,
+        status: true,
+        agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+      },
+    }),
+  ]);
+
+  if (!task || task.deletedAt) return null;
+  if (
+    !targetUser ||
+    targetUser.kind !== "agent" ||
+    targetUser.status !== "active" ||
+    !targetUser.agent ||
+    targetUser.agent.deactivatedAt
+  ) {
+    return null;
+  }
+
+  const mirroredBody = [
+    `PM workflow notification for @${targetUser.agent.slug}:`,
+    "",
+    args.body,
+  ].join("\n");
+
+  const msg = await db.agentChatMessage.create({
+    data: {
+      projectId: task.projectId,
+      taskId: task.id,
+      epicId: null,
+      agentSlug: targetUser.agent.slug,
+      senderUserId: args.actor.id,
+      body: mirroredBody,
+      allowDescriptionEdit: false,
+      originChannel: "comment",
+      originCommentId: null,
+    },
+    select: { id: true, createdAt: true },
+  });
+
+  await db.activityLog.create({
+    data: {
+      projectId: task.projectId,
+      taskId: task.id,
+      userId: args.actor.id,
+      kind: "task.workflow.notify",
+      targetAgent: targetUser.agent.slug,
+      payload: JSON.stringify({
+        messageId: msg.id,
+        agentSlug: targetUser.agent.slug,
+        reason: args.reason,
+      }),
+    },
+  });
+
+  const userMessage = await buildTaskAgentUserMessage({
+    taskId: task.id,
+    agentSlug: targetUser.agent.slug,
+    currentTurn: {
+      id: msg.id,
+      agentChatMessageId: msg.id,
+      source: "task comment",
+      actorUsername: args.actor.username ?? actorUser?.username ?? null,
+      actorKind: args.actor.kind,
+      body: args.body,
+      createdAt: msg.createdAt,
+    },
+  });
+  const sessionBinding = await getOrCreateAgentSessionBinding({
+    scopeType: "task",
+    scopeId: task.id,
+    agentSlug: targetUser.agent.slug,
+  });
+  const delivery = await sendOpenClawPmChannelTurn({
+    gatewayPort: targetUser.agent.gatewayPort,
+    agentSlug: targetUser.agent.slug,
+    sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
+    kind: "task-comment",
+    text: args.body,
+    contextText: userMessage,
+    systemPrompt: [
+      buildTaskNativeChannelPrompt(task.title, targetUser.agent.slug),
+      workflowPrompt({
+        taskTitle: task.title,
+        taskId: task.id,
+        agentSlug: targetUser.agent.slug,
+        messageId: msg.id,
+        reason: args.reason,
+      }),
+    ].join("\n\n"),
+    projectId: task.projectId,
+    actor: {
+      id: args.actor.id,
+      username: args.actor.username ?? actorUser?.username ?? null,
+      kind: args.actor.kind,
+    },
+    replyTarget: {
+      kind: "task-comment",
+      agentSlug: targetUser.agent.slug,
+      taskId: task.id,
+      messageId: msg.id,
+      projectSlug: task.project.slug,
+    },
+  });
+
+  await db.activityLog.create({
+    data: {
+      projectId: task.projectId,
+      taskId: task.id,
+      userId: args.actor.id,
+      kind: delivery.ok ? "task.workflow.dispatch" : "task.workflow.dispatch_failed",
+      targetAgent: targetUser.agent.slug,
+      payload: JSON.stringify({
+        messageId: msg.id,
+        agentSlug: targetUser.agent.slug,
+        reason: args.reason,
+        driver: delivery.driver,
+        status: delivery.status ?? null,
+        error: delivery.error ?? null,
+      }),
+    },
+  });
+
+  return { messageId: msg.id, agentSlug: targetUser.agent.slug, delivery };
+}
+
+export async function sendTaskCommentNotifications(args: {
+  taskId: string;
+  commentId: string;
+  body: string;
+  actor: Actor;
+  excludeAgentSlugs?: string[];
+}) {
+  const task = await db.task.findUnique({
+    where: { id: args.taskId },
+    select: {
+      id: true,
+      projectId: true,
+      title: true,
+      status: true,
+      deletedAt: true,
+      project: { select: { slug: true } },
+      assignee: {
+        select: {
+          id: true,
+          username: true,
+          kind: true,
+          status: true,
+          agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+        },
+      },
+      actingManager: {
+        select: {
+          id: true,
+          username: true,
+          kind: true,
+          status: true,
+          agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+        },
+      },
+      reporter: {
+        select: {
+          id: true,
+          username: true,
+          kind: true,
+          status: true,
+          agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+        },
+      },
+      epic: {
+        select: {
+          status: true,
+          actingManager: {
+            select: {
+              id: true,
+              username: true,
+              kind: true,
+              status: true,
+              agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!task || task.deletedAt) return [];
+
+  const users = await db.user.findMany({
+    select: {
+      id: true,
+      username: true,
+      kind: true,
+      status: true,
+      agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
+    },
+  });
+  const actorUser = users.find((u) => u.id === args.actor.id);
+  const mentions = extractMentions(
+    args.body,
+    users.map((u) => ({ username: u.username })),
+  );
+  const mentionedUsers = users.filter((u) => mentions.includes(u.username));
+  const excluded = new Set(args.excludeAgentSlugs ?? []);
+  if (actorUser?.kind === "agent" && actorUser.agent?.slug) {
+    excluded.add(actorUser.agent.slug);
+  }
+
+  const targetAgents = new Map<string, AgentTarget>();
+  addTargetAgent(targetAgents, task.assignee, "assigned", excluded);
+  addTargetAgent(targetAgents, task.actingManager, "reviewer", excluded);
+  const hasOpenEpicManager = task.epic?.status === "Open" && task.epic.actingManager;
+  if (task.epic?.status === "Open") {
+    addTargetAgent(targetAgents, task.epic.actingManager, "epic-manager", excluded);
+  }
+  if (!task.actingManager && !hasOpenEpicManager) {
+    addTargetAgent(targetAgents, task.reporter, "reporter", excluded);
+  }
+  for (const user of mentionedUsers) {
+    addTargetAgent(targetAgents, user, "mentioned", excluded);
+  }
+
+  const mirroredBody = [
+    `Task comment from @${actorUser?.username ?? args.actor.username ?? "unknown"}:`,
+    "",
+    args.body,
+  ].join("\n");
+
+  const mirroredMessages = await db.$transaction(async (tx) => {
+    const mirrored: Array<{
+      id: string;
+      agentSlug: string;
+      reason: string[];
+      commentCreatedAt: Date;
+    }> = [];
+    for (const target of targetAgents.values()) {
+      const msg = await tx.agentChatMessage.create({
+        data: {
+          projectId: task.projectId,
+          taskId: task.id,
+          epicId: null,
+          agentSlug: target.slug,
+          senderUserId: args.actor.id,
+          body: mirroredBody,
+          allowDescriptionEdit: false,
+          originChannel: "comment",
+          originCommentId: args.commentId,
+        },
+        select: { id: true, createdAt: true },
+      });
+      const reason = [...target.reasons];
+      mirrored.push({
+        id: msg.id,
+        agentSlug: target.slug,
+        reason,
+        commentCreatedAt: msg.createdAt,
+      });
+      await tx.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId: task.id,
+          userId: args.actor.id,
+          kind: "task.chat.send",
+          targetAgent: target.slug,
+          payload: JSON.stringify({
+            messageId: msg.id,
+            agentSlug: target.slug,
+            mirroredFromCommentId: args.commentId,
+            reason,
+          }),
+        },
+      });
+    }
+    return mirrored;
+  });
+
+  await Promise.all(mirroredMessages.map(async (msg) => {
+    const userMessage = await buildTaskAgentUserMessage({
+      taskId: task.id,
+      agentSlug: msg.agentSlug,
+      currentTurn: {
+        id: args.commentId,
+        agentChatMessageId: msg.id,
+        source: "task comment",
+        actorUsername: actorUser?.username ?? args.actor.username,
+        actorKind: args.actor.kind,
+        body: args.body,
+        createdAt: msg.commentCreatedAt,
+      },
+    });
+    const sessionBinding = await getOrCreateAgentSessionBinding({
+      scopeType: "task",
+      scopeId: task.id,
+      agentSlug: msg.agentSlug,
+    });
+    const target = targetAgents.get(msg.agentSlug);
+    const delivery = await sendOpenClawPmChannelTurn({
+      gatewayPort: target?.gatewayPort ?? null,
+      agentSlug: msg.agentSlug,
+      sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
+      kind: "task-comment",
+      text: args.body,
+      contextText: userMessage,
+      systemPrompt: buildTaskNativeChannelPrompt(task.title, msg.agentSlug),
+      projectId: task.projectId,
+      actor: {
+        id: args.actor.id,
+        username: actorUser?.username ?? args.actor.username,
+        kind: args.actor.kind,
+      },
+      replyTarget: {
+        kind: "task-comment",
+        agentSlug: msg.agentSlug,
+        taskId: task.id,
+        messageId: msg.id,
+        projectSlug: task.project.slug,
+      },
+    });
+    await db.activityLog.create({
+      data: {
+        projectId: task.projectId,
+        taskId: task.id,
+        userId: args.actor.id,
+        kind: delivery.ok ? "task.comment.dispatch" : "task.comment.dispatch_failed",
+        targetAgent: msg.agentSlug,
+        payload: JSON.stringify({
+          commentId: args.commentId,
+          messageId: msg.id,
+          agentSlug: msg.agentSlug,
+          reason: msg.reason,
+          driver: delivery.driver,
+          status: delivery.status ?? null,
+          error: delivery.error ?? null,
+        }),
+      },
+    });
+  }));
+
+  return mirroredMessages;
+}

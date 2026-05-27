@@ -37,7 +37,7 @@ export function TabsNav({ tabs, sticky = false }: { tabs: string[]; sticky?: boo
       role="tablist"
       className={`flex flex-wrap gap-1 border-b border-[var(--color-line)] ${
         sticky
-          ? "sticky top-14 z-20 -mx-5 bg-[var(--color-panel)] px-5 shadow-sm"
+          ? "sticky top-[70px] z-20 -mx-5 bg-[var(--color-panel)] px-5 shadow-sm"
           : ""
       }`}
     >

@@ -237,10 +237,18 @@ Progress · Review · Done. The board renders the four workflow statuses
 (`@dnd-kit`); Backlog is a separate full-width table below the board
 with a per-project localStorage show/hide toggle (hidden by default).
 Dragging a backlog row onto a column moves the task into that status.
+Backlog is a planning/opinion state: assigning or reassigning an agent
+there sends the agent a task-context PM-channel turn and requires a
+task-comment implementation plan/opinion, but does not authorize work.
+`To Do` is the approval-to-execute state: the assigned agent must move
+the task to `In Progress` and start immediately. `Review` is reserved
+for completed implementation review.
 Server-side enforcement lives in `lib/workflow.ts`:
 `checkStatusTransition`, `checkAssignment`, `checkHierarchy`,
-`checkActingManager`. Agents are blocked from transitioning out of
-Review or Done. Client rolls back optimistic moves on rejection. Done
+`checkActingManager`, plus the token-scoped
+`POST /api/agent/tasks/[taskId]/workflow` endpoint for role-aware agent
+actions (`start`, `ready_for_review`, `review_feedback`, `review_done`,
+`triage_to_todo`). Client rolls back optimistic moves on rejection. Done
 cards older than the project's `doneTtlDays` (default 5) are filtered
 out of the board server-side so the column doesn't grow without bound.
 
@@ -603,7 +611,11 @@ the consumer service when the PM checkout is present.
   `allowWorkItemManagement` for human-triggered Discussion proposal
   grants. Per-addressed-agent proposal grant consumption is tracked on
   `PmChannelRun`. `originChannel` / `originCommentId` keep replies in
-  the user's original channel.
+  the user's original channel. The task Comments tab renders live
+  task-comment bubbles from `PmChannelRun` state only while the turn is
+  still active and relevant to the task's current workflow owner/status;
+  failed, completed, or orphaned workflow notifications are settled
+  instead of showing an endless live reply bubble.
 - `DirectAgentChatMessage` / `DirectAgentChatArchive` — sidebar direct
   chat. Active messages carry `archiveId` (null while live) and
   `baseArchiveId` (the frozen archive a continuation builds on). An

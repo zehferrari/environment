@@ -30,13 +30,18 @@ function isTokenScopedProjectProposal(path: string) {
   return /^\/api\/agent\/projects\/[^/]+\/proposals$/.test(path);
 }
 
+function isTokenScopedTaskWorkflow(path: string) {
+  return /^\/api\/agent\/tasks\/[^/]+\/workflow$/.test(path);
+}
+
 function isTokenScopedAgentCallback(path: string) {
   return (
     isTokenScopedAgentReply(path) ||
     isTokenScopedTaskReply(path) ||
     isTokenScopedTaskDescription(path) ||
     isTokenScopedEpicDescription(path) ||
-    isTokenScopedProjectProposal(path)
+    isTokenScopedProjectProposal(path) ||
+    isTokenScopedTaskWorkflow(path)
   );
 }
 

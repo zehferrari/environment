@@ -181,6 +181,13 @@ export async function renameEpic(formData: FormData) {
     }),
   ]);
 
+  try {
+    const { deleteDescriptionDraft } = await import("@/lib/description-drafts");
+    deleteDescriptionDraft(epicId, "epic");
+  } catch (e) {
+    console.error("Failed to delete draft file:", e);
+  }
+
   revalidatePath(`/projects/${slug}/epics`);
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
 }
@@ -483,6 +490,13 @@ export async function updateEpic(formData: FormData) {
       }),
     ),
   ]);
+
+  try {
+    const { deleteDescriptionDraft } = await import("@/lib/description-drafts");
+    deleteDescriptionDraft(epicId, "epic");
+  } catch (e) {
+    console.error("Failed to delete draft file:", e);
+  }
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}/epics`);

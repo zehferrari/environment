@@ -33,6 +33,7 @@ import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import AddEpicTaskFab from "./add-epic-task-fab";
 import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
+import EpicTasksClient from "./epic-tasks-client";
 
 type ActorRow = {
   id: string;
@@ -282,6 +283,40 @@ export default async function EpicDetailPage({
       },
     },
   });
+  const pendingProposals = await db.workItemProposal.findMany({
+    where: {
+      status: "pending",
+      projectId: epic.projectId,
+      grantMessageId: { in: chatMessages.map((m) => m.id) },
+    },
+    include: {
+      project: { select: { name: true } },
+    },
+  });
+  const pendingDescriptionMessages = await db.agentChatMessage.findMany({
+    where: {
+      epicId: epic.id,
+      allowDescriptionEdit: true,
+      editGrantUsedAt: null,
+    },
+    select: { id: true },
+  });
+  const pendingDescMsgIds = pendingDescriptionMessages.map((m) => m.id);
+  const runningDescriptionRun = pendingDescMsgIds.length > 0
+    ? await db.pmChannelRun.findFirst({
+        where: {
+          epicId: epic.id,
+          messageId: { in: pendingDescMsgIds },
+          status: { in: ["queued", "accepted", "streaming"] },
+        },
+        select: { messageId: true, agentSlug: true },
+      })
+    : null;
+  const isAiDescriptionRunning = runningDescriptionRun !== null;
+
+  const { getDescriptionDraft } = await import("@/lib/description-drafts");
+  const draftDescription = getDescriptionDraft(epic.id, "epic");
+
   const [chatArchives, binChatArchives, selectedChatArchive] = await Promise.all([
     db.agentChatRoomArchive.findMany({
       where: { projectId: epic.project.id, epicId: epic.id, deletedAt: null },
@@ -582,6 +617,10 @@ export default async function EpicDetailPage({
                     aiTargets={aiTargetOptions}
                     defaultAiTarget={defaultAiTarget}
                     descriptionLabel="Epic"
+                    draftDescription={draftDescription}
+                    aiRunning={isAiDescriptionRunning}
+                    runningMessageId={runningDescriptionRun?.messageId ?? null}
+                    runningAgentSlug={runningDescriptionRun?.agentSlug ?? null}
                     rows={12}
                   />
 
@@ -744,46 +783,28 @@ export default async function EpicDetailPage({
                 epicTitle={epic.title}
                 aiTargets={aiTargetOptions}
                 defaultAiTarget={defaultAiTarget}
+                isAiRunning={pendingAgents.length > 0}
               />
             </>
           ) : (
-            <div className="space-y-3">
-              {TASK_STATUS_ORDER.map((s) => {
-                const list = tasksByStatus.get(s) ?? [];
-                if (list.length === 0) return null;
-                return (
-                  <div key={s}>
-                    <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                      {s} ({list.length})
-                    </div>
-                    <SortableTaskList
-                      ariaLabel={`Tasks in ${s}`}
-                      reorderAction={reorderEpicTasks}
-                      tableLayout
-                      showReporterAvatar
-                      showAssignee
-                      showReviewer
-                      showCreated
-                      showUpdated
-                      deleteTaskAction={binTask}
-                      projectSlug={slug}
-                      items={list.map((t) => ({
-                        id: t.id,
-                        title: t.title,
-                        href: `/projects/${slug}/tasks/${t.id}`,
-                        createdAt: t.createdAt.toISOString(),
-                        reporter: serializeActor(t.reporter),
-                        assignee: serializeActor(t.assignee),
-                        reviewer: serializeActor(t.actingManager),
-                        assigneeName: t.assignee?.username ?? null,
-                        reviewerName: t.actingManager?.username ?? null,
-                        updatedAt: t.updatedAt.toISOString(),
-                      }))}
-                    />
-                  </div>
-                );
-              })}
-            </div>
+            <EpicTasksClient
+              initialTasks={epic.tasks.map((t) => ({
+                id: t.id,
+                title: t.title,
+                status: t.status,
+                href: `/projects/${slug}/tasks/${t.id}`,
+                createdAt: t.createdAt.toISOString(),
+                reporter: serializeActor(t.reporter),
+                assignee: serializeActor(t.assignee),
+                reviewer: serializeActor(t.actingManager),
+                assigneeName: t.assignee?.username ?? null,
+                reviewerName: t.actingManager?.username ?? null,
+                updatedAt: t.updatedAt.toISOString(),
+              }))}
+              projectSlug={slug}
+              reorderEpicTasks={reorderEpicTasks}
+              epicId={epic.id}
+            />
           )}
 
           <AddEpicTaskFab
@@ -952,6 +973,7 @@ export default async function EpicDetailPage({
                     pendingAgents={pendingAgents}
                     latestMessageId={viewingChatArchive ? null : pendingChatMessageId}
                     currentUserId={session?.user?.id ?? null}
+                    pendingProposals={pendingProposals}
                   />
                 </div>
               </TabPanel>

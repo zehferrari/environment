@@ -29,6 +29,7 @@ import {
   type MessageActor,
 } from "@/components/message-avatar";
 import { formatGridDate } from "@/lib/date-format";
+import { bulkBinTasks } from "@/lib/bin/actions";
 
 type BoardActor = MessageActor & { id: string };
 
@@ -45,7 +46,7 @@ type Task = {
   manager: BoardActor | null;
   epicTitle: string | null;
 };
-type Column = { id: string; label: string };
+type Column = { id: string; label: string; description?: string };
 
 type BoardProps = {
   projectSlug: string;
@@ -191,11 +192,43 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
     });
   }
 
-  function toggleTaskSelection(taskId: string, selected: boolean) {
+  const [lastCheckedId, setLastCheckedId] = useState<string | null>(null);
+
+  function toggleTaskSelection(taskId: string, selected: boolean, shiftKey?: boolean) {
+    const task = items.find((t) => t.id === taskId);
+    if (!task) return;
+
     setSelectedIds((current) => {
       const next = new Set(current);
-      if (selected) next.add(taskId);
-      else next.delete(taskId);
+
+      if (shiftKey && lastCheckedId) {
+        const list = task.status === "Backlog"
+          ? items.filter((t) => t.status === "Backlog")
+          : items.filter((t) => t.status === task.status).sort((a, b) => a.rank - b.rank);
+
+        const lastIdx = list.findIndex((t) => t.id === lastCheckedId);
+        const currIdx = list.findIndex((t) => t.id === taskId);
+
+        if (lastIdx !== -1 && currIdx !== -1) {
+          const start = Math.min(lastIdx, currIdx);
+          const end = Math.max(lastIdx, currIdx);
+          for (let i = start; i <= end; i++) {
+            if (selected) {
+              next.add(list[i].id);
+            } else {
+              next.delete(list[i].id);
+            }
+          }
+        } else {
+          if (selected) next.add(taskId);
+          else next.delete(taskId);
+        }
+      } else {
+        if (selected) next.add(taskId);
+        else next.delete(taskId);
+      }
+
+      setLastCheckedId(taskId);
       return next;
     });
   }
@@ -221,6 +254,49 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
         }
       }
       setSelectedIds(new Set());
+    });
+  }
+
+  function bulkDeleteSelected() {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Are you sure you want to delete these ${selectedIds.size} task(s)?`)) return;
+
+    const ids = Array.from(selectedIds);
+    const previousItems = items;
+    setItems((prev) => prev.filter((task) => !selectedIds.has(task.id)));
+    setMoveError(null);
+
+    startTransition(async () => {
+      try {
+        await bulkBinTasks(ids, projectSlug);
+        setSelectedIds(new Set());
+      } catch (err) {
+        setItems(previousItems);
+        setMoveError((err as Error).message);
+      }
+    });
+  }
+
+  function toggleSelectAllBacklog(checked: boolean) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      backlogTasks.forEach((t) => {
+        if (checked) next.add(t.id);
+        else next.delete(t.id);
+      });
+      return next;
+    });
+  }
+
+  function toggleSelectAllColumn(columnId: string, checked: boolean) {
+    const colTasks = items.filter((t) => t.status === columnId);
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      colTasks.forEach((t) => {
+        if (checked) next.add(t.id);
+        else next.delete(t.id);
+      });
+      return next;
     });
   }
 
@@ -334,6 +410,13 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
             </button>
             <button
               type="button"
+              onClick={bulkDeleteSelected}
+              className="rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--color-crit)] transition hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+            >
+              Delete selected
+            </button>
+            <button
+              type="button"
               onClick={() => setSelectedIds(new Set())}
               className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
             >
@@ -346,7 +429,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       <section className="mb-6">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
-            Backlog{backlogCount ? ` (${backlogCount})` : ""}
+            Backlog{backlogCount ? ` (${backlogCount})` : ""} · planning/opinions
           </h2>
           <button
             type="button"
@@ -367,7 +450,18 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
             ) : (
               <div className="overflow-x-auto">
                 <div className="grid min-w-[62rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_5rem_5rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                  <span>Task</span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={backlogCount > 0 && backlogTasks.every((t) => selectedIds.has(t.id))}
+                      onChange={(e) => toggleSelectAllBacklog(e.target.checked)}
+                      onClick={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                      aria-label="Select all backlog tasks"
+                    />
+                    <span>Task</span>
+                  </div>
                   <span>Epic</span>
                   <span>Assignee</span>
                   <span>Reviewer</span>
@@ -375,21 +469,23 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                   <span className="text-right">Updated</span>
                   <span className="sr-only">Bin</span>
                 </div>
-                <SortableContext
-                  items={backlogTasks.map((t) => t.id)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  {backlogTasks.map((t) => (
-                    <BacklogRow
-                      key={t.id}
-                      task={t}
-                      projectSlug={projectSlug}
-                      deleteTaskAction={deleteTaskAction}
-                      selected={selectedIds.has(t.id)}
-                      onSelectionChange={toggleTaskSelection}
-                    />
-                  ))}
-                </SortableContext>
+                <div className="max-h-[780px] overflow-y-auto pr-1">
+                  <SortableContext
+                    items={backlogTasks.map((t) => t.id)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                    {backlogTasks.map((t) => (
+                      <BacklogRow
+                        key={t.id}
+                        task={t}
+                        projectSlug={projectSlug}
+                        deleteTaskAction={deleteTaskAction}
+                        selected={selectedIds.has(t.id)}
+                        onSelectionChange={toggleTaskSelection}
+                      />
+                    ))}
+                  </SortableContext>
+                </div>
               </div>
             )}
           </BacklogDroppable>
@@ -397,25 +493,37 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       </section>
 
       <div className="grid grid-cols-4 gap-3">
-        {columnLanes.map(({ col, tasks: colTasks }) => (
-          <ColumnDroppable key={col.id} id={col.id} label={col.label} count={colTasks.length}>
-            <SortableContext
-              items={colTasks.map((t) => t.id)}
-              strategy={verticalListSortingStrategy}
+        {columnLanes.map(({ col, tasks: colTasks }) => {
+          const colTaskIds = colTasks.map((t) => t.id);
+          const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
+          return (
+            <ColumnDroppable
+              key={col.id}
+              id={col.id}
+              label={col.label}
+              description={col.description}
+              count={colTasks.length}
+              allSelected={allSelected}
+              onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
             >
-              {colTasks.map((t) => (
-                <TaskCard
-                  key={t.id}
-                  task={t}
-                  projectSlug={projectSlug}
-                  deleteTaskAction={deleteTaskAction}
-                  selected={selectedIds.has(t.id)}
-                  onSelectionChange={toggleTaskSelection}
-                />
-              ))}
-            </SortableContext>
-          </ColumnDroppable>
-        ))}
+              <SortableContext
+                items={colTasks.map((t) => t.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                {colTasks.map((t) => (
+                  <TaskCard
+                    key={t.id}
+                    task={t}
+                    projectSlug={projectSlug}
+                    deleteTaskAction={deleteTaskAction}
+                    selected={selectedIds.has(t.id)}
+                    onSelectionChange={toggleTaskSelection}
+                  />
+                ))}
+              </SortableContext>
+            </ColumnDroppable>
+          );
+        })}
       </div>
 
       <DragOverlay>
@@ -432,12 +540,18 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
 function ColumnDroppable({
   id,
   label,
+  description,
   count,
+  allSelected = false,
+  onSelectAll,
   children,
 }: {
   id: string;
   label: string;
+  description?: string;
   count: number;
+  allSelected?: boolean;
+  onSelectAll?: (checked: boolean) => void;
   children: React.ReactNode;
 }) {
   const { isOver, setNodeRef } = useDroppable({ id });
@@ -450,9 +564,27 @@ function ColumnDroppable({
           : "border-[var(--color-line)]"
       }`}
     >
-      <div className="px-1 pb-2 text-xs uppercase tracking-wider text-[var(--color-text-muted)] flex justify-between">
-        <span>{label}</span>
-        <span>{count}</span>
+      <div className="px-1 pb-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)] flex justify-between items-center">
+        <div className="flex items-center gap-1.5 min-w-0">
+          {onSelectAll && (
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={(e) => onSelectAll(e.target.checked)}
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              className="h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]"
+              aria-label={`Select all in ${label}`}
+            />
+          )}
+          <span className="truncate">{label}</span>
+          {description ? (
+            <span className="hidden truncate normal-case tracking-normal text-[var(--color-text-muted)] xl:inline">
+              · {description}
+            </span>
+          ) : null}
+        </div>
+        <span className="shrink-0">{count}</span>
       </div>
       <div className="space-y-2">{children}</div>
     </div>
@@ -470,7 +602,7 @@ function TaskCard({
   projectSlug: string;
   deleteTaskAction: (formData: FormData) => Promise<void>;
   selected: boolean;
-  onSelectionChange: (taskId: string, selected: boolean) => void;
+  onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
 }) {
   const router = useRouter();
   const {
@@ -498,8 +630,11 @@ function TaskCard({
           <input
             type="checkbox"
             checked={selected}
-            onChange={(event) => onSelectionChange(task.id, event.currentTarget.checked)}
-            onClick={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSelectionChange(task.id, !selected, event.shiftKey);
+            }}
+            onChange={() => {}}
             onPointerDown={(event) => event.stopPropagation()}
             aria-label={`Select ${task.title}`}
             className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
@@ -581,7 +716,7 @@ function BacklogRow({
   projectSlug: string;
   deleteTaskAction: (formData: FormData) => Promise<void>;
   selected: boolean;
-  onSelectionChange: (taskId: string, selected: boolean) => void;
+  onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
 }) {
   const router = useRouter();
   const {
@@ -613,8 +748,11 @@ function BacklogRow({
         <input
           type="checkbox"
           checked={selected}
-          onChange={(event) => onSelectionChange(task.id, event.currentTarget.checked)}
-          onClick={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelectionChange(task.id, !selected, event.shiftKey);
+          }}
+          onChange={() => {}}
           onPointerDown={(event) => event.stopPropagation()}
           aria-label={`Select ${task.title}`}
           className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
@@ -705,7 +843,7 @@ function PersonCell({
 }
 
 function boardActorForTask(task: Task): BoardActor | null {
-  if (task.status === "To Do") return task.reporter;
+  if (task.status === "To Do") return task.assignee ?? task.reporter;
   if (task.status === "In Progress") {
     return task.assignee ?? task.reviewer ?? task.manager ?? task.reporter;
   }

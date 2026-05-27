@@ -11,12 +11,14 @@ export default function EpicTasksAiPrompt({
   epicTitle,
   aiTargets,
   defaultAiTarget,
+  isAiRunning = false,
 }: {
   projectSlug: string;
   epicId: string;
   epicTitle: string;
   aiTargets: AvatarComboboxOption[];
   defaultAiTarget: string;
+  isAiRunning?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -46,14 +48,21 @@ export default function EpicTasksAiPrompt({
         <p className="mt-1 text-xs leading-relaxed text-[var(--color-text-muted)]">
           Ask an agent to use the Epic context and propose the first task breakdown.
         </p>
-        <button
-          type="button"
-          disabled={aiTargets.length === 0}
-          onClick={() => setOpen(true)}
-          className="mt-3 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          Ask AI to generate tasks
-        </button>
+        {isAiRunning ? (
+          <div className="mt-3 flex items-center gap-2 text-xs font-medium text-[var(--color-accent)]">
+            <div className="h-4 w-4 rounded-full border-2 border-[var(--color-accent)]/20 border-t-[var(--color-accent)] animate-spin" />
+            <span>Agent is planning tasks, please wait...</span>
+          </div>
+        ) : (
+          <button
+            type="button"
+            disabled={aiTargets.length === 0}
+            onClick={() => setOpen(true)}
+            className="mt-3 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            Ask AI to generate tasks
+          </button>
+        )}
       </div>
 
       {open ? (

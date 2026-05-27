@@ -237,6 +237,29 @@ agent, and single-use stamp before replacing the description. For
 room-scoped chat rows, each addressed agent receives its own token; any
 active addressed agent can use only its own token.
 
+## PM Workflow Actions
+
+Mission Control now grants role-aware task workflow actions through the
+same native PM-channel turns used for task comments. Workflow turns carry
+the full task context packet, the exact required action, and a scoped
+token for:
+
+```text
+POST /api/agent/tasks/<taskId>/workflow
+```
+
+Allowed actions are `start`, `ready_for_review`, `review_feedback`,
+`review_done`, and `triage_to_todo`. PM validates the addressed agent,
+task assignee/reviewer role, task status, and parent Epic status before
+writing. Agent replies to workflow turns are stored as normal task
+comments.
+
+Backlog assignment is planning/opinion only: the assigned agent replies
+with a task-comment implementation plan and does not change status.
+`To Do` is the approval-to-execute signal: the assigned agent moves the
+task to `In Progress` and starts immediately. `Review` is only for
+completed implementation review.
+
 ## Future Agent Actions
 
 Further agent write actions should follow the same shape (typed endpoint,
@@ -247,8 +270,7 @@ Still future:
 
 - create projects;
 - upload or attach files from an agent turn;
-- direct agent-initiated transitions outside a human-triggered proposal
-  grant.
+- direct database mutations or unscoped workflow changes.
 
 Each such action should follow the same shape:
 

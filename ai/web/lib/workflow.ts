@@ -31,9 +31,10 @@ export function isTaskStatus(value: unknown): value is TaskStatus {
 //   Review → Done        (also reversible to In Progress if review re-opens)
 //   Done → Review        (re-open path; final close is still Done)
 //
-// "Reversible" edges exist for humans walking work back; agents are
-// further constrained by EXPLICIT_USER_STATES below — agents may not
-// move INTO or OUT OF Review/Done (HOMELAB-44 commentId 12200).
+// "Reversible" edges exist for humans walking work back. Browser-session
+// agent form edits are still constrained by EXPLICIT_USER_STATES below;
+// role-aware agent transitions use /api/agent/tasks/[taskId]/workflow,
+// where assignment/reviewer authority is validated against the live task.
 const ALLOWED: Record<TaskStatus, ReadonlySet<TaskStatus>> = {
   Backlog: new Set<TaskStatus>(["To Do"]),
   "To Do": new Set<TaskStatus>(["In Progress", "Backlog"]),
@@ -42,12 +43,11 @@ const ALLOWED: Record<TaskStatus, ReadonlySet<TaskStatus>> = {
   Done: new Set<TaskStatus>(["Review"]),
 };
 
-// Review and Done are explicit human actions per TEAM_WORKFLOW.md and
-// HOMELAB-44 Steps. Agents may not transition INTO or OUT OF these
-// states — i.e. they cannot send a task to Review/Done and cannot
-// reopen Review/Done back into earlier states (HOMELAB-44 commentId
-// 12200). The agent-ack auto-transition (see autoTransitionOnAck) is
-// bounded to To Do → In Progress and never touches either side.
+// Review and Done are blocked for generic agent form edits because the
+// task role is not part of this small structural helper. The native
+// agent workflow endpoint applies the newer PM policy: assignees may
+// send completed work to Review, and resolved reviewers may move Review
+// to Done or leave feedback.
 const EXPLICIT_USER_STATES: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
   "Review",
   "Done",
@@ -116,7 +116,20 @@ export function checkStatusTransition(input: TransitionInput): RuleResult {
     return {
       ok: false,
       code: "EXPLICIT_USER_ACTION_REQUIRED",
-      message: `Transition ${input.from} → ${input.to} touches Review/Done and requires an explicit human action.`,
+      message: `Transition ${input.from} → ${input.to} touches Review/Done and requires the native PM workflow endpoint or a human action.`,
+    };
+  }
+
+  if (
+    input.actor.kind === "agent" &&
+    input.from === "Backlog" &&
+    input.to === "To Do"
+  ) {
+    return {
+      ok: false,
+      code: "EXPLICIT_USER_ACTION_REQUIRED",
+      message:
+        "Agents cannot promote Backlog work through generic board moves; use the native PM workflow endpoint so reviewer authority is checked.",
     };
   }
 
@@ -211,8 +224,9 @@ export interface AckInput {
 // Agent-ack auto-transition: when an agent acknowledges a wake on a
 // task they are assigned to and the task is in To Do, the server moves
 // the task to In Progress. Returns the next status, or null when no
-// auto-transition applies. This is the only path where an agent
-// advances status without an explicit human action.
+// auto-transition applies. Agents should normally use the native PM
+// workflow endpoint; this remains as a compatibility path for older
+// wake/ack clients.
 export function autoTransitionOnAck(input: AckInput): TaskStatus | null {
   if (input.actor.kind !== "agent") return null;
   if (input.assigneeId !== input.actor.id) return null;

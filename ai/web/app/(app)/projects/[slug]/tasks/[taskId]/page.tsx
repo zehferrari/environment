@@ -23,14 +23,9 @@ import {
 } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
 import {
-  buildTaskAgentUserMessage,
-  buildTaskNativeChannelPrompt,
-} from "@/lib/agents/task-chat-context";
-import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
-import {
-  buildPmTurnSessionKey,
-  sendOpenClawPmChannelTurn,
-} from "@/lib/agents/openclaw-pm-channel";
+  sendTaskCommentNotifications,
+  sendTaskWorkflowNotification,
+} from "@/lib/agents/task-workflow-notifications";
 import {
   listAssignablePrincipals,
 } from "@/lib/principals";
@@ -38,6 +33,7 @@ import { uploadAttachment, deleteAttachment } from "@/lib/attachments/actions";
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteTask } from "@/lib/bin/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
+import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import SortableTaskList from "@/components/sortable-task-list";
 import AttachmentUploadFab from "@/components/attachment-upload-fab";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
@@ -152,6 +148,7 @@ async function updateTask(formData: FormData) {
   let assignmentTarget: { id: string; kind: string; username: string } | null =
     null;
   let assignmentChanged = false;
+  let statusChangedTo: string | null = null;
 
   // Title / description
   const titleChanged = task.title !== titleRaw;
@@ -185,6 +182,7 @@ async function updateTask(formData: FormData) {
     data.status = newStatus;
     data.rank = (maxRank._max.rank ?? 0) + 1;
     data.statusChangedAt = new Date();
+    statusChangedTo = newStatus;
     activity.push({
       kind: "task.move",
       payload: JSON.stringify({ from: task.status, to: newStatus }),
@@ -347,6 +345,13 @@ async function updateTask(formData: FormData) {
     ),
   ]);
 
+  try {
+    const { deleteDescriptionDraft } = await import("@/lib/description-drafts");
+    deleteDescriptionDraft(taskId, "task");
+  } catch (e) {
+    console.error("Failed to delete draft file:", e);
+  }
+
   revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   revalidatePath(`/projects/${slug}`);
 
@@ -380,6 +385,55 @@ async function updateTask(formData: FormData) {
       ),
     );
   }
+
+  const finalStatus = statusChangedTo ?? task.status;
+  const finalAssigneeId = assignmentChanged ? newAssigneeId : task.assigneeId;
+  if (
+    finalAssigneeId &&
+    (assignmentChanged || statusChangedTo === "To Do") &&
+    (finalStatus === "Backlog" || finalStatus === "To Do")
+  ) {
+    await sendTaskWorkflowNotification({
+      taskId: task.id,
+      targetUserId: finalAssigneeId,
+      actor,
+      reason: finalStatus === "Backlog" ? "backlog_plan_requested" : "todo_start_required",
+      body: finalStatus === "Backlog"
+        ? [
+            `You have been assigned to "${titleRaw}" while it is in Backlog.`,
+            "Read the full task context and existing comments. Post a task comment with your implementation plan or opinion.",
+            "Do not change task status and do not start work until the task is moved to To Do.",
+          ].join("\n")
+        : [
+            `Task "${titleRaw}" is now in To Do and assigned to you.`,
+            "Read the full task context, move it to In Progress through the workflow endpoint, and start work immediately.",
+          ].join("\n"),
+    });
+  }
+
+  if (statusChangedTo === "Review") {
+    const updatedTask = await db.task.findUnique({
+      where: { id: task.id },
+      select: {
+        actingManagerId: true,
+        reporterId: true,
+        epic: { select: { status: true, actingManagerId: true } },
+      },
+    });
+    const reviewerId = updatedTask ? resolveReviewOwnerId(updatedTask) : null;
+    if (reviewerId) {
+      await sendTaskWorkflowNotification({
+        taskId: task.id,
+        targetUserId: reviewerId,
+        actor,
+        reason: "review_requested",
+        body: [
+          `Task "${titleRaw}" was moved to Review.`,
+          "Review the completed work, read the full task context and comments, then either leave feedback/blockers or move the task to Done through the workflow endpoint.",
+        ].join("\n"),
+      });
+    }
+  }
 }
 
 async function createComment(formData: FormData) {
@@ -397,17 +451,7 @@ async function createComment(formData: FormData) {
       id: true,
       projectId: true,
       title: true,
-      description: true,
       project: { select: { slug: true } },
-      assignee: {
-        select: {
-          id: true,
-          username: true,
-          kind: true,
-          status: true,
-          agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
-        },
-      },
     },
   });
   if (!task || task.project.slug !== slug) return;
@@ -426,61 +470,8 @@ async function createComment(formData: FormData) {
     users.map((u) => ({ username: u.username })),
   );
   const actorUser = users.find((u) => u.id === actorId);
-  const mentionedUsers = users.filter((u) => mentions.includes(u.username));
-  const targetAgents = new Map<
-    string,
-    {
-      slug: string;
-      userId: string;
-      username: string;
-      gatewayPort: number | null;
-      reasons: Set<"assigned" | "mentioned">;
-    }
-  >();
-  function addTargetAgent(
-    user:
-      | {
-          id: string;
-          username: string;
-          kind: string;
-          status: string;
-          agent: { slug: string; deactivatedAt: Date | null; gatewayPort: number | null } | null;
-        }
-      | null
-      | undefined,
-    reason: "assigned" | "mentioned",
-  ) {
-    if (
-      !user ||
-      user.kind !== "agent" ||
-      user.status !== "active" ||
-      !user.agent ||
-      user.agent.deactivatedAt
-    ) {
-      return;
-    }
-    const existing = targetAgents.get(user.agent.slug);
-    if (existing) {
-      existing.reasons.add(reason);
-      return;
-    }
-    targetAgents.set(user.agent.slug, {
-      slug: user.agent.slug,
-      userId: user.id,
-      username: user.username,
-      gatewayPort: user.agent.gatewayPort,
-      reasons: new Set([reason]),
-    });
-  }
-  addTargetAgent(task.assignee, "assigned");
-  for (const user of mentionedUsers) addTargetAgent(user, "mentioned");
-  const mirroredBody = [
-    `Task comment from @${actorUser?.username ?? "unknown"}:`,
-    "",
-    body,
-  ].join("\n");
 
-  const { commentId, mirroredMessages } = await db.$transaction(async (tx) => {
+  const comment = await db.$transaction(async (tx) => {
     const comment = await tx.comment.create({
       data: { taskId, userId: actorId, body },
       select: { id: true, createdAt: true },
@@ -494,51 +485,7 @@ async function createComment(formData: FormData) {
         payload: mentions.length > 0 ? JSON.stringify({ mentions }) : null,
       },
     });
-    const mirrored: Array<{
-      id: string;
-      agentSlug: string;
-      reason: string[];
-      commentCreatedAt: Date;
-    }> = [];
-    for (const target of targetAgents.values()) {
-      const msg = await tx.agentChatMessage.create({
-        data: {
-          projectId: task.projectId,
-          taskId,
-          epicId: null,
-          agentSlug: target.slug,
-          senderUserId: actorId,
-          body: mirroredBody,
-          allowDescriptionEdit: false,
-          originChannel: "comment",
-          originCommentId: comment.id,
-        },
-        select: { id: true },
-      });
-      const reason = [...target.reasons];
-      mirrored.push({
-        id: msg.id,
-        agentSlug: target.slug,
-        reason,
-        commentCreatedAt: comment.createdAt,
-      });
-      await tx.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId,
-          userId: actorId,
-          kind: "task.chat.send",
-          targetAgent: target.slug,
-          payload: JSON.stringify({
-            messageId: msg.id,
-            agentSlug: target.slug,
-            mirroredFromCommentId: comment.id,
-            reason,
-          }),
-        },
-      });
-    }
-    return { commentId: comment.id, mirroredMessages: mirrored };
+    return comment;
   });
 
   revalidatePath(`/projects/${slug}/tasks/${taskId}`);
@@ -550,67 +497,16 @@ async function createComment(formData: FormData) {
       ? "agent"
       : "human") as "human" | "agent",
   };
-  await Promise.all(mirroredMessages.map(async (msg) => {
-    const userMessage = await buildTaskAgentUserMessage({
-      taskId: task.id,
-      agentSlug: msg.agentSlug,
-      currentTurn: {
-        id: commentId,
-        agentChatMessageId: msg.id,
-        source: "task comment",
-        actorUsername: actorUser?.username,
-        actorKind: actor.kind,
-        body,
-        createdAt: msg.commentCreatedAt,
-      },
-    });
-    const sessionBinding = await getOrCreateAgentSessionBinding({
-      scopeType: "task",
-      scopeId: task.id,
-      agentSlug: msg.agentSlug,
-    });
-    const target = targetAgents.get(msg.agentSlug);
-    const delivery = await sendOpenClawPmChannelTurn({
-      gatewayPort: target?.gatewayPort ?? null,
-      agentSlug: msg.agentSlug,
-      sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
-      kind: "task-comment",
-      text: body,
-      contextText: userMessage,
-      systemPrompt: buildTaskNativeChannelPrompt(task.title, msg.agentSlug),
-      projectId: task.projectId,
-      actor: {
-        id: actor.id,
-        username: actorUser?.username,
-        kind: actor.kind,
-      },
-      replyTarget: {
-        kind: "task-comment",
-        agentSlug: msg.agentSlug,
-        taskId: task.id,
-        messageId: msg.id,
-        projectSlug: task.project.slug,
-      },
-    });
-    await db.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId: task.id,
-        userId: actor.id,
-        kind: delivery.ok ? "task.comment.dispatch" : "task.comment.dispatch_failed",
-        targetAgent: msg.agentSlug,
-        payload: JSON.stringify({
-          commentId,
-          messageId: msg.id,
-          agentSlug: msg.agentSlug,
-          reason: msg.reason,
-          driver: delivery.driver,
-          status: delivery.status ?? null,
-          error: delivery.error ?? null,
-        }),
-      },
-    });
-  }));
+  await sendTaskCommentNotifications({
+    taskId: task.id,
+    commentId: comment.id,
+    body,
+    actor: {
+      id: actor.id,
+      username: actorUser?.username,
+      kind: actor.kind,
+    },
+  });
 }
 
 // Human-only comment removal (HOMELAB-41). Agents post comments but
@@ -738,6 +634,20 @@ async function createSubtask(formData: FormData) {
     },
   });
 
+  if (parent.project.defaultAssigneeId) {
+    await sendTaskWorkflowNotification({
+      taskId: child.id,
+      targetUserId: parent.project.defaultAssigneeId,
+      actor,
+      reason: "backlog_plan_requested",
+      body: [
+        `You have been assigned to "${child.title}" while it is in Backlog.`,
+        "Read the full task context and existing comments. Post a task comment with your implementation plan or opinion.",
+        "Do not change task status and do not start work until the task is moved to To Do.",
+      ].join("\n"),
+    });
+  }
+
   revalidatePath(`/projects/${slug}/tasks/${parentTaskId}`);
   revalidatePath(`/projects/${slug}/tasks/${child.id}`);
   revalidatePath(`/projects/${slug}`);
@@ -768,13 +678,118 @@ function activityMessageIds(rows: Array<{ kind: string; payload: string | null }
       const payload = JSON.parse(row.payload) as {
         inReplyToMessageId?: unknown;
         messageId?: unknown;
+        target?: { messageId?: unknown };
       };
       if (typeof payload.inReplyToMessageId === "string") ids.add(payload.inReplyToMessageId);
+      if (row.kind.endsWith(".dispatch_failed") && typeof payload.messageId === "string") {
+        ids.add(payload.messageId);
+      }
+      if (row.kind.endsWith(".stream_error") && typeof payload.target?.messageId === "string") {
+        ids.add(payload.target.messageId);
+      }
     } catch {
       // Ignore old or malformed audit payloads.
     }
   }
   return ids;
+}
+
+type WorkflowBubbleActor = {
+  username?: string | null;
+  kind?: string | null;
+  agent?: { slug?: string | null } | null;
+} | null;
+
+type WorkflowBubbleTask = {
+  status: string;
+  assignee?: WorkflowBubbleActor;
+  actingManager?: WorkflowBubbleActor;
+  reporter?: WorkflowBubbleActor;
+  epic?: {
+    status?: string | null;
+    actingManager?: WorkflowBubbleActor;
+  } | null;
+};
+
+type PendingCommentMessage = {
+  id: string;
+  agentSlug: string;
+  originChannel: string;
+  sender: { kind: string };
+  body: string;
+};
+
+type PendingCommentRun = {
+  messageId: string;
+  agentSlug: string;
+  status: string;
+};
+
+function workflowActorSlug(actor: WorkflowBubbleActor | undefined) {
+  if (!actor) return null;
+  if (actor.kind === "agent" && actor.agent?.slug) return actor.agent.slug;
+  return actor.username ?? null;
+}
+
+function workflowNotificationStatus(body: string) {
+  if (!body.startsWith("PM workflow notification for @")) return null;
+  if (body.includes(" while it is in Backlog.")) return "Backlog";
+  if (body.includes(" is now in To Do ")) return "To Do";
+  if (body.includes(" was moved to Review.")) return "Review";
+  return null;
+}
+
+function workflowOwnerSlugs(task: WorkflowBubbleTask) {
+  const slugs = new Set<string>();
+  const add = (slug: string | null) => {
+    if (slug) slugs.add(slug);
+  };
+
+  if (task.status === "Backlog" || task.status === "To Do" || task.status === "In Progress") {
+    add(workflowActorSlug(task.assignee));
+    return slugs;
+  }
+
+  if (task.status === "Review") {
+    add(
+      workflowActorSlug(task.actingManager)
+        ?? (task.epic?.status === "Open" ? workflowActorSlug(task.epic?.actingManager) : null)
+        ?? workflowActorSlug(task.reporter),
+    );
+  }
+
+  return slugs;
+}
+
+function isCurrentWorkflowNotification(task: WorkflowBubbleTask, message: PendingCommentMessage) {
+  const expectedStatus = workflowNotificationStatus(message.body);
+  if (!expectedStatus) return true;
+  if (task.status !== expectedStatus) return false;
+  return workflowOwnerSlugs(task).has(message.agentSlug);
+}
+
+function shouldRenderPendingCommentMessage(args: {
+  task: WorkflowBubbleTask;
+  message: PendingCommentMessage;
+  run?: PendingCommentRun;
+  settledMessageIds: Set<string>;
+}) {
+  const { task, message, run, settledMessageIds } = args;
+  if (message.originChannel !== "comment" || message.sender.kind === "agent") {
+    return false;
+  }
+
+  const isWorkflowNotification = workflowNotificationStatus(message.body) !== null;
+  const isCurrentWorkflow = isCurrentWorkflowNotification(task, message);
+  if (isWorkflowNotification && !isCurrentWorkflow) return false;
+
+  if (run?.status === "failed") {
+    return isWorkflowNotification && isCurrentWorkflow;
+  }
+  if (run?.status === "complete") return false;
+  if (settledMessageIds.has(message.id)) return false;
+
+  return true;
 }
 
 function settledAgentSlugsForMessage(
@@ -879,6 +894,7 @@ export default async function TaskDetailPage({
         select: {
           id: true,
           title: true,
+          status: true,
           branchName: true,
           commitPrefix: true,
           actingManager: {
@@ -955,6 +971,7 @@ export default async function TaskDetailPage({
         originChannel: true,
         originCommentId: true,
         createdAt: true,
+        body: true,
         sender: { select: { kind: true } },
       },
     }),
@@ -968,6 +985,8 @@ export default async function TaskDetailPage({
             "task.comment",
             "task.chat.dispatch_failed",
             "task.comment.dispatch_failed",
+            "task.workflow.dispatch_failed",
+            "task.chat.stream_error",
           ],
         },
       },
@@ -978,12 +997,30 @@ export default async function TaskDetailPage({
   ]);
   const mentionables = mentionableUsers.map((u) => ({ username: u.username }));
   const settledMessageIds = activityMessageIds(recentReplyActivity);
-  const pendingCommentMessages = recentTaskChatMessages
-    .filter((message) => (
-      message.originChannel === "comment"
-      && message.sender.kind !== "agent"
-      && !settledMessageIds.has(message.id)
-    ))
+  const recentCommentMessages = recentTaskChatMessages.filter((message) => (
+    message.originChannel === "comment"
+    && message.sender.kind !== "agent"
+  ));
+  const recentCommentRuns = recentCommentMessages.length
+    ? await db.pmChannelRun.findMany({
+        where: {
+          kind: "task-comment",
+          taskId: task.id,
+          messageId: { in: recentCommentMessages.map((message) => message.id) },
+        },
+        select: { messageId: true, agentSlug: true, status: true },
+      })
+    : [];
+  const commentRunByTarget = new Map(
+    recentCommentRuns.map((run) => [`${run.messageId}:${run.agentSlug}`, run]),
+  );
+  const pendingCommentMessages = recentCommentMessages
+    .filter((message) => shouldRenderPendingCommentMessage({
+      task,
+      message,
+      run: commentRunByTarget.get(`${message.id}:${message.agentSlug}`),
+      settledMessageIds,
+    }))
     .filter((message, index, all) => all.findIndex((item) => item.agentSlug === message.agentSlug) === index)
     .slice(0, 4);
   const chatMessages = await db.agentChatMessage.findMany({
@@ -1006,6 +1043,40 @@ export default async function TaskDetailPage({
       },
     },
   });
+  const pendingProposals = await db.workItemProposal.findMany({
+    where: {
+      status: "pending",
+      projectId: task.projectId,
+      grantMessageId: { in: chatMessages.map((m) => m.id) },
+    },
+    include: {
+      project: { select: { name: true } },
+    },
+  });
+  const pendingDescriptionMessages = await db.agentChatMessage.findMany({
+    where: {
+      taskId: task.id,
+      allowDescriptionEdit: true,
+      editGrantUsedAt: null,
+    },
+    select: { id: true },
+  });
+  const pendingDescMsgIds = pendingDescriptionMessages.map((m) => m.id);
+  const runningDescriptionRun = pendingDescMsgIds.length > 0
+    ? await db.pmChannelRun.findFirst({
+        where: {
+          taskId: task.id,
+          messageId: { in: pendingDescMsgIds },
+          status: { in: ["queued", "accepted", "streaming"] },
+        },
+        select: { messageId: true, agentSlug: true },
+      })
+    : null;
+  const isAiDescriptionRunning = runningDescriptionRun !== null;
+
+  const { getDescriptionDraft } = await import("@/lib/description-drafts");
+  const draftDescription = getDescriptionDraft(task.id, "task");
+
   const [chatArchives, binChatArchives, selectedChatArchive] = await Promise.all([
     db.agentChatRoomArchive.findMany({
       where: { projectId: task.project.id, taskId: task.id, deletedAt: null },
@@ -1315,6 +1386,7 @@ export default async function TaskDetailPage({
           <TabsProvider defaultTab={chatArchive || chatRoom === "current" ? "Discussion" : "Description"}>
             <TabsNav
               tabs={["Description", "Sub-Tasks", "Attachments", "Comments", "Discussion"]}
+              sticky
             />
             <div className="pt-4">
               <TabPanel name="Description">
@@ -1328,6 +1400,10 @@ export default async function TaskDetailPage({
                     aiTargets={aiTargetOptions}
                     defaultAiTarget={defaultAiTarget}
                     descriptionLabel="Task"
+                    draftDescription={draftDescription}
+                    aiRunning={isAiDescriptionRunning}
+                    runningMessageId={runningDescriptionRun?.messageId ?? null}
+                    runningAgentSlug={runningDescriptionRun?.agentSlug ?? null}
                     // Sub-tasks (parentTaskId !== null) get a taller editor —
                     // they're where most of the day-to-day work detail lands,
                     // so the larger box matches actual use (HOMELAB-48).
@@ -1718,6 +1794,7 @@ export default async function TaskDetailPage({
                     pendingAgents={pendingAgents}
                     latestMessageId={viewingChatArchive ? null : pendingChatMessageId}
                     currentUserId={viewer.id}
+                    pendingProposals={pendingProposals}
                   />
                 </div>
               </TabPanel>

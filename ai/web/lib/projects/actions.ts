@@ -31,6 +31,26 @@ export async function setProjectSettings(formData: FormData) {
   });
   if (!project || project.deletedAt) return;
 
+  const name = trimOrNull(formData.get("name"));
+  if (!name) throw new Error("Project name is required");
+
+  const newSlug = trimOrNull(formData.get("slug"));
+  if (!newSlug) throw new Error("Project slug is required");
+  if (!/^[a-zA-Z0-9\-_]+$/.test(newSlug)) {
+    throw new Error("Slug must only contain letters, numbers, hyphens, and underscores");
+  }
+
+  const slugChanged = newSlug !== slug;
+  if (slugChanged) {
+    const existing = await db.project.findUnique({
+      where: { slug: newSlug },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new Error("Slug is already in use by another project");
+    }
+  }
+
   const repositoryPath = trimOrNull(formData.get("repositoryPath"));
   const defaultGitUserName = trimOrNull(formData.get("defaultGitUserName"));
   const defaultGitUserEmail = trimOrNull(formData.get("defaultGitUserEmail"));
@@ -45,6 +65,8 @@ export async function setProjectSettings(formData: FormData) {
     db.project.update({
       where: { id: project.id },
       data: {
+        name,
+        slug: newSlug,
         repositoryPath,
         defaultGitUserName,
         defaultGitUserEmail,
@@ -59,6 +81,8 @@ export async function setProjectSettings(formData: FormData) {
         userId: actor.id,
         kind: "project.settings",
         payload: JSON.stringify({
+          name,
+          slug: newSlug,
           repositoryPath,
           defaultGitUserName,
           defaultGitUserEmail,
@@ -70,8 +94,14 @@ export async function setProjectSettings(formData: FormData) {
     }),
   ]);
 
+  revalidatePath(`/projects`);
   revalidatePath(`/projects/${slug}`);
   revalidatePath(`/projects/${slug}/settings`);
+  if (slugChanged) {
+    revalidatePath(`/projects/${newSlug}`);
+    revalidatePath(`/projects/${newSlug}/settings`);
+    redirect(`/projects/${newSlug}/settings`);
+  }
 }
 
 export async function deleteProject(formData: FormData) {
@@ -155,4 +185,9 @@ export async function restoreProject(formData: FormData) {
   revalidatePath(`/projects`);
   revalidatePath(`/projects/bin`);
   revalidatePath(`/projects/${slug}`);
+}
+
+export async function clearDescriptionDraftAction(id: string, scope: "task" | "epic") {
+  const { deleteDescriptionDraft } = await import("@/lib/description-drafts");
+  deleteDescriptionDraft(id, scope);
 }

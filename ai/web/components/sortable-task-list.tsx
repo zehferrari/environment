@@ -52,6 +52,8 @@ type Props = {
   deleteTaskAction?: (formData: FormData) => Promise<void>;
   projectSlug?: string;
   ariaLabel?: string;
+  selectedIds?: Set<string>;
+  onSelectionChange?: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
 };
 
 export default function SortableTaskList({
@@ -67,6 +69,8 @@ export default function SortableTaskList({
   deleteTaskAction,
   projectSlug,
   ariaLabel,
+  selectedIds,
+  onSelectionChange,
 }: Props) {
   const [order, setOrder] = useState(items);
   const [, startTransition] = useTransition();
@@ -126,6 +130,8 @@ export default function SortableTaskList({
               tableLayout={tableLayout}
               deleteTaskAction={deleteTaskAction}
               projectSlug={projectSlug}
+              selectedIds={selectedIds}
+              onSelectionChange={onSelectionChange}
             />
           ))}
         </ul>
@@ -161,6 +167,8 @@ function SortableRow({
   tableLayout,
   deleteTaskAction,
   projectSlug,
+  selectedIds,
+  onSelectionChange,
 }: {
   item: SortableTaskItem;
   showStatusBadge: boolean;
@@ -172,6 +180,8 @@ function SortableRow({
   tableLayout: boolean;
   deleteTaskAction?: (formData: FormData) => Promise<void>;
   projectSlug?: string;
+  selectedIds?: Set<string>;
+  onSelectionChange?: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
 }) {
   const router = useRouter();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -209,6 +219,20 @@ function SortableRow({
           >
             ⋮⋮
           </button>
+          {onSelectionChange && (
+            <input
+              type="checkbox"
+              checked={selectedIds?.has(item.id) ?? false}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelectionChange(item.id, !selectedIds?.has(item.id), event.shiftKey);
+              }}
+              onChange={() => {}}
+              onPointerDown={(event) => event.stopPropagation()}
+              className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+              aria-label={`Select ${item.title}`}
+            />
+          )}
           {showReporterAvatar && item.reporter ? <MessageAvatar actor={item.reporter} size="sm" /> : null}
           <span className="min-w-0 flex-1 truncate">{item.title}</span>
         </div>
@@ -260,6 +284,20 @@ function SortableRow({
       >
         ⋮⋮
       </button>
+      {onSelectionChange && (
+        <input
+          type="checkbox"
+          checked={selectedIds?.has(item.id) ?? false}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelectionChange(item.id, !selectedIds?.has(item.id), event.shiftKey);
+          }}
+          onChange={() => {}}
+          onPointerDown={(event) => event.stopPropagation()}
+          className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+          aria-label={`Select ${item.title}`}
+        />
+      )}
       <Link href={item.href} className="min-w-0 flex-1 truncate hover:underline">
         {item.title}
       </Link>

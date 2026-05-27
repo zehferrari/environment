@@ -186,8 +186,10 @@ tier 2 or 3.
    source-specific queue/status rules before acting.
 3. **Directly assigned work that is not yet in an approved ready state.**
    Start only when the source-specific rules allow it.
-4. **Backlog/deferred work**: skip unless zeh explicitly overrides for
-   that specific item.
+4. **Backlog/deferred work**: follow source-specific rules. In Jira this
+   normally means skip unless zeh overrides. In Zero Latency / PM, a
+   Backlog assignment is actionable only as a plan/opinion comment and
+   does not authorize implementation.
 5. **Unassigned work**: do not claim it. If one looks important, report
    the finding in the source channel or hand it to the manager / zeh for
    assignment.
@@ -225,8 +227,9 @@ agent.
    the wake/email that named it, re-check using the source-specific
    helpers before declaring no action. If lookups disagree, tell zeh
    you're blocked.
-4. Backlog/deferred work is not actionable unless zeh explicitly
-   overrides for that specific item.
+4. Backlog/deferred work follows source-specific rules. In Zero Latency
+   / PM, assigned Backlog work requires a plan/opinion comment but no
+   status change or implementation until it reaches `To Do`.
 5. If the work item is unassigned, do not assign it to yourself and do
    not start implementation.
 6. You may implement only when the work is explicitly assigned to you by

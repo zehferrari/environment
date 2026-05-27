@@ -303,7 +303,7 @@ export default async function DirectAgentChatPage({
   // this agent submitted that are awaiting review.
   const attachedProjectId =
     [...activeMessages].reverse().find((m) => m.projectId)?.projectId ?? null;
-  const [projects, pendingProposals] = await Promise.all([
+  const [projects, pendingProposalsRaw] = await Promise.all([
     db.project.findMany({
       where: { deletedAt: null },
       orderBy: { name: "asc" },
@@ -312,17 +312,32 @@ export default async function DirectAgentChatPage({
     db.workItemProposal.findMany({
       where: { agentSlug: slug, status: "pending" },
       orderBy: { createdAt: "desc" },
-      take: 10,
+      take: 50,
       select: {
         id: true,
         summary: true,
         operations: true,
         validation: true,
         createdAt: true,
+        agentSlug: true,
+        grantMessageId: true,
         project: { select: { name: true } },
       },
     }),
   ]);
+
+  const taskEpicGrantMessageIds = pendingProposalsRaw.map(p => p.grantMessageId).filter(Boolean) as string[];
+  const taskEpicMessages = taskEpicGrantMessageIds.length > 0
+    ? await db.agentChatMessage.findMany({
+        where: { id: { in: taskEpicGrantMessageIds } },
+        select: { id: true },
+      })
+    : [];
+  const taskEpicMessageIdSet = new Set(taskEpicMessages.map(m => m.id));
+
+  const pendingProposals = pendingProposalsRaw
+    .filter((p) => !p.grantMessageId || !taskEpicMessageIdSet.has(p.grantMessageId))
+    .slice(0, 10);
   const activeBaseArchive = activeBaseArchiveId
     ? archives.find((archive) => archive.id === activeBaseArchiveId)
       ?? await db.directAgentChatArchive.findFirst({
@@ -624,6 +639,7 @@ export default async function DirectAgentChatPage({
                 validation: p.validation,
                 createdAt: p.createdAt.toISOString(),
                 projectName: p.project.name,
+                agentSlug: p.agentSlug,
               }))}
             />
 

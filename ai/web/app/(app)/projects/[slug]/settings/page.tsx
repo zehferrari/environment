@@ -80,6 +80,36 @@ export default async function ProjectSettingsPage({
           <input type="hidden" name="projectSlug" value={slug} />
 
           <SettingsRow
+            label="Project name"
+            hint="The display name of this project."
+          >
+            <input
+              type="text"
+              name="name"
+              defaultValue={project.name}
+              required
+              placeholder="My Project"
+              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+            />
+          </SettingsRow>
+
+          <SettingsRow
+            label="Project slug"
+            hint="The URL slug of this project (e.g. zero-latency)."
+          >
+            <input
+              type="text"
+              name="slug"
+              defaultValue={slug}
+              required
+              placeholder="my-project"
+              pattern="[a-zA-Z0-9\-_]+"
+              title="Only letters, numbers, hyphens, and underscores are allowed"
+              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+            />
+          </SettingsRow>
+
+          <SettingsRow
             label="Repository folder"
             hint="Absolute path on the host where this project's git checkout lives."
           >

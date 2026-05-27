@@ -37,8 +37,10 @@ Task comments support actionable `@mentions`. A mention must match a
 known username exactly, including case. When a task comment mentions an
 active agent, PM mirrors that comment into the agent's PM channel turn so
 the agent can answer back in the original task-comment thread. A task
-comment also targets the assigned active agent, even without an explicit
-mention.
+comment also targets the assigned active agent, the task reviewer, the
+acting manager of an Open parent Epic, and explicit mentions, with
+duplicates removed. If no reviewer or Open Epic manager exists, the task
+reporter is the review fallback.
 
 Task and Epic descriptions currently support full markdown preview, but
 they do **not** resolve `@mentions` or dispatch mention notifications.
@@ -95,13 +97,13 @@ task using this priority order:
    move into `Review`. Oldest comment first. Respond with **concrete
    action** (code change pushed, plan revised, question answered), not
    just acknowledgement.
-2. **`To Do` tasks assigned to you and ready to start.** Send the one
-   allowed Telegram start notice, acknowledge/start through PM, and work
-   in PM.
+2. **`To Do` tasks assigned to you and ready to start.** Move the task
+   to `In Progress` through PM workflow and start immediately.
 3. **Assigned tasks in other non-terminal states.** Act only if the PM
    event or human request clearly asks for your response.
-4. **`Backlog`**: skip unless zeh explicitly overrides for that specific
-   task.
+4. **Assigned `Backlog` tasks**: planning/opinion only. Read the full
+   context and post your implementation plan or perspective as a task
+   comment. Do not change status and do not start work.
 5. **Unassigned tasks**: do not claim them. If one looks important,
    report the finding in PM or hand it to the manager / zeh for
    assignment.
@@ -117,23 +119,26 @@ task using this priority order:
    current status.
 2. Determine your role from the PM task/Epic context and the latest human
    instruction, not from persona alone.
-3. **`Backlog` -> ignore completely** unless zeh explicitly overrides for
-   that specific task. No queue, wake, comment, transition, or work.
+3. **`Backlog` means planning/opinion only.** If you are assigned while
+   the task is in Backlog, read all context and comments, then post a
+   task comment with your implementation plan or perspective. Do not
+   change status and do not start implementation.
 4. If the task is unassigned, do not assign it to yourself and do not
    start implementation.
 5. You may implement only when the PM task is explicitly assigned to you
    by zeh, by a valid handoff, or by a PM event that clearly grants you
    ownership.
-6. Send exactly **one** concise Telegram start notice to zeh after
-   accepting an assigned PM task. After that, communicate about the task
-   only in PM unless zeh redirects.
-7. PM can auto-transition an assigned agent's task from `To Do` to
-   `In Progress` when the agent acknowledges the task. Do not use hidden
-   routes or direct database edits to force status.
+6. `To Do` is the approval-to-execute signal. When a task assigned to
+   you reaches `To Do`, move it to `In Progress` through the PM workflow
+   endpoint and start work immediately.
+7. PM may still auto-transition an assigned agent's task from `To Do`
+   to `In Progress` when older wake/ack clients acknowledge the task.
+   Do not use hidden routes or direct database edits to force status.
 8. If blocked, do not start unless explicitly instructed. If a blocker
    exists, wait until it is actually done/landed, not merely approved.
-9. For risky / ambiguous / multi-step work needing approval, post a
-   concise plan in PM **before** implementation.
+9. The Backlog plan/opinion comment is mandatory for Backlog
+   assignments. For other risky / ambiguous / multi-step work, post a
+   concise plan in PM before implementation.
 10. For code tasks, use the PM project settings and task fields:
     - `Project.repositoryPath` tells you the repo path when configured.
     - `Project.defaultGitUserName` / `defaultGitUserEmail` describe the
@@ -149,9 +154,10 @@ task using this priority order:
     request. PR creation and landing are human-only.
 14. On completion, post a concise PM completion comment with branch,
     commit, tests, and residual risk. Sign formal completion notes.
-15. Do **not** move PM tasks to `Review` or `Done` unless zeh explicitly
-    instructs you and the PM workflow permits it. In the current PM rules,
-    Review and Done are explicit human actions for agents.
+15. When implementation is complete, move the task to `Review` through
+    the PM workflow endpoint. If you are the resolved reviewer, review
+    the completed work, move it to `Done` when satisfied, or leave
+    concrete feedback/blockers while keeping it in `Review`.
 16. When you flip the matching `~/tasks/current.md` entry to a terminal
     status, move it to `~/tasks/log.md` in the same edit. See
     [TEAM_WORKFLOW.md -> Maintaining tasks/current.md](./TEAM_WORKFLOW.md#maintaining-taskscurrentmd).
@@ -174,8 +180,14 @@ task using this priority order:
   they are in `To Do` or arrive through a PM event.
 - A coordinating agent may hand off work only when the task is ready and
   not blocked.
-- Agents may not transition into or out of `Review` / `Done` through PM
-  automation. Those states require explicit human action today.
+- Role-aware PM workflow actions are allowed only through the native
+  workflow endpoint supplied in a PM-channel turn. Assignees may
+  `start` and `ready_for_review`; the resolved reviewer may
+  `review_feedback`, `review_done`, or `triage_to_todo`.
+- Review owner resolution is: task Reviewer / acting manager, then the
+  acting manager of an Open parent Epic, then the task reporter.
+- Tasks under an Epic are actionable only when that Epic status is
+  `Open`.
 - If a PM event says "assigned to me" but the actor is yourself, treat it
   as a policy error and do not start work.
 

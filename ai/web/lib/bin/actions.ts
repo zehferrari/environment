@@ -356,3 +356,47 @@ export async function emptyProjectBin(formData: FormData) {
   revalidatePath(`/projects/${slug}/epics`);
   revalidatePath(`/projects/${slug}/bin`);
 }
+
+export async function bulkBinTasks(taskIds: string[], slug: string): Promise<void> {
+  const actorId = await requireActorId();
+  if (!slug || !taskIds || taskIds.length === 0) return;
+
+  const tasks = await db.task.findMany({
+    where: { id: { in: taskIds }, project: { slug } },
+    include: {
+      subtasks: { where: { deletedAt: null }, select: { id: true } },
+    },
+  });
+  if (tasks.length === 0) return;
+
+  const now = new Date();
+  const allSubtaskIds = tasks.flatMap((t) => t.subtasks.map((s) => s.id));
+  const idsToBin = Array.from(new Set([...tasks.map((t) => t.id), ...allSubtaskIds]));
+
+  await db.$transaction([
+    db.task.updateMany({
+      where: { id: { in: idsToBin }, deletedAt: null },
+      data: { deletedAt: now, deletedById: actorId },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: tasks[0].projectId,
+        userId: actorId,
+        kind: "task.delete",
+        payload: JSON.stringify({
+          bulkIds: tasks.map((t) => t.id),
+          cascadedSubtaskIds: allSubtaskIds,
+          deletedAt: now.toISOString(),
+        }),
+      },
+    }),
+  ]);
+
+  revalidatePath(`/projects/${slug}`);
+  revalidatePath(`/projects/${slug}/bin`);
+
+  const epicIds = Array.from(new Set(tasks.map((t) => t.epicId).filter(Boolean) as string[]));
+  for (const epicId of epicIds) {
+    revalidatePath(`/projects/${slug}/epics/${epicId}`);
+  }
+}

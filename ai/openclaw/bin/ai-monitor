@@ -21,6 +21,7 @@ import os
 import pwd
 import re
 import shlex
+import sqlite3
 import socket
 import stat
 import subprocess
@@ -991,6 +992,440 @@ def probe_pending_mentions(cfg, registry):
     return out
 
 
+def _sqlite_pm_db_path(cfg):
+    pc = cfg.get("pm_workflow") or {}
+    raw = (
+        pc.get("database_path")
+        or os.environ.get("PM_DATABASE_PATH")
+        or os.environ.get("DATABASE_URL")
+        or ""
+    )
+    if raw.startswith("file:"):
+        raw = raw[5:]
+        if raw.startswith("//"):
+            raw = raw[2:]
+            raw = "/" + raw.lstrip("/")
+        raw = raw.split("?", 1)[0]
+    if raw:
+        return raw
+    candidates = [
+        "/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma/prisma/dev.db",
+        "/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma/dev.db",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
+def _parse_pm_ts(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        # Prisma SQLite DateTime values are commonly stored as ms.
+        if value > 10_000_000_000:
+            return int(value / 1000)
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        from datetime import datetime, timezone
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return None
+
+
+def _pm_age_s(value):
+    ts = _parse_pm_ts(value)
+    if ts is None:
+        return None
+    return max(0, int(time.time()) - ts)
+
+
+def _pm_latest_assignment_s(conn, task_id, username, fallback_created_at):
+    try:
+        rows = conn.execute(
+            """
+            SELECT payload, createdAt
+            FROM ActivityLog
+            WHERE taskId = ? AND kind = 'task.assign'
+            ORDER BY createdAt DESC
+            LIMIT 20
+            """,
+            (task_id,),
+        ).fetchall()
+    except Exception:
+        return _parse_pm_ts(fallback_created_at)
+    for row in rows:
+        payload = row["payload"] or ""
+        try:
+            doc = json.loads(payload)
+        except Exception:
+            doc = {}
+        if doc.get("to") == username:
+            return _parse_pm_ts(row["createdAt"])
+    return _parse_pm_ts(fallback_created_at)
+
+
+def _pm_has_comment_since(conn, task_id, user_id, since_s):
+    if since_s is None:
+        since_s = 0
+    try:
+        rows = conn.execute(
+            """
+            SELECT createdAt
+            FROM Comment
+            WHERE taskId = ? AND userId = ?
+            ORDER BY createdAt DESC
+            LIMIT 20
+            """,
+            (task_id, user_id),
+        ).fetchall()
+    except Exception:
+        return False
+    for row in rows:
+        ts = _parse_pm_ts(row["createdAt"])
+        if ts is not None and ts >= since_s:
+            return True
+    return False
+
+
+def _pm_latest_comment_by(conn, task_id, user_id, since_s):
+    if not user_id:
+        return None
+    rows = conn.execute(
+        """
+        SELECT id, body, createdAt
+        FROM Comment
+        WHERE taskId = ? AND userId = ?
+        ORDER BY createdAt DESC
+        LIMIT 5
+        """,
+        (task_id, user_id),
+    ).fetchall()
+    for row in rows:
+        ts = _parse_pm_ts(row["createdAt"])
+        if ts is not None and (since_s is None or ts >= since_s):
+            return row
+    return None
+
+
+def _pm_workflow_notification_status(body):
+    text = body or ""
+    if not text.startswith("PM workflow notification for @"):
+        return None
+    if " while it is in Backlog." in text:
+        return "Backlog"
+    if " is now in To Do " in text:
+        return "To Do"
+    if " was moved to Review." in text:
+        return "Review"
+    return None
+
+
+def _pm_actor_slug(row, agent_key, username_key):
+    return row[agent_key] or row[username_key]
+
+
+def _pm_current_workflow_slugs(row):
+    status = row["status"]
+    if status in ("Backlog", "To Do", "In Progress"):
+        slug = _pm_actor_slug(row, "assigneeAgentSlug", "assigneeUsername")
+        return {slug} if slug else set()
+    if status == "Review":
+        slug = (
+            _pm_actor_slug(row, "reviewerAgentSlug", "reviewerUsername")
+            or (
+                _pm_actor_slug(row, "epicManagerAgentSlug", "epicManagerUsername")
+                if row["epicStatus"] == "Open"
+                else None
+            )
+            or row["reporterUsername"]
+        )
+        return {slug} if slug else set()
+    return set()
+
+
+def _pm_workflow_notification_is_current(row):
+    expected_status = _pm_workflow_notification_status(row["body"])
+    if not expected_status:
+        return True
+    if row["status"] != expected_status:
+        return False
+    return row["messageAgentSlug"] in _pm_current_workflow_slugs(row)
+
+
+def probe_pm_workflow(cfg, registry):
+    """Probe Mission Control / PM workflow invariants for Karen.
+
+    The PM webapp owns writes; this probe is read-only. It classifies tasks
+    into concrete reminders that ai-monitor can route to the responsible
+    agent with task id, status, Epic state, and next action.
+    """
+    pc = cfg.get("pm_workflow") or {}
+    out = {"items": [], "errors": [], "enabled": pc.get("enabled", True)}
+    if not out["enabled"]:
+        return out
+    db_path = _sqlite_pm_db_path(cfg)
+    out["database_path"] = db_path
+    if not os.path.exists(db_path):
+        out["errors"].append(f"PM database not found: {db_path}")
+        return out
+
+    warn_backlog_s = int(pc.get("backlog_plan_warn_minutes", 15)) * 60
+    warn_todo_s = int(pc.get("todo_start_warn_minutes", 10)) * 60
+    warn_progress_s = int(pc.get("in_progress_stale_minutes", 60)) * 60
+    warn_review_s = int(pc.get("review_wait_warn_minutes", 30)) * 60
+    max_items = int(pc.get("max_items", 50))
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except Exception as e:
+        out["errors"].append(f"PM database open failed: {e}")
+        return out
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+              t.id, t.title, t.status, t.statusChangedAt, t.createdAt, t.updatedAt,
+              t.assigneeId, t.actingManagerId, t.reporterId,
+              p.slug AS projectSlug,
+              a.username AS assigneeUsername,
+              aa.slug AS assigneeAgentSlug,
+              r.username AS reviewerUsername,
+              ra.slug AS reviewerAgentSlug,
+              rep.username AS reporterUsername,
+              er.username AS epicManagerUsername,
+              era.slug AS epicManagerAgentSlug,
+              e.status AS epicStatus,
+              e.actingManagerId AS epicManagerId
+            FROM Task t
+            JOIN Project p ON p.id = t.projectId
+            LEFT JOIN User a ON a.id = t.assigneeId
+            LEFT JOIN Agent aa ON aa.id = a.agentId
+            LEFT JOIN User r ON r.id = t.actingManagerId
+            LEFT JOIN Agent ra ON ra.id = r.agentId
+            LEFT JOIN User rep ON rep.id = t.reporterId
+            LEFT JOIN Epic e ON e.id = t.epicId
+            LEFT JOIN User er ON er.id = e.actingManagerId
+            LEFT JOIN Agent era ON era.id = er.agentId
+            WHERE t.deletedAt IS NULL
+              AND p.deletedAt IS NULL
+              AND t.status IN ('Backlog', 'To Do', 'In Progress', 'Review')
+            ORDER BY t.updatedAt DESC
+            LIMIT 500
+            """
+        ).fetchall()
+
+        orphan_rows = conn.execute(
+            """
+            SELECT
+              m.id AS messageId,
+              m.agentSlug AS messageAgentSlug,
+              m.body,
+              m.createdAt AS messageCreatedAt,
+              r.status AS runStatus,
+              r.lastEventAt AS runLastEventAt,
+              t.id, t.title, t.status, t.statusChangedAt, t.createdAt, t.updatedAt,
+              t.assigneeId, t.actingManagerId, t.reporterId,
+              p.slug AS projectSlug,
+              a.username AS assigneeUsername,
+              aa.slug AS assigneeAgentSlug,
+              rv.username AS reviewerUsername,
+              rva.slug AS reviewerAgentSlug,
+              rep.username AS reporterUsername,
+              er.username AS epicManagerUsername,
+              era.slug AS epicManagerAgentSlug,
+              e.status AS epicStatus,
+              e.actingManagerId AS epicManagerId
+            FROM AgentChatMessage m
+            JOIN User sender ON sender.id = m.senderUserId
+            JOIN Task t ON t.id = m.taskId
+            JOIN Project p ON p.id = t.projectId
+            LEFT JOIN PmChannelRun r
+              ON r.kind = 'task-comment'
+             AND r.taskId = t.id
+             AND r.messageId = m.id
+             AND r.agentSlug = m.agentSlug
+            LEFT JOIN User a ON a.id = t.assigneeId
+            LEFT JOIN Agent aa ON aa.id = a.agentId
+            LEFT JOIN User rv ON rv.id = t.actingManagerId
+            LEFT JOIN Agent rva ON rva.id = rv.agentId
+            LEFT JOIN User rep ON rep.id = t.reporterId
+            LEFT JOIN Epic e ON e.id = t.epicId
+            LEFT JOIN User er ON er.id = e.actingManagerId
+            LEFT JOIN Agent era ON era.id = er.agentId
+            WHERE m.originChannel = 'comment'
+              AND sender.kind != 'agent'
+              AND m.body LIKE 'PM workflow notification for @%'
+              AND t.deletedAt IS NULL
+              AND p.deletedAt IS NULL
+              AND (r.status IS NULL OR r.status IN ('queued', 'accepted', 'streaming'))
+            ORDER BY m.createdAt DESC
+            LIMIT 200
+            """
+        ).fetchall()
+
+        def add(row, kind, target_agent, age_s, required_action, severity="warn", extra=None):
+            if not target_agent:
+                return
+            out["items"].append({
+                "kind": kind,
+                "severity": severity,
+                "agent": target_agent,
+                "task_id": row["id"],
+                "task_title": (row["title"] or "")[:140],
+                "project": row["projectSlug"],
+                "status": row["status"],
+                "epic_status": row["epicStatus"],
+                "age_s": age_s,
+                "required_action": required_action,
+                **(extra or {}),
+            })
+
+        for row in orphan_rows:
+            if len(out["items"]) >= max_items:
+                break
+            if _pm_workflow_notification_is_current(row):
+                continue
+            age_s = (
+                _pm_age_s(row["runLastEventAt"])
+                or _pm_age_s(row["messageCreatedAt"])
+                or 0
+            )
+            add(
+                row,
+                "pm-orphan-live-bubble",
+                "karen",
+                age_s,
+                "The PM app must hide or settle this stale workflow live bubble; do not wake the task agent.",
+                extra={
+                    "bubble_agent": row["messageAgentSlug"],
+                    "message_id": row["messageId"],
+                    "run_status": row["runStatus"] or "missing",
+                },
+            )
+
+        for row in rows:
+            if len(out["items"]) >= max_items:
+                break
+            status = row["status"]
+            changed_age = _pm_age_s(row["statusChangedAt"]) or _pm_age_s(row["updatedAt"]) or 0
+            assignee_slug = row["assigneeAgentSlug"] or row["assigneeUsername"]
+            reviewer_id = row["actingManagerId"] or (
+                row["epicManagerId"] if row["epicStatus"] == "Open" else None
+            ) or row["reporterId"]
+            reviewer_slug = (
+                row["reviewerAgentSlug"]
+                or (row["epicManagerAgentSlug"] if row["epicStatus"] == "Open" else None)
+                or row["reporterUsername"]
+            )
+
+            if row["epicStatus"] and row["epicStatus"] != "Open" and status in ("To Do", "In Progress"):
+                manager = row["epicManagerAgentSlug"] or row["epicManagerUsername"] or reviewer_slug
+                add(
+                    row,
+                    "pm-epic-not-open",
+                    manager,
+                    changed_age,
+                    "Open the Epic before agent work continues, or move the task back to Backlog.",
+                    extra={"assignee": assignee_slug},
+                )
+                continue
+
+            if status == "Backlog" and row["assigneeId"] and assignee_slug:
+                assigned_s = _pm_latest_assignment_s(
+                    conn,
+                    row["id"],
+                    row["assigneeUsername"],
+                    row["createdAt"],
+                )
+                age_s = max(0, int(time.time()) - assigned_s) if assigned_s else changed_age
+                if age_s >= warn_backlog_s and not _pm_has_comment_since(
+                    conn,
+                    row["id"],
+                    row["assigneeId"],
+                    assigned_s,
+                ):
+                    add(
+                        row,
+                        "pm-backlog-plan-missing",
+                        assignee_slug,
+                        age_s,
+                        "Post a task comment with your implementation plan/opinion. Do not change status or start work while the task is in Backlog.",
+                    )
+                continue
+
+            if status == "To Do" and row["assigneeId"] and assignee_slug:
+                if changed_age >= warn_todo_s:
+                    add(
+                        row,
+                        "pm-todo-not-started",
+                        assignee_slug,
+                        changed_age,
+                        "Move the task to In Progress through PM workflow and start work immediately.",
+                    )
+                continue
+
+            if status == "In Progress" and row["assigneeId"] and assignee_slug:
+                if changed_age >= warn_progress_s:
+                    add(
+                        row,
+                        "pm-in-progress-stale",
+                        assignee_slug,
+                        changed_age,
+                        "Update the task with progress, continue work, or move completed work to Review.",
+                    )
+                continue
+
+            if status == "Review":
+                status_s = _parse_pm_ts(row["statusChangedAt"])
+                feedback = _pm_latest_comment_by(conn, row["id"], reviewer_id, status_s)
+                if feedback and row["assigneeId"] and assignee_slug:
+                    feedback_age = _pm_age_s(feedback["createdAt"]) or 0
+                    if feedback_age >= warn_review_s and not _pm_has_comment_since(
+                        conn,
+                        row["id"],
+                        row["assigneeId"],
+                        _parse_pm_ts(feedback["createdAt"]),
+                    ):
+                        add(
+                            row,
+                            "pm-review-feedback-awaiting-assignee",
+                            assignee_slug,
+                            feedback_age,
+                            "Read the review feedback, respond in comments, and keep the task in Review until feedback is addressed.",
+                            extra={"reviewer": reviewer_slug, "comment_preview": (feedback["body"] or "")[:180]},
+                        )
+                    continue
+                if changed_age >= warn_review_s:
+                    add(
+                        row,
+                        "pm-review-awaiting-reviewer",
+                        reviewer_slug,
+                        changed_age,
+                        "Review the completed work. Move to Done if satisfied, or leave feedback/blockers while keeping the task in Review.",
+                        extra={"assignee": assignee_slug},
+                    )
+    except Exception as e:
+        out["errors"].append(f"PM workflow probe failed: {type(e).__name__}: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return out
+
+
 def probe_ollama(cfg):
     """Reachability check only. We do NOT force a model load here -- on a CPU host the
     cold-load latency dwarfs the tick budget. The AI judge call (when invoked) is the
@@ -1112,6 +1547,13 @@ def build_compact_input(probes):
              "age_minutes": e["age_s"] // 60, "severity": e["severity"],
              "subject": e.get("subject", "")[:80]}
             for e in probes.get("pending_email_tasks", {}).get("pending", [])
+        ],
+        "pm_workflow": [
+            {"agent": p["agent"], "task_id": p["task_id"],
+             "kind": p["kind"], "status": p.get("status"),
+             "age_minutes": (p.get("age_s") or 0) // 60,
+             "required_action": p.get("required_action", "")[:140]}
+            for p in probes.get("pm_workflow", {}).get("items", [])
         ],
     }
 
@@ -1318,6 +1760,29 @@ def deterministic_issues(probes):
             "kind": "pending-mentions-probe-failed",
             "severity": "warn",
             "reason": f"pending-mentions probe error: {err}",
+            "suggested_action": "investigate",
+        })
+    pmw = probes.get("pm_workflow", {})
+    for item in pmw.get("items", []) or []:
+        age_min = (item.get("age_s") or 0) // 60
+        out.append({
+            "unit": f"pm:{item['agent']}/{item['task_id']}",
+            "kind": item.get("kind", "pm-workflow"),
+            "severity": item.get("severity", "warn"),
+            "reason": (
+                f"{item.get('project','?')} task {item['task_id']} "
+                f"({item.get('task_title','')}) is {item.get('status','?')} "
+                f"for {age_min} min; Epic={item.get('epic_status') or 'none'}. "
+                f"Required action: {item.get('required_action','follow PM workflow')}"
+            ),
+            "suggested_action": "investigate",
+        })
+    for err in pmw.get("errors", []) or []:
+        out.append({
+            "unit": "pm:workflow",
+            "kind": "pm-workflow-probe-failed",
+            "severity": "warn",
+            "reason": f"PM workflow probe error: {err}",
             "suggested_action": "investigate",
         })
     return out
@@ -1549,13 +2014,15 @@ def restart_and_wake_stalled_agents(no_agent_issues):
             rest = unit[5:]
         elif unit.startswith("email:"):
             rest = unit[6:]
+        elif unit.startswith("pm:"):
+            rest = unit[3:]
         else:
             continue
         if "/" not in rest:
             continue
         user, tail = rest.split("/", 1)
         bucket = by_user.setdefault(user, {
-            "tickets": [], "queue_count": 0, "queue_keys": [], "emails": []
+            "tickets": [], "queue_count": 0, "queue_keys": [], "emails": [], "pm_tasks": []
         })
         if kind == "task-stalled-no-agent":
             bucket["tickets"].append(tail)
@@ -1575,6 +2042,12 @@ def restart_and_wake_stalled_agents(no_agent_issues):
             if m:
                 subject = m.group(1)
             bucket["emails"].append({"message_id": tail, "subject": subject[:100]})
+        elif kind.startswith("pm-"):
+            bucket["pm_tasks"].append({
+                "task_id": tail,
+                "kind": kind,
+                "reason": (issue.get("reason") or "")[:240],
+            })
 
     results = {}
     for user, b in by_user.items():
@@ -1608,6 +2081,15 @@ def restart_and_wake_stalled_agents(no_agent_issues):
                 f"and waking you to process them now. reply in the source email "
                 f"thread and update ~/tasks/current.md out of QUEUED"
             )
+        if b["pm_tasks"]:
+            details = "; ".join(
+                f"{p['task_id']} {p['kind']}: {p['reason']}"
+                for p in b["pm_tasks"][:5]
+            )
+            parts.append(
+                f"PM workflow action required ({details}) — follow the "
+                f"Mission Control task context and respond/update status now"
+            )
         reminder = "ai-monitor: " + "; ".join(parts) + "."
         cmd = [
             "sudo", "-n", "/usr/local/sbin/openclaw-control",
@@ -1626,6 +2108,7 @@ def restart_and_wake_stalled_agents(no_agent_issues):
             "tickets": b["tickets"],
             "queue_keys": b["queue_keys"],
             "emails": b["emails"],
+            "pm_tasks": b["pm_tasks"],
             "wake_rc": rc,
             "wake_err": (err.strip()[:200] if rc != 0 else ""),
             "post_idle_s": post_idle_s,
@@ -1653,13 +2136,15 @@ def auto_wake_stalled_agents(no_agent_issues):
             rest = unit[5:]
         elif unit.startswith("email:"):
             rest = unit[6:]
+        elif unit.startswith("pm:"):
+            rest = unit[3:]
         else:
             continue
         if "/" not in rest:
             continue
         user, tail = rest.split("/", 1)
         bucket = by_user.setdefault(user, {
-            "tickets": [], "queue_count": 0, "queue_keys": [], "emails": []
+            "tickets": [], "queue_count": 0, "queue_keys": [], "emails": [], "pm_tasks": []
         })
         if kind == "task-stalled-no-agent":
             bucket["tickets"].append(tail)
@@ -1685,6 +2170,12 @@ def auto_wake_stalled_agents(no_agent_issues):
             if m:
                 subject = m.group(1)
             bucket["emails"].append({"message_id": tail, "subject": subject[:100]})
+        elif kind.startswith("pm-"):
+            bucket["pm_tasks"].append({
+                "task_id": tail,
+                "kind": kind,
+                "reason": (issue.get("reason") or "")[:240],
+            })
 
     results = {}
     for user, b in by_user.items():
@@ -1718,6 +2209,15 @@ def auto_wake_stalled_agents(no_agent_issues):
                 f"sign outbound email with the current runtime model, and update "
                 f"the task status out of QUEUED"
             )
+        if b["pm_tasks"]:
+            details = "; ".join(
+                f"{p['task_id']} {p['kind']}: {p['reason']}"
+                for p in b["pm_tasks"][:5]
+            )
+            parts.append(
+                f"PM workflow action required ({details}) — follow the "
+                f"Mission Control task context and respond/update status now"
+            )
         reminder = "ai-monitor: " + "; ".join(parts) + "."
         cmd = [
             "sudo", "-n", "/usr/local/sbin/openclaw-control",
@@ -1736,6 +2236,7 @@ def auto_wake_stalled_agents(no_agent_issues):
             "tickets": b["tickets"],
             "queue_keys": b["queue_keys"],
             "emails": b["emails"],
+            "pm_tasks": b["pm_tasks"],
             "wake_rc": rc,
             "wake_err": (err.strip()[:200] if rc != 0 else ""),
             "post_idle_s": post_idle_s,
@@ -2197,7 +2698,15 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
             "auto_action_kinds_bypass_monitor",
             triage_cfg.get(
                 "auto_action_kinds_bypass_karen",
-                ["agent-idle-with-queue", "email-awaiting-action"],
+                [
+                    "agent-idle-with-queue",
+                    "email-awaiting-action",
+                    "pm-backlog-plan-missing",
+                    "pm-todo-not-started",
+                    "pm-in-progress-stale",
+                    "pm-review-feedback-awaiting-assignee",
+                    "pm-review-awaiting-reviewer",
+                ],
             ),
         ))
         auto_issues = [i for i in new_alert_issues if i.get("kind") in AUTO_ACTION_KINDS]
@@ -2416,6 +2925,11 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                         "task-stalled-no-agent": ("wake-agent", "restart-and-wake"),
                         "agent-idle-with-queue": ("wake-agent", "restart-and-wake"),
                         "email-awaiting-action": ("wake-agent", "restart-and-wake"),
+                        "pm-backlog-plan-missing": ("wake-agent", "restart-and-wake"),
+                        "pm-todo-not-started": ("wake-agent", "restart-and-wake"),
+                        "pm-in-progress-stale": ("wake-agent", "restart-and-wake"),
+                        "pm-review-feedback-awaiting-assignee": ("wake-agent", "restart-and-wake"),
+                        "pm-review-awaiting-reviewer": ("wake-agent", "restart-and-wake"),
                     }
                     actions_taken_lc = [a.lower() for a in (decision.get("actions_taken") or [])]
                     violations = []
@@ -2437,6 +2951,11 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                                 "task-stalled-no-agent",
                                 "agent-idle-with-queue",
                                 "email-awaiting-action",
+                                "pm-backlog-plan-missing",
+                                "pm-todo-not-started",
+                                "pm-in-progress-stale",
+                                "pm-review-feedback-awaiting-assignee",
+                                "pm-review-awaiting-reviewer",
                             )
                         ]
                         wake_results = (
@@ -2880,6 +3399,7 @@ def gather_probes(cfg):
         "agent_queue": probe_agent_queue(cfg, registry),
         "pending_email_tasks": probe_pending_email_tasks(cfg, registry),
         "pending_mentions": probe_pending_mentions(cfg, registry),
+        "pm_workflow": probe_pm_workflow(cfg, registry),
     }
     for user, uid, unit in user_units_spec:
         key = f"{user}/{unit}"

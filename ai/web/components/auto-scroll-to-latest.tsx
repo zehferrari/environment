@@ -26,6 +26,7 @@ export default function AutoScrollToLatest({
     let raf = 0;
     const scroll = () => {
       ref.current?.scrollIntoView({ behavior, block });
+      window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "auto" });
     };
 
     raf = window.requestAnimationFrame(scroll);

@@ -36,6 +36,8 @@ export interface CommitResult {
   error?: string;
   projectSlug: string;
   agentSlug: string;
+  taskId?: string | null;
+  epicId?: string | null;
   counts: CommitCounts;
 }
 
@@ -58,6 +60,7 @@ export async function commitProposal(
       agentSlug: true,
       proposedByUserId: true,
       operations: true,
+      grantMessageId: true,
       project: { select: { slug: true, deletedAt: true } },
     },
   });
@@ -66,11 +69,25 @@ export async function commitProposal(
   }
   const projectSlug = proposal.project.slug;
   const agentSlug = proposal.agentSlug;
+
+  let taskId: string | null = null;
+  let epicId: string | null = null;
+  if (proposal.grantMessageId) {
+    const msg = await db.agentChatMessage.findUnique({
+      where: { id: proposal.grantMessageId },
+      select: { taskId: true, epicId: true },
+    });
+    if (msg) {
+      taskId = msg.taskId;
+      epicId = msg.epicId;
+    }
+  }
+
   if (proposal.status !== "pending") {
-    return { ok: false, error: `Proposal is already ${proposal.status}`, projectSlug, agentSlug, counts: ZERO };
+    return { ok: false, error: `Proposal is already ${proposal.status}`, projectSlug, agentSlug, taskId, epicId, counts: ZERO };
   }
   if (proposal.project.deletedAt) {
-    return { ok: false, error: "Project is in the bin", projectSlug, agentSlug, counts: ZERO };
+    return { ok: false, error: "Project is in the bin", projectSlug, agentSlug, taskId, epicId, counts: ZERO };
   }
 
   let ops: RawOp[];
@@ -381,5 +398,5 @@ export async function commitProposal(
     { timeout: 20000, maxWait: 10000 },
   );
 
-  return { ok: true, projectSlug, agentSlug, counts };
+  return { ok: true, projectSlug, agentSlug, taskId, epicId, counts };
 }

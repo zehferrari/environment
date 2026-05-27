@@ -2,6 +2,7 @@ import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { verifyTaskChatReplyToken } from "@/lib/agents/task-chat-token";
+import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -207,6 +208,20 @@ export async function POST(
     });
     return { id: created.id, channel: "chat" as const };
   });
+
+  if (reply.channel === "comment") {
+    await sendTaskCommentNotifications({
+      taskId,
+      commentId: reply.id,
+      body,
+      actor: {
+        id: agent.user.id,
+        kind: "agent",
+        username: agent.slug,
+      },
+      excludeAgentSlugs: [agent.slug],
+    });
+  }
 
   revalidatePath(`/projects/${original.project.slug}/tasks/${taskId}`);
   return NextResponse.json({ ok: true, id: reply.id, channel: reply.channel });

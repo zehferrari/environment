@@ -107,13 +107,12 @@ export async function POST(
     return NextResponse.json({ error: "Epic not found" }, { status: 404 });
   }
 
-  const newDescription = description.trim() === "" ? null : description;
+  const newDescription = description.trim();
+
+  const { saveDescriptionDraft } = await import("@/lib/description-drafts");
+  saveDescriptionDraft(epicId, "epic", newDescription);
 
   await db.$transaction([
-    db.epic.update({
-      where: { id: epicId },
-      data: { description: newDescription },
-    }),
     db.agentChatMessage.update({
       where: { id: messageId },
       data: { editGrantUsedAt: new Date() },
@@ -127,7 +126,8 @@ export async function POST(
           messageId,
           epicId,
           agentSlug: resolvedAgent.slug,
-          length: newDescription?.length ?? 0,
+          length: newDescription.length,
+          draft: true,
         }),
       },
     }),

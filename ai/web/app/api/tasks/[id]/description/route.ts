@@ -115,13 +115,12 @@ export async function POST(
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
 
-  const newDescription = description.trim() === "" ? null : description;
+  const newDescription = description.trim();
+
+  const { saveDescriptionDraft } = await import("@/lib/description-drafts");
+  saveDescriptionDraft(taskId, "task", newDescription);
 
   await db.$transaction([
-    db.task.update({
-      where: { id: taskId },
-      data: { description: newDescription },
-    }),
     db.agentChatMessage.update({
       where: { id: messageId },
       data: { editGrantUsedAt: new Date() },
@@ -135,7 +134,8 @@ export async function POST(
         payload: JSON.stringify({
           messageId,
           agentSlug: resolvedAgent.slug,
-          length: newDescription?.length ?? 0,
+          length: newDescription.length,
+          draft: true,
         }),
       },
     }),

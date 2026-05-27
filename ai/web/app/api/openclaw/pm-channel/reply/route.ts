@@ -10,6 +10,7 @@ import {
 import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel-stream";
 import { recordPmChannelRunEvent } from "@/lib/agents/pm-channel-runs";
 import { normalizeDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
+import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -236,6 +237,20 @@ async function persistTaskReply(
     });
     return { id: created.id, channel: "chat" as const };
   });
+
+  if (reply.channel === "comment") {
+    await sendTaskCommentNotifications({
+      taskId: target.taskId,
+      commentId: reply.id,
+      body: persistedBody,
+      actor: {
+        id: agentUser.id,
+        kind: "agent",
+        username: target.agentSlug,
+      },
+      excludeAgentSlugs: [target.agentSlug],
+    });
+  }
 
   revalidatePath(`/projects/${original.project.slug}/tasks/${target.taskId}`);
   return {
