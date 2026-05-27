@@ -8,6 +8,7 @@ inventory itself, see [`../../README.md`](../../README.md).
 | For… | Look at |
 |---|---|
 | **Active agent roster** (user, role, email, accountId, capabilities, integrations, services, listeners) | `/etc/openclaw/agents.json` → `/srv/agents/index.json` (live runtime, NOT in this repo; the dashboard writes capability/integration toggles back to it). [`index.example.json`](./index.example.json) is the in-repo single-record template. |
+| **Per-agent private identity/memory/config files** (`SOUL`, `USER`, `MEMORY`, `IDENTITY`, `TOOLS`, `HEARTBEAT`, `openclaw.json`) | Top-level `agentFilesRoot` in `/etc/openclaw/agents.json`, default `/srv/agents/openclaw`; workspace/config paths symlink back to `<agentFilesRoot>/<user>/`. |
 | **Workflow rules** (Jira, email, Telegram, formatting, signature, escalation, picking next task) | [`TEAM_WORKFLOW.md`](./TEAM_WORKFLOW.md) |
 | **Agent operating baseline** (every agent) | [`AGENTS.md`](./AGENTS.md) |
 | **Role-specific behaviour** (manager / developer / monitor) | [`ROLES.md`](./ROLES.md) |
@@ -23,7 +24,9 @@ inventory itself, see [`../../README.md`](../../README.md).
 
 - **Persona and private memory stay per-agent.** This repo holds only stable
   shared knowledge: hosts, services, ports, monitoring, workflow, role
-  baselines, integration rules.
+  baselines, integration rules. `install.sh` keeps private persona, memory,
+  and OpenClaw runtime config files under the host agent-files root and
+  symlinks them into each agent workspace/config path.
 - **Identity and runtime config flow through the registry.** Helpers must
   resolve agent identity at runtime via `skills/agent-self.js`, never
   hardcode email/displayName/accountId.
