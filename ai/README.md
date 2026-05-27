@@ -476,9 +476,10 @@ The Project Manager (Zero Latency) web interface and queue processor run as host
   - Runs in a loop using `pnpm tsx` to execute `scripts/pm-consumer-loop.ts`.
   - Reads dropped event files and triggers loopback wake requests (`POST /hooks/wake`) to target agent gateways (e.g. `http://127.0.0.1:18789/hooks/wake` with Bearer tokens).
   - Configured with `ProtectHome=true` and service-private cache/config directories under `/var/lib/pm/` (`pnpm-home`, `pnpm-config`, `pnpm-cache`, `.npmrc`) to avoid home directory configuration leaks.
+- **`pm-switch-runner.service`**: A system-wide `systemd` service (runs as `karen`, decoupled from `pm.service`) implementing the "switchable single site" live preview — it builds a chosen git worktree and flips which one `pm.service` serves. The web app stays unprivileged (drops a request into a spool, polls a state file); the runner builds and a path-validated root helper (`pm-apply-worktree`) does the only privileged step, granted by one NOPASSWD sudoers line. Triggered from a git/worktree-exposed project's Settings → **Worktree live preview** panel (admin) or the `pm-switch` CLI. Backed by `/srv/Code` being group-collaborative (`code-tree-perms`: setgid + default ACLs) so any code-agent can build. See [web/deploy/MULTI_AGENT_WORKTREES.md](web/deploy/MULTI_AGENT_WORKTREES.md).
 
 #### Database and Data Storage
-- **Database**: A Prisma SQLite database located at `ai/web/prisma/prisma/dev.db` (under the `/srv/Code/environment.worktrees/...` checkout).
+- **Database**: A Prisma SQLite database located at `ai/web/prisma/prisma/dev.db` (under the `/srv/Code/environment.worktrees/...` checkout). The DB directory is owned by `karen` (`0700`) so the coding agents cannot read it, even though the surrounding source tree is group-collaborative.
 - **Attachments**: Task and Epic file attachments are saved to `/srv/Data/projects/<projectId>/attachments/<sha256>`.
 - **Private Credentials**: Stored securely in `/etc/openclaw/pm-agent-credentials/` (owned by `karen:karen`, mode `0700`).
 
