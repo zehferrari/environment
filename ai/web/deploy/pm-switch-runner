@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""pm-switch-runner — monitor-driven worktree switch runner.
+
+Runs as the monitor agent (e.g. karen) as a systemd service, DECOUPLED from
+pm.service so the restart at the end of a switch can't kill the switch itself.
+The PM web app (also the monitor) only drops a request.json into the spool dir;
+this runner picks it up, runs pm-switch.sh (build + privileged flip via
+pm-apply-worktree), and publishes state.json for the browser to poll.
+
+Spool (PM_SWITCH_DIR, default /var/lib/pm/switch):
+  request.json  — written by the web app: {id, target, requestedBy, requestedAt}
+  state.json    — written here: {served, servedBranch, worktrees[], job{}, updatedAt}
+
+Config via env (set in the systemd unit):
+  PM_SWITCH_DIR, PM_SWITCH_SCRIPT, ENV_REPO, PM_WORKTREES_ROOT, PM_SWITCH_POLL_SECONDS
+"""
+import datetime
+import json
+import os
+import re
+import subprocess
+import time
+
+SWITCH_DIR = os.environ.get("PM_SWITCH_DIR", "/var/lib/pm/switch")
+SWITCH_SCRIPT = os.environ.get("PM_SWITCH_SCRIPT", "/usr/local/sbin/pm-switch")
+REPO = os.environ.get("ENV_REPO", "/srv/Code/environment")
+POLL = float(os.environ.get("PM_SWITCH_POLL_SECONDS", "2"))
+REQUEST = os.path.join(SWITCH_DIR, "request.json")
+STATE = os.path.join(SWITCH_DIR, "state.json")
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def read_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def served():
+    """(worktree_root, branch) pm.service is serving, from its WorkingDirectory."""
+    try:
+        wd = subprocess.run(
+            ["systemctl", "show", "-p", "WorkingDirectory", "--value", "pm.service"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        suffix = "/ai/web/.next/standalone"
+        if wd.endswith(suffix):
+            root = wd[: -len(suffix)]
+            br = subprocess.run(
+                ["git", "-C", root, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            return root, br
+    except Exception:
+        pass
+    return None, None
+
+
+def worktrees(served_root):
+    out = subprocess.run(
+        ["git", "-C", REPO, "worktree", "list", "--porcelain"],
+        capture_output=True, text=True, timeout=20,
+    ).stdout
+    res, cur = [], {}
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            cur = {"path": line[9:]}
+        elif line.startswith("HEAD "):
+            cur["head"] = line[5:][:10]
+        elif line.startswith("branch "):
+            cur["branch"] = line[7:].replace("refs/heads/", "")
+        elif line.startswith("detached"):
+            cur["branch"] = "(detached)"
+        elif line == "" and cur:
+            res.append(cur); cur = {}
+    if cur:
+        res.append(cur)
+    for w in res:
+        w["name"] = os.path.basename(w["path"])
+        w["ready"] = os.path.isdir(os.path.join(w["path"], "ai/web/node_modules"))
+        w["served"] = (w["path"] == served_root)
+        w.setdefault("branch", "?")
+    return res
+
+
+def write_state(job):
+    root, br = served()
+    state = {
+        "served": root,
+        "servedBranch": br,
+        "worktrees": worktrees(root),
+        "job": job,
+        "updatedAt": now(),
+    }
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f, indent=2)
+    os.replace(tmp, STATE)
+    try:
+        os.chmod(STATE, 0o600)
+    except OSError:
+        pass
+
+
+def run_switch(req):
+    target = str(req.get("target", "")).strip()
+    valid = {w["name"] for w in worktrees(None)} | {w["path"] for w in worktrees(None)}
+    if target not in valid:
+        return {"id": req["id"], "state": "error", "target": target,
+                "message": f"Unknown worktree: {target}", "startedAt": now(),
+                "updatedAt": now(), "log": ""}
+
+    started = now()
+    write_state({"id": req["id"], "state": "building", "target": target,
+                 "message": f"Building & switching to {target}…", "startedAt": started,
+                 "updatedAt": now(), "log": ""})
+    proc = subprocess.run([SWITCH_SCRIPT, target], capture_output=True, text=True)
+    log = ANSI.sub("", (proc.stdout or "") + (proc.stderr or ""))
+    tail = "\n".join(log.splitlines()[-40:])
+    if proc.returncode == 0:
+        return {"id": req["id"], "state": "done", "target": target,
+                "message": f"Now serving {target}.", "startedAt": started,
+                "updatedAt": now(), "log": tail}
+    return {"id": req["id"], "state": "error", "target": target,
+            "message": f"Switch failed (exit {proc.returncode}).", "startedAt": started,
+            "updatedAt": now(), "log": tail}
+
+
+def main():
+    st = read_json(STATE)
+    job = (st or {}).get("job") or {
+        "id": None, "state": "idle", "target": None, "message": "",
+        "startedAt": None, "updatedAt": now(), "log": "",
+    }
+    last_id = job.get("id")
+    write_state(job)
+    while True:
+        req = read_json(REQUEST)
+        if req and req.get("id") and req["id"] != last_id:
+            last_id = req["id"]
+            job = run_switch(req)
+            write_state(job)
+        else:
+            write_state(job)  # refresh inventory/served (catches CLI switches, new worktrees)
+        time.sleep(POLL)
+
+
+if __name__ == "__main__":
+    main()

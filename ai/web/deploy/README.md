@@ -14,6 +14,23 @@ zeh sees exactly what changes on the host.
 | `/etc/openclaw/pm-consumer-tokens.json` | host-created | `root:<pm-consumer-group>`, `0640` | per-agent `/hooks/wake` Bearer map; never commit. |
 | `/etc/openclaw/pm-channel-tokens.json` | host-created | `root:<pm-user-group>`, `0640` | per-agent native PM channel Bearer map; never commit. |
 | `nginx-agents.vixi.au.conf` | `/etc/nginx/sites-available/agents.vixi.au` (+ symlink in `sites-enabled/`) | root | TLS via Let's Encrypt. |
+| `rebuild-and-restart.sh` | run in place | — | coupled build + restart of the *currently-served* worktree. |
+| `pm-switch.sh` | `-> /usr/local/sbin/pm-switch` | root | build a chosen worktree + flip `pm.service` to it (`pm-switch <wt>` / `pm-switch status`). |
+| `pm-apply-worktree` | `-> /usr/local/sbin/pm-apply-worktree` | root | the one privileged step (drop-in + daemon-reload + restart), path-validated. |
+| `pm-switch-runner` | `-> /usr/local/sbin/pm-switch-runner` | root | monitor-run runner behind `pm-switch-runner.service`; watches the spool, runs `pm-switch`. |
+| `systemd/pm-switch-runner.service` | `/etc/systemd/system/` | root | runner unit (`User=<monitor>`, templated). |
+| `sudoers.d/pm-switch` | `/etc/sudoers.d/pm-switch`, `0440` | root | one NOPASSWD rule: monitor -> `pm-apply-worktree`. |
+| `install-pm-switch.sh` | run as root | — | idempotent installer for the switcher (scripts, unit, sudoers, spool, RW drop-in). |
+
+## Worktree switcher (live preview)
+
+Lets the monitor agent build any git worktree and flip which one `pm.service`
+serves — from the CLI (`pm-switch <wt>`) or, in the PM webapp, a
+git/worktree-exposed project's **Settings → Worktree live preview** panel
+(admin only). Install with
+`sudo PM_MONITOR_USER=karen ai/web/deploy/install-pm-switch.sh` (after
+`code-tree-perms` has made `/srv/Code` group-collaborative). Full design,
+mechanism, and caveats: [`MULTI_AGENT_WORKTREES.md`](./MULTI_AGENT_WORKTREES.md).
 
 ## Service Model
 

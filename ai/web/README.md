@@ -75,12 +75,14 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/(app)/projects/[slug]/epics` | epic list with status filter (open/done/archived) + inline create (title + description + Acting Manager picker, then redirects into detail for attachments). |
 | `app/(app)/projects/[slug]/epics/[epicId]` | epic detail — assignee + acting manager (Epic keeps that label), status, attachments, tasks grouped by their own status, chat sidebar, Delete. |
 | `app/(app)/projects/[slug]/library` | project library — every attachment under the project (task- + epic-anchored) in one list; excludes files whose parent is in the bin. |
-| `app/(app)/projects/[slug]/settings` | project settings — repository path, default git identity, default assignee/reviewer for pickers, Done-card TTL, and project delete; plus a recent-activity agenda. |
+| `app/(app)/projects/[slug]/settings` | project settings — repository path, default git identity, default assignee/reviewer for pickers, Done-card TTL, and project delete; plus a recent-activity agenda. For admin (`zeh`) on git/worktree-exposed projects, also a **Worktree live preview** switcher (build a worktree + flip which one `pm.service` serves; currently shared-service-scoped — see TODO). |
 | `app/(app)/projects/[slug]/bin` | soft-delete bin — lists deleted Epics + Tasks with per-row Restore and "Restore + N children" actions. |
 | `app/(app)/agents` | agents grid; merges PM DB rows with Atlas live snapshot. |
 | `app/(app)/agents/[agent]` | per-agent deck — Atlas controls, profile editor, model settings. |
 | `app/(app)/agents/[agent]/chat` | direct per-agent chat opened from the global sidebar CHAT section. |
 | `app/(app)/system/activity` | system-wide ActivityLog stream. |
+| `app/(app)/system/settings` | system-wide setting defaults. |
+| `app/api/system/worktree-switch/status` | admin-only poll of the runner-maintained worktree-switch state (served worktree, inventory, current job). Drives the per-project **Worktree live preview** panel. |
 | `app/api/auth/[...nextauth]` | NextAuth route. |
 | `app/api/debug/sync` | manual trigger for the agent sync (auth-only). |
 | `app/api/tasks/[id]/ack` | agent ack endpoint — auto To Do → In Progress, emits `task.ack_ready`. |
@@ -152,6 +154,8 @@ still require a signed-in PM user.
 | `components/streaming-agent-reply.tsx` | client SSE subscriber that renders the live reply bubble while OpenClaw is still generating. |
 | `components/sortable-task-list.tsx` | `@dnd-kit` drag-reorder list used for sub-tasks / grouped task views, backed by `lib/tasks/reorder.ts`. |
 | `components/activity-agenda.tsx` | compact recent-activity feed rendered on the project settings page. |
+| `components/worktree-switcher.tsx` | admin live-preview switcher (shown in a git/worktree-exposed project's Settings via `lib/projects/worktree.ts::isWorktreeExposedRepo`): lists worktrees, polls switch state, requests a build+flip. |
+| `lib/deploy/worktrees.ts` · `lib/deploy/actions.ts` | read the runner's switch `state.json` / write a switch `request.json`. The web app stays unprivileged; the build + restart happen in `pm-switch-runner` (as the monitor). See [deploy/MULTI_AGENT_WORKTREES.md](./deploy/MULTI_AGENT_WORKTREES.md). |
 | `lib/activity.ts` | ActivityLog write helpers. |
 | `lib/markdown.tsx` | server-side markdown renderer with safe-href allowlist + @mention resolver. |
 | `lib/pm-events/` | shared `PmEvent` envelope (schema v1). |

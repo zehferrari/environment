@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# pm-apply-worktree — the ONLY privileged step of a worktree switch.
+#
+# Runs as root (the monitor calls it via a single NOPASSWD sudoers rule). Points
+# pm.service's WorkingDirectory at the given standalone build dir and restarts.
+# The input is validated against a strict allow-list (must be a real worktree's
+# built standalone dir under $PM_WORKTREES_ROOT), so a non-root caller can never
+# steer pm.service at an arbitrary path.
+#
+# A *symlinked* WorkingDirectory fails CHDIR under pm.service's ProtectSystem=
+# strict sandbox, so the path written here is always literal.
+#
+# Installed to /usr/local/sbin/pm-apply-worktree by ai/web/deploy/install-pm-switch.sh.
+set -euo pipefail
+
+STANDALONE="${1:-}"
+WT_ROOT="${PM_WORKTREES_ROOT:-/srv/Code/environment.worktrees}"
+DROPIN_DIR=/etc/systemd/system/pm.service.d
+DROPIN="$DROPIN_DIR/20-active-worktree.conf"
+
+die(){ printf 'pm-apply-worktree: %s\n' "$*" >&2; exit 1; }
+
+[[ $EUID -eq 0 ]] || die "must run as root (via sudo)"
+[[ -n "$STANDALONE" ]] || die "usage: pm-apply-worktree <…/ai/web/.next/standalone>"
+
+real="$(readlink -f "$STANDALONE" 2>/dev/null || true)"
+[[ -n "$real" ]]                                    || die "path does not resolve: $STANDALONE"
+[[ "$real" == "$WT_ROOT"/*/ai/web/.next/standalone ]] || die "refused: $real is not <$WT_ROOT>/*/ai/web/.next/standalone"
+[[ -f "$real/server.js" ]]                          || die "no server.js in $real (build the worktree first)"
+
+install -d "$DROPIN_DIR"
+printf '[Service]\nWorkingDirectory=\nWorkingDirectory=%s\n' "$real" > "$DROPIN"
+systemctl daemon-reload
+systemctl restart pm.service
+printf 'pm-apply-worktree: pm.service now serving %s\n' "$real"

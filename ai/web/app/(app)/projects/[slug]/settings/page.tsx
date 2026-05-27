@@ -7,6 +7,10 @@ import {
 import { listAssignablePrincipals } from "@/lib/principals";
 import { describeActivity } from "@/lib/activity";
 import ActivityAgenda from "@/components/activity-agenda";
+import { auth } from "@/lib/auth";
+import { isWorktreeExposedRepo } from "@/lib/projects/worktree";
+import { readSwitchState } from "@/lib/deploy/worktrees";
+import WorktreeSwitcher from "@/components/worktree-switcher";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +30,13 @@ export default async function ProjectSettingsPage({
     },
   });
   if (!project) notFound();
+
+  // Per-project "live preview" switcher: admin only, and only for projects
+  // whose repo is a git checkout exposed to the shared worktree approach.
+  const session = await auth();
+  const isAdmin = session?.user?.name === "zeh";
+  const showSwitcher = isAdmin && isWorktreeExposedRepo(project.repositoryPath);
+  const switchState = showSwitcher ? await readSwitchState() : null;
 
   const [principals, activity] = await Promise.all([
     listAssignablePrincipals(),
@@ -185,6 +196,31 @@ export default async function ProjectSettingsPage({
             Delete project
           </button>
         </form>
+
+        {showSwitcher && switchState ? (
+          <section className="space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm">
+            <div>
+              <h2 className="text-sm font-semibold tracking-tight">Worktree live preview</h2>
+              <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
+                Build a git worktree and point the live site at it. One worktree
+                is served at a time; all share the same database and secrets, so
+                only the served code changes. Admin only.
+              </p>
+            </div>
+            {/* TODO (later): implement the full per-project pm.service serving
+                solution — a dedicated service per project so each repo can be
+                built + served independently. For now this control operates on
+                the shared PM app service (pm.service) and lists the
+                environment repo's worktrees. */}
+            <div className="rounded-lg border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-xs leading-5 text-[var(--color-warn)]">
+              <span className="font-semibold">TODO (later):</span> implement the
+              full per-project <code>pm.service</code> serving solution (one
+              service per project repo). For now this controls the shared PM app
+              service and lists the <code>environment</code> worktrees.
+            </div>
+            <WorktreeSwitcher initial={switchState} />
+          </section>
+        ) : null}
       </div>
 
       <aside>

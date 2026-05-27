@@ -35,6 +35,9 @@ prisma/*.db
 prisma/*.db-journal
 *.db
 *.db-journal
+# runtime DB dir — owned/locked to the monitor (karen 0700); git must not
+# descend into it (it can't read it) and must never track the live DB.
+prisma/prisma/
 
 # coverage
 coverage/

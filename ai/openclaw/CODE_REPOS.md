@@ -26,6 +26,41 @@ identity here, and never need to remember to.
 System-wide `safe.directory = /srv/Code/*` lets agents (different uid
 than the directory owner) operate on the trees.
 
+## Permissions & secrets
+
+`/srv/Code` is **collaborative for the `code-agents` group**: group-owned,
+group-writable, **setgid** on directories with **default ACLs**, so files
+created later by *any* member stay group-writable. This is what lets any
+code-agent build a worktree (run `pnpm install` / `prisma generate` / a build),
+not just whoever first created `node_modules`.
+
+> If a build ever fails with `EPERM`, suspect a stray `user:<name>` named-ACL
+> entry (a named-user ACL overrides the group). Check `getfacl <path>` and clear
+> with `setfacl -x u:<name> <path>`. For build tools that copy + `fchmod`
+> (e.g. `prisma generate` into `.prisma`), remove the generated dir first so the
+> current builder owns the fresh files.
+
+Enforce/repair these perms with the idempotent, reusable tool
+**`/usr/local/sbin/code-tree-perms`** (source: `ai/openclaw/bin/code-tree-perms`,
+installed by `install.sh`). It is *additive* — it grants group access and never
+revokes `other`, so it can't break a co-hosted app's runtime user.
+
+**Runtime secrets belong to the monitor agent, not the coders.** A service's
+live secrets and data (e.g. the PM webapp's `ai/web/.env.local` and its SQLite
+DB dir `ai/web/prisma/prisma/`) are owned by the monitor (karen) and locked
+(`600` / `0700`) so the coding agents cannot read them — even though the
+surrounding source tree is group-collaborative. `code-tree-perms --secret
+<file> --secret-dir <dir> --monitor <user>` applies this.
+
+## Live preview — serving a worktree
+
+The monitor agent can build any worktree and point the live PM site
+(`pm.service`) at it, from the CLI (`pm-switch <branch-worktree>`) or the PM
+webapp (a git/worktree-exposed project's Settings → Worktree live preview,
+admin only). Exactly one worktree is served at a time; all share
+the same DB + env, so only the served code changes. Full design:
+[`ai/web/deploy/MULTI_AGENT_WORKTREES.md`](../web/deploy/MULTI_AGENT_WORKTREES.md).
+
 ## Mandatory branch workflow
 
 Every Jira ticket that touches a shared repo **must** designate a

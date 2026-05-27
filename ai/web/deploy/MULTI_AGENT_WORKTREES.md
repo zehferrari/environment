@@ -1,60 +1,140 @@
-# Previewing a worktree's PM webapp live (switchable single site)
+# Multi-agent worktrees + monitor-driven live preview
 
-> **The worktree workflow itself is not described here.** Multiple agents
-> already share this repo via the established per-branch worktree model —
-> `claim-branch <repo> <branch>`, one implementer per branch, reviewers on
-> detached-HEAD worktrees, enforced by the `/srv/Code` pre-commit hook. See
-> [`ai/openclaw/CODE_REPOS.md`](../../openclaw/CODE_REPOS.md). This file only
-> covers the one thing that *is* new: running a chosen worktree's build of the
-> PM webapp on the live host so you can see it in the browser.
+Several actors edit this repo on one host at once — the coding agents, the human
+(zeh / Claude Code), and the monitor agent (karen). This documents how they
+share the tree safely and how the **monitor** can build any worktree and flip
+which one the live PM site serves, including from the browser.
 
-## The rule (recap)
+## 1. One writer per branch worktree
 
-One writer per branch worktree. Two agents must **not** both implement in the
-same branch's worktree — that produces the entangled diffs / broken builds we
-hit on `feature/HOMELAB-41`. Split into separate branches (each its own
-`claim-branch` worktree) or have the second agent use `claim-branch --review`.
+The worktree workflow itself is the existing `claim-branch` model — see
+[`ai/openclaw/CODE_REPOS.md`](../../openclaw/CODE_REPOS.md): every ticket gets
+its own worktree under `/srv/Code/<repo>.worktrees/<branch>/`, **one implementer
+per branch**, reviewers on detached-HEAD worktrees, enforced by the `/srv/Code`
+pre-commit hook. Two agents must never both *write* the same branch worktree —
+that produces entangled diffs and broken builds.
 
-## Switchable single site
+## 2. Collaborative permissions (any code-agent can build)
 
-`pm.service` (agents.vixi.au) serves exactly **one** worktree's build at a time.
-Switch which one with:
+`/srv/Code` is group-owned by `code-agents`, group-writable, **setgid** on dirs
+with **default ACLs**, so files created by anyone stay group-writable. This is
+what lets *any* code-agent (including the monitor) build a worktree — not just
+whoever first ran `pnpm install`.
+
+Enforced/repaired by the reusable, idempotent tool
+[`ai/openclaw/bin/code-tree-perms`](../../openclaw/bin/code-tree-perms)
+(installed to `/usr/local/sbin`):
 
 ```bash
-ai/web/deploy/pm-switch.sh <worktree-name | path>   # build that worktree, point pm.service at it, restart, verify
-ai/web/deploy/pm-switch.sh status                    # which worktree/branch is live now
+sudo code-tree-perms --tree /srv/Code --group code-agents --monitor karen \
+  --secret     /srv/Code/environment.worktrees/<wt>/ai/web/.env.local \
+  --secret-dir /srv/Code/environment.worktrees/<wt>/ai/web/prisma/prisma
 ```
 
-Run it as **zeh** (owns `node_modules`, has passwordless sudo to `karen` +
-systemctl). For the *currently-served* worktree, `rebuild-and-restart.sh` still
-works unchanged.
+- Grants group access (never revokes `other`, so co-hosted apps don't break).
+- Removes any leftover `user:<monitor>` named-ACL **cap** — a named-user ACL
+  overrides the group and is what once limited the monitor to read-only
+  (the "only zeh can build" symptom).
+- Locks each `--secret` file to the monitor (`chmod 600`) and each
+  `--secret-dir` to the monitor (`0700`) — so the PM runtime secrets
+  (`.env.local`) and the SQLite DB dir (`prisma/prisma/`, incl. its `-wal`/`-shm`)
+  are **not** readable by the coders. The monitor runs `pm.service`, so it owns
+  the runtime data.
 
-### How it works / what it touches
+> **Cross-user build note:** `prisma generate` copies files and `fchmod`s the
+> destination; only the *owner* may chmod, so overwriting a prior builder's
+> `.prisma` fails with `EPERM`. `pm-switch.sh` removes `.prisma` before building
+> (it's regenerated), so any builder produces fresh, owned files. `next build`
+> recreates `.next` itself, so it's unaffected.
 
-- A systemd drop-in `/etc/systemd/system/pm.service.d/20-active-worktree.conf`
-  overrides `WorkingDirectory` to the chosen worktree's **literal**
-  `ai/web/.next/standalone`. (A *symlinked* WorkingDirectory fails `CHDIR`
-  under the unit's `ProtectSystem=strict` sandbox — confirmed — so the path
-  must be literal; the switcher rewrites it + `daemon-reload`s each switch.)
-- `ReadWritePaths` are **not** touched. `DATABASE_URL` is an absolute path and
-  the full runtime env (incl. `AUTH_SECRET`) lives in `/etc/default/pm`, so
-  switching changes only the **code** served — same database, same secrets,
-  no per-worktree `.env.local` seeding.
-- Each worktree needs its own `node_modules` (gitignored, not shared) — run
-  `pnpm install` in its `ai/web` before the first switch.
+## 3. Switchable single site
 
-### Caveats
+`pm.service` serves exactly **one** worktree at a time. All worktrees share the
+same DB + env (`/etc/default/pm`, absolute `DATABASE_URL`), so switching changes
+only the served **code**.
 
-- **Shared DB across branches.** Switching to a worktree whose branch has
-  *unapplied* migrations can throw `P2022` at runtime. `pm-switch.sh` runs
-  `prisma migrate status` and **warns** but does **not** auto-migrate
-  (auto-migrating could break other worktrees on an older schema). Apply
-  deliberately when you mean to:
-  `sudo -u karen bash -c 'cd <ai/web> && set -a && . /etc/default/pm && set +a && pnpm exec prisma migrate deploy'`.
-- **DB location is load-bearing.** The live SQLite DB currently sits *inside*
-  the HOMELAB-41 worktree (`…/feature_HOMELAB-41…/ai/web/prisma/prisma/dev.db`,
-  the absolute `DATABASE_URL`). Don't release that worktree, and consider
-  relocating the DB to a neutral path (e.g. `/srv/Data/pm/dev.db`) +
-  updating `DATABASE_URL` in `/etc/default/pm` so no single worktree owns the data.
+### From the browser (monitor-driven)
+
+A git/worktree-exposed project's **Settings → Worktree live preview** (admin
+only). Lists worktrees, marks the live one, and a **Serve live** button
+builds + switches. (Shown only for projects whose `repositoryPath` is a git
+checkout exposed to the worktree approach — `lib/projects/worktree.ts`.)
+
+> **TODO (later):** today the panel drives the shared `pm.service` and the
+> `environment` worktrees regardless of which project it's shown on. The full
+> per-project solution — a dedicated service per project repo so each can be
+> built + served independently — is not yet implemented.
+
+The web app (runs as the monitor) is **unprivileged** here: it only writes a
+request into the spool and polls a state file. A separate **runner service**
+does the real work, decoupled from `pm.service` so the restart can't kill it:
+
+```
+browser ─▶ POST action ─▶ /var/lib/pm/switch/request.json   (web app, as monitor)
+                                   │
+        pm-switch-runner (systemd, User=monitor) ──watches──┘
+                                   │ runs
+                          /usr/local/sbin/pm-switch <wt>      (build, as monitor)
+                                   │ sudo (one NOPASSWD rule)
+                          /usr/local/sbin/pm-apply-worktree   (root: drop-in + restart)
+                                   │ writes
+                          /var/lib/pm/switch/state.json  ◀── browser polls
+```
+
+### From the CLI
+
+```bash
+pm-switch <worktree-name | path>    # build + flip + verify (as monitor or any code-agent w/ the sudoers rule)
+pm-switch status                    # which worktree/branch is live
+```
+
+### Mechanism
+
+- A drop-in `/etc/systemd/system/pm.service.d/20-active-worktree.conf` overrides
+  `WorkingDirectory` to the chosen worktree's **literal** `.next/standalone`
+  (a *symlinked* WorkingDirectory fails `CHDIR` under the unit's
+  `ProtectSystem=strict` sandbox). Only `pm-apply-worktree` (root) writes it,
+  after validating the path is a real worktree build under
+  `$PM_WORKTREES_ROOT`.
+- `30-switch-spool.conf` adds the spool to pm.service's `ReadWritePaths` so the
+  web app can drop a request.
+
+## 4. Files & install
+
+Versioned under `ai/web/deploy/` (PM-specific) and `ai/openclaw/` (generic):
+
+| Path | Role |
+| --- | --- |
+| `ai/openclaw/bin/code-tree-perms` | generic: collaborative perms + monitor secret-lock (any host) |
+| `ai/web/deploy/pm-switch.sh` | build a worktree + delegate the privileged flip |
+| `ai/web/deploy/pm-apply-worktree` | **root** helper: write drop-in + daemon-reload + restart (path-validated) |
+| `ai/web/deploy/pm-switch-runner` | monitor-run runner: watch spool, run pm-switch, publish state |
+| `ai/web/deploy/systemd/pm-switch-runner.service` | runner unit (`User=<monitor>`, templated) |
+| `ai/web/deploy/sudoers.d/pm-switch` | one NOPASSWD rule: monitor → `pm-apply-worktree` |
+| `ai/web/deploy/install-pm-switch.sh` | idempotent installer (scripts, unit, sudoers, spool, RW drop-in) |
+| `ai/web/lib/deploy/{worktrees.ts,actions.ts}` · `app/api/system/worktree-switch/status` · `components/worktree-switcher.tsx` | the browser UI |
+
+Install on a host (after `code-tree-perms` has run):
+
+```bash
+sudo PM_MONITOR_USER=karen ai/web/deploy/install-pm-switch.sh
+```
+
+Everything is parameterized (`PM_MONITOR_USER`, `PM_WORKTREES_ROOT`,
+`PM_SWITCH_DIR`) — nothing is hardcoded to a specific host or worktree.
+
+## 5. Caveats
+
+- **Shared DB across branches.** Switching to a branch with *unapplied*
+  migrations can throw `P2022`. `pm-switch.sh` **warns** but never auto-migrates
+  (it could break other worktrees on an older schema). Apply deliberately:
+  `cd <ai/web> && set -a && . /etc/default/pm && set +a && pnpm exec prisma migrate deploy`.
+- **DB lives in a worktree.** The live SQLite DB sits in the HOMELAB-41
+  worktree's `prisma/prisma/`. Don't release that worktree; relocating the DB to
+  a neutral path (e.g. `/srv/Data/pm/`) + updating `DATABASE_URL` in
+  `/etc/default/pm` is a recommended durable follow-up.
+- **The switcher rides in the app it switches.** Switching to a worktree whose
+  branch predates this feature lands you on a build without the UI — switch back
+  with the CLI `pm-switch`. Resolved once this is merged to `main`.
 - Only one worktree is live at a time — switching off a worktree takes its
-  in-progress preview offline until you switch back.
+  preview offline until you switch back.

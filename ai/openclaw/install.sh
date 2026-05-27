@@ -123,6 +123,7 @@ do_install 755 "$REPO_ROOT/bin/agent-dashboard"           /usr/local/bin/agent-d
 do_install 755 "$REPO_ROOT/bin/openclaw-monitor-sync"     /usr/local/sbin/openclaw-monitor-sync
 do_install 755 "$REPO_ROOT/bin/openclaw-typing-keepalive" /usr/local/bin/openclaw-typing-keepalive
 do_install 755 "$REPO_ROOT/bin/gmail-watch-renew-all"     /usr/local/sbin/gmail-watch-renew-all
+do_install 755 "$REPO_ROOT/bin/code-tree-perms"           /usr/local/sbin/code-tree-perms
 if [ "$OPENCLAW_SESSION_FENCE_PATCH" != "0" ] && [ "$OPENCLAW_SESSION_FENCE_PATCH" != "false" ]; then
     if [ "$DRY" -eq 1 ]; then
         log "  would patch OpenClaw session fence at $OPENCLAW_SESSION_FENCE_PATCH_FILE"

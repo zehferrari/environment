@@ -38,6 +38,14 @@ x1 uses systemd timers for active automation. Cron references in old migration n
   redirected to `/var/lib/pm/pnpm-{home,config,cache}` to avoid probing
   hidden `/home/karen` paths. Stale per-agent user units named
   `pm.service` or `pm-consumer.service` should be removed.
+- `pm-switch-runner.service`: monitor-driven worktree switch runner (system
+  unit, `User=karen` on x1). Watches `/var/lib/pm/switch/request.json`, builds
+  the requested worktree with `pm-switch`, and flips `pm.service` to serve it via
+  the root helper `pm-apply-worktree` (one NOPASSWD sudoers rule). Deliberately
+  decoupled from `pm.service` so the restart at the end of a switch can't kill
+  it. Publishes `state.json` for the project-settings "Worktree live preview"
+  panel to poll. Installed by `ai/web/deploy/install-pm-switch.sh`; full design in
+  `ai/web/deploy/MULTI_AGENT_WORKTREES.md`.
 - OpenClaw Control UIs: per-agent gateway dashboards exposed through nginx behind basic auth. x1 exposes primary, secondary, and monitoring gateway dashboards through role-based nginx routes. OpenClaw uses trusted-proxy auth with `X-Forwarded-User` from nginx, so nginx basic auth is the browser login. Gateway ports bind to LAN but remain blocked from direct network access by firewalld. This is an admin surface; do not expose without auth.
   - OpenClaw 2026.5.7 dashboard note: nginx also sends X-OpenClaw-Scopes: operator.admin. Coding agents set gateway.controlUi.dangerouslyDisableDeviceAuth=true so trusted-proxy WebSocket sessions keep operator scope; this depends on nginx basic auth and firewalld remaining in place.
   - No-slash dashboard paths redirect to trailing-slash paths. Do not proxy exact no-slash paths directly, or OpenClaw emits root-relative assets (/assets/...) that 404.

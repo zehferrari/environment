@@ -1,0 +1,9 @@
+# PM worktree switcher — let the monitor agent flip which worktree pm.service
+# serves, and nothing more. The helper validates its argument against a strict
+# allow-list (a real worktree's built standalone dir), so this grant cannot be
+# used to point pm.service at an arbitrary path or run arbitrary commands.
+#
+# Installed to /etc/sudoers.d/pm-switch (mode 0440) by install-pm-switch.sh,
+# which substitutes __PM_MONITOR_USER__ with the configured monitor user.
+# Reviewed/validated with `visudo -c` before install.
+__PM_MONITOR_USER__ ALL=(root) NOPASSWD: /usr/local/sbin/pm-apply-worktree
