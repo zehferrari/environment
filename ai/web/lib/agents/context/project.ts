@@ -16,13 +16,25 @@ import { resolveGitIdentity } from "@/lib/settings/system";
 
 const MAX_EPICS = 40;
 const MAX_TASKS = 80;
-const MAX_EPIC_DESCRIPTION = 6000;
-const MAX_TASK_DESCRIPTION = 1600;
+// Keep breadth ahead of depth: every scoped epic/task should be visible even
+// when one early item has a very long description.
+const MAX_EPIC_DESCRIPTION = 1200;
+const MAX_TASK_DESCRIPTION = 800;
+
+type ClipResult = { text: string; truncated: boolean; omittedChars: number };
+
+function clipWithMeta(value: string, max = 2000): ClipResult {
+  const text = value.trim();
+  if (text.length <= max) return { text, truncated: false, omittedChars: 0 };
+  return {
+    text: `${text.slice(0, max).trimEnd()}\n[truncated: ${text.length - max} more chars]`,
+    truncated: true,
+    omittedChars: text.length - max,
+  };
+}
 
 function clip(value: string, max = 2000) {
-  const text = value.trim();
-  if (text.length <= max) return text;
-  return `${text.slice(0, max).trimEnd()}\n[truncated]`;
+  return clipWithMeta(value, max).text;
 }
 
 export interface ProjectEnvContext {
@@ -103,15 +115,52 @@ export async function buildProjectEnvContext(
     lines.push(`- @${p.username}${p.kind === "agent" ? " (agent)" : ""}`);
   }
 
-  lines.push("", `EXISTING EPICS (${epics.length}):`);
+  const tasksByEpic = new Map<string, typeof tasks>();
+  const rootTasks: typeof tasks = [];
+  for (const task of tasks) {
+    if (task.epicId) {
+      const existing = tasksByEpic.get(task.epicId) ?? [];
+      existing.push(task);
+      tasksByEpic.set(task.epicId, existing);
+    } else {
+      rootTasks.push(task);
+    }
+  }
+
+  lines.push("", "CONTEXT MANIFEST (breadth first; all fetched items):");
+  lines.push(`Epics fetched: ${epics.length}${epics.length === MAX_EPICS ? " (limit reached)" : ""}`);
+  if (epics.length === 0) lines.push("- Epics: (none)");
+  else for (const e of epics) {
+    const childTasks = tasksByEpic.get(e.id) ?? [];
+    lines.push(`- Epic [${e.status}] ${e.title} (id: ${e.id}; open tasks fetched: ${childTasks.length})`);
+    for (const t of childTasks) {
+      lines.push(`  - Task [${t.status}] ${t.title} (id: ${t.id}${t.parentTaskId ? `; parent: ${t.parentTaskId}` : ""})`);
+    }
+  }
+  if (rootTasks.length > 0) {
+    lines.push(`- Root open tasks without epic: ${rootTasks.length}`);
+    for (const t of rootTasks) {
+      lines.push(`  - Task [${t.status}] ${t.title} (id: ${t.id}${t.parentTaskId ? `; parent: ${t.parentTaskId}` : ""})`);
+    }
+  }
+  if (tasks.length === MAX_TASKS) {
+    lines.push(`[partial context: task fetch limit reached at ${MAX_TASKS}; additional open tasks may exist]`);
+  }
+
+  let truncatedEpicDescriptions = 0;
+  let truncatedTaskDescriptions = 0;
+
+  lines.push("", `EXISTING EPICS (${epics.length}; per-item descriptions capped):`);
   if (epics.length === 0) lines.push("(none)");
   else for (const e of epics) {
     lines.push(`- [${e.status}] ${e.title} (id: ${e.id})`);
     if (e.description?.trim()) {
+      const clipped = clipWithMeta(e.description, MAX_EPIC_DESCRIPTION);
+      if (clipped.truncated) truncatedEpicDescriptions += 1;
       lines.push(
         `  Description for epic ${e.id}:`,
         `<<<EPIC_DESCRIPTION_${e.id}`,
-        clip(e.description, MAX_EPIC_DESCRIPTION),
+        clipped.text,
         `EPIC_DESCRIPTION_${e.id}>>>`,
       );
     } else {
@@ -119,7 +168,7 @@ export async function buildProjectEnvContext(
     }
   }
 
-  lines.push("", `EXISTING OPEN TASKS (${tasks.length}; excludes Done):`);
+  lines.push("", `EXISTING OPEN TASKS (${tasks.length}; excludes Done; per-item descriptions capped):`);
   if (tasks.length === 0) lines.push("(none)");
   else for (const t of tasks) {
     const rel = [
@@ -128,13 +177,22 @@ export async function buildProjectEnvContext(
     ].filter(Boolean).join(", ");
     lines.push(`- [${t.status}] ${t.title} (id: ${t.id}${rel ? `, ${rel}` : ""})`);
     if (t.description?.trim()) {
+      const clipped = clipWithMeta(t.description, MAX_TASK_DESCRIPTION);
+      if (clipped.truncated) truncatedTaskDescriptions += 1;
       lines.push(
         `  Description for task ${t.id}:`,
         `<<<TASK_DESCRIPTION_${t.id}`,
-        clip(t.description, MAX_TASK_DESCRIPTION),
+        clipped.text,
         `TASK_DESCRIPTION_${t.id}>>>`,
       );
     }
+  }
+
+  if (truncatedEpicDescriptions > 0 || truncatedTaskDescriptions > 0 || epics.length === MAX_EPICS || tasks.length === MAX_TASKS) {
+    lines.push(
+      "",
+      `[partial context: ${truncatedEpicDescriptions} epic descriptions truncated; ${truncatedTaskDescriptions} task descriptions truncated; fetched ${epics.length}/${MAX_EPICS} epics and ${tasks.length}/${MAX_TASKS} open tasks]`,
+    );
   }
 
   return {
