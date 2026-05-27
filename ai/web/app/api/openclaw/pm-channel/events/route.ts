@@ -7,7 +7,9 @@ import {
 import {
   createPmChannelEventStream,
   pmChannelStreamKey,
+  type PmChannelStreamState,
 } from "@/lib/agents/pm-channel-stream";
+import { getPmChannelRunSnapshot } from "@/lib/agents/pm-channel-runs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -60,6 +62,28 @@ async function targetExists(target: PmChannelReplyTarget) {
   return Boolean(row);
 }
 
+function streamStateFromRun(
+  target: PmChannelReplyTarget,
+  run: Awaited<ReturnType<typeof getPmChannelRunSnapshot>>,
+): PmChannelStreamState | null {
+  if (!run) return null;
+  const status = run.status === "failed"
+    ? "error"
+    : run.status === "complete"
+      ? "done"
+      : "streaming";
+  return {
+    key: pmChannelStreamKey(target),
+    target,
+    text: "",
+    reasoning: "",
+    status,
+    runStatus: run.status as PmChannelStreamState["runStatus"],
+    error: run.status === "failed" ? run.error ?? "Agent run failed" : null,
+    updatedAt: run.lastEventAt?.getTime() ?? Date.now(),
+  };
+}
+
 export async function GET(req: Request) {
   const session = await auth();
   if (!session?.user?.id) return new Response("Unauthorized", { status: 401 });
@@ -68,12 +92,17 @@ export async function GET(req: Request) {
   if (!target) return new Response("Bad request", { status: 400 });
   if (!(await targetExists(target))) return new Response("Not found", { status: 404 });
 
-  return new Response(createPmChannelEventStream(pmChannelStreamKey(target)), {
+  const run = await getPmChannelRunSnapshot(target);
+
+  return new Response(
+    createPmChannelEventStream(pmChannelStreamKey(target), streamStateFromRun(target, run)),
+    {
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     },
-  });
+    },
+  );
 }

@@ -30,12 +30,29 @@ export type ActivityKind =
   | "bin.purge"
   | "task.chat.send"
   | "epic.chat.send"
+  | "task.chat.archive"
+  | "epic.chat.archive"
+  | "task.chat.delete_to_bin"
+  | "epic.chat.delete_to_bin"
   | "agent.direct_chat.send"
   | "agent.direct_chat.wake"
   | "agent.direct_chat.wake_failed"
   | "agent.direct_chat.reply"
   | "agent.direct_chat.archive"
+  | "agent.direct_chat.delete_to_bin"
   | "agent.direct_chat.archive_delete"
+  | "agent.service.toggle"
+  | "agent.service.toggle_failed"
+  | "agent.service.restart"
+  | "agent.service.restart_failed"
+  | "agent.registry.toggle"
+  | "agent.registry.toggle_failed"
+  | "agent.integration.credentials"
+  | "agent.integration.credentials_failed"
+  | "agent.model.update"
+  | "agent.profile.update"
+  | "agent.restart.requested"
+  | "agent.restart.failed"
   | "task.chat.delete"
   | "epic.chat.delete"
   | "agent.direct_chat.delete"
@@ -54,6 +71,8 @@ export interface ActivityRow {
   payload: string | null;
   actorName: string | null;
   taskTitle: string | null;
+  targetAgent?: string | null;
+  targetFile?: string | null;
 }
 
 interface MovePayload {
@@ -107,6 +126,10 @@ function actor(name: string | null): string {
 
 function task(title: string | null): string {
   return title ?? "a task";
+}
+
+function targetAgent(row: ActivityRow): string {
+  return row.targetAgent ? `@${row.targetAgent}` : "an agent";
 }
 
 // Returns a single-line human label describing the activity. Does not
@@ -296,9 +319,71 @@ export function describeActivity(row: ActivityRow): string {
       const count = p?.messageCount ?? 0;
       return `${actor(row.actorName)} archived direct chat with @${p?.agentSlug ?? "?"} (${count} message${count === 1 ? "" : "s"})`;
     }
+    case "agent.direct_chat.delete_to_bin": {
+      const p = parsePayload<{ agentSlug?: string; messageCount?: number }>(row.payload);
+      const count = p?.messageCount ?? 0;
+      return `${actor(row.actorName)} moved direct chat with @${p?.agentSlug ?? "?"} to the bin (${count} message${count === 1 ? "" : "s"})`;
+    }
     case "agent.direct_chat.archive_delete": {
       const p = parsePayload<{ agentSlug?: string }>(row.payload);
       return `${actor(row.actorName)} removed an archived direct chat with @${p?.agentSlug ?? "?"}`;
+    }
+    case "agent.service.toggle":
+    case "agent.service.toggle_failed": {
+      const p = parsePayload<{ service?: string; enabled?: boolean; error?: string | null }>(row.payload);
+      const verb = p?.enabled ? "started" : "stopped";
+      const base = `${actor(row.actorName)} ${verb} ${p?.service ?? "a service"} for ${targetAgent(row)}`;
+      return row.kind.endsWith("_failed") ? `${base} failed${p?.error ? `: ${p.error}` : ""}` : base;
+    }
+    case "agent.service.restart":
+    case "agent.service.restart_failed": {
+      const p = parsePayload<{ service?: string; error?: string | null }>(row.payload);
+      const base = `${actor(row.actorName)} restarted ${p?.service ?? "a service"} for ${targetAgent(row)}`;
+      return row.kind.endsWith("_failed") ? `${base} failed${p?.error ? `: ${p.error}` : ""}` : base;
+    }
+    case "agent.registry.toggle":
+    case "agent.registry.toggle_failed": {
+      const p = parsePayload<{ kind?: string; key?: string; value?: boolean; error?: string | null }>(row.payload);
+      const verb = p?.value ? "enabled" : "disabled";
+      const base = `${actor(row.actorName)} ${verb} ${p?.kind ?? "setting"}.${p?.key ?? "unknown"} for ${targetAgent(row)}`;
+      return row.kind.endsWith("_failed") ? `${base} failed${p?.error ? `: ${p.error}` : ""}` : base;
+    }
+    case "agent.integration.credentials":
+    case "agent.integration.credentials_failed": {
+      const p = parsePayload<{ integration?: string; fields?: string[]; error?: string | null }>(row.payload);
+      const fields = p?.fields?.length ? ` (${p.fields.join(", ")})` : "";
+      const base = `${actor(row.actorName)} updated ${p?.integration ?? "integration"} credentials for ${targetAgent(row)}${fields}`;
+      return row.kind.endsWith("_failed") ? `${base} failed${p?.error ? `: ${p.error}` : ""}` : base;
+    }
+    case "agent.model.update": {
+      const p = parsePayload<{ before?: { active?: string | null }; after?: { active?: string | null } }>(row.payload);
+      const from = p?.before?.active ?? "unset";
+      const to = p?.after?.active ?? "unset";
+      return `${actor(row.actorName)} changed ${targetAgent(row)} model from ${from} to ${to}`;
+    }
+    case "agent.profile.update":
+      return `${actor(row.actorName)} updated ${targetAgent(row)} profile${row.targetFile ? ` (${row.targetFile})` : ""}`;
+    case "agent.restart.requested":
+    case "agent.restart.failed": {
+      const p = parsePayload<{ reason?: string; services?: Array<{ service?: string; ok?: boolean }> }>(row.payload);
+      const serviceCount = p?.services?.length ?? 0;
+      const base = `PM requested restart for ${targetAgent(row)}${p?.reason ? ` (${p.reason})` : ""}`;
+      const suffix = serviceCount ? ` across ${serviceCount} service${serviceCount === 1 ? "" : "s"}` : "";
+      return row.kind.endsWith(".failed") ? `${base} failed${suffix}` : `${base}${suffix}`;
+    }
+    case "task.chat.archive":
+    case "epic.chat.archive": {
+      const p = parsePayload<{ messageCount?: number }>(row.payload);
+      const count = p?.messageCount ?? 0;
+      const target = row.kind === "task.chat.archive" ? task(row.taskTitle) : "an epic";
+      return `${actor(row.actorName)} archived the chat room on ${target} (${count} message${count === 1 ? "" : "s"})`;
+    }
+    case "task.chat.delete_to_bin":
+    case "epic.chat.delete_to_bin": {
+      const p = parsePayload<{ messageCount?: number }>(row.payload);
+      const count = p?.messageCount ?? 0;
+      const target = row.kind === "task.chat.delete_to_bin" ? task(row.taskTitle) : "an epic";
+      return `${actor(row.actorName)} moved the chat room on ${target} to the bin (${count} message${count === 1 ? "" : "s"})`;
     }
     case "task.chat.delete":
     case "epic.chat.delete": {

@@ -1,7 +1,8 @@
 "use client";
 
 import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
-import React, { useRef } from "react";
+import MaximizableTextarea from "@/components/maximizable-textarea";
+import React, { useRef, useState } from "react";
 
 interface AgentChatInputProps {
   projectSlug: string;
@@ -20,19 +21,20 @@ export default function AgentChatInput({
 }: AgentChatInputProps) {
   const formRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [messageText, setMessageText] = useState("");
+  const canSend = messageText.trim().length > 0;
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      formRef.current?.requestSubmit();
+      if (canSend) formRef.current?.requestSubmit();
     }
   };
 
   const actionHandler = async (formData: FormData) => {
-    if (textareaRef.current) {
-      textareaRef.current.value = "";
-    }
     await sendAgentChatMessage(formData);
+    setMessageText("");
+    if (textareaRef.current) textareaRef.current.value = "";
   };
 
   return (
@@ -44,20 +46,23 @@ export default function AgentChatInput({
         <input type="hidden" name="epicId" value={epicId} />
       )}
       <input type="hidden" name="agentSlug" value={agentSlug} />
-      <textarea
+      <MaximizableTextarea
         ref={textareaRef}
         name="body"
-        required
+        value={messageText}
+        onValueChange={setMessageText}
         rows={3}
         maxLength={8000}
         placeholder={`Message @${agentUsername}...`}
         onKeyDown={handleKeyDown}
+        expandedTitle={`Message @${agentUsername}`}
         className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-xs outline-none focus:border-[var(--color-accent)] resize-none"
       />
       <div className="flex justify-end">
         <button
           type="submit"
-          className="rounded-lg bg-[var(--color-accent)] px-3 py-1 text-xs font-medium text-[var(--color-bg)] hover:opacity-90 cursor-pointer"
+          disabled={!canSend}
+          className="rounded-lg bg-[var(--color-accent)] px-3 py-1 text-xs font-medium text-[var(--color-bg)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
         >
           Send
         </button>

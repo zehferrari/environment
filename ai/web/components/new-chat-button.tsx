@@ -103,11 +103,12 @@ export default function NewChatButton({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setStep("delete")}
+                    disabled={isPending}
+                    onClick={handleDelete}
                     className="flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--color-crit)]/30 bg-[var(--color-crit)]/[0.04] py-2.5 text-sm font-medium text-[var(--color-crit)] hover:bg-[var(--color-crit)]/[0.08] transition cursor-pointer"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-                    Delete Current Chat (Move to Bin)
+                    {isPending ? "Moving to Bin..." : "Move Current Chat to Bin"}
                   </button>
                 </div>
                 <div className="flex justify-end pt-2">

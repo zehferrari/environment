@@ -105,18 +105,27 @@ model fallback chain instead of returning a generic PM failure. Re-run
 `install.sh` after upgrading or reinstalling the global `openclaw`
 package.
 
-Gateway hook config lives in `/srv/agents/openclaw/<agent>/openclaw.json`:
+Gateway hook config lives in `/srv/agents/openclaw/<agent>/openclaw.json`;
+`/home/<agent>/.openclaw/openclaw.json` should be a symlink to that
+canonical file so Mission Control writes and the gateway runtime read the
+same config. `install.sh` verifies that link and refuses to replace a
+different regular home file until an operator reconciles the two copies.
 `gateway.bind="loopback"`, `gateway.trustedProxies=["127.0.0.1","::1"]`,
 `gateway.auth.trustedProxy.allowLoopback=true`, `hooks.enabled=true`,
 `hooks.path="/hooks"`, `hooks.token=<secret>`,
 `hooks.allowRequestSessionKey=true`, and
 `hooks.allowedSessionKeyPrefixes=["hook:","pm:"]`. OpenClaw requires
-`hook:` when no hook default session key is configured; PM-owned sessions
-use `pm:` stable session keys. Chat, Epic chat, and task-comment turns
+`hook:` when no hook default session key is configured; PM-owned session
+keys use the `pm:` prefix. Direct chat keeps a stable `pm:` key, while
+Task/Epic Discussion and task-comment turns derive per-message `pm:`
+keys from the PM binding. Chat, Epic chat, and task-comment turns
 normally enter OpenClaw through `POST /pm-channel/ingest`, not
 `/hooks/wake`. The PM app sends a final reply callback
 (`/api/openclaw/pm-channel/reply`) and a live partial-reply stream
 callback (`/api/openclaw/pm-channel/stream`) in each native channel turn.
+PM also stores a durable `PmChannelRun` row for each native channel turn
+so browser reconnects can resume from accepted/streaming/failed state
+without relying on `/hooks/wake` or polling.
 The installer preserves `hooks.internal` and
 restarts `openclaw-gateway.service` when it changes hook or channel
 config. Do not expose hooks or the PM channel through nginx; PM calls

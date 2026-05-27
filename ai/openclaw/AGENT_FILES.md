@@ -32,7 +32,7 @@ The monitoring agent (`karen`) only has `~/.openclaw/workspace/`, no user-facing
 | `~/.ssh/id_*` | Per-agent SSH key pair (Bitbucket, optional GitHub). |
 | `~/.config/openclaw/openclaw-secrets.env` | Telegram bot token, OpenClaw gateway token, model-provider API keys (Moonshot, Z.ai). |
 | `~/.config/openclaw/openclaw-webhook.env` | Webhook signing secrets (Jira, Bitbucket). |
-| `~/.config/openclaw/openclaw.json` | Per-agent OpenClaw runtime config (model defaults, limits). |
+| `/srv/agents/openclaw/<agent>/openclaw.json` | Canonical per-agent OpenClaw runtime config (model defaults, gateway hooks, limits). `/home/<agent>/.openclaw/openclaw.json` should symlink here so Mission Control and the gateway runtime share one file. |
 | `~/.local/share/openclaw/...` | OAuth refresh tokens for Gmail, Drive, Calendar, Photos. |
 
 ## Per-agent runtime state — `~/.openclaw/skills/google-workspace/*.json`

@@ -281,32 +281,6 @@ export default function ArchiveSidebarClient({
             </button>
           )}
 
-          {/* Trash Bin Toggle Button */}
-          <button
-            onClick={() => {
-              setViewMode(viewMode === "archives" ? "bin" : "archives");
-              setSelectedDateStr(null);
-            }}
-            className={`relative rounded-md border p-1 transition-colors cursor-pointer ${
-              viewMode === "bin"
-                ? "border-[var(--color-ok)]/30 bg-[var(--color-ok)]/[0.04] text-[var(--color-ok)] hover:border-[var(--color-ok)] hover:text-[var(--color-ok)]"
-                : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-            }`}
-            title={viewMode === "bin" ? "Show Archives" : "Show Trash Bin"}
-          >
-            {viewMode === "bin" ? (
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect width="20" height="5" x="2" y="3" rx="1"/>
-                <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/>
-                <path d="M10 12h4"/>
-              </svg>
-            ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
-              </svg>
-            )}
-          </button>
-
           <Link
             href={`/agents/${slug}/chat`}
             className={`rounded-md border px-2 py-1 text-xs font-medium transition-all ${
@@ -318,6 +292,37 @@ export default function ArchiveSidebarClient({
             Active
           </Link>
         </div>
+      </div>
+
+      <div className="mb-3 grid grid-cols-2 gap-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-1 text-xs font-semibold shrink-0">
+        <button
+          type="button"
+          onClick={() => {
+            setViewMode("archives");
+            setSelectedDateStr(null);
+          }}
+          className={`rounded-lg px-2 py-1.5 transition ${
+            viewMode === "archives"
+              ? "bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm"
+              : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          }`}
+        >
+          Archive <span className="text-[10px] text-[var(--color-text-muted)]">({archives.length})</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setViewMode("bin");
+            setSelectedDateStr(null);
+          }}
+          className={`rounded-lg px-2 py-1.5 transition ${
+            viewMode === "bin"
+              ? "bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm"
+              : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          }`}
+        >
+          Bin <span className="text-[10px] text-[var(--color-text-muted)]">({binArchives.length})</span>
+        </button>
       </div>
 
       {/* Mini Calendar View */}

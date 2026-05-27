@@ -1,8 +1,17 @@
 "use client";
 
 import { useState } from "react";
+import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 
-type Principal = { id: string; username: string; kind: string };
+type Principal = {
+  id: string;
+  username: string;
+  name: string;
+  kind: string;
+  avatarUpdatedAt?: string | Date | null;
+  agentSlug?: string | null;
+  agentAvatar?: string | null;
+};
 type EpicOption = { id: string; title: string };
 
 // Floating "+" button + modal for creating a top-level task. Mirrors the
@@ -27,6 +36,20 @@ export default function AddTaskFab({
   createTaskAction: (formData: FormData) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  const principalOptions: AvatarComboboxOption[] = principals.map((p) => ({
+    value: p.id,
+    label: p.name,
+    actor: {
+      id: p.id,
+      username: p.username,
+      kind: p.kind,
+      name: p.name,
+      avatarUpdatedAt: p.avatarUpdatedAt ?? null,
+      agent: p.kind === "agent"
+        ? { slug: p.agentSlug ?? null, name: p.name, avatar: p.agentAvatar ?? null }
+        : null,
+    },
+  }));
 
   return (
     <>
@@ -36,6 +59,7 @@ export default function AddTaskFab({
           onClick={() => setOpen(false)}
         >
           <form
+            id="newTaskForm"
             action={createTaskAction}
             onSubmit={() => setOpen(false)}
             onClick={(e) => e.stopPropagation()}
@@ -95,37 +119,27 @@ export default function AddTaskFab({
                 <span className="mb-1 block text-[var(--color-text-muted)]">
                   Assignee
                 </span>
-                <select
+                <AvatarCombobox
+                  formId="newTaskForm"
                   name="assigneeId"
                   defaultValue={defaultAssigneeId ?? ""}
-                  className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
-                >
-                  <option value="">Unassigned</option>
-                  {principals.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.username}
-                      {p.kind === "agent" ? " (agent)" : ""}
-                    </option>
-                  ))}
-                </select>
+                  options={principalOptions}
+                  emptyLabel="Unassigned"
+                  ariaLabel="Assignee"
+                />
               </label>
               <label className="text-xs">
                 <span className="mb-1 block text-[var(--color-text-muted)]">
                   Reviewer
                 </span>
-                <select
+                <AvatarCombobox
+                  formId="newTaskForm"
                   name="actingManagerId"
                   defaultValue={defaultReviewerId ?? ""}
-                  className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
-                >
-                  <option value="">No reviewer</option>
-                  {principals.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.username}
-                      {p.kind === "agent" ? " (agent)" : ""}
-                    </option>
-                  ))}
-                </select>
+                  options={principalOptions}
+                  emptyLabel="No reviewer"
+                  ariaLabel="Reviewer"
+                />
               </label>
             </div>
 

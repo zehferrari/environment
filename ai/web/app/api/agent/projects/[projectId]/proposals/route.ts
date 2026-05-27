@@ -1,16 +1,17 @@
 // Agent work-item proposal submission (propose → approve).
 //
 // An agent that received a per-conversation "manage work items" grant on
-// a direct chat message POSTs a change-set of typed operations here. PM
-// validates the grant + token (mirrors /api/tasks/[id]/description), dry-
-// run-validates the change-set against lib/workflow.ts, and stores it as
-// a PENDING WorkItemProposal. Nothing on the board changes until a human
-// applies it (lib/work-items/actions.ts, Slice 3).
+// a direct chat or Task/Epic Discussion message POSTs a typed change-set
+// here. PM validates the grant + token (mirrors /api/tasks/[id]/description),
+// dry-run-validates the change-set against lib/workflow.ts, and stores it
+// as a PENDING WorkItemProposal. Nothing on the board changes until a
+// human applies it (lib/work-items/actions.ts, Slice 3).
 //
 // Auth model (same shape as the description-write grant):
-//   - body.grantMessageId references a DirectAgentChatMessage with
+//   - body.grantMessageId references a DirectAgentChatMessage, or an
+//     AgentChatMessage plus the addressed agent's PmChannelRun, with
 //     allowWorkItemManagement == true, projectId == route projectId, and
-//     workItemGrantUsedAt == null (single-use);
+//     the relevant workItemGrantUsedAt == null (single-use);
 //   - body.token is the HMAC grant token bound to (projectId, agentSlug,
 //     messageId);
 //   - the slug's Agent + seeded User must be active.
@@ -27,6 +28,53 @@ import { validateProposal } from "@/lib/work-items/proposal";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+type WorkItemGrant =
+  | {
+      source: "direct";
+      id: string;
+      agentSlug: string;
+      projectId: string | null;
+      allowWorkItemManagement: boolean;
+      workItemGrantUsedAt: Date | null;
+      taskId?: null;
+      epicId?: null;
+    }
+  | {
+      source: "discussion";
+      id: string;
+      runId: string;
+      agentSlug: string;
+      projectId: string;
+      allowWorkItemManagement: boolean;
+      workItemGrantUsedAt: Date | null;
+      taskId: string | null;
+      epicId: string | null;
+    };
+
+async function findDiscussionGrantRun(projectId: string, grantMessageId: string, token: string) {
+  const agents = await db.agent.findMany({
+    where: {
+      deactivatedAt: null,
+      user: { status: "active" },
+    },
+    select: { slug: true },
+  });
+  const agentSlug = agents.find((agent) =>
+    verifyWorkItemGrantToken(projectId, agent.slug, grantMessageId, token),
+  )?.slug ?? null;
+  if (!agentSlug) return null;
+
+  const run = await db.pmChannelRun.findFirst({
+    where: {
+      messageId: grantMessageId,
+      agentSlug,
+      projectId,
+    },
+    select: { id: true, agentSlug: true, workItemGrantUsedAt: true },
+  });
+  return run;
+}
 
 export async function POST(
   req: NextRequest,
@@ -91,7 +139,7 @@ export async function POST(
     });
   }
 
-  const grant = await db.directAgentChatMessage.findUnique({
+  const directGrant = await db.directAgentChatMessage.findUnique({
     where: { id: grantMessageId },
     select: {
       id: true,
@@ -101,6 +149,37 @@ export async function POST(
       workItemGrantUsedAt: true,
     },
   });
+  let grant: WorkItemGrant | null = directGrant
+    ? { source: "direct", ...directGrant }
+    : null;
+
+  if (!grant) {
+    const discussionGrant = await db.agentChatMessage.findUnique({
+      where: { id: grantMessageId },
+      select: {
+        id: true,
+        projectId: true,
+        taskId: true,
+        epicId: true,
+        allowWorkItemManagement: true,
+        workItemGrantUsedAt: true,
+      },
+    });
+    if (discussionGrant) {
+      const run = await findDiscussionGrantRun(projectId, grantMessageId, token);
+      if (!run) {
+        return NextResponse.json({ error: "Invalid grant token" }, { status: 403 });
+      }
+      grant = {
+        ...discussionGrant,
+        source: "discussion",
+        runId: run.id,
+        agentSlug: run.agentSlug,
+        workItemGrantUsedAt: run.workItemGrantUsedAt,
+      };
+    }
+  }
+
   if (!grant) {
     return NextResponse.json({ error: "Grant message not found" }, { status: 404 });
   }
@@ -119,7 +198,10 @@ export async function POST(
   if (grant.workItemGrantUsedAt) {
     return NextResponse.json({ error: "Grant already used" }, { status: 410 });
   }
-  if (!verifyWorkItemGrantToken(projectId, grant.agentSlug, grantMessageId, token)) {
+  if (
+    grant.source === "direct"
+    && !verifyWorkItemGrantToken(projectId, grant.agentSlug, grantMessageId, token)
+  ) {
     return NextResponse.json({ error: "Invalid grant token" }, { status: 403 });
   }
 
@@ -173,10 +255,17 @@ export async function POST(
         },
         select: { id: true },
       });
-      await tx.directAgentChatMessage.update({
-        where: { id: grantMessageId },
-        data: { workItemGrantUsedAt: new Date() },
-      });
+      if (grant.source === "direct") {
+        await tx.directAgentChatMessage.update({
+          where: { id: grantMessageId },
+          data: { workItemGrantUsedAt: new Date() },
+        });
+      } else {
+        await tx.pmChannelRun.update({
+          where: { id: grant.runId },
+          data: { workItemGrantUsedAt: new Date() },
+        });
+      }
       await tx.activityLog.create({
         data: {
           projectId,
@@ -194,7 +283,13 @@ export async function POST(
       return proposal;
     });
 
-    revalidatePath(`/agents/${grant.agentSlug}/chat`);
+    if (grant.source === "direct") {
+      revalidatePath(`/agents/${grant.agentSlug}/chat`);
+    } else if (grant.taskId) {
+      revalidatePath(`/projects/${project.slug}/tasks/${grant.taskId}`);
+    } else if (grant.epicId) {
+      revalidatePath(`/projects/${project.slug}/epics/${grant.epicId}`);
+    }
     return NextResponse.json(
       { ok: true, proposalId: created.id, status: "pending", validation },
       { status: 201 },

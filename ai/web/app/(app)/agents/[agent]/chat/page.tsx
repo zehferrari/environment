@@ -10,8 +10,7 @@ import {
   getConversationFolderIds,
   getAgentChatUploadDir,
 } from "@/lib/agents/direct-chat-actions";
-import ChatRefresh from "./chat-refresh";
-import StreamingAgentReply from "@/components/streaming-agent-reply";
+import { getPmChannelRunSnapshot } from "@/lib/agents/pm-channel-runs";
 import ChatLayoutClient from "./chat-layout-client";
 import ChatInput from "@/components/chat-input";
 import ProposalReview from "./proposal-review";
@@ -80,42 +79,6 @@ function serializeSender(sender: {
     avatarUpdatedAt: sender.avatarUpdatedAt?.toISOString() ?? null,
     agent: sender.agent,
   };
-}
-
-type DirectStatus = {
-  pending: boolean;
-};
-
-type DirectActivityRow = {
-  kind: string;
-  payload: string | null;
-};
-
-function payloadFor(row: DirectActivityRow) {
-  if (!row.payload) return null;
-  try {
-    return JSON.parse(row.payload) as {
-      messageId?: unknown;
-      inReplyToMessageId?: unknown;
-      error?: unknown;
-    };
-  } catch {
-    return null;
-  }
-}
-
-function directStatusFor(messageId: string, rows: DirectActivityRow[]): DirectStatus {
-  for (const row of rows) {
-    const payload = payloadFor(row);
-    if (payload?.messageId !== messageId && payload?.inReplyToMessageId !== messageId) continue;
-    if (row.kind === "agent.direct_chat.wake_failed") {
-      return { pending: false };
-    }
-    if (row.kind === "agent.direct_chat.wake") {
-      return { pending: true };
-    }
-  }
-  return { pending: true };
 }
 
 type ArchiveSummary = {
@@ -377,28 +340,15 @@ export default async function DirectAgentChatPage({
   const messages = selectedArchive?.messages ?? activeMessages;
   const latest = messages.at(-1) ?? null;
   const agentIsProcessing = !viewingArchive && Boolean(latest && latest.sender.kind !== "agent");
-  const directActivity = agentIsProcessing && latest
-    ? await db.activityLog.findMany({
-        where: {
-          targetAgent: slug,
-          kind: {
-            in: [
-              "agent.direct_chat.wake",
-              "agent.direct_chat.wake_failed",
-              "agent.direct_chat.reply",
-            ],
-          },
-          createdAt: { gte: latest.createdAt },
-        },
-        orderBy: { createdAt: "desc" },
-        take: 20,
-        select: { kind: true, payload: true },
+  const directRun = agentIsProcessing && latest
+    ? await getPmChannelRunSnapshot({
+        kind: "direct",
+        agentSlug: slug,
+        messageId: latest.id,
       })
-    : [];
-  const agentStatus = agentIsProcessing && latest
-    ? directStatusFor(latest.id, directActivity)
     : null;
-  const showAgentProcessing = agentStatus?.pending ?? agentIsProcessing;
+  const showAgentProcessing = agentIsProcessing
+    && (!directRun || directRun.status !== "complete");
   const avatarSrc = agent.avatar ? avatarUrl(agent.name) : null;
   const activeChildAlreadyOpen = viewingArchive
     && selectedArchive
@@ -577,7 +527,6 @@ export default async function DirectAgentChatPage({
 
   return (
     <div className="mx-auto flex h-[calc(100vh-2.5rem)] max-w-7xl flex-col gap-4 overflow-hidden">
-      <ChatRefresh active={showAgentProcessing} />
       {/* Sticky Header Banner */}
       <header className="sticky top-[-1.25rem] z-10 -mx-6 bg-[var(--color-bg)] pt-[1.25rem] pb-3 px-6 lg:-mx-8 lg:px-8 border-b border-[var(--color-line)] flex items-center justify-between gap-4 shrink-0">
         <Link href={`/agents/${slug}`} className="flex items-center gap-3 hover:opacity-80 transition shrink-min min-w-0">

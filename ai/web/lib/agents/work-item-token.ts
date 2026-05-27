@@ -6,8 +6,8 @@ import { createHmac, timingSafeEqual } from "crypto";
 // identifying tuple, keyed by AUTH_SECRET. PM hands the token to the
 // agent in the planning turn; the agent presents it when POSTing a
 // proposal to /api/agent/projects/[projectId]/proposals. The grant
-// itself (DirectAgentChatMessage.allowWorkItemManagement +
-// workItemGrantUsedAt) is what makes it single-use — this token only
+// itself (DirectAgentChatMessage for direct chats, PmChannelRun for
+// Task/Epic Discussion) is what makes it single-use — this token only
 // proves the request is bound to that specific (project, agent, message).
 
 function secret() {

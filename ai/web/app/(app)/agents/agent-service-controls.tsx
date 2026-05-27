@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 export type AgentService = {
   name: string;
@@ -25,6 +26,7 @@ export default function AgentServiceControls({
   agent: string;
   services: AgentService[];
 }) {
+  const router = useRouter();
   const [rows, setRows] = useState(services);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -47,6 +49,7 @@ export default function AgentServiceControls({
       });
       if (!res.ok) throw new Error(await res.text());
       setMessage(`${labelFor(service.name)} ${enabled ? "started" : "stopped"}`);
+      router.refresh();
     } catch (err) {
       setRows(before);
       setMessage(err instanceof Error ? err.message : String(err));
@@ -67,6 +70,7 @@ export default function AgentServiceControls({
       });
       if (!res.ok) throw new Error(await res.text());
       setMessage(`${labelFor(service.name)} restart requested`);
+      router.refresh();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));
     } finally {

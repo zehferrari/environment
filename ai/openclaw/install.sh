@@ -429,7 +429,7 @@ if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
 fi
 
 # 4f. PM web service + dispatch file-drop + consumer + local gateway hooks/channel
-log "[4f/7] PM web service + dispatch + /hooks/wake + native channel"
+log "[4f/7] PM web service + non-chat /hooks/wake + native channel"
 PM_WEB_ROOT="$(cd "$PM_WEB_ROOT" 2>/dev/null && pwd || printf '%s' "$PM_WEB_ROOT")"
 if [ ! -d "$PM_WEB_ROOT" ]; then
     warn "  PM web root $PM_WEB_ROOT not found; skipping PM web/consumer install"
@@ -456,7 +456,7 @@ else
         log "  would install -d -o root -g root -m 0755 $PM_SAMBA_SHARED_ROOT and grant $pm_app_user ACL write access"
         log "  would provision pm-consumer pnpm home/config/cache under $PM_STATE_DIR"
         log "  would remove stale per-agent user pm.service / pm-consumer.service units"
-        log "  would bind agent gateways to loopback, enable /hooks/wake with hook:/pm: session keys, and reconcile $PM_CONSUMER_TOKEN_FILE (root:$pm_group 0640)"
+        log "  would bind agent gateways to loopback, enable /hooks/wake for non-chat automation with hook:/pm: session keys, and reconcile $PM_CONSUMER_TOKEN_FILE (root:$pm_group 0640)"
         log "  would reconcile native PM channel tokens at $PM_OPENCLAW_CHANNEL_TOKEN_FILE (root:$PM_OPENCLAW_CHANNEL_TOKEN_GROUP 0640)"
         log "  would configure native PM channel final callback $PM_OPENCLAW_CHANNEL_CALLBACK_URL"
         if [ -n "$pm_channel_agents" ]; then
@@ -464,7 +464,7 @@ else
         else
             log "  would let native PM channel installer discover enabled agents from $REGISTRY"
         fi
-        log "  PM sends the live stream callback per turn as /api/openclaw/pm-channel/stream from its callback base"
+        log "  PM sends the live stream callback per turn as /api/openclaw/pm-channel/stream from its callback base and tracks durable PmChannelRun state; success still requires the final reply callback"
         if [ -f "$pm_unit_src" ]; then
             log "  would render $pm_unit_src → /etc/systemd/system/pm.service"
         else
@@ -584,8 +584,9 @@ else
         if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
             agent_files_root=$(jq -r '.agentFilesRoot // "/srv/agents/openclaw"' "$REGISTRY")
             agent_config_group=$(jq -r '.codeGroup // empty' "$REGISTRY")
-            while IFS=$'\t' read -r user uid port; do
+            while IFS=$'\t' read -r user uid port home; do
                 [ -z "$user" ] && continue
+                [ -n "$home" ] || home="/home/$user"
                 cfg="$agent_files_root/$user/openclaw.json"
                 if [ ! -f "$cfg" ]; then
                     warn "  $user: missing $cfg; cannot enable /hooks/wake"
@@ -637,6 +638,34 @@ else
                 fi
                 rm -f "$tmp_cfg"
 
+                home_cfg="$home/.openclaw/openclaw.json"
+                cfg_real=$(readlink -f "$cfg" 2>/dev/null || printf '%s' "$cfg")
+                if [ -L "$home_cfg" ]; then
+                    home_real=$(readlink -f "$home_cfg" 2>/dev/null || true)
+                    if [ "$home_real" = "$cfg_real" ]; then
+                        log "  $user: $home_cfg already points at $cfg"
+                    else
+                        ln -snf "$cfg" "$home_cfg"
+                        chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
+                        ok "  $user: repointed $home_cfg -> $cfg"
+                    fi
+                elif [ -e "$home_cfg" ]; then
+                    if cmp -s "$home_cfg" "$cfg"; then
+                        backup="$home_cfg.pre-symlink-$(date +%Y%m%d%H%M%S)"
+                        mv "$home_cfg" "$backup"
+                        ln -s "$cfg" "$home_cfg"
+                        chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
+                        ok "  $user: replaced duplicate $home_cfg with symlink to $cfg (backup: $backup)"
+                    else
+                        warn "  $user: $home_cfg differs from $cfg; leaving regular file in place. Reconcile before symlinking."
+                    fi
+                else
+                    install -d -o "$user" -g "$user" -m 0700 "$home/.openclaw" 2>/dev/null || true
+                    ln -s "$cfg" "$home_cfg"
+                    chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
+                    ok "  $user: created $home_cfg -> $cfg"
+                fi
+
                 next_tokens=$(mktemp)
                 jq --arg agent "$user" --arg token "$token" '. + {($agent): $token}' "$tmp_tokens" > "$next_tokens"
                 mv "$next_tokens" "$tmp_tokens"
@@ -660,7 +689,7 @@ else
                 | . as $a
                 | ($a.listeners // [] | map(select(.owner == "openclaw-gateway")) | .[0].port // empty) as $port
                 | select($port != "")
-                | "\($a.user)\t\($a.uid // "")\t\($port)"
+                | "\($a.user)\t\($a.uid // "")\t\($port)\t\($a.home // "")"
             ' "$REGISTRY")
         else
             warn "  registry or jq unavailable; $PM_CONSUMER_TOKEN_FILE remains an empty/preserved token map"
@@ -725,7 +754,7 @@ else
         if [ -f "$channel_installer" ]; then
             if [ -x "$PM_NODE_BIN" ]; then
                 log "  native PM channel final callback: $PM_OPENCLAW_CHANNEL_CALLBACK_URL"
-                log "  native PM channel stream callback is supplied per turn by the PM app"
+                log "  native PM channel stream callback is supplied per turn by the PM app; no-reply turns fail visibly instead of completing on bare done"
                 channel_args=(
                     --registry "$REGISTRY"
                     --agent-root "$pm_channel_agent_root"

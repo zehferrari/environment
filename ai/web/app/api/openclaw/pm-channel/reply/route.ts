@@ -8,6 +8,8 @@ import {
   type PmChannelReplyTarget,
 } from "@/lib/agents/openclaw-pm-channel";
 import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel-stream";
+import { recordPmChannelRunEvent } from "@/lib/agents/pm-channel-runs";
+import { normalizeDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -104,7 +106,7 @@ async function persistDirectReply(target: Extract<PmChannelReplyTarget, { kind: 
   });
 
   revalidatePath(`/agents/${target.agentSlug}/chat`);
-  return { status: 200, body: { ok: true, id: reply.id, channel: "direct" } };
+  return { status: 200, body: { ok: true, id: reply.id, channel: "direct" }, streamText: body };
 }
 
 async function resolveTaskReplyOrigin(args: {
@@ -132,6 +134,8 @@ async function persistTaskReply(
       projectId: true,
       taskId: true,
       agentSlug: true,
+      archiveId: true,
+      baseArchiveId: true,
       originChannel: true,
       originCommentId: true,
       project: { select: { slug: true } },
@@ -158,6 +162,9 @@ async function persistTaskReply(
     originChannel: original.originChannel,
     originCommentId: original.originCommentId,
   });
+  const persistedBody = origin.channel === "chat"
+    ? normalizeDiscussionReplySections(body)
+    : body;
 
   const reply = await db.$transaction(async (tx) => {
     if (origin.channel === "comment") {
@@ -165,7 +172,7 @@ async function persistTaskReply(
         data: {
           taskId: target.taskId,
           userId: agentUser.id,
-          body,
+          body: persistedBody,
         },
         select: { id: true },
       });
@@ -194,13 +201,24 @@ async function persistTaskReply(
         taskId: target.taskId,
         epicId: null,
         agentSlug: original.agentSlug,
+        archiveId: original.archiveId,
+        baseArchiveId: original.baseArchiveId,
         senderUserId: agentUser.id,
-        body,
+        body: persistedBody,
         allowDescriptionEdit: false,
         originChannel: "chat",
       },
-      select: { id: true },
+      select: { id: true, archiveId: true, createdAt: true },
     });
+    if (created.archiveId) {
+      await tx.agentChatRoomArchive.update({
+        where: { id: created.archiveId },
+        data: {
+          endedAt: created.createdAt,
+          messageCount: { increment: 1 },
+        },
+      });
+    }
     await tx.activityLog.create({
       data: {
         projectId: original.projectId,
@@ -220,7 +238,11 @@ async function persistTaskReply(
   });
 
   revalidatePath(`/projects/${original.project.slug}/tasks/${target.taskId}`);
-  return { status: 200, body: { ok: true, id: reply.id, channel: reply.channel } };
+  return {
+    status: 200,
+    body: { ok: true, id: reply.id, channel: reply.channel },
+    streamText: persistedBody,
+  };
 }
 
 async function persistEpicReply(
@@ -234,6 +256,8 @@ async function persistEpicReply(
       projectId: true,
       epicId: true,
       agentSlug: true,
+      archiveId: true,
+      baseArchiveId: true,
       originChannel: true,
       project: { select: { slug: true } },
       epic: { select: { deletedAt: true } },
@@ -250,6 +274,7 @@ async function persistEpicReply(
   if (!agentUser) {
     return { status: 403, body: { error: "Agent not active" } };
   }
+  const persistedBody = normalizeDiscussionReplySections(body);
 
   const reply = await db.$transaction(async (tx) => {
     const created = await tx.agentChatMessage.create({
@@ -258,13 +283,24 @@ async function persistEpicReply(
         taskId: null,
         epicId: target.epicId,
         agentSlug: original.agentSlug,
+        archiveId: original.archiveId,
+        baseArchiveId: original.baseArchiveId,
         senderUserId: agentUser.id,
-        body,
+        body: persistedBody,
         allowDescriptionEdit: false,
         originChannel: "chat",
       },
-      select: { id: true },
+      select: { id: true, archiveId: true, createdAt: true },
     });
+    if (created.archiveId) {
+      await tx.agentChatRoomArchive.update({
+        where: { id: created.archiveId },
+        data: {
+          endedAt: created.createdAt,
+          messageCount: { increment: 1 },
+        },
+      });
+    }
     await tx.activityLog.create({
       data: {
         projectId: original.projectId,
@@ -283,7 +319,11 @@ async function persistEpicReply(
   });
 
   revalidatePath(`/projects/${original.project.slug}/epics/${target.epicId}`);
-  return { status: 200, body: { ok: true, id: reply.id, channel: reply.channel } };
+  return {
+    status: 200,
+    body: { ok: true, id: reply.id, channel: reply.channel },
+    streamText: persistedBody,
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -323,8 +363,17 @@ export async function POST(req: NextRequest) {
     publishPmChannelStreamEvent({
       target,
       event: "final",
-      text: body,
+      text: (result as { streamText?: string }).streamText ?? body,
       replace: true,
+    });
+    await recordPmChannelRunEvent({ target, event: "final" });
+  } else {
+    await recordPmChannelRunEvent({
+      target,
+      event: "error",
+      error: "error" in result.body && typeof result.body.error === "string"
+        ? result.body.error
+        : `Reply callback failed with HTTP ${result.status}`,
     });
   }
 

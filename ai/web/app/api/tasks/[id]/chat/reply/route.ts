@@ -84,6 +84,8 @@ export async function POST(
       projectId: true,
       taskId: true,
       agentSlug: true,
+      archiveId: true,
+      baseArchiveId: true,
       originChannel: true,
       originCommentId: true,
       project: { select: { slug: true } },
@@ -171,13 +173,24 @@ export async function POST(
         taskId,
         epicId: null,
         agentSlug: original.agentSlug,
+        archiveId: original.archiveId,
+        baseArchiveId: original.baseArchiveId,
         senderUserId: agent.user!.id,
         body,
         allowDescriptionEdit: false,
         originChannel: "chat",
       },
-      select: { id: true },
+      select: { id: true, archiveId: true, createdAt: true },
     });
+    if (created.archiveId) {
+      await tx.agentChatRoomArchive.update({
+        where: { id: created.archiveId },
+        data: {
+          endedAt: created.createdAt,
+          messageCount: { increment: 1 },
+        },
+      });
+    }
     await tx.activityLog.create({
       data: {
         projectId: original.projectId,

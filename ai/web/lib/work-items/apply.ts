@@ -2,8 +2,8 @@
 //
 // commitProposal() takes a pending WorkItemProposal and the approving
 // human's user id, re-validates the change-set against current state
-// (as the AGENT — approval does not launder agent guardrails), then
-// commits every operation in one transaction. It mirrors the canonical
+// under the same human-triggered grant semantics, then commits every
+// operation in one transaction. It mirrors the canonical
 // createTask / createEpic / moveTask shapes (rank, Backlog, statusChangedAt,
 // activity rows).
 //
@@ -81,7 +81,7 @@ export async function commitProposal(
     return { ok: false, error: "Stored operations are not valid JSON", projectSlug, agentSlug, counts: ZERO };
   }
 
-  // Re-validate against current state, as the agent.
+  // Re-validate against current state with the same grant semantics.
   const agentActor = { userId: proposal.proposedByUserId, agentSlug };
   const validation = await validateProposal(proposal.projectId, ops, agentActor);
   if (!validation.ok) {
@@ -149,9 +149,11 @@ export async function commitProposal(
                 projectId,
                 title: String(op.title),
                 description: optionalText(op.description),
-                status: "open",
+                status: "Backlog",
+                statusChangedAt: new Date(),
                 assigneeId: createId(op.assignee),
                 actingManagerId: createId(op.actingManager),
+                reporterId: agentId,
               },
               select: { id: true, title: true },
             });
@@ -169,6 +171,27 @@ export async function commitProposal(
             const isSub = op.op === "create_subtask";
             const epicId = isSub ? null : op.epic !== undefined ? resolveRef(op.epic) : null;
             const parentTaskId = isSub ? resolveRef(op.parent) : null;
+            let inheritedBranchName: string | null = null;
+            let inheritedCommitPrefix: string | null = null;
+            if (parentTaskId) {
+              const parent = await tx.task.findUnique({
+                where: { id: parentTaskId },
+                select: {
+                  branchName: true,
+                  commitPrefix: true,
+                  epic: { select: { branchName: true, commitPrefix: true } },
+                },
+              });
+              inheritedBranchName = parent?.branchName ?? parent?.epic?.branchName ?? null;
+              inheritedCommitPrefix = parent?.commitPrefix ?? parent?.epic?.commitPrefix ?? null;
+            } else if (epicId) {
+              const epic = await tx.epic.findUnique({
+                where: { id: epicId },
+                select: { branchName: true, commitPrefix: true },
+              });
+              inheritedBranchName = epic?.branchName ?? null;
+              inheritedCommitPrefix = epic?.commitPrefix ?? null;
+            }
             const task = await tx.task.create({
               data: {
                 projectId,
@@ -181,6 +204,9 @@ export async function commitProposal(
                 statusChangedAt: new Date(),
                 assigneeId: createId(op.assignee),
                 actingManagerId: createId(op.actingManager),
+                reporterId: agentId,
+                branchName: inheritedBranchName,
+                commitPrefix: inheritedCommitPrefix,
               },
               select: { id: true, title: true },
             });

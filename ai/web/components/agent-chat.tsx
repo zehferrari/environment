@@ -107,7 +107,7 @@ export default async function AgentChatSidebar(props: TargetProps) {
 
       {selected ? (
         <>
-          <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+          <div className="max-h-[630px] space-y-2 overflow-y-auto pr-1">
             {messages.length === 0 ? (
               <p className="text-xs text-[var(--color-text-muted)]">
                 No messages for @{selected.username}.

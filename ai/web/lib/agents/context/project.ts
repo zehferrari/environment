@@ -1,11 +1,11 @@
 // Project-environment context + planning prompt for agent work-item
 // proposals (Slice 2).
 //
-// When a direct chat is attached to a project and the user grants
-// "manage work items", the agent's turn carries this project-environment
-// packet (repo path, git identity, picker defaults, existing epics/open
-// tasks, assignable principals) plus a planning prompt that hands the
-// agent the propose endpoint + grant token + the change-set op schema.
+// When a direct chat or Task/Epic Discussion message grants "manage work
+// items", the agent's turn carries this project-environment packet (repo
+// path, git identity, picker defaults, existing epics/open tasks,
+// assignable principals) plus a planning prompt that hands the agent the
+// propose endpoint + grant token + the change-set op schema.
 //
 // PM owns this context; the agent proposes against it, and a human
 // approves before anything is written (see lib/work-items/apply.ts).
@@ -187,7 +187,7 @@ export function buildWorkItemPlanningPrompt(args: {
     "- create_epic    { ref, title, description?, assignee?, actingManager? }",
     "- create_task    { ref, title, description?, epic?, assignee?, actingManager? }   (epic optional; top-level task)",
     "- create_subtask { ref, parent, title, description?, assignee?, actingManager? }  (parent required)",
-    "- update_epic    { target, title?, description?, assignee?, actingManager?, status? }   (status: open|done|archived)",
+    "- update_epic    { target, title?, description?, assignee?, actingManager?, status? }   (status: Backlog|Open|Done|Archive)",
     "- update_task    { target, title?, description?, assignee?, actingManager?, epic?, parent?, status? }",
     "- comment_task   { target, body }",
     "",
@@ -197,9 +197,10 @@ export function buildWorkItemPlanningPrompt(args: {
     "- assignee / actingManager are usernames from the ASSIGNABLE PRINCIPALS list, or null to leave unset.",
     "",
     "RULES (your proposal is validated against these; violations are flagged for the user):",
-    "- You cannot assign work to yourself or set yourself as reviewer / acting manager.",
-    "- You cannot move a task into or out of Review/Done — those stay human actions.",
-    "- New tasks start in Backlog; new epics start open.",
+    "- You may propose changes anywhere in the project when the current human message explicitly asks for them.",
+    "- Keep requested assignee / actingManager values exactly as the human asked; otherwise leave them null.",
+    "- Nothing is applied until the human reviews and approves the proposal.",
+    "- New tasks and epics start in Backlog.",
     "- Use a fresh, unique planId per proposal; re-POSTing the same planId is idempotent (no duplicate).",
     "",
     "In your chat reply, briefly tell the user what you proposed and that it is awaiting their review.",

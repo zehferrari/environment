@@ -23,8 +23,10 @@ export interface AssignablePrincipal {
   // name column).
   name: string;
   kind: "human" | "agent";
+  avatarUpdatedAt: Date | null;
   agentSlug: string | null;
   agentRole: string | null;
+  agentAvatar: string | null;
 }
 
 export async function listAssignablePrincipals(): Promise<
@@ -46,8 +48,9 @@ export async function listAssignablePrincipals(): Promise<
       id: true,
       username: true,
       name: true,
+      avatarUpdatedAt: true,
       kind: true,
-      agent: { select: { slug: true, role: true, name: true } },
+      agent: { select: { slug: true, role: true, name: true, avatar: true } },
     },
   });
 
@@ -58,8 +61,10 @@ export async function listAssignablePrincipals(): Promise<
     // for humans; username as the final fallback.
     name: u.agent?.name ?? u.name ?? u.username,
     kind: u.kind === "agent" ? "agent" : "human",
+    avatarUpdatedAt: u.avatarUpdatedAt,
     agentSlug: u.agent?.slug ?? null,
     agentRole: u.agent?.role ?? null,
+    agentAvatar: u.agent?.avatar ?? null,
   }));
 }
 

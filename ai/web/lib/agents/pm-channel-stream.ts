@@ -22,6 +22,7 @@ export interface PmChannelStreamState {
   text: string;
   reasoning: string;
   status: "streaming" | "done" | "error";
+  runStatus?: "queued" | "accepted" | "streaming" | "complete" | "failed";
   error: string | null;
   updatedAt: number;
 }
@@ -71,6 +72,7 @@ function emptyState(target: PmChannelReplyTarget): PmChannelStreamState {
     text: "",
     reasoning: "",
     status: "streaming",
+    runStatus: "streaming",
     error: null,
     updatedAt: Date.now(),
   };
@@ -118,6 +120,7 @@ export function publishPmChannelStreamEvent(input: PmChannelStreamInput): PmChan
       state.text = clip(input.text);
     }
     state.status = input.event === "final" ? "done" : "streaming";
+    state.runStatus = input.event === "final" ? "complete" : "streaming";
     state.error = null;
   } else if (input.event === "reasoning") {
     if (input.replace) {
@@ -129,9 +132,11 @@ export function publishPmChannelStreamEvent(input: PmChannelStreamInput): PmChan
     }
   } else if (input.event === "done") {
     state.status = "done";
+    state.runStatus = "complete";
     state.error = null;
   } else {
     state.status = "error";
+    state.runStatus = "failed";
     state.error = input.error || input.text || "OpenClaw stream failed";
   }
 
@@ -145,7 +150,10 @@ function ssePayload(event: string, state: PmChannelStreamState) {
   return `event: ${event}\ndata: ${JSON.stringify(state)}\n\n`;
 }
 
-export function createPmChannelEventStream(key: string): ReadableStream<Uint8Array> {
+export function createPmChannelEventStream(
+  key: string,
+  initialState?: PmChannelStreamState | null,
+): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   let cleanup = () => {};
 
@@ -168,7 +176,7 @@ export function createPmChannelEventStream(key: string): ReadableStream<Uint8Arr
       }
       subscribers.add(send);
 
-      const snapshot = s.states.get(key);
+      const snapshot = s.states.get(key) ?? initialState;
       if (snapshot) send("snapshot", snapshot);
 
       const keepAlive = setInterval(() => {

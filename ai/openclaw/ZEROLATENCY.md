@@ -49,7 +49,8 @@ Rules:
 
 - Read the whole PM context packet before answering: task title,
   description, status, project, assignee, reviewer, parent/subtask
-  context, Epic context, recent comments, relevant agent chat, activity,
+  context, Epic context, recent comments, full active Task/Epic
+  Discussion history for the item once invited or mentioned, activity,
   attachment metadata, and extracted attachment text when available.
 - Reply only in the origin channel. If the user wrote in task chat, reply
   in task chat. If the user wrote a task comment, reply as a task comment.
@@ -183,13 +184,18 @@ task using this priority order:
 ## Work-item proposals
 
 Zero Latency supports grant-scoped **propose -> approve** work-item
-planning from direct PM chat.
+planning from direct PM chat and Task/Epic Discussion turns.
 
 Use this only when all of these are true:
 
-- The direct chat is attached to a target project.
-- The human ticked the grant to let the agent propose work-item changes.
+- The turn is project-scoped: either a direct chat attached to a target
+  project, or a Task/Epic Discussion message.
+- The current message was authored by a human, which grants proposal
+  capability for explicit project-change requests by default.
 - The PM turn supplied a single-use grant token and proposal endpoint.
+  In Task/Epic Discussion, that grant is single-use per addressed agent,
+  so `All Coders` can submit independent proposals from the same human
+  message.
 
 The agent submits a typed change-set to:
 
@@ -212,8 +218,9 @@ Rules:
 - Existing items are addressed by real IDs from the PM project context.
 - `assignee` and `actingManager` values are usernames or `null`.
 - New tasks land in `Backlog`; new epics land `open`.
-- PM dry-run-validates every operation as the agent. No self-assign, no
-  self-review, and no moving a task into/out of `Review` or `Done`.
+- PM dry-run-validates every operation under the human-triggered grant:
+  active principals, project scoping, hierarchy, known statuses, and
+  valid task-status transitions are checked before the proposal is stored.
 - A valid proposal is stored pending. Nothing changes on the board until
   a human clicks Apply.
 - Re-submitting the same `planId` is idempotent.

@@ -394,6 +394,28 @@ function directChatTimeoutSeconds() {
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 90;
 }
 
+function directChatUploadedFiles(formData: FormData) {
+  return formData
+    .getAll("attachments")
+    .filter((file): file is File => (
+      typeof file !== "string"
+      && typeof file.name === "string"
+      && typeof file.size === "number"
+      && typeof file.arrayBuffer === "function"
+      && file.size > 0
+    ));
+}
+
+function appendDirectAttachmentNames(body: string, files: File[]) {
+  if (files.length === 0) return body;
+  return [
+    body,
+    "",
+    "Attached files:",
+    ...files.map((file) => `- ${path.basename(file.name)}`),
+  ].filter(Boolean).join("\n");
+}
+
 function extractOpenClawReply(stdout: string) {
   const parsed = JSON.parse(stdout) as {
     runId?: unknown;
@@ -590,6 +612,7 @@ async function handleDirectAgentMessage(args: {
     text: args.body,
     contextText,
     systemPrompt: systemPromptParts.join("\n"),
+    projectId: args.projectId,
     actor: {
       id: args.userId,
       username: args.actorName,
@@ -646,9 +669,11 @@ export async function sendDirectAgentMessage(formData: FormData) {
   const agentSlug = String(formData.get("agentSlug") ?? "").trim();
   const requestedBaseArchiveId = String(formData.get("baseArchiveId") ?? "").trim() || null;
   const continueFromArchive = formData.get("continueFromArchive") === "1";
-  const body = String(formData.get("body") ?? "").trim();
+  const bodyRaw = String(formData.get("body") ?? "").trim();
+  const attachments = directChatUploadedFiles(formData);
+  const body = appendDirectAttachmentNames(bodyRaw, attachments);
   const requestedProjectId = String(formData.get("projectId") ?? "").trim() || null;
-  if (!agentSlug || !body || body.length > 8000) return;
+  if (!agentSlug || (!bodyRaw && attachments.length === 0) || body.length > 8000) return;
 
   const agent = await db.agent.findUnique({
     where: { slug: agentSlug },
@@ -730,15 +755,12 @@ export async function sendDirectAgentMessage(formData: FormData) {
   });
 
   // Handle files upload to Samba chats folder
-  const attachments = formData.getAll("attachments") as unknown as Array<{
-    name: string;
-    size: number;
-    arrayBuffer: () => Promise<ArrayBuffer>;
-  }>;
   const chatId = activeAnchor?.id ?? msg.id;
   const uploadDir = await getAgentChatUploadDir(agentSlug, chatId);
   for (const file of attachments) {
     if (file && file.size > 0 && file.name) {
+      const filename = path.basename(file.name);
+      if (!filename) continue;
       await mkdir(uploadDir, { recursive: true });
       const chatsDir = path.dirname(uploadDir);
       const gid = getGidByName(agentSlug);
@@ -757,7 +779,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
       } catch (e) {
         console.error(`Failed to set permissions/owner on directories for ${agentSlug}`, e);
       }
-      const filePath = path.join(uploadDir, file.name);
+      const filePath = path.join(uploadDir, filename);
       const buffer = Buffer.from(await file.arrayBuffer());
       await writeFile(filePath, buffer);
       try {
@@ -774,7 +796,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
     }
   }
 
-  void handleDirectAgentMessage({
+  await handleDirectAgentMessage({
     agentSlug,
     actorName: userName,
     messageId: msg.id,

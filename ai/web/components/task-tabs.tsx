@@ -29,13 +29,17 @@ export function TabsProvider({
   return <Ctx.Provider value={{ active, setActive }}>{children}</Ctx.Provider>;
 }
 
-export function TabsNav({ tabs }: { tabs: string[] }) {
+export function TabsNav({ tabs, sticky = false }: { tabs: string[]; sticky?: boolean }) {
   const ctx = useContext(Ctx);
   if (!ctx) return null;
   return (
     <div
       role="tablist"
-      className="flex flex-wrap gap-1 border-b border-[var(--color-line)]"
+      className={`flex flex-wrap gap-1 border-b border-[var(--color-line)] ${
+        sticky
+          ? "sticky top-14 z-20 -mx-5 bg-[var(--color-panel)] px-5 shadow-sm"
+          : ""
+      }`}
     >
       {tabs.map((tab) => {
         const selected = ctx.active === tab;
@@ -58,6 +62,10 @@ export function TabsNav({ tabs }: { tabs: string[] }) {
       })}
     </div>
   );
+}
+
+export function useActiveTab() {
+  return useContext(Ctx)?.active ?? null;
 }
 
 export function TabPanel({

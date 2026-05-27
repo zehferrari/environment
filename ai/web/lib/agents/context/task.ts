@@ -113,6 +113,37 @@ function actorLabelFromParts(username: string | null | undefined, kind?: string 
   return actorLabel({ username: username ?? null, kind });
 }
 
+function chatRoutingLabel(chat: {
+  agentSlug?: string | null;
+  targetLabel?: string | null;
+  targetType?: string | null;
+  targetValue?: string | null;
+}) {
+  if (chat.targetLabel?.trim()) return `target=${chat.targetLabel.trim()}`;
+  if (chat.targetType?.trim() || chat.targetValue?.trim()) {
+    return [chat.targetType, chat.targetValue].filter(Boolean).join(":");
+  }
+  if (chat.agentSlug && chat.agentSlug !== "room") return `legacy thread=@${chat.agentSlug}`;
+  return "room";
+}
+
+function chatTimelineBody(
+  chat: {
+    agentSlug?: string | null;
+    targetLabel?: string | null;
+    targetType?: string | null;
+    targetValue?: string | null;
+    body: string;
+  },
+  archived = false,
+) {
+  const labels = [
+    archived ? "archived discussion context" : "discussion context",
+    chatRoutingLabel(chat),
+  ].filter(Boolean);
+  return `[${labels.join("; ")}]\n${chat.body}`;
+}
+
 function payloadText(payload: string | null | undefined) {
   if (!payload) return "";
   try {
@@ -135,6 +166,23 @@ async function attachmentContexts(
   scope: "task" | "epic",
 ) {
   return Promise.all(rows.map((row) => getAttachmentContext(row, scope)));
+}
+
+async function taskDiscussionArchiveChain(taskId: string, archiveId: string | null) {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  let currentId = archiveId;
+  while (currentId && !seen.has(currentId) && ids.length < 3) {
+    seen.add(currentId);
+    const archive = await db.agentChatRoomArchive.findFirst({
+      where: { id: currentId, taskId, deletedAt: null },
+      select: { id: true, parentArchiveId: true },
+    });
+    if (!archive) break;
+    ids.unshift(archive.id);
+    currentId = archive.parentArchiveId;
+  }
+  return ids;
 }
 
 export function buildTaskEditGrantPrompt(taskTitle: string): string {
@@ -304,11 +352,15 @@ export async function buildTaskAgentContextPacket(args: {
         },
       },
       chats: {
-        where: { agentSlug: { in: [args.agentSlug, "room"] } },
+        where: { archiveId: null },
         orderBy: { createdAt: "desc" },
         take: 30,
         select: {
           id: true,
+          agentSlug: true,
+          targetType: true,
+          targetValue: true,
+          targetLabel: true,
           body: true,
           createdAt: true,
           sender: { select: { username: true, kind: true } },
@@ -393,6 +445,36 @@ export async function buildTaskAgentContextPacket(args: {
 
   const currentId = args.currentTurn.id ?? null;
   const currentChatId = args.currentTurn.agentChatMessageId ?? currentId;
+  const currentChat = currentChatId
+    ? await db.agentChatMessage.findUnique({
+        where: { id: currentChatId },
+        select: { baseArchiveId: true },
+      })
+    : null;
+  const archiveIds = await taskDiscussionArchiveChain(
+    args.taskId,
+    currentChat?.baseArchiveId ?? null,
+  );
+  const archivedChats = archiveIds.length > 0
+    ? await db.agentChatMessage.findMany({
+        where: {
+          taskId: args.taskId,
+          archiveId: { in: archiveIds },
+        },
+        orderBy: { createdAt: "asc" },
+        take: 80,
+        select: {
+          id: true,
+          agentSlug: true,
+          targetType: true,
+          targetValue: true,
+          targetLabel: true,
+          body: true,
+          createdAt: true,
+          sender: { select: { username: true, kind: true } },
+        },
+      })
+    : [];
   const comments = [...task.comments]
     .reverse()
     .filter((comment) => comment.id !== currentId);
@@ -415,11 +497,18 @@ export async function buildTaskAgentContextPacket(args: {
         body: comment.body,
         createdAt: formatDate(comment.createdAt)!,
       })),
+      ...archivedChats.map((chat) => ({
+        type: "chat" as const,
+        id: chat.id,
+        actor: actorLabel(chat.sender),
+        body: chatTimelineBody(chat, true),
+        createdAt: formatDate(chat.createdAt)!,
+      })),
       ...chats.map((chat) => ({
         type: "chat" as const,
         id: chat.id,
         actor: actorLabel(chat.sender),
-        body: chat.body,
+        body: chatTimelineBody(chat),
         createdAt: formatDate(chat.createdAt)!,
       })),
       ...activity.map((row) => ({

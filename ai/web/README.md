@@ -129,6 +129,7 @@ still require a signed-in PM user.
 | `lib/agents/context/` | PM-owned context packet builders for agent turns, including task/Epic snapshots, related activity, and cached attachment text extraction. |
 | `lib/agents/session-bindings.ts` | PM-owned conversation-to-OpenClaw session bindings for task/comment and direct chats. |
 | `lib/agents/pm-channel-stream.ts` | in-process live stream state for native PM channel partial replies, bridged to browser SSE. |
+| `lib/agents/pm-channel-runs.ts` | durable native PM channel run state (`queued`/`accepted`/`streaming`/`complete`/`failed`) used when the browser reconnects. |
 | `lib/agents/direct-chat-actions.ts` | direct agent chat actions for sidebar-launched conversations (send, archive, restart-from-archive). |
 | `lib/agents/openclaw-pm-channel.ts` | native `pm` channel client — posts turns to `/pm-channel/ingest`, resolves per-agent Bearer tokens, types the reply-target envelope. |
 | `lib/agents/effective-config.ts` | merges `/etc/openclaw/agent-defaults.json` (core → byRole → byIntegration → per-agent) into the effective capability/service view shown on the agent deck. |
@@ -138,7 +139,7 @@ still require a signed-in PM user.
 | `lib/projects/actions.ts` | project settings write + soft-delete / restore server actions (`setProjectSettings`, `deleteProject`, `restoreProject`). |
 | `lib/tasks/reorder.ts` | persists drag reorder of the board's `Task.rank` column. |
 | `lib/epics/actions.ts` | Epic CRUD server actions (create/rename/assign/acting-manager/status). |
-| `lib/work-items/proposal.ts` | agent work-item proposal change-set validator (create/update epics·tasks·sub-tasks·comments; `tmp:` temp-refs; runs `lib/workflow.ts` rules as the agent). |
+| `lib/work-items/proposal.ts` | agent work-item proposal change-set validator (create/update epics·tasks·sub-tasks·comments; `tmp:` temp-refs; validates project scope, active principals, hierarchy, and task-status transitions under human-triggered grant semantics). |
 | `lib/work-items/apply.ts` | transactional commit core for an approved proposal (auth-free; topo-orders temp-refs, mirrors createTask/createEpic, attributes mutations to the agent). |
 | `lib/work-items/actions.ts` | human apply/reject server actions wrapping the commit core (auth + revalidate). |
 | `lib/agents/work-item-token.ts` | one-shot HMAC grant token for the proposal endpoint (mirrors `task-chat-token.ts`). |
@@ -326,11 +327,19 @@ from task comments are posted back as task comments.
 Task chat, Epic chat, and task-comment turns still use the PM context packet
 builder in `lib/agents/context/`: the current turn is kept explicit,
 and the packet includes live task + Epic descriptions, recent
-comments, relevant agent chat, task activity, attachment metadata, and
+comments, full active Discussion history for the Task/Epic once the
+agent is invited or mentioned, task activity, attachment metadata, and
 cached text excerpts for supported text attachments. Every task +
 agent conversation gets an `AgentSessionBinding`; its
-`openclawSessionKey` is handed to the `pm` channel so OpenClaw owns the
-native session history and final reply delivery.
+`openclawSessionKey` is the base for PM channel routing. Direct chats
+use the stable key for continuity; task, Epic, and task-comment turns
+derive a per-message key so stale or oversized OpenClaw transcripts do
+not carry into the next PM request. PM also writes a `PmChannelRun` row
+for each local handoff so the browser can reconnect to
+accepted/streaming/failed state without a polling refresh loop.
+Only the durable final reply callback marks a run complete; a bare
+stream `done` without a saved reply is recorded as failed so the chat UI
+does not wait indefinitely.
 
 **Direct agent chat.** `/agents/<slug>/chat` opens a sidebar-launched
 conversation with one agent. Sending a direct message persists it,
@@ -352,20 +361,23 @@ The UI supports several key enhancements:
 OpenClaw exposes the selected thinking budget and run metadata inside a collapsible `<details>` panel, not private chain-of-thought text. To keep reply latency down, the PM channel context includes a bounded recent transcript and bounded parent-archive excerpt (`PM_DIRECT_CHAT_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT`). Because PM and OpenClaw run on the same host, channel callbacks default to `http://127.0.0.1:3000`; set `PM_AGENT_CALLBACK_URL` or `PM_INTERNAL_APP_URL` to override that.
 
 **Agent work-item proposals.** A direct chat (`/agents/<slug>/chat`) can
-be attached to a project. Every human-authored project-scoped direct
-message becomes a planning-capable turn by default: PM hands the agent the
-project environment (repo path, git identity, picker defaults, existing
+be attached to a project, and Task/Epic Discussion messages are already
+project-scoped. Every human-authored project-scoped message becomes a
+planning-capable turn by default: PM hands the agent the project
+environment (repo path, git identity, picker defaults, existing
 epics/open tasks and their descriptions via `lib/agents/context/project.ts`)
-plus a single-use HMAC grant + the propose endpoint. The prompt tells the
-agent to submit a proposal only when the current human message directly
-asks for project work-item changes. The agent POSTs a typed change-set to
+plus a single-use HMAC grant + the propose endpoint. In Task/Epic
+Discussion, that single-use stamp is tracked per addressed agent, so an
+`All Coders` message can let each coder submit one proposal. The prompt
+tells the agent to submit a proposal only when the current human message
+directly asks for project work-item changes. The agent POSTs a typed change-set to
 `POST /api/agent/projects/<id>/proposals` — it never writes the board
 directly. That route is token-scoped and intentionally bypasses browser
 session middleware; the route handler validates the grant, token, active
 agent, project binding, and single-use stamp. PM dry-run-validates every
-op against `lib/workflow.ts` **as the
-agent** (no self-assign, no self-review, no moving into/out of Review/Done;
-new tasks land in Backlog, new epics open) and stores a pending
+op under human-triggered grant semantics (active principals, project
+scope, hierarchy, known statuses, and valid task-status transitions; new
+tasks land in Backlog, new epics open) and stores a pending
 `WorkItemProposal`. The human reviews it in the chat
 (`proposal-review.tsx`) and clicks Apply — the whole change-set commits in
 one transaction (`lib/work-items/apply.ts`), attributed to the agent in
@@ -377,8 +389,11 @@ re-submitted proposal idempotent. Full contract:
 **Agents dashboard.** `/agents` merges the PM `Agent` table with the
 Atlas live snapshot at `http://127.0.0.1:3013/agents/snapshot` (busy /
 idle / model / current ticket / host services). KPI strip shows agents
-online, open tickets, open PM tasks, host services, activity stream
-size. `/agents/[slug]` mounts the Atlas controls deck (service
+online, open tickets, open PM tasks, host services, and open sensor
+alerts. The hub renders Mission Control actions from `ActivityLog`
+(`agent.service.*`, `agent.registry.*`, `agent.integration.*`,
+model/profile/restart rows) plus live signals/sensors from the Atlas
+monitor snapshot. `/agents/[slug]` mounts the Atlas controls deck (service
 toggle/restart, registry toggle), the model settings editor, and the
 profile editor. Profile + model writes go through
 `lib/agents/profile.ts` / `lib/agents/model-settings.ts`, are
@@ -405,8 +420,8 @@ host: dedupes by `${kind}:${task.id}:${event.id}` against the
 `PmEventDelivery.dedupeKey` unique index, resolves the target agent's
 gateway port, and wakes the local gateway with
 `POST http://127.0.0.1:<port>/hooks/wake` plus that agent's Bearer
-token for non-chat automation. Chat, Epic chat, and task-comment turns bypass this
-consumer path and enter OpenClaw through the native `pm` channel at
+token for non-chat automation. Direct chat, Discussion, Epic chat, and
+task-comment turns bypass this consumer path and enter OpenClaw through the native `pm` channel at
 `POST http://127.0.0.1:<port>/pm-channel/ingest`. OpenClaw gateway
 configs must still set `hooks.allowRequestSessionKey=true` and
 `hooks.allowedSessionKeyPrefixes=["hook:", "pm:"]` for generic PM wakes.
@@ -438,8 +453,8 @@ message, or task comment that targets an agent, PM:
 2. Builds a bounded context packet with the current turn, relevant
    session/task/Epic/comment/activity history, project context where
    applicable, and attachment extracts.
-3. Resolves an `AgentSessionBinding` and sends the turn to the target
-   agent gateway:
+3. Resolves an `AgentSessionBinding`, derives the channel session key
+   for that surface, and sends the turn to the target agent gateway:
 
 ```json
 {
@@ -463,7 +478,10 @@ session, streams partial visible text to `/api/openclaw/pm-channel/stream`,
 and posts the durable final answer to `/api/openclaw/pm-channel/reply`.
 PM writes the final answer only to the origin channel: direct chat stays
 direct, task chat stays task chat, Epic chat stays Epic chat, and
-task-comment replies become task comments.
+task-comment replies become task comments. PM records the turn in
+`PmChannelRun` before contacting the gateway and updates it from stream
+and reply callbacks. For Task/Epic Discussion work-item grants,
+`PmChannelRun.workItemGrantUsedAt` is the per-agent consumption stamp.
 
 `/hooks/wake` remains installed for generic PM events such as assignment
 and ack-ready automation. It is no longer the normal chat/comment path.
@@ -500,9 +518,12 @@ integration. With a PM checkout present it must:
   `hooks.enabled=true`, `hooks.path="/hooks"`, and a per-agent
   `hooks.token`. Also set `hooks.allowRequestSessionKey=true` and
   `hooks.allowedSessionKeyPrefixes=["hook:", "pm:"]` so PM can route
-  task and direct chats into stable OpenClaw sessions while preserving
+  direct chats and per-message PM turns through OpenClaw while preserving
   OpenClaw's required hook-session prefix. Preserve existing
-  `hooks.internal` config.
+  `hooks.internal` config. Each runtime
+  `/home/<slug>/.openclaw/openclaw.json` should be a symlink to the
+  `/srv/agents/openclaw/<slug>/openclaw.json` file; otherwise PM model
+  edits and gateway reads can diverge.
 - Mirror those same Bearer tokens into `PM_CONSUMER_HOOK_TOKEN_FILE`
   (default `/etc/openclaw/pm-consumer-tokens.json`) as a JSON object
   keyed by agent slug. The file should be readable by the PM consumer
@@ -565,16 +586,20 @@ the consumer service when the PM checkout is present.
   keyed by `(sha256, extractorVersion)` so duplicate uploads reuse the
   same bounded text excerpt.
 - `AgentSessionBinding` — PM-owned mapping from `(scopeType, scopeId,
-  agentSlug)` to an OpenClaw session key. Task/comment and direct chat
-  wakes use this to keep the agent working in the same session instead
-  of spawning a fresh context on every message.
+  agentSlug)` to an OpenClaw session key. Direct chat uses this stable
+  key for continuity; task/comment/Epic channel turns derive a
+  per-message key from it because the PM context packet already carries
+  the authoritative project state for each request.
 - `Task.deletedAt` / `Epic.deletedAt` + `deletedById` (HOMELAB-48) —
   soft-delete columns. `deletedAt != null` means in the bin; the value
   is also the cascade-batch anchor and the 7-day purge anchor.
 - `AgentChatMessage` (HOMELAB-48) — chat thread per (taskId|epicId,
   agentSlug). Carries `allowDescriptionEdit` and `editGrantUsedAt` for
-  the one-shot agent description write-back grant, plus `originChannel`
-  / `originCommentId` so replies stay in the user's original channel.
+  the one-shot agent description write-back grant, plus
+  `allowWorkItemManagement` for human-triggered Discussion proposal
+  grants. Per-addressed-agent proposal grant consumption is tracked on
+  `PmChannelRun`. `originChannel` / `originCommentId` keep replies in
+  the user's original channel.
 - `DirectAgentChatMessage` / `DirectAgentChatArchive` — sidebar direct
   chat. Active messages carry `archiveId` (null while live) and
   `baseArchiveId` (the frozen archive a continuation builds on). An
@@ -623,6 +648,11 @@ Migrations under `prisma/migrations/`:
 - `20260525081816_agent_work_item_proposals` — `WorkItemProposal` table +
   `DirectAgentChatMessage.projectId` / `allowWorkItemManagement` /
   `workItemGrantUsedAt` for project-attached agent planning.
+- `20260526172000_discussion_work_item_grants` — Task/Epic Discussion
+  messages can carry human-triggered work-item proposal grants.
+- `20260526173500_pm_channel_run_work_item_grants` —
+  `PmChannelRun.workItemGrantUsedAt` tracks Discussion proposal grant
+  consumption per addressed agent.
 
 ## Environment
 

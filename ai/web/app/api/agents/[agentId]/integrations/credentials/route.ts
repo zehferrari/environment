@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { canEditProfile } from "@/lib/agents/profile";
+import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,7 +13,7 @@ async function allowedFor(agentId: string) {
   if (!session?.user) return { ok: false as const, status: 401, error: "unauth" };
   const ok = await canEditProfile({ name: session.user.name, kind: session.user.kind }, agentId);
   if (!ok) return { ok: false as const, status: 403, error: "forbidden" };
-  return { ok: true as const };
+  return { ok: true as const, userId: session.user.id };
 }
 
 export async function GET(request: Request, { params }: { params: Promise<{ agentId: string }> }) {
@@ -41,5 +42,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
     cache: "no-store",
   });
   const text = await res.text();
+  const fields = body.fields as Record<string, unknown>;
+  await db.activityLog.create({
+    data: {
+      userId: gate.userId,
+      kind: res.ok ? "agent.integration.credentials" : "agent.integration.credentials_failed",
+      targetAgent: agentId,
+      payload: JSON.stringify({
+        driver: "atlas",
+        integration: body.integration,
+        fields: Object.keys(fields).sort(),
+        status: res.status,
+        error: res.ok ? null : text.slice(0, 500),
+      }),
+    },
+  });
   return new NextResponse(text, { status: res.status, headers: { "content-type": res.headers.get("content-type") ?? "application/json" } });
 }

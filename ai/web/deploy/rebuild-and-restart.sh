@@ -91,7 +91,15 @@ else
   printf '\033[1;33mWARN:\033[0m %s not found — relying on inherited env.\n' "$ENV_FILE"
 fi
 
-# ---- 3. restart the server ------------------------------------------------
+# ---- 3. apply database migrations -----------------------------------------
+if as_app test -f "$ENV_FILE"; then
+  log "Applying Prisma migrations as $APP_USER…"
+  as_app bash -lc "cd '$APP_DIR' && set -a && . '$ENV_FILE' && set +a && '$PNPM' prisma migrate deploy"
+else
+  printf '\033[1;33mWARN:\033[0m %s not found — skipping Prisma migrate deploy.\n' "$ENV_FILE"
+fi
+
+# ---- 4. restart the server ------------------------------------------------
 if systemctl list-unit-files 'pm.service' --no-legend 2>/dev/null | grep -q '^pm\.service'; then
   log "Restarting pm.service through systemd…"
   sudo -n systemctl restart pm.service
@@ -110,7 +118,7 @@ else
     setsid nohup '$NODE_BIN' server.js >>'$LOG_FILE' 2>&1 </dev/null & disown"
 fi
 
-# ---- 4. verify ------------------------------------------------------------
+# ---- 5. verify ------------------------------------------------------------
 log "Waiting for the server to listen…"
 ok=""
 for _ in $(seq 1 30); do

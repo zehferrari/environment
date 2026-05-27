@@ -359,13 +359,14 @@ function actorLabel(actor) {
 }
 
 function buildAgentBody(payload) {
+  const hasContext = typeof payload.contextText === "string" && payload.contextText.trim();
   return [
     typeof payload.systemPrompt === "string" && payload.systemPrompt.trim()
       ? payload.systemPrompt.trim()
       : "Reply to this PM message.",
     "",
-    typeof payload.contextText === "string" && payload.contextText.trim()
-      ? `PM CONTEXT:\n${payload.contextText.trim()}`
+    hasContext
+      ? "The live PM context packet is attached to this turn as supplemental context."
       : "",
     "",
     "CURRENT MESSAGE:",
@@ -474,6 +475,7 @@ async function runPmTurn({ cfg, payload, accountId, logger }) {
     body: bodyForAgent,
   });
   const stream = createPmStreamPublisher({ account, target, logger });
+  let visibleReplySent = false;
 
   const ctxPayload = runtime.channel.turn.buildContext({
     channel: CHANNEL_ID,
@@ -562,6 +564,7 @@ async function runPmTurn({ cfg, payload, accountId, logger }) {
             replyToId: messageId,
           });
           await stream.final(text);
+          visibleReplySent = true;
           return {
             messageIds: [result.messageId],
             receipt: createReceipt(result.messageId, undefined, messageId),
@@ -587,7 +590,12 @@ async function runPmTurn({ cfg, payload, accountId, logger }) {
       },
       messageId,
     });
-    await stream.done();
+    if (visibleReplySent) {
+      await stream.done();
+    } else {
+      logger.warn?.("[pm-channel] turn ended without a visible reply");
+      await stream.error(new Error("Agent finished without posting a reply."));
+    }
   } catch (err) {
     await stream.error(err);
     throw err;

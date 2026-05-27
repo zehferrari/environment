@@ -9,6 +9,8 @@ const DEFAULT_TTL_DAYS = 7;
 export interface ChatPurgeResult {
   purgedArchives: number;
   purgedMessages: number;
+  purgedRoomArchives: number;
+  purgedRoomMessages: number;
   removedFolders: number;
   errors: string[];
 }
@@ -18,33 +20,55 @@ export async function purgeDirectAgentChatBin(): Promise<ChatPurgeResult> {
   const result: ChatPurgeResult = {
     purgedArchives: 0,
     purgedMessages: 0,
+    purgedRoomArchives: 0,
+    purgedRoomMessages: 0,
     removedFolders: 0,
     errors: [],
   };
 
   try {
-    const expiring = await db.directAgentChatArchive.findMany({
-      where: { deletedAt: { lt: cutoff, not: null } },
-      select: { id: true, agentSlug: true },
-    });
+    const [expiring, expiringRooms] = await Promise.all([
+      db.directAgentChatArchive.findMany({
+        where: { deletedAt: { lt: cutoff, not: null } },
+        select: { id: true, agentSlug: true },
+      }),
+      db.agentChatRoomArchive.findMany({
+        where: { deletedAt: { lt: cutoff, not: null } },
+        select: { id: true },
+      }),
+    ]);
 
-    if (expiring.length === 0) {
+    if (expiring.length === 0 && expiringRooms.length === 0) {
       return result;
     }
 
     const archiveIds = expiring.map((a) => a.id);
+    const roomArchiveIds = expiringRooms.map((a) => a.id);
 
     // Delete messages linked to these archives first, to avoid onDelete: SetNull trigger restoring them to active chat
-    const msgDel = await db.directAgentChatMessage.deleteMany({
-      where: { archiveId: { in: archiveIds } },
-    });
-    result.purgedMessages = msgDel.count;
+    if (archiveIds.length > 0) {
+      const msgDel = await db.directAgentChatMessage.deleteMany({
+        where: { archiveId: { in: archiveIds } },
+      });
+      result.purgedMessages = msgDel.count;
 
-    // Delete the archives
-    const arcDel = await db.directAgentChatArchive.deleteMany({
-      where: { id: { in: archiveIds } },
-    });
-    result.purgedArchives = arcDel.count;
+      // Delete the archives
+      const arcDel = await db.directAgentChatArchive.deleteMany({
+        where: { id: { in: archiveIds } },
+      });
+      result.purgedArchives = arcDel.count;
+    }
+
+    if (roomArchiveIds.length > 0) {
+      const msgDel = await db.agentChatMessage.deleteMany({
+        where: { archiveId: { in: roomArchiveIds } },
+      });
+      result.purgedRoomMessages = msgDel.count;
+      const arcDel = await db.agentChatRoomArchive.deleteMany({
+        where: { id: { in: roomArchiveIds } },
+      });
+      result.purgedRoomArchives = arcDel.count;
+    }
 
     // Remove folders from disk
     for (const item of expiring) {

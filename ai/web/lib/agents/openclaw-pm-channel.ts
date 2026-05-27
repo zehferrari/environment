@@ -1,4 +1,8 @@
 import { readFile } from "fs/promises";
+import {
+  recordPmChannelRunDispatch,
+  recordPmChannelRunQueued,
+} from "@/lib/agents/pm-channel-runs";
 
 export type PmChannelReplyTarget =
   | {
@@ -37,6 +41,7 @@ export interface SendPmChannelTurnArgs {
     kind: "human" | "agent";
   };
   replyTarget: PmChannelReplyTarget;
+  projectId?: string | null;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
 }
@@ -46,6 +51,12 @@ export interface SendPmChannelTurnResult {
   status?: number;
   error?: string;
   driver: "openclaw-pm-channel";
+}
+
+export function buildPmTurnSessionKey(baseSessionKey: string, messageId: string): string {
+  const base = baseSessionKey.trim();
+  const safeMessageId = messageId.trim().replace(/[^A-Za-z0-9_.:-]/g, "_");
+  return `${base}:turn:${safeMessageId}`;
 }
 
 export function parsePmChannelReplyTarget(value: unknown): PmChannelReplyTarget | null {
@@ -151,21 +162,33 @@ function defaultTimeoutMs() {
 export async function sendOpenClawPmChannelTurn(
   args: SendPmChannelTurnArgs,
 ): Promise<SendPmChannelTurnResult> {
+  await recordPmChannelRunQueued({
+    target: args.replyTarget,
+    kind: args.kind,
+    projectId: args.projectId ?? null,
+    gatewayPort: args.gatewayPort,
+    sessionKey: args.sessionKey,
+  });
+
   if (!args.gatewayPort) {
-    return {
+    const result: SendPmChannelTurnResult = {
       ok: false,
       driver: "openclaw-pm-channel",
       error: `agent "${args.agentSlug}" has no gateway port`,
     };
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    return result;
   }
 
   const token = await resolvePmChannelToken(args.agentSlug);
   if (!token) {
-    return {
+    const result: SendPmChannelTurnResult = {
       ok: false,
       driver: "openclaw-pm-channel",
       error: `missing PM OpenClaw channel token for agent "${args.agentSlug}"`,
     };
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    return result;
   }
 
   const url = new URL(channelPath(), `http://127.0.0.1:${args.gatewayPort}`);
@@ -205,21 +228,31 @@ export async function sendOpenClawPmChannelTurn(
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      return {
+      const result: SendPmChannelTurnResult = {
         ok: false,
         status: res.status,
         driver: "openclaw-pm-channel",
         error: body.trim() || `HTTP ${res.status}`,
       };
+      await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+      return result;
     }
 
-    return { ok: true, status: res.status, driver: "openclaw-pm-channel" };
+    const result: SendPmChannelTurnResult = {
+      ok: true,
+      status: res.status,
+      driver: "openclaw-pm-channel",
+    };
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    return result;
   } catch (err) {
-    return {
+    const result: SendPmChannelTurnResult = {
       ok: false,
       driver: "openclaw-pm-channel",
       error: err instanceof Error ? err.message : String(err),
     };
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    return result;
   } finally {
     clearTimeout(timer);
   }

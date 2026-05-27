@@ -103,6 +103,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
       });
       return NextResponse.json({ ok: true, service: body.service, enabled: body.enabled, driver: "systemctl-user" });
     }
+    await db.activityLog.create({
+      data: {
+        userId: session.user.id,
+        kind: res.ok ? "agent.service.toggle" : "agent.service.toggle_failed",
+        targetAgent: agentId,
+        payload: JSON.stringify({
+          service: body.service,
+          enabled: body.enabled,
+          driver: "atlas",
+          status: res.status,
+          error: res.ok ? null : text.slice(0, 500),
+        }),
+      },
+    });
     return new NextResponse(text, {
       status: res.status,
       headers: { "content-type": res.headers.get("content-type") ?? "application/json" },

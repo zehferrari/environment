@@ -10,9 +10,40 @@ import {
 import { reorderTasks } from "@/lib/tasks/reorder";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { resolveDoneTtlDays } from "@/lib/settings/system";
+import { binTask } from "@/lib/bin/actions";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
 import { COLUMNS, COLUMN_IDS } from "./columns";
+
+type ActorRow = {
+  id: string;
+  username: string;
+  kind: string;
+  name: string | null;
+  avatarUpdatedAt: Date | null;
+  agent: { slug: string; name: string; avatar: string | null } | null;
+};
+
+const actorSelect = {
+  id: true,
+  username: true,
+  kind: true,
+  name: true,
+  avatarUpdatedAt: true,
+  agent: { select: { slug: true, name: true, avatar: true } },
+};
+
+function serializeActor(actor: ActorRow | null) {
+  if (!actor) return null;
+  return {
+    id: actor.id,
+    username: actor.username,
+    kind: actor.kind,
+    name: actor.name,
+    avatarUpdatedAt: actor.avatarUpdatedAt?.toISOString() ?? null,
+    agent: actor.agent,
+  };
+}
 
 async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
   const session = await auth();
@@ -43,12 +74,14 @@ async function createTask(formData: FormData) {
   // Epic combobox: scope the chosen epic to this project; ignore anything
   // that isn't a live epic here.
   let epicId: string | null = epicRaw === "" ? null : epicRaw;
+  let epicDefaults: { branchName: string | null; commitPrefix: string | null } | null = null;
   if (epicId) {
     const epic = await db.epic.findFirst({
       where: { id: epicId, projectId, deletedAt: null },
-      select: { id: true },
+      select: { id: true, branchName: true, commitPrefix: true },
     });
     if (!epic) epicId = null;
+    else epicDefaults = epic;
   }
 
   // Assignee / reviewer come pre-selected (to the project defaults) from
@@ -67,6 +100,9 @@ async function createTask(formData: FormData) {
       epicId,
       assigneeId,
       actingManagerId,
+      reporterId: actor.id,
+      branchName: epicDefaults?.branchName ?? null,
+      commitPrefix: epicDefaults?.commitPrefix ?? null,
     },
     select: { id: true, title: true },
   });
@@ -165,8 +201,15 @@ export default async function ProjectBoardPage({
         where: { deletedAt: null },
         orderBy: [{ status: "asc" }, { rank: "asc" }],
         include: {
-          assignee: { select: { username: true } },
-          epic: { select: { title: true } },
+          reporter: { select: actorSelect },
+          assignee: { select: actorSelect },
+          actingManager: { select: actorSelect },
+          epic: {
+            select: {
+              title: true,
+              actingManager: { select: actorSelect },
+            },
+          },
         },
       },
     },
@@ -190,7 +233,7 @@ export default async function ProjectBoardPage({
   const [principals, epicOptions] = await Promise.all([
     listAssignablePrincipals(),
     db.epic.findMany({
-      where: { projectId: project.id, status: { not: "archived" }, deletedAt: null },
+      where: { projectId: project.id, status: { not: "Archive" }, deletedAt: null },
       orderBy: [{ status: "asc" }, { title: "asc" }],
       select: { id: true, title: true },
     }),
@@ -212,12 +255,17 @@ export default async function ProjectBoardPage({
           title: t.title,
           status: t.status,
           rank: t.rank,
+          createdAt: t.createdAt.toISOString(),
           updatedAt: t.updatedAt.toISOString(),
-          assigneeName: t.assignee?.username ?? null,
+          reporter: serializeActor(t.reporter),
+          assignee: serializeActor(t.assignee),
+          reviewer: serializeActor(t.actingManager),
+          manager: serializeActor(t.epic?.actingManager ?? null),
           epicTitle: t.epic?.title ?? null,
         }))}
         moveTaskAction={moveTask}
         reorderTasksAction={reorderBoardTasks}
+        deleteTaskAction={binTask}
       />
 
       <AddTaskFab
@@ -226,7 +274,11 @@ export default async function ProjectBoardPage({
         principals={principals.map((p) => ({
           id: p.id,
           username: p.username,
+          name: p.name,
           kind: p.kind,
+          avatarUpdatedAt: p.avatarUpdatedAt,
+          agentSlug: p.agentSlug,
+          agentAvatar: p.agentAvatar,
         }))}
         epics={epicOptions}
         defaultAssigneeId={project.defaultAssigneeId}

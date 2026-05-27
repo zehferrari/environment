@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { chmod, chown, copyFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -37,6 +37,15 @@ function hasFlag(name) {
 function readJson(file, fallback) {
   if (!existsSync(file)) return fallback;
   return JSON.parse(readFileSync(file, "utf8"));
+}
+
+function existingRealPath(file) {
+  if (!existsSync(file)) return null;
+  try {
+    return realpathSync(file);
+  } catch {
+    return path.resolve(file);
+  }
 }
 
 async function writeJsonAtomic(file, value, mode, owner = null) {
@@ -230,7 +239,7 @@ for (const agent of uniqueAgents) {
     path.join(agentRoot, agent, "openclaw.json"),
     path.join(home, ".openclaw/openclaw.json"),
   ];
-  const uniqueConfigPaths = [...new Set(agentConfigPaths.map((entry) => path.resolve(entry)))];
+  const uniqueConfigPaths = [...new Set(agentConfigPaths.map(existingRealPath).filter(Boolean))];
   let configured = false;
   for (const configPath of uniqueConfigPaths) {
     if (!existsSync(configPath)) continue;

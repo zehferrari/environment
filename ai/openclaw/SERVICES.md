@@ -25,7 +25,9 @@ x1 uses systemd timers for active automation. Cron references in old migration n
   sends chat/comment turns into each agent's native OpenClaw `pm`
   channel, receives partial reply streams at
   `/api/openclaw/pm-channel/stream`, and persists final replies from
-  `/api/openclaw/pm-channel/reply`. The service needs read access to the
+  `/api/openclaw/pm-channel/reply`. Native-channel turns are tracked in
+  `PmChannelRun` so browser reconnects use durable accepted/streaming/
+  complete/failed state instead of polling. The service needs read access to the
   PM checkout/bundle and write access to `prisma/`, `.data`,
   `/etc/openclaw/pm-agent-credentials`, `/var/lib/pm/drop`,
   `/srv/Data/projects`, and `/srv/samba/shared`.
@@ -47,12 +49,18 @@ x1 uses systemd timers for active automation. Cron references in old migration n
   `/srv/agents/openclaw/<agent>/openclaw.json` so
   `gateway.bind="loopback"`, loopback trusted-proxy config, and
   `hooks.enabled=true`, `hooks.path="/hooks"`, and `hooks.token` are
-  present. It also sets `hooks.allowRequestSessionKey=true` and
+  present, then verifies `/home/<agent>/.openclaw/openclaw.json` is a
+  symlink to that canonical file. If a different regular home config
+  exists, the installer leaves it in place and warns instead of replacing
+  possibly newer runtime settings. It also sets
+  `hooks.allowRequestSessionKey=true` and
   `hooks.allowedSessionKeyPrefixes=["hook:","pm:"]`; `hook:` is
   required by OpenClaw when no default hook session key is configured,
-  and PM-owned sessions use `pm:` stable session keys. It then mirrors
+  and PM-owned session keys use the `pm:` prefix. Direct chat keeps a
+  stable `pm:` key; Discussion, Epic chat, and task-comment turns use
+  per-message `pm:` keys derived from the PM binding. It then mirrors
   those tokens into `/etc/openclaw/pm-consumer-tokens.json` for the PM
-  consumer. Chat, Epic chat, and task-comment turns normally use the
+  consumer. Direct chat, Discussion, Epic chat, and task-comment turns use the
   native `POST /pm-channel/ingest` route instead; `install.sh` stages that
   plugin for every enabled registry agent and mirrors per-agent channel tokens into
   `/etc/openclaw/pm-channel-tokens.json`. Keep both surfaces local; nginx

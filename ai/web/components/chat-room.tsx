@@ -1,13 +1,16 @@
 "use client";
 
-import React, { useRef, useEffect } from "react";
-import { renderFullMarkdown } from "@/lib/markdown";
-import { sendAgentChatMessage, deleteChatMessage } from "@/lib/agents/chat-actions";
+import React, { useRef, useEffect, useLayoutEffect, useMemo, useState, useTransition } from "react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { archiveChatRoom, sendAgentChatMessage, deleteChatMessage } from "@/lib/agents/chat-actions";
+import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
+import MaximizableTextarea from "@/components/maximizable-textarea";
+import { useActiveTab } from "@/components/task-tabs";
 import {
   actorDisplayName,
   MessageAvatar,
-  MessageTimestamp,
   type MessageActor,
 } from "@/components/message-avatar";
 
@@ -17,7 +20,15 @@ interface Message {
   createdAt: Date;
   allowDescriptionEdit: boolean;
   editGrantUsedAt: Date | null;
+  targetLabel?: string | null;
   sender: MessageActor;
+}
+
+interface DiscussionTarget {
+  value: string;
+  label: string;
+  group: "Groups" | "Users" | "Agents";
+  actor?: MessageActor | null;
 }
 
 interface ChatRoomProps {
@@ -25,9 +36,254 @@ interface ChatRoomProps {
   taskId?: string;
   epicId?: string;
   messages: Message[];
+  activeMessageCount?: number;
+  archives?: Array<{
+    id: string;
+    summary: string;
+    startedAt: Date | string;
+    endedAt: Date | string;
+    messageCount: number;
+    deletedAt?: Date | string | null;
+  }>;
+  binArchives?: Array<{
+    id: string;
+    summary: string;
+    startedAt: Date | string;
+    endedAt: Date | string;
+    messageCount: number;
+    deletedAt?: Date | string | null;
+  }>;
+  selectedArchiveId?: string | null;
+  selectedArchiveDeleted?: boolean;
+  viewingArchive?: boolean;
+  discussionTargets?: DiscussionTarget[];
+  defaultDiscussionTarget?: string | null;
   pendingAgents: Array<{ slug: string; username: string }>;
   latestMessageId: string | null;
   currentUserId?: string | null;
+}
+
+function formatModernDate(value: Date | string) {
+  const d = new Date(value);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const time = new Intl.DateTimeFormat("en-AU", { timeStyle: "short" }).format(d);
+  if (d.toDateString() === now.toDateString()) return `Today · ${time}`;
+  if (d.toDateString() === yesterday.toDateString()) return `Yesterday · ${time}`;
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const date = new Intl.DateTimeFormat("en-AU", {
+    day: "numeric",
+    month: "short",
+    year: sameYear ? undefined : "numeric",
+  }).format(d);
+  return `${date} · ${time}`;
+}
+
+function daysUntilPurge(value?: Date | string | null) {
+  if (!value) return null;
+  const expiry = new Date(new Date(value).getTime() + 7 * 24 * 60 * 60 * 1000);
+  const diffDays = Math.ceil((expiry.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+  if (diffDays <= 0) return "purging soon";
+  if (diffDays === 1) return "purge in 1d";
+  return `purge in ${diffDays}d`;
+}
+
+function participantKey(actor: MessageActor) {
+  return actor.id ?? actor.agent?.slug ?? actor.username;
+}
+
+function RoomArchiveButton({
+  projectSlug,
+  taskId,
+  epicId,
+  hasActiveHistory,
+}: {
+  projectSlug: string;
+  taskId?: string;
+  epicId?: string;
+  hasActiveHistory: boolean;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [step, setStep] = useState<"choice" | "archive" | "delete">("choice");
+  const [customTitle, setCustomTitle] = useState("");
+  const [isPending, startTransition] = useTransition();
+
+  const runArchive = (moveToBin: boolean) => {
+    const formData = new FormData();
+    formData.append("projectSlug", projectSlug);
+    if (taskId) formData.append("taskId", taskId);
+    if (epicId) formData.append("epicId", epicId);
+    if (customTitle.trim() && !moveToBin) {
+      formData.append("customTitle", customTitle.trim());
+    }
+    if (moveToBin) formData.append("deleteToBin", "true");
+
+    startTransition(async () => {
+      await archiveChatRoom(formData);
+      setOpen(false);
+      setStep("choice");
+      setCustomTitle("");
+      router.refresh();
+    });
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        disabled={!hasActiveHistory}
+        onClick={() => {
+          setStep("choice");
+          setCustomTitle("");
+          setOpen(true);
+        }}
+        className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-[11px] font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
+      >
+        New Discussion
+      </button>
+
+      {open ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+          onClick={() => !isPending && setOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {step === "choice" ? (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-[var(--color-text)]">
+                    Start a fresh room
+                  </h3>
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() => setOpen(false)}
+                    className="text-lg leading-none text-[var(--color-text-muted)] transition hover:text-[var(--color-text)] cursor-pointer"
+                  >
+                    &times;
+                  </button>
+                </div>
+                <p className="text-sm leading-relaxed text-[var(--color-text-muted)]">
+                  Archive the current room to keep the transcript, or move it to the bin and clear this Task/Epic chat.
+                </p>
+                <div className="grid gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setStep("archive")}
+                    className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-left text-sm font-medium text-[var(--color-text)] transition hover:border-[var(--color-accent)] cursor-pointer"
+                  >
+                    Archive current room
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() => runArchive(true)}
+                    className="rounded-lg border border-[var(--color-crit)]/30 bg-[var(--color-crit)]/[0.04] px-3 py-2 text-left text-sm font-medium text-[var(--color-crit)] transition hover:bg-[var(--color-crit)]/[0.08] cursor-pointer"
+                  >
+                    {isPending ? "Moving to bin..." : "Move current room to bin"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {step === "archive" ? (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-[var(--color-text)]">
+                    Archive room
+                  </h3>
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() => setOpen(false)}
+                    className="text-lg leading-none text-[var(--color-text-muted)] transition hover:text-[var(--color-text)] cursor-pointer"
+                  >
+                    &times;
+                  </button>
+                </div>
+                <label className="block space-y-1.5 text-xs font-medium text-[var(--color-text-muted)]">
+                  <span>Archive title</span>
+                  <input
+                    type="text"
+                    disabled={isPending}
+                    value={customTitle}
+                    onChange={(event) => setCustomTitle(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") runArchive(false);
+                    }}
+                    placeholder="Optional title"
+                    className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text)] outline-none transition focus:border-[var(--color-accent)] disabled:opacity-50"
+                  />
+                </label>
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() => setStep("choice")}
+                    className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-50 cursor-pointer"
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() => runArchive(false)}
+                    className="rounded-lg bg-[var(--color-accent)] px-4 py-1.5 text-xs font-semibold text-[var(--color-bg)] transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                  >
+                    {isPending ? "Archiving..." : "Archive room"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {step === "delete" ? (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-[var(--color-crit)]">
+                    Move room to bin
+                  </h3>
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() => setOpen(false)}
+                    className="text-lg leading-none text-[var(--color-text-muted)] transition hover:text-[var(--color-text)] cursor-pointer"
+                  >
+                    &times;
+                  </button>
+                </div>
+                <p className="text-sm leading-relaxed text-[var(--color-text-muted)]">
+                  This clears the active room and keeps the deleted transcript until the retention purge runs.
+                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() => setStep("choice")}
+                    className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-50 cursor-pointer"
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isPending}
+                    onClick={() => runArchive(true)}
+                    className="rounded-lg bg-[var(--color-crit)] px-4 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                  >
+                    {isPending ? "Deleting..." : "Move to bin"}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 export default function ChatRoom({
@@ -35,36 +291,154 @@ export default function ChatRoom({
   taskId,
   epicId,
   messages,
+  activeMessageCount,
+  archives = [],
+  binArchives = [],
+  selectedArchiveId = null,
+  selectedArchiveDeleted = false,
+  viewingArchive = false,
+  discussionTargets = [],
+  defaultDiscussionTarget = null,
   pendingAgents,
   latestMessageId,
   currentUserId = null,
 }: ChatRoomProps) {
+  const pathname = usePathname();
   const formRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const activeTab = useActiveTab();
+  const [messageText, setMessageText] = useState("");
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [selectedFilesCount, setSelectedFilesCount] = useState(0);
+  const [selectedTargets, setSelectedTargets] = useState<string[]>(
+    defaultDiscussionTarget ? [defaultDiscussionTarget] : [],
+  );
+  const [targetPickerOpen, setTargetPickerOpen] = useState(false);
+  const [archiveSidebarOpen, setArchiveSidebarOpen] = useState(false);
+  const [archiveViewMode, setArchiveViewMode] = useState<"archives" | "bin">("archives");
+  const canSend = messageText.trim().length > 0 || selectedFilesCount > 0;
+  const activeCount = activeMessageCount ?? messages.length;
+  const canContinueArchive = viewingArchive && !selectedArchiveDeleted && activeCount === 0;
+  const discussionIsVisible = activeTab === null || activeTab === "Discussion";
+  const latestEventKey = [
+    viewingArchive ? "archive" : "current",
+    selectedArchiveId ?? "",
+    messages.length,
+    messages.at(-1)?.id ?? "",
+    latestMessageId ?? "",
+    pendingAgents.map((agent) => agent.slug).join(","),
+  ].join("|");
+  const participantIndexes = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const message of messages) {
+      if (currentUserId && message.sender.id === currentUserId) continue;
+      const key = participantKey(message.sender);
+      if (!map.has(key)) map.set(key, map.size);
+    }
+    return map;
+  }, [messages, currentUserId]);
+
+  useLayoutEffect(() => {
+    if (!discussionIsVisible) return;
+
+    const scrollToLatest = () => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+      formRef.current?.scrollIntoView({ block: "end" });
+    };
+
+    const frame = window.requestAnimationFrame(scrollToLatest);
+    const timer = window.setTimeout(scrollToLatest, 80);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [discussionIsVisible, latestEventKey]);
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages, pendingAgents]);
+    if (!discussionIsVisible || !scrollRef.current) return;
+
+    const container = scrollRef.current;
+    let stickToBottom = true;
+    const handleScroll = () => {
+      stickToBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+    };
+    const observer = new MutationObserver(() => {
+      if (stickToBottom) {
+        container.scrollTop = container.scrollHeight;
+      }
+    });
+
+    container.addEventListener("scroll", handleScroll);
+    observer.observe(container, { childList: true, subtree: true, characterData: true });
+
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      observer.disconnect();
+    };
+  }, [discussionIsVisible, latestEventKey]);
+
+  useEffect(() => {
+    setSelectedTargets(defaultDiscussionTarget ? [defaultDiscussionTarget] : []);
+  }, [defaultDiscussionTarget]);
+
+  const targetOptions: DiscussionTarget[] = [
+    { value: "all-coders", label: "All Coders", group: "Groups" },
+    ...discussionTargets,
+  ];
+  const selectedTargetOptions = selectedTargets
+    .map((value) => targetOptions.find((target) => target.value === value))
+    .filter((target): target is DiscussionTarget => Boolean(target));
+  const targetButtonLabel = selectedTargetOptions.length === 0
+    ? "Default recipient"
+    : selectedTargetOptions.map((target) => target.label).join(", ");
+
+  function toggleTarget(target: DiscussionTarget) {
+    setSelectedTargets((current) => {
+      if (target.group === "Groups") {
+        return current.includes(target.value) ? [] : [target.value];
+      }
+      const withoutGroups = current.filter((value) => {
+        const option = targetOptions.find((candidate) => candidate.value === value);
+        return option?.group !== "Groups";
+      });
+      if (withoutGroups.includes(target.value)) {
+        return withoutGroups.filter((value) => value !== target.value);
+      }
+      return [...withoutGroups, target.value];
+    });
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      formRef.current?.requestSubmit();
+      if (canSend) formRef.current?.requestSubmit();
     }
   };
 
   const actionHandler = async (formData: FormData) => {
-    if (textareaRef.current) {
-      textareaRef.current.value = "";
-    }
     await sendAgentChatMessage(formData);
+    setMessageText("");
+    setSelectedFilesCount(0);
+    setComposerOpen(false);
+    setTargetPickerOpen(false);
+    if (textareaRef.current) textareaRef.current.value = "";
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const closeComposer = () => {
+    setComposerOpen(false);
+    setTargetPickerOpen(false);
+    setSelectedFilesCount(0);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   return (
-    <div className="flex flex-col h-[520px] rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] overflow-hidden shadow-sm">
+    <div className="relative flex h-[calc(100dvh-14rem)] min-h-[620px] flex-col overflow-hidden rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] shadow-sm">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-panel-soft)] px-4 py-2.5">
         <div className="flex items-center gap-2">
@@ -73,15 +447,205 @@ export default function ChatRoom({
             {taskId ? "Task Chat Room" : "Epic Chat Room"}
           </span>
         </div>
-        <span className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider font-semibold">
-          Multi-Agent Channel
-        </span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setArchiveSidebarOpen((open) => !open)}
+            className="grid h-8 w-8 place-items-center rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer"
+            aria-label={archiveSidebarOpen ? "Hide discussion archives" : "Show discussion archives"}
+            title={archiveSidebarOpen ? "Hide discussion archives" : "Show discussion archives"}
+          >
+            {archiveSidebarOpen ? (
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect width="18" height="18" x="3" y="3" rx="2" />
+                <path d="M15 3v18" />
+                <path d="m10 9 3 3-3 3" />
+              </svg>
+            ) : (
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect width="18" height="18" x="3" y="3" rx="2" />
+                <path d="M15 3v18" />
+                <path d="m11 15-3-3 3-3" />
+              </svg>
+            )}
+          </button>
+          {viewingArchive ? (
+            <span className="hidden text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider font-semibold sm:inline">
+              Archived Room
+            </span>
+          ) : null}
+          {viewingArchive ? (
+            <Link
+              href={`${pathname}?chatRoom=current`}
+              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-[11px] font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+            >
+              Current Room
+            </Link>
+          ) : (
+            <RoomArchiveButton
+              projectSlug={projectSlug}
+              taskId={taskId}
+              epicId={epicId}
+              hasActiveHistory={(activeMessageCount ?? messages.length) > 0}
+            />
+          )}
+        </div>
       </div>
 
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+      {archiveSidebarOpen ? (
+        <aside className="order-2 flex w-[min(22rem,42vw)] min-w-[18rem] flex-col border-l border-[var(--color-line)] bg-[var(--color-panel)] shadow-[-18px_0_35px_rgba(15,23,42,0.06)]">
+          <div className="flex items-center justify-between border-b border-[var(--color-line)] px-3 py-2">
+            <div>
+              <div className="flex items-center gap-1.5">
+                <p className="text-xs font-semibold text-[var(--color-text)]">
+                  {archiveViewMode === "archives" ? "Archived discussions" : "Discussion bin"}
+                </p>
+                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                  archiveViewMode === "archives"
+                    ? "bg-[var(--color-ok)]/10 text-[var(--color-ok)]"
+                    : "bg-[var(--color-crit)]/10 text-[var(--color-crit)]"
+                }`}>
+                  {archiveViewMode === "archives" ? archives.length : binArchives.length}
+                </span>
+              </div>
+              <p className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+                {archiveViewMode === "archives" ? "Latest rooms" : "Deleted rooms"}
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setArchiveSidebarOpen(false)}
+                className="grid h-7 w-7 place-items-center rounded-md border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer"
+                aria-label="Close discussion archives"
+                title="Hide sidebar"
+              >
+                <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect width="18" height="18" x="3" y="3" rx="2" />
+                  <path d="M15 3v18" />
+                  <path d="m10 9 3 3-3 3" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-1 border-b border-[var(--color-line)] bg-[var(--color-panel-soft)] p-1.5 text-xs font-semibold">
+            <button
+              type="button"
+              onClick={() => setArchiveViewMode("archives")}
+              className={`rounded-lg px-2 py-1.5 transition ${
+                archiveViewMode === "archives"
+                  ? "bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm"
+                  : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              }`}
+            >
+              Archive <span className="text-[10px] text-[var(--color-text-muted)]">({archives.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setArchiveViewMode("bin")}
+              className={`rounded-lg px-2 py-1.5 transition ${
+                archiveViewMode === "bin"
+                  ? "bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm"
+                  : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              }`}
+            >
+              Bin <span className="text-[10px] text-[var(--color-text-muted)]">({binArchives.length})</span>
+            </button>
+          </div>
+          <div className="flex-1 space-y-4 overflow-y-auto p-3">
+            <Link
+              href={`${pathname}?chatRoom=current`}
+              className={`block rounded-lg border px-3 py-2 text-xs transition ${
+                !viewingArchive
+                  ? "border-[var(--color-accent)] bg-[var(--color-accent)]/[0.08] text-[var(--color-text)]"
+                  : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
+              }`}
+            >
+              <span className="font-semibold">Current discussion</span>
+              <span className="mt-1 block text-[10px] uppercase tracking-wider">
+                {activeCount} message{activeCount === 1 ? "" : "s"}
+              </span>
+            </Link>
+
+            {archiveViewMode === "archives" ? (
+              archives.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-[var(--color-line)] p-3 text-center text-xs text-[var(--color-text-muted)]">
+                  No archived discussions.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {archives.map((archive) => {
+                    const selected = selectedArchiveId === archive.id && !selectedArchiveDeleted;
+                    return (
+                      <Link
+                        key={archive.id}
+                        href={`${pathname}?chatArchive=${archive.id}`}
+                        className={`block rounded-xl border p-2 text-xs shadow-sm transition ${
+                          selected
+                            ? "border-[var(--color-accent)] bg-[var(--color-accent)]/[0.04] text-[var(--color-text)]"
+                            : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)]/30 hover:bg-[var(--color-panel)] hover:text-[var(--color-text)]"
+                        }`}
+                      >
+                        <span className="mb-0.5 block text-[9px] font-semibold tracking-wider text-[var(--color-text-muted)]">
+                          {formatModernDate(archive.startedAt)}
+                        </span>
+                        <span className="block truncate font-semibold">{archive.summary}</span>
+                        <span className="mt-1 block border-t border-[var(--color-line)]/40 pt-1 text-[10px] uppercase tracking-wider">
+                          {archive.messageCount} message{archive.messageCount === 1 ? "" : "s"}
+                        </span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              )
+            ) : binArchives.length === 0 ? (
+                <p className="rounded-lg border border-dashed border-[var(--color-line)] p-3 text-center text-xs text-[var(--color-text-muted)]">
+                  No deleted discussions.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {binArchives.map((archive) => {
+                    const selected = selectedArchiveId === archive.id && selectedArchiveDeleted;
+                    const purgeLabel = daysUntilPurge(archive.deletedAt);
+                    return (
+                      <Link
+                        key={archive.id}
+                        href={`${pathname}?chatArchive=${archive.id}`}
+                        className={`block rounded-xl border p-2 text-xs shadow-sm transition ${
+                          selected
+                            ? "border-[var(--color-crit)] bg-[var(--color-crit)]/[0.06] text-[var(--color-text)]"
+                            : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] hover:border-[var(--color-crit)]/50 hover:bg-[var(--color-panel)] hover:text-[var(--color-text)]"
+                        }`}
+                      >
+                        <span className="mb-0.5 block text-[9px] font-semibold tracking-wider text-[var(--color-text-muted)]">
+                          {formatModernDate(archive.startedAt)}
+                        </span>
+                        <span className="block truncate font-semibold">{archive.summary}</span>
+                        <span className="mt-1 flex items-center justify-between gap-2 border-t border-[var(--color-line)]/40 pt-1 text-[10px] uppercase tracking-wider">
+                          <span>
+                          {archive.messageCount} message{archive.messageCount === 1 ? "" : "s"}
+                          </span>
+                          {purgeLabel ? (
+                            <span className="rounded-md border border-[var(--color-crit)]/10 bg-[var(--color-crit)]/[0.06] px-1.5 py-0.5 font-mono font-semibold text-[var(--color-crit)] normal-case">
+                              {purgeLabel}
+                            </span>
+                          ) : null}
+                        </span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
+          </div>
+        </aside>
+      ) : null}
+
+      <div className="order-1 flex min-w-0 flex-1 flex-col">
       {/* Messages List */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0 scrollbar-thin"
+        className="flex-1 overflow-y-auto p-4 space-y-6 min-h-0 scrollbar-thin"
       >
         {messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-6 border border-dashed border-[var(--color-line)] rounded-xl bg-[var(--color-panel-soft)]/20">
@@ -95,71 +659,34 @@ export default function ChatRoom({
           </div>
         ) : (
           messages.map((m) => {
-            const fromAgent = m.sender.kind === "agent";
-            const fromCurrentUser = Boolean(currentUserId && m.sender.id === currentUserId);
-            const displayName = actorDisplayName(m.sender);
-            const bubbleTone = fromCurrentUser
-              ? "border-[var(--color-accent)]/35 bg-[var(--color-accent)]/[0.09]"
-              : fromAgent
-                ? "border-[var(--color-accent)]/25 bg-[var(--color-panel-soft)]"
-                : "border-[var(--color-line)] bg-[var(--color-panel-soft)]";
-            const tailTone = fromCurrentUser
-              ? "border-[var(--color-accent)]/35 bg-[var(--color-accent)]/[0.09]"
-              : fromAgent
-                ? "border-[var(--color-accent)]/25 bg-[var(--color-panel-soft)]"
-                : "border-[var(--color-line)] bg-[var(--color-panel-soft)]";
             return (
-              <div
+              <ChatBubble
                 key={m.id}
-                className={`flex items-start gap-2.5 ${fromCurrentUser ? "justify-end" : "justify-start"}`}
-              >
-                {!fromCurrentUser ? <MessageAvatar actor={m.sender} /> : null}
-                <article
-                  className={`group relative w-fit min-w-[11rem] max-w-[min(36rem,78%)] rounded-2xl border px-3.5 py-2.5 shadow-sm transition-all ${bubbleTone}`}
-                >
-                  <span
-                    aria-hidden="true"
-                    className={`absolute top-4 h-3 w-3 rotate-45 ${tailTone} ${
-                      fromCurrentUser ? "-right-1.5 border-r border-t" : "-left-1.5 border-b border-l"
-                    }`}
-                  />
-                  <div className={`relative mb-2 flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-muted)] ${fromCurrentUser ? "justify-end" : "justify-between"}`}>
-                    <span className="flex min-w-0 items-center gap-1">
-                      <span className={`truncate ${fromAgent ? "font-semibold text-[var(--color-accent)]" : "font-semibold text-[var(--color-text)]"}`}>
-                        {displayName}
-                      </span>
-                      {fromAgent ? (
-                        <span className="rounded bg-[var(--color-accent)]/10 px-1 py-0.2 text-[8px] text-[var(--color-accent)] uppercase tracking-wider font-bold">
-                          agent
-                        </span>
-                      ) : null}
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <MessageTimestamp value={m.createdAt} />
-                      <form action={deleteChatMessage}>
-                        <input type="hidden" name="projectSlug" value={projectSlug} />
-                        <input type="hidden" name="messageId" value={m.id} />
-                        <button
-                          type="submit"
-                          aria-label="Delete message"
-                          title="Delete message"
-                          className="text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 hover:text-[var(--color-crit)] cursor-pointer font-bold text-[12px]"
-                        >
-                          ×
-                        </button>
-                      </form>
-                    </div>
-                  </div>
-                  <div className={`relative md md-compact text-sm ${fromCurrentUser ? "text-left" : ""}`} dangerouslySetInnerHTML={renderFullMarkdown(m.body)} />
-                </article>
-                {fromCurrentUser ? <MessageAvatar actor={m.sender} /> : null}
-              </div>
+                message={m}
+                currentUserId={currentUserId}
+                preferShortAgentSections
+                participantIndex={participantIndexes.get(participantKey(m.sender)) ?? 0}
+                actions={!viewingArchive ? (
+                  <form action={deleteChatMessage}>
+                    <input type="hidden" name="projectSlug" value={projectSlug} />
+                    <input type="hidden" name="messageId" value={m.id} />
+                    <button
+                      type="submit"
+                      aria-label="Delete message"
+                      title="Delete message"
+                      className="text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)] cursor-pointer"
+                    >
+                      ×
+                    </button>
+                  </form>
+                ) : null}
+              />
             );
           })
         )}
 
         {/* Streaming Replies */}
-        {latestMessageId && pendingAgents.map((agent) => (
+        {!viewingArchive && latestMessageId && pendingAgents.map((agent) => (
           <StreamingAgentReply
             key={agent.slug}
             targetKind={taskId ? "task-chat" : "epic-chat"}
@@ -173,39 +700,199 @@ export default function ChatRoom({
       </div>
 
       {/* Input Form */}
-      <form
-        ref={formRef}
-        action={actionHandler}
-        className="border-t border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3 space-y-2 shrink-0"
-      >
-        <input type="hidden" name="projectSlug" value={projectSlug} />
-        {taskId ? (
-          <input type="hidden" name="taskId" value={taskId} />
-        ) : (
-          <input type="hidden" name="epicId" value={epicId} />
-        )}
-        <input type="hidden" name="agentSlug" value="room" />
-
-        <textarea
-          ref={textareaRef}
-          name="body"
-          required
-          rows={2}
-          maxLength={8000}
-          placeholder="Message the room... (mentions like @agent are supported)"
-          onKeyDown={handleKeyDown}
-          className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-xs outline-none focus:border-[var(--color-accent)] resize-none"
-        />
-
-        <div className="flex items-center justify-end gap-4">
-          <button
-            type="submit"
-            className="rounded-lg bg-[var(--color-accent)] px-4 py-1.5 text-xs font-semibold text-[var(--color-bg)] hover:opacity-90 transition cursor-pointer select-none"
-          >
-            Send
-          </button>
+      {viewingArchive && !canContinueArchive ? (
+        <div className="border-t border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3 text-xs text-[var(--color-text-muted)] shrink-0">
+          {selectedArchiveDeleted ? (
+            "Deleted discussions are read-only."
+          ) : activeCount > 0 ? (
+            "Archive the current discussion before continuing from this archived discussion."
+          ) : (
+            "Archived discussions are read-only."
+          )}{" "}
+          <Link href={`${pathname}?chatRoom=current`} className="font-semibold text-[var(--color-accent)] hover:underline">
+            Open the current discussion
+          </Link>
+          .
         </div>
-      </form>
+      ) : (
+        <>
+          {composerOpen ? (
+            <div
+              className="fixed inset-0 z-50 bg-black/10 p-4 backdrop-blur-[1px]"
+              onClick={closeComposer}
+            >
+              <form
+                ref={formRef}
+                action={actionHandler}
+                encType="multipart/form-data"
+                onClick={(event) => event.stopPropagation()}
+                className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-2xl space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-2xl sm:right-6"
+              >
+                <input type="hidden" name="projectSlug" value={projectSlug} />
+                {taskId ? (
+                  <input type="hidden" name="taskId" value={taskId} />
+                ) : (
+                  <input type="hidden" name="epicId" value={epicId} />
+                )}
+                <input type="hidden" name="agentSlug" value="room" />
+                {selectedTargets.map((target) => (
+                  <input key={target} type="hidden" name="discussionTarget" value={target} />
+                ))}
+                {canContinueArchive && selectedArchiveId ? (
+                  <>
+                    <input type="hidden" name="baseArchiveId" value={selectedArchiveId} />
+                    <input type="hidden" name="continueFromArchive" value="1" />
+                  </>
+                ) : null}
+
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                      {canContinueArchive ? "Continue discussion" : "Discussion message"}
+                    </div>
+                    <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+                      Choose recipients, attach files, and send the room a message.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeComposer}
+                    aria-label="Close discussion composer"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-[var(--color-text-muted)] transition hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+                  >
+                    &times;
+                  </button>
+                </div>
+
+                <div className="relative text-xs text-[var(--color-text-muted)]">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="font-semibold">To</span>
+                    {selectedTargets.length > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTargets([])}
+                        className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-accent)]"
+                      >
+                        Clear
+                      </button>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setTargetPickerOpen((open) => !open)}
+                    className="flex min-h-10 w-full items-center justify-between gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-left text-xs text-[var(--color-text)] outline-none transition hover:border-[var(--color-accent)]"
+                    aria-expanded={targetPickerOpen}
+                  >
+                    <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+                      {selectedTargetOptions.length === 0 ? (
+                        <span className="text-[var(--color-text-muted)]">Default recipient</span>
+                      ) : selectedTargetOptions.map((target) => (
+                        <span
+                          key={target.value}
+                          className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] px-2 py-1"
+                        >
+                          {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-7 w-7 place-items-center rounded-full border border-[var(--color-line)] text-[10px] font-semibold">G</span>}
+                          <span className="max-w-[9rem] truncate">{target.label}</span>
+                        </span>
+                      ))}
+                    </span>
+                    <span className="shrink-0 text-[var(--color-text-muted)]" aria-hidden="true">
+                      {targetPickerOpen ? "▴" : "▾"}
+                    </span>
+                  </button>
+                  <span className="sr-only">{targetButtonLabel}</span>
+                  {targetPickerOpen ? (
+                    <div className="absolute bottom-full left-0 z-30 mb-2 max-h-72 w-full overflow-y-auto rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-2 shadow-2xl">
+                      {["Groups", "Users", "Agents"].map((group) => {
+                        const options = targetOptions.filter((target) => target.group === group);
+                        if (options.length === 0) return null;
+                        return (
+                          <div key={group} className="py-1">
+                            <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                              {group}
+                            </div>
+                            <div className="space-y-1">
+                              {options.map((target) => {
+                                const selected = selectedTargets.includes(target.value);
+                                return (
+                                  <button
+                                    key={target.value}
+                                    type="button"
+                                    onClick={() => toggleTarget(target)}
+                                    className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
+                                      selected
+                                        ? "bg-[var(--color-accent)]/[0.12] text-[var(--color-text)]"
+                                        : "text-[var(--color-text-muted)] hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+                                    }`}
+                                  >
+                                    {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-7 w-7 place-items-center rounded-full border border-[var(--color-line)] text-[10px] font-semibold">G</span>}
+                                    <span className="min-w-0 flex-1 truncate">{target.actor ? actorDisplayName(target.actor) : target.label}</span>
+                                    <span className="text-[10px] font-semibold uppercase tracking-wider">
+                                      {selected ? "Selected" : target.group}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+
+                <MaximizableTextarea
+                  ref={textareaRef}
+                  name="body"
+                  value={messageText}
+                  onValueChange={setMessageText}
+                  rows={5}
+                  maxLength={8000}
+                  placeholder={canContinueArchive ? "Continue this discussion..." : "Message the discussion..."}
+                  onKeyDown={handleKeyDown}
+                  expandedTitle={canContinueArchive ? "Continue Discussion" : "Discussion Message"}
+                  className="w-full resize-none rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-xs outline-none focus:border-[var(--color-accent)]"
+                />
+
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <label className="flex items-center gap-1.5 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer select-none">
+                    <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                    </svg>
+                    <span>{selectedFilesCount > 0 ? `${selectedFilesCount} selected` : "Attach files"}</span>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      name="attachments"
+                      multiple
+                      onChange={(event) => setSelectedFilesCount(event.target.files?.length ?? 0)}
+                      className="hidden"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={!canSend}
+                    className="rounded-lg bg-[var(--color-accent)] px-4 py-1.5 text-xs font-semibold text-[var(--color-bg)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer select-none"
+                  >
+                    {canContinueArchive ? "Continue" : "Send"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={() => setComposerOpen(true)}
+            aria-label={canContinueArchive ? "Continue discussion" : "Message discussion"}
+            className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-accent)] text-3xl leading-none text-[var(--color-bg)] shadow-lg transition hover:opacity-90"
+          >
+            <span className="-mt-0.5">+</span>
+          </button>
+        </>
+      )}
+      </div>
+      </div>
     </div>
   );
 }

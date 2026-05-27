@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { canEditProfile } from "@/lib/agents/profile";
+import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,9 +28,24 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
   if ((body.kind !== "integrations" && body.kind !== "capabilities") || typeof body.key !== "string" || typeof body.value !== "boolean") {
     return NextResponse.json({ error: "kind, key, and boolean value are required" }, { status: 400 });
   }
-  return proxyAtlas("/agents/registry/toggle", {
+  const response = await proxyAtlas("/agents/registry/toggle", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ user: agentId, kind: body.kind, key: body.key, value: body.value }),
   });
+  await db.activityLog.create({
+    data: {
+      userId: session.user.id,
+      kind: response.ok ? "agent.registry.toggle" : "agent.registry.toggle_failed",
+      targetAgent: agentId,
+      payload: JSON.stringify({
+        driver: "atlas",
+        status: response.status,
+        kind: body.kind,
+        key: body.key,
+        value: body.value,
+      }),
+    },
+  });
+  return response;
 }

@@ -1,15 +1,16 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useMemo } from "react";
-import { renderFullMarkdown } from "@/lib/markdown";
 import { deleteDirectAgentMessage } from "@/lib/agents/direct-chat-actions";
+import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import {
-  actorDisplayName,
-  MessageAvatar,
-  MessageTimestamp,
   type MessageActor,
 } from "@/components/message-avatar";
+
+function participantKey(actor: MessageActor) {
+  return actor.id ?? actor.agent?.slug ?? actor.username;
+}
 
 interface Message {
   id: string;
@@ -134,11 +135,20 @@ export default function ChatMessagesContainer({
   }, [showAgentProcessing]);
 
   const latest = messages.at(-1) ?? null;
+  const participantIndexes = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const message of allMessages) {
+      if (currentUserId && message.sender.id === currentUserId) continue;
+      const key = participantKey(message.sender);
+      if (!map.has(key)) map.set(key, map.size);
+    }
+    return map;
+  }, [allMessages, currentUserId]);
 
   return (
     <div
       ref={containerRef}
-      className="flex-1 space-y-3 overflow-y-auto p-4 min-h-0 scrollbar-thin scroll-smooth"
+      className="flex-1 space-y-6 overflow-y-auto p-4 min-h-0 scrollbar-thin scroll-smooth"
     >
       {/* Parent lineage expanding button */}
       {parentArchives.length > 0 && (
@@ -165,71 +175,30 @@ export default function ChatMessagesContainer({
         <p className="text-sm text-[var(--color-text-muted)]">No messages yet.</p>
       ) : (
         allMessages.map((m, index) => {
-          const fromCurrentUser = Boolean(currentUserId && m.sender.id === currentUserId);
-          const fromAgent = m.sender.kind === "agent";
-          const bubbleTone = fromCurrentUser
-            ? "border-[var(--color-accent)]/35 bg-[var(--color-accent)]/[0.09]"
-            : fromAgent
-              ? "border-[var(--color-accent)]/25 bg-[var(--color-panel-soft)]"
-              : "border-[var(--color-line)] bg-[var(--color-panel-soft)]";
-          const tailTone = fromCurrentUser
-            ? "border-[var(--color-accent)]/35 bg-[var(--color-accent)]/[0.09]"
-            : fromAgent
-              ? "border-[var(--color-accent)]/25 bg-[var(--color-panel-soft)]"
-              : "border-[var(--color-line)] bg-[var(--color-panel-soft)]";
           const isLast = index === allMessages.length - 1;
           
           return (
-            <div
+            <ChatBubble
               key={m.id}
-              ref={isLast ? lastMessageRef : null}
-              className={`group flex items-start gap-2.5 transition-all duration-200 ${
-                fromCurrentUser ? "justify-end" : ""
-              }`}
-            >
-              {!fromCurrentUser ? <MessageAvatar actor={m.sender} /> : null}
-              <div
-                className={`relative w-fit min-w-[11rem] max-w-[min(36rem,78%)] rounded-2xl border px-3.5 py-2.5 shadow-sm ${bubbleTone}`}
-              >
-                <span
-                  aria-hidden="true"
-                  className={`absolute top-4 h-3 w-3 rotate-45 ${tailTone} ${
-                    fromCurrentUser ? "-right-1.5 border-r border-t" : "-left-1.5 border-b border-l"
-                  }`}
-                />
-                <div className="relative mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
-                  <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <strong className="truncate font-medium text-[var(--color-text)]">
-                      {actorDisplayName(m.sender)}
-                    </strong>
-                    {m.sender.kind === "agent" ? (
-                      <span className="rounded-full border border-[var(--color-line)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider">
-                        agent
-                      </span>
-                    ) : null}
-                    <MessageTimestamp value={m.createdAt} />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {!viewingArchive ? (
-                      <form action={deleteDirectAgentMessage}>
-                        <input type="hidden" name="agentSlug" value={slug} />
-                        <input type="hidden" name="messageId" value={m.id} />
-                        <button
-                          type="submit"
-                          aria-label="Delete message"
-                          title="Delete message"
-                          className="cursor-pointer text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 hover:text-[var(--color-crit)]"
-                        >
-                          ×
-                        </button>
-                      </form>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="relative md md-compact" dangerouslySetInnerHTML={renderFullMarkdown(m.body)} />
-              </div>
-              {fromCurrentUser ? <MessageAvatar actor={m.sender} /> : null}
-            </div>
+              containerRef={isLast ? lastMessageRef : null}
+              message={m}
+              currentUserId={currentUserId}
+              participantIndex={participantIndexes.get(participantKey(m.sender)) ?? 0}
+              actions={!viewingArchive ? (
+                <form action={deleteDirectAgentMessage}>
+                  <input type="hidden" name="agentSlug" value={slug} />
+                  <input type="hidden" name="messageId" value={m.id} />
+                  <button
+                    type="submit"
+                    aria-label="Delete message"
+                    title="Delete message"
+                    className="cursor-pointer text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)]"
+                  >
+                    ×
+                  </button>
+                </form>
+              ) : null}
+            />
           );
         })
       )}

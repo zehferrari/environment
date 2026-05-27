@@ -20,6 +20,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { deleteAttachmentFile } from "@/lib/attachments/storage";
 
 async function requireActorId(): Promise<string> {
   const session = await auth();
@@ -30,7 +31,7 @@ async function requireActorId(): Promise<string> {
 
 // ---- Delete --------------------------------------------------------
 
-export async function deleteTask(formData: FormData) {
+export async function binTask(formData: FormData): Promise<void> {
   const actorId = await requireActorId();
   const slug = String(formData.get("projectSlug") ?? "");
   const taskId = String(formData.get("taskId") ?? "");
@@ -69,6 +70,13 @@ export async function deleteTask(formData: FormData) {
 
   revalidatePath(`/projects/${slug}`);
   revalidatePath(`/projects/${slug}/bin`);
+  if (task.epicId) revalidatePath(`/projects/${slug}/epics/${task.epicId}`);
+}
+
+export async function deleteTask(formData: FormData) {
+  const slug = String(formData.get("projectSlug") ?? "");
+  await binTask(formData);
+  if (!slug) return;
 
   // The task page we were on now points at a binned task — send the user
   // back to the board. redirect() throws NEXT_REDIRECT, so it must come
@@ -76,7 +84,7 @@ export async function deleteTask(formData: FormData) {
   redirect(`/projects/${slug}`);
 }
 
-export async function deleteEpic(formData: FormData) {
+export async function binEpic(formData: FormData): Promise<void> {
   const actorId = await requireActorId();
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
@@ -124,7 +132,14 @@ export async function deleteEpic(formData: FormData) {
 
   revalidatePath(`/projects/${slug}`);
   revalidatePath(`/projects/${slug}/epics`);
+  revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}/bin`);
+}
+
+export async function deleteEpic(formData: FormData) {
+  const slug = String(formData.get("projectSlug") ?? "");
+  await binEpic(formData);
+  if (!slug) return;
 
   // Back to the board — the epic page we were on is now binned.
   redirect(`/projects/${slug}`);
@@ -241,5 +256,103 @@ export async function restoreEpic(formData: FormData) {
   revalidatePath(`/projects/${slug}`);
   revalidatePath(`/projects/${slug}/epics`);
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
+  revalidatePath(`/projects/${slug}/bin`);
+}
+
+// ---- Manual purge --------------------------------------------------
+
+export async function emptyProjectBin(formData: FormData) {
+  const actorId = await requireActorId();
+  const slug = String(formData.get("projectSlug") ?? "");
+  if (!slug) return;
+
+  const project = await db.project.findUnique({
+    where: { slug },
+    select: { id: true, slug: true },
+  });
+  if (!project) return;
+
+  const [deletedEpics, deletedTasks] = await Promise.all([
+    db.epic.findMany({
+      where: { projectId: project.id, deletedAt: { not: null } },
+      select: { id: true },
+    }),
+    db.task.findMany({
+      where: { projectId: project.id, deletedAt: { not: null } },
+      select: { id: true },
+    }),
+  ]);
+  const epicIds = deletedEpics.map((epic) => epic.id);
+  const taskIds = deletedTasks.map((task) => task.id);
+  if (epicIds.length === 0 && taskIds.length === 0) return;
+
+  const attachmentsAtRisk = await db.attachment.findMany({
+    where: {
+      projectId: project.id,
+      OR: [
+        epicIds.length ? { epicId: { in: epicIds } } : undefined,
+        taskIds.length ? { taskId: { in: taskIds } } : undefined,
+      ].filter(Boolean) as object[],
+    },
+    select: { storagePath: true },
+  });
+
+  const result = {
+    purgedEpics: 0,
+    purgedTasks: 0,
+    removedBlobs: 0,
+    errors: [] as string[],
+    manual: true,
+  };
+
+  try {
+    await db.$transaction(async (tx) => {
+      if (epicIds.length > 0) {
+        await tx.epic.deleteMany({ where: { id: { in: epicIds } } });
+      }
+      if (taskIds.length > 0) {
+        await tx.task.deleteMany({ where: { id: { in: taskIds } } });
+      }
+    });
+    result.purgedEpics = epicIds.length;
+    result.purgedTasks = taskIds.length;
+  } catch (err) {
+    result.errors.push(`project bin empty: ${(err as Error).message}`);
+  }
+
+  if (result.errors.length === 0) {
+    const seenPath = new Set<string>();
+    for (const attachment of attachmentsAtRisk) {
+      if (seenPath.has(attachment.storagePath)) continue;
+      seenPath.add(attachment.storagePath);
+      const stillRef = await db.attachment.count({
+        where: { storagePath: attachment.storagePath },
+      });
+      if (stillRef === 0) {
+        try {
+          await deleteAttachmentFile({ storagePath: attachment.storagePath, otherRefs: 0 });
+          result.removedBlobs += 1;
+        } catch (err) {
+          result.errors.push(`blob ${attachment.storagePath}: ${(err as Error).message}`);
+        }
+      }
+    }
+  }
+
+  await db.activityLog
+    .create({
+      data: {
+        projectId: project.id,
+        userId: actorId,
+        kind: "bin.purge",
+        payload: JSON.stringify(result),
+      },
+    })
+    .catch((err) => {
+      result.errors.push(`audit: ${(err as Error).message}`);
+    });
+
+  revalidatePath(`/projects/${slug}`);
+  revalidatePath(`/projects/${slug}/epics`);
   revalidatePath(`/projects/${slug}/bin`);
 }

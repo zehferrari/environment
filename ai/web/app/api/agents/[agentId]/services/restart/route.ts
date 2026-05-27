@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { canEditProfile } from "@/lib/agents/profile";
+import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +24,19 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
     cache: "no-store",
   });
   const text = await res.text();
+  await db.activityLog.create({
+    data: {
+      userId: session.user.id,
+      kind: res.ok ? "agent.service.restart" : "agent.service.restart_failed",
+      targetAgent: agentId,
+      payload: JSON.stringify({
+        driver: "atlas",
+        service: body.service,
+        status: res.status,
+        error: res.ok ? null : text.slice(0, 500),
+      }),
+    },
+  });
   return new NextResponse(text, {
     status: res.status,
     headers: { "content-type": res.headers.get("content-type") ?? "application/json" },

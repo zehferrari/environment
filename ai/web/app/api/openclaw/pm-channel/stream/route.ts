@@ -10,6 +10,10 @@ import {
   publishPmChannelStreamEvent,
   type PmChannelStreamEventKind,
 } from "@/lib/agents/pm-channel-stream";
+import {
+  pmChannelTargetHasDurableReply,
+  recordPmChannelRunEvent,
+} from "@/lib/agents/pm-channel-runs";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -111,12 +115,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  if (event === "error" && await pmChannelTargetHasDurableReply(target)) {
+    const state = publishPmChannelStreamEvent({ target, event: "done" });
+    await recordPmChannelRunEvent({ target, event: "done" });
+    return NextResponse.json({ ok: true, key: state.key, status: state.status });
+  }
+
   const state = publishPmChannelStreamEvent({
     target,
     event,
     text: stringField(payload.text, 40_000),
     delta: stringField(payload.delta, 8_000),
     replace: payload.replace === true,
+    error: stringField(payload.error, 2_000),
+  });
+  await recordPmChannelRunEvent({
+    target,
+    event,
     error: stringField(payload.error, 2_000),
   });
   if (event === "error") {

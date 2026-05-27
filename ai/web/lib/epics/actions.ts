@@ -20,7 +20,7 @@ import {
   type ActorKind,
 } from "@/lib/workflow";
 
-const EPIC_STATUSES = ["open", "done", "archived"] as const;
+const EPIC_STATUSES = ["Backlog", "Open", "Done", "Archive"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
 
 function isEpicStatus(value: unknown): value is EpicStatus {
@@ -45,6 +45,7 @@ async function loadEpicScoped(epicId: string, slug: string) {
       project: { select: { id: true, slug: true } },
       assignee: { select: { username: true } },
       actingManager: { select: { username: true } },
+      reporter: { select: { username: true } },
     },
   });
 }
@@ -58,8 +59,14 @@ export async function createEpic(formData: FormData) {
   const actingManagerId = actingManagerRaw === "" ? null : actingManagerRaw;
   const assigneeRaw = String(formData.get("assigneeId") ?? "");
   const assigneeId = assigneeRaw === "" ? null : assigneeRaw;
+  const branchRaw = String(formData.get("branchName") ?? "").trim();
+  const branchName = branchRaw === "" ? null : branchRaw;
+  const commitRaw = String(formData.get("commitPrefix") ?? "").trim();
+  const commitPrefix = commitRaw === "" ? null : commitRaw;
   if (!slug || !title) return;
   if (title.length > 200) return;
+  if (branchName !== null && branchName.length > 200) return;
+  if (commitPrefix !== null && commitPrefix.length > 200) return;
 
   const project = await db.project.findUnique({
     where: { slug },
@@ -105,6 +112,10 @@ export async function createEpic(formData: FormData) {
       description: description || null,
       actingManagerId,
       assigneeId,
+      reporterId: actor.id,
+      branchName,
+      commitPrefix,
+      statusChangedAt: new Date(),
     },
     select: { id: true, title: true },
   });
@@ -119,6 +130,9 @@ export async function createEpic(formData: FormData) {
         title: epic.title,
         actingManagerId,
         assigneeId,
+        reporterId: actor.id,
+        branchName,
+        commitPrefix,
       }),
     },
   });
@@ -287,10 +301,20 @@ export async function updateEpic(formData: FormData) {
   const descriptionRaw = String(formData.get("description") ?? "");
   const newDescription = descriptionRaw.trim() === "" ? null : descriptionRaw;
   const status = String(formData.get("status") ?? "");
+  const assigneeRaw = String(formData.get("assigneeId") ?? "");
+  const newAssigneeId = assigneeRaw === "" ? null : assigneeRaw;
   const acmRaw = String(formData.get("actingManagerId") ?? "");
   const newActingManagerId = acmRaw === "" ? null : acmRaw;
+  const reporterRaw = String(formData.get("reporterId") ?? "");
+  const newReporterId = reporterRaw === "" ? null : reporterRaw;
+  const branchRaw = String(formData.get("branchName") ?? "").trim();
+  const newBranchName = branchRaw === "" ? null : branchRaw;
+  const commitRaw = String(formData.get("commitPrefix") ?? "").trim();
+  const newCommitPrefix = commitRaw === "" ? null : commitRaw;
 
   if (status !== "" && !isEpicStatus(status)) return;
+  if (newBranchName !== null && newBranchName.length > 200) return;
+  if (newCommitPrefix !== null && newCommitPrefix.length > 200) return;
 
   const epic = await loadEpicScoped(epicId, slug);
   if (!epic || epic.project.slug !== slug) return;
@@ -316,11 +340,50 @@ export async function updateEpic(formData: FormData) {
   }
 
   // Status
-  if (status !== "" && status !== epic.status) {
+  const statusChangedAt = new Date();
+  const statusChanged = status !== "" && status !== epic.status;
+  const taskCascade = statusChanged
+    ? status === "Backlog"
+      ? "Backlog"
+      : status === "Open"
+        ? "To Do"
+        : null
+    : null;
+  if (statusChanged) {
     data.status = status;
+    data.statusChangedAt = statusChangedAt;
     activity.push({
       kind: "epic.status",
       payload: JSON.stringify({ epicId, from: epic.status, to: status }),
+    });
+  }
+
+  // Assignee (no agent self-assign; target must be active)
+  if (newAssigneeId !== epic.assigneeId) {
+    const check = checkAssignment({ actor, newAssigneeId });
+    if (!check.ok) throw new Error(check.message);
+    let toUsername: string | null = null;
+    if (newAssigneeId !== null) {
+      const row = await db.user.findUnique({
+        where: { id: newAssigneeId },
+        select: { username: true, status: true },
+      });
+      if (!row || row.status !== "active") {
+        throw new Error("Assignee not found or inactive");
+      }
+      toUsername = row.username;
+    }
+    data.assignee =
+      newAssigneeId === null
+        ? { disconnect: true }
+        : { connect: { id: newAssigneeId } };
+    activity.push({
+      kind: "epic.assign",
+      payload: JSON.stringify({
+        epicId,
+        from: epic.assignee?.username ?? null,
+        to: toUsername,
+      }),
     });
   }
 
@@ -353,10 +416,62 @@ export async function updateEpic(formData: FormData) {
     });
   }
 
+  // Reporter (active User/Agent row; defaults to creator on new epics)
+  if (newReporterId !== epic.reporterId) {
+    let toUsername: string | null = null;
+    if (newReporterId !== null) {
+      const row = await db.user.findUnique({
+        where: { id: newReporterId },
+        select: { username: true, status: true },
+      });
+      if (!row || row.status !== "active") {
+        throw new Error("Reporter not found or inactive");
+      }
+      toUsername = row.username;
+    }
+    data.reporter =
+      newReporterId === null
+        ? { disconnect: true }
+        : { connect: { id: newReporterId } };
+    activity.push({
+      kind: "epic.reporter",
+      payload: JSON.stringify({
+        epicId,
+        from: epic.reporter?.username ?? null,
+        to: toUsername,
+      }),
+    });
+  }
+
+  // Epic git defaults inherited by child tasks while their own values are blank.
+  if ((epic.branchName ?? null) !== newBranchName) {
+    data.branchName = newBranchName;
+    activity.push({
+      kind: "epic.branch",
+      payload: JSON.stringify({ from: epic.branchName ?? null, to: newBranchName }),
+    });
+  }
+  if ((epic.commitPrefix ?? null) !== newCommitPrefix) {
+    data.commitPrefix = newCommitPrefix;
+    activity.push({
+      kind: "epic.commit_prefix",
+      payload: JSON.stringify({
+        from: epic.commitPrefix ?? null,
+        to: newCommitPrefix,
+      }),
+    });
+  }
+
   if (activity.length === 0) return;
 
   await db.$transaction([
     db.epic.update({ where: { id: epicId }, data }),
+    ...(taskCascade
+      ? [db.task.updateMany({
+          where: { epicId, deletedAt: null, status: { not: "Done" } },
+          data: { status: taskCascade, statusChangedAt },
+        })]
+      : []),
     ...activity.map((a) =>
       db.activityLog.create({
         data: {
@@ -379,6 +494,7 @@ export async function createTaskInEpic(formData: FormData) {
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
   const title = String(formData.get("title") ?? "").trim();
+  const description = String(formData.get("description") ?? "").trim() || null;
   if (!slug || !epicId || !title) return;
   if (title.length > 200) return;
 
@@ -387,6 +503,8 @@ export async function createTaskInEpic(formData: FormData) {
     select: {
       id: true,
       projectId: true,
+      branchName: true,
+      commitPrefix: true,
       deletedAt: true,
       project: {
         select: {
@@ -409,11 +527,15 @@ export async function createTaskInEpic(formData: FormData) {
       projectId: epic.projectId,
       epicId: epic.id,
       title,
+      description,
       status: "Backlog",
       rank: (maxRank._max.rank ?? 0) + 1,
       statusChangedAt: new Date(),
       assigneeId: epic.project.defaultAssigneeId ?? null,
       actingManagerId: epic.project.defaultReviewerId ?? null,
+      reporterId: actor.id,
+      branchName: epic.branchName ?? null,
+      commitPrefix: epic.commitPrefix ?? null,
     },
     select: { id: true, title: true },
   });
@@ -443,11 +565,25 @@ export async function setEpicStatus(formData: FormData) {
   if (!epic || epic.project.slug !== slug) return;
   if (epic.status === status) return;
 
+  const statusChangedAt = new Date();
+  const taskCascade =
+    status === "Backlog"
+      ? "Backlog"
+      : status === "Open"
+        ? "To Do"
+        : null;
+
   await db.$transaction([
     db.epic.update({
       where: { id: epicId },
-      data: { status },
+      data: { status, statusChangedAt },
     }),
+    ...(taskCascade
+      ? [db.task.updateMany({
+          where: { epicId, deletedAt: null, status: { not: "Done" } },
+          data: { status: taskCascade, statusChangedAt },
+        })]
+      : []),
     db.activityLog.create({
       data: {
         projectId: epic.project.id,

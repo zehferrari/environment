@@ -40,14 +40,18 @@ model User {
   projectMembers              ProjectMember[]
   assignedTasks               Task[]               @relation("TaskAssignee")
   actingManagerOf             Task[]               @relation("TaskActingManager")
+  reportedTasks               Task[]               @relation("TaskReporter")
   deletedTasks                Task[]               @relation("TaskDeletedBy")
   assignedEpics               Epic[]               @relation("EpicAssignee")
   actingManagerOfEpic         Epic[]               @relation("EpicActingManager")
+  reportedEpics               Epic[]               @relation("EpicReporter")
   deletedEpics                Epic[]               @relation("EpicDeletedBy")
   comments                    Comment[]
   activity                    ActivityLog[]
   uploadedAttachments         Attachment[]
   agentChatMessages           AgentChatMessage[]   @relation("AgentChatSender")
+  archivedAgentChatRooms      AgentChatRoomArchive[] @relation("AgentChatRoomArchivedBy")
+  deletedAgentChatRoomArchives AgentChatRoomArchive[] @relation("AgentChatRoomArchiveDeletedBy")
   directAgentChatMessages     DirectAgentChatMessage[] @relation("DirectAgentChatSender")
   archivedDirectAgentChats    DirectAgentChatArchive[] @relation("DirectAgentChatArchivedBy")
   deletedDirectAgentChatArchives DirectAgentChatArchive[] @relation("DirectAgentChatArchiveDeletedBy")
@@ -150,6 +154,7 @@ model Project {
   activity     ActivityLog[]
   attachments  Attachment[]
   chatMessages AgentChatMessage[]
+  chatRoomArchives AgentChatRoomArchive[]
   directChatMessages DirectAgentChatMessage[] @relation("DirectChatProject")
   workItemProposals  WorkItemProposal[]
 
@@ -175,7 +180,8 @@ model Epic {
   project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   title           String
   description     String?
-  status          String   @default("open") // "open" | "done" | "archived"
+  status          String   @default("Backlog") // "Backlog" | "Open" | "Done" | "Archive"
+  statusChangedAt DateTime?
   // Epic-level assignee + acting manager. Independent of any Task's
   // assignee/actingManager — an Epic can be owned by one agent while its
   // tasks are assigned to others (HOMELAB-47). Same User pool as Task
@@ -185,6 +191,12 @@ model Epic {
   assignee        User?    @relation("EpicAssignee", fields: [assigneeId], references: [id])
   actingManagerId String?
   actingManager   User?    @relation("EpicActingManager", fields: [actingManagerId], references: [id])
+  reporterId      String?
+  reporter        User?    @relation("EpicReporter", fields: [reporterId], references: [id])
+  // Epic-level git defaults inherited by child Tasks when their own fields
+  // are blank. Task keeps its own branchName/commitPrefix once overridden.
+  branchName      String?
+  commitPrefix    String?
   // Soft delete (HOMELAB-48). deletedAt != null means the row is in the
   // bin; active reads filter deletedAt: null. Hard purge happens after
   // 7 days via the instrumentation interval. deletedById captures the
@@ -199,11 +211,14 @@ model Epic {
   attachments Attachment[]
   comments    Comment[]
   chats       AgentChatMessage[] @relation("EpicChat")
+  chatRoomArchives AgentChatRoomArchive[] @relation("EpicChatRoomArchive")
 
   @@index([projectId])
   @@index([status])
+  @@index([statusChangedAt])
   @@index([assigneeId])
   @@index([actingManagerId])
+  @@index([reporterId])
   @@index([deletedAt])
 }
 
@@ -233,6 +248,8 @@ model Task {
   // acting manager (see lib/workflow.ts checkActingManager).
   actingManagerId String?
   actingManager   User?    @relation("TaskActingManager", fields: [actingManagerId], references: [id])
+  reporterId      String?
+  reporter        User?    @relation("TaskReporter", fields: [reporterId], references: [id])
   // Lexorank-style ordering within column; simple Int for v1.
   rank            Int      @default(0)
   // Set on every status transition; drives the Done-column TTL filter
@@ -258,6 +275,7 @@ model Task {
   activity    ActivityLog[]
   attachments Attachment[]
   chats       AgentChatMessage[] @relation("TaskChat")
+  chatRoomArchives AgentChatRoomArchive[] @relation("TaskChatRoomArchive")
 
   @@index([projectId])
   @@index([status])
@@ -265,6 +283,7 @@ model Task {
   @@index([assigneeId])
   @@index([parentTaskId])
   @@index([actingManagerId])
+  @@index([reporterId])
   @@index([deletedAt])
 }
 
@@ -417,6 +436,46 @@ model AgentSessionBinding {
   @@index([openclawSessionId])
 }
 
+// Native OpenClaw PM-channel delivery/run state. This is the durable
+// counterpart to the in-process SSE stream cache: PM can tell whether a
+// local handoff was accepted, is streaming, completed, or failed even if
+// the browser leaves and later reconnects. For Task/Epic Discussion
+// work-item grants, this row is also the per-addressed-agent single-use
+// stamp, so All Coders messages can grant each coder independently.
+model PmChannelRun {
+  id          String    @id @default(cuid())
+  targetKey   String    @unique
+  kind        String
+  agentSlug   String
+  messageId   String
+  projectId   String?
+  taskId      String?
+  epicId      String?
+  sessionKey  String?
+  driver      String    @default("openclaw-pm-channel")
+  gatewayPort Int?
+  httpStatus  Int?
+  status      String    @default("queued") // queued | accepted | streaming | complete | failed
+  error       String?
+  acceptedAt  DateTime?
+  streamingAt DateTime?
+  completedAt DateTime?
+  failedAt    DateTime?
+  lastEventAt DateTime?
+  workItemGrantUsedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([agentSlug])
+  @@index([messageId])
+  @@index([messageId, agentSlug])
+  @@index([projectId])
+  @@index([taskId])
+  @@index([epicId])
+  @@index([status])
+  @@index([lastEventAt])
+}
+
 // ------------------------------------------------------------------
 // HOMELAB-48 agent chat — sidebar conversations between humans and a
 // specific agent, scoped to a Task XOR an Epic. The "allow description
@@ -440,6 +499,12 @@ model AgentChatMessage {
   // rather than agentId so chat history survives an Agent row being
   // soft-deactivated and the index.json deciding to re-issue.
   agentSlug            String
+  archiveId            String?
+  archive              AgentChatRoomArchive? @relation(fields: [archiveId], references: [id], onDelete: SetNull)
+  baseArchiveId        String?
+  targetType           String?
+  targetValue          String?
+  targetLabel          String?
   // The sender — a User row (humans send via their own row, agents
   // reply via their own seeded User row).
   senderUserId         String
@@ -447,6 +512,11 @@ model AgentChatMessage {
   body                 String
   allowDescriptionEdit Boolean   @default(false)
   editGrantUsedAt      DateTime?
+  // Human-authored Discussion messages grant work-item proposal capability
+  // by default. Consumption is tracked per addressed agent in PmChannelRun;
+  // this legacy message-level stamp is retained for compatibility.
+  allowWorkItemManagement Boolean @default(false)
+  workItemGrantUsedAt   DateTime?
   // Where an agent reply should be posted. "chat" means the message
   // originated in the task/epic chat sidebar; "comment" means it was
   // mirrored from a task comment so the reply should return to comments.
@@ -456,8 +526,42 @@ model AgentChatMessage {
 
   @@index([taskId, createdAt])
   @@index([epicId, createdAt])
+  @@index([taskId, archiveId, createdAt])
+  @@index([epicId, archiveId, createdAt])
+  @@index([archiveId, createdAt])
+  @@index([baseArchiveId, createdAt])
   @@index([agentSlug])
   @@index([originCommentId])
+}
+
+model AgentChatRoomArchive {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId       String?
+  task         Task?    @relation("TaskChatRoomArchive", fields: [taskId], references: [id], onDelete: Cascade)
+  epicId       String?
+  epic         Epic?    @relation("EpicChatRoomArchive", fields: [epicId], references: [id], onDelete: Cascade)
+  archivedById String
+  archivedBy   User     @relation("AgentChatRoomArchivedBy", fields: [archivedById], references: [id])
+  deletedById  String?
+  deletedBy    User?    @relation("AgentChatRoomArchiveDeletedBy", fields: [deletedById], references: [id])
+  parentArchiveId String?
+  summary      String
+  startedAt    DateTime
+  endedAt      DateTime
+  messageCount Int      @default(0)
+  deletedAt    DateTime?
+  createdAt    DateTime @default(now())
+  messages     AgentChatMessage[]
+
+  @@index([projectId, taskId, deletedAt, createdAt])
+  @@index([projectId, epicId, deletedAt, createdAt])
+  @@index([taskId, createdAt])
+  @@index([epicId, createdAt])
+  @@index([parentArchiveId])
+  @@index([archivedById])
+  @@index([deletedById])
 }
 
 // ------------------------------------------------------------------

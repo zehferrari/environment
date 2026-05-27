@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { restoreTask, restoreEpic } from "@/lib/bin/actions";
+import EmptyBinButton from "./empty-bin-button";
 
 export const dynamic = "force-dynamic";
 
@@ -63,15 +64,19 @@ export default async function BinPage({
       },
     }),
   ]);
+  const hasDeletedRows = deletedEpics.length > 0 || deletedTasks.length > 0;
 
   return (
     <div className="space-y-6">
-      <p className="text-xs text-[var(--color-text-muted)]">
-        Soft-deleted Epics and Tasks. Anything left here for more than{" "}
-        {PURGE_TTL_DAYS} days is hard-deleted by the hourly purge job.
-      </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <p className="max-w-2xl text-xs text-[var(--color-text-muted)]">
+          Soft-deleted Epics and Tasks. Anything left here for more than{" "}
+          {PURGE_TTL_DAYS} days is hard-deleted by the hourly purge job.
+        </p>
+        <EmptyBinButton projectSlug={slug} disabled={!hasDeletedRows} />
+      </div>
 
-      {deletedEpics.length === 0 && deletedTasks.length === 0 ? (
+      {!hasDeletedRows ? (
         <p className="rounded-xl border border-dashed border-[var(--color-line)] p-6 text-center text-sm text-[var(--color-text-muted)]">
           The bin is empty.
         </p>

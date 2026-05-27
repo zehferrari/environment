@@ -40,18 +40,35 @@ and posts final visible replies back to PM.
 events, but chat, task-comment, and epic-chat replies should not use
 `/hooks/wake` or prompt-visible callback contracts.
 
+PM stores every native-channel turn in `PmChannelRun` as soon as it is
+queued locally. The run moves through `accepted`, `streaming`,
+`complete`, or `failed` from the gateway response and stream/reply
+callbacks, so reconnecting browsers can resume from durable state rather
+than polling for a reply. A terminal stream `done` is not success by
+itself: PM only marks a run `complete` after a durable final reply is
+posted to `/api/openclaw/pm-channel/reply`. If a channel turn ends
+without that reply, PM marks the run `failed` and the browser keeps a
+visible failure bubble instead of waiting indefinitely.
+
 ## Task, Epic, And Comment Chat
 
 PM creates an `AgentSessionBinding` for every direct/task/epic
-conversation and sends that `pm:` key to the OpenClaw `pm` channel.
-OpenClaw owns the chat session from there: inbound recording, model
-dispatch, and final reply delivery are channel behavior, not
-instructions shown to the model.
+conversation. Direct chats use that stable `pm:` key for continuity.
+Task, Epic, and task-comment turns derive a per-message key from the
+binding so each PM request starts with a clean OpenClaw transcript while
+still carrying the complete DB-backed PM context packet. OpenClaw owns
+inbound recording, model dispatch, and final reply delivery from there;
+those are channel behavior, not instructions shown to the model.
 
 Task chat/comment payloads still include a PM context packet in
-`contextText`. PM is the source of truth for task, Epic, comments,
-activity, and attachment extracts; OpenClaw is the owner of the channel
-session and communication lifecycle.
+`contextText`, delivered to OpenClaw as supplemental context rather than
+duplicated into the visible wake text. PM is the source of truth for
+task, Epic, comments, activity, and attachment extracts; OpenClaw is the
+owner of the channel session and communication lifecycle.
+
+Task comments addressed to an agent, assigned to an agent, or mentioning
+an agent use the same native channel directly. They do not enqueue a
+legacy `task.commented` / `task.mentioned` wake through `pm-consumer`.
 
 Replies must stay in the origin channel:
 
@@ -85,6 +102,11 @@ The stream route is `POST /api/openclaw/pm-channel/stream` with the same
 Bearer token. PM treats stream chunks as ephemeral UI state; the final
 durable answer still comes through the reply route.
 
+The stream endpoint also accepts terminal `done` and `error` events.
+`done` is only a stream lifecycle marker. It must follow an already
+delivered final reply; otherwise PM treats the turn as failed because no
+chat/comment record exists to preserve for later page loads.
+
 The OpenClaw `pm` channel posts final visible replies to PM:
 
 ```json
@@ -105,6 +127,21 @@ The route is `POST /api/openclaw/pm-channel/reply` with
 target and active agent user before writing the reply to direct chat,
 task chat, epic chat, or task comments.
 
+Task and Epic Discussion replies must use two markdown sections:
+
+```markdown
+## Section A - Full Response
+<complete final formatted answer>
+
+## Section B - Short Summary
+<short direct summary focused on the human's latest request>
+```
+
+The browser shows Section B by default in saved Discussion bubbles and
+lets the user flip to Section A. Live streaming and pending reply blocks
+show Section A. PM normalizes non-conforming Discussion replies at the
+callback boundary so the UI always has both display modes.
+
 ## Context Requirements
 
 Agents should answer from the whole provided context, not only the last
@@ -114,7 +151,9 @@ line. The PM prompt can include:
   parent/subtask context;
 - Epic title, status, description, assignee, and acting-manager context;
 - recent task comments;
-- relevant task chat history for the addressed agent;
+- full active Task/Epic Discussion history for the item once the agent
+  is invited or mentioned, including other agents' replies and routing
+  labels such as `All Coders` or a specific target;
 - related task activity;
 - task and Epic attachment metadata;
 - cached text excerpts for supported text-like attachments.
@@ -130,20 +169,21 @@ identified by filename and `/api/attachments/<id>` path.
 
 ## Work-Item Proposals (propose → approve)
 
-Implemented for direct PM chats attached to a project. On
-`/agents/<slug>/chat` the user selects a target project; every
-human-authored project-scoped direct message then carries the project
-environment (repo path, git identity, picker defaults, existing epics +
-open tasks) plus a single-use proposal grant. The agent must use that
-grant only when the current human message directly asks for project
-work-item changes. The agent does NOT mutate the board — it submits a
-typed change-set:
+Implemented for direct PM chats attached to a project and for Task/Epic
+Discussion messages. Every human-authored project-scoped message carries
+the project environment (repo path, git identity, picker defaults,
+existing epics + open tasks) plus a single-use proposal grant. In
+Task/Epic Discussion, the grant is consumed per addressed agent so an
+`All Coders` message can let each coder submit one proposal. The agent
+must use that grant only when the current human message directly asks for
+project work-item changes. The agent does NOT mutate the board — it
+submits a typed change-set:
 
 ```text
 POST http://127.0.0.1:3000/api/agent/projects/<projectId>/proposals
 Content-Type: application/json
 {
-  "grantMessageId": "<DirectAgentChatMessage id supplied in the turn>",
+  "grantMessageId": "<DirectAgentChatMessage or AgentChatMessage id supplied in the turn>",
   "token": "<one-shot HMAC grant token supplied in the turn>",
   "planId": "<unique id for this proposal; re-POST is idempotent>",
   "summary": "<one-line summary>",
@@ -158,9 +198,10 @@ existing items are addressed by their real id from the project-environment
 block. `assignee` / `actingManager` are usernames (or `null` to unset).
 
 PM validates the grant (single-use, bound to project + agent + message),
-then dry-run-validates every op against `lib/workflow.ts` **as the
-agent** — no self-assign, no self-review, no moving a task into/out of
-Review/Done; new tasks land in Backlog, new epics open. The proposal
+then dry-run-validates every op under human-triggered grant semantics:
+active principals, project scoping, hierarchy, known statuses, and valid
+task-status transitions are checked; new tasks land in Backlog, new
+epics open. The proposal
 endpoint is token-scoped and intentionally does not require a browser
 session; middleware lets the request reach the route handler, where the
 HMAC grant and active agent are verified. A valid change-set is stored
@@ -206,8 +247,8 @@ Still future:
 
 - create projects;
 - upload or attach files from an agent turn;
-- agent-initiated transitions into Review/Done (these remain explicit
-  human actions today, even via a proposal).
+- direct agent-initiated transitions outside a human-triggered proposal
+  grant.
 
 Each such action should follow the same shape:
 
