@@ -56,14 +56,18 @@ only the served **code**.
 ### From the browser (monitor-driven)
 
 A git/worktree-exposed project's **Settings → Worktree live preview** (admin
-only). Lists worktrees, marks the live one, and a **Serve live** button
-builds + switches. (Shown only for projects whose `repositoryPath` is a git
-checkout exposed to the worktree approach — `lib/projects/worktree.ts`.)
+only). Lists that project's **own** repo worktrees, marks the live one, and a
+**Serve live** button builds + switches. It is shown only when the project's
+`repositoryPath` is a git checkout exposed to the worktree approach
+(`lib/projects/worktree.ts`) **and** that repo has worktrees to choose from —
+otherwise the block is hidden. Options are scoped by repo identity
+(`lib/deploy/repo-key.ts`).
 
-> **TODO (later):** today the panel drives the shared `pm.service` and the
-> `environment` worktrees regardless of which project it's shown on. The full
-> per-project solution — a dedicated service per project repo so each can be
-> built + served independently — is not yet implemented.
+> **TODO (later):** switching still routes through the single shared
+> `pm.service`, so today the panel only resolves to real options for the repo
+> that service serves (the `environment` repo). The full per-project solution —
+> a dedicated service per project repo so each can be built + served
+> independently — is not yet implemented.
 
 The web app (runs as the monitor) is **unprivileged** here: it only writes a
 request into the spool and polls a state file. A separate **runner service**

@@ -3,17 +3,26 @@
 import { useEffect, useState, useTransition } from "react";
 import { requestWorktreeSwitch } from "@/lib/deploy/actions";
 import type { SwitchState } from "@/lib/deploy/worktrees";
+import { worktreeRepoKey } from "@/lib/deploy/repo-key";
 
 const POLL_BUSY_MS = 2000;
 const POLL_IDLE_MS = 5000;
 
-export default function WorktreeSwitcher({ initial }: { initial: SwitchState }) {
+export default function WorktreeSwitcher({
+  initial,
+  repoKey,
+}: {
+  initial: SwitchState;
+  // Only worktrees belonging to this project's repo are shown.
+  repoKey: string;
+}) {
   const [state, setState] = useState<SwitchState>(initial);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
   const job = state.job;
   const inProgress = job.state === "queued" || job.state === "building";
+  const worktrees = state.worktrees.filter((w) => worktreeRepoKey(w.path) === repoKey);
 
   // Poll the runner-maintained state. Tolerant of network errors — the
   // pm.service restart at the end of a switch will drop a few polls, then the
@@ -100,7 +109,7 @@ export default function WorktreeSwitcher({ initial }: { initial: SwitchState }) 
       ) : null}
 
       <ul className="divide-y divide-[var(--color-line)] overflow-hidden rounded-xl border border-[var(--color-line)]">
-        {state.worktrees.map((w) => (
+        {worktrees.map((w) => (
           <li key={w.path} className="flex items-center gap-3 px-3 py-2.5">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">

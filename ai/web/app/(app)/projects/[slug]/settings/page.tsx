@@ -10,6 +10,7 @@ import ActivityAgenda from "@/components/activity-agenda";
 import { auth } from "@/lib/auth";
 import { isWorktreeExposedRepo } from "@/lib/projects/worktree";
 import { readSwitchState } from "@/lib/deploy/worktrees";
+import { worktreeRepoKey } from "@/lib/deploy/repo-key";
 import WorktreeSwitcher from "@/components/worktree-switcher";
 
 export const dynamic = "force-dynamic";
@@ -33,10 +34,17 @@ export default async function ProjectSettingsPage({
 
   // Per-project "live preview" switcher: admin only, and only for projects
   // whose repo is a git checkout exposed to the shared worktree approach.
+  // Scope the worktree options to THIS project's repo, and hide the block
+  // entirely when that repo has no worktrees to choose from.
   const session = await auth();
   const isAdmin = session?.user?.name === "zeh";
-  const showSwitcher = isAdmin && isWorktreeExposedRepo(project.repositoryPath);
-  const switchState = showSwitcher ? await readSwitchState() : null;
+  const repoKey = worktreeRepoKey(project.repositoryPath);
+  const eligible = isAdmin && isWorktreeExposedRepo(project.repositoryPath) && !!repoKey;
+  const switchState = eligible ? await readSwitchState() : null;
+  const relatedWorktrees = switchState
+    ? switchState.worktrees.filter((w) => worktreeRepoKey(w.path) === repoKey)
+    : [];
+  const showSwitcher = eligible && switchState !== null && relatedWorktrees.length > 0;
 
   const [principals, activity] = await Promise.all([
     listAssignablePrincipals(),
@@ -209,16 +217,15 @@ export default async function ProjectSettingsPage({
             </div>
             {/* TODO (later): implement the full per-project pm.service serving
                 solution — a dedicated service per project so each repo can be
-                built + served independently. For now this control operates on
-                the shared PM app service (pm.service) and lists the
-                environment repo's worktrees. */}
+                built + served independently. For now switching routes through
+                the single shared PM app service (pm.service). */}
             <div className="rounded-lg border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-xs leading-5 text-[var(--color-warn)]">
               <span className="font-semibold">TODO (later):</span> implement the
               full per-project <code>pm.service</code> serving solution (one
-              service per project repo). For now this controls the shared PM app
-              service and lists the <code>environment</code> worktrees.
+              service per project repo). For now switching routes through the
+              single shared PM app service.
             </div>
-            <WorktreeSwitcher initial={switchState} />
+            <WorktreeSwitcher initial={switchState} repoKey={repoKey ?? ""} />
           </section>
         ) : null}
       </div>
