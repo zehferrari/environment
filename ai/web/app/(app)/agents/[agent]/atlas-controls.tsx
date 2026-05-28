@@ -2,8 +2,13 @@
 
 import { useState } from "react";
 import type { ControlValue } from "@/lib/agents/effective-config";
+import ConfirmPopup from "@/components/confirm-popup";
 
 type ServiceRow = { name: string; status?: string };
+
+type PendingPrompt =
+  | { kind: "toggle"; service: ServiceRow; enabled: boolean }
+  | { kind: "restart"; serviceName: string };
 
 type Props = {
   agent: string;
@@ -38,6 +43,7 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
   const [message, setMessage] = useState<string | null>(null);
   const [credIntegration, setCredIntegration] = useState<string | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
+  const [pending, setPending] = useState<PendingPrompt | null>(null);
 
   async function toggle(kind: "integrations" | "capabilities", key: string, value: boolean) {
     if (!canEdit) return;
@@ -64,10 +70,8 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
     }
   }
 
-  async function toggleService(service: ServiceRow, enabled: boolean) {
+  async function runToggleService(service: ServiceRow, enabled: boolean) {
     if (!canEdit) return;
-    const verb = enabled ? "enable/start" : "disable/stop";
-    if (!window.confirm(`${verb} ${service.name} for ${agent}?`)) return;
     setBusy(`service-toggle:${service.name}`);
     setMessage(null);
     const prev = localServices;
@@ -88,9 +92,8 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
     }
   }
 
-  async function restart(service: string) {
+  async function runRestart(service: string) {
     if (!canEdit) return;
-    if (!window.confirm(`Restart ${service} for ${agent}? This will momentarily interrupt it.`)) return;
     setBusy(`service:${service}`);
     setMessage(null);
     try {
@@ -157,8 +160,8 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
               const busyToggle = busy === `service-toggle:${svc.name}`;
               return (
                 <span key={svc.name} className={`inline-flex items-center justify-between overflow-hidden rounded-lg border ${enabled ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10 text-[var(--color-ok)]" : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]"}`} title={`${svc.name}: ${svc.status ?? "unknown"}`}>
-                  <button type="button" disabled={!canEdit || busyToggle} onClick={() => toggleService(svc, !enabled)} className="px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50">{serviceLabel(svc.name)}: {enabled ? "enabled" : "disabled"}</button>
-                  <button type="button" disabled={!canEdit || busy === `service:${svc.name}`} onClick={() => restart(svc.name)} className="border-l border-current/20 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50" title={`Restart ${svc.name}`}>↻</button>
+                  <button type="button" disabled={!canEdit || busyToggle} onClick={() => setPending({ kind: "toggle", service: svc, enabled: !enabled })} className="px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50">{serviceLabel(svc.name)}: {enabled ? "enabled" : "disabled"}</button>
+                  <button type="button" disabled={!canEdit || busy === `service:${svc.name}`} onClick={() => setPending({ kind: "restart", serviceName: svc.name })} className="border-l border-current/20 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50" title={`Restart ${svc.name}`}>↻</button>
                 </span>
               );
             })}
@@ -189,6 +192,42 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
           </div>
         </div>
       ) : null}
+      <ConfirmPopup
+        open={pending !== null}
+        title={
+          pending?.kind === "restart"
+            ? `Restart ${pending.serviceName}?`
+            : pending?.kind === "toggle"
+              ? `${pending.enabled ? "Enable/start" : "Disable/stop"} ${pending.service.name}?`
+              : ""
+        }
+        description={
+          pending?.kind === "restart"
+            ? `Restart ${pending.serviceName} for ${agent}? This will momentarily interrupt it.`
+            : pending?.kind === "toggle"
+              ? `${pending.enabled ? "Enable/start" : "Disable/stop"} ${pending.service.name} for ${agent}?`
+              : null
+        }
+        confirmLabel={
+          pending?.kind === "restart"
+            ? "Restart"
+            : pending?.kind === "toggle"
+              ? pending.enabled
+                ? "Enable"
+                : "Disable"
+              : "Confirm"
+        }
+        danger={pending?.kind === "toggle" && !pending.enabled}
+        busy={busy !== null}
+        onConfirm={async () => {
+          if (!pending) return;
+          const next = pending;
+          setPending(null);
+          if (next.kind === "toggle") await runToggleService(next.service, next.enabled);
+          else await runRestart(next.serviceName);
+        }}
+        onCancel={() => setPending(null)}
+      />
     </div>
   );
 }

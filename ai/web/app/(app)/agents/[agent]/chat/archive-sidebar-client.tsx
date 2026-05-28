@@ -8,6 +8,11 @@ import {
   emptyDirectAgentChatBin,
   updateDirectAgentArchiveTitle,
 } from "@/lib/agents/direct-chat-actions";
+import ConfirmPopup from "@/components/confirm-popup";
+
+type PendingPrompt =
+  | { kind: "empty-bin" }
+  | { kind: "delete-archive"; archiveId: string };
 
 interface Archive {
   id: string;
@@ -75,6 +80,7 @@ export default function ArchiveSidebarClient({
 }: ArchiveSidebarClientProps) {
   const [viewMode, setViewMode] = useState<"archives" | "bin">("archives");
   const [isPending, startTransition] = useTransition();
+  const [pending, setPending] = useState<PendingPrompt | null>(null);
 
   // Inline rename states
   const [editingArchiveId, setEditingArchiveId] = useState<string | null>(null);
@@ -208,21 +214,34 @@ export default function ArchiveSidebarClient({
   };
 
   const handleEmptyBin = () => {
-    if (
-      !confirm(
-        "Permanently empty the bin? This will erase all soft-deleted chats and files and cannot be undone."
-      )
-    ) {
-      return;
-    }
+    setPending({ kind: "empty-bin" });
+  };
+
+  const runEmptyBin = () => {
     const formData = new FormData();
     formData.append("agentSlug", slug);
-
     startTransition(async () => {
       try {
         await emptyDirectAgentChatBin(formData);
       } catch (err) {
         console.error("Empty bin error", err);
+      } finally {
+        setPending(null);
+      }
+    });
+  };
+
+  const runDeleteArchive = (archiveId: string) => {
+    const formData = new FormData();
+    formData.append("agentSlug", slug);
+    formData.append("archiveId", archiveId);
+    startTransition(async () => {
+      try {
+        await deleteDirectAgentArchive(formData);
+      } catch (err) {
+        console.error("Delete archive error", err);
+      } finally {
+        setPending(null);
       }
     });
   };
@@ -520,33 +539,20 @@ export default function ArchiveSidebarClient({
                           )}
                         </span>
                         
-                        <form
-                          onSubmit={(e) => {
-                            e.preventDefault();
-                            if (confirm("Move this archive to the bin? It will be deleted in 7 days.")) {
-                              const formData = new FormData(e.currentTarget);
-                              startTransition(async () => {
-                                await deleteDirectAgentArchive(formData);
-                              });
-                            }
-                          }}
+                        <button
+                          type="button"
+                          disabled={hasChildren || isPending}
+                          onClick={() => setPending({ kind: "delete-archive", archiveId: archive.id })}
+                          aria-label={hasChildren ? "Cannot delete parent of a continuation" : "Delete archived chat"}
+                          title={hasChildren ? "Cannot delete: this archive has active continuation children" : "Delete archived chat"}
+                          className={`rounded px-1.5 py-0.5 text-[8px] font-medium transition-all ${
+                            hasChildren
+                              ? "bg-[var(--color-line)]/20 text-[var(--color-text-muted)]/40 border border-transparent cursor-not-allowed"
+                              : "border border-[var(--color-line)] text-[var(--color-text-muted)] hover:border-[var(--color-crit)] hover:bg-[var(--color-crit)]/[0.04] hover:text-[var(--color-crit)] cursor-pointer"
+                          }`}
                         >
-                          <input type="hidden" name="agentSlug" value={slug} />
-                          <input type="hidden" name="archiveId" value={archive.id} />
-                          <button
-                            type="submit"
-                            disabled={hasChildren || isPending}
-                            aria-label={hasChildren ? "Cannot delete parent of a continuation" : "Delete archived chat"}
-                            title={hasChildren ? "Cannot delete: this archive has active continuation children" : "Delete archived chat"}
-                            className={`rounded px-1.5 py-0.5 text-[8px] font-medium transition-all ${
-                              hasChildren 
-                                ? "bg-[var(--color-line)]/20 text-[var(--color-text-muted)]/40 border border-transparent cursor-not-allowed" 
-                                : "border border-[var(--color-line)] text-[var(--color-text-muted)] hover:border-[var(--color-crit)] hover:bg-[var(--color-crit)]/[0.04] hover:text-[var(--color-crit)] cursor-pointer"
-                            }`}
-                          >
-                            {hasChildren ? "Locked" : "Delete"}
-                          </button>
-                        </form>
+                          {hasChildren ? "Locked" : "Delete"}
+                        </button>
                       </div>
                     </>
                   )}
@@ -632,6 +638,32 @@ export default function ArchiveSidebarClient({
           </button>
         </div>
       )}
+
+      <ConfirmPopup
+        open={pending !== null}
+        title={
+          pending?.kind === "empty-bin"
+            ? "Empty the trash bin"
+            : pending?.kind === "delete-archive"
+              ? "Move archive to bin"
+              : ""
+        }
+        description={
+          pending?.kind === "empty-bin"
+            ? "Permanently empty the bin? This will erase all soft-deleted chats and files and cannot be undone."
+            : pending?.kind === "delete-archive"
+              ? "Move this archive to the bin? It will be permanently deleted in 7 days."
+              : null
+        }
+        confirmLabel={pending?.kind === "empty-bin" ? "Empty Bin" : "Move to bin"}
+        danger
+        busy={isPending}
+        onConfirm={() => {
+          if (pending?.kind === "empty-bin") runEmptyBin();
+          else if (pending?.kind === "delete-archive") runDeleteArchive(pending.archiveId);
+        }}
+        onCancel={() => setPending(null)}
+      />
     </aside>
   );
 }

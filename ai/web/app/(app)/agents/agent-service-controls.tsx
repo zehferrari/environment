@@ -2,6 +2,11 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import ConfirmPopup from "@/components/confirm-popup";
+
+type PendingPrompt =
+  | { kind: "toggle"; service: AgentService; enabled: boolean }
+  | { kind: "restart"; service: AgentService };
 
 export type AgentService = {
   name: string;
@@ -30,9 +35,9 @@ export default function AgentServiceControls({
   const [rows, setRows] = useState(services);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingPrompt | null>(null);
 
-  async function toggle(service: AgentService, enabled: boolean) {
-    if (!window.confirm(`${enabled ? "Start" : "Stop"} ${service.name} for ${agent}?`)) return;
+  async function runToggle(service: AgentService, enabled: boolean) {
     setBusy(`toggle:${service.name}`);
     setMessage(null);
     const before = rows;
@@ -58,8 +63,7 @@ export default function AgentServiceControls({
     }
   }
 
-  async function restart(service: AgentService) {
-    if (!window.confirm(`Restart ${service.name} for ${agent}?`)) return;
+  async function runRestart(service: AgentService) {
     setBusy(`restart:${service.name}`);
     setMessage(null);
     try {
@@ -111,7 +115,7 @@ export default function AgentServiceControls({
                 <button
                   type="button"
                   disabled={toggling}
-                  onClick={() => toggle(service, !active)}
+                  onClick={() => setPending({ kind: "toggle", service, enabled: !active })}
                   className={`rounded-md p-1.5 border transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
                     active
                       ? "border-[var(--color-line)] bg-[var(--color-panel)] text-[var(--color-text-muted)] hover:border-[var(--color-crit)]/30 hover:bg-[var(--color-crit)]/[0.04] hover:text-[var(--color-crit)]"
@@ -128,7 +132,7 @@ export default function AgentServiceControls({
                 <button
                   type="button"
                   disabled={restarting}
-                  onClick={() => restart(service)}
+                  onClick={() => setPending({ kind: "restart", service })}
                   className="rounded-md border border-[var(--color-line)] p-1.5 text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)] transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                   title={`Restart ${labelFor(service.name)}`}
                 >
@@ -144,6 +148,42 @@ export default function AgentServiceControls({
           {message}
         </p>
       ) : null}
+      <ConfirmPopup
+        open={pending !== null}
+        title={
+          pending?.kind === "restart"
+            ? `Restart ${labelFor(pending.service.name)}?`
+            : pending?.kind === "toggle"
+              ? `${pending.enabled ? "Start" : "Stop"} ${labelFor(pending.service.name)}?`
+              : ""
+        }
+        description={
+          pending?.kind === "restart"
+            ? `Restart ${pending.service.name} for ${agent}? This will momentarily interrupt it.`
+            : pending?.kind === "toggle"
+              ? `${pending.enabled ? "Start" : "Stop"} ${pending.service.name} for ${agent}?`
+              : null
+        }
+        confirmLabel={
+          pending?.kind === "restart"
+            ? "Restart"
+            : pending?.kind === "toggle"
+              ? pending.enabled
+                ? "Start"
+                : "Stop"
+              : "Confirm"
+        }
+        danger={pending?.kind === "toggle" && !pending.enabled}
+        busy={busy !== null}
+        onConfirm={async () => {
+          if (!pending) return;
+          const next = pending;
+          setPending(null);
+          if (next.kind === "toggle") await runToggle(next.service, next.enabled);
+          else await runRestart(next.service);
+        }}
+        onCancel={() => setPending(null)}
+      />
     </div>
   );
 }

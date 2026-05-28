@@ -30,6 +30,7 @@ import {
 } from "@/components/message-avatar";
 import { formatGridDate } from "@/lib/date-format";
 import { bulkBinTasks } from "@/lib/bin/actions";
+import ConfirmPopup from "@/components/confirm-popup";
 
 type BoardActor = MessageActor & { id: string };
 
@@ -87,7 +88,8 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
   const [moveError, setMoveError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkTarget, setBulkTarget] = useState("To Do");
-  const [, startTransition] = useTransition();
+  const [isPending, startTransition] = useTransition();
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   // Server-render and first client-render both start hidden so React
   // hydration matches; the stored preference (if any) is applied in a
   // post-mount effect, which is a normal state update and not a
@@ -259,9 +261,15 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
 
   function bulkDeleteSelected() {
     if (selectedIds.size === 0) return;
-    if (!confirm(`Are you sure you want to delete these ${selectedIds.size} task(s)?`)) return;
+    setConfirmDeleteOpen(true);
+  }
 
+  function performBulkDelete() {
     const ids = Array.from(selectedIds);
+    if (ids.length === 0) {
+      setConfirmDeleteOpen(false);
+      return;
+    }
     const previousItems = items;
     setItems((prev) => prev.filter((task) => !selectedIds.has(task.id)));
     setMoveError(null);
@@ -270,9 +278,11 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       try {
         await bulkBinTasks(ids, projectSlug);
         setSelectedIds(new Set());
+        setConfirmDeleteOpen(false);
       } catch (err) {
         setItems(previousItems);
         setMoveError((err as Error).message);
+        setConfirmDeleteOpen(false);
       }
     });
   }
@@ -365,6 +375,16 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >
+      <ConfirmPopup
+        open={confirmDeleteOpen}
+        title="Delete selected tasks"
+        description={`Move ${selectedIds.size} task${selectedIds.size === 1 ? "" : "s"} to the bin? They'll be permanently deleted after the bin TTL elapses.`}
+        confirmLabel="Move to bin"
+        danger
+        busy={isPending}
+        onConfirm={performBulkDelete}
+        onCancel={() => setConfirmDeleteOpen(false)}
+      />
       {moveError ? (
         <div
           role="alert"
@@ -850,7 +870,7 @@ function boardActorForTask(task: Task): BoardActor | null {
   if (task.status === "Review") {
     return task.reviewer ?? task.manager ?? task.reporter;
   }
-  if (task.status === "Done") return task.assignee ?? task.reporter;
+  if (task.status === "Done") return task.reporter ?? task.assignee;
   return task.reporter ?? task.assignee ?? task.reviewer ?? task.manager;
 }
 

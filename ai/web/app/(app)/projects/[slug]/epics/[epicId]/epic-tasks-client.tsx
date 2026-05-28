@@ -3,6 +3,7 @@
 import { useState, useEffect, useTransition } from "react";
 import SortableTaskList from "@/components/sortable-task-list";
 import { bulkBinTasks } from "@/lib/bin/actions";
+import ConfirmPopup from "@/components/confirm-popup";
 
 const TASK_STATUS_ORDER = ["Backlog", "To Do", "In Progress", "Review", "Done"];
 
@@ -21,7 +22,8 @@ export default function EpicTasksClient({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastCheckedId, setLastCheckedId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [, startTransition] = useTransition();
+  const [isPending, startTransition] = useTransition();
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   useEffect(() => {
     setTasks(initialTasks);
@@ -92,9 +94,15 @@ export default function EpicTasksClient({
 
   function bulkDeleteSelected() {
     if (selectedIds.size === 0) return;
-    if (!confirm(`Are you sure you want to delete these ${selectedIds.size} task(s)?`)) return;
+    setConfirmDeleteOpen(true);
+  }
 
+  function performBulkDelete() {
     const ids = Array.from(selectedIds);
+    if (ids.length === 0) {
+      setConfirmDeleteOpen(false);
+      return;
+    }
     const previousTasks = tasks;
     setTasks((prev) => prev.filter((t) => !selectedIds.has(t.id)));
     setError(null);
@@ -103,9 +111,11 @@ export default function EpicTasksClient({
       try {
         await bulkBinTasks(ids, projectSlug);
         setSelectedIds(new Set());
+        setConfirmDeleteOpen(false);
       } catch (err) {
         setTasks(previousTasks);
         setError((err as Error).message);
+        setConfirmDeleteOpen(false);
       }
     });
   }
@@ -143,6 +153,17 @@ export default function EpicTasksClient({
           </div>
         </div>
       )}
+
+      <ConfirmPopup
+        open={confirmDeleteOpen}
+        title="Delete selected tasks"
+        description={`Move ${selectedCount} task${selectedCount === 1 ? "" : "s"} to the bin? They'll be permanently deleted after the bin TTL elapses.`}
+        confirmLabel="Move to bin"
+        danger
+        busy={isPending}
+        onConfirm={performBulkDelete}
+        onCancel={() => setConfirmDeleteOpen(false)}
+      />
 
       <div className="space-y-3">
         {TASK_STATUS_ORDER.map((s) => {
