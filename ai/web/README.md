@@ -70,7 +70,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/login`, `app/rotate-password` | unauthenticated routes (forced rotation on first login). |
 | `app/(app)/projects` | projects list + inline create. |
 | `app/(app)/projects/bin` | project-level soft-delete bin — restores whole projects within the 30-day TTL. |
-| `app/(app)/projects/[slug]` | kanban board (four workflow columns + a separate Backlog table, drag-and-drop, Backlog show/hide toggle); per-project tab bar (`project-tabs.tsx` in `layout.tsx`: Board · Epics · Library · Settings · Bin). Done cards older than `doneTtlDays` drop off the board. Task cards show assignee + `updated` time. |
+| `app/(app)/projects/[slug]` | kanban board (four workflow columns + a separate Backlog table, drag-and-drop, Backlog show/hide toggle); per-project tab bar (`project-tabs.tsx` in `layout.tsx`: Board · Epics · Library · Settings · Bin). Done cards older than `doneTtlDays` drop off the board. Task cards show the current workflow actor + `updated` time; Done cards show the reporter. |
 | `app/(app)/projects/[slug]/tasks/[taskId]` | task editor — two-column. Main: inline title, description editor, sub-tasks, attachments, comments. Sidebar: status, assignee, reviewer, epic picker, parent, dates. |
 | `app/(app)/projects/[slug]/epics` | epic list with status filter (open/done/archived) + inline create (title + description + Acting Manager picker, then redirects into detail for attachments). |
 | `app/(app)/projects/[slug]/epics/[epicId]` | epic detail — assignee + acting manager (Epic keeps that label), status, attachments, tasks grouped by their own status, chat sidebar, Delete. |
@@ -241,14 +241,18 @@ Backlog is a planning/opinion state: assigning or reassigning an agent
 there sends the agent a task-context PM-channel turn and requires a
 task-comment implementation plan/opinion, but does not authorize work.
 `To Do` is the approval-to-execute state: the assigned agent must move
-the task to `In Progress` and start immediately. `Review` is reserved
-for completed implementation review.
+the task to `In Progress` and start immediately without posting a
+visible acknowledgement unless there is new task information.
+`Review` is reserved for completed implementation review; the resolved
+reviewer moves satisfied work to `Done` without approval-only comments,
+or leaves concise feedback/blockers while the task stays in `Review`.
 Server-side enforcement lives in `lib/workflow.ts`:
 `checkStatusTransition`, `checkAssignment`, `checkHierarchy`,
 `checkActingManager`, plus the token-scoped
 `POST /api/agent/tasks/[taskId]/workflow` endpoint for role-aware agent
 actions (`start`, `ready_for_review`, `review_feedback`, `review_done`,
-`triage_to_todo`). Client rolls back optimistic moves on rejection. Done
+`triage_to_todo`; `submit_review` is a legacy alias for
+`ready_for_review`). Client rolls back optimistic moves on rejection. Done
 cards older than the project's `doneTtlDays` (default 5) are filtered
 out of the board server-side so the column doesn't grow without bound.
 
@@ -349,9 +353,13 @@ derive a per-message key so stale or oversized OpenClaw transcripts do
 not carry into the next PM request. PM also writes a `PmChannelRun` row
 for each local handoff so the browser can reconnect to
 accepted/streaming/failed state without a polling refresh loop.
-Only the durable final reply callback marks a run complete; a bare
-stream `done` without a saved reply is recorded as failed so the chat UI
-does not wait indefinitely.
+Visible replies are only for useful contributions: plans, action
+results, feedback, blockers, or necessary questions. If an agent has no
+new information to add, it replies with the `PM_SILENT_NO_CONTRIBUTION`
+sentinel; `/api/openclaw/pm-channel/reply` records a silent completion
+activity row and creates no chat/comment bubble. A bare stream `done`
+without a saved reply, workflow action, or silent completion is recorded
+as failed so the chat UI does not wait indefinitely.
 
 **Direct agent chat.** `/agents/<slug>/chat` opens a sidebar-launched
 conversation with one agent. Sending a direct message persists it,
@@ -446,6 +454,10 @@ Karen's
 is a degraded fallback for hosts that have not enabled gateway hooks or
 for temporary gateway hook failures; the fallback passes the same
 `--session-key <pm:...>` through `openclaw system event`.
+Karen's PM workflow drift fallback uses `/usr/local/sbin/pm-workflow-nudge`
+instead. That helper re-enters the native `pm` channel so the target agent
+gets the full Mission Control context packet, workflow endpoint capability,
+and task-comment reply target instead of a generic heartbeat reminder.
 Truncating `PmEventDelivery` is safe — audit rows live independently on
 `ActivityLog`.
 

@@ -18,7 +18,7 @@ Yoga510 is a new agent instance. It shares selected operating behaviour with x1,
 - Environment repo: `/home/rachael/Code/environment` (kept outside the samba-backed `/srv` tree).
 - Shared OpenClaw docs and skills: `/home/rachael/Code/environment/ai/openclaw`.
 - Agent users access the repo through group/ACL permissions on `/home/rachael/Code`; each agent has `~/Code -> /home/rachael/Code`.
-- Agent registry: `/etc/openclaw/agents.json` -> `/srv/agents/index.json`. The live file uses the same registry schema as x1 (`version`, `description`, `sharedKnowledgeDir`, `webhookRoutedUsers`, `agents`), with yoga510 users and paths.
+- Agent registry: `/etc/openclaw/agents.json` -> `/srv/agents/index.json`. The live file uses the same registry schema as x1 (`version`, `description`, `sharedKnowledgeDir`, `agents`), with yoga510 users and paths.
 - Dashboard config: `/etc/agent-dashboard/config.json`.
 - Dashboard source files and nginx web root: `/home/rachael/Code/environment/ai/web`.
 - Nginx serves `agents.html` directly from the repo checkout; stale `/srv/www/agents*.html` deployment copies are not used on yoga510.
@@ -97,7 +97,7 @@ Validate with `openclaw channels list` as each user, then restart `openclaw-gate
 Yoga510 now uses the x1-style monitor-owned webhook dispatcher for Jira routing:
 
 - Main local receivers: `/home/emery/webhooks/jira-receiver.js` (port `3014`) and `/home/emery/webhooks/bitbucket-receiver.js` (port `3015`).
-- Routing config: `/home/emery/webhooks/users.json`.
+- Routing config: `/srv/agents/index.json` via `/etc/openclaw/agents.json`.
 - Routed coding users: `ada` and `claudia`.
 - Task queues: `/home/ada/tasks/current.md` and `/home/claudia/tasks/current.md`.
 - The monitor user has ACL write access to those task queues so incoming Jira events can be queued and agents can be woken through `/usr/local/sbin/openclaw-control`.

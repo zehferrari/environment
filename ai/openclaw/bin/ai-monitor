@@ -1178,10 +1178,11 @@ def probe_pm_workflow(cfg, registry):
         out["errors"].append(f"PM database not found: {db_path}")
         return out
 
-    warn_backlog_s = int(pc.get("backlog_plan_warn_minutes", 15)) * 60
-    warn_todo_s = int(pc.get("todo_start_warn_minutes", 10)) * 60
-    warn_progress_s = int(pc.get("in_progress_stale_minutes", 60)) * 60
-    warn_review_s = int(pc.get("review_wait_warn_minutes", 30)) * 60
+    warn_backlog_s = int(pc.get("backlog_plan_warn_minutes", 2)) * 60
+    warn_todo_s = int(pc.get("todo_start_warn_minutes", 2)) * 60
+    warn_progress_s = int(pc.get("in_progress_stale_minutes", 5)) * 60
+    warn_review_s = int(pc.get("review_wait_warn_minutes", 10)) * 60
+    warn_channel_s = int(pc.get("channel_no_start_warn_minutes", 2)) * 60
     max_items = int(pc.get("max_items", 50))
 
     try:
@@ -1294,13 +1295,33 @@ def probe_pm_workflow(cfg, registry):
         for row in orphan_rows:
             if len(out["items"]) >= max_items:
                 break
-            if _pm_workflow_notification_is_current(row):
-                continue
+            is_current = _pm_workflow_notification_is_current(row)
             age_s = (
                 _pm_age_s(row["runLastEventAt"])
                 or _pm_age_s(row["messageCreatedAt"])
                 or 0
             )
+            if is_current:
+                if age_s < warn_channel_s:
+                    continue
+                run_status = row["runStatus"] or "missing"
+                kind = (
+                    "pm-channel-no-start"
+                    if run_status in ("queued", "accepted", "missing")
+                    else "pm-channel-stalled"
+                )
+                add(
+                    row,
+                    kind,
+                    row["messageAgentSlug"],
+                    age_s,
+                    "The native PM-channel workflow turn has not produced live output or a durable reply. Restart the agent services if needed and resend the PM-channel context.",
+                    extra={
+                        "message_id": row["messageId"],
+                        "run_status": run_status,
+                    },
+                )
+                continue
             add(
                 row,
                 "pm-orphan-live-bubble",
@@ -1360,7 +1381,7 @@ def probe_pm_workflow(cfg, registry):
                         "pm-backlog-plan-missing",
                         assignee_slug,
                         age_s,
-                        "Post a task comment with your implementation plan/opinion. Do not change status or start work while the task is in Backlog.",
+                        "Post a concise task comment with your implementation plan/opinion. Do not change status or start work while the task is in Backlog.",
                     )
                 continue
 
@@ -1412,7 +1433,7 @@ def probe_pm_workflow(cfg, registry):
                         "pm-review-awaiting-reviewer",
                         reviewer_slug,
                         changed_age,
-                        "Review the completed work. Move to Done if satisfied, or leave feedback/blockers while keeping the task in Review.",
+                        "Review the completed work. Move to Done if satisfied without posting an approval-only comment, or leave concise feedback/blockers while keeping the task in Review.",
                         extra={"assignee": assignee_slug},
                     )
     except Exception as e:
@@ -2001,6 +2022,64 @@ def _issues_resolved_for_user(user, bucket):
     return {"email_results": {}, "all_email_resolved": None}
 
 
+def _pm_required_action_from_reason(reason):
+    marker = "Required action:"
+    if marker not in (reason or ""):
+        return None
+    return reason.split(marker, 1)[1].strip()[:500]
+
+
+def _run_pm_workflow_nudges(user, bucket):
+    """Send PM workflow recovery through the native PM channel.
+
+    Generic openclaw-control wakes land in the heartbeat/system-event lane
+    and do not carry the Mission Control context packet or workflow endpoint.
+    PM drift must use the PM channel so the agent receives the same task
+    context and task-comment reply target as a normal comment/discussion.
+    """
+    results = []
+    for p in bucket.get("pm_tasks") or []:
+        cmd = [
+            "/usr/local/sbin/pm-workflow-nudge",
+            "--task-id", p.get("task_id") or "",
+            "--agent", user,
+            "--kind", p.get("kind") or "pm-workflow",
+        ]
+        required = _pm_required_action_from_reason(p.get("reason") or "")
+        if required:
+            cmd.extend(["--required-action", required])
+        rc, out, err = run_cmd(cmd, timeout=90)
+        parsed = None
+        if out.strip():
+            try:
+                parsed = json.loads(out)
+            except Exception:
+                parsed = None
+        results.append({
+            "task_id": p.get("task_id"),
+            "kind": p.get("kind"),
+            "rc": rc,
+            "ok": bool(parsed.get("ok")) if isinstance(parsed, dict) else rc == 0,
+            "out": out.strip()[:500],
+            "err": err.strip()[:300],
+            "parsed": parsed if isinstance(parsed, dict) else None,
+        })
+    return results
+
+
+def _bucket_only_pm(bucket):
+    return bool(bucket.get("pm_tasks")) and not (
+        bucket.get("tickets") or bucket.get("queue_keys") or bucket.get("emails")
+    )
+
+
+def _bucket_needs_pm_restart(bucket):
+    return any(
+        (p.get("kind") or "") in ("pm-channel-no-start", "pm-channel-stalled")
+        for p in bucket.get("pm_tasks") or []
+    )
+
+
 def restart_and_wake_stalled_agents(no_agent_issues):
     """Tier-2 escalation for bypass-monitor kinds: instead of `wake-agent`,
     run `openclaw-control restart-and-wake <user> <reminder>`. Same shape
@@ -2051,6 +2130,34 @@ def restart_and_wake_stalled_agents(no_agent_issues):
 
     results = {}
     for user, b in by_user.items():
+        if _bucket_only_pm(b):
+            restart_cmd = [
+                "sudo", "-n", "/usr/local/sbin/openclaw-control",
+                "restart-services", user, "ai-monitor PM workflow retry",
+            ]
+            restart_rc, _, restart_err = run_cmd(restart_cmd, timeout=120)
+            nudge_results = _run_pm_workflow_nudges(user, b)
+            time.sleep(20)
+            post_idle_s, _ = probe_session_idle_for_user(user, f"/home/{user}")
+            recovered = any(r.get("ok") for r in nudge_results)
+            results[user] = {
+                "tickets": b["tickets"],
+                "queue_keys": b["queue_keys"],
+                "emails": b["emails"],
+                "pm_tasks": b["pm_tasks"],
+                "wake_rc": 0 if recovered else 1,
+                "wake_err": "; ".join(r.get("err") or "" for r in nudge_results if r.get("err"))[:200],
+                "post_idle_s": post_idle_s,
+                "recovered": bool(recovered),
+                "email_results": {},
+                "all_email_resolved": None,
+                "action": "restart-services-and-pm-channel-nudge",
+                "restart_rc": restart_rc,
+                "restart_err": restart_err.strip()[:200],
+                "pm_nudge_results": nudge_results,
+            }
+            continue
+
         parts = []
         if b["tickets"]:
             parts.append(
@@ -2179,6 +2286,40 @@ def auto_wake_stalled_agents(no_agent_issues):
 
     results = {}
     for user, b in by_user.items():
+        if _bucket_only_pm(b):
+            restart_rc = None
+            restart_err = ""
+            if _bucket_needs_pm_restart(b):
+                restart_cmd = [
+                    "sudo", "-n", "/usr/local/sbin/openclaw-control",
+                    "restart-services", user, "ai-monitor PM channel no-start",
+                ]
+                restart_rc, _, restart_err = run_cmd(restart_cmd, timeout=120)
+            nudge_results = _run_pm_workflow_nudges(user, b)
+            time.sleep(15)
+            post_idle_s, _ = probe_session_idle_for_user(user, f"/home/{user}")
+            recovered = any(r.get("ok") for r in nudge_results)
+            results[user] = {
+                "tickets": b["tickets"],
+                "queue_keys": b["queue_keys"],
+                "emails": b["emails"],
+                "pm_tasks": b["pm_tasks"],
+                "wake_rc": 0 if recovered else 1,
+                "wake_err": "; ".join(r.get("err") or "" for r in nudge_results if r.get("err"))[:200],
+                "post_idle_s": post_idle_s,
+                "recovered": bool(recovered),
+                "email_results": {},
+                "all_email_resolved": None,
+                "action": (
+                    "restart-services-and-pm-channel-nudge"
+                    if restart_rc is not None else "pm-channel-nudge"
+                ),
+                "restart_rc": restart_rc,
+                "restart_err": restart_err.strip()[:200],
+                "pm_nudge_results": nudge_results,
+            }
+            continue
+
         parts = []
         if b["tickets"]:
             parts.append(
@@ -2694,21 +2835,24 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
         # action is bounded and idempotent (wake-agent). No judgment needed;
         # routing through the monitor just adds latency and a chance of a
         # wrong suppress.
-        AUTO_ACTION_KINDS = set(triage_cfg.get(
-            "auto_action_kinds_bypass_monitor",
-            triage_cfg.get(
-                "auto_action_kinds_bypass_karen",
-                [
-                    "agent-idle-with-queue",
-                    "email-awaiting-action",
-                    "pm-backlog-plan-missing",
-                    "pm-todo-not-started",
-                    "pm-in-progress-stale",
-                    "pm-review-feedback-awaiting-assignee",
-                    "pm-review-awaiting-reviewer",
-                ],
-            ),
-        ))
+        default_auto_action_kinds = {
+            "agent-idle-with-queue",
+            "email-awaiting-action",
+            "pm-backlog-plan-missing",
+            "pm-todo-not-started",
+            "pm-in-progress-stale",
+            "pm-review-feedback-awaiting-assignee",
+            "pm-review-awaiting-reviewer",
+            "pm-channel-no-start",
+            "pm-channel-stalled",
+        }
+        configured_auto_action_kinds = (
+            triage_cfg.get("auto_action_kinds_bypass_monitor")
+            or triage_cfg.get("auto_action_kinds_bypass_karen")
+            or []
+        )
+        AUTO_ACTION_KINDS = default_auto_action_kinds | set(configured_auto_action_kinds)
+        AUTO_ACTION_KINDS -= set(triage_cfg.get("disable_auto_action_kinds", []))
         auto_issues = [i for i in new_alert_issues if i.get("kind") in AUTO_ACTION_KINDS]
         monitor_bound_issues = [
             i for i in new_alert_issues if i.get("kind") not in AUTO_ACTION_KINDS
@@ -2930,6 +3074,8 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                         "pm-in-progress-stale": ("wake-agent", "restart-and-wake"),
                         "pm-review-feedback-awaiting-assignee": ("wake-agent", "restart-and-wake"),
                         "pm-review-awaiting-reviewer": ("wake-agent", "restart-and-wake"),
+                        "pm-channel-no-start": ("pm-channel-nudge", "restart-services"),
+                        "pm-channel-stalled": ("pm-channel-nudge", "restart-services"),
                     }
                     actions_taken_lc = [a.lower() for a in (decision.get("actions_taken") or [])]
                     violations = []
@@ -2956,6 +3102,8 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                                 "pm-in-progress-stale",
                                 "pm-review-feedback-awaiting-assignee",
                                 "pm-review-awaiting-reviewer",
+                                "pm-channel-no-start",
+                                "pm-channel-stalled",
                             )
                         ]
                         wake_results = (
@@ -3220,7 +3368,7 @@ def load_agent_defaults(cfg):
                 "byRole": {}, "byIntegration": {}}
 
 
-def derive_effective_agent(agent, defaults):
+def derive_effective_agent(agent, defaults, all_agents=None):
     """Compute effective services and capabilities for an agent by
     merging the central defaults schema with the per-agent flags.
 
@@ -3298,11 +3446,25 @@ def derive_effective_agent(agent, defaults):
     import re as _re_recv
     _integ = agent.get("integrations") or {}
     _recv_re = _re_recv.compile(r"^openclaw-([a-z0-9-]+)-receiver\.service$")
+
+    has_active_integration = {}
+    if all_agents:
+        for a in all_agents:
+            if a.get("enabled", True) and a.get("role") == "coding":
+                for k, v in (a.get("integrations") or {}).items():
+                    if v:
+                        has_active_integration[k] = True
+
     def _keep(s):
         m = _recv_re.match(s)
         if not m:
             return True
-        return bool(_integ.get(m.group(1)))
+        gate = m.group(1)
+        if not _integ.get(gate):
+            return False
+        if agent.get("role") == "monitor" and not has_active_integration.get(gate):
+            return False
+        return True
     services = [s for s in services if _keep(s)]
 
     eff["services"] = services
@@ -3329,9 +3491,10 @@ def load_registry(cfg):
         health["age_s"] = age_s
         registry = json.loads(p.read_text())
         defaults = load_agent_defaults(cfg)
+        raw_agents = registry.get("agents") or []
         registry["agents"] = [
-            derive_effective_agent(a, defaults)
-            for a in (registry.get("agents") or [])
+            derive_effective_agent(a, defaults, raw_agents)
+            for a in raw_agents
         ]
         max_age_h = cfg["watch"].get("agents_registry_max_age_hours")
         if max_age_h:

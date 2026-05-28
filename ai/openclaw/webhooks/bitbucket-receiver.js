@@ -33,7 +33,7 @@ const server = c.http.createServer((req, res) => {
     res.end(JSON.stringify({
       status: 'ok',
       service: 'bitbucket-receiver',
-      users: Object.keys(c.config.users),
+      users: c.routedUsernamesFor('bitbucket'),
       timestamp: new Date().toISOString(),
     }));
     return;
@@ -61,10 +61,10 @@ const server = c.http.createServer((req, res) => {
         }
 
         const matchedUsers = c.resolveBitbucketUsers(event);
-        const targetUsers = matchedUsers.length ? matchedUsers : Object.values(c.allUsers);
+        const targetUsers = matchedUsers.length ? matchedUsers : c.routedUsersFor('bitbucket');
 
         if (!matchedUsers.length) {
-          c.sharedLog(`Bitbucket webhook: no explicit user match for actor ${event.actor?.displayName || event.actor?.username || 'unknown'}; broadcasting to all users`);
+          c.sharedLog(`Bitbucket webhook: no explicit user match for actor ${event.actor?.displayName || event.actor?.username || 'unknown'}; broadcasting to all Bitbucket-routed users`);
         }
 
         for (const userCfg of targetUsers) {
@@ -86,5 +86,5 @@ const server = c.http.createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`bitbucket-receiver listening on http://${HOST}:${PORT}`);
-  console.log(`Users: ${Object.keys(c.config.users).join(', ')}`);
+  console.log(`Users: ${c.routedUsernamesFor('bitbucket').join(', ')}`);
 });

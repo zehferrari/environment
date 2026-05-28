@@ -54,6 +54,10 @@ Rules:
   context, Epic context, recent comments, full active Task/Epic
   Discussion history for the item once invited or mentioned, activity,
   attachment metadata, and extracted attachment text when available.
+- Golden rule: if there is no new information, concrete action result,
+  required plan, review feedback, blocker, or necessary question, stay
+  silent. Do not post acknowledgements, restatements, progress filler,
+  or "nothing to add" comments.
 - Reply only in the origin channel. If the user wrote in task chat, reply
   in task chat. If the user wrote a task comment, reply as a task comment.
   If the user wrote direct chat, reply in direct chat.
@@ -156,8 +160,9 @@ task using this priority order:
     commit, tests, and residual risk. Sign formal completion notes.
 15. When implementation is complete, move the task to `Review` through
     the PM workflow endpoint. If you are the resolved reviewer, review
-    the completed work, move it to `Done` when satisfied, or leave
-    concrete feedback/blockers while keeping it in `Review`.
+    the completed work, move it to `Done` when satisfied without posting
+    an approval-only comment, or leave concrete feedback/blockers while
+    keeping it in `Review`.
 16. When you flip the matching `~/tasks/current.md` entry to a terminal
     status, move it to `~/tasks/log.md` in the same edit. See
     [TEAM_WORKFLOW.md -> Maintaining tasks/current.md](./TEAM_WORKFLOW.md#maintaining-taskscurrentmd).

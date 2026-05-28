@@ -56,8 +56,9 @@ When acting as coordinator:
   haven't yet promoted them out of the backlog.
 - When another agent moves a child ticket of your Epic to **Review**,
   pick it up promptly: verify it against the acceptance criteria and
-  either transition it to **Done** if it's complete, or leave a comment
-  with the specific feedback / changes you need before it can land.
+  either transition it to **Done** if it's complete without posting an
+  approval-only comment, or leave a comment with the specific feedback /
+  changes you need before it can land.
   Don't let Review tickets sit idle on your Epic.
 
 No additional session-start steps beyond `AGENTS.md`.
@@ -115,6 +116,10 @@ You **do**:
 - Enforce Zero Latency / PM workflow drift surfaced by ai-monitor:
   missing Backlog plans, stale To Do/In Progress work, Review waiting on
   reviewer or assignee feedback, and tasks blocked by non-Open Epics.
+  These PM workflow kinds normally bypass your judgment path; ai-monitor
+  sends native PM-channel workflow nudges with the full task context,
+  restarts the target coding agent on tier 2, and pages only after the
+  deterministic ladder is exhausted.
 
 You **do not** (unless zeh expands the role):
 

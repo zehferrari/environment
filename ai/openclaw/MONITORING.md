@@ -73,8 +73,15 @@ the entry-point overview.
   waiting on the assignee, and actionable tasks blocked by a non-Open
   Epic. It also reports stale active workflow live-bubble turns whose
   original PM notification no longer matches the task's current
-  owner/status. Wake reminders include task id, project, status, Epic
-  status, and the required next PM action.
+  owner/status. Defaults are intentionally short because Mission Control is
+  the source of truth and the first wake already happened: Backlog plan
+  missing after 2 min, `To Do` not started after 2 min, `In Progress` stale
+  after 5 min, and Review waiting after 10 min. PM workflow kinds bypass
+  Karen and use the deterministic ladder directly: T1 sends a native
+  PM-channel workflow nudge with the full PM task context packet, T2
+  restarts agent services and sends the PM-channel nudge again, and T3
+  sends Telegram with attempt history. Wake reminders include task id,
+  project, status, Epic status, and the required next PM action.
 
 ## Registry-driven
 
@@ -148,8 +155,10 @@ To add a project: write the file, set `enabled: true`, done — no central
 registry edit. To temporarily pause monitoring + running: flip `enabled`
 to `false` and write the file. Idempotent.
 
-`/home/karen/webhooks/users.json` is webhook routing only, **not** the
-agent roster. Don't conflate them.
+Webhook routing is derived from `/srv/agents/index.json` via
+`/etc/openclaw/agents.json`. Enabled coding agents with
+`integrations.jira: true` receive Jira events; enabled coding agents with
+`integrations.bitbucket: true` receive Bitbucket events.
 
 Validate drift after any registry/service edit:
 
@@ -172,9 +181,12 @@ Every alert key gets up to **3 attempts** before zeh is paged. Configured
 under `karen_triage.escalation_ladder` in `/etc/ai-monitor/config.json`
 (`max_attempts: 3`, `confirmation_window_s: 300`). Two execution paths:
 
-- **Bypass-Karen kinds** (default `agent-idle-with-queue`):
-  T1 = `wake-agent`, T2 = `restart-and-wake`, T3 = telegram with attempt history.
-  ai-monitor runs the actions itself; Karen is never involved.
+- **Bypass-Karen kinds** (default `agent-idle-with-queue`,
+  `email-awaiting-action`, and all `pm-*` workflow-action kinds):
+  T1 = `wake-agent` for generic queues/email or native PM-channel nudge for
+  PM workflow drift, T2 = `restart-and-wake` / restart-services plus PM-channel
+  nudge, T3 = telegram with attempt history. ai-monitor runs the actions
+  itself; Karen is never involved.
 - **Karen-bound kinds** (everything else): incident payload now includes
   an `escalation_context` block (`{attempt, max_attempts, is_final,
   prior_attempts, guidance}`). On T1/T2 Karen is told to act and

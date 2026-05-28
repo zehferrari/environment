@@ -127,7 +127,7 @@ async function createTask(formData: FormData) {
       reason: "backlog_plan_requested",
       body: [
         `You have been assigned to "${task.title}" while it is in Backlog.`,
-        "Read the full task context and existing comments. Post a task comment with your implementation plan or opinion.",
+        "Read the full task context and existing comments. Post a concise task comment with your implementation plan or opinion.",
         "Do not change task status and do not start work until the task is moved to To Do.",
       ].join("\n"),
     });
@@ -219,6 +219,7 @@ async function moveTask(
       body: [
         `Task "${current.title}" is now in To Do and assigned to you.`,
         "Read the full task context, move it to In Progress through the workflow endpoint, and start work immediately.",
+        "Do not post a visible acknowledgement unless you have new task information to add.",
       ].join("\n"),
     });
   }
@@ -232,7 +233,7 @@ async function moveTask(
         reason: "review_requested",
         body: [
           `Task "${current.title}" was moved to Review.`,
-          "Review the completed work, read the full task context and comments, then either leave feedback/blockers or move the task to Done through the workflow endpoint.",
+          "Review the completed work and full task context. If satisfied, move the task to Done through the workflow endpoint without posting an approval-only comment. If changes or blockers remain, leave concise feedback while keeping it in Review.",
         ].join("\n"),
       });
     }

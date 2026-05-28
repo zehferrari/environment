@@ -68,9 +68,9 @@ mail sent by another local agent.
 
 Per-agent clones of project repos (e.g., `~/Code/whitsunday-discovery-trail`). Each agent has its own working copy with its own branch state. NOT shared.
 
-## Webhook routing — `/home/karen/webhooks/users.json`
+## Webhook routing — `/srv/agents/index.json`
 
-Lives under `karen`'s home (not under either coding agent). Maps Jira display names and accountIds to agent users for webhook routing. Not part of this repo because it lives in the webhook receiver's runtime path.
+The live agent registry is the only routing source. Jira routes to enabled coding agents with `integrations.jira: true` and a `jira_account_id`; Bitbucket routes to enabled coding agents with `integrations.bitbucket: true`. `/etc/openclaw/agents.json` should be a symlink to `/srv/agents/index.json`.
 
 ## Why these stay separate
 

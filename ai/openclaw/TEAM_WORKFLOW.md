@@ -152,9 +152,10 @@ source channel. Silence is not an option.
 
 - **You can help**: do the work, reply with results, sign when the
   channel calls for the signature rule.
-- **Nothing useful to add**: post a brief acknowledgement saying why
-  ("I've reviewed the prior comment and have nothing to add"), and tag
-  or name the right person if redirection is needed.
+- **Nothing useful to add**: follow the source-specific rule. Zero
+  Latency / PM uses a silent no-contribution path, so do not post a
+  visible "nothing to add" comment there. Other channels may still
+  require a brief acknowledgement and redirection.
 - **Work belongs to someone else**: reply in the thread only. Do not
   transition, assign, or take over without explicit handoff.
 
@@ -335,9 +336,12 @@ code-host file and [`CODE_REPOS.md`](./CODE_REPOS.md).
 A signed-off review **does not** authorise the reviewer, implementer, or
 any other agent to create or merge a PR.
 
-Output: concise and findings-first. If no issues, say so and mention
-remaining risk. Sign the review handoff when the destination calls for
-the signature rule.
+Output: concise and findings-first. In Zero Latency / PM, if the review
+is satisfied, move the task to `Done` through the workflow endpoint and
+do not post an approval-only comment. If a visible review handoff is
+needed in another source channel, say no issues and mention remaining
+risk. Sign the review handoff when the destination calls for the
+signature rule.
 
 ---
 

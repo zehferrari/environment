@@ -9,8 +9,10 @@
   "codeGroup": "code-agents",
   "gitName": "Zeh Ferrari",
   "gitEmail": "e@zeh.me",
+  "jiraHost": "example.atlassian.net",
+  "bitbucketWorkspace": "example-workspace",
+  "bitbucketRepo": "example-repo",
 
-  "webhookRoutedUsers": ["example"],
   "agents": [
     {
       "_doc_role": "role is exclusive: 'coding' (modifies code, works tickets) OR 'monitor' (triages incidents, wakes/restarts other agents, sends alerts). Never both. Derived capabilities and services come from agent-defaults.json byRole[role].",
