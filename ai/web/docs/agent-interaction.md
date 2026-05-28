@@ -244,7 +244,12 @@ PM validates the grant (single-use, bound to project + agent + message),
 then dry-run-validates every op under human-triggered grant semantics:
 active principals, project scoping, hierarchy, known statuses, and valid
 task-status transitions are checked; new tasks land in Backlog, new
-epics open. The proposal
+epics open. The **requesting human** (the `senderUserId` of the grant
+message — direct-chat or Task/Epic Discussion) is recorded as the
+`reporterId` of every newly-created epic and task in the change-set, so
+the board attributes the request back to the human who asked the agent
+to plan it. If the grant message has been deleted by the time the human
+applies the proposal, PM falls back to the agent as reporter. The proposal
 endpoint is token-scoped and intentionally does not require a browser
 session; middleware lets the request reach the route handler, where the
 HMAC grant and active agent are verified. A valid change-set is stored

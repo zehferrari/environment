@@ -72,15 +72,42 @@ export async function commitProposal(
 
   let taskId: string | null = null;
   let epicId: string | null = null;
+  // Resolve the requesting human. New epics/tasks created by this
+  // proposal record that human as the reporter (HOMELAB-41 / item 3:
+  // "every Epic/Task created by an agent has to set the human user
+  // that requested the task as the reporter"). The grant message is
+  // either a DirectAgentChatMessage (direct-chat-attached project work)
+  // or an AgentChatMessage (Task/Epic Discussion). Both expose
+  // senderUserId for the human who issued the request.
+  let requesterUserId: string | null = null;
   if (proposal.grantMessageId) {
-    const msg = await db.agentChatMessage.findUnique({
+    const directGrant = await db.directAgentChatMessage.findUnique({
       where: { id: proposal.grantMessageId },
-      select: { taskId: true, epicId: true },
+      select: { senderUserId: true },
     });
-    if (msg) {
-      taskId = msg.taskId;
-      epicId = msg.epicId;
+    if (directGrant) {
+      requesterUserId = directGrant.senderUserId;
+    } else {
+      const discussionGrant = await db.agentChatMessage.findUnique({
+        where: { id: proposal.grantMessageId },
+        select: { taskId: true, epicId: true, senderUserId: true },
+      });
+      if (discussionGrant) {
+        taskId = discussionGrant.taskId;
+        epicId = discussionGrant.epicId;
+        requesterUserId = discussionGrant.senderUserId;
+      }
     }
+  }
+  // If the grant message has gone (or the sender row is gone), fall back
+  // to the agent — same behaviour as before the rule. Verify the user
+  // we resolved is still a real, active row before stamping it.
+  if (requesterUserId) {
+    const exists = await db.user.findUnique({
+      where: { id: requesterUserId },
+      select: { id: true, status: true },
+    });
+    if (!exists || exists.status === "inactive") requesterUserId = null;
   }
 
   if (proposal.status !== "pending") {
@@ -126,6 +153,10 @@ export async function commitProposal(
   const counts: CommitCounts = { ...ZERO };
   const agentId = proposal.proposedByUserId;
   const projectId = proposal.projectId;
+  // reporterId on new epics/tasks: the requesting human if we resolved
+  // one, otherwise fall back to the agent (preserves old behaviour for
+  // grants whose original message is gone).
+  const newItemReporterId = requesterUserId ?? agentId;
 
   await db.$transaction(
     async (tx) => {
@@ -170,7 +201,7 @@ export async function commitProposal(
                 statusChangedAt: new Date(),
                 assigneeId: createId(op.assignee),
                 actingManagerId: createId(op.actingManager),
-                reporterId: agentId,
+                reporterId: newItemReporterId,
               },
               select: { id: true, title: true },
             });
@@ -221,7 +252,7 @@ export async function commitProposal(
                 statusChangedAt: new Date(),
                 assigneeId: createId(op.assignee),
                 actingManagerId: createId(op.actingManager),
-                reporterId: agentId,
+                reporterId: newItemReporterId,
                 branchName: inheritedBranchName,
                 commitPrefix: inheritedCommitPrefix,
               },
