@@ -4,17 +4,19 @@ import {
   buildPmTurnSessionKey,
   sendOpenClawPmChannelTurn,
 } from "@/lib/agents/openclaw-pm-channel";
+import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
 
-const POLICY_UPDATE_ID = "2026-05-27-pm-workflow-backlog-planning";
+const POLICY_UPDATE_ID = "2026-05-28-pm-silent-contribution";
 
 const body = [
   "PM workflow policy update:",
   "",
-  "- Backlog assignments are for planning/opinions only. If assigned in Backlog, read the full PM task context and post a task comment with your implementation plan or perspective. Do not change status and do not start work.",
+  "- Backlog assignments are for planning/opinions only. If assigned in Backlog, read the full PM task context and post a concise task comment with your implementation plan or perspective. Do not change status and do not start work.",
   "- Reassignment while a task remains in Backlog is allowed to request another agent perspective; the new assignee posts their own plan/opinion.",
-  "- To Do means the plan/request is approved for execution. If assigned in To Do, move the task to In Progress through the PM workflow endpoint and start immediately.",
+  "- To Do means the plan/request is approved for execution. If assigned in To Do, move the task to In Progress through the PM workflow endpoint and start immediately. Do not post an acknowledgement unless you have new task information to add.",
   "- Move completed implementation from In Progress to Review through the PM workflow endpoint.",
-  "- Review is for completed-work review. The resolved reviewer is task reviewer, then Open Epic acting manager, then task reporter. The reviewer moves satisfied work to Done or leaves feedback/blockers while keeping the task in Review.",
+  "- Review is for completed-work review. The resolved reviewer is task reviewer, then Open Epic acting manager, then task reporter. The reviewer moves satisfied work to Done without approval-only comments, or leaves concise feedback/blockers while keeping the task in Review.",
+  "- Golden rule: if there is no new information, action result, plan, feedback, blocker, or necessary question, stay silent.",
   "- Tasks under an Epic are actionable only when that Epic is Open.",
   "",
   "These PM rules are separate from Jira rules.",
@@ -119,7 +121,9 @@ async function main() {
       contextText: body,
       systemPrompt: [
         `You have a directed PM policy update addressed to @${agent.slug}.`,
-        "Read it carefully and apply it to future Zero Latency / PM tasks. Reply with a concise acknowledgement only if the PM channel expects a visible response.",
+        "Read it carefully and apply it to future Zero Latency / PM tasks.",
+        `If you have no concrete blocker applying the policy, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
+        "Create a visible reply only for a concrete blocker.",
       ].join("\n"),
       actor: {
         id: sender.id,

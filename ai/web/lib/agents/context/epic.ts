@@ -4,6 +4,21 @@ import {
   type AttachmentContext,
   type AttachmentForContext,
 } from "./attachment-extracts";
+import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
+import {
+  renderDirectedSilenceRule,
+  type DirectedDescriptor,
+} from "@/lib/agents/directed-targets";
+
+// Row caps for context breadth on a single epic. Matches the task.ts caps so
+// that the prompt experience is the same on both surfaces — breadth-first,
+// per-body clipping reported inline via clipWithMeta().
+const MAX_COMMENTS = 40;
+const MAX_LIVE_CHATS = 50;
+const MAX_ACTIVITY = 30;
+const MAX_ARCHIVED_CHATS = 80;
+const MAX_TIMELINE_BODY = 1400;
+const MAX_ACTIVITY_BODY = 900;
 
 export type EpicAgentCurrentTurn = {
   id?: string | null;
@@ -24,6 +39,7 @@ export type EpicAgentContextPacket = {
   };
   targetAgentSlug: string;
   origin: "comment" | "chat";
+  directedDescriptor: DirectedDescriptor | null;
   currentTurn: {
     id: string | null;
     source: "epic_comment" | "epic_chat";
@@ -68,10 +84,21 @@ export type EpicAgentContextPacket = {
 
 type UserLabel = { username: string | null; kind?: string | null } | null | undefined;
 
-function clip(value: string | null | undefined, max = 4000) {
+type ClipResult = { text: string; truncated: boolean; omittedChars: number };
+
+function clipWithMeta(value: string | null | undefined, max = 4000): ClipResult {
   const text = (value ?? "").trim();
-  if (text.length <= max) return text;
-  return `${text.slice(0, max).trimEnd()}\n[truncated]`;
+  if (text.length <= max) return { text, truncated: false, omittedChars: 0 };
+  const omittedChars = text.length - max;
+  return {
+    text: `${text.slice(0, max).trimEnd()}\n[truncated: ${omittedChars} more chars]`,
+    truncated: true,
+    omittedChars,
+  };
+}
+
+function clip(value: string | null | undefined, max = 4000) {
+  return clipWithMeta(value, max).text;
 }
 
 function formatDate(value: Date | string | null | undefined) {
@@ -213,14 +240,24 @@ export function buildEpicPlainChatPrompt(epicTitle: string, slug: string): strin
   ].join("\n");
 }
 
-export function buildEpicNativeChannelPrompt(epicTitle: string, slug: string): string {
-  return [
-    `You have a directed PM message on epic "${epicTitle}", addressed to @${slug}.`,
+export function buildEpicNativeChannelPrompt(
+  epicTitle: string,
+  slug: string,
+  directedDescriptor?: DirectedDescriptor | null,
+): string {
+  const lines = [
+    `You have a PM message on epic "${epicTitle}", addressed to @${slug}.`,
     "This turn arrived through the native OpenClaw PM channel.",
-    "Reply normally; OpenClaw will deliver your visible response back to the same PM origin channel.",
+    "Golden rule: only create a visible PM reply when you have new information, a concrete action result, a required plan, review feedback, a blocker, or a necessary question.",
+    `If you have no contribution to add, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else. PM will mark the turn complete without creating a visible comment.`,
+    "Context breadth: the PM context packet below contains EVERY comment and EVERY discussion message on this epic — not only the ones directed at you. Read them as background. The directed-message rule below governs whether you reply.",
     "Use the full live PM context supplied in the message. Do not answer only from the latest line if earlier comments, chats, activity, epic details, or attachments change the meaning.",
     "Markdown formatting in your reply is welcome.",
-  ].join("\n");
+  ];
+  if (directedDescriptor) {
+    lines.push("", renderDirectedSilenceRule({ descriptor: directedDescriptor, recipientAgentSlug: slug }));
+  }
+  return lines.join("\n");
 }
 
 export function buildEpicNativeEditGrantPrompt(args: {
@@ -253,6 +290,7 @@ export async function buildEpicAgentContextPacket(args: {
   epicId: string;
   agentSlug: string;
   currentTurn: EpicAgentCurrentTurn;
+  directedDescriptor?: DirectedDescriptor | null;
 }): Promise<EpicAgentContextPacket> {
   const epic = await db.epic.findUnique({
     where: { id: args.epicId },
@@ -300,7 +338,7 @@ export async function buildEpicAgentContextPacket(args: {
       },
       comments: {
         orderBy: { createdAt: "desc" },
-        take: 24,
+        take: MAX_COMMENTS,
         select: {
           id: true,
           body: true,
@@ -311,7 +349,7 @@ export async function buildEpicAgentContextPacket(args: {
       chats: {
         where: { archiveId: null },
         orderBy: { createdAt: "desc" },
-        take: 30,
+        take: MAX_LIVE_CHATS,
         select: {
           id: true,
           agentSlug: true,
@@ -335,6 +373,7 @@ export async function buildEpicAgentContextPacket(args: {
     },
     targetAgentSlug: args.agentSlug,
     origin: originFromSource(args.currentTurn.source),
+    directedDescriptor: args.directedDescriptor ?? null,
     currentTurn: {
       id: args.currentTurn.id ?? null,
       source: currentTurnSource(args.currentTurn.source),
@@ -392,7 +431,7 @@ export async function buildEpicAgentContextPacket(args: {
           archiveId: { in: archiveIds },
         },
         orderBy: { createdAt: "asc" },
-        take: 80,
+        take: MAX_ARCHIVED_CHATS,
         select: {
           id: true,
           agentSlug: true,
@@ -419,7 +458,7 @@ export async function buildEpicAgentContextPacket(args: {
   const activity = await db.activityLog.findMany({
     where: { projectId: epic.project.id },
     orderBy: { createdAt: "desc" },
-    take: 30,
+    take: MAX_ACTIVITY,
     select: {
       id: true,
       kind: true,
@@ -529,8 +568,17 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
     `Scope: ${packet.scope.type} ${packet.scope.id}`,
     `Target agent: @${packet.targetAgentSlug}`,
     `Origin channel: ${packet.origin}`,
-    "",
   ];
+  if (packet.directedDescriptor) {
+    if (packet.directedDescriptor.isBroadcast) {
+      lines.push(`Directed-to: broadcast (${packet.directedDescriptor.label})`);
+    } else {
+      lines.push(
+        `Directed-to: ${packet.directedDescriptor.label} [${packet.directedDescriptor.directedAgentSlugs.map((s) => `@${s}`).join(", ")}]`,
+      );
+    }
+  }
+  lines.push("");
 
   if (!packet.snapshot.epic || !packet.snapshot.project) {
     lines.push(
@@ -572,24 +620,56 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
   lines.push("", "ATTACHMENTS:");
   lines.push(...renderAttachments(packet.attachments));
 
+  lines.push("", "TIMELINE MANIFEST (breadth first; every fetched row):");
+  if (packet.timeline.length === 0) {
+    lines.push("(none)");
+  } else {
+    const counts = { comment: 0, chat: 0, activity: 0 };
+    for (const item of packet.timeline) counts[item.type] += 1;
+    lines.push(
+      `Fetched: ${counts.comment} comments, ${counts.chat} discussion messages (including any archived chain), ${counts.activity} activity rows.`,
+    );
+    for (const item of packet.timeline) {
+      const kind = item.kind ? ` ${item.kind}` : "";
+      lines.push(
+        `- [${item.createdAt}] ${item.type}${kind} ${item.actor} (${item.id})`,
+      );
+    }
+    if (counts.comment >= MAX_COMMENTS || counts.chat >= MAX_LIVE_CHATS || counts.activity >= MAX_ACTIVITY) {
+      lines.push(
+        `[partial context: comments cap ${MAX_COMMENTS} / chats cap ${MAX_LIVE_CHATS} / activity cap ${MAX_ACTIVITY} — older rows may exist beyond this packet]`,
+      );
+    }
+  }
+
+  let truncatedBodies = 0;
   lines.push("", "RELATED TIMELINE (oldest to newest):");
   if (packet.timeline.length === 0) {
     lines.push("(none)");
   } else {
     for (const item of packet.timeline) {
       const kind = item.kind ? ` ${item.kind}` : "";
+      const clipped = clipWithMeta(item.body, item.type === "activity" ? MAX_ACTIVITY_BODY : MAX_TIMELINE_BODY);
+      if (clipped.truncated) truncatedBodies += 1;
       lines.push(
         `[${item.createdAt}] ${item.type}${kind} ${item.actor} (${item.id}):`,
-        clip(item.body, item.type === "activity" ? 900 : 1800),
+        clipped.text,
         "",
       );
     }
+  }
+  if (truncatedBodies > 0) {
+    lines.push(
+      `[partial context: ${truncatedBodies} timeline bodies were clipped above; each clip annotates how many characters were omitted]`,
+    );
   }
 
   lines.push(
     "",
     "RESPONSE GUIDANCE:",
     "Use the current turn together with the live PM Epic, timeline, tasks, and attachment context above. If an attachment is important but only metadata is available, say exactly which attachment needs inspection. Do not invent attachment contents.",
+    "You can see EVERY comment and EVERY discussion message above, including messages between other people/agents that were not directed at you. Read them as background and use them in your reasoning.",
+    `If the current turn requires no visible contribution from you, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
   );
 
   return lines.join("\n");
@@ -599,6 +679,7 @@ export async function buildEpicAgentUserMessage(args: {
   epicId: string;
   agentSlug: string;
   currentTurn: EpicAgentCurrentTurn;
+  directedDescriptor?: DirectedDescriptor | null;
 }) {
   const packet = await buildEpicAgentContextPacket(args);
   return packet.renderedPrompt;

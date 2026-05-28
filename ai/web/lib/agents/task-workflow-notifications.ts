@@ -9,7 +9,9 @@ import {
   buildPmTurnSessionKey,
   sendOpenClawPmChannelTurn,
 } from "@/lib/agents/openclaw-pm-channel";
+import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
 import { createTaskWorkflowToken } from "@/lib/agents/task-workflow-token";
+import { resolveDirectedFromComment } from "@/lib/agents/directed-targets";
 
 type Actor = {
   id: string;
@@ -36,6 +38,7 @@ type AgentUser = {
 export type TaskWorkflowNotificationReason =
   | "backlog_plan_requested"
   | "todo_start_required"
+  | "monitor_recovery"
   | "review_requested"
   | "review_feedback"
   | "review_done"
@@ -113,13 +116,15 @@ function workflowPrompt(args: {
     "- Review means the completed work is waiting for reviewer feedback. If you are the resolved reviewer and are satisfied, call action=review_done. If changes or blockers remain, call action=review_feedback with a clear comment.",
     "- If you are the reviewer or Open Epic acting manager and accept a Backlog plan, call action=triage_to_todo.",
     "- For tasks under an Epic, do not start or advance work unless the Epic status in the context is Open.",
+    "- Do not post visible acknowledgements, restatements, or filler. If your workflow action fully handles the turn and you have no new information to add, finish with the exact reply token below.",
     "",
     "Workflow endpoint:",
     `POST application/json to: ${workflowUrl}`,
     "Body shape:",
     bodyShape,
     "",
-    "Replies to this PM-channel turn are stored as normal task comments. Use a visible comment whenever you are giving a plan, an opinion, feedback, or status context.",
+    `Silent reply token: ${PM_SILENT_REPLY_TOKEN}`,
+    "Replies to this PM-channel turn are stored as normal task comments. Use a visible comment only for a plan, opinion, completion evidence, review feedback, blocker, or necessary question.",
   ].join("\n");
 }
 
@@ -370,6 +375,17 @@ export async function sendTaskCommentNotifications(args: {
     addTargetAgent(targetAgents, user, "mentioned", excluded);
   }
 
+  // Directed-message descriptor for the silence rule. A comment with no
+  // @-mentions of an agent is a broadcast to assignee/reviewer/etc.; any
+  // mention narrows the directed set so the non-mentioned roles go silent.
+  const mentionableAgents = users
+    .filter((u) => u.kind === "agent" && u.status === "active" && u.agent && !u.agent.deactivatedAt)
+    .map((u) => ({ username: u.username, agentSlug: u.agent!.slug }));
+  const directedDescriptor = resolveDirectedFromComment({
+    body: args.body,
+    mentionableAgents,
+  });
+
   const mirroredBody = [
     `Task comment from @${actorUser?.username ?? args.actor.username ?? "unknown"}:`,
     "",
@@ -437,6 +453,7 @@ export async function sendTaskCommentNotifications(args: {
         body: args.body,
         createdAt: msg.commentCreatedAt,
       },
+      directedDescriptor,
     });
     const sessionBinding = await getOrCreateAgentSessionBinding({
       scopeType: "task",
@@ -451,7 +468,7 @@ export async function sendTaskCommentNotifications(args: {
       kind: "task-comment",
       text: args.body,
       contextText: userMessage,
-      systemPrompt: buildTaskNativeChannelPrompt(task.title, msg.agentSlug),
+      systemPrompt: buildTaskNativeChannelPrompt(task.title, msg.agentSlug, directedDescriptor),
       projectId: task.projectId,
       actor: {
         id: args.actor.id,

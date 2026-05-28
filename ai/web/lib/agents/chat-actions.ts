@@ -44,6 +44,7 @@ import {
   attachmentMaxBytes,
   writeAttachment,
 } from "@/lib/attachments/storage";
+import { resolveDirectedFromDiscussionRow } from "@/lib/agents/directed-targets";
 
 async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> {
   const session = await auth();
@@ -464,13 +465,27 @@ export async function sendAgentChatMessage(formData: FormData) {
     select: { username: true },
   });
 
+  // Directed-message descriptor for the silence rule. Computed once from the
+  // just-persisted target* fields against the set of active agent slugs.
+  const activeAgentSlugs = new Set(
+    users
+      .filter((u) => u.kind === "agent" && u.status === "active" && u.agent && !u.agent.deactivatedAt)
+      .map((u) => u.agent!.slug),
+  );
+  const directedDescriptor = resolveDirectedFromDiscussionRow({
+    targetType,
+    targetValue,
+    targetLabel,
+    activeAgentSlugs,
+  });
+
   await Promise.all([...targetAgents.values()].map(async (target) => {
     const agentSlug = target.slug;
     const gatewayPort = target.gatewayPort;
 
     const baseSystemPrompt = taskId
-      ? buildTaskNativeChannelPrompt(task.title, agentSlug)
-      : buildEpicNativeChannelPrompt(epic.title, agentSlug);
+      ? buildTaskNativeChannelPrompt(task.title, agentSlug, directedDescriptor)
+      : buildEpicNativeChannelPrompt(epic.title, agentSlug, directedDescriptor);
 
     const descriptionPrompt = allowDescriptionEdit
       ? taskId
@@ -526,6 +541,7 @@ export async function sendAgentChatMessage(formData: FormData) {
             actorKind: actor.kind,
             body,
           },
+          directedDescriptor,
         })
       : await buildEpicAgentUserMessage({
           epicId: epic.id,
@@ -537,6 +553,7 @@ export async function sendAgentChatMessage(formData: FormData) {
             actorKind: actor.kind,
             body,
           },
+          directedDescriptor,
         });
 
     const sessionBinding = await getOrCreateAgentSessionBinding({

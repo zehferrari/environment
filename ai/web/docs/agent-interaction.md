@@ -45,10 +45,11 @@ queued locally. The run moves through `accepted`, `streaming`,
 `complete`, or `failed` from the gateway response and stream/reply
 callbacks, so reconnecting browsers can resume from durable state rather
 than polling for a reply. A terminal stream `done` is not success by
-itself: PM only marks a run `complete` after a durable final reply is
-posted to `/api/openclaw/pm-channel/reply`. If a channel turn ends
-without that reply, PM marks the run `failed` and the browser keeps a
-visible failure bubble instead of waiting indefinitely.
+itself: PM only marks a run `complete` after a durable final reply, a
+valid workflow action, or a silent no-contribution reply is delivered.
+If a channel turn ends without one of those outcomes, PM marks the run
+`failed` and the browser keeps a visible failure bubble instead of
+waiting indefinitely.
 
 ## Task, Epic, And Comment Chat
 
@@ -78,6 +79,33 @@ Replies must stay in the origin channel:
   only.
 
 Agents should not post the same answer in both comments and chat.
+They should also avoid no-op chatter: if a turn requires no visible
+contribution, the final reply body must be exactly
+`PM_SILENT_NO_CONTRIBUTION`. PM records the turn as complete without
+creating a chat or comment row.
+
+### Directed-message rule
+
+A task comment, task-chat message, or epic-chat message is either a
+**broadcast** (no specific addressee — typical of an open question to
+the assignee/reviewer/role-holders) or **directed** at one or more
+specific agents. PM resolves the directed set from:
+
+- discussion `targetType`/`targetValue` (`agent:<slug>`, a `multi`
+  array, `all-coders`, or a `user:<id>`),
+- explicit `@<username>` mentions in the comment body (only mentions
+  that resolve to an active agent count).
+
+PM dispatches a PM-channel turn to every role-holder as today — so a
+manager/assignee can still read the content and update their session
+memory — but every native PM-channel turn carries a `DIRECTED-MESSAGE
+RULE` block that names the directed set. If the recipient is NOT in
+that set and the message is not a broadcast, the recipient MUST reply
+exactly `PM_SILENT_NO_CONTRIBUTION` regardless of whether they are the
+assignee, reviewer, epic acting manager, or reporter. Workflow turns
+(`start`, `ready_for_review`, `review_*`, `triage_to_todo`) are
+exempt — those are role-directed by construction and always expect a
+visible reply from the addressed assignee/reviewer.
 
 ## Channel Reply Contract
 
@@ -127,6 +155,10 @@ The route is `POST /api/openclaw/pm-channel/reply` with
 target and active agent user before writing the reply to direct chat,
 task chat, epic chat, or task comments.
 
+If the final reply text is exactly `PM_SILENT_NO_CONTRIBUTION`, PM does
+not write a visible reply. It records a `*.silent` ActivityLog row with
+`inReplyToMessageId` so pending live bubbles settle cleanly.
+
 Task and Epic Discussion replies must use two markdown sections:
 
 ```markdown
@@ -150,13 +182,24 @@ line. The PM prompt can include:
 - task title, description, status, project, assignee, reviewer, and
   parent/subtask context;
 - Epic title, status, description, assignee, and acting-manager context;
-- recent task comments;
-- full active Task/Epic Discussion history for the item once the agent
-  is invited or mentioned, including other agents' replies and routing
-  labels such as `All Coders` or a specific target;
+- **every** comment on the item (up to a generous breadth cap, currently
+  40), regardless of who wrote it or whether the agent was directly
+  addressed by it;
+- **every** live Task/Epic Discussion message on the item (up to a
+  generous breadth cap, currently 50), plus the archived-discussion
+  chain that produced the current room, regardless of which agent each
+  message was directed at and including other agents' replies and
+  routing labels such as `All Coders` or a specific target;
 - related task activity;
 - task and Epic attachment metadata;
 - cached text excerpts for supported text-like attachments.
+
+Every rendered packet starts with a `TIMELINE MANIFEST` listing every
+fetched comment/chat/activity row by id+actor+createdAt before the
+bodies. Per-body clips report the omitted character count inline
+(`[truncated: N more chars]`), and a packet annotates `[partial
+context: …]` when a row cap is hit so the agent can tell when older
+rows may exist beyond the packet.
 
 PM owns this context packet. OpenClaw private memory may help the agent
 reason, but PM task/Epic/comment/activity/attachment data is the source
@@ -249,10 +292,12 @@ POST /api/agent/tasks/<taskId>/workflow
 ```
 
 Allowed actions are `start`, `ready_for_review`, `review_feedback`,
-`review_done`, and `triage_to_todo`. PM validates the addressed agent,
+`review_done`, and `triage_to_todo` (`submit_review` is accepted as a
+legacy alias for `ready_for_review`). PM validates the addressed agent,
 task assignee/reviewer role, task status, and parent Epic status before
 writing. Agent replies to workflow turns are stored as normal task
-comments.
+comments only when they add useful task information; no-contribution
+turns use the silent reply token.
 
 Backlog assignment is planning/opinion only: the assigned agent replies
 with a task-comment implementation plan and does not change status.
