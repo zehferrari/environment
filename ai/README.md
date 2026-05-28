@@ -476,8 +476,8 @@ The Project Manager (Zero Latency) web interface and queue processor run as host
   - Runs in a loop using `pnpm tsx` to execute `scripts/pm-consumer-loop.ts`.
   - Reads dropped event files and triggers loopback wake requests (`POST /hooks/wake`) to target agent gateways (e.g. `http://127.0.0.1:18789/hooks/wake` with Bearer tokens).
   - Configured with `ProtectHome=true` and service-private cache/config directories under `/var/lib/pm/` (`pnpm-home`, `pnpm-config`, `pnpm-cache`, `.npmrc`) to avoid home directory configuration leaks.
-- **Native PM workflow notifications**: Mission Control sends workflow turns through the same native `pm` channel used for task comments. Backlog assignment wakes the assigned agent only to post an implementation plan/opinion as a task comment; `To Do` is the approval-to-execute signal; assignees then move to `In Progress`, finish into `Review`, and the resolved reviewer moves satisfied work to `Done` or leaves feedback.
-- **Karen workflow enforcement**: `ai-monitor` reads the PM SQLite database read-only and raises/wakes on missing Backlog plans, stale `To Do`, stale `In Progress`, Review waiting on a reviewer, Review feedback waiting on the assignee, tasks blocked by a non-Open Epic, and stale active workflow live-bubble turns that no longer match the task's current owner/status.
+- **Native PM workflow notifications**: Mission Control sends workflow turns through the same native `pm` channel used for task comments. Backlog assignment wakes the assigned agent only to post a concise implementation plan/opinion as a task comment; `To Do` is the approval-to-execute signal; assignees then move to `In Progress`, finish into `Review`, and the resolved reviewer moves satisfied work to `Done` without approval-only comments or leaves feedback. If an agent has no new information, action result, plan, feedback, blocker, or necessary question, PM supports a silent no-contribution completion instead of visible chatter.
+- **Karen workflow enforcement**: `ai-monitor` reads the PM SQLite database read-only and raises/wakes on missing Backlog plans, stale `To Do`, stale `In Progress`, Review waiting on a reviewer, Review feedback waiting on the assignee, tasks blocked by a non-Open Epic, and stale active workflow live-bubble turns that no longer match the task's current owner/status. PM workflow drift is deterministic: it bypasses Karen's judgment path and runs the wake/restart ladder directly so the agent is nudged on the next monitor cycle.
 - **`pm-switch-runner.service`**: A system-wide `systemd` service (runs as `karen`, decoupled from `pm.service`) implementing the "switchable single site" live preview — it builds a chosen git worktree and flips which one `pm.service` serves. The web app stays unprivileged (drops a request into a spool, polls a state file); the runner builds and a path-validated root helper (`pm-apply-worktree`) does the only privileged step, granted by one NOPASSWD sudoers line. Triggered from a git/worktree-exposed project's Settings → **Worktree live preview** panel (admin) or the `pm-switch` CLI. Backed by `/srv/Code` being group-collaborative (`code-tree-perms`: setgid + default ACLs) so any code-agent can build. See [web/deploy/MULTI_AGENT_WORKTREES.md](web/deploy/MULTI_AGENT_WORKTREES.md).
 
 #### Database and Data Storage
@@ -503,8 +503,8 @@ Incoming webhooks from Atlassian (Jira/Bitbucket) flow from public URLs through 
 - `karen` runs the monitoring agent's OpenClaw gateway on `127.0.0.1:18793`.
 - `karen` also receives webhooks, updates `/home/<user>/tasks/current.md`, and wakes the target agent via `/usr/local/sbin/openclaw-control`.
 - Shared operational knowledge lives in `/srv/Code/environment/ai/openclaw`.
-- Active monitored-agent registry lives at `/etc/openclaw/agents.json`; `` points to the same file.
-- `/home/karen/webhooks/users.json` is webhook routing only, not the full monitoring roster.
+- Active monitored-agent registry lives at `/srv/agents/index.json`; `/etc/openclaw/agents.json` is a symlink to it.
+- Webhook routing is derived from `/srv/agents/index.json`: enabled coding agents with `integrations.jira` receive Jira events, and enabled coding agents with `integrations.bitbucket` receive Bitbucket events.
 - The shared docs (`AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`, `CODE_REPOS.md`) are canonical at `/srv/Code/environment/ai/openclaw/` (deployed from `environment/ai/openclaw/` in the unified `environment` repo). Each coding agent's home has two symlinks per file (one in `~/workspace/`, one in `~/.openclaw/workspace/`) pointing at the canonical file in the repo, so both the user-facing and OpenClaw internal workspaces see the same content. The monitoring agent (`karen`) has only `~/.openclaw/workspace/`, with one symlink per file.
 - Per-agent files (`SOUL.md`, `IDENTITY.md`, `USER.md`, `TOOLS.md`, `MEMORY.md`, `HEARTBEAT.md`) are **content-per-agent** but **single-canonical in location**: each lives at `~/workspace/<file>` and `~/.openclaw/workspace/<file>` is a symlink to it.
 - `AGENTS.md` defines the operating baseline (always-on rules + memory/safety/group-chats/heartbeats/tools). `ROLES.md` defines task-role behaviour for coding agents plus the standing monitor role. `TEAM_WORKFLOW.md` is the action-indexed playbook for tasks. `SOUL.md` and `IDENTITY.md` define per-agent persona only.
@@ -513,31 +513,13 @@ Incoming webhooks from Atlassian (Jira/Bitbucket) flow from public URLs through 
 - Agent communication policy: report only when finished or blocked. No play-by-play progress updates.
 - Preserve the source communication channel. Jira tasks use Jira comments/status updates; email tasks use the email thread; Telegram tasks use Telegram. Jira/email-triggered work may send exactly one Telegram start notice to zeh, then no further Telegram messages for that task unless zeh explicitly redirects the conversation.
 
-Current model posture by operational class. Coding agents do not have fixed
-manager/developer personas; they take task roles from Jira/Epic assignment or
-explicit handoff. Model choice is per-agent and task-fit based, not arranged
-on a cheap-vs-expensive ladder.
+Model posture is dynamically resolved per-agent based on task-fit, not arranged on a cheap-vs-expensive ladder. Coding agents do not have fixed manager/developer personas; they take task roles from Jira/Epic assignment or explicit handoff.
 
-| Class | Tuned for | Typical primary | Typical fallbacks |
-|---|---|---|---|
-| Coding agent `asdrubal` | Ambiguity, architecture, review, implementation when assigned | `openai-codex/gpt-5.5` | `openai-codex/gpt-5.4`, `openai-codex/gpt-5.3-codex`, `openrouter/google/gemini-3-flash-preview`, `openrouter/x-ai/grok-4.1-fast` |
-| Coding agent `barekbaal` | Focused execution, engineering, implementation, review when assigned | `ollama/kimi-k2.6:cloud` | `ollama/deepseek-v4-pro:cloud`, `ollama/glm-5.1:cloud`, `ollama/deepseek-v4-flash:cloud` |
-| `monitor` (user `karen`) | Triage, host probing, terse Telegram alerts | `ollama/deepseek-v4-pro:cloud` | `ollama/kimi-k2.6:cloud`, `ollama/glm-5.1:cloud`, `ollama/deepseek-v4-flash:cloud` |
+As of May 2026, we rely dynamically on **OpenAI OAuth**, **Claude CLI**, and **Ollama Cloud** to provision the models in use.
 
-Coding agents can implement, coordinate, review, research, or operate when the
-live ticket/Epic assignment gives them that role. They must never self-assign
-Jira work. No agent creates or merges pull requests; agents push branches and
-report readiness, and zeh creates/lands PRs.
+Coding agents can implement, coordinate, review, research, or operate when the live ticket/Epic assignment gives them that role. They must never self-assign Jira work. No agent creates or merges pull requests; agents push branches and report readiness, and zeh creates/lands PRs.
 
 Live per-user defaults are in each agent's own `~/.openclaw/openclaw.json`, **not** in the shared registry — model preference is persona, not host topology.
-
-Enabled model providers for coding agents:
-
-- OpenAI/Codex
-- Ollama
-- OpenRouter
-
-The Z.ai provider/plugin was intentionally removed/disabled on 2026-05-06.
 
 ### Webhook Flow
 
@@ -553,14 +535,13 @@ https://dev.vixi.au/webhooks/*
 Webhook and integration facts:
 
 - Shared webhook receivers: `/home/karen/webhooks/jira-receiver.js` and `/home/karen/webhooks/bitbucket-receiver.js`.
-- Routing config: `/home/karen/webhooks/users.json`.
+- Routing config: `/srv/agents/index.json` via `/etc/openclaw/agents.json`; `users.json` is deprecated.
 - Endpoints: `GET /health`, `POST /jira`, `POST /bitbucket`.
 - `karen` may run `/usr/local/sbin/openclaw-control *` via `/etc/sudoers.d/karen-openclaw-control`.
 - `openclaw-control` permits target users that are coding agents in `/etc/openclaw/agents.json`; commands include `restart-services`, `wake-agent`, and `restart-and-wake`. `restart-services` covers all enabled `openclaw-*` user services for the target user; `systemctl restart` is invoked uniformly so inactive units are also (re)started. This is the path the monitoring agent / `ai-monitor` uses to bring stuck user services back up automatically. Project-specific services should NOT be named `openclaw-*`; declare them in `~/<user>/.config/openclaw/projects/<name>.json` instead (convention; loader hook not yet wired).
 - `openclaw-control wake-agent` loads `/home/<user>/.config/openclaw/openclaw-secrets.env` before calling `openclaw system event`, so gateway token secret refs resolve for webhook wakes.
 - Telegram bots: one per agent, recorded in `/etc/openclaw/agents.json` under each agent's `telegram.bot` field.
-- Jira host: `zeh-ferrari.atlassian.net`.
-- Bitbucket workspace/repo: `zehferrari` / `whitsunday-discovery-trail`.
+- Jira host and Bitbucket workspace/repo are declared in `/srv/agents/index.json`.
 - Agents may push ticket branches but must not create or merge Bitbucket pull
   requests. PR creation and landing are human-only.
 - Jira issue keys are project-agnostic. Gmail/Jira automation must accept any generic `PROJECT-123` key, not a hard-coded prefix.
@@ -644,6 +625,7 @@ Local fallback model (added 2026-05-08):
   - `task-stalled-no-progress` (secondary): Jira issue `In Progress` with stale `updated` field (>30 min) but session is fresh — i.e. the agent is alive but spinning (HOMELAB-5 heartbeat-loop pattern). The monitoring agent uses `openclaw-control restart-and-wake <user> '<focused brief>'` to break the loop.
   - Both checks query Jira via each coding agent's own token (`~/.ssh/jiraToken.txt`, per-user least privilege). Thresholds live in `/etc/ai-monitor/config.json` under `stalled_tasks_check` (`session_idle_warn_minutes`, `session_idle_crit_minutes`, `update_warn_minutes`). Disable per-agent by setting `coding: false` or `integrations.jira: false` in the registry.
 - Pending email action detection: Gmail/local-mail listeners must wake the owning agent immediately for requests from the configured whitelist plus every local agent with email access. ai-monitor is the fallback path, not the first responder: it scans each monitored coding agent's `~/tasks/current.md` for Gmail-backed sections (`Gmail messageId:`) still marked `Status: QUEUED`. It fires `email-awaiting-action` at 15 min warn / 60 min crit, ignores stale historical entries older than 24 h, and wakes the owning agent directly with a reminder to process the queued email, reply in-thread when required, include the configured signature/runtime model, and move the task out of `QUEUED`. Recovery is task-status based: the wake/restart is not considered successful while the same Gmail messageId remains `QUEUED`, and tier-3 Telegram escalation no longer suppresses future recovery attempts for unresolved email work.
+- PM workflow drift detection: Mission Control already wakes the target agent when the PM event happens; `ai-monitor` is the fast fallback. Defaults are Backlog plan missing after 2 min, `To Do` not started after 2 min, `In Progress` stale after 5 min, and Review waiting after 10 min. PM kinds are mandatory bypass-monitor auto-actions: T1 sends a native PM-channel workflow nudge with the full task context packet, T2 restarts agent services and sends the PM-channel nudge again, T3 sends Telegram with attempt history.
 - Agent dashboard: `https://dev.vixi.au/agents.html` (basic auth — same `admin` user as the per-agent vhosts, htpasswd at `/etc/nginx/.htpasswd`). Real-time per-agent activity, AI monitor status, monitoring agent decisions, system service health. SSE-driven, no refresh needed. See **§16 Agent Dashboard** subsection below for the architecture.
 - ThinkPad cron job `/etc/cron.d/openclaw-integrity` was preserved for reference only. x1's active automation uses systemd timers, not cron.
 - On openSUSE, the active scheduler is `openclaw-integrity.timer` plus `openclaw-integrity.service`, running every 2 minutes.
@@ -779,7 +761,7 @@ Second consolidated note covering changes since the 2026-05-08 entry. Each bulle
 
 - **Dashboard HTML lives in the environment repo** (/srv/Code/environment/ai/web/). nginx serves the main dashboard and experiment HTML copies directly via alias from /etc/nginx/vhosts.d/dev.conf. The Node service still handles /agents/events, /agents/snapshot, registry toggles, service restarts, and /agents/health.
 
-- **Webhook @-mention routing** (`/home/karen/webhooks/jira-receiver.js` + `users.json`). `comment_*` events are parsed for both ADF and wiki-markup mentions (`[~accountid:712020:...]`). Jira Cloud delivers webhook `comment.body` as a wiki-markup string (not ADF — the REST API does ADF, webhooks do not), so `extractWikiMentions()` is the path that fires in practice. Mentioned agents are routed by `jiraAccountId` lookup (per-user map built at startup from `users.json`); the wake message gets a "You were @-mentioned in <KEY> by <Mentioner>" prefix invoking the TEAM_WORKFLOW.md "Receiving an @-mention" rule. Comment author is excluded (no self-wake). Otherwise routing is assignee-only; unassigned Jira updates are not broadcast to all agents and are not executable work.
+- **Webhook @-mention routing** (`/home/karen/webhooks/jira-receiver.js` + `/srv/agents/index.json`). `comment_*` events are parsed for both ADF and wiki-markup mentions (`[~accountid:712020:...]`). Jira Cloud delivers webhook `comment.body` as a wiki-markup string (not ADF — the REST API does ADF, webhooks do not), so `extractWikiMentions()` is the path that fires in practice. Mentioned agents are routed by `jira_account_id` lookup from enabled coding agents with `integrations.jira: true`; the wake message gets a "You were @-mentioned in <KEY> by <Mentioner>" prefix invoking the TEAM_WORKFLOW.md "Receiving an @-mention" rule. Comment author is excluded (no self-wake). Otherwise routing is assignee-only; unassigned Jira updates are not broadcast to all agents and are not executable work.
 
 - **Pending-mention queue** (`/var/lib/ai-monitor/pending-mentions/`, root:karen 0775). Receiver writes one JSON per `(issue_key, comment_id, agent)` recording mention metadata. ai-monitor's new `probe_pending_mentions` walks the queue every tick, queries Jira for an agent reply on the issue dated ≥ the mention's `created`, and either deletes the resolved entry or surfaces a `mention-awaiting-reply` warn (≥15 min) or crit (≥60 min). Configured under `/etc/ai-monitor/config.json` → `pending_mentions` block.
 
