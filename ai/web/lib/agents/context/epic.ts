@@ -237,20 +237,47 @@ export function buildEpicPlainChatPrompt(epicTitle: string, slug: string): strin
   ].join("\n");
 }
 
+export interface LiveContextAccessEpic {
+  baseUrl: string;
+  bearer: string;
+  epicId: string;
+  projectId: string;
+}
+
+function liveContextFetchBlockEpic(args: LiveContextAccessEpic) {
+  return [
+    "LIVE PM CONTEXT — FETCH BEFORE YOU REPLY:",
+    "PM no longer inlines the whole epic context into this prompt — it has grown too large. Fetch the live data over loopback before you respond. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL. Authenticate with the Bearer below (same value as channels.pm.token in your ~/.openclaw/openclaw.json):",
+    "",
+    "  # Required — epic with its full task list, comments, discussion, attachments:",
+    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/epic/${args.epicId}'`,
+    "",
+    "  # Use before proposing work-item changes:",
+    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/project/${args.projectId}'`,
+    "",
+    "  # Per-task detail, if you need to dive into a specific task under this epic:",
+    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/task/<taskId>'`,
+    "",
+    "Soft-deleted comments / chats are filtered server-side — anything missing from the response is deliberately invisible to you. Do not invent content not in the JSON. Full contract: ai/web/docs/agent-pm-api.md.",
+  ].join("\n");
+}
+
 export function buildEpicNativeChannelPrompt(
   epicTitle: string,
   slug: string,
   directedDescriptor?: DirectedDescriptor | null,
+  contextAccess?: LiveContextAccessEpic | null,
 ): string {
   const lines = [
     `You have a PM message on epic "${epicTitle}", addressed to @${slug}.`,
     "This turn arrived through the native OpenClaw PM channel.",
     "Golden rule: only create a visible PM reply when you have new information, a concrete action result, a required plan, review feedback, a blocker, or a necessary question.",
     `If you have no contribution to add, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else. PM will mark the turn complete without creating a visible comment.`,
-    "Context breadth: the PM context packet below contains EVERY comment and EVERY discussion message on this epic — not only the ones directed at you. Read them as background. The directed-message rule below governs whether you reply.",
-    "Use the full live PM context supplied in the message. Do not answer only from the latest line if earlier comments, chats, activity, epic details, or attachments change the meaning.",
     "Markdown formatting in your reply is welcome.",
   ];
+  if (contextAccess) {
+    lines.push("", liveContextFetchBlockEpic(contextAccess));
+  }
   if (directedDescriptor) {
     lines.push("", renderDirectedSilenceRule({ descriptor: directedDescriptor, recipientAgentSlug: slug }));
   }

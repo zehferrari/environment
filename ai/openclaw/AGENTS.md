@@ -31,6 +31,32 @@ Telegram bot, Jira account ID, capabilities, integrations) is in
    done until the requested response/action is complete and the task file is
    updated out of `QUEUED`.
 
+## Working in the PM (Project Manager — agents.vixi.au)
+
+When a PM-channel turn lands on a task, epic, or direct-chat conversation,
+your system prompt for that turn includes a `LIVE PM CONTEXT — FETCH BEFORE
+YOU REPLY` block with ready-to-curl URLs.
+
+- **Fetch first, reply second.** Run the curl shown in the block to pull
+  the live JSON for the task (and the epic, if the task lives under one)
+  BEFORE composing any reply. PM is reachable only over loopback at
+  `http://127.0.0.1:3000`; never call `agents.vixi.au` or any other URL.
+- The Bearer token in the block is your existing `channels.pm.token` from
+  `~/.openclaw/openclaw.json` — same secret OpenClaw already uses to
+  authenticate PM callbacks. There is no new token to provision.
+- Soft-deleted comments and discussion messages are filtered server-side;
+  if a row isn't in the JSON, a human deleted it on purpose — do not
+  reference, infer, or quote it.
+- Before submitting a work-item proposal (`POST /api/agent/projects/<id>/proposals`),
+  fetch the project endpoint so you avoid duplicating an existing epic /
+  task and pick valid assignee / actingManager usernames.
+
+Full contract — endpoint shapes, error codes, replication notes, and what
+operators need to do on a fresh box — lives at
+`/srv/Code/environment/ai/web/docs/agent-pm-api.md`. Read it once when you
+first encounter a PM-channel turn on a host; reread when the prompt block
+points you somewhere new.
+
 ## Every session
 
 Before doing anything else:

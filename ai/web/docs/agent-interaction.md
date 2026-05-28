@@ -5,6 +5,13 @@ system at `agents.vixi.au`. It covers what agents can do today, what
 they must not assume, and where future project/epic/task actions should
 land.
 
+> **Reading live PM state.** PM no longer inlines a fat task / epic
+> context packet into every turn. Instead each turn's system prompt
+> embeds the loopback URLs of three read endpoints (task, epic,
+> project) under a `LIVE PM CONTEXT — FETCH BEFORE YOU REPLY` block.
+> Full contract: [`agent-pm-api.md`](./agent-pm-api.md). Always fetch
+> the task before composing a reply.
+
 ## Current Contract
 
 Direct PM chat, task chat, task-comment, and epic chat agent replies use

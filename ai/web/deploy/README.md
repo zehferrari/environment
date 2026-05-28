@@ -4,6 +4,13 @@ This directory carries the deploy-side artefacts for the PM walking skeleton.
 It does not auto-apply — the bootstrap is intentionally manual for Stage 1 so
 zeh sees exactly what changes on the host.
 
+> **Agent read-API (loopback only)**: PM exposes
+> `GET /api/agents/context/{task,epic,project}/<id>` for OpenClaw agents to
+> retrieve live PM state on demand instead of receiving it inlined in every
+> turn. Authenticated with the same `channels.pm.token` agents already have.
+> Loopback-only — nginx must NOT proxy these paths. Full contract: see
+> [`../docs/agent-pm-api.md`](../docs/agent-pm-api.md).
+
 ## Files
 
 | File | Lands at | Owner | Notes |

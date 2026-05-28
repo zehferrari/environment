@@ -233,7 +233,7 @@ export function buildWorkItemPlanningPrompt(args: {
     `WORK-ITEM PLANNING GRANT for @${args.agentSlug} on project "${args.projectSlug}".`,
     "A human-authored message in this project-scoped chat gives you a one-shot capability to PROPOSE work-item changes.",
     "Use it only when the current human message directly asks you to create, update, reorganize, comment on, or otherwise change project work items. If the message is only a question, discussion, or status check, do not submit a proposal.",
-    "Use the PROJECT ENVIRONMENT block as the source of truth. Do not try to fetch PM's local web UI or internal API; the proposal endpoint below is the only project-write endpoint you should call from this turn.",
+    "Source of truth for project state: GET /api/agents/context/project/<projectId> via the loopback fetch shown in the LIVE PM CONTEXT block in your system prompt. The proposal endpoint below is the only project-WRITE endpoint you should call from this turn.",
     "Nothing changes on the board until the user reviews and approves your proposal, so make the breakdown clear and well structured when you do propose.",
     "",
     "HOW TO SUBMIT (do this in addition to your normal chat reply):",

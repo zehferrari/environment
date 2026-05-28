@@ -253,10 +253,46 @@ export function buildTaskPlainChatPrompt(taskTitle: string, slug: string): strin
   ].join("\n");
 }
 
+export interface LiveContextAccess {
+  /** Absolute base URL where PM is reachable from this host — loopback only. */
+  baseUrl: string;
+  /** Per-agent Bearer token (same value as channels.pm.token in this agent's openclaw.json). */
+  bearer: string;
+  /** Current task id, embedded into a ready-to-curl URL for convenience. */
+  taskId: string;
+  /** Optional epic id, when the task lives under an Epic — agent should fetch the Epic too. */
+  epicId?: string | null;
+  /** Project id, for proposing work items. */
+  projectId: string;
+}
+
+function liveContextFetchBlock(args: LiveContextAccess) {
+  return [
+    "LIVE PM CONTEXT — FETCH BEFORE YOU REPLY:",
+    "PM no longer inlines the whole task context into this prompt — it has grown too large. Instead, fetch the live data over loopback before you respond. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL. Three read endpoints are available, all returning JSON. Authenticate with the Bearer below (same value as channels.pm.token in your ~/.openclaw/openclaw.json):",
+    "",
+    "  # Required — current task, its comments, full discussion, activity, attachments:",
+    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/task/${args.taskId}'`,
+    "",
+    args.epicId
+      ? "  # Required — parent epic, since this task lives under one:"
+      : "  # Optional — call this only if you reference a different epic:",
+    args.epicId
+      ? `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/epic/${args.epicId}'`
+      : `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/epic/<epicId>'`,
+    "",
+    "  # Use before proposing work-item changes: project env + epics + open tasks + active principals:",
+    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/project/${args.projectId}'`,
+    "",
+    "Soft-deleted comments / chats are filtered server-side — anything missing from the response is deliberately invisible to you. Do not infer or invent content that is not in the JSON. Full contract: see ai/web/docs/agent-pm-api.md inside your worktree.",
+  ].join("\n");
+}
+
 export function buildTaskNativeChannelPrompt(
   taskTitle: string,
   slug: string,
   directedDescriptor?: DirectedDescriptor | null,
+  contextAccess?: LiveContextAccess | null,
 ): string {
   const lines = [
     `You have a PM message on task "${taskTitle}", addressed to @${slug}.`,
@@ -264,10 +300,11 @@ export function buildTaskNativeChannelPrompt(
     "Golden rule: only create a visible PM reply when you have new information, a concrete action result, a required plan, review feedback, a blocker, or a necessary question.",
     `If you have no contribution to add, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else. PM will mark the turn complete without creating a visible comment.`,
     "Do not post acknowledgements, restatements, progress filler, or 'nothing to add' comments.",
-    "Context breadth: the PM context packet below contains EVERY comment and EVERY discussion message on this task — not only the ones directed at you. Read them as background. The directed-message rule below governs whether you reply.",
-    "Use the full live PM context supplied in the message. Do not answer only from the latest line if earlier comments, chats, activity, task details, Epic details, or attachments change the meaning.",
     "Markdown formatting in your reply is welcome.",
   ];
+  if (contextAccess) {
+    lines.push("", liveContextFetchBlock(contextAccess));
+  }
   if (directedDescriptor) {
     lines.push("", renderDirectedSilenceRule({ descriptor: directedDescriptor, recipientAgentSlug: slug }));
   }

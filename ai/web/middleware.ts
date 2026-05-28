@@ -34,6 +34,12 @@ function isTokenScopedTaskWorkflow(path: string) {
   return /^\/api\/agent\/tasks\/[^/]+\/workflow$/.test(path);
 }
 
+// Loopback-only, agent-bearer-auth read API. Authenticates inside the
+// route handler — see ai/web/docs/agent-pm-api.md.
+function isTokenScopedAgentContextRead(path: string) {
+  return /^\/api\/agents\/context\/(task|epic|project)\/[^/]+$/.test(path);
+}
+
 function isTokenScopedAgentCallback(path: string) {
   return (
     isTokenScopedAgentReply(path) ||
@@ -41,7 +47,8 @@ function isTokenScopedAgentCallback(path: string) {
     isTokenScopedTaskDescription(path) ||
     isTokenScopedEpicDescription(path) ||
     isTokenScopedProjectProposal(path) ||
-    isTokenScopedTaskWorkflow(path)
+    isTokenScopedTaskWorkflow(path) ||
+    isTokenScopedAgentContextRead(path)
   );
 }
 

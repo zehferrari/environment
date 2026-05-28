@@ -17,12 +17,10 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import {
-  buildTaskAgentUserMessage,
   buildTaskNativeChannelPrompt,
   buildTaskNativeEditGrantPrompt,
 } from "@/lib/agents/task-chat-context";
 import {
-  buildEpicAgentUserMessage,
   buildEpicNativeChannelPrompt,
   buildEpicNativeEditGrantPrompt,
 } from "@/lib/agents/epic-chat-context";
@@ -30,16 +28,14 @@ import { extractMentions } from "@/lib/markdown";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
 import {
   buildPmTurnSessionKey,
+  resolvePmChannelToken,
   sendOpenClawPmChannelTurn,
 } from "@/lib/agents/openclaw-pm-channel";
 import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/discussion-reply-format";
 import { createTaskDescriptionWriteToken } from "@/lib/agents/task-chat-token";
 import { createEpicDescriptionWriteToken } from "@/lib/agents/epic-chat-token";
 import { createWorkItemGrantToken } from "@/lib/agents/work-item-token";
-import {
-  buildProjectEnvContext,
-  buildWorkItemPlanningPrompt,
-} from "@/lib/agents/context/project";
+import { buildWorkItemPlanningPrompt } from "@/lib/agents/context/project";
 import {
   attachmentMaxBytes,
   writeAttachment,
@@ -483,9 +479,28 @@ export async function sendAgentChatMessage(formData: FormData) {
     const agentSlug = target.slug;
     const gatewayPort = target.gatewayPort;
 
+    // Live-fetch envelope (HOMELAB-41 follow-on). Instead of inlining a fat
+    // context packet on every turn, hand the agent the loopback fetch URL +
+    // their existing pm-channel bearer and let them retrieve the live JSON
+    // on demand. See ai/web/docs/agent-pm-api.md.
+    const agentBearer = (await resolvePmChannelToken(agentSlug)) ?? "";
+    const fetchBaseUrl = agentCallbackBaseUrl();
+    const liveContextAccess = {
+      baseUrl: fetchBaseUrl,
+      bearer: agentBearer,
+      projectId: project.id,
+    };
+
     const baseSystemPrompt = taskId
-      ? buildTaskNativeChannelPrompt(task.title, agentSlug, directedDescriptor)
-      : buildEpicNativeChannelPrompt(epic.title, agentSlug, directedDescriptor);
+      ? buildTaskNativeChannelPrompt(task.title, agentSlug, directedDescriptor, {
+          ...liveContextAccess,
+          taskId: task.id,
+          epicId: task.epicId ?? null,
+        })
+      : buildEpicNativeChannelPrompt(epic.title, agentSlug, directedDescriptor, {
+          ...liveContextAccess,
+          epicId: epic.id,
+        });
 
     const descriptionPrompt = allowDescriptionEdit
       ? taskId
@@ -502,25 +517,20 @@ export async function sendAgentChatMessage(formData: FormData) {
             token: createEpicDescriptionWriteToken(msg.id, epic.id, agentSlug),
         })
       : "";
-    let projectContextText = "";
     let workItemPrompt = "";
     if (allowWorkItemManagement) {
-      const env = await buildProjectEnvContext(project.id);
-      if (env) {
-        projectContextText = env.text;
-        const token = createWorkItemGrantToken(project.id, agentSlug, msg.id);
-        const proposeUrl = new URL(
-          `/api/agent/projects/${project.id}/proposals`,
-          agentCallbackBaseUrl(),
-        ).toString();
-        workItemPrompt = buildWorkItemPlanningPrompt({
-          agentSlug,
-          projectSlug: env.projectSlug,
-          proposeUrl,
-          grantMessageId: msg.id,
-          token,
-        });
-      }
+      const token = createWorkItemGrantToken(project.id, agentSlug, msg.id);
+      const proposeUrl = new URL(
+        `/api/agent/projects/${project.id}/proposals`,
+        agentCallbackBaseUrl(),
+      ).toString();
+      workItemPrompt = buildWorkItemPlanningPrompt({
+        agentSlug,
+        projectSlug: slug,
+        proposeUrl,
+        grantMessageId: msg.id,
+        token,
+      });
     }
 
     const systemPrompt = [
@@ -529,32 +539,6 @@ export async function sendAgentChatMessage(formData: FormData) {
       descriptionPrompt,
       workItemPrompt,
     ].filter(Boolean).join("\n\n");
-
-    const userMessage = taskId
-      ? await buildTaskAgentUserMessage({
-          taskId: task.id,
-          agentSlug,
-          currentTurn: {
-            id: msg.id,
-            source: "task chat",
-            actorUsername: actorUser?.username,
-            actorKind: actor.kind,
-            body,
-          },
-          directedDescriptor,
-        })
-      : await buildEpicAgentUserMessage({
-          epicId: epic.id,
-          agentSlug,
-          currentTurn: {
-            id: msg.id,
-            source: "epic chat",
-            actorUsername: actorUser?.username,
-            actorKind: actor.kind,
-            body,
-          },
-          directedDescriptor,
-        });
 
     const sessionBinding = await getOrCreateAgentSessionBinding({
       scopeType: taskId ? "task" : "epic",
@@ -568,7 +552,7 @@ export async function sendAgentChatMessage(formData: FormData) {
       sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
       kind: taskId ? "task-chat" : "epic-chat",
       text: body,
-      contextText: [userMessage, projectContextText].filter(Boolean).join("\n\n"),
+      contextText: null,
       systemPrompt,
       projectId: project.id,
       actor: {
