@@ -264,28 +264,46 @@ export interface LiveContextAccess {
   epicId?: string | null;
   /** Project id, for proposing work items. */
   projectId: string;
+  /** Inlined "recent exchange" block — pre-rendered by the dispatcher
+   *  (lib/agents/context-api/recent.ts:formatRecentBlock). When set, this
+   *  is the conversational hot path the agent MUST treat as primary
+   *  context. Empty string when there is no prior exchange yet. */
+  inlineRecentBlock?: string;
 }
 
+const SCOPE_ANCHORING_RULE = [
+  "SCOPE-ANCHORING RULE (read before composing):",
+  "If you OR another participant proposed a specific scope in the RECENT block above (e.g. 'I can split this into 2 tasks'), and the user replied affirmatively (e.g. 'yes', 'please do', 'I really enjoy your suggestions'), MATCH THAT SCOPE EXACTLY. Do not silently widen it (e.g. 2 → 7 tasks) or invent a new epic. If you genuinely need a different scope, surface a question first instead of acting.",
+].join("\n");
+
 function liveContextFetchBlock(args: LiveContextAccess) {
-  return [
-    "LIVE PM CONTEXT — FETCH BEFORE YOU REPLY:",
-    "PM no longer inlines the whole task context into this prompt — it has grown too large. Instead, fetch the live data over loopback before you respond. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL. Three read endpoints are available, all returning JSON. Authenticate with the Bearer below (same value as channels.pm.token in your ~/.openclaw/openclaw.json):",
+  const out: string[] = [];
+  if (args.inlineRecentBlock && args.inlineRecentBlock.trim()) {
+    out.push(args.inlineRecentBlock.trim());
+    out.push("");
+    out.push(SCOPE_ANCHORING_RULE);
+    out.push("");
+  }
+  out.push(
+    "LIVE PM CONTEXT — FETCH WHEN YOU NEED DEEPER HISTORY:",
+    "The RECENT block above is your PRIMARY context — the immediate conversational thread. PM also exposes loopback-only JSON endpoints for deeper history (older messages, full activity, project state). Call them when the RECENT block doesn't cover what you need. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL. Authenticate with the Bearer below (same value as channels.pm.token in your ~/.openclaw/openclaw.json):",
     "",
-    "  # Required — current task, its comments, full discussion, activity, attachments:",
+    "  # Full task: deeper history, comments, archived discussion, activity, attachments:",
     `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/task/${args.taskId}'`,
     "",
     args.epicId
-      ? "  # Required — parent epic, since this task lives under one:"
-      : "  # Optional — call this only if you reference a different epic:",
+      ? "  # Parent epic (this task lives under one):"
+      : "  # Optional — only if you reference a different epic:",
     args.epicId
       ? `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/epic/${args.epicId}'`
       : `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/epic/<epicId>'`,
     "",
-    "  # Use before proposing work-item changes: project env + epics + open tasks + active principals:",
+    "  # Required before proposing work-item changes — project env + epics + open tasks + active principals:",
     `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/project/${args.projectId}'`,
     "",
-    "Soft-deleted comments / chats are filtered server-side — anything missing from the response is deliberately invisible to you. Do not infer or invent content that is not in the JSON. Full contract: see ai/web/docs/agent-pm-api.md inside your worktree.",
-  ].join("\n");
+    "Soft-deleted comments / chats are filtered server-side — anything missing from the JSON is deliberately invisible to you. Do not infer or invent content. Full contract: ai/web/docs/agent-pm-api.md.",
+  );
+  return out.join("\n");
 }
 
 export function buildTaskNativeChannelPrompt(

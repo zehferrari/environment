@@ -41,6 +41,11 @@ import {
   writeAttachment,
 } from "@/lib/attachments/storage";
 import { resolveDirectedFromDiscussionRow } from "@/lib/agents/directed-targets";
+import {
+  formatRecentBlock,
+  recentComments,
+  recentDiscussion,
+} from "@/lib/agents/context-api/recent";
 
 async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> {
   const session = await auth();
@@ -475,6 +480,23 @@ export async function sendAgentChatMessage(formData: FormData) {
     activeAgentSlugs,
   });
 
+  // Recent-exchange slice (HOMELAB-41 prioritization fix). This is the
+  // single most important context for "did the participant just agree to
+  // a specific scope?" — so we compute it once and inline it ABOVE the
+  // live-fetch curl block in every per-agent prompt. The just-persisted
+  // current message is filtered out by id so it doesn't double-render.
+  const scopeForRecent = taskId ? { taskId: task.id as string } : { epicId: epic.id as string };
+  const [recentDisc, recentCmts] = await Promise.all([
+    recentDiscussion(scopeForRecent),
+    recentComments(scopeForRecent),
+  ]);
+  const inlineRecentBlock = formatRecentBlock({
+    scope: taskId ? "task" : "epic",
+    discussion: recentDisc,
+    comments: recentCmts,
+    currentMessageId: msg.id,
+  });
+
   await Promise.all([...targetAgents.values()].map(async (target) => {
     const agentSlug = target.slug;
     const gatewayPort = target.gatewayPort;
@@ -489,6 +511,7 @@ export async function sendAgentChatMessage(formData: FormData) {
       baseUrl: fetchBaseUrl,
       bearer: agentBearer,
       projectId: project.id,
+      inlineRecentBlock,
     };
 
     const baseSystemPrompt = taskId

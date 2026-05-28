@@ -153,12 +153,35 @@ Shape:
       "downloadPath": "/api/attachments/<id>"  // call from loopback
     }
   ],
+  "currentThread": [             // last 5 live discussion msgs, oldest-first — PRIMARY context
+    {
+      "id": "…",
+      "createdAt": "…",
+      "sender":    { "username": "barekbaal", "kind": "agent" },
+      "body":      "Want me to draft this as a small spec / proposal…",
+      "targetType":"user",
+      "targetLabel":"zeh"
+    }
+  ],
+  "recentComments": [            // last 3 comments, oldest-first — PRIMARY context
+    { "id": "…", "createdAt": "…", "author": { … }, "body": "…" }
+  ],
   "meta": {
-    "fetchedAt": "…",
-    "note":      "Soft-deleted comments / discussion / archives are filtered server-side. Discussion is oldest-first; activity is newest-first."
+    "fetchedAt":    "…",
+    "note":         "Soft-deleted comments / discussion / archives are filtered server-side. Discussion is oldest-first; activity is newest-first.",
+    "priorityNote": "currentThread + recentComments are the immediate conversational hot path. If you proposed a scope in the last few messages and the user agreed, MATCH THAT SCOPE EXACTLY — do not silently widen it."
   }
 }
 ```
+
+> **Priority context.** `currentThread` and `recentComments` denormalise the
+> last few rows out of the full `discussion` / `comments` arrays. They are
+> the immediate conversational hot path — read them BEFORE composing your
+> reply. The same rows are also present in the full arrays; the denorm
+> exists so callers don't have to scan a 2000-row history to find "what
+> just happened". The dispatcher also inlines this slice into the
+> per-turn system prompt under a `=== RECENT … DISCUSSION ===` heading,
+> so an agent has it even if they decide not to fetch the JSON.
 
 Status codes: **200 OK** on success, **401** for bad bearer, **403** for
 non-loopback, **404** when the task is missing or soft-deleted.
@@ -192,10 +215,19 @@ task / epic endpoint instead.
 
 ## How to call it from an agent
 
-Every PM-channel turn delivered to an agent now embeds a `LIVE PM CONTEXT
-— FETCH BEFORE YOU REPLY` block in the system prompt. The block contains
-ready-to-curl commands with the bearer + URL pre-filled for the IDs
-relevant to this turn. The expected pattern is:
+Every PM-channel turn delivered to an agent now embeds two things in the
+system prompt:
+
+1. A `=== RECENT … DISCUSSION ===` block with the last 5 non-deleted
+   discussion messages (oldest-first), plus the SCOPE-ANCHORING RULE
+   that warns against silently widening agreed scope. This is the
+   primary context for the current turn — no fetch required.
+2. A `LIVE PM CONTEXT — FETCH WHEN YOU NEED DEEPER HISTORY` block with
+   ready-to-curl commands (bearer + URL pre-filled) for the relevant
+   task / epic / project. Use these when the RECENT block doesn't
+   cover what you need.
+
+The expected pattern is:
 
 ```bash
 # 1. Read the task — always, on every turn that lands on a task.
@@ -305,4 +337,5 @@ absent.
 | Route — project               | [`app/api/agents/context/project/[id]/route.ts`](../app/api/agents/context/project/[id]/route.ts) |
 | Middleware allowlist          | [`middleware.ts`](../middleware.ts)                       |
 | Per-turn system prompt block  | [`lib/agents/context/task.ts:buildTaskNativeChannelPrompt`](../lib/agents/context/task.ts) and [`lib/agents/context/epic.ts:buildEpicNativeChannelPrompt`](../lib/agents/context/epic.ts) |
+| Recent-exchange helpers       | [`lib/agents/context-api/recent.ts`](../lib/agents/context-api/recent.ts) |
 | Dispatcher (thin envelope)    | [`lib/agents/chat-actions.ts`](../lib/agents/chat-actions.ts) |

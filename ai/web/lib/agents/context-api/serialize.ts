@@ -114,9 +114,37 @@ export interface TaskContextResponse {
     createdAt: string;
     downloadPath: string;
   }>;
+  /**
+   * PRIORITY CONTEXT — the last few non-deleted discussion messages
+   * (oldest-first). This is the conversational hot path the agent is
+   * replying inside. Same rows are also present in `discussion`; this
+   * is a denormalised pointer so callers don't have to scan the full
+   * 2000-row array to find "what just happened".
+   */
+  currentThread: Array<{
+    id: string;
+    createdAt: string;
+    sender: ReturnType<typeof actor>;
+    body: string;
+    targetType: string | null;
+    targetLabel: string | null;
+  }>;
+  /**
+   * PRIORITY CONTEXT — the last few non-deleted comments (oldest-first).
+   * Same rows are also present in `comments`. Treat as primary if the
+   * current message is a reply to a comment.
+   */
+  recentComments: Array<{
+    id: string;
+    createdAt: string;
+    author: ReturnType<typeof actor>;
+    body: string;
+  }>;
   meta: {
     fetchedAt: string;
     note: string;
+    /** Present on task / epic responses to flag the recent-exchange slice. Absent on project. */
+    priorityNote?: string;
   };
 }
 
@@ -334,9 +362,24 @@ export async function buildTaskContextJson(taskId: string): Promise<TaskContextR
       createdAt: a.createdAt.toISOString(),
       downloadPath: `/api/attachments/${a.id}`,
     })),
+    currentThread: liveChats.slice(-5).map((m) => ({
+      id: m.id,
+      createdAt: m.createdAt.toISOString(),
+      sender: actor(m.sender),
+      body: m.body,
+      targetType: m.targetType,
+      targetLabel: m.targetLabel,
+    })),
+    recentComments: comments.slice(-3).map((c) => ({
+      id: c.id,
+      createdAt: c.createdAt.toISOString(),
+      author: actor(c.user),
+      body: c.body,
+    })),
     meta: {
       fetchedAt: new Date().toISOString(),
       note: "Soft-deleted comments / discussion / archives are filtered server-side. Discussion is oldest-first; activity is newest-first.",
+      priorityNote: "currentThread + recentComments are the immediate conversational hot path. If you proposed a scope in the last few messages and the user agreed, MATCH THAT SCOPE EXACTLY — do not silently widen it. Surface a question first if you need to deviate.",
     },
   };
 }
@@ -369,6 +412,8 @@ export interface EpicContextResponse {
   comments: TaskContextResponse["comments"];
   discussion: TaskContextResponse["discussion"];
   attachments: TaskContextResponse["attachments"];
+  currentThread: TaskContextResponse["currentThread"];
+  recentComments: TaskContextResponse["recentComments"];
   meta: TaskContextResponse["meta"];
 }
 
@@ -484,9 +529,24 @@ export async function buildEpicContextJson(epicId: string): Promise<EpicContextR
       createdAt: a.createdAt.toISOString(),
       downloadPath: `/api/attachments/${a.id}`,
     })),
+    currentThread: liveChats.slice(-5).map((m) => ({
+      id: m.id,
+      createdAt: m.createdAt.toISOString(),
+      sender: actor(m.sender),
+      body: m.body,
+      targetType: m.targetType,
+      targetLabel: m.targetLabel,
+    })),
+    recentComments: comments.slice(-3).map((c) => ({
+      id: c.id,
+      createdAt: c.createdAt.toISOString(),
+      author: actor(c.user),
+      body: c.body,
+    })),
     meta: {
       fetchedAt: new Date().toISOString(),
       note: "Soft-deleted comments / discussion are filtered server-side. Discussion is oldest-first.",
+      priorityNote: "currentThread + recentComments are the immediate conversational hot path. If you proposed a scope in the last few messages and the user agreed, MATCH THAT SCOPE EXACTLY — do not silently widen it. Surface a question first if you need to deviate.",
     },
   };
 }

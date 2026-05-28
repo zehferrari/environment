@@ -242,24 +242,39 @@ export interface LiveContextAccessEpic {
   bearer: string;
   epicId: string;
   projectId: string;
+  /** Inlined "recent exchange" block — same idea as the task variant. */
+  inlineRecentBlock?: string;
 }
 
+const SCOPE_ANCHORING_RULE = [
+  "SCOPE-ANCHORING RULE (read before composing):",
+  "If you OR another participant proposed a specific scope in the RECENT block above (e.g. 'I can split this into 2 tasks'), and the user replied affirmatively (e.g. 'yes', 'please do', 'I really enjoy your suggestions'), MATCH THAT SCOPE EXACTLY. Do not silently widen it or invent a new epic. If you genuinely need a different scope, surface a question first instead of acting.",
+].join("\n");
+
 function liveContextFetchBlockEpic(args: LiveContextAccessEpic) {
-  return [
-    "LIVE PM CONTEXT — FETCH BEFORE YOU REPLY:",
-    "PM no longer inlines the whole epic context into this prompt — it has grown too large. Fetch the live data over loopback before you respond. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL. Authenticate with the Bearer below (same value as channels.pm.token in your ~/.openclaw/openclaw.json):",
+  const out: string[] = [];
+  if (args.inlineRecentBlock && args.inlineRecentBlock.trim()) {
+    out.push(args.inlineRecentBlock.trim());
+    out.push("");
+    out.push(SCOPE_ANCHORING_RULE);
+    out.push("");
+  }
+  out.push(
+    "LIVE PM CONTEXT — FETCH WHEN YOU NEED DEEPER HISTORY:",
+    "The RECENT block above is your PRIMARY context. PM also exposes loopback-only JSON endpoints for older history and full project state. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL. Authenticate with the Bearer below (same value as channels.pm.token in your ~/.openclaw/openclaw.json):",
     "",
-    "  # Required — epic with its full task list, comments, discussion, attachments:",
+    "  # Full epic: deeper history, full task list, comments, attachments:",
     `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/epic/${args.epicId}'`,
     "",
-    "  # Use before proposing work-item changes:",
+    "  # Required before proposing work-item changes:",
     `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/project/${args.projectId}'`,
     "",
-    "  # Per-task detail, if you need to dive into a specific task under this epic:",
+    "  # Per-task detail when you need to dive into a specific task under this epic:",
     `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/task/<taskId>'`,
     "",
-    "Soft-deleted comments / chats are filtered server-side — anything missing from the response is deliberately invisible to you. Do not invent content not in the JSON. Full contract: ai/web/docs/agent-pm-api.md.",
-  ].join("\n");
+    "Soft-deleted comments / chats are filtered server-side. Full contract: ai/web/docs/agent-pm-api.md.",
+  );
+  return out.join("\n");
 }
 
 export function buildEpicNativeChannelPrompt(
