@@ -9,17 +9,11 @@ import {
   renderDirectedSilenceRule,
   type DirectedDescriptor,
 } from "@/lib/agents/directed-targets";
+import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
 
-// Row caps for context breadth on a single task. Mirrors the 6114e6a fix on
-// project.ts: prefer breadth (see every comment / discussion message that
-// fits) over depth (long per-item bodies). Each body is further clipped with
-// clipWithMeta() so the agent can tell when a row was truncated.
-const MAX_COMMENTS = 40;
-const MAX_LIVE_CHATS = 50;
-const MAX_ACTIVITY = 30;
-const MAX_ARCHIVED_CHATS = 80;
-const MAX_TIMELINE_BODY = 1400;
-const MAX_ACTIVITY_BODY = 900;
+// Context-packet caps live in ./caps.ts and are resolved per-recipient
+// from agent.role. Coding agents (can_modify_code=true) get the 1M-token
+// profile; monitor agents get the 256k profile.
 
 export type TaskAgentCurrentTurn = {
   id?: string | null;
@@ -41,6 +35,8 @@ export type AgentContextPacket = {
   targetAgentSlug: string;
   origin: "comment" | "chat";
   directedDescriptor: DirectedDescriptor | null;
+  /** Caps used when building this packet — also drives renderer clip sizes. */
+  caps: ContextCaps;
   currentTurn: {
     id: string | null;
     source: "task_comment" | "task_chat";
@@ -310,6 +306,11 @@ export async function buildTaskAgentContextPacket(args: {
   currentTurn: TaskAgentCurrentTurn;
   directedDescriptor?: DirectedDescriptor | null;
 }): Promise<AgentContextPacket> {
+  // Caps are role-driven (see ./caps.ts) — coding agents get the 1M
+  // profile, monitor agents get the 256k profile. Resolved once per
+  // build and threaded through both the Prisma query (row counts) and
+  // the renderer (per-body clips).
+  const caps = await resolveAgentCaps(args.agentSlug);
   const task = await db.task.findUnique({
     where: { id: args.taskId },
     select: {
@@ -386,7 +387,7 @@ export async function buildTaskAgentContextPacket(args: {
         // removed them on purpose. HOMELAB-41 / item 2.
         where: { deletedAt: null },
         orderBy: { createdAt: "desc" },
-        take: MAX_COMMENTS,
+        take: caps.maxComments,
         select: {
           id: true,
           body: true,
@@ -398,7 +399,7 @@ export async function buildTaskAgentContextPacket(args: {
         // Active discussion only, and never soft-deleted bubbles.
         where: { archiveId: null, deletedAt: null },
         orderBy: { createdAt: "desc" },
-        take: MAX_LIVE_CHATS,
+        take: caps.maxLiveChats,
         select: {
           id: true,
           agentSlug: true,
@@ -412,7 +413,7 @@ export async function buildTaskAgentContextPacket(args: {
       },
       activity: {
         orderBy: { createdAt: "desc" },
-        take: MAX_ACTIVITY,
+        take: caps.maxActivity,
         select: {
           id: true,
           kind: true,
@@ -436,6 +437,7 @@ export async function buildTaskAgentContextPacket(args: {
     targetAgentSlug: args.agentSlug,
     origin: originFromSource(args.currentTurn.source),
     directedDescriptor: args.directedDescriptor ?? null,
+    caps,
     currentTurn: {
       id: args.currentTurn.id ?? null,
       source: currentTurnSource(args.currentTurn.source),
@@ -510,7 +512,7 @@ export async function buildTaskAgentContextPacket(args: {
           deletedAt: null,
         },
         orderBy: { createdAt: "asc" },
-        take: MAX_ARCHIVED_CHATS,
+        take: caps.maxArchivedChats,
         select: {
           id: true,
           agentSlug: true,
@@ -590,9 +592,9 @@ function pushDescription(lines: string[], label: string, value: string | null, m
   }
 }
 
-function renderAttachments(attachments: AttachmentContext[]) {
+function renderAttachments(attachments: AttachmentContext[], caps: ContextCaps) {
   const lines: string[] = [];
-  let remainingInlineChars = 12000;
+  let remainingInlineChars = caps.attachmentInlineBudget;
   if (attachments.length === 0) {
     lines.push("(none)");
     return lines;
@@ -604,7 +606,7 @@ function renderAttachments(attachments: AttachmentContext[]) {
     );
     if (attachment.extract.status === "ready" && attachment.extract.text) {
       if (remainingInlineChars > 0) {
-        const text = clip(attachment.extract.text, Math.min(4000, remainingInlineChars));
+        const text = clip(attachment.extract.text, Math.min(caps.attachmentPerExcerpt, remainingInlineChars));
         remainingInlineChars -= text.length;
         lines.push("  Extracted text excerpt:", "  -----", ...text.split("\n").map((line) => `  ${line}`), "  -----");
       } else {
@@ -661,7 +663,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     `Project id: ${project.id}`,
     `Project README path: ${project.readmePath || "(not set)"}`,
   );
-  pushDescription(lines, "PROJECT DESCRIPTION", project.description, 2500);
+  pushDescription(lines, "PROJECT DESCRIPTION", project.description, packet.caps.projectDescriptionMax);
 
   lines.push(
     "",
@@ -676,7 +678,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     `Updated: ${task.updatedAt}`,
     "",
   );
-  pushDescription(lines, "TASK DESCRIPTION", task.description, 6000);
+  pushDescription(lines, "TASK DESCRIPTION", task.description, packet.caps.taskDescriptionMax);
 
   lines.push("", "EPIC SNAPSHOT:");
   if (epic) {
@@ -685,7 +687,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
       `Assignee: ${epic.assignee}`,
       `Acting manager: ${epic.actingManager}`,
     );
-    pushDescription(lines, "EPIC DESCRIPTION", epic.description, 6000);
+    pushDescription(lines, "EPIC DESCRIPTION", epic.description, packet.caps.epicDescriptionMax);
   } else {
     lines.push("(none)");
   }
@@ -700,7 +702,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
   }
 
   lines.push("", "ATTACHMENTS:");
-  lines.push(...renderAttachments(packet.attachments));
+  lines.push(...renderAttachments(packet.attachments, packet.caps));
 
   lines.push("", "TIMELINE MANIFEST (breadth first; every fetched row):");
   if (packet.timeline.length === 0) {
@@ -717,9 +719,9 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
         `- [${item.createdAt}] ${item.type}${kind} ${item.actor} (${item.id})`,
       );
     }
-    if (counts.comment >= MAX_COMMENTS || counts.chat >= MAX_LIVE_CHATS || counts.activity >= MAX_ACTIVITY) {
+    if (counts.comment >= packet.caps.maxComments || counts.chat >= packet.caps.maxLiveChats || counts.activity >= packet.caps.maxActivity) {
       lines.push(
-        `[partial context: comments cap ${MAX_COMMENTS} / chats cap ${MAX_LIVE_CHATS} / activity cap ${MAX_ACTIVITY} — older rows may exist beyond this packet]`,
+        `[partial context: comments cap ${packet.caps.maxComments} / chats cap ${packet.caps.maxLiveChats} / activity cap ${packet.caps.maxActivity} — older rows may exist beyond this packet]`,
       );
     }
   }
@@ -731,7 +733,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
   } else {
     for (const item of packet.timeline) {
       const kind = item.kind ? ` ${item.kind}` : "";
-      const clipped = clipWithMeta(item.body, item.type === "activity" ? MAX_ACTIVITY_BODY : MAX_TIMELINE_BODY);
+      const clipped = clipWithMeta(item.body, item.type === "activity" ? packet.caps.maxActivityBody : packet.caps.maxTimelineBody);
       if (clipped.truncated) truncatedBodies += 1;
       lines.push(
         `[${item.createdAt}] ${item.type}${kind} ${item.actor} (${item.id}):`,

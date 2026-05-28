@@ -9,16 +9,11 @@ import {
   renderDirectedSilenceRule,
   type DirectedDescriptor,
 } from "@/lib/agents/directed-targets";
+import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
 
-// Row caps for context breadth on a single epic. Matches the task.ts caps so
-// that the prompt experience is the same on both surfaces — breadth-first,
-// per-body clipping reported inline via clipWithMeta().
-const MAX_COMMENTS = 40;
-const MAX_LIVE_CHATS = 50;
-const MAX_ACTIVITY = 30;
-const MAX_ARCHIVED_CHATS = 80;
-const MAX_TIMELINE_BODY = 1400;
-const MAX_ACTIVITY_BODY = 900;
+// Context-packet caps live in ./caps.ts and are resolved per-recipient
+// from agent.role. Coding agents (can_modify_code=true) get the 1M-token
+// profile; monitor agents get the 256k profile.
 
 export type EpicAgentCurrentTurn = {
   id?: string | null;
@@ -40,6 +35,8 @@ export type EpicAgentContextPacket = {
   targetAgentSlug: string;
   origin: "comment" | "chat";
   directedDescriptor: DirectedDescriptor | null;
+  /** Caps used when building this packet — also drives renderer clip sizes. */
+  caps: ContextCaps;
   currentTurn: {
     id: string | null;
     source: "epic_comment" | "epic_chat";
@@ -295,6 +292,8 @@ export async function buildEpicAgentContextPacket(args: {
   currentTurn: EpicAgentCurrentTurn;
   directedDescriptor?: DirectedDescriptor | null;
 }): Promise<EpicAgentContextPacket> {
+  // Role-driven caps; see lib/agents/context/caps.ts.
+  const caps = await resolveAgentCaps(args.agentSlug);
   const epic = await db.epic.findUnique({
     where: { id: args.epicId },
     select: {
@@ -344,7 +343,7 @@ export async function buildEpicAgentContextPacket(args: {
         // removed them on purpose. HOMELAB-41 / item 2.
         where: { deletedAt: null },
         orderBy: { createdAt: "desc" },
-        take: MAX_COMMENTS,
+        take: caps.maxComments,
         select: {
           id: true,
           body: true,
@@ -355,7 +354,7 @@ export async function buildEpicAgentContextPacket(args: {
       chats: {
         where: { archiveId: null, deletedAt: null },
         orderBy: { createdAt: "desc" },
-        take: MAX_LIVE_CHATS,
+        take: caps.maxLiveChats,
         select: {
           id: true,
           agentSlug: true,
@@ -380,6 +379,7 @@ export async function buildEpicAgentContextPacket(args: {
     targetAgentSlug: args.agentSlug,
     origin: originFromSource(args.currentTurn.source),
     directedDescriptor: args.directedDescriptor ?? null,
+    caps,
     currentTurn: {
       id: args.currentTurn.id ?? null,
       source: currentTurnSource(args.currentTurn.source),
@@ -440,7 +440,7 @@ export async function buildEpicAgentContextPacket(args: {
           deletedAt: null,
         },
         orderBy: { createdAt: "asc" },
-        take: MAX_ARCHIVED_CHATS,
+        take: caps.maxArchivedChats,
         select: {
           id: true,
           agentSlug: true,
@@ -467,7 +467,7 @@ export async function buildEpicAgentContextPacket(args: {
   const activity = await db.activityLog.findMany({
     where: { projectId: epic.project.id },
     orderBy: { createdAt: "desc" },
-    take: MAX_ACTIVITY,
+    take: caps.maxActivity,
     select: {
       id: true,
       kind: true,
@@ -536,9 +536,9 @@ function pushDescription(lines: string[], label: string, value: string | null, m
   }
 }
 
-function renderAttachments(attachments: AttachmentContext[]) {
+function renderAttachments(attachments: AttachmentContext[], caps: ContextCaps) {
   const lines: string[] = [];
-  let remainingInlineChars = 12000;
+  let remainingInlineChars = caps.attachmentInlineBudget;
   if (attachments.length === 0) {
     lines.push("(none)");
     return lines;
@@ -550,7 +550,7 @@ function renderAttachments(attachments: AttachmentContext[]) {
     );
     if (attachment.extract.status === "ready" && attachment.extract.text) {
       if (remainingInlineChars > 0) {
-        const text = clip(attachment.extract.text, Math.min(4000, remainingInlineChars));
+        const text = clip(attachment.extract.text, Math.min(caps.attachmentPerExcerpt, remainingInlineChars));
         remainingInlineChars -= text.length;
         lines.push("  Extracted text excerpt:", "  -----", ...text.split("\n").map((line) => `  ${line}`), "  -----");
       } else {
@@ -607,7 +607,7 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
     `Project id: ${project.id}`,
     `Project README path: ${project.readmePath || "(not set)"}`,
   );
-  pushDescription(lines, "PROJECT DESCRIPTION", project.description, 2500);
+  pushDescription(lines, "PROJECT DESCRIPTION", project.description, packet.caps.projectDescriptionMax);
 
   lines.push("", "EPIC SNAPSHOT:");
   lines.push(
@@ -615,7 +615,7 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
     `Assignee: ${epic.assignee}`,
     `Acting manager: ${epic.actingManager}`,
   );
-  pushDescription(lines, "EPIC DESCRIPTION", epic.description, 6000);
+  pushDescription(lines, "EPIC DESCRIPTION", epic.description, packet.caps.epicDescriptionMax);
 
   lines.push("", "EPIC TASKS:");
   if (tasks.length === 0) {
@@ -627,7 +627,7 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
   }
 
   lines.push("", "ATTACHMENTS:");
-  lines.push(...renderAttachments(packet.attachments));
+  lines.push(...renderAttachments(packet.attachments, packet.caps));
 
   lines.push("", "TIMELINE MANIFEST (breadth first; every fetched row):");
   if (packet.timeline.length === 0) {
@@ -644,9 +644,9 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
         `- [${item.createdAt}] ${item.type}${kind} ${item.actor} (${item.id})`,
       );
     }
-    if (counts.comment >= MAX_COMMENTS || counts.chat >= MAX_LIVE_CHATS || counts.activity >= MAX_ACTIVITY) {
+    if (counts.comment >= packet.caps.maxComments || counts.chat >= packet.caps.maxLiveChats || counts.activity >= packet.caps.maxActivity) {
       lines.push(
-        `[partial context: comments cap ${MAX_COMMENTS} / chats cap ${MAX_LIVE_CHATS} / activity cap ${MAX_ACTIVITY} — older rows may exist beyond this packet]`,
+        `[partial context: comments cap ${packet.caps.maxComments} / chats cap ${packet.caps.maxLiveChats} / activity cap ${packet.caps.maxActivity} — older rows may exist beyond this packet]`,
       );
     }
   }
@@ -658,7 +658,7 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
   } else {
     for (const item of packet.timeline) {
       const kind = item.kind ? ` ${item.kind}` : "";
-      const clipped = clipWithMeta(item.body, item.type === "activity" ? MAX_ACTIVITY_BODY : MAX_TIMELINE_BODY);
+      const clipped = clipWithMeta(item.body, item.type === "activity" ? packet.caps.maxActivityBody : packet.caps.maxTimelineBody);
       if (clipped.truncated) truncatedBodies += 1;
       lines.push(
         `[${item.createdAt}] ${item.type}${kind} ${item.actor} (${item.id}):`,
