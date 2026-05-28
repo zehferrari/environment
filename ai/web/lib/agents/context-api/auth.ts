@@ -27,20 +27,28 @@ const LOOPBACK_HOSTS = new Set([
 
 /**
  * Verify the request reached PM directly over loopback (no nginx hop). The
- * agent context API is for ON-HOST agents only — if nginx is in the path,
- * we have an X-Forwarded-* header and we reject. Mirrors the policy on
- * pm-channel/ingest (loopback-only on the OpenClaw side).
+ * agent context API is for ON-HOST agents only.
+ *
+ * pm.service binds to 127.0.0.1:3000 — so any request that arrives at all
+ * either came in directly on loopback (no x-forwarded-for) or was proxied
+ * through nginx (x-forwarded-for points at the external client IP). We
+ * accept the first case and reject the second.
+ *
+ * NOTE: Next.js 15 itself sometimes stamps x-forwarded-host/proto on
+ * internal RSC navigations even for direct loopback requests, so we look
+ * specifically at x-forwarded-for (which only nginx populates here) and
+ * trust the loopback bind for the rest. The host header is informational.
  */
 export function isLoopbackRequest(req: NextRequest): boolean {
-  // Any X-Forwarded-* header → request came through a proxy. Reject.
-  if (req.headers.get("x-forwarded-for")) return false;
-  if (req.headers.get("x-forwarded-host")) return false;
-  if (req.headers.get("x-forwarded-proto")) return false;
-  // Host header must name a loopback target.
-  const host = (req.headers.get("host") ?? "").toLowerCase();
-  if (!host) return false;
-  const bare = host.replace(/:\d+$/, "");
-  return LOOPBACK_HOSTS.has(bare);
+  const xff = (req.headers.get("x-forwarded-for") ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (xff.length === 0) return true;
+  // If every IP in the chain is loopback, accept (some setups stamp the
+  // header even for in-process forwards). Reject as soon as a non-loopback
+  // IP appears.
+  return xff.every((ip) => LOOPBACK_HOSTS.has(ip));
 }
 
 const DEFAULT_TOKEN_FILE =
