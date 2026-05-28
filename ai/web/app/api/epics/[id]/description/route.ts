@@ -40,6 +40,7 @@ export async function POST(
     select: {
       epicId: true,
       agentSlug: true,
+      senderUserId: true,
       allowDescriptionEdit: true,
       editGrantUsedAt: true,
     },
@@ -109,8 +110,17 @@ export async function POST(
 
   const newDescription = description.trim();
 
+  // Persist the draft against the human who triggered the grant (mirrors
+  // the task route). Anyone else viewing the epic sees nothing; the
+  // reaper purges abandoned drafts within a minute of the page closing.
   const { saveDescriptionDraft } = await import("@/lib/description-drafts");
-  saveDescriptionDraft(epicId, "epic", newDescription);
+  await saveDescriptionDraft({
+    scope: "epic",
+    targetId: epicId,
+    requesterUserId: grant.senderUserId,
+    agentSlug: resolvedAgent.slug,
+    body: newDescription,
+  });
 
   await db.$transaction([
     db.agentChatMessage.update({
@@ -126,6 +136,7 @@ export async function POST(
           messageId,
           epicId,
           agentSlug: resolvedAgent.slug,
+          requesterUserId: grant.senderUserId,
           length: newDescription.length,
           draft: true,
         }),

@@ -88,7 +88,7 @@ export default function DescriptionField({
     improveFormatting ? "improve the markdown structure and formatting" : null,
   ].filter(Boolean);
   const aiInstruction = aiInstructionParts.length > 0
-    ? `Please update this ${descriptionLabel.toLowerCase()} description in place: ${aiInstructionParts.join(" and ")}. Preserve useful existing details and only change the description. Do NOT ask for human confirmation or approval, and do NOT submit this change as a work-item proposal. Instead, use your description write-back token/endpoint to update the description directly and immediately.`
+    ? `Please propose a new ${descriptionLabel.toLowerCase()} description as a draft: ${aiInstructionParts.join(" and ")}. Preserve useful existing details. Do NOT submit this as a work-item proposal. Use your description write-back token/endpoint to publish the draft for the requester to review; the requester will explicitly Save it (or Rollback) on the task/epic page.`
     : "";
 
   useEffect(() => {
@@ -107,6 +107,41 @@ export default function DescriptionField({
       localStorage.removeItem(rollbackKey);
     }
   }, [defaultValue, draftDescription, rollbackKey]);
+
+  // Description-draft heartbeat — bumps lastSeenAt on the requester's
+  // DescriptionDraft row while the page is open. If the user navigates
+  // away or the tab is hidden long enough, heartbeats stop and the
+  // server-side reaper purges any draft within ~60s. We always heartbeat
+  // (even when there's no current draft) so a late-arriving agent POST
+  // still sees a fresh row when it lands. We stop while the AI prompt
+  // is running on the same tab to avoid log spam during streaming.
+  useEffect(() => {
+    const id = taskId ?? epicId;
+    const scope: "task" | "epic" | null = taskId ? "task" : epicId ? "epic" : null;
+    if (!id || !scope) return;
+
+    const ping = () => {
+      // navigator.sendBeacon isn't ideal here (it's POST-only and we want
+      // JSON), so a plain fetch with keepalive covers tab-close as well.
+      fetch("/api/system/description-draft/heartbeat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ scope, targetId: id }),
+        keepalive: true,
+      }).catch(() => { /* heartbeat failures are silent — reaper cleans up */ });
+    };
+
+    ping(); // immediate bump so the first read after the AI POST is fresh
+    const handle = window.setInterval(ping, 15_000);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") ping();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(handle);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [taskId, epicId]);
 
   useEffect(() => {
     if (!aiRunning || !runningMessageId || !runningAgentSlug) {

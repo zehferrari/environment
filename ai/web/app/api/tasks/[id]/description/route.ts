@@ -49,6 +49,7 @@ export async function POST(
     select: {
       taskId: true,
       agentSlug: true,
+      senderUserId: true,
       allowDescriptionEdit: true,
       editGrantUsedAt: true,
     },
@@ -117,8 +118,19 @@ export async function POST(
 
   const newDescription = description.trim();
 
+  // Persist the draft against the human who triggered the grant. The page
+  // they had open will pick it up via the next read (or via the heartbeat
+  // path the description-field component drives). If that human closed the
+  // page before this POST landed, the reaper purges the draft inside a
+  // minute — no other viewer ever sees it.
   const { saveDescriptionDraft } = await import("@/lib/description-drafts");
-  saveDescriptionDraft(taskId, "task", newDescription);
+  await saveDescriptionDraft({
+    scope: "task",
+    targetId: taskId,
+    requesterUserId: grant.senderUserId,
+    agentSlug: resolvedAgent.slug,
+    body: newDescription,
+  });
 
   await db.$transaction([
     db.agentChatMessage.update({
@@ -134,6 +146,7 @@ export async function POST(
         payload: JSON.stringify({
           messageId,
           agentSlug: resolvedAgent.slug,
+          requesterUserId: grant.senderUserId,
           length: newDescription.length,
           draft: true,
         }),

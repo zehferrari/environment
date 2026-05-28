@@ -287,20 +287,20 @@ export function buildTaskNativeEditGrantPrompt(args: {
   const exampleBody = JSON.stringify({
     messageId: args.messageId,
     token: args.token,
-    description: "<complete replacement markdown description>",
+    description: "<complete final markdown description>",
   });
 
   return [
-    `DESCRIPTION WRITE CAPABILITY for task "${args.taskTitle}".`,
-    "A human-authored message on this task gives you a one-shot capability to replace the task description.",
+    `DESCRIPTION DRAFT CAPABILITY for task "${args.taskTitle}".`,
+    "A human-authored message on this task gives you a one-shot capability to PROPOSE A DRAFT of the task description. Your POST does NOT replace the description directly — it lands as a draft on the open task page for the requesting human to review, Save (apply), or Rollback. If the requester closed the page before your POST landed, the draft is reaped within ~60s and no other viewer ever sees it.",
     "Use it only when the current human message directly asks you to update, rewrite, reformat, or replace this task description. If the message is only a question, discussion, or status check, do not call this endpoint.",
     "",
-    "To write the description, POST application/json to:",
+    "To publish a draft, POST application/json to:",
     args.descriptionUrl,
     "Body shape:",
     exampleBody,
     "",
-    "The description field must contain the complete final markdown description and nothing else. After a successful POST, reply normally through the PM channel with a concise confirmation.",
+    "The `description` field must contain the COMPLETE final markdown description and nothing else — no preamble, no acknowledgement, no JSON wrapper. After a successful POST, reply through the PM channel with a concise confirmation noting that the requester needs to click Save to apply the draft.",
   ].join("\n");
 }
 

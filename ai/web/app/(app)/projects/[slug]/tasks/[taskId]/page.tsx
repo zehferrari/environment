@@ -347,9 +347,11 @@ async function updateTask(formData: FormData) {
 
   try {
     const { deleteDescriptionDraft } = await import("@/lib/description-drafts");
-    deleteDescriptionDraft(taskId, "task");
+    // Save applied — clear THIS user's draft (others viewing the same
+    // task with their own drafts keep them).
+    await deleteDescriptionDraft({ scope: "task", targetId: taskId, requesterUserId: actor.id });
   } catch (e) {
-    console.error("Failed to delete draft file:", e);
+    console.error("Failed to delete description draft:", e);
   }
 
   revalidatePath(`/projects/${slug}/tasks/${taskId}`);
@@ -1087,8 +1089,17 @@ export default async function TaskDetailPage({
     : null;
   const isAiDescriptionRunning = runningDescriptionRun !== null;
 
+  // Draft is requester-bound — anyone viewing the task other than the
+  // human who clicked "Ask AI" sees null. The reaper inside
+  // getDescriptionDraft() also returns null for stale drafts
+  // (lastSeenAt > 60s ago) so a closed-tab requester doesn't leak
+  // their draft into a later session.
   const { getDescriptionDraft } = await import("@/lib/description-drafts");
-  const draftDescription = getDescriptionDraft(task.id, "task");
+  const draftDescription = await getDescriptionDraft({
+    scope: "task",
+    targetId: task.id,
+    requesterUserId: viewer.id,
+  });
 
   const [chatArchives, binChatArchives, selectedChatArchive] = await Promise.all([
     db.agentChatRoomArchive.findMany({

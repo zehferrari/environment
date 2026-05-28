@@ -256,11 +256,11 @@ agent in `ActivityLog`, while the human's approval is recorded by
 Re-validation runs again at apply time, so a stale proposal aborts
 without writing.
 
-## Description Writes
+## Description Writes (drafts, not direct writes)
 
-Human-authored task and epic chat messages carry a one-shot description
-write capability by default. PM sends the agent a token-scoped endpoint
-only in the native-channel system prompt:
+Human-authored task and epic chat messages carry a one-shot
+description-DRAFT capability by default. PM sends the agent a
+token-scoped endpoint only in the native-channel system prompt:
 
 ```text
 POST http://127.0.0.1:3000/api/tasks/<taskId>/description
@@ -269,16 +269,37 @@ Content-Type: application/json
 {
   "messageId": "<AgentChatMessage id supplied in the turn>",
   "token": "<one-shot HMAC description token supplied in the turn>",
-  "description": "<complete replacement markdown description>"
+  "description": "<complete final markdown description>"
 }
 ```
 
+The endpoint validates the message grant, target id, token, active
+agent, and single-use stamp, then stores the proposed description as a
+**draft** in the `DescriptionDraft` table tagged with the human
+`requesterUserId` taken from the grant message's `senderUserId`. The
+agent's POST does NOT replace the task/epic description directly.
+
+The draft is requester-bound and ephemeral:
+
+- it is visible only to the human who clicked "Ask AI to update
+  description" — never to other viewers of the same task/epic;
+- the open task/epic page heartbeats every 15s
+  (`POST /api/system/description-draft/heartbeat`) bumping
+  `lastSeenAt`; if the user closes the page (or the tab is hidden
+  long enough), heartbeats stop and the reaper purges the row inside
+  ~60s — so an agent's POST that arrives after the requester left
+  never leaks into a later session;
+- a 30-minute `expiresAt` is the backstop in case heartbeats fail
+  silently;
+- the human applies the draft with the task/epic form's normal "Save
+  changes" button (which writes the description into `Task` /
+  `Epic`), or discards it via the rollback icon — both clear the
+  draft row.
+
 The agent must call this endpoint only when the current human message
 directly asks to update, rewrite, reformat, or replace the description.
-The endpoint validates the message grant, target id, token, active
-agent, and single-use stamp before replacing the description. For
-room-scoped chat rows, each addressed agent receives its own token; any
-active addressed agent can use only its own token.
+For room-scoped chat rows, each addressed agent receives its own
+token; any active addressed agent can use only its own token.
 
 ## PM Workflow Actions
 

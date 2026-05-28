@@ -685,3 +685,31 @@ model SystemSettings {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
+
+// ------------------------------------------------------------------
+// DescriptionDraft (HOMELAB-41 / item 4):
+// Replaces the filesystem-based draft store at .data/drafts. An agent's
+// description proposal lands in this table tagged with the human who
+// requested it (requesterUserId = the senderUserId on the grant message,
+// i.e. whoever clicked "Ask AI to update description"). Only that user
+// sees the draft on the task/epic page; a heartbeat from the open page
+// bumps lastSeenAt, and a reaper purges rows whose lastSeenAt has gone
+// stale (page closed before the agent answered) or whose expiresAt has
+// passed.
+// ------------------------------------------------------------------
+
+model DescriptionDraft {
+  id              String   @id @default(cuid())
+  scope           String   // "task" | "epic"
+  targetId        String
+  requesterUserId String
+  agentSlug       String
+  body            String
+  createdAt       DateTime @default(now())
+  lastSeenAt      DateTime @default(now())
+  expiresAt       DateTime
+
+  @@unique([scope, targetId, requesterUserId])
+  @@index([expiresAt])
+  @@index([lastSeenAt])
+}

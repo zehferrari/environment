@@ -183,9 +183,10 @@ export async function renameEpic(formData: FormData) {
 
   try {
     const { deleteDescriptionDraft } = await import("@/lib/description-drafts");
-    deleteDescriptionDraft(epicId, "epic");
+    // Save applied — clear THIS user's draft only.
+    await deleteDescriptionDraft({ scope: "epic", targetId: epicId, requesterUserId: actor.id });
   } catch (e) {
-    console.error("Failed to delete draft file:", e);
+    console.error("Failed to delete description draft:", e);
   }
 
   revalidatePath(`/projects/${slug}/epics`);
@@ -493,9 +494,10 @@ export async function updateEpic(formData: FormData) {
 
   try {
     const { deleteDescriptionDraft } = await import("@/lib/description-drafts");
-    deleteDescriptionDraft(epicId, "epic");
+    // Save applied — clear THIS user's draft only.
+    await deleteDescriptionDraft({ scope: "epic", targetId: epicId, requesterUserId: actor.id });
   } catch (e) {
-    console.error("Failed to delete draft file:", e);
+    console.error("Failed to delete description draft:", e);
   }
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);

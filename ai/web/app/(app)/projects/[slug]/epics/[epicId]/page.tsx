@@ -314,8 +314,16 @@ export default async function EpicDetailPage({
     : null;
   const isAiDescriptionRunning = runningDescriptionRun !== null;
 
+  // Draft is requester-bound — only the human who clicked "Ask AI" sees
+  // it, and only while their page heartbeats. See lib/description-drafts.ts.
   const { getDescriptionDraft } = await import("@/lib/description-drafts");
-  const draftDescription = getDescriptionDraft(epic.id, "epic");
+  const draftDescription = session?.user?.id
+    ? await getDescriptionDraft({
+        scope: "epic",
+        targetId: epic.id,
+        requesterUserId: session.user.id,
+      })
+    : null;
 
   const [chatArchives, binChatArchives, selectedChatArchive] = await Promise.all([
     db.agentChatRoomArchive.findMany({

@@ -188,6 +188,13 @@ export async function restoreProject(formData: FormData) {
 }
 
 export async function clearDescriptionDraftAction(id: string, scope: "task" | "epic") {
+  // Rollback / explicit clear from the description-field UI. Only the
+  // current session user can clear their own draft — never another
+  // viewer's. If the session can't be resolved, no-op silently.
+  const { auth } = await import("@/lib/auth");
+  const session = await auth();
+  const requesterUserId = session?.user?.id;
+  if (!requesterUserId) return;
   const { deleteDescriptionDraft } = await import("@/lib/description-drafts");
-  deleteDescriptionDraft(id, scope);
+  await deleteDescriptionDraft({ scope, targetId: id, requesterUserId });
 }
