@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useMemo } from "react";
-import { deleteDirectAgentMessage } from "@/lib/agents/direct-chat-actions";
+import { deleteDirectAgentMessage, restoreDirectAgentMessage } from "@/lib/agents/direct-chat-actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
@@ -184,11 +184,16 @@ export default function ChatMessagesContainer({
           const isLast = index === allMessages.length - 1;
           if (m.deletedAt) {
             // Soft-deleted direct-chat bubble (HOMELAB-41 / item 2).
+            // Restore (↺) only on live view, never in an archived read-only.
             return (
               <DeletedMessageDivider
                 key={m.id}
                 deletedAt={m.deletedAt}
                 deletedBy={m.deletedBy ?? null}
+                restore={!viewingArchive ? {
+                  action: restoreDirectAgentMessage,
+                  fields: { agentSlug: slug, messageId: m.id },
+                } : undefined}
               >
                 <span>{m.body}</span>
               </DeletedMessageDivider>

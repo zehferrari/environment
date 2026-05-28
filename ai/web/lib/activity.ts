@@ -10,7 +10,9 @@ export type ActivityKind =
   | "task.comment"
   | "task.comment.silent"
   | "task.comment.delete"
+  | "task.comment.restore"
   | "epic.comment.delete"
+  | "epic.comment.restore"
   | "task.assign"
   | "task.acting_manager"
   | "task.create"
@@ -61,6 +63,9 @@ export type ActivityKind =
   | "task.chat.delete"
   | "epic.chat.delete"
   | "agent.direct_chat.delete"
+  | "task.chat.restore"
+  | "epic.chat.restore"
+  | "agent.direct_chat.restore"
   | "task.description.agent_write"
   | "epic.description.agent_write"
   | "workitem.proposal.propose"
@@ -167,8 +172,18 @@ export function describeActivity(row: ActivityRow): string {
       return `${targetAgent(row)} had no task-comment update to add`;
     case "task.comment.delete":
       return `${actor(row.actorName)} deleted a comment on ${task(row.taskTitle)}`;
+    case "task.comment.restore":
+      return `${actor(row.actorName)} restored a comment on ${task(row.taskTitle)}`;
     case "epic.comment.delete":
       return `${actor(row.actorName)} deleted a comment on an epic`;
+    case "epic.comment.restore":
+      return `${actor(row.actorName)} restored a comment on an epic`;
+    case "task.chat.restore":
+      return `${actor(row.actorName)} restored a discussion message on ${task(row.taskTitle)}`;
+    case "epic.chat.restore":
+      return `${actor(row.actorName)} restored a discussion message on an epic`;
+    case "agent.direct_chat.restore":
+      return `${actor(row.actorName)} restored a direct-chat message`;
     case "task.assign": {
       const p = parsePayload<AssignPayload>(row.payload);
       if (p) {

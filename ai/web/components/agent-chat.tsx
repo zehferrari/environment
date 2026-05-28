@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { listChatTargets } from "@/lib/agents/chat-targets";
 import {
   deleteChatMessage,
+  restoreChatMessage,
 } from "@/lib/agents/chat-actions";
 import { renderFullMarkdown } from "@/lib/markdown";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
@@ -121,14 +122,17 @@ export default async function AgentChatSidebar(props: TargetProps) {
             ) : (
               messages.map((m) => {
                 if (m.deletedAt) {
-                  // Soft-deleted (HOMELAB-41 / item 2). Renders as a
-                  // collapsed dotted divider with the original body
-                  // hidden behind [+]. Agent context never sees it.
+                  // Soft-deleted (HOMELAB-41 / item 2). Collapsed dotted
+                  // divider with restore (↺) for humans on the live view.
                   return (
                     <DeletedMessageDivider
                       key={m.id}
                       deletedAt={m.deletedAt}
                       deletedBy={m.deletedBy}
+                      restore={{
+                        action: restoreChatMessage,
+                        fields: { projectSlug: props.projectSlug, messageId: m.id },
+                      }}
                     >
                       <span>{m.body}</span>
                     </DeletedMessageDivider>

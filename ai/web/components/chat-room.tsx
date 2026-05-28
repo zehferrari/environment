@@ -3,7 +3,7 @@
 import React, { useRef, useEffect, useLayoutEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { archiveChatRoom, sendAgentChatMessage, deleteChatMessage } from "@/lib/agents/chat-actions";
+import { archiveChatRoom, sendAgentChatMessage, deleteChatMessage, restoreChatMessage } from "@/lib/agents/chat-actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import MaximizableTextarea from "@/components/maximizable-textarea";
@@ -672,13 +672,18 @@ export default function ChatRoom({
           messages.map((m) => {
             if (m.deletedAt) {
               // Soft-deleted discussion bubble (HOMELAB-41 / item 2).
-              // Renders as a collapsed dotted divider; agents never see
-              // these in their context.
+              // Restore (↺) only offered when viewing the live room —
+              // archived views stay read-only. Agents never see these
+              // in their context until restored.
               return (
                 <DeletedMessageDivider
                   key={m.id}
                   deletedAt={m.deletedAt}
                   deletedBy={m.deletedBy ?? null}
+                  restore={!viewingArchive ? {
+                    action: restoreChatMessage,
+                    fields: { projectSlug, messageId: m.id },
+                  } : undefined}
                 >
                   <span>{m.body}</span>
                 </DeletedMessageDivider>

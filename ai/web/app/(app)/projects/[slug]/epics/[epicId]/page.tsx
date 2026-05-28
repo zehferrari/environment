@@ -7,6 +7,7 @@ import {
   createTaskInEpic,
   createEpicComment,
   deleteEpicComment,
+  restoreEpicComment,
 } from "@/lib/epics/actions";
 import { auth } from "@/lib/auth";
 import {
@@ -910,12 +911,18 @@ export default async function EpicDetailPage({
                         {epic.comments.map((c) => {
                           if (c.deletedAt) {
                             // Soft-deleted (HOMELAB-41 / item 2):
-                            // collapsed dotted divider; agents never see.
+                            // collapsed dotted divider; humans with
+                            // delete privilege can restore via ↺.
+                            // Agents never see deleted bodies.
                             return (
                               <li key={c.id}>
                                 <DeletedMessageDivider
                                   deletedAt={c.deletedAt}
                                   deletedBy={c.deletedBy}
+                                  restore={canDeleteComments ? {
+                                    action: restoreEpicComment,
+                                    fields: { commentId: c.id, epicId: epic.id, projectSlug: slug },
+                                  } : undefined}
                                 >
                                   <div
                                     className="md"

@@ -574,6 +574,55 @@ async function deleteComment(formData: FormData) {
   revalidatePath(`/projects/${slug}`);
 }
 
+// Restore a soft-deleted task comment (HOMELAB-41 / item 2 follow-up).
+// Inverse of deleteComment. Human-only, same gating. Idempotent.
+async function restoreComment(formData: FormData) {
+  "use server";
+  const actor = await requireActor();
+  if (actor.kind !== "human") return;
+  const commentId = String(formData.get("commentId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  const taskId = String(formData.get("taskId") ?? "");
+  if (!commentId || !slug || !taskId) return;
+
+  const comment = await db.comment.findUnique({
+    where: { id: commentId },
+    select: {
+      id: true,
+      deletedAt: true,
+      task: { select: { id: true, projectId: true, project: { select: { slug: true } } } },
+    },
+  });
+  if (
+    !comment ||
+    !comment.task ||
+    comment.task.id !== taskId ||
+    comment.task.project.slug !== slug
+  ) {
+    return;
+  }
+  if (!comment.deletedAt) return; // already restored
+
+  await db.$transaction([
+    db.comment.update({
+      where: { id: commentId },
+      data: { deletedAt: null, deletedById: null },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: comment.task.projectId,
+        taskId: comment.task.id,
+        userId: actor.id,
+        kind: "task.comment.restore",
+        payload: JSON.stringify({ commentId }),
+      },
+    }),
+  ]);
+
+  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
+  revalidatePath(`/projects/${slug}`);
+}
+
 async function createSubtask(formData: FormData) {
   "use server";
   const actor = await requireActor();
@@ -1810,13 +1859,18 @@ export default async function TaskDetailPage({
                 if (c.deletedAt) {
                   // Soft-deleted (HOMELAB-41 / item 2): render as a
                   // collapsed dotted divider with the original body
-                  // hidden behind a [+] toggle. Agent context never
-                  // sees deleted bodies.
+                  // hidden behind a [+] toggle. Humans can restore via
+                  // the ↺ button (only shown when canDeleteComments).
+                  // Agent context never sees deleted bodies.
                   return (
                     <li key={c.id}>
                       <DeletedMessageDivider
                         deletedAt={c.deletedAt}
                         deletedBy={c.deletedBy}
+                        restore={canDeleteComments ? {
+                          action: restoreComment,
+                          fields: { commentId: c.id, taskId: task.id, projectSlug: slug },
+                        } : undefined}
                       >
                         {renderCommentBody(c.body, mentionables)}
                       </DeletedMessageDivider>

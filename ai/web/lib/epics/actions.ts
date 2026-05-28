@@ -697,3 +697,44 @@ export async function deleteEpicComment(formData: FormData) {
   ]);
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
 }
+
+// Restore a soft-deleted epic comment (HOMELAB-41 / item 2 follow-up).
+// Inverse of deleteEpicComment. Human-only, idempotent.
+export async function restoreEpicComment(formData: FormData) {
+  const actor = await requireActor();
+  if (actor.kind !== "human") return;
+  const slug = String(formData.get("projectSlug") ?? "");
+  const epicId = String(formData.get("epicId") ?? "");
+  const commentId = String(formData.get("commentId") ?? "");
+  if (!slug || !epicId || !commentId) return;
+
+  const comment = await db.comment.findUnique({
+    where: { id: commentId },
+    select: {
+      id: true,
+      epicId: true,
+      deletedAt: true,
+      epic: { select: { projectId: true, project: { select: { slug: true } } } },
+    },
+  });
+  if (!comment || comment.epicId !== epicId || comment.epic?.project.slug !== slug) {
+    return;
+  }
+  if (!comment.deletedAt) return; // already restored
+
+  await db.$transaction([
+    db.comment.update({
+      where: { id: commentId },
+      data: { deletedAt: null, deletedById: null },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: comment.epic!.projectId,
+        userId: actor.id,
+        kind: "epic.comment.restore",
+        payload: JSON.stringify({ commentId, epicId }),
+      },
+    }),
+  ]);
+  revalidatePath(`/projects/${slug}/epics/${epicId}`);
+}

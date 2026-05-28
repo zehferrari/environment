@@ -97,6 +97,14 @@ TIMELINE MANIFEST or RELATED TIMELINE row. Agents should treat the
 absence of a previously-seen row as final — do not infer, search for,
 or retry against it.
 
+A human reviewer can **restore** a soft-deleted row from the same
+dotted-divider via the `↺` button (next to `[+]`). Restoring clears
+`deletedAt`/`deletedById` so the row is human-visible again AND
+re-enters every subsequent agent context packet. Each restore writes
+a `*.restore` ActivityLog row. Agents must NOT attempt to "remember"
+deleted content between turns — if a row reappears in context after a
+restore, treat the restore moment as new information.
+
 Hard purge of soft-deleted rows happens through the existing
 project-bin-empty path.
 

@@ -780,3 +780,41 @@ export async function deleteChatMessage(formData: FormData) {
   if (msg.taskId) revalidatePath(`/projects/${slug}/tasks/${msg.taskId}`);
   if (msg.epicId) revalidatePath(`/projects/${slug}/epics/${msg.epicId}`);
 }
+
+// Restore a soft-deleted chat bubble (HOMELAB-41 / item 2 follow-up).
+// Inverse of deleteChatMessage. Clears deletedAt + deletedById so the
+// row is visible to humans again AND eligible for inclusion in agent
+// context. Idempotent on already-restored rows. Scope is project-slug
+// enforced like its sibling.
+export async function restoreChatMessage(formData: FormData) {
+  const actor = await requireActor();
+  const slug = String(formData.get("projectSlug") ?? "");
+  const messageId = String(formData.get("messageId") ?? "");
+  if (!slug || !messageId) return;
+
+  const msg = await db.agentChatMessage.findUnique({
+    where: { id: messageId },
+    include: { project: { select: { slug: true } } },
+  });
+  if (!msg || msg.project.slug !== slug) return;
+  if (!msg.deletedAt) return; // already restored / never deleted
+
+  await db.$transaction([
+    db.agentChatMessage.update({
+      where: { id: messageId },
+      data: { deletedAt: null, deletedById: null },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: msg.projectId,
+        taskId: msg.taskId,
+        userId: actor.id,
+        kind: msg.taskId ? "task.chat.restore" : "epic.chat.restore",
+        payload: JSON.stringify({ messageId, agentSlug: msg.agentSlug }),
+      },
+    }),
+  ]);
+
+  if (msg.taskId) revalidatePath(`/projects/${slug}/tasks/${msg.taskId}`);
+  if (msg.epicId) revalidatePath(`/projects/${slug}/epics/${msg.epicId}`);
+}

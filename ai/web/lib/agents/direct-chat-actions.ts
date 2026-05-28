@@ -957,6 +957,39 @@ export async function deleteDirectAgentMessage(formData: FormData) {
   revalidatePath(`/agents/${agentSlug}/chat`);
 }
 
+// Restore a soft-deleted direct-agent-chat bubble (HOMELAB-41 / item 2
+// follow-up). Inverse of deleteDirectAgentMessage. Idempotent.
+export async function restoreDirectAgentMessage(formData: FormData) {
+  const { userId } = await requireUserId();
+  const messageId = String(formData.get("messageId") ?? "");
+  const agentSlug = String(formData.get("agentSlug") ?? "");
+  if (!messageId || !agentSlug) return;
+
+  const msg = await db.directAgentChatMessage.findUnique({
+    where: { id: messageId },
+    select: { id: true, agentSlug: true, deletedAt: true },
+  });
+  if (!msg || msg.agentSlug !== agentSlug) return;
+  if (!msg.deletedAt) return; // already restored
+
+  await db.$transaction([
+    db.directAgentChatMessage.update({
+      where: { id: messageId },
+      data: { deletedAt: null, deletedById: null },
+    }),
+    db.activityLog.create({
+      data: {
+        userId,
+        kind: "agent.direct_chat.restore",
+        targetAgent: agentSlug,
+        payload: JSON.stringify({ messageId }),
+      },
+    }),
+  ]);
+
+  revalidatePath(`/agents/${agentSlug}/chat`);
+}
+
 export async function restoreDirectAgentArchive(formData: FormData) {
   const { userId } = await requireUserId();
   const agentSlug = String(formData.get("agentSlug") ?? "").trim();
