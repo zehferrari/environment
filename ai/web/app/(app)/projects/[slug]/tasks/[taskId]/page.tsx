@@ -401,12 +401,13 @@ async function updateTask(formData: FormData) {
       body: finalStatus === "Backlog"
         ? [
             `You have been assigned to "${titleRaw}" while it is in Backlog.`,
-            "Read the full task context and existing comments. Post a task comment with your implementation plan or opinion.",
+            "Read the full task context and existing comments. Post a concise task comment with your implementation plan or opinion.",
             "Do not change task status and do not start work until the task is moved to To Do.",
           ].join("\n")
         : [
             `Task "${titleRaw}" is now in To Do and assigned to you.`,
             "Read the full task context, move it to In Progress through the workflow endpoint, and start work immediately.",
+            "Do not post a visible acknowledgement unless you have new task information to add.",
           ].join("\n"),
     });
   }
@@ -429,7 +430,7 @@ async function updateTask(formData: FormData) {
         reason: "review_requested",
         body: [
           `Task "${titleRaw}" was moved to Review.`,
-          "Review the completed work, read the full task context and comments, then either leave feedback/blockers or move the task to Done through the workflow endpoint.",
+          "Review the completed work and full task context. If satisfied, move the task to Done through the workflow endpoint without posting an approval-only comment. If changes or blockers remain, leave concise feedback while keeping it in Review.",
         ].join("\n"),
       });
     }
@@ -642,7 +643,7 @@ async function createSubtask(formData: FormData) {
       reason: "backlog_plan_requested",
       body: [
         `You have been assigned to "${child.title}" while it is in Backlog.`,
-        "Read the full task context and existing comments. Post a task comment with your implementation plan or opinion.",
+        "Read the full task context and existing comments. Post a concise task comment with your implementation plan or opinion.",
         "Do not change task status and do not start work until the task is moved to To Do.",
       ].join("\n"),
     });
@@ -819,7 +820,7 @@ function settledAgentSlugsForMessage(
             : null;
       if (!agentSlug) continue;
       if (
-        row.kind === "task.chat.reply" &&
+        (row.kind === "task.chat.reply" || row.kind === "task.chat.silent") &&
         payload.inReplyToMessageId === messageId
       ) {
         slugs.add(agentSlug);
@@ -949,7 +950,7 @@ export default async function TaskDetailPage({
   const viewer = await requireActor();
   const canDeleteComments = viewer.kind === "human";
 
-  const [principals, projectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity] = await Promise.all([
+  const [principals, projectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify] = await Promise.all([
     listAssignablePrincipals(),
     db.epic.findMany({
       where: {
@@ -981,8 +982,10 @@ export default async function TaskDetailPage({
         kind: {
           in: [
             "task.chat.reply",
+            "task.chat.silent",
             "task.chat.dispatch",
             "task.comment",
+            "task.comment.silent",
             "task.chat.dispatch_failed",
             "task.comment.dispatch_failed",
             "task.workflow.dispatch_failed",
@@ -993,6 +996,16 @@ export default async function TaskDetailPage({
       orderBy: { createdAt: "desc" },
       take: 160,
       select: { kind: true, payload: true, targetAgent: true },
+    }),
+    // Latest Karen branch-verification row, if any. Used by the Review-state
+    // Repo verification panel below.
+    db.activityLog.findFirst({
+      where: {
+        taskId: task.id,
+        kind: { in: ["pm.repo.verify.ok", "pm.repo.verify.fail", "pm.repo.verify.enqueue"] },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { kind: true, payload: true, createdAt: true },
     }),
   ]);
   const mentionables = mentionableUsers.map((u) => ({ username: u.username }));
@@ -1372,6 +1385,60 @@ export default async function TaskDetailPage({
               </button>
             </div>
           </div>
+          {/* Review verification panel — only shown on tasks in Review with
+              a branchName set on the task or its epic. Surfaces Karen's
+              latest pm.repo.verify.* result so the reviewer doesn't approve
+              work that isn't on origin/<branch> yet. */}
+          {task.status === "Review" && (task.branchName || task.epic?.branchName) ? (() => {
+            const branchName = task.branchName ?? task.epic?.branchName ?? "";
+            const commitPrefix = task.commitPrefix ?? task.epic?.commitPrefix ?? null;
+            let kind: string | null = latestRepoVerify?.kind ?? null;
+            let payload: { headSha?: string | null; matchSha?: string | null; branchName?: string | null; fetchError?: string | null; logError?: string | null } = {};
+            try {
+              payload = latestRepoVerify?.payload ? JSON.parse(latestRepoVerify.payload) : {};
+            } catch { /* ignore */ }
+            const tone =
+              kind === "pm.repo.verify.ok" ? "ok" :
+              kind === "pm.repo.verify.fail" ? "fail" :
+              kind === "pm.repo.verify.enqueue" ? "pending" :
+              "missing";
+            const palette = {
+              ok:      { border: "var(--color-line)", bg: "rgba(34,197,94,0.08)",  dot: "#22c55e", title: "✓ origin verified" },
+              fail:    { border: "var(--color-line)", bg: "rgba(239,68,68,0.10)",  dot: "#ef4444", title: "⚠ origin not verified" },
+              pending: { border: "var(--color-line)", bg: "rgba(59,130,246,0.08)", dot: "#3b82f6", title: "… Karen verifying" },
+              missing: { border: "var(--color-line)", bg: "rgba(148,163,184,0.10)", dot: "#94a3b8", title: "Repo verification not yet requested" },
+            }[tone];
+            return (
+              <div
+                className="rounded-lg border px-4 py-3 text-sm"
+                style={{ borderColor: palette.border, backgroundColor: palette.bg }}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: palette.dot }} aria-hidden="true" />
+                  <strong className="text-[var(--color-text)]">{palette.title}</strong>
+                  <span className="ml-auto text-xs text-[var(--color-text-muted)]">
+                    branch <code className="text-[var(--color-text)]">{branchName}</code>
+                    {commitPrefix ? <> · prefix <code className="text-[var(--color-text)]">{commitPrefix}</code></> : null}
+                  </span>
+                </div>
+                <div className="mt-1 text-xs text-[var(--color-text-muted)]">
+                  {tone === "ok" && payload.headSha
+                    ? <>HEAD <code className="text-[var(--color-text)]">{payload.headSha.slice(0, 10)}</code> matches the COMMIT_PREFIX — safe to review.</>
+                    : null}
+                  {tone === "fail"
+                    ? <>{payload.fetchError ? <>fetch failed: <code className="text-[var(--color-text)]">{payload.fetchError}</code>.</> : null} See the latest <code className="text-[var(--color-text)]">pm.repo.verify.fail</code> comment below. Ask the assignee to push (with the prefix) before reviewing.</>
+                    : null}
+                  {tone === "pending"
+                    ? <>Karen has been asked to verify <code className="text-[var(--color-text)]">origin/{branchName}</code>. The result will appear as a new task comment.</>
+                    : null}
+                  {tone === "missing"
+                    ? <>No <code className="text-[var(--color-text)]">pm.repo.verify.*</code> activity yet — either the task pre-dates the verifier, or the assignee declared <code className="text-[var(--color-text)]">repoTouched: false</code> on ready_for_review.</>
+                    : null}
+                </div>
+              </div>
+            );
+          })() : null}
+
           {/* One edit form for the whole card: every control below carries
               form="taskMain" so the single "Save changes" button persists
               Epic, Status, Title, Description, Branch, Commit Prefix,

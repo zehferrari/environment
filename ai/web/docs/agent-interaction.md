@@ -305,6 +305,39 @@ with a task-comment implementation plan and does not change status.
 task to `In Progress` and starts immediately. `Review` is only for
 completed implementation review.
 
+### Commit hygiene + Review verification
+
+For code-touching tasks (task has a `branchName` set on a project with
+a `repositoryPath`), workflow turns inject a **Commit hygiene** block
+that names the resolved COMMIT_PREFIX (task.commitPrefix →
+epic.commitPrefix fallback), the branch, and the repository path. The
+assignee must:
+
+- prefix every commit on the branch with the resolved COMMIT_PREFIX
+  (e.g. `HOMELAB-41: short imperative summary`),
+- commit ALL local changes and push to `origin/<branchName>` BEFORE
+  calling `action: ready_for_review`,
+- include `repoTouched: true` in the workflow POST when calling
+  `ready_for_review` (default when branchName + repositoryPath are
+  set), or `repoTouched: false` for docs-only / decision-only tasks.
+
+When `repoTouched` resolves true, PM drops a JSON job into
+`/var/lib/pm/branch-verify/<jobId>.json`. The karen-side runner
+(`pm-verify-runner.service`) runs `git -C <repositoryPath> fetch
+origin <branchName>` on the already-cloned repo, looks for commits
+whose subject starts with the COMMIT_PREFIX on
+`origin/<branchName>`, and posts a `pm.repo.verify.ok` task comment
+(with HEAD sha, the latest prefix-matching commit, push timestamp) or
+`pm.repo.verify.fail` (no push found / no prefix match). The Review
+transition itself is NOT blocked — the verifier publishes its result
+asynchronously and the reviewer reads it before approving.
+
+The reviewer's `review_requested` workflow turn adds a **Review
+verification** block instructing them to read the latest
+`pm.repo.verify.*` comment first: on `ok` proceed; on `fail` send
+`review_feedback` asking the assignee to push (with prefix) before
+review; if neither has appeared, wait briefly for Karen.
+
 ## Future Agent Actions
 
 Further agent write actions should follow the same shape (typed endpoint,

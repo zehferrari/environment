@@ -14,6 +14,7 @@ import {
   pmChannelTargetHasDurableReply,
   recordPmChannelRunEvent,
 } from "@/lib/agents/pm-channel-runs";
+import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -121,11 +122,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, key: state.key, status: state.status });
   }
 
+  const text = stringField(payload.text, 40_000);
+  const delta = stringField(payload.delta, 8_000);
+  if (
+    (event === "partial" || event === "final") &&
+    (isSilentPmReplyText(text) || isSilentPmReplyText(delta))
+  ) {
+    return NextResponse.json({ ok: true, silent: true });
+  }
+
   const state = publishPmChannelStreamEvent({
     target,
     event,
-    text: stringField(payload.text, 40_000),
-    delta: stringField(payload.delta, 8_000),
+    text,
+    delta,
     replace: payload.replace === true,
     error: stringField(payload.error, 2_000),
   });

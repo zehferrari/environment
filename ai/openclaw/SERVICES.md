@@ -46,6 +46,17 @@ x1 uses systemd timers for active automation. Cron references in old migration n
   it. Publishes `state.json` for the project-settings "Worktree live preview"
   panel to poll. Installed by `ai/web/deploy/install-pm-switch.sh`; full design in
   `ai/web/deploy/MULTI_AGENT_WORKTREES.md`.
+- `pm-verify-runner.service`: monitor-driven branch verification runner (system
+  unit, `User=karen` on x1). Watches `/var/lib/pm/branch-verify/*.json` job
+  files dropped by the PM workflow endpoint when an assignee moves a
+  code-touching task to Review (with `repoTouched: true`). For each job runs
+  `git -C <repositoryPath> fetch origin <branchName>` then `git log
+  origin/<branchName>` on the already-cloned local repo, looks for commits
+  whose subject starts with the task/epic `commitPrefix`, and writes a Karen-
+  authored task `Comment` plus a `pm.repo.verify.ok` or `pm.repo.verify.fail`
+  `ActivityLog` row. No sudo / no privileged step — DB writes go through
+  `DATABASE_URL` from `/etc/default/pm`. Decoupled from `pm.service` like the
+  switch runner. Installed by `ai/web/deploy/install-pm-verify.sh`.
 - OpenClaw Control UIs: per-agent gateway dashboards exposed through nginx behind basic auth. x1 exposes primary, secondary, and monitoring gateway dashboards through role-based nginx routes. OpenClaw uses trusted-proxy auth with `X-Forwarded-User` from nginx, so nginx basic auth is the browser login. Gateway ports bind to LAN but remain blocked from direct network access by firewalld. This is an admin surface; do not expose without auth.
   - OpenClaw 2026.5.7 dashboard note: nginx also sends X-OpenClaw-Scopes: operator.admin. Coding agents set gateway.controlUi.dangerouslyDisableDeviceAuth=true so trusted-proxy WebSocket sessions keep operator scope; this depends on nginx basic auth and firewalld remaining in place.
   - No-slash dashboard paths redirect to trailing-slash paths. Do not proxy exact no-slash paths directly, or OpenClaw emits root-relative assets (/assets/...) that 404.
@@ -103,6 +114,10 @@ x1 uses systemd timers for active automation. Cron references in old migration n
   narrow per-user sudoers grant instead of calling `openclaw` directly. PM
   callers may pass `--session-key <pm:...>` before the prompt to route the
   wake into a PM-owned OpenClaw session.
+- `/usr/local/sbin/pm-workflow-nudge`: PM workflow recovery helper used by
+  ai-monitor for Mission Control drift. It runs the PM TS script as the PM app
+  user and sends a native `pm` channel task-comment turn with the full context
+  packet, rather than a generic OpenClaw heartbeat reminder.
 
 ## Agent Services
 

@@ -21,6 +21,9 @@ zeh sees exactly what changes on the host.
 | `systemd/pm-switch-runner.service` | `/etc/systemd/system/` | root | runner unit (`User=<monitor>`, templated). |
 | `sudoers.d/pm-switch` | `/etc/sudoers.d/pm-switch`, `0440` | root | one NOPASSWD rule: monitor -> `pm-apply-worktree`. |
 | `install-pm-switch.sh` | run as root | — | idempotent installer for the switcher (scripts, unit, sudoers, spool, RW drop-in). |
+| `pm-verify-runner` | `-> /usr/local/sbin/pm-verify-runner` | root | monitor-run runner behind `pm-verify-runner.service`; polls `/var/lib/pm/branch-verify/*.json` and invokes the TS verifier in the active worktree. |
+| `systemd/pm-verify-runner.service` | `/etc/systemd/system/` | root | runner unit (`User=<monitor>`, templated). No sudo / no privileged step. |
+| `install-pm-verify.sh` | run as root | — | idempotent installer for the branch verifier (runner, unit, spool, RW drop-in). |
 
 ## Worktree switcher (live preview)
 
@@ -31,6 +34,31 @@ git/worktree-exposed project's **Settings → Worktree live preview** panel
 `sudo PM_MONITOR_USER=karen ai/web/deploy/install-pm-switch.sh` (after
 `code-tree-perms` has made `/srv/Code` group-collaborative). Full design,
 mechanism, and caveats: [`MULTI_AGENT_WORKTREES.md`](./MULTI_AGENT_WORKTREES.md).
+
+## Branch-push verifier (Review verification)
+
+When an assignee moves a code-touching task (`branchName` set on a project
+with `repositoryPath`) to Review through the workflow endpoint with
+`repoTouched: true` (default for branch-bearing tasks), PM drops a JSON job
+into `/var/lib/pm/branch-verify/<jobId>.json`. The monitor-run
+`pm-verify-runner.service` picks it up, finds the active PM worktree (by
+reading `pm.service`'s `WorkingDirectory`), and runs the TS verifier
+(`ai/web/scripts/pm-verify-branch-pushed.ts`) inside it. The verifier:
+
+- `git -C <repositoryPath> fetch --quiet origin <branchName>` on the local
+  clone — the remote IS Bitbucket, but Karen reuses whatever credentials are
+  already configured on the local clone (no Bitbucket REST in this pass);
+- looks for a commit on `origin/<branchName>` whose subject starts with the
+  resolved COMMIT_PREFIX (`task.commitPrefix` → fallback `epic.commitPrefix`);
+- writes a Karen-authored task Comment plus a `pm.repo.verify.ok` or
+  `pm.repo.verify.fail` `ActivityLog` row.
+
+The reviewer's task page shows a Review verification panel reading the
+latest `pm.repo.verify.*` row, so they can see at a glance whether
+`origin/<branch>` reflects the work BEFORE approving. The transition
+itself is not blocked — async verification means a flaky `git fetch`
+doesn't kill legitimate Reviews. Install with
+`sudo PM_MONITOR_USER=karen ai/web/deploy/install-pm-verify.sh`.
 
 ## Service Model
 

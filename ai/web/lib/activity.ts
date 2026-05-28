@@ -8,6 +8,7 @@ export type ActivityKind =
   | "task.move"
   | "task.ack.auto"
   | "task.comment"
+  | "task.comment.silent"
   | "task.comment.delete"
   | "task.assign"
   | "task.acting_manager"
@@ -29,7 +30,9 @@ export type ActivityKind =
   | "epic.restore"
   | "bin.purge"
   | "task.chat.send"
+  | "task.chat.silent"
   | "epic.chat.send"
+  | "epic.chat.silent"
   | "task.chat.archive"
   | "epic.chat.archive"
   | "task.chat.delete_to_bin"
@@ -38,6 +41,7 @@ export type ActivityKind =
   | "agent.direct_chat.wake"
   | "agent.direct_chat.wake_failed"
   | "agent.direct_chat.reply"
+  | "agent.direct_chat.silent"
   | "agent.direct_chat.archive"
   | "agent.direct_chat.delete_to_bin"
   | "agent.direct_chat.archive_delete"
@@ -158,6 +162,8 @@ export function describeActivity(row: ActivityRow): string {
       }
       return `${actor(row.actorName)} commented on ${task(row.taskTitle)}`;
     }
+    case "task.comment.silent":
+      return `${targetAgent(row)} had no task-comment update to add`;
     case "task.comment.delete":
       return `${actor(row.actorName)} deleted a comment on ${task(row.taskTitle)}`;
     case "task.assign": {
@@ -298,6 +304,10 @@ export function describeActivity(row: ActivityRow): string {
       const target = row.kind === "task.chat.send" ? task(row.taskTitle) : "an epic";
       return `${actor(row.actorName)} messaged @${p?.agentSlug ?? "?"} on ${target}`;
     }
+    case "task.chat.silent":
+      return `${targetAgent(row)} had no task-chat update to add`;
+    case "epic.chat.silent":
+      return `${targetAgent(row)} had no epic-chat update to add`;
     case "agent.direct_chat.send": {
       const p = parsePayload<{ agentSlug?: string }>(row.payload);
       return `${actor(row.actorName)} messaged @${p?.agentSlug ?? "?"}`;
@@ -314,6 +324,8 @@ export function describeActivity(row: ActivityRow): string {
       const p = parsePayload<{ agentSlug?: string }>(row.payload);
       return `@${p?.agentSlug ?? "agent"} replied in direct chat`;
     }
+    case "agent.direct_chat.silent":
+      return `${targetAgent(row)} had no direct-chat update to add`;
     case "agent.direct_chat.archive": {
       const p = parsePayload<{ agentSlug?: string; messageCount?: number }>(row.payload);
       const count = p?.messageCount ?? 0;

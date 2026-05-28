@@ -88,6 +88,9 @@ function workflowPrompt(args: {
   agentSlug: string;
   messageId: string;
   reason: TaskWorkflowNotificationReason;
+  branchName: string | null;
+  commitPrefix: string | null;
+  repositoryPath: string | null;
 }) {
   const token = createTaskWorkflowToken(args.messageId, args.taskId, args.agentSlug);
   const workflowUrl = new URL(
@@ -100,10 +103,40 @@ function workflowPrompt(args: {
       token,
       action: "<start | ready_for_review | review_feedback | review_done | triage_to_todo>",
       comment: "<required only for review_feedback>",
+      repoTouched: "<true | false, only on ready_for_review; default true when branchName is set>",
     },
     null,
     2,
   );
+
+  const codeTouching = Boolean(args.branchName && args.repositoryPath);
+  const commitHygiene: string[] = [];
+  if (codeTouching) {
+    commitHygiene.push(
+      "",
+      "COMMIT HYGIENE (this task touches the repository):",
+      `- Repository: ${args.repositoryPath}`,
+      `- Branch: ${args.branchName}`,
+      args.commitPrefix
+        ? `- COMMIT_PREFIX: ${args.commitPrefix} — every commit message on this task MUST start with this exact prefix (e.g. "${args.commitPrefix} short imperative summary").`
+        : "- COMMIT_PREFIX is not set on the task or its epic. Use the task id as a fallback prefix, and ask zeh to set commitPrefix on the task or epic.",
+      `- All local changes must be committed (each with the prefix) and pushed to origin/${args.branchName} BEFORE you call action=ready_for_review.`,
+      "- On ready_for_review: include `repoTouched: true` in the body. PM will dispatch Karen to verify origin reflects your work and post a pm.repo.verify.* comment.",
+      "- If this task changed nothing in the repository (docs-only, decision-only, etc.), set `repoTouched: false` on ready_for_review and Karen will skip the check.",
+    );
+  }
+
+  const reviewerVerify: string[] = [];
+  if (args.reason === "review_requested" && codeTouching) {
+    reviewerVerify.push(
+      "",
+      "REVIEW VERIFICATION (first check, you are the resolved reviewer):",
+      `- This task touched ${args.repositoryPath} on branch ${args.branchName}. Before reviewing, look for a pm.repo.verify.* task comment from Karen confirming origin/${args.branchName} reflects the work.`,
+      "- If pm.repo.verify.ok is present and recent, proceed with the review.",
+      "- If pm.repo.verify.fail is present (no push found / no prefix match), leave concise review_feedback asking the assignee to commit (with the prefix) and push BEFORE you proceed. Do not approve work that isn't on origin yet.",
+      "- If no pm.repo.verify.* comment has appeared yet, wait briefly for Karen to publish one. The runner picks up the job within seconds of the assignee's ready_for_review call.",
+    );
+  }
 
   return [
     `PM WORKFLOW CAPABILITY for task "${args.taskTitle}".`,
@@ -117,6 +150,8 @@ function workflowPrompt(args: {
     "- If you are the reviewer or Open Epic acting manager and accept a Backlog plan, call action=triage_to_todo.",
     "- For tasks under an Epic, do not start or advance work unless the Epic status in the context is Open.",
     "- Do not post visible acknowledgements, restatements, or filler. If your workflow action fully handles the turn and you have no new information to add, finish with the exact reply token below.",
+    ...commitHygiene,
+    ...reviewerVerify,
     "",
     "Workflow endpoint:",
     `POST application/json to: ${workflowUrl}`,
@@ -142,8 +177,11 @@ export async function sendTaskWorkflowNotification(args: {
         id: true,
         title: true,
         projectId: true,
+        branchName: true,
+        commitPrefix: true,
         deletedAt: true,
-        project: { select: { slug: true } },
+        project: { select: { slug: true, repositoryPath: true } },
+        epic: { select: { commitPrefix: true } },
       },
     }),
     db.user.findUnique({
@@ -242,6 +280,9 @@ export async function sendTaskWorkflowNotification(args: {
         agentSlug: targetUser.agent.slug,
         messageId: msg.id,
         reason: args.reason,
+        branchName: task.branchName ?? null,
+        commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
+        repositoryPath: task.project.repositoryPath ?? null,
       }),
     ].join("\n\n"),
     projectId: task.projectId,

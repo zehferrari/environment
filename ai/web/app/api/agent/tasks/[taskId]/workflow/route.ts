@@ -1,9 +1,12 @@
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
+import { randomUUID } from "crypto";
 import { db } from "@/lib/db";
 import { sendTaskCommentNotifications, sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
+import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel-runs";
 import { verifyTaskWorkflowToken } from "@/lib/agents/task-workflow-token";
 import { epicAllowsAgentAction, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import { enqueueBranchVerifyJob } from "@/lib/deploy/branch-verify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +14,7 @@ export const dynamic = "force-dynamic";
 const ACTIONS = [
   "start",
   "ready_for_review",
+  "submit_review",
   "review_feedback",
   "review_done",
   "triage_to_todo",
@@ -70,6 +74,7 @@ export async function POST(
     token?: unknown;
     action?: unknown;
     comment?: unknown;
+    repoTouched?: unknown;
   };
   try {
     payload = (await req.json()) as typeof payload;
@@ -122,9 +127,11 @@ export async function POST(
         assigneeId: true,
         actingManagerId: true,
         reporterId: true,
+        branchName: true,
+        commitPrefix: true,
         deletedAt: true,
-        project: { select: { slug: true } },
-        epic: { select: { status: true, actingManagerId: true } },
+        project: { select: { slug: true, repositoryPath: true } },
+        epic: { select: { status: true, actingManagerId: true, commitPrefix: true } },
       },
     }),
   ]);
@@ -158,15 +165,30 @@ export async function POST(
       to: "In Progress",
       action,
     });
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     return NextResponse.json({ ok: true, taskId: task.id, status: "In Progress" });
   }
 
-  if (action === "ready_for_review") {
+  if (action === "ready_for_review" || action === "submit_review") {
     if (!isAssignee) return NextResponse.json({ error: "Only the assignee can send this task to Review" }, { status: 403 });
     if (task.status !== "In Progress") return NextResponse.json({ error: "Task must be In Progress before Review" }, { status: 409 });
     if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be Open before task work advances" }, { status: 409 });
+
+    // Resolve repoTouched. The assignee can override by sending an explicit
+    // boolean; otherwise default to "yes, it touched the repo" iff the task
+    // has a branch name on a project with a repositoryPath set.
+    const codeTouching = Boolean(task.branchName && task.project.repositoryPath);
+    const repoTouched = typeof payload.repoTouched === "boolean"
+      ? payload.repoTouched
+      : codeTouching;
+    const resolvedCommitPrefix = task.commitPrefix ?? task.epic?.commitPrefix ?? null;
 
     await moveTaskStatus({
       taskId: task.id,
@@ -176,6 +198,56 @@ export async function POST(
       to: "Review",
       action,
     });
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
+
+    // Karen verifier: only enqueue when the task plausibly touched the repo.
+    // If branchName or repositoryPath is unset, there's nothing for Karen to
+    // check against — skip silently. If the assignee declared repoTouched=
+    // false (e.g., doc-only task), also skip.
+    let verifyJobId: string | null = null;
+    if (repoTouched && task.branchName && task.project.repositoryPath) {
+      const jobId = randomUUID();
+      try {
+        await enqueueBranchVerifyJob({
+          jobId,
+          taskId: task.id,
+          projectId: task.projectId,
+          projectSlug: task.project.slug,
+          repositoryPath: task.project.repositoryPath,
+          branchName: task.branchName,
+          commitPrefix: resolvedCommitPrefix,
+          requestedByAgentSlug: agent.slug,
+          requestedByUserId: agent.user.id,
+          requestedAt: new Date().toISOString(),
+        });
+        verifyJobId = jobId;
+        await db.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: task.id,
+            userId: agent.user.id,
+            kind: "pm.repo.verify.enqueue",
+            targetAgent: agent.slug,
+            payload: JSON.stringify({
+              jobId,
+              branchName: task.branchName,
+              commitPrefix: resolvedCommitPrefix,
+              repositoryPath: task.project.repositoryPath,
+            }),
+          },
+        });
+      } catch (err) {
+        // Enqueue failure is non-fatal — the Review transition still
+        // succeeds; the reviewer just won't see a verification comment.
+        console.warn(`[workflow] failed to enqueue branch verify for ${task.id}`, err);
+      }
+    }
+
     if (reviewerId) {
       await sendTaskWorkflowNotification({
         taskId: task.id,
@@ -184,13 +256,16 @@ export async function POST(
         reason: "review_requested",
         body: [
           `Task "${task.title}" was moved to Review by @${agent.user.username}.`,
-          "Review the completed work, read the full task context and comments, then either leave feedback/blockers or move the task to Done through the workflow endpoint.",
+          repoTouched && verifyJobId
+            ? `Karen has been asked to verify origin/${task.branchName} reflects the work; a pm.repo.verify.* task comment will follow. Check it before reviewing.`
+            : "The assignee indicated this task did not change the repository (or no branch is set). Verify the non-code work directly.",
+          "Review the completed work and full task context. If satisfied, move the task to Done through the workflow endpoint without posting an approval-only comment. If changes or blockers remain, leave concise feedback while keeping it in Review.",
         ].join("\n"),
       });
     }
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
-    return NextResponse.json({ ok: true, taskId: task.id, status: "Review" });
+    return NextResponse.json({ ok: true, taskId: task.id, status: "Review", verifyJobId, repoTouched });
   }
 
   if (action === "review_feedback") {
@@ -221,6 +296,12 @@ export async function POST(
       });
       return row;
     });
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
     await sendTaskCommentNotifications({
       taskId: task.id,
       commentId: created.id,
@@ -243,6 +324,12 @@ export async function POST(
       actorUserId: agent.user.id,
       from: task.status,
       to: "Done",
+      action,
+    });
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
       action,
     });
     if (task.assigneeId) {
@@ -273,6 +360,12 @@ export async function POST(
       actorUserId: agent.user.id,
       from: task.status,
       to: "To Do",
+      action,
+    });
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
       action,
     });
     if (task.assigneeId) {

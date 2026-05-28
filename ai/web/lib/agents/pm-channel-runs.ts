@@ -21,7 +21,6 @@ const STREAM_INACTIVE_TIMEOUT_MS = Number.parseInt(
   process.env.PM_OPENCLAW_STREAM_INACTIVE_TIMEOUT_MS ?? "180000",
   10,
 );
-const COMPLETE_REPLY_GRACE_MS = 2_000;
 
 export function pmChannelRunTargetKey(target: PmChannelReplyTarget): string {
   if (target.kind === "direct") {
@@ -64,10 +63,17 @@ function replyActivityKind(target: PmChannelReplyTarget) {
   return "task.chat.reply";
 }
 
+function silentActivityKind(target: PmChannelReplyTarget) {
+  if (target.kind === "direct") return "agent.direct_chat.silent";
+  if (target.kind === "epic-chat") return "epic.chat.silent";
+  if (target.kind === "task-comment") return "task.comment.silent";
+  return "task.chat.silent";
+}
+
 export async function pmChannelTargetHasDurableReply(target: PmChannelReplyTarget) {
   const row = await db.activityLog.findFirst({
     where: {
-      kind: replyActivityKind(target),
+      kind: { in: [replyActivityKind(target), silentActivityKind(target)] },
       targetAgent: target.agentSlug,
       payload: { contains: `"inReplyToMessageId":"${target.messageId}"` },
     },
@@ -168,6 +174,37 @@ export async function recordPmChannelRunDispatch(args: {
       },
     }),
     "dispatch run state",
+  );
+}
+
+export async function recordPmChannelRunWorkflowAction(args: {
+  taskId: string;
+  agentSlug: string;
+  messageId: string;
+  action: string;
+}) {
+  const now = new Date();
+  const targetKey = pmChannelRunTargetKey({
+    kind: "task-comment",
+    agentSlug: args.agentSlug,
+    taskId: args.taskId,
+    messageId: args.messageId,
+  });
+  await record(
+    () => db.pmChannelRun.updateMany({
+      where: {
+        targetKey,
+        status: { in: ["queued", "accepted", "streaming"] },
+      },
+      data: {
+        status: "complete",
+        error: null,
+        completedAt: now,
+        failedAt: null,
+        lastEventAt: now,
+      },
+    }),
+    `workflow action run state (${args.action})`,
   );
 }
 
@@ -353,12 +390,7 @@ export async function getPmChannelRunSnapshot(target: PmChannelReplyTarget) {
   const now = Date.now();
   const lastEventAt = run.lastEventAt?.getTime() ?? run.updatedAt.getTime();
 
-  if (run.status === "complete" && run.completedAt) {
-    const hasReply = await pmChannelTargetHasDurableReply(target);
-    if (!hasReply && now - run.completedAt.getTime() > COMPLETE_REPLY_GRACE_MS) {
-      return failRun(target, "Agent finished without posting a reply.");
-    }
-  }
+  if (run.status === "complete" && run.completedAt) return run;
 
   if (
     (run.status === "queued" || run.status === "accepted") &&

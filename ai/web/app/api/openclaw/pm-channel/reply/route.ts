@@ -11,6 +11,7 @@ import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel-stream";
 import { recordPmChannelRunEvent } from "@/lib/agents/pm-channel-runs";
 import { normalizeDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
 import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
+import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -341,6 +342,110 @@ async function persistEpicReply(
   };
 }
 
+async function persistSilentReply(target: PmChannelReplyTarget) {
+  const agentUser = await activeAgentUser(target.agentSlug);
+  if (!agentUser) {
+    return { status: 403, body: { error: "Agent not active" } };
+  }
+
+  if (target.kind === "direct") {
+    const original = await db.directAgentChatMessage.findUnique({
+      where: { id: target.messageId },
+      select: { id: true, agentSlug: true },
+    });
+    if (!original || original.agentSlug !== target.agentSlug) {
+      return { status: 404, body: { error: "Message not found" } };
+    }
+    await db.activityLog.create({
+      data: {
+        userId: agentUser.id,
+        kind: "agent.direct_chat.silent",
+        targetAgent: target.agentSlug,
+        payload: JSON.stringify({
+          driver: "openclaw-pm-channel",
+          inReplyToMessageId: target.messageId,
+          agentSlug: target.agentSlug,
+          reason: "no_new_information",
+        }),
+      },
+    });
+    revalidatePath(`/agents/${target.agentSlug}/chat`);
+    return { status: 200, body: { ok: true, silent: true, channel: "direct" } };
+  }
+
+  if (target.kind === "epic-chat") {
+    const original = await db.agentChatMessage.findUnique({
+      where: { id: target.messageId },
+      select: {
+        id: true,
+        projectId: true,
+        epicId: true,
+        agentSlug: true,
+        project: { select: { slug: true } },
+        epic: { select: { deletedAt: true } },
+      },
+    });
+    if (!original || original.epicId !== target.epicId || original.epic?.deletedAt) {
+      return { status: 404, body: { error: "Message not found" } };
+    }
+    if (original.agentSlug !== "room" && original.agentSlug !== target.agentSlug) {
+      return { status: 403, body: { error: "Agent mismatch" } };
+    }
+    await db.activityLog.create({
+      data: {
+        projectId: original.projectId,
+        userId: agentUser.id,
+        kind: "epic.chat.silent",
+        targetAgent: target.agentSlug,
+        payload: JSON.stringify({
+          driver: "openclaw-pm-channel",
+          inReplyToMessageId: target.messageId,
+          agentSlug: target.agentSlug,
+          reason: "no_new_information",
+        }),
+      },
+    });
+    revalidatePath(`/projects/${original.project.slug}/epics/${target.epicId}`);
+    return { status: 200, body: { ok: true, silent: true, channel: "epic-chat" } };
+  }
+
+  const original = await db.agentChatMessage.findUnique({
+    where: { id: target.messageId },
+    select: {
+      id: true,
+      projectId: true,
+      taskId: true,
+      agentSlug: true,
+      project: { select: { slug: true } },
+      task: { select: { deletedAt: true } },
+    },
+  });
+  if (!original || original.taskId !== target.taskId || original.task?.deletedAt) {
+    return { status: 404, body: { error: "Message not found" } };
+  }
+  if (original.agentSlug !== "room" && original.agentSlug !== target.agentSlug) {
+    return { status: 403, body: { error: "Agent mismatch" } };
+  }
+
+  await db.activityLog.create({
+    data: {
+      projectId: original.projectId,
+      taskId: target.taskId,
+      userId: agentUser.id,
+      kind: target.kind === "task-comment" ? "task.comment.silent" : "task.chat.silent",
+      targetAgent: target.agentSlug,
+      payload: JSON.stringify({
+        driver: "openclaw-pm-channel",
+        inReplyToMessageId: target.messageId,
+        agentSlug: target.agentSlug,
+        reason: "no_new_information",
+      }),
+    },
+  });
+  revalidatePath(`/projects/${original.project.slug}/tasks/${target.taskId}`);
+  return { status: 200, body: { ok: true, silent: true, channel: target.kind } };
+}
+
 export async function POST(req: NextRequest) {
   let payload: Record<string, unknown>;
   try {
@@ -368,7 +473,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = target.kind === "direct"
+  const result = isSilentPmReplyText(body)
+    ? await persistSilentReply(target)
+    : target.kind === "direct"
     ? await persistDirectReply(target, body)
     : target.kind === "epic-chat"
     ? await persistEpicReply(target, body)
@@ -378,7 +485,7 @@ export async function POST(req: NextRequest) {
     publishPmChannelStreamEvent({
       target,
       event: "final",
-      text: (result as { streamText?: string }).streamText ?? body,
+      text: (result as { streamText?: string }).streamText ?? "",
       replace: true,
     });
     await recordPmChannelRunEvent({ target, event: "final" });
