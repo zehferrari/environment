@@ -382,6 +382,9 @@ export async function buildTaskAgentContextPacket(args: {
         },
       },
       comments: {
+        // Agent context NEVER includes soft-deleted comments — a human
+        // removed them on purpose. HOMELAB-41 / item 2.
+        where: { deletedAt: null },
         orderBy: { createdAt: "desc" },
         take: MAX_COMMENTS,
         select: {
@@ -392,7 +395,8 @@ export async function buildTaskAgentContextPacket(args: {
         },
       },
       chats: {
-        where: { archiveId: null },
+        // Active discussion only, and never soft-deleted bubbles.
+        where: { archiveId: null, deletedAt: null },
         orderBy: { createdAt: "desc" },
         take: MAX_LIVE_CHATS,
         select: {
@@ -501,6 +505,9 @@ export async function buildTaskAgentContextPacket(args: {
         where: {
           taskId: args.taskId,
           archiveId: { in: archiveIds },
+          // Soft-deleted bubbles inside an archived discussion are
+          // also hidden from agent context. HOMELAB-41 / item 2.
+          deletedAt: null,
         },
         orderBy: { createdAt: "asc" },
         take: MAX_ARCHIVED_CHATS,

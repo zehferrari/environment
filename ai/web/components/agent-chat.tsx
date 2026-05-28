@@ -8,6 +8,8 @@ import {
 import { renderFullMarkdown } from "@/lib/markdown";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import AgentChatInput from "./agent-chat-input";
+import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
+import DeletedMessageDivider from "@/components/deleted-message-divider";
 import {
   actorDisplayName,
   MessageAvatar,
@@ -44,6 +46,9 @@ export default async function AgentChatSidebar(props: TargetProps) {
           agentSlug: selected.agentSlug,
           ...(props.taskId ? { taskId: props.taskId } : { epicId: props.epicId }),
         },
+        // Soft-deleted bubbles (HOMELAB-41 / item 2) stay in this list
+        // so the agent-chat sidebar can render the collapsed dotted
+        // divider. Agent context queries filter them out upstream.
         orderBy: { createdAt: "desc" },
         take: 50,
         include: {
@@ -57,6 +62,7 @@ export default async function AgentChatSidebar(props: TargetProps) {
               agent: { select: { slug: true, name: true, avatar: true } },
             },
           },
+          deletedBy: { select: { username: true, name: true, kind: true } },
         },
       })
     : [];
@@ -114,6 +120,20 @@ export default async function AgentChatSidebar(props: TargetProps) {
               </p>
             ) : (
               messages.map((m) => {
+                if (m.deletedAt) {
+                  // Soft-deleted (HOMELAB-41 / item 2). Renders as a
+                  // collapsed dotted divider with the original body
+                  // hidden behind [+]. Agent context never sees it.
+                  return (
+                    <DeletedMessageDivider
+                      key={m.id}
+                      deletedAt={m.deletedAt}
+                      deletedBy={m.deletedBy}
+                    >
+                      <span>{m.body}</span>
+                    </DeletedMessageDivider>
+                  );
+                }
                 const fromAgent = m.sender.kind === "agent";
                 const fromCurrentUser = Boolean(currentUserId && m.sender.id === currentUserId);
                 const bubbleTone = fromCurrentUser
@@ -143,18 +163,17 @@ export default async function AgentChatSidebar(props: TargetProps) {
                         </span>
                         <div className="flex items-center gap-2">
                           <MessageTimestamp value={m.createdAt} />
-                          <form action={deleteChatMessage}>
-                            <input type="hidden" name="projectSlug" value={props.projectSlug} />
-                            <input type="hidden" name="messageId" value={m.id} />
-                            <button
-                              type="submit"
-                              aria-label="Delete message"
-                              title="Delete message"
-                              className="text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 hover:text-[var(--color-crit)]"
-                            >
-                              x
-                            </button>
-                          </form>
+                          <ConfirmedDeleteButton
+                            action={deleteChatMessage}
+                            fields={{ projectSlug: props.projectSlug, messageId: m.id }}
+                            label="x"
+                            title="Delete message"
+                            description="The bubble will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
+                            confirmLabel="Delete message"
+                            buttonTitle="Delete message"
+                            ariaLabel="Delete message"
+                            className="text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 hover:text-[var(--color-crit)] cursor-pointer"
+                          />
                         </div>
                       </div>
                       <div className="relative md md-compact" dangerouslySetInnerHTML={renderFullMarkdown(m.body)} />

@@ -10,6 +10,7 @@ export type ActivityKind =
   | "task.comment"
   | "task.comment.silent"
   | "task.comment.delete"
+  | "epic.comment.delete"
   | "task.assign"
   | "task.acting_manager"
   | "task.create"
@@ -166,6 +167,8 @@ export function describeActivity(row: ActivityRow): string {
       return `${targetAgent(row)} had no task-comment update to add`;
     case "task.comment.delete":
       return `${actor(row.actorName)} deleted a comment on ${task(row.taskTitle)}`;
+    case "epic.comment.delete":
+      return `${actor(row.actorName)} deleted a comment on an epic`;
     case "task.assign": {
       const p = parsePayload<AssignPayload>(row.payload);
       if (p) {

@@ -47,12 +47,15 @@ model User {
   reportedEpics               Epic[]               @relation("EpicReporter")
   deletedEpics                Epic[]               @relation("EpicDeletedBy")
   comments                    Comment[]
+  deletedComments             Comment[]            @relation("CommentDeletedBy")
   activity                    ActivityLog[]
   uploadedAttachments         Attachment[]
   agentChatMessages           AgentChatMessage[]   @relation("AgentChatSender")
+  deletedAgentChatMessages    AgentChatMessage[]   @relation("AgentChatMessageDeletedBy")
   archivedAgentChatRooms      AgentChatRoomArchive[] @relation("AgentChatRoomArchivedBy")
   deletedAgentChatRoomArchives AgentChatRoomArchive[] @relation("AgentChatRoomArchiveDeletedBy")
   directAgentChatMessages     DirectAgentChatMessage[] @relation("DirectAgentChatSender")
+  deletedDirectAgentChatMessages DirectAgentChatMessage[] @relation("DirectAgentChatMessageDeletedBy")
   archivedDirectAgentChats    DirectAgentChatArchive[] @relation("DirectAgentChatArchivedBy")
   deletedDirectAgentChatArchives DirectAgentChatArchive[] @relation("DirectAgentChatArchiveDeletedBy")
   defaultAssigneeForProjects  Project[]            @relation("ProjectDefaultAssignee")
@@ -350,10 +353,20 @@ model Comment {
   user      User     @relation(fields: [userId], references: [id])
   body      String
   createdAt DateTime @default(now())
+  // Soft delete (HOMELAB-41 / item 2). Active reads filter
+  // deletedAt: null; agent-context builders ALWAYS filter deleted rows
+  // out so deleted content never reaches an agent. The frontend renders
+  // deleted rows as a collapsed dotted divider with a [+] toggle so a
+  // human reviewer can expand them on demand.
+  deletedAt   DateTime?
+  deletedById String?
+  deletedBy   User?    @relation("CommentDeletedBy", fields: [deletedById], references: [id])
 
   @@index([taskId])
   @@index([epicId])
   @@index([userId])
+  @@index([deletedAt])
+  @@index([deletedById])
 }
 
 model ActivityLog {
@@ -523,6 +536,12 @@ model AgentChatMessage {
   originChannel        String    @default("chat")
   originCommentId      String?
   createdAt            DateTime  @default(now())
+  // Soft delete (HOMELAB-41 / item 2). See Comment.deletedAt for the
+  // same convention. Active reads filter deletedAt: null; agent context
+  // builders ALWAYS filter deleted out.
+  deletedAt            DateTime?
+  deletedById          String?
+  deletedBy            User?     @relation("AgentChatMessageDeletedBy", fields: [deletedById], references: [id])
 
   @@index([taskId, createdAt])
   @@index([epicId, createdAt])
@@ -532,6 +551,8 @@ model AgentChatMessage {
   @@index([baseArchiveId, createdAt])
   @@index([agentSlug])
   @@index([originCommentId])
+  @@index([deletedAt])
+  @@index([deletedById])
 }
 
 model AgentChatRoomArchive {
@@ -591,6 +612,14 @@ model DirectAgentChatMessage {
   allowWorkItemManagement Boolean   @default(false)
   workItemGrantUsedAt     DateTime?
   createdAt    DateTime @default(now())
+  // Soft delete (HOMELAB-41 / item 2). See Comment.deletedAt for the
+  // same convention. The archive-level deletedAt on
+  // DirectAgentChatArchive remains separate — that one bins an entire
+  // archived conversation; this one bins an individual bubble inside
+  // the active or archived chat.
+  deletedAt    DateTime?
+  deletedById  String?
+  deletedBy    User?     @relation("DirectAgentChatMessageDeletedBy", fields: [deletedById], references: [id])
 
   @@index([agentSlug, createdAt])
   @@index([agentSlug, archiveId, createdAt])
@@ -598,6 +627,8 @@ model DirectAgentChatMessage {
   @@index([archiveId, createdAt])
   @@index([senderUserId])
   @@index([projectId])
+  @@index([deletedAt])
+  @@index([deletedById])
 }
 
 model DirectAgentChatArchive {

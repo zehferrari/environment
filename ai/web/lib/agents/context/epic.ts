@@ -340,6 +340,9 @@ export async function buildEpicAgentContextPacket(args: {
         },
       },
       comments: {
+        // Agent context NEVER includes soft-deleted comments — a human
+        // removed them on purpose. HOMELAB-41 / item 2.
+        where: { deletedAt: null },
         orderBy: { createdAt: "desc" },
         take: MAX_COMMENTS,
         select: {
@@ -350,7 +353,7 @@ export async function buildEpicAgentContextPacket(args: {
         },
       },
       chats: {
-        where: { archiveId: null },
+        where: { archiveId: null, deletedAt: null },
         orderBy: { createdAt: "desc" },
         take: MAX_LIVE_CHATS,
         select: {
@@ -432,6 +435,9 @@ export async function buildEpicAgentContextPacket(args: {
         where: {
           epicId: args.epicId,
           archiveId: { in: archiveIds },
+          // Soft-deleted archived bubbles stay hidden from agent
+          // context too. HOMELAB-41 / item 2.
+          deletedAt: null,
         },
         orderBy: { createdAt: "asc" },
         take: MAX_ARCHIVED_CHATS,

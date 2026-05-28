@@ -23,6 +23,8 @@ import { listAssignablePrincipals } from "@/lib/principals";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
 import ChatRoom from "@/components/chat-room";
 import CommentComposerFab from "@/components/comment-composer-fab";
+import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
+import DeletedMessageDivider from "@/components/deleted-message-divider";
 import {
   actorDisplayName,
   MessageAvatar,
@@ -223,6 +225,9 @@ export default async function EpicDetailPage({
         include: { uploader: { select: { username: true } } },
       },
       comments: {
+        // Soft-deleted comments (HOMELAB-41 / item 2) stay on the
+        // human-facing page so the dotted divider can render; agent
+        // context filters deletedAt: null upstream.
         orderBy: { createdAt: "asc" },
         include: {
           user: {
@@ -234,6 +239,9 @@ export default async function EpicDetailPage({
               avatarUpdatedAt: true,
               agent: { select: { slug: true, name: true, avatar: true } },
             },
+          },
+          deletedBy: {
+            select: { id: true, username: true, name: true, kind: true },
           },
         },
       },
@@ -269,6 +277,9 @@ export default async function EpicDetailPage({
       agentSlug: "room",
       archiveId: null,
     },
+    // Soft-deleted bubbles (HOMELAB-41 / item 2) stay in this list so
+    // ChatRoom can render the collapsed dotted divider. Agent context
+    // (lib/agents/context/epic.ts) filters them out.
     orderBy: { createdAt: "asc" },
     include: {
       sender: {
@@ -281,6 +292,7 @@ export default async function EpicDetailPage({
           agent: { select: { slug: true, name: true, avatar: true } },
         },
       },
+      deletedBy: { select: { username: true, name: true, kind: true } },
     },
   });
   const pendingProposals = await db.workItemProposal.findMany({
@@ -895,55 +907,58 @@ export default async function EpicDetailPage({
                       </p>
                     ) : (
                       <ul className="space-y-3">
-                        {epic.comments.map((c) => (
-                          <li
-                            key={c.id}
-                            className="flex items-start gap-3 text-sm"
-                          >
-                            <MessageAvatar actor={c.user} size="sm" />
-                            <div className="min-w-0 flex-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2">
-                              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
-                                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                                  <strong className="truncate font-medium text-[var(--color-text)]">
-                                    {actorDisplayName(c.user)}
-                                  </strong>
-                                  <MessageTimestamp value={c.createdAt} />
-                                </div>
-                                {canDeleteComments ? (
-                                  <form action={deleteEpicComment}>
-                                    <input
-                                      type="hidden"
-                                      name="commentId"
-                                      value={c.id}
-                                    />
-                                    <input
-                                      type="hidden"
-                                      name="epicId"
-                                      value={epic.id}
-                                    />
-                                    <input
-                                      type="hidden"
-                                      name="projectSlug"
-                                      value={slug}
-                                    />
-                                    <button
-                                      type="submit"
-                                      className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-text-muted)] hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+                        {epic.comments.map((c) => {
+                          if (c.deletedAt) {
+                            // Soft-deleted (HOMELAB-41 / item 2):
+                            // collapsed dotted divider; agents never see.
+                            return (
+                              <li key={c.id}>
+                                <DeletedMessageDivider
+                                  deletedAt={c.deletedAt}
+                                  deletedBy={c.deletedBy}
+                                >
+                                  <div
+                                    className="md"
+                                    dangerouslySetInnerHTML={renderFullMarkdown(c.body)}
+                                  />
+                                </DeletedMessageDivider>
+                              </li>
+                            );
+                          }
+                          return (
+                            <li
+                              key={c.id}
+                              className="flex items-start gap-3 text-sm"
+                            >
+                              <MessageAvatar actor={c.user} size="sm" />
+                              <div className="min-w-0 flex-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2">
+                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
+                                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                    <strong className="truncate font-medium text-[var(--color-text)]">
+                                      {actorDisplayName(c.user)}
+                                    </strong>
+                                    <MessageTimestamp value={c.createdAt} />
+                                  </div>
+                                  {canDeleteComments ? (
+                                    <ConfirmedDeleteButton
+                                      action={deleteEpicComment}
+                                      fields={{ commentId: c.id, epicId: epic.id, projectSlug: slug }}
                                       title="Delete comment"
-                                      aria-label="Delete comment"
-                                    >
-                                      Delete
-                                    </button>
-                                  </form>
-                                ) : null}
+                                      description="The comment will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
+                                      confirmLabel="Delete comment"
+                                      buttonTitle="Delete comment"
+                                      ariaLabel="Delete comment"
+                                    />
+                                  ) : null}
+                                </div>
+                                <div
+                                  className="md"
+                                  dangerouslySetInnerHTML={renderFullMarkdown(c.body)}
+                                />
                               </div>
-                              <div
-                                className="md"
-                                dangerouslySetInnerHTML={renderFullMarkdown(c.body)}
-                              />
-                            </div>
-                          </li>
-                        ))}
+                            </li>
+                          );
+                        })}
                       </ul>
                     )}
                     {epic.comments.length > 0 ? (

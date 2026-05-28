@@ -14,6 +14,8 @@ import {
   type MessageActor,
 } from "@/components/message-avatar";
 import ProposalReview from "@/app/(app)/agents/[agent]/chat/proposal-review";
+import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
+import DeletedMessageDivider from "@/components/deleted-message-divider";
 
 interface Message {
   id: string;
@@ -23,6 +25,11 @@ interface Message {
   editGrantUsedAt: Date | null;
   targetLabel?: string | null;
   sender: MessageActor;
+  // Soft-delete metadata (HOMELAB-41 / item 2). When deletedAt is set,
+  // the bubble is replaced by a DeletedMessageDivider that humans can
+  // toggle open. Agents never see deleted bubbles in their context.
+  deletedAt?: Date | string | null;
+  deletedBy?: { username?: string | null; name?: string | null; kind?: string | null } | null;
 }
 
 interface DiscussionTarget {
@@ -663,6 +670,20 @@ export default function ChatRoom({
           </div>
         ) : (
           messages.map((m) => {
+            if (m.deletedAt) {
+              // Soft-deleted discussion bubble (HOMELAB-41 / item 2).
+              // Renders as a collapsed dotted divider; agents never see
+              // these in their context.
+              return (
+                <DeletedMessageDivider
+                  key={m.id}
+                  deletedAt={m.deletedAt}
+                  deletedBy={m.deletedBy ?? null}
+                >
+                  <span>{m.body}</span>
+                </DeletedMessageDivider>
+              );
+            }
             return (
               <ChatBubble
                 key={m.id}
@@ -671,18 +692,17 @@ export default function ChatRoom({
                 preferShortAgentSections
                 participantIndex={participantIndexes.get(participantKey(m.sender)) ?? 0}
                 actions={!viewingArchive ? (
-                  <form action={deleteChatMessage}>
-                    <input type="hidden" name="projectSlug" value={projectSlug} />
-                    <input type="hidden" name="messageId" value={m.id} />
-                    <button
-                      type="submit"
-                      aria-label="Delete message"
-                      title="Delete message"
-                      className="text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)] cursor-pointer"
-                    >
-                      ×
-                    </button>
-                  </form>
+                  <ConfirmedDeleteButton
+                    action={deleteChatMessage}
+                    fields={{ projectSlug, messageId: m.id }}
+                    label="×"
+                    title="Delete message"
+                    description="The discussion bubble will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
+                    confirmLabel="Delete message"
+                    buttonTitle="Delete message"
+                    ariaLabel="Delete message"
+                    className="text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)] cursor-pointer"
+                  />
                 ) : null}
               />
             );

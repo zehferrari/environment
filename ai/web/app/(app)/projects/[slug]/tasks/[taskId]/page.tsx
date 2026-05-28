@@ -40,6 +40,8 @@ import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import ChatRoom from "@/components/chat-room";
 import CommentComposerFab from "@/components/comment-composer-fab";
+import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
+import DeletedMessageDivider from "@/components/deleted-message-divider";
 import {
   actorDisplayName,
   MessageAvatar,
@@ -528,6 +530,7 @@ async function deleteComment(formData: FormData) {
     where: { id: commentId },
     select: {
       id: true,
+      deletedAt: true,
       task: {
         select: {
           id: true,
@@ -545,15 +548,24 @@ async function deleteComment(formData: FormData) {
   ) {
     return;
   }
+  if (comment.deletedAt) return; // already soft-deleted
 
+  // Soft delete (HOMELAB-41 / item 2): keep the row so the frontend can
+  // show a collapsed dotted divider that a human reviewer can toggle
+  // open. Agent context builders filter deletedAt: null so the agents
+  // never see the deleted body.
   await db.$transaction([
-    db.comment.delete({ where: { id: commentId } }),
+    db.comment.update({
+      where: { id: commentId },
+      data: { deletedAt: new Date(), deletedById: actor.id },
+    }),
     db.activityLog.create({
       data: {
         projectId: comment.task.projectId,
         taskId: comment.task.id,
         userId: actor.id,
         kind: "task.comment.delete",
+        payload: JSON.stringify({ commentId, soft: true }),
       },
     }),
   ]);
@@ -926,6 +938,10 @@ export default async function TaskDetailPage({
         },
       },
       comments: {
+        // Soft-deleted comments (HOMELAB-41 / item 2) are returned to
+        // humans on the task page so they can render the collapsed
+        // dotted divider. Agent context queries filter deletedAt: null
+        // upstream so agents never see deleted bodies.
         orderBy: { createdAt: "asc" },
         include: {
           user: {
@@ -936,6 +952,14 @@ export default async function TaskDetailPage({
               name: true,
               avatarUpdatedAt: true,
               agent: { select: { slug: true, name: true, avatar: true } },
+            },
+          },
+          deletedBy: {
+            select: {
+              id: true,
+              username: true,
+              name: true,
+              kind: true,
             },
           },
         },
@@ -1044,6 +1068,9 @@ export default async function TaskDetailPage({
       agentSlug: "room",
       archiveId: null,
     },
+    // Soft-deleted bubbles (HOMELAB-41 / item 2) stay in this list so
+    // the chat room can render the collapsed dotted divider. Agent
+    // context queries (lib/agents/context/task.ts) filter them out.
     orderBy: { createdAt: "asc" },
     include: {
       sender: {
@@ -1056,6 +1083,7 @@ export default async function TaskDetailPage({
           agent: { select: { slug: true, name: true, avatar: true } },
         },
       },
+      deletedBy: { select: { username: true, name: true, kind: true } },
     },
   });
   const pendingProposals = await db.workItemProposal.findMany({
@@ -1778,44 +1806,54 @@ export default async function TaskDetailPage({
             </p>
           ) : (
             <ul className="space-y-3">
-              {task.comments.map((c) => (
-                <li
-                  key={c.id}
-                  className="flex items-start gap-3 text-sm"
-                >
-                  <MessageAvatar actor={c.user} size="sm" />
-                  <div className="min-w-0 flex-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2">
-                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
-                      <div className="flex min-w-0 flex-wrap items-center gap-2">
-                        <strong className="truncate font-medium text-[var(--color-text)]">
-                          {actorDisplayName(c.user)}
-                        </strong>
-                        <MessageTimestamp value={c.createdAt} />
-                      </div>
-                      {canDeleteComments ? (
-                        <form action={deleteComment}>
-                          <input type="hidden" name="commentId" value={c.id} />
-                          <input type="hidden" name="taskId" value={task.id} />
-                          <input
-                            type="hidden"
-                            name="projectSlug"
-                            value={slug}
-                          />
-                          <button
-                            type="submit"
-                            className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-[var(--color-text-muted)] hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+              {task.comments.map((c) => {
+                if (c.deletedAt) {
+                  // Soft-deleted (HOMELAB-41 / item 2): render as a
+                  // collapsed dotted divider with the original body
+                  // hidden behind a [+] toggle. Agent context never
+                  // sees deleted bodies.
+                  return (
+                    <li key={c.id}>
+                      <DeletedMessageDivider
+                        deletedAt={c.deletedAt}
+                        deletedBy={c.deletedBy}
+                      >
+                        {renderCommentBody(c.body, mentionables)}
+                      </DeletedMessageDivider>
+                    </li>
+                  );
+                }
+                return (
+                  <li
+                    key={c.id}
+                    className="flex items-start gap-3 text-sm"
+                  >
+                    <MessageAvatar actor={c.user} size="sm" />
+                    <div className="min-w-0 flex-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <strong className="truncate font-medium text-[var(--color-text)]">
+                            {actorDisplayName(c.user)}
+                          </strong>
+                          <MessageTimestamp value={c.createdAt} />
+                        </div>
+                        {canDeleteComments ? (
+                          <ConfirmedDeleteButton
+                            action={deleteComment}
+                            fields={{ commentId: c.id, taskId: task.id, projectSlug: slug }}
                             title="Delete comment"
-                            aria-label="Delete comment"
-                          >
-                            Delete
-                          </button>
-                        </form>
-                      ) : null}
+                            description="The comment will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
+                            confirmLabel="Delete comment"
+                            buttonTitle="Delete comment"
+                            ariaLabel="Delete comment"
+                          />
+                        ) : null}
+                      </div>
+                      <div>{renderCommentBody(c.body, mentionables)}</div>
                     </div>
-                    <div>{renderCommentBody(c.body, mentionables)}</div>
-                  </div>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           )}
 

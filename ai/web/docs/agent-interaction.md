@@ -84,6 +84,22 @@ contribution, the final reply body must be exactly
 `PM_SILENT_NO_CONTRIBUTION`. PM records the turn as complete without
 creating a chat or comment row.
 
+### Soft-deleted content is hidden from agents
+
+A human can delete a comment, a Task/Epic Discussion bubble, or a
+direct-agent-chat bubble. PM does **not** hard-delete the row — it
+sets `deletedAt` + `deletedById` and keeps the body for human-side
+review (the UI shows a collapsed dotted divider with a `[+]` toggle).
+Every agent-context query (`buildTaskAgentContextPacket`,
+`buildEpicAgentContextPacket`, the archived-discussion chain queries)
+filters `deletedAt: null` so agents never see deleted bodies in any
+TIMELINE MANIFEST or RELATED TIMELINE row. Agents should treat the
+absence of a previously-seen row as final — do not infer, search for,
+or retry against it.
+
+Hard purge of soft-deleted rows happens through the existing
+project-bin-empty path.
+
 ### Directed-message rule
 
 A task comment, task-chat message, or epic-chat message is either a

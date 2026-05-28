@@ -930,18 +930,26 @@ export async function deleteDirectAgentMessage(formData: FormData) {
 
   const msg = await db.directAgentChatMessage.findUnique({
     where: { id: messageId },
-    select: { id: true, agentSlug: true },
+    select: { id: true, agentSlug: true, deletedAt: true },
   });
   if (!msg || msg.agentSlug !== agentSlug) return;
+  if (msg.deletedAt) return; // already soft-deleted
 
+  // Soft delete (HOMELAB-41 / item 2). Same convention as
+  // deleteChatMessage and deleteComment: the row stays, deletedAt is
+  // stamped, and the frontend renders it as a collapsed dotted divider
+  // a human can expand. Agent context never sees the deleted body.
   await db.$transaction([
-    db.directAgentChatMessage.delete({ where: { id: messageId } }),
+    db.directAgentChatMessage.update({
+      where: { id: messageId },
+      data: { deletedAt: new Date(), deletedById: userId },
+    }),
     db.activityLog.create({
       data: {
         userId,
         kind: "agent.direct_chat.delete",
         targetAgent: agentSlug,
-        payload: JSON.stringify({ messageId }),
+        payload: JSON.stringify({ messageId, soft: true }),
       },
     }),
   ]);

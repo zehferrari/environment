@@ -253,9 +253,14 @@ export default async function DirectAgentChatPage({
   const [activeMessages, archives, binArchives, selectedArchive] = await Promise.all([
     db.directAgentChatMessage.findMany({
       where: { agentSlug: slug, archiveId: null },
+      // Soft-deleted bubbles (HOMELAB-41 / item 2) stay in this list so
+      // chat-messages-container can render the collapsed dotted divider.
       orderBy: { createdAt: "asc" },
       take: 120,
-      include: { sender: { select: messageSenderSelect } },
+      include: {
+        sender: { select: messageSenderSelect },
+        deletedBy: { select: { username: true, name: true, kind: true } },
+      },
     }),
     db.directAgentChatArchive.findMany({
       where: { agentSlug: slug, deletedAt: null },

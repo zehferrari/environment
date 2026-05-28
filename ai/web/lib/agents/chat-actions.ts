@@ -737,10 +737,12 @@ export async function archiveChatRoom(formData: FormData) {
 }
 
 // Hard-delete a chat message. Chats are conversation, not work
-// items — they don't go through the soft-delete bin. The activity
-// log keeps a record of who deleted what; the row itself is gone.
-// Scope is project-slug enforced so a stale messageId from another
-// project can't be deleted via this action.
+// items — they're SOFT-deleted (HOMELAB-41 / item 2): the row stays
+// with deletedAt + deletedById stamped so the frontend can render a
+// collapsed dotted divider that a human reviewer can expand on demand.
+// Active reads (and ALL agent-context builders) filter deletedAt: null
+// so deleted content never reaches an agent. Repeat-deleting a row is a
+// no-op so the action stays idempotent. Scope is project-slug enforced.
 export async function deleteChatMessage(formData: FormData) {
   const actor = await requireActor();
   const slug = String(formData.get("projectSlug") ?? "");
@@ -752,9 +754,13 @@ export async function deleteChatMessage(formData: FormData) {
     include: { project: { select: { slug: true } } },
   });
   if (!msg || msg.project.slug !== slug) return;
+  if (msg.deletedAt) return; // already soft-deleted
 
   await db.$transaction([
-    db.agentChatMessage.delete({ where: { id: messageId } }),
+    db.agentChatMessage.update({
+      where: { id: messageId },
+      data: { deletedAt: new Date(), deletedById: actor.id },
+    }),
     db.activityLog.create({
       data: {
         projectId: msg.projectId,
@@ -765,6 +771,7 @@ export async function deleteChatMessage(formData: FormData) {
           messageId,
           agentSlug: msg.agentSlug,
           allowDescriptionEdit: msg.allowDescriptionEdit,
+          soft: true,
         }),
       },
     }),

@@ -4,6 +4,8 @@ import React, { useEffect, useRef, useState, useMemo } from "react";
 import { deleteDirectAgentMessage } from "@/lib/agents/direct-chat-actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
+import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
+import DeletedMessageDivider from "@/components/deleted-message-divider";
 import {
   type MessageActor,
 } from "@/components/message-avatar";
@@ -17,6 +19,10 @@ interface Message {
   body: string;
   createdAt: string; // ISO string
   sender: MessageActor;
+  // Soft-delete metadata (HOMELAB-41 / item 2). When deletedAt is set
+  // the bubble is replaced by a collapsed dotted divider.
+  deletedAt?: string | null;
+  deletedBy?: { username?: string | null; name?: string | null; kind?: string | null } | null;
 }
 
 interface ParentArchive {
@@ -176,7 +182,18 @@ export default function ChatMessagesContainer({
       ) : (
         allMessages.map((m, index) => {
           const isLast = index === allMessages.length - 1;
-          
+          if (m.deletedAt) {
+            // Soft-deleted direct-chat bubble (HOMELAB-41 / item 2).
+            return (
+              <DeletedMessageDivider
+                key={m.id}
+                deletedAt={m.deletedAt}
+                deletedBy={m.deletedBy ?? null}
+              >
+                <span>{m.body}</span>
+              </DeletedMessageDivider>
+            );
+          }
           return (
             <ChatBubble
               key={m.id}
@@ -185,18 +202,17 @@ export default function ChatMessagesContainer({
               currentUserId={currentUserId}
               participantIndex={participantIndexes.get(participantKey(m.sender)) ?? 0}
               actions={!viewingArchive ? (
-                <form action={deleteDirectAgentMessage}>
-                  <input type="hidden" name="agentSlug" value={slug} />
-                  <input type="hidden" name="messageId" value={m.id} />
-                  <button
-                    type="submit"
-                    aria-label="Delete message"
-                    title="Delete message"
-                    className="cursor-pointer text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)]"
-                  >
-                    ×
-                  </button>
-                </form>
+                <ConfirmedDeleteButton
+                  action={deleteDirectAgentMessage}
+                  fields={{ agentSlug: slug, messageId: m.id }}
+                  label="×"
+                  title="Delete message"
+                  description="The bubble will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
+                  confirmLabel="Delete message"
+                  buttonTitle="Delete message"
+                  ariaLabel="Delete message"
+                  className="cursor-pointer text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)]"
+                />
               ) : null}
             />
           );

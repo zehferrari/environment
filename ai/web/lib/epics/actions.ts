@@ -669,13 +669,31 @@ export async function deleteEpicComment(formData: FormData) {
     select: {
       id: true,
       epicId: true,
-      epic: { select: { project: { select: { slug: true } } } },
+      deletedAt: true,
+      epic: { select: { projectId: true, project: { select: { slug: true } } } },
     },
   });
   if (!comment || comment.epicId !== epicId || comment.epic?.project.slug !== slug) {
     return;
   }
+  if (comment.deletedAt) return; // already soft-deleted
 
-  await db.comment.delete({ where: { id: commentId } });
+  // Soft delete (HOMELAB-41 / item 2). Mirrors the task page rule:
+  // the row stays so humans see a collapsed dotted divider; agent
+  // context filters deletedAt: null so the body never reaches an agent.
+  await db.$transaction([
+    db.comment.update({
+      where: { id: commentId },
+      data: { deletedAt: new Date(), deletedById: actor.id },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: comment.epic!.projectId,
+        userId: actor.id,
+        kind: "epic.comment.delete",
+        payload: JSON.stringify({ commentId, epicId, soft: true }),
+      },
+    }),
+  ]);
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
 }
