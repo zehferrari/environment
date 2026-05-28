@@ -18,7 +18,7 @@ inventory itself, see [`../../README.md`](../../README.md).
 | **Service catalog** | [`SERVICES.md`](./SERVICES.md) |
 | **Monitoring topology** | [`MONITORING.md`](./MONITORING.md) |
 | **Per-agent files (NOT in this repo)** | [`AGENT_FILES.md`](./AGENT_FILES.md) |
-| **Webhook routing only** (Jira/Bitbucket → coding agent) | `/home/karen/webhooks/users.json` (per-host, not in this repo) |
+| **Webhook routing** (Jira/Bitbucket → coding agent) | `/srv/agents/index.json` via `/etc/openclaw/agents.json` |
 
 ## Policy
 
@@ -34,3 +34,19 @@ inventory itself, see [`../../README.md`](../../README.md).
   that specific ticket.
 - **Edits go through git.** Edit the host checkout (x1: `/srv/Code/environment/ai/openclaw/`; yoga510: `/home/rachael/Code/environment/ai/openclaw/`), commit,
   push. Every agent picks up the change on next read.
+- **No Claude / Anthropic attribution in commits, PRs, or anything else.**
+  If a host enables Anthropic / Claude (e.g. an agent runs Claude Code, or a
+  human uses Claude Code on the host), ensure the `Co-Authored-By: Claude`
+  trailer and the `🤖 Generated with Claude Code` PR footer stay OFF. Set
+  both in `~/.claude/settings.json` (and any project-local
+  `.claude/settings.json` / `.claude/settings.local.json`):
+  ```json
+  {
+    "attribution": { "commit": "", "pr": "" },
+    "includeCoAuthoredBy": false
+  }
+  ```
+  Empty `attribution.commit` / `attribution.pr` hide each one; the deprecated
+  `includeCoAuthoredBy: false` covers older Claude Code versions. Audit
+  every settings file on a fresh install — repo commits attribute to the
+  human user only.
