@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import pwd
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+
+REGISTRY = Path("/etc/openclaw/agents.json")
+AI_MONITOR_CONFIG = Path("/etc/ai-monitor/config.json")
+
+
+class Reporter:
+    def __init__(self):
+        self.ok = 0
+        self.warn = 0
+        self.fail = 0
+
+    def _line(self, level, msg):
+        print(f"[{level}] {msg}")
+
+    def pass_(self, msg):
+        self.ok += 1
+        self._line("OK", msg)
+
+    def warning(self, msg):
+        self.warn += 1
+        self._line("WARN", msg)
+
+    def failure(self, msg):
+        self.fail += 1
+        self._line("FAIL", msg)
+
+    def summary(self):
+        print(f"[SUMMARY] ok={self.ok} warn={self.warn} fail={self.fail}")
+        return 1 if self.fail else 0
+
+
+def load_json(path, reporter, required=True):
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        if required:
+            reporter.failure(f"{path} is missing")
+        else:
+            reporter.warning(f"{path} is missing")
+        return None
+    except json.JSONDecodeError as exc:
+        reporter.failure(f"{path} is invalid JSON: {exc}")
+        return None
+
+
+def same_file(a, b):
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def is_port_open(host, port, timeout=0.5):
+    probe_host = "127.0.0.1" if host == "0.0.0.0" else host
+    try:
+        with socket.create_connection((probe_host, int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def path_exists_for_check(path):
+    try:
+        return path.exists(), None
+    except PermissionError as exc:
+        return True, exc
+    except OSError as exc:
+        return False, exc
+
+
+def user_systemctl(user, unit):
+    try:
+        pw = pwd.getpwnam(user)
+    except KeyError:
+        return None, "no such user"
+    env = os.environ.copy()
+    env["XDG_RUNTIME_DIR"] = f"/run/user/{pw.pw_uid}"
+    env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path=/run/user/{pw.pw_uid}/bus"
+    cmd = [
+        "sudo",
+        "-u",
+        user,
+        "env",
+        f"XDG_RUNTIME_DIR={env['XDG_RUNTIME_DIR']}",
+        f"DBUS_SESSION_BUS_ADDRESS={env['DBUS_SESSION_BUS_ADDRESS']}",
+        "systemctl",
+        "--user",
+        "is-enabled",
+        unit,
+    ]
+    enabled = subprocess.run(cmd, text=True, capture_output=True, timeout=5)
+    cmd[-2] = "is-active"
+    active = subprocess.run(cmd, text=True, capture_output=True, timeout=5)
+    return {
+        "enabled": enabled.stdout.strip() or enabled.stderr.strip(),
+        "active": active.stdout.strip() or active.stderr.strip(),
+        "enabled_rc": enabled.returncode,
+        "active_rc": active.returncode,
+    }, None
+
+
+def agent_home(agent):
+    user = agent.get("user")
+    return Path(agent.get("home") or (f"/home/{user}" if user else ""))
+
+
+def derived_route_config(agent):
+    home = agent_home(agent)
+    return {
+        "home": str(home),
+        "tasksFile": str(home / "tasks" / "current.md"),
+        "logFile": str(home / "tasks" / "log.md"),
+        "jiraTokenFile": str(home / ".ssh" / "jiraToken.txt"),
+        "bitbucketTokenFile": str(home / ".ssh" / "bitbucketToken.txt"),
+        "bitbucketEmail": agent.get("bitbucket_email") or agent.get("bitbucketEmail") or agent.get("email") or "",
+        "jiraDisplayName": agent.get("jira_display_name") or agent.get("jiraDisplayName") or agent.get("name") or agent.get("user"),
+        "jiraAccountId": agent.get("jira_account_id") or agent.get("jiraAccountId"),
+    }
+
+
+def routed_agents(registry, integration):
+    out = []
+    for agent in registry.get("agents") or []:
+        integrations = agent.get("integrations") or {}
+        if (
+            agent.get("enabled", True)
+            and agent.get("role") == "coding"
+            and integrations.get(integration)
+        ):
+            out.append(agent)
+    return out
+
+
+def routed_usernames(registry, integration):
+    return [a.get("user") for a in routed_agents(registry, integration) if a.get("user")]
+
+
+def registry_value(registry, camel_name, snake_name=None):
+    value = registry.get(camel_name)
+    if value is None and snake_name:
+        value = registry.get(snake_name)
+    return str(value or "").strip()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Validate OpenClaw registry and known config drift points.")
+    parser.add_argument("--runtime", action="store_true", help="also check user services and listener sockets")
+    args = parser.parse_args()
+
+    reporter = Reporter()
+    registry = load_json(REGISTRY, reporter)
+    if not registry:
+        return reporter.summary()
+
+    if registry.get("version") == 1:
+        reporter.pass_("registry version is 1")
+    else:
+        reporter.failure("registry version must be 1")
+
+    shared_dir = Path(registry.get("sharedKnowledgeDir", ""))
+    if shared_dir.is_dir():
+        reporter.pass_(f"shared knowledge directory exists ({shared_dir})")
+    else:
+        reporter.failure(f"shared knowledge directory missing ({shared_dir})")
+
+    agents = registry.get("agents")
+    if not isinstance(agents, list) or not agents:
+        reporter.failure("registry agents must be a non-empty list")
+        return reporter.summary()
+
+    seen_users = set()
+    seen_uids = set()
+    seen_ports = {}
+    monitored = []
+
+    for agent in agents:
+        user = agent.get("user")
+        if not user:
+            reporter.failure("agent entry missing user")
+            continue
+        prefix = f"{user}:"
+        if user in seen_users:
+            reporter.failure(f"{prefix} duplicate user")
+        else:
+            seen_users.add(user)
+            reporter.pass_(f"{prefix} user is unique")
+
+        try:
+            pw = pwd.getpwnam(user)
+        except KeyError:
+            reporter.failure(f"{prefix} Linux user does not exist")
+            continue
+
+        uid = agent.get("uid")
+        if uid == pw.pw_uid:
+            reporter.pass_(f"{prefix} uid matches passwd ({uid})")
+        else:
+            reporter.failure(f"{prefix} uid mismatch registry={uid} passwd={pw.pw_uid}")
+        if uid in seen_uids:
+            reporter.failure(f"{prefix} duplicate uid {uid}")
+        seen_uids.add(uid)
+
+        home = Path(agent.get("home", ""))
+        if home == Path(pw.pw_dir) and home.is_dir():
+            reporter.pass_(f"{prefix} home exists and matches passwd")
+        else:
+            reporter.failure(f"{prefix} home mismatch or missing ({home}, passwd={pw.pw_dir})")
+
+        workspace = Path(agent.get("workspace", ""))
+        workspace_exists, workspace_err = path_exists_for_check(workspace)
+        if workspace_exists and workspace_err:
+            reporter.warning(f"{prefix} workspace exists but is not readable by current user ({workspace}: {workspace_err})")
+        elif workspace_exists:
+            reporter.pass_(f"{prefix} workspace exists ({workspace})")
+        else:
+            reporter.failure(f"{prefix} workspace missing ({workspace})")
+
+        integrations = agent.get("integrations") or {}
+        if agent.get("enabled") and (agent.get("role") == "monitor" or integrations.get("monitor")):
+            monitored.append(user)
+
+        capabilities = agent.get("capabilities")
+        if isinstance(capabilities, dict):
+            reporter.pass_(f"{prefix} capabilities are explicit")
+            if not agent.get("coding") and capabilities.get("can_modify_code"):
+                reporter.failure(f"{prefix} non-coding agent may modify code")
+            if not agent.get("coding") and capabilities.get("can_jira"):
+                reporter.failure(f"{prefix} non-coding agent may transition Jira")
+        else:
+            reporter.warning(f"{prefix} capabilities missing; remediation authority is prose-only")
+
+        telegram = agent.get("telegram") or {}
+        if telegram.get("enabled") and str(telegram.get("bot", "")).startswith("@"):
+            reporter.pass_(f"{prefix} Telegram bot is declared")
+        elif telegram.get("enabled"):
+            reporter.failure(f"{prefix} Telegram enabled without @bot handle")
+
+        listeners = agent.get("listeners") or []
+        for listener in listeners:
+            port = listener.get("port")
+            host = listener.get("host")
+            key = (host, port)
+            if key in seen_ports:
+                reporter.failure(f"{prefix} duplicate listener {host}:{port} also used by {seen_ports[key]}")
+            else:
+                seen_ports[key] = user
+                reporter.pass_(f"{prefix} listener declared {host}:{port}")
+            if args.runtime and listener.get("expected", True):
+                if is_port_open(host, port):
+                    reporter.pass_(f"{prefix} listener open {host}:{port}")
+                else:
+                    reporter.failure(f"{prefix} listener closed {host}:{port}")
+
+        if args.runtime:
+            for unit in agent.get("services") or []:
+                state, err = user_systemctl(user, unit)
+                if err:
+                    reporter.failure(f"{prefix} cannot check {unit}: {err}")
+                    continue
+                if state["active"] == "active":
+                    reporter.pass_(f"{prefix} {unit} active")
+                else:
+                    reporter.failure(f"{prefix} {unit} not active ({state['active']})")
+                if state["enabled"] in ("enabled", "static", "generated", "linked", "alias"):
+                    reporter.pass_(f"{prefix} {unit} enabled/static")
+                else:
+                    reporter.warning(f"{prefix} {unit} not enabled ({state['enabled']})")
+
+    jira_routed = routed_usernames(registry, "jira")
+    bitbucket_routed = routed_usernames(registry, "bitbucket")
+    reporter.pass_(f"Jira webhook routed users derived from registry: {','.join(jira_routed) or '(none)'}")
+    reporter.pass_(f"Bitbucket webhook routed users derived from registry: {','.join(bitbucket_routed) or '(none)'}")
+
+    legacy_routed = registry.get("webhookRoutedUsers")
+    if legacy_routed:
+        reporter.warning("webhookRoutedUsers is deprecated; routing is derived from integrations.<name>")
+
+    ai_config = load_json(AI_MONITOR_CONFIG, reporter, required=False)
+    if ai_config:
+        configured_registry = (((ai_config.get("watch") or {}).get("agents_registry")) or "")
+        if Path(configured_registry) == REGISTRY:
+            reporter.pass_("ai-monitor points at the active registry")
+        else:
+            reporter.failure(f"ai-monitor registry mismatch ({configured_registry})")
+
+    for agent in routed_agents(registry, "jira"):
+        cfg = derived_route_config(agent)
+        prefix = f"{agent['user']}:"
+        if cfg["jiraDisplayName"]:
+            reporter.pass_(f"{prefix} Jira display name derived from registry")
+        else:
+            reporter.failure(f"{prefix} Jira display name missing")
+        if cfg["jiraAccountId"]:
+            reporter.pass_(f"{prefix} Jira account id declared")
+        else:
+            reporter.failure(f"{prefix} Jira account id missing")
+
+    if monitored:
+        reporter.pass_(f"monitored agents: {','.join(monitored)}")
+    else:
+        reporter.failure("no monitored agents declared")
+
+    return reporter.summary()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

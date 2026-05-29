@@ -1,0 +1,44 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.*
+.yarn/*
+
+# next.js
+.next/
+out/
+build/
+dist/
+
+# production
+*.tsbuildinfo
+next-env.d.ts
+
+# env
+.env*.local
+.env
+
+# logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# misc
+.DS_Store
+*.pem
+.antigravitycli/
+
+# local sqlite
+prisma/*.db
+prisma/*.db-journal
+*.db
+*.db-journal
+# runtime DB dir — owned/locked to the monitor (karen 0700); git must not
+# descend into it (it can't read it) and must never track the live DB.
+prisma/prisma/
+
+# coverage
+coverage/
+*.lcov

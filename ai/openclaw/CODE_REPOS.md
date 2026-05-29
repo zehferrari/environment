@@ -26,6 +26,41 @@ identity here, and never need to remember to.
 System-wide `safe.directory = /srv/Code/*` lets agents (different uid
 than the directory owner) operate on the trees.
 
+## Permissions & secrets
+
+`/srv/Code` is **collaborative for the `code-agents` group**: group-owned,
+group-writable, **setgid** on directories with **default ACLs**, so files
+created later by *any* member stay group-writable. This is what lets any
+code-agent build a worktree (run `pnpm install` / `prisma generate` / a build),
+not just whoever first created `node_modules`.
+
+> If a build ever fails with `EPERM`, suspect a stray `user:<name>` named-ACL
+> entry (a named-user ACL overrides the group). Check `getfacl <path>` and clear
+> with `setfacl -x u:<name> <path>`. For build tools that copy + `fchmod`
+> (e.g. `prisma generate` into `.prisma`), remove the generated dir first so the
+> current builder owns the fresh files.
+
+Enforce/repair these perms with the idempotent, reusable tool
+**`/usr/local/sbin/code-tree-perms`** (source: `ai/openclaw/bin/code-tree-perms`,
+installed by `install.sh`). It is *additive* — it grants group access and never
+revokes `other`, so it can't break a co-hosted app's runtime user.
+
+**Runtime secrets belong to the monitor agent, not the coders.** A service's
+live secrets and data (e.g. the PM webapp's `ai/web/.env.local` and its SQLite
+DB dir `ai/web/prisma/prisma/`) are owned by the monitor (karen) and locked
+(`600` / `0700`) so the coding agents cannot read them — even though the
+surrounding source tree is group-collaborative. `code-tree-perms --secret
+<file> --secret-dir <dir> --monitor <user>` applies this.
+
+## Live preview — serving a worktree
+
+The monitor agent can build any worktree and point the live PM site
+(`pm.service`) at it, from the CLI (`pm-switch <branch-worktree>`) or the PM
+webapp (a git/worktree-exposed project's Settings → Worktree live preview,
+admin only). Exactly one worktree is served at a time; all share
+the same DB + env, so only the served code changes. Full design:
+[`ai/web/deploy/MULTI_AGENT_WORKTREES.md`](../web/deploy/MULTI_AGENT_WORKTREES.md).
+
 ## Mandatory branch workflow
 
 Every Jira ticket that touches a shared repo **must** designate a
@@ -40,20 +75,30 @@ created via `claim-branch`.
 
 The implementer flow is:
 
-1. Read the Jira ticket, note the designated branch (e.g. `feature/HOMELAB-12-foo`).
-2. `claim-branch <repo> <branch>` — checks the branch exists on origin,
-   creates a worktree on it, prints the worktree path.
+1. Read the Jira or Zero Latency ticket, note the designated branch (e.g. `feature/HOMELAB-12-foo`).
+2. `claim-branch <repo> <branch>` — checks if the branch exists on origin and creates a worktree on it. If it does not exist, it automatically creates it on origin from `origin/master` (or `origin/main` on origin) and checks out locally.
 3. `cd "$(claim-branch <repo> <branch>)"` and work there.
-4. Make your changes; `git add` + `git commit` as normal. Identity is
-   already wired (`Zeh Ferrari <e@zeh.me>`).
-5. **Push the branch to origin** — `git push` works as-is on a freshly
+4. Make sure the git user name and email match the project settings.
+   - If the project settings define a custom git identity, you MUST configure them locally in the worktree:
+     ```bash
+     git config extensions.worktreeConfig true
+     git config --worktree user.name "Project.defaultGitUserName"
+     git config --worktree user.email "Project.defaultGitUserEmail"
+     ```
+   - Also write the expected identity JSON to the git directory to allow the pre-commit hook to validate it:
+     ```bash
+     echo '{"name": "Project.defaultGitUserName", "email": "Project.defaultGitUserEmail"}' > "$(git rev-parse --git-dir)/expected-identity"
+     ```
+   - If no project-specific identity is configured, it defaults to the host identity `Zeh Ferrari <e@zeh.me>`.
+5. Make your changes; `git add` + `git commit` as normal.
+6. **Push the branch to origin** — `git push` works as-is on a freshly
    claimed branch (the worktree was created with upstream tracking).
-   For a brand-new branch from `--from`, the helper has already done
+   For a brand-new branch, the helper has already done
    the initial `git push -u origin <branch>` for you. Auth resolves
    as zeh via `bbZeh` — no flags or env needed.
-6. Stop. Do **not** create a pull request. Report the branch, commit, tests,
+7. Stop. Do **not** create a pull request. Report the branch, commit, tests,
    and residual risk in the source channel so zeh can create the PR.
-7. After zeh confirms the PR has landed, `claim-branch --release <repo>
+8. After zeh confirms the PR has landed, `claim-branch --release <repo>
    <branch>` to tear down the worktree. The remote branch is cleaned up on
    Bitbucket separately by whoever lands the PR.
 
@@ -193,9 +238,17 @@ where their tree is.
 
 ```
 # Inside any /srv/Code/* tree:
-git config user.email          # → e@zeh.me
+git config user.name           # → Project-specific name OR Zeh Ferrari
+git config user.email          # → Project-specific email OR e@zeh.me
 git config core.sshCommand     # → ssh -i $HOME/.ssh/bbZeh -o IdentitiesOnly=yes
 
 # Outside /srv/Code:
 git config user.email          # → agent's own (a@zeh.me / b@zeh.me)
 ```
+
+## Automated Enforcement (Pre-commit hook)
+
+Every repository and worktree under `/srv/Code/` is monitored by a global pre-commit hook (configured via `/srv/Code/.gitconfig-zeh` setting `core.hooksPath = /srv/Code/git-hooks`). The hook automatically validates:
+1. **Mandatory Worktree**: Commits directly to the primary repository `/srv/Code/<repo>/` are blocked. You MUST use a branch worktree.
+2. **Branch Match**: The current git branch name (slugified) must match the worktree directory name.
+3. **Identity Verification**: If an `expected-identity` file exists in the worktree's git directory (written by `claim-branch` or updated by you with project settings), the active `user.name` and `user.email` must match it exactly.

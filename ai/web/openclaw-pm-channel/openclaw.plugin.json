@@ -1,0 +1,53 @@
+{
+  "id": "pm",
+  "name": "PM Channel",
+  "description": "Native local PM chat and task-comment channel for OpenClaw.",
+  "version": "0.1.0",
+  "channels": ["pm"],
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "channelConfigs": {
+    "pm": {
+      "label": "PM",
+      "description": "Local Vixi PM channel.",
+      "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "token": { "type": "string" },
+          "callbackToken": { "type": "string" },
+          "callbackUrl": { "type": "string" },
+          "agentId": { "type": "string" },
+          "defaultTo": { "type": "string" },
+          "accounts": { "type": "object" },
+          "defaultAccount": { "type": "string" }
+        }
+      },
+      "uiHints": {
+        "token": {
+          "label": "Ingress token",
+          "sensitive": true
+        },
+        "callbackToken": {
+          "label": "PM callback token",
+          "sensitive": true
+        },
+        "callbackUrl": {
+          "label": "PM callback URL",
+          "placeholder": "http://127.0.0.1:3000/api/openclaw/pm-channel/reply"
+        },
+        "agentId": {
+          "label": "OpenClaw agent id",
+          "placeholder": "main"
+        }
+      }
+    }
+  }
+}

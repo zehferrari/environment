@@ -14,6 +14,7 @@ For broader context:
 ```
 .
 ├── README.md              this file (folder overview, layout, editing)
+├── install.sh             host bootstrap/reconcile script for OpenClaw services and PM wake hooks
 ├── AGENT_FILES.md         per-agent files (NOT in this repo) and what each is for
 ├── ENVIRONMENT.md         "where things live" map (source of truth + policy)
 ├── SERVICES.md            service catalog
@@ -91,6 +92,55 @@ sudo -u "$OWNER" git pull
 sudo -u "$OWNER" git commit -am "<message>"
 sudo -u "$OWNER" git push
 ```
+
+## Host install path
+
+Run `install.sh` after pulling changes on x1. Besides syncing scripts and
+systemd units, it reconciles the PM web/OpenClaw integration when the
+sibling PM checkout exists. The PM step creates `/var/lib/pm/drop`,
+renders the one host-wide `pm.service` and `pm-consumer.service`, binds
+every enabled agent gateway to loopback, enables its external
+`/hooks/wake` surface for non-chat PM events, installs the native
+OpenClaw `pm` channel plugin for every enabled registry agent, and mirrors token maps into
+`/etc/openclaw/pm-consumer-tokens.json` and
+`/etc/openclaw/pm-channel-tokens.json`.
+
+The installer also runs `/usr/local/sbin/openclaw-patch-session-fence`
+against the installed OpenClaw runtime. That patch keeps provider timeout
+records written during a PM channel turn from being misclassified as an
+external session takeover, so OpenClaw can continue into the configured
+model fallback chain instead of returning a generic PM failure. Re-run
+`install.sh` after upgrading or reinstalling the global `openclaw`
+package.
+
+Gateway hook config lives in `/srv/agents/openclaw/<agent>/openclaw.json`;
+`/home/<agent>/.openclaw/openclaw.json` should be a symlink to that
+canonical file so Mission Control writes and the gateway runtime read the
+same config. `install.sh` verifies that link and refuses to replace a
+different regular home file until an operator reconciles the two copies.
+`gateway.bind="loopback"`, `gateway.trustedProxies=["127.0.0.1","::1"]`,
+`gateway.auth.trustedProxy.allowLoopback=true`, `hooks.enabled=true`,
+`hooks.path="/hooks"`, `hooks.token=<secret>`,
+`hooks.allowRequestSessionKey=true`, and
+`hooks.allowedSessionKeyPrefixes=["hook:","pm:"]`. OpenClaw requires
+`hook:` when no hook default session key is configured; PM-owned session
+keys use the `pm:` prefix. Direct chat keeps a stable `pm:` key, while
+Task/Epic Discussion and task-comment turns derive per-message `pm:`
+keys from the PM binding. Chat, Epic chat, and task-comment turns
+normally enter OpenClaw through `POST /pm-channel/ingest`, not
+`/hooks/wake`. The PM app sends a final reply callback
+(`/api/openclaw/pm-channel/reply`) and a live partial-reply stream
+callback (`/api/openclaw/pm-channel/stream`) in each native channel turn.
+PM also stores a durable `PmChannelRun` row for each native channel turn
+so browser reconnects can resume from accepted/streaming/failed state
+without relying on `/hooks/wake` or polling.
+The installer preserves `hooks.internal` and
+restarts `openclaw-gateway.service` when it changes hook or channel
+config. Do not expose hooks or the PM channel through nginx; PM calls
+them on `127.0.0.1`. Any nginx dashboard proxy for the gateway must use
+`127.0.0.1:<gateway_port>` as the upstream, not the host's LAN IP, and
+must explicitly block prefixed paths such as `/<agent>/hooks` and
+`/<agent>/pm-channel`.
 
 ## Agent identity in code
 

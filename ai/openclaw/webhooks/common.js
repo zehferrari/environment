@@ -5,9 +5,10 @@
 //
 // Exports: createReceiver(opts) returning { server, sharedLog, userLog,
 // verifySignature, allUsers, jiraNameToUser, jiraAccountIdToUser, config,
-// queueJiraTask, queueBitbucketTask, resolveJiraUsers, resolveBitbucketUsers,
-// resolveJiraMentionedAgents, recordPendingMention, adfToText, wakeAgent,
-// notifyDashboard }. Each receiver wires its own /health + integration route.
+// routedUsersFor, routedUsernamesFor, queueJiraTask, queueBitbucketTask,
+// resolveJiraUsers, resolveBitbucketUsers, resolveJiraMentionedAgents,
+// recordPendingMention, adfToText, wakeAgent, notifyDashboard }. Each
+// receiver wires its own /health + integration route.
 
 const http = require('http');
 const crypto = require('crypto');
@@ -22,11 +23,9 @@ const OPENCLAW_CONTROL_BIN = '/usr/local/sbin/openclaw-control';
 const DASHBOARD_HOST = '127.0.0.1';
 const DASHBOARD_PORT = 3013;
 
-// Run as the monitor agent — their home holds the users.json route table
-// and the shared log file lives at ~/tasks/log.md. os.homedir() is the
-// HOME env (set by the systemd User= directive).
+// Run as the monitor agent. The shared log file lives at ~/tasks/log.md.
+// os.homedir() is the HOME env set by the systemd User= directive.
 const MONITOR_HOME = os.homedir();
-const USERS_JSON = path.join(MONITOR_HOME, 'webhooks', 'users.json');
 const SHARED_LOG = path.join(MONITOR_HOME, 'tasks', 'log.md');
 
 const PENDING_MENTIONS_DIR = '/var/lib/ai-monitor/pending-mentions';
@@ -38,12 +37,21 @@ try { fs.mkdirSync(PENDING_EPIC_COMMENTS_DIR, { recursive: true }); } catch (_e)
 
 // ─── config + registry ──────────────────────────────────────────────────────
 
-const config = JSON.parse(fs.readFileSync(USERS_JSON, 'utf8'));
+function loadRegistry() {
+  try {
+    return JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8'));
+  } catch (e) {
+    console.error(`webhook common: unable to load registry ${REGISTRY_PATH}: ${e.message}`);
+    return { agents: [] };
+  }
+}
+
+const registry = loadRegistry();
+const registryAgents = registry.agents || [];
 
 function loadRegistryByUser() {
   try {
-    const registry = JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8'));
-    return Object.fromEntries((registry.agents || []).map(a => [a.user, a]));
+    return Object.fromEntries(registryAgents.filter(a => a.user).map(a => [a.user, a]));
   } catch (_e) {
     return {};
   }
@@ -59,18 +67,84 @@ const CONTROL_ALLOWED_USERS = new Set(
     .map(a => a.user)
 );
 
+function hasIntegration(agent, integration) {
+  return Boolean((agent.integrations || {})[integration]);
+}
+
+function isRoutableAgent(agent, integration) {
+  return Boolean(
+    agent &&
+    agent.user &&
+    agent.enabled !== false &&
+    agent.role === 'coding' &&
+    hasIntegration(agent, integration)
+  );
+}
+
+function routeConfigForAgent(agent) {
+  const username = agent.user;
+  const home = agent.home || `/home/${username}`;
+  const jiraDisplayName = agent.jira_display_name || agent.jiraDisplayName || agent.name || username;
+  const jiraAccountId = agent.jira_account_id || agent.jiraAccountId || null;
+  return {
+    username,
+    home,
+    tasksFile: path.join(home, 'tasks', 'current.md'),
+    logFile: path.join(home, 'tasks', 'log.md'),
+    jiraTokenFile: path.join(home, '.ssh', 'jiraToken.txt'),
+    bitbucketTokenFile: path.join(home, '.ssh', 'bitbucketToken.txt'),
+    bitbucketEmail: agent.bitbucket_email || agent.bitbucketEmail || agent.email || '',
+    jiraDisplayName,
+    jiraAccountId,
+    role: agent.role || 'developer',
+    capabilities: agent.capabilities || {},
+    integrations: agent.integrations || {},
+  };
+}
+
+const routedByIntegration = {
+  jira: registryAgents.filter(a => isRoutableAgent(a, 'jira')).map(routeConfigForAgent),
+  bitbucket: registryAgents.filter(a => isRoutableAgent(a, 'bitbucket')).map(routeConfigForAgent),
+};
+
+function routedUsersFor(integration) {
+  return routedByIntegration[integration] || [];
+}
+
+function routedUsernamesFor(integration) {
+  return routedUsersFor(integration).map(u => u.username);
+}
+
+const allUserEntries = new Map();
+for (const userCfg of [...routedUsersFor('jira'), ...routedUsersFor('bitbucket')]) {
+  allUserEntries.set(userCfg.username, userCfg);
+}
+const allUsers = Object.fromEntries(allUserEntries.entries());
+
+// Compatibility shape for older receiver code and health output callers.
+const config = {
+  users: allUsers,
+  jiraHost: registry.jiraHost || registry.jira_host || '',
+  bitbucketWorkspace: registry.bitbucketWorkspace || registry.bitbucket_workspace || '',
+  bitbucketRepo: registry.bitbucketRepo || registry.bitbucket_repo || '',
+};
+
 const jiraNameToUser = {};
 const jiraAccountIdToUser = {};
-const allUsers = {};
-for (const [username, userCfg] of Object.entries(config.users)) {
-  userCfg.username = username;
-  const agent = registryByUser[username] || {};
-  userCfg.role = agent.role || userCfg.role || 'developer';
-  userCfg.capabilities = agent.capabilities || userCfg.capabilities || {};
-  userCfg.integrations = agent.integrations || userCfg.integrations || {};
-  allUsers[username] = userCfg;
-  jiraNameToUser[userCfg.jiraDisplayName] = userCfg;
+for (const userCfg of routedUsersFor('jira')) {
+  if (userCfg.jiraDisplayName) jiraNameToUser[userCfg.jiraDisplayName] = userCfg;
   if (userCfg.jiraAccountId) jiraAccountIdToUser[userCfg.jiraAccountId] = userCfg;
+}
+
+const bitbucketIdentityToUser = {};
+function addBitbucketIdentity(value, userCfg) {
+  const key = String(value || '').trim().toLowerCase();
+  if (key && !bitbucketIdentityToUser[key]) bitbucketIdentityToUser[key] = userCfg;
+}
+for (const userCfg of routedUsersFor('bitbucket')) {
+  addBitbucketIdentity(userCfg.username, userCfg);
+  addBitbucketIdentity(userCfg.jiraDisplayName, userCfg);
+  addBitbucketIdentity(userCfg.bitbucketEmail, userCfg);
 }
 
 // ─── logging ────────────────────────────────────────────────────────────────
@@ -268,7 +342,7 @@ function resolveBitbucketUsers(event) {
   const seen = new Set();
   const addByName = (name) => {
     if (!name) return;
-    const userCfg = jiraNameToUser[name];
+    const userCfg = bitbucketIdentityToUser[String(name).trim().toLowerCase()];
     if (!userCfg || seen.has(userCfg.username)) return;
     seen.add(userCfg.username);
     matches.push(userCfg);
@@ -508,13 +582,19 @@ const KNOWN_RECEIVERS = {
 };
 
 // Resolve the running user's integrations from the registry and check
-// whether the named receiver is enabled. Receivers gated on integrations
-// the monitor agent has turned off exit cleanly at startup.
+// whether the named receiver is enabled. The monitor agent must have the
+// receiver integration enabled, and at least one coding agent must be
+// routable for that integration.
 function isReceiverEnabled(name) {
   const spec = KNOWN_RECEIVERS[name];
   if (!spec) return false;
   const me = registryByUser[require('os').userInfo().username] || {};
-  return Boolean((me.integrations || {})[spec.integration]);
+  const integrations = me.integrations || {};
+  return Boolean(
+    integrations.monitor &&
+    integrations[spec.integration] &&
+    routedUsersFor(spec.integration).length > 0
+  );
 }
 
 // ─── exports ────────────────────────────────────────────────────────────────
@@ -522,6 +602,7 @@ function isReceiverEnabled(name) {
 module.exports = {
   http, sharedLog, userLog, verifySignature,
   config, allUsers, jiraNameToUser, jiraAccountIdToUser,
+  routedUsersFor, routedUsernamesFor,
   resolveJiraUsers, resolveBitbucketUsers, resolveJiraMentionedAgents,
   recordPendingMention, recordPendingAssigneeComment, recordPendingEpicComment, queueJiraTask, queueBitbucketTask,
   wakeAgent, notifyDashboard, adfToText,

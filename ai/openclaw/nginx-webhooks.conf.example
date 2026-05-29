@@ -1,3 +1,10 @@
+# upstream block for dynamic health check failover.
+# Put this outside your server { ... } block in the vhost configuration.
+upstream webhook_health_backend {
+    server 127.0.0.1:3014 max_fails=1 fail_timeout=5s; # Jira receiver
+    server 127.0.0.1:3015 backup;                     # Bitbucket receiver
+}
+
 # nginx webhook split — Atlassian Cloud → monitor agent receivers
 #
 # Drop these three `location` blocks inside the `server { … }` block of
@@ -39,6 +46,6 @@ location = /webhooks/bitbucket {
 # legacy /webhooks/health). The integrity check hits this URL to
 # verify the receiver pipeline is alive end-to-end.
 location = /webhooks/health {
-    proxy_pass http://127.0.0.1:3014/health;
+    proxy_pass http://webhook_health_backend/health;
     proxy_set_header Host $host;
 }

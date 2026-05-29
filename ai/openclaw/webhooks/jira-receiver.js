@@ -38,7 +38,7 @@ const server = c.http.createServer(async (req, res) => {
     res.end(JSON.stringify({
       status: 'ok',
       service: 'jira-receiver',
-      users: Object.keys(c.config.users),
+      users: c.routedUsernamesFor('jira'),
       timestamp: new Date().toISOString(),
     }));
     return;
@@ -120,5 +120,5 @@ const server = c.http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`jira-receiver listening on http://${HOST}:${PORT}`);
-  console.log(`Users: ${Object.keys(c.config.users).join(', ')}`);
+  console.log(`Users: ${c.routedUsernamesFor('jira').join(', ')}`);
 });

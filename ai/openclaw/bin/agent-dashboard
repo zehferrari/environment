@@ -66,7 +66,7 @@ function loadAgentDefaults() {
 // Mirror of Python derive_effective_agent in ai-monitor / openclaw-integrity-check.
 // Merge order: core → byRole[agent.role] → byIntegration[k] for every truthy
 // integration → per-agent overrides (services append-dedup; capabilities key-by-key).
-function deriveEffectiveAgent(agent, defaults) {
+function deriveEffectiveAgent(agent, defaults, allAgents = []) {
   const eff = { ...agent };
   const core = defaults.core || {};
   let services = [...(core.services || [])];
@@ -109,6 +109,15 @@ function deriveEffectiveAgent(agent, defaults) {
     }
   } catch (_e) { /* ignore */ }
 
+  const activeIntegrations = {};
+  for (const a of allAgents) {
+    if (a.enabled !== false && a.role === 'coding') {
+      for (const [k, on] of Object.entries(a.integrations || {})) {
+        if (on) activeIntegrations[k] = true;
+      }
+    }
+  }
+
   // Receiver-gating: openclaw-<X>-receiver.service is gated at script
   // startup by integrations.<X> (see webhooks/common.js KNOWN_RECEIVERS).
   // If the gate is off, the script exits 0 and the service stays
@@ -120,7 +129,10 @@ function deriveEffectiveAgent(agent, defaults) {
   services = services.filter(s => {
     const m = s.match(RECEIVER_RE);
     if (!m) return true;
-    return Boolean(integ[m[1]]);
+    const gate = m[1];
+    if (!integ.monitor || !integ[gate]) return false;
+    if (agent.role === 'monitor' && !activeIntegrations[gate]) return false;
+    return true;
   });
 
   eff.services = services;
@@ -133,7 +145,8 @@ function loadRegistry() {
   try {
     const raw = JSON.parse(fs.readFileSync(p, 'utf8'));
     const defaults = loadAgentDefaults();
-    raw.agents = (raw.agents || []).map(a => deriveEffectiveAgent(a, defaults));
+    const rawAgents = raw.agents || [];
+    raw.agents = rawAgents.map(a => deriveEffectiveAgent(a, defaults, rawAgents));
     registry = raw;
   } catch (e) {
     log('ERROR loading registry', p, String(e));

@@ -1,0 +1,158 @@
+// Agent description write-back for Tasks (HOMELAB-48).
+//
+// One-shot endpoint consumed by an agent that received a chat message
+// with allowDescriptionEdit=true. Auth model:
+//
+//   - Caller must provide the signed one-shot token generated for the
+//     addressed message.
+//   - The provided messageId must reference an AgentChatMessage where:
+//     * taskId == route :id
+//     * allowDescriptionEdit == true
+//     * editGrantUsedAt == null  (not yet used)
+//
+// On success: update Task.description, stamp the grant as used, write
+// ActivityLog. Re-using the same messageId returns 410.
+
+import { NextResponse, type NextRequest } from "next/server";
+import { verifyTaskDescriptionWriteToken } from "@/lib/agents/task-chat-token";
+import { db } from "@/lib/db";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function POST(
+  req: NextRequest,
+  ctx: { params: Promise<{ id: string }> },
+) {
+  const { id: taskId } = await ctx.params;
+
+  let payload: { messageId?: unknown; token?: unknown; description?: unknown };
+  try {
+    payload = (await req.json()) as typeof payload;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  const messageId =
+    typeof payload.messageId === "string" ? payload.messageId : "";
+  const token = typeof payload.token === "string" ? payload.token : "";
+  const description =
+    typeof payload.description === "string" ? payload.description : null;
+  if (!messageId || !token || description === null) {
+    return NextResponse.json(
+      { error: "messageId, token, and description (string) are required" },
+      { status: 400 },
+    );
+  }
+
+  const grant = await db.agentChatMessage.findUnique({
+    where: { id: messageId },
+    select: {
+      taskId: true,
+      agentSlug: true,
+      senderUserId: true,
+      allowDescriptionEdit: true,
+      editGrantUsedAt: true,
+    },
+  });
+  if (!grant) {
+    return NextResponse.json({ error: "Message not found" }, { status: 404 });
+  }
+  if (grant.taskId !== taskId) {
+    return NextResponse.json(
+      { error: "Message does not reference this task" },
+      { status: 400 },
+    );
+  }
+  if (!grant.allowDescriptionEdit) {
+    return NextResponse.json(
+      { error: "Message did not grant description edit" },
+      { status: 403 },
+    );
+  }
+  if (grant.editGrantUsedAt) {
+    return NextResponse.json(
+      { error: "Grant already used" },
+      { status: 410 },
+    );
+  }
+  const activeAgents = await db.agent.findMany({
+    where: { deactivatedAt: null, user: { is: { status: "active" } } },
+    select: {
+      slug: true,
+      user: { select: { id: true } },
+    },
+  });
+
+  let resolvedAgent = null;
+  if (grant.agentSlug === "room") {
+    for (const agent of activeAgents) {
+      if (verifyTaskDescriptionWriteToken(messageId, taskId, agent.slug, token)) {
+        resolvedAgent = agent;
+        break;
+      }
+    }
+  } else {
+    const matchingAgent = activeAgents.find((a) => a.slug === grant.agentSlug);
+    if (
+      matchingAgent &&
+      verifyTaskDescriptionWriteToken(messageId, taskId, grant.agentSlug, token)
+    ) {
+      resolvedAgent = matchingAgent;
+    }
+  }
+
+  if (!resolvedAgent || !resolvedAgent.user) {
+    return NextResponse.json(
+      { error: "Invalid description token or agent not active" },
+      { status: 403 },
+    );
+  }
+
+  const task = await db.task.findUnique({
+    where: { id: taskId },
+    select: { id: true, projectId: true, deletedAt: true },
+  });
+  if (!task || task.deletedAt) {
+    return NextResponse.json({ error: "Task not found" }, { status: 404 });
+  }
+
+  const newDescription = description.trim();
+
+  // Persist the draft against the human who triggered the grant. The page
+  // they had open will pick it up via the next read (or via the heartbeat
+  // path the description-field component drives). If that human closed the
+  // page before this POST landed, the reaper purges the draft inside a
+  // minute — no other viewer ever sees it.
+  const { saveDescriptionDraft } = await import("@/lib/description-drafts");
+  await saveDescriptionDraft({
+    scope: "task",
+    targetId: taskId,
+    requesterUserId: grant.senderUserId,
+    agentSlug: resolvedAgent.slug,
+    body: newDescription,
+  });
+
+  await db.$transaction([
+    db.agentChatMessage.update({
+      where: { id: messageId },
+      data: { editGrantUsedAt: new Date() },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: task.projectId,
+        taskId,
+        userId: resolvedAgent.user.id,
+        kind: "task.description.agent_write",
+        payload: JSON.stringify({
+          messageId,
+          agentSlug: resolvedAgent.slug,
+          requesterUserId: grant.senderUserId,
+          length: newDescription.length,
+          draft: true,
+        }),
+      },
+    }),
+  ]);
+
+  return NextResponse.json({ ok: true });
+}

@@ -1,0 +1,455 @@
+// Human-readable formatter for ActivityLog rows (HOMELAB-44 Stage 2).
+// Pure function: takes a stored row and returns a short label suitable
+// for rendering in the project board feed. Unknown kinds fall through
+// to a generic "<actor> · <kind>" label so new event types remain
+// visible before they get a dedicated formatter.
+
+export type ActivityKind =
+  | "task.move"
+  | "task.ack.auto"
+  | "task.comment"
+  | "task.comment.silent"
+  | "task.comment.delete"
+  | "task.comment.restore"
+  | "epic.comment.delete"
+  | "epic.comment.restore"
+  | "task.assign"
+  | "task.acting_manager"
+  | "task.create"
+  | "task.update"
+  | "task.epic"
+  | "task.attachment.add"
+  | "task.attachment.delete"
+  | "epic.create"
+  | "epic.update"
+  | "epic.assign"
+  | "epic.acting_manager"
+  | "epic.status"
+  | "epic.attachment.add"
+  | "epic.attachment.delete"
+  | "task.delete"
+  | "task.restore"
+  | "epic.delete"
+  | "epic.restore"
+  | "bin.purge"
+  | "task.chat.send"
+  | "task.chat.silent"
+  | "epic.chat.send"
+  | "epic.chat.silent"
+  | "task.chat.archive"
+  | "epic.chat.archive"
+  | "task.chat.delete_to_bin"
+  | "epic.chat.delete_to_bin"
+  | "agent.direct_chat.send"
+  | "agent.direct_chat.wake"
+  | "agent.direct_chat.wake_failed"
+  | "agent.direct_chat.reply"
+  | "agent.direct_chat.silent"
+  | "agent.direct_chat.archive"
+  | "agent.direct_chat.delete_to_bin"
+  | "agent.direct_chat.archive_delete"
+  | "agent.service.toggle"
+  | "agent.service.toggle_failed"
+  | "agent.service.restart"
+  | "agent.service.restart_failed"
+  | "agent.registry.toggle"
+  | "agent.registry.toggle_failed"
+  | "agent.integration.credentials"
+  | "agent.integration.credentials_failed"
+  | "agent.model.update"
+  | "agent.profile.update"
+  | "agent.restart.requested"
+  | "agent.restart.failed"
+  | "task.chat.delete"
+  | "epic.chat.delete"
+  | "agent.direct_chat.delete"
+  | "task.chat.restore"
+  | "epic.chat.restore"
+  | "agent.direct_chat.restore"
+  | "task.description.agent_write"
+  | "epic.description.agent_write"
+  | "workitem.proposal.propose"
+  | "workitem.proposal.apply"
+  | "workitem.proposal.reject"
+  | "system.settings"
+  | "project.create"
+  | "agent.sync"
+  | string;
+
+export interface ActivityRow {
+  kind: ActivityKind;
+  payload: string | null;
+  actorName: string | null;
+  taskTitle: string | null;
+  targetAgent?: string | null;
+  targetFile?: string | null;
+}
+
+interface MovePayload {
+  from?: string;
+  to?: string;
+}
+
+interface CommentPayload {
+  mentions?: string[];
+}
+
+// task.assign payload uses usernames (never raw user IDs) so the feed
+// renders a stable label even if the assignee row is later deleted.
+// from/to are null for unassigned / unset.
+interface AssignPayload {
+  from?: string | null;
+  to?: string | null;
+}
+
+// task.acting_manager payload follows the same shape and rationale as
+// AssignPayload — usernames, not IDs, so the feed survives deletion.
+interface ActingManagerPayload {
+  from?: string | null;
+  to?: string | null;
+}
+
+// task.create payload: title is the new task's title at creation time
+// (so the feed reads correctly even if the row is later renamed or
+// deleted, in which case row.taskTitle would go null). parentTaskId +
+// parentTitle are set only when the row represents sub-task creation;
+// top-level creates may omit them so a later slice can backfill
+// top-level createTask without changing this contract.
+interface TaskCreatePayload {
+  title?: string;
+  parentTaskId?: string | null;
+  parentTitle?: string | null;
+}
+
+function parsePayload<T>(payload: string | null): T | null {
+  if (!payload) return null;
+  try {
+    return JSON.parse(payload) as T;
+  } catch {
+    return null;
+  }
+}
+
+function actor(name: string | null): string {
+  return name ?? "Someone";
+}
+
+function task(title: string | null): string {
+  return title ?? "a task";
+}
+
+function targetAgent(row: ActivityRow): string {
+  return row.targetAgent ? `@${row.targetAgent}` : "an agent";
+}
+
+// Returns a single-line human label describing the activity. Does not
+// include timestamps — callers render those separately.
+export function describeActivity(row: ActivityRow): string {
+  switch (row.kind) {
+    case "task.move": {
+      const p = parsePayload<MovePayload>(row.payload);
+      if (p?.from && p?.to) {
+        return `${actor(row.actorName)} moved ${task(row.taskTitle)} from ${p.from} to ${p.to}`;
+      }
+      return `${actor(row.actorName)} moved ${task(row.taskTitle)}`;
+    }
+    case "task.ack.auto": {
+      const p = parsePayload<MovePayload>(row.payload);
+      if (p?.from && p?.to) {
+        return `${actor(row.actorName)} acknowledged ${task(row.taskTitle)} — auto ${p.from} → ${p.to}`;
+      }
+      return `${actor(row.actorName)} acknowledged ${task(row.taskTitle)}`;
+    }
+    case "task.comment": {
+      const p = parsePayload<CommentPayload>(row.payload);
+      if (p?.mentions && p.mentions.length > 0) {
+        const list = p.mentions.map((m) => `@${m}`).join(", ");
+        return `${actor(row.actorName)} commented on ${task(row.taskTitle)} (mentioned ${list})`;
+      }
+      return `${actor(row.actorName)} commented on ${task(row.taskTitle)}`;
+    }
+    case "task.comment.silent":
+      return `${targetAgent(row)} had no task-comment update to add`;
+    case "task.comment.delete":
+      return `${actor(row.actorName)} deleted a comment on ${task(row.taskTitle)}`;
+    case "task.comment.restore":
+      return `${actor(row.actorName)} restored a comment on ${task(row.taskTitle)}`;
+    case "epic.comment.delete":
+      return `${actor(row.actorName)} deleted a comment on an epic`;
+    case "epic.comment.restore":
+      return `${actor(row.actorName)} restored a comment on an epic`;
+    case "task.chat.restore":
+      return `${actor(row.actorName)} restored a discussion message on ${task(row.taskTitle)}`;
+    case "epic.chat.restore":
+      return `${actor(row.actorName)} restored a discussion message on an epic`;
+    case "agent.direct_chat.restore":
+      return `${actor(row.actorName)} restored a direct-chat message`;
+    case "task.assign": {
+      const p = parsePayload<AssignPayload>(row.payload);
+      if (p) {
+        if (!p.from && p.to) {
+          return `${actor(row.actorName)} assigned ${task(row.taskTitle)} to @${p.to}`;
+        }
+        if (p.from && !p.to) {
+          return `${actor(row.actorName)} unassigned ${task(row.taskTitle)} (was @${p.from})`;
+        }
+        if (p.from && p.to) {
+          return `${actor(row.actorName)} reassigned ${task(row.taskTitle)} from @${p.from} to @${p.to}`;
+        }
+      }
+      return `${actor(row.actorName)} updated assignment on ${task(row.taskTitle)}`;
+    }
+    case "task.acting_manager": {
+      const p = parsePayload<ActingManagerPayload>(row.payload);
+      if (p) {
+        if (!p.from && p.to) {
+          return `${actor(row.actorName)} set @${p.to} as acting manager on ${task(row.taskTitle)}`;
+        }
+        if (p.from && !p.to) {
+          return `${actor(row.actorName)} cleared acting manager on ${task(row.taskTitle)} (was @${p.from})`;
+        }
+        if (p.from && p.to) {
+          return `${actor(row.actorName)} changed acting manager on ${task(row.taskTitle)} from @${p.from} to @${p.to}`;
+        }
+      }
+      return `${actor(row.actorName)} updated acting manager on ${task(row.taskTitle)}`;
+    }
+    case "task.create": {
+      const p = parsePayload<TaskCreatePayload>(row.payload);
+      // Prefer the payload's frozen title so the label still reads
+      // correctly if the task row was later renamed; fall back to the
+      // current task title from the join when payload is missing.
+      const title = p?.title ?? row.taskTitle;
+      if (p?.parentTitle) {
+        return `${actor(row.actorName)} created sub-task ${task(title)} under ${p.parentTitle}`;
+      }
+      return `${actor(row.actorName)} created task ${task(title)}`;
+    }
+    case "task.update":
+      return `${actor(row.actorName)} updated ${task(row.taskTitle)}`;
+    case "task.epic": {
+      const p = parsePayload<{ from?: string | null; to?: string | null }>(row.payload);
+      if (p) {
+        if (!p.from && p.to) return `${actor(row.actorName)} linked ${task(row.taskTitle)} to epic ${p.to}`;
+        if (p.from && !p.to) return `${actor(row.actorName)} removed ${task(row.taskTitle)} from epic ${p.from}`;
+        if (p.from && p.to) return `${actor(row.actorName)} moved ${task(row.taskTitle)} from epic ${p.from} to ${p.to}`;
+      }
+      return `${actor(row.actorName)} changed epic on ${task(row.taskTitle)}`;
+    }
+    case "task.attachment.add": {
+      const p = parsePayload<{ filename?: string }>(row.payload);
+      return `${actor(row.actorName)} attached ${p?.filename ?? "a file"} to ${task(row.taskTitle)}`;
+    }
+    case "task.attachment.delete": {
+      const p = parsePayload<{ filename?: string }>(row.payload);
+      return `${actor(row.actorName)} removed ${p?.filename ?? "an attachment"} from ${task(row.taskTitle)}`;
+    }
+    case "epic.create": {
+      const p = parsePayload<{ title?: string }>(row.payload);
+      return `${actor(row.actorName)} created epic ${p?.title ?? ""}`.trim();
+    }
+    case "epic.update":
+      return `${actor(row.actorName)} updated an epic`;
+    case "epic.assign": {
+      const p = parsePayload<{ from?: string | null; to?: string | null }>(row.payload);
+      if (p?.to && !p?.from) return `${actor(row.actorName)} assigned an epic to @${p.to}`;
+      if (p?.from && !p?.to) return `${actor(row.actorName)} unassigned an epic (was @${p.from})`;
+      if (p?.from && p?.to) return `${actor(row.actorName)} reassigned an epic from @${p.from} to @${p.to}`;
+      return `${actor(row.actorName)} updated epic assignment`;
+    }
+    case "epic.acting_manager": {
+      const p = parsePayload<{ from?: string | null; to?: string | null }>(row.payload);
+      if (p?.to && !p?.from) return `${actor(row.actorName)} set @${p.to} as epic acting manager`;
+      if (p?.from && !p?.to) return `${actor(row.actorName)} cleared epic acting manager (was @${p.from})`;
+      if (p?.from && p?.to) return `${actor(row.actorName)} changed epic acting manager from @${p.from} to @${p.to}`;
+      return `${actor(row.actorName)} updated epic acting manager`;
+    }
+    case "epic.status": {
+      const p = parsePayload<{ from?: string; to?: string }>(row.payload);
+      if (p?.from && p?.to) return `${actor(row.actorName)} moved an epic from ${p.from} to ${p.to}`;
+      return `${actor(row.actorName)} updated epic status`;
+    }
+    case "epic.attachment.add": {
+      const p = parsePayload<{ filename?: string }>(row.payload);
+      return `${actor(row.actorName)} attached ${p?.filename ?? "a file"} to an epic`;
+    }
+    case "epic.attachment.delete": {
+      const p = parsePayload<{ filename?: string }>(row.payload);
+      return `${actor(row.actorName)} removed ${p?.filename ?? "an attachment"} from an epic`;
+    }
+    case "task.delete": {
+      const p = parsePayload<{ cascadedSubtaskIds?: string[] }>(row.payload);
+      const n = p?.cascadedSubtaskIds?.length ?? 0;
+      return n > 0
+        ? `${actor(row.actorName)} moved ${task(row.taskTitle)} to the bin (${n} sub-task${n === 1 ? "" : "s"} too)`
+        : `${actor(row.actorName)} moved ${task(row.taskTitle)} to the bin`;
+    }
+    case "task.restore": {
+      const p = parsePayload<{ restoredChildren?: string[]; withChildren?: boolean }>(row.payload);
+      const n = p?.restoredChildren?.length ?? 0;
+      return p?.withChildren && n > 0
+        ? `${actor(row.actorName)} restored ${task(row.taskTitle)} + ${n} sub-task${n === 1 ? "" : "s"}`
+        : `${actor(row.actorName)} restored ${task(row.taskTitle)}`;
+    }
+    case "epic.delete": {
+      const p = parsePayload<{ cascadedTaskIds?: string[] }>(row.payload);
+      const n = p?.cascadedTaskIds?.length ?? 0;
+      return n > 0
+        ? `${actor(row.actorName)} moved an epic to the bin (${n} task${n === 1 ? "" : "s"} too)`
+        : `${actor(row.actorName)} moved an epic to the bin`;
+    }
+    case "epic.restore": {
+      const p = parsePayload<{ restoredTasks?: string[]; withChildren?: boolean }>(row.payload);
+      const n = p?.restoredTasks?.length ?? 0;
+      return p?.withChildren && n > 0
+        ? `${actor(row.actorName)} restored an epic + ${n} task${n === 1 ? "" : "s"}`
+        : `${actor(row.actorName)} restored an epic`;
+    }
+    case "bin.purge": {
+      const p = parsePayload<{
+        purgedEpics?: number;
+        purgedTasks?: number;
+        removedBlobs?: number;
+      }>(row.payload);
+      const e = p?.purgedEpics ?? 0;
+      const t = p?.purgedTasks ?? 0;
+      const b = p?.removedBlobs ?? 0;
+      return `Bin purge — ${e} epic${e === 1 ? "" : "s"}, ${t} task${t === 1 ? "" : "s"}, ${b} blob${b === 1 ? "" : "s"}`;
+    }
+    case "task.chat.send":
+    case "epic.chat.send": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      const target = row.kind === "task.chat.send" ? task(row.taskTitle) : "an epic";
+      return `${actor(row.actorName)} messaged @${p?.agentSlug ?? "?"} on ${target}`;
+    }
+    case "task.chat.silent":
+      return `${targetAgent(row)} had no task-chat update to add`;
+    case "epic.chat.silent":
+      return `${targetAgent(row)} had no epic-chat update to add`;
+    case "agent.direct_chat.send": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      return `${actor(row.actorName)} messaged @${p?.agentSlug ?? "?"}`;
+    }
+    case "agent.direct_chat.wake": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      return `PM woke @${p?.agentSlug ?? "?"} for direct chat`;
+    }
+    case "agent.direct_chat.wake_failed": {
+      const p = parsePayload<{ agentSlug?: string; error?: string }>(row.payload);
+      return `PM could not wake @${p?.agentSlug ?? "?"}: ${p?.error ?? "unknown error"}`;
+    }
+    case "agent.direct_chat.reply": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      return `@${p?.agentSlug ?? "agent"} replied in direct chat`;
+    }
+    case "agent.direct_chat.silent":
+      return `${targetAgent(row)} had no direct-chat update to add`;
+    case "agent.direct_chat.archive": {
+      const p = parsePayload<{ agentSlug?: string; messageCount?: number }>(row.payload);
+      const count = p?.messageCount ?? 0;
+      return `${actor(row.actorName)} archived direct chat with @${p?.agentSlug ?? "?"} (${count} message${count === 1 ? "" : "s"})`;
+    }
+    case "agent.direct_chat.delete_to_bin": {
+      const p = parsePayload<{ agentSlug?: string; messageCount?: number }>(row.payload);
+      const count = p?.messageCount ?? 0;
+      return `${actor(row.actorName)} moved direct chat with @${p?.agentSlug ?? "?"} to the bin (${count} message${count === 1 ? "" : "s"})`;
+    }
+    case "agent.direct_chat.archive_delete": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      return `${actor(row.actorName)} removed an archived direct chat with @${p?.agentSlug ?? "?"}`;
+    }
+    case "agent.service.toggle":
+    case "agent.service.toggle_failed": {
+      const p = parsePayload<{ service?: string; enabled?: boolean; error?: string | null }>(row.payload);
+      const verb = p?.enabled ? "started" : "stopped";
+      const base = `${actor(row.actorName)} ${verb} ${p?.service ?? "a service"} for ${targetAgent(row)}`;
+      return row.kind.endsWith("_failed") ? `${base} failed${p?.error ? `: ${p.error}` : ""}` : base;
+    }
+    case "agent.service.restart":
+    case "agent.service.restart_failed": {
+      const p = parsePayload<{ service?: string; error?: string | null }>(row.payload);
+      const base = `${actor(row.actorName)} restarted ${p?.service ?? "a service"} for ${targetAgent(row)}`;
+      return row.kind.endsWith("_failed") ? `${base} failed${p?.error ? `: ${p.error}` : ""}` : base;
+    }
+    case "agent.registry.toggle":
+    case "agent.registry.toggle_failed": {
+      const p = parsePayload<{ kind?: string; key?: string; value?: boolean; error?: string | null }>(row.payload);
+      const verb = p?.value ? "enabled" : "disabled";
+      const base = `${actor(row.actorName)} ${verb} ${p?.kind ?? "setting"}.${p?.key ?? "unknown"} for ${targetAgent(row)}`;
+      return row.kind.endsWith("_failed") ? `${base} failed${p?.error ? `: ${p.error}` : ""}` : base;
+    }
+    case "agent.integration.credentials":
+    case "agent.integration.credentials_failed": {
+      const p = parsePayload<{ integration?: string; fields?: string[]; error?: string | null }>(row.payload);
+      const fields = p?.fields?.length ? ` (${p.fields.join(", ")})` : "";
+      const base = `${actor(row.actorName)} updated ${p?.integration ?? "integration"} credentials for ${targetAgent(row)}${fields}`;
+      return row.kind.endsWith("_failed") ? `${base} failed${p?.error ? `: ${p.error}` : ""}` : base;
+    }
+    case "agent.model.update": {
+      const p = parsePayload<{ before?: { active?: string | null }; after?: { active?: string | null } }>(row.payload);
+      const from = p?.before?.active ?? "unset";
+      const to = p?.after?.active ?? "unset";
+      return `${actor(row.actorName)} changed ${targetAgent(row)} model from ${from} to ${to}`;
+    }
+    case "agent.profile.update":
+      return `${actor(row.actorName)} updated ${targetAgent(row)} profile${row.targetFile ? ` (${row.targetFile})` : ""}`;
+    case "agent.restart.requested":
+    case "agent.restart.failed": {
+      const p = parsePayload<{ reason?: string; services?: Array<{ service?: string; ok?: boolean }> }>(row.payload);
+      const serviceCount = p?.services?.length ?? 0;
+      const base = `PM requested restart for ${targetAgent(row)}${p?.reason ? ` (${p.reason})` : ""}`;
+      const suffix = serviceCount ? ` across ${serviceCount} service${serviceCount === 1 ? "" : "s"}` : "";
+      return row.kind.endsWith(".failed") ? `${base} failed${suffix}` : `${base}${suffix}`;
+    }
+    case "task.chat.archive":
+    case "epic.chat.archive": {
+      const p = parsePayload<{ messageCount?: number }>(row.payload);
+      const count = p?.messageCount ?? 0;
+      const target = row.kind === "task.chat.archive" ? task(row.taskTitle) : "an epic";
+      return `${actor(row.actorName)} archived the chat room on ${target} (${count} message${count === 1 ? "" : "s"})`;
+    }
+    case "task.chat.delete_to_bin":
+    case "epic.chat.delete_to_bin": {
+      const p = parsePayload<{ messageCount?: number }>(row.payload);
+      const count = p?.messageCount ?? 0;
+      const target = row.kind === "task.chat.delete_to_bin" ? task(row.taskTitle) : "an epic";
+      return `${actor(row.actorName)} moved the chat room on ${target} to the bin (${count} message${count === 1 ? "" : "s"})`;
+    }
+    case "task.chat.delete":
+    case "epic.chat.delete": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      const target = row.kind === "task.chat.delete" ? task(row.taskTitle) : "an epic";
+      return `${actor(row.actorName)} deleted a chat message to @${p?.agentSlug ?? "?"} on ${target}`;
+    }
+    case "agent.direct_chat.delete": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      return `${actor(row.actorName)} deleted a chat message to @${p?.agentSlug ?? "?"}`;
+    }
+    case "task.description.agent_write": {
+      const p = parsePayload<{ agentSlug?: string; length?: number }>(row.payload);
+      return `@${p?.agentSlug ?? "agent"} wrote the description for ${task(row.taskTitle)} (${p?.length ?? 0} chars)`;
+    }
+    case "epic.description.agent_write": {
+      const p = parsePayload<{ agentSlug?: string; length?: number }>(row.payload);
+      return `@${p?.agentSlug ?? "agent"} wrote an epic description (${p?.length ?? 0} chars)`;
+    }
+    case "workitem.proposal.propose": {
+      const p = parsePayload<{ agentSlug?: string; opCount?: number }>(row.payload);
+      const n = p?.opCount ?? 0;
+      return `@${p?.agentSlug ?? "agent"} proposed ${n} work-item change${n === 1 ? "" : "s"} for review`;
+    }
+    case "workitem.proposal.apply": {
+      const p = parsePayload<{ agentSlug?: string; opCount?: number }>(row.payload);
+      const n = p?.opCount ?? 0;
+      return `${actor(row.actorName)} applied ${n} proposed change${n === 1 ? "" : "s"} from @${p?.agentSlug ?? "agent"}`;
+    }
+    case "workitem.proposal.reject": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      return `${actor(row.actorName)} rejected a work-item proposal from @${p?.agentSlug ?? "agent"}`;
+    }
+    case "system.settings":
+      return `${actor(row.actorName)} updated system settings`;
+    default:
+      return `${actor(row.actorName)} · ${row.kind}`;
+  }
+}

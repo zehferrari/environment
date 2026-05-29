@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""pm-verify-runner — monitor-driven branch-verify runner.
+
+Runs as the monitor agent (e.g. karen) as a systemd service. Polls
+PM_BRANCH_VERIFY_DIR (default /var/lib/pm/branch-verify) for *.json job files
+dropped by the PM workflow endpoint when an assignee moves a code-touching
+task to Review (with repoTouched=true). For each job, finds the active PM web
+worktree by reading pm.service's WorkingDirectory and runs the TS verifier
+script (scripts/pm-verify-branch-pushed.ts) inside it via `pnpm exec tsx`.
+
+The TS script:
+  * `git fetch origin <branchName>` on the local clone at the project's
+    repositoryPath,
+  * confirms HEAD + a recent commit starting with COMMIT_PREFIX,
+  * posts a Karen-authored task Comment plus a pm.repo.verify.{ok,fail}
+    ActivityLog row,
+  * deletes the job file on success.
+
+No sudo / no privileged step — verifier is read-only on the filesystem and
+writes only via the SQLite DB (DATABASE_URL from /etc/default/pm). Decoupled
+from pm.service so a Review-time switch can't interrupt verification.
+
+Config via env (set in the systemd unit):
+  PM_BRANCH_VERIFY_DIR, PM_VERIFY_POLL_SECONDS
+"""
+import datetime
+import os
+import subprocess
+import time
+
+VERIFY_DIR = os.environ.get("PM_BRANCH_VERIFY_DIR", "/var/lib/pm/branch-verify")
+POLL = float(os.environ.get("PM_VERIFY_POLL_SECONDS", "2"))
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def active_app_dir():
+    """ai/web dir of the worktree pm.service is currently serving."""
+    try:
+        wd = subprocess.run(
+            ["systemctl", "show", "-p", "WorkingDirectory", "--value", "pm.service"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        suffix = "/.next/standalone"
+        if wd.endswith(suffix):
+            return wd[: -len(suffix)]
+    except Exception:
+        pass
+    return None
+
+
+def process_one(jobfile, app_dir):
+    print(f"[{now()}] processing {jobfile}", flush=True)
+    try:
+        proc = subprocess.run(
+            ["pnpm", "exec", "tsx", "scripts/pm-verify-branch-pushed.ts", jobfile],
+            cwd=app_dir,
+            capture_output=True, text=True,
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"[{now()}] verifier timeout on {jobfile}", flush=True)
+        try:
+            os.rename(jobfile, jobfile + ".failed")
+        except OSError:
+            pass
+        return
+    if proc.stdout:
+        print(proc.stdout, flush=True)
+    if proc.returncode != 0:
+        print(f"[{now()}] verifier exited {proc.returncode}: {proc.stderr}", flush=True)
+        # Move to .failed so we don't spin on the same job. Operator can
+        # rename back to .json to retry.
+        try:
+            if os.path.exists(jobfile):
+                os.rename(jobfile, jobfile + ".failed")
+        except OSError:
+            pass
+
+
+def main():
+    print(f"pm-verify-runner watching {VERIFY_DIR}", flush=True)
+    while True:
+        app = active_app_dir()
+        if app and os.path.isdir(VERIFY_DIR):
+            try:
+                files = sorted(
+                    f for f in os.listdir(VERIFY_DIR)
+                    if f.endswith(".json") and not f.startswith(".")
+                )
+            except OSError:
+                files = []
+            for f in files:
+                process_one(os.path.join(VERIFY_DIR, f), app)
+        time.sleep(POLL)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass

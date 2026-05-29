@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+#
+# code-tree-perms — make a shared code tree collaborative for an agent group,
+# and lock named runtime secrets to a monitor agent. Reusable across hosts,
+# idempotent, and *additive* (it only grants group access — it never revokes
+# `other`, so it can't break a co-hosted app's runtime user).
+#
+# What it enforces:
+#   - the whole tree is group-owned by --group, group-rwX, with setgid on dirs
+#     and default ACLs, so files created later by ANY group member stay
+#     group-writable (this is what lets any code-agent build, not just the
+#     original owner);
+#   - any leftover `user:<monitor>` named-ACL cap is removed (a named-user ACL
+#     overrides the group, which is how "only zeh could build" happened);
+#   - each --secret file is chowned to the monitor and chmod 600;
+#   - each --secret-dir is chowned -R to the monitor and chmod 700 (so the
+#     SQLite DB and its wal/shm stay monitor-only, durably).
+#
+# Usage (run as root):
+#   code-tree-perms [--tree /srv/Code] [--group code-agents] [--monitor karen] \
+#                   [--secret <path>]... [--secret-dir <path>]... [--dry-run]
+#
+# Installed to /usr/local/sbin/code-tree-perms by ai/openclaw/install.sh.
+# See ai/openclaw/CODE_REPOS.md.
+set -euo pipefail
+
+TREE="/srv/Code"
+GROUP="code-agents"
+MONITOR="karen"
+DRY=0
+SECRETS=()
+SECRET_DIRS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tree)       TREE="$2"; shift 2;;
+    --group)      GROUP="$2"; shift 2;;
+    --monitor)    MONITOR="$2"; shift 2;;
+    --secret)     SECRETS+=("$2"); shift 2;;
+    --secret-dir) SECRET_DIRS+=("$2"); shift 2;;
+    --dry-run)    DRY=1; shift;;
+    -h|--help)    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+    *) echo "code-tree-perms: unknown arg: $1" >&2; exit 2;;
+  esac
+done
+
+die(){ printf 'code-tree-perms: %s\n' "$*" >&2; exit 1; }
+run(){ if [[ "$DRY" == 1 ]]; then printf '  [dry-run] %s\n' "$*"; else "$@"; fi; }
+say(){ printf '\n==> %s\n' "$*"; }
+
+[[ $EUID -eq 0 ]]   || die "must run as root"
+[[ -d "$TREE" ]]    || die "tree not found: $TREE"
+getent group "$GROUP" >/dev/null || die "group not found: $GROUP"
+id "$MONITOR" >/dev/null 2>&1     || die "monitor user not found: $MONITOR"
+
+say "Collaborative group perms on $TREE (group=$GROUP, additive)"
+run chgrp -Rh "$GROUP" "$TREE"
+# find -type skips symlinks, so we never chmod through a link out of the tree.
+if [[ "$DRY" == 1 ]]; then
+  echo "  [dry-run] find $TREE -type d -exec chmod g+rwxs {} +"
+  echo "  [dry-run] find $TREE -type f -exec chmod g+rwX  {} +"
+  echo "  [dry-run] setfacl -R    -m g:$GROUP:rwX $TREE"
+  echo "  [dry-run] setfacl -R -d -m g:$GROUP:rwx $TREE"
+  echo "  [dry-run] setfacl -R -x u:$MONITOR $TREE"
+else
+  find "$TREE" -type d -exec chmod g+rwxs {} + 2>/dev/null || true
+  find "$TREE" -type f -exec chmod g+rwX  {} + 2>/dev/null || true
+  setfacl -R    -m "g:$GROUP:rwX" "$TREE"
+  setfacl -R -d -m "g:$GROUP:rwx" "$TREE"
+  # Drop any leftover monitor-specific ACL cap so the monitor builds via group.
+  setfacl -R -x "u:$MONITOR" "$TREE" 2>/dev/null || true
+fi
+
+if [[ ${#SECRETS[@]} -gt 0 || ${#SECRET_DIRS[@]} -gt 0 ]]; then
+  say "Lock runtime secrets to monitor ($MONITOR)"
+  for f in "${SECRETS[@]}"; do
+    [[ -f "$f" ]] || { echo "  skip (not a file): $f"; continue; }
+    run setfacl -b "$f"
+    run chown "$MONITOR:$MONITOR" "$f"
+    run chmod 600 "$f"
+    echo "  locked file: $f"
+  done
+  for d in "${SECRET_DIRS[@]}"; do
+    [[ -d "$d" ]] || { echo "  skip (not a dir): $d"; continue; }
+    run setfacl -bR "$d"
+    run setfacl -kR "$d"
+    run chown -R "$MONITOR:$MONITOR" "$d"
+    run chmod 700 "$d"
+    [[ "$DRY" == 1 ]] || find "$d" -type f -exec chmod 600 {} +
+    echo "  locked dir:  $d (monitor-only 0700)"
+  done
+fi
+
+say "Done."

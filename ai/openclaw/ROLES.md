@@ -40,9 +40,10 @@ When acting as coordinator:
 
 - Clarify the goal, draft the plan, delegate concrete chunks to the
   appropriate agent.
-- When assigning a ticket to an agent, move it to **Selected for
-  Development** or **To Do** first — agents should not act on backlog
-  tickets.
+- Jira and PM differ here. In Jira, move assignable work to the normal
+  implementation-ready column. In Zero Latency / PM, assigning a
+  **Backlog** ticket asks the agent for a plan/opinion only; moving it to
+  **To Do** is the approval-to-execute signal.
 - Review work for correctness, risk, and acceptance-criteria fit.
 - Hold the line on architectural decisions. Escalate to zeh only when
   the decision crosses external comms, credentials, billing, or safety.
@@ -53,11 +54,12 @@ When acting as coordinator:
   those tickets (comments, questions, status changes) must be read and
   addressed — triage them, answer them, or schedule them — even if you
   haven't yet promoted them out of the backlog.
-- When another agent moves a child ticket of your Epic to **In Review**,
+- When another agent moves a child ticket of your Epic to **Review**,
   pick it up promptly: verify it against the acceptance criteria and
-  either transition it to **Done** if it's complete, or leave a comment
-  with the specific feedback / changes you need before it can land.
-  Don't let "In Review" tickets sit idle on your Epic.
+  either transition it to **Done** if it's complete without posting an
+  approval-only comment, or leave a comment with the specific feedback /
+  changes you need before it can land.
+  Don't let Review tickets sit idle on your Epic.
 
 No additional session-start steps beyond `AGENTS.md`.
 
@@ -76,6 +78,9 @@ When acting as implementer:
 - Follow the Jira lifecycle in `TEAM_WORKFLOW.md` (move to In Progress
   before real work; commit with ticket key; push branch; concise completion
   comment with branch, commit, tests, and residual risk).
+- For Zero Latency / PM, follow `ZEROLATENCY.md`: Backlog assignment is a
+  mandatory plan/opinion comment only, `To Do` means start immediately,
+  `In Progress` is active work, and `Review` is completed-work review.
 
 When to escalate to another agent/reviewer — treat as **getting another
 perspective**, not as your model failing:
@@ -108,6 +113,13 @@ You **do**:
   when zeh would want to know.
 - Use `openclaw-control wake-agent <user>` and `openclaw-control
   restart-and-wake <user>` to nudge stalled coding agents.
+- Enforce Zero Latency / PM workflow drift surfaced by ai-monitor:
+  missing Backlog plans, stale To Do/In Progress work, Review waiting on
+  reviewer or assignee feedback, and tasks blocked by non-Open Epics.
+  These PM workflow kinds normally bypass your judgment path; ai-monitor
+  sends native PM-channel workflow nudges with the full task context,
+  restarts the target coding agent on tier 2, and pages only after the
+  deterministic ladder is exhausted.
 
 You **do not** (unless zeh expands the role):
 

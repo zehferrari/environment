@@ -23,7 +23,7 @@ def load_agent_defaults():
                 "byRole": {}, "byIntegration": {}}
 
 
-def derive_effective_agent(agent, defaults):
+def derive_effective_agent(agent, defaults, all_agents=None):
     """Merge defaults (core, byRole[role], byIntegration[k]) into agent.
     Per-agent services append (dedup); capabilities override key-by-key.
     Returns shallow copy with derived services/capabilities."""
@@ -86,10 +86,30 @@ def derive_effective_agent(agent, defaults):
     import re as _re_recv
     _integ = agent.get("integrations") or {}
     _recv_re = _re_recv.compile(r"^openclaw-([a-z0-9-]+)-receiver\.service$")
-    services = [
-        s for s in services
-        if not _recv_re.match(s) or _integ.get(_recv_re.match(s).group(1))
-    ]
+
+    # Check if there is any coding agent with this integration
+    has_active_integration = {}
+    if all_agents:
+        for a in all_agents:
+            if a.get("enabled", True) and a.get("role") == "coding":
+                a_integ = a.get("integrations") or {}
+                for k, v in a_integ.items():
+                    if v:
+                        has_active_integration[k] = True
+
+    services_filtered = []
+    for s in services:
+        m = _recv_re.match(s)
+        if m:
+            gate = m.group(1)
+            # If the agent itself doesn't have the monitor integration or the specific gate enabled, drop it.
+            # Additionally, if role == "monitor", only keep the receiver if at least one coding agent uses it.
+            if not _integ.get("monitor") or not _integ.get(gate):
+                continue
+            if agent.get("role") == "monitor" and not has_active_integration.get(gate):
+                continue
+        services_filtered.append(s)
+    services = services_filtered
 
     eff["services"] = services
     eff["capabilities"] = caps
@@ -151,9 +171,10 @@ def load_agent_registry():
         emit("FAIL", f"unable to parse {AGENT_REGISTRY_PATH} ({trim(str(exc))})")
         return None
     defaults = load_agent_defaults()
+    raw_agents = registry.get("agents") or []
     registry["agents"] = [
-        derive_effective_agent(a, defaults)
-        for a in (registry.get("agents") or [])
+        derive_effective_agent(a, defaults, raw_agents)
+        for a in raw_agents
     ]
     agents = [
         a for a in registry["agents"]
@@ -168,14 +189,15 @@ def load_agent_registry():
 
 def fallback_agent_registry(users_cfg):
     """Degraded-mode registry when /etc/openclaw/agents.json is unreadable.
-    Treats every user in /etc/openclaw/users.json as a generic coding
+    Treats every legacy webhook user config entry as a generic coding
     agent — neutral defaults, no host-specific identity baked in. The
     real registry should always be reachable in production; this just
     keeps the integrity check from crashing during transient outages."""
     defaults = load_agent_defaults()
     agents = []
+    raw_agents = []
     for user in sorted((users_cfg.get("users") or {}).keys()):
-        agents.append(derive_effective_agent({
+        raw_agents.append({
             "user": user,
             "enabled": True,
             "role": "coding",
@@ -187,7 +209,9 @@ def fallback_agent_registry(users_cfg):
                 "bitbucket": True,
                 "openaiAuth": True,
             },
-        }, defaults))
+        })
+    for a in raw_agents:
+        agents.append(derive_effective_agent(a, defaults, raw_agents))
     return {"version": 0, "agents": agents}
 
 
@@ -637,7 +661,46 @@ def find_monitor_user(agent_registry):
     return None, None, None
 
 
-def check_dev_shared_files(users_cfg, agent_registry=None, monitor_user=None, monitor_home=None):
+def routed_agents(agent_registry, integration):
+    out = []
+    for agent in ((agent_registry or {}).get("agents") or []):
+        integrations = agent.get("integrations") or {}
+        if (
+            agent.get("enabled", True)
+            and agent.get("role") == "coding"
+            and integrations.get(integration)
+        ):
+            out.append(agent)
+    return out
+
+
+def routed_usernames(agent_registry, integration):
+    return [a.get("user") for a in routed_agents(agent_registry, integration) if a.get("user")]
+
+
+def derived_user_cfg(agent):
+    user = agent.get("user")
+    home = Path(agent.get("home") or (f"/home/{user}" if user else ""))
+    return {
+        "home": str(home),
+        "tasksFile": str(home / "tasks" / "current.md"),
+        "logFile": str(home / "tasks" / "log.md"),
+        "jiraTokenFile": str(home / ".ssh" / "jiraToken.txt"),
+        "bitbucketTokenFile": str(home / ".ssh" / "bitbucketToken.txt"),
+        "bitbucketEmail": agent.get("bitbucket_email") or agent.get("bitbucketEmail") or agent.get("email") or "",
+        "jiraDisplayName": agent.get("jira_display_name") or agent.get("jiraDisplayName") or agent.get("name") or user,
+        "jiraAccountId": agent.get("jira_account_id") or agent.get("jiraAccountId"),
+    }
+
+
+def registry_value(agent_registry, camel_name, snake_name=None):
+    value = (agent_registry or {}).get(camel_name)
+    if value is None and snake_name:
+        value = (agent_registry or {}).get(snake_name)
+    return str(value or "").strip()
+
+
+def check_dev_shared_files(agent_registry=None, monitor_user=None, monitor_home=None):
     if not monitor_user or not monitor_home:
         emit("WARN", "no monitor agent (role=monitor) in registry — skipping monitor-receiver file checks")
         return
@@ -645,7 +708,6 @@ def check_dev_shared_files(users_cfg, agent_registry=None, monitor_user=None, mo
         Path(f"{monitor_home}/webhooks/common.js"),
         Path(f"{monitor_home}/webhooks/jira-receiver.js"),
         Path(f"{monitor_home}/webhooks/bitbucket-receiver.js"),
-        Path(f"{monitor_home}/webhooks/users.json"),
         Path(f"{monitor_home}/.config/openclaw/openclaw-webhook.env"),
     ]
     for path in dev_paths:
@@ -654,13 +716,20 @@ def check_dev_shared_files(users_cfg, agent_registry=None, monitor_user=None, mo
         else:
             emit("FAIL", f"{monitor_user}: required file missing ({path})")
 
-    users = users_cfg.get("users") or {}
-    registry_by_user = {
-        a.get("user"): a for a in ((agent_registry or {}).get("agents") or [])
+    route_agents = {
+        a.get("user"): a
+        for a in (
+            routed_agents(agent_registry, "jira") +
+            routed_agents(agent_registry, "bitbucket")
+        )
         if a.get("user")
     }
-    for user, cfg in users.items():
-        agent = registry_by_user.get(user) or {}
+    if not route_agents:
+        emit("OK", f"{monitor_user}: no registry-routed webhook users")
+        return
+
+    for user, agent in sorted(route_agents.items()):
+        cfg = derived_user_cfg(agent)
         integrations = agent.get("integrations") or {}
         checks = {
             "home": cfg.get("home"),
@@ -676,13 +745,17 @@ def check_dev_shared_files(users_cfg, agent_registry=None, monitor_user=None, mo
             checks["bitbucketTokenFile"] = cfg.get("bitbucketTokenFile")
         for label, raw_path in checks.items():
             if raw_path and Path(raw_path).exists():
-                emit("OK", f"{monitor_user}: users.json route for {user} has existing {label}")
+                emit("OK", f"{monitor_user}: registry route for {user} has existing {label}")
             else:
-                emit("FAIL", f"{monitor_user}: users.json route for {user} missing {label} ({raw_path})")
+                emit("FAIL", f"{monitor_user}: registry route for {user} missing {label} ({raw_path})")
+        if integrations.get("jira") and cfg.get("jiraAccountId"):
+            emit("OK", f"{monitor_user}: registry route for {user} has Jira account id")
+        elif integrations.get("jira"):
+            emit("FAIL", f"{monitor_user}: registry route for {user} missing Jira account id")
         if not integrations.get("jira"):
-            emit("OK", f"{monitor_user}: users.json route for {user} skips jiraTokenFile (Jira integration disabled)")
+            emit("OK", f"{monitor_user}: registry route for {user} skips jiraTokenFile (Jira integration disabled)")
         if not integrations.get("bitbucket"):
-            emit("OK", f"{monitor_user}: users.json route for {user} skips bitbucketTokenFile (Bitbucket integration disabled)")
+            emit("OK", f"{monitor_user}: registry route for {user} skips bitbucketTokenFile (Bitbucket integration disabled)")
 
 
 def check_dev_env_drift(monitor_user=None, monitor_home=None, monitor_uid=None):
@@ -835,57 +908,47 @@ def remediate_service(user, service):
 def main():
     print(f"[INFO] openclaw integrity check started at {datetime.now(timezone.utc).isoformat()}")
 
-    # Load registry first to locate the monitor agent (role=monitor) — the
-    # shared webhook receiver and its users.json live in that agent's home.
+    # Load registry first to locate the monitor agent (role=monitor). Webhook
+    # routing is derived from this same registry; there is no separate users
+    # routing file.
     agent_registry_early = load_agent_registry() or {}
     monitor_user, monitor_home, monitor_uid = find_monitor_user(agent_registry_early)
     if not monitor_user:
         emit("WARN", "no monitor agent (role=monitor) in registry — webhook checks will be limited")
 
-    users_cfg_path = Path(f"{monitor_home}/webhooks/users.json") if monitor_home else None
-    if users_cfg_path is None or not users_cfg_path.exists():
-        emit("FAIL", f"missing shared users config {users_cfg_path or '(monitor agent home unknown)'}")
-        print(f"[SUMMARY] ok={ok_count} warn={warn_count} fail={fail_count}")
-        return 1
-    try:
-        users_cfg = load_json_file(users_cfg_path)
-    except Exception as exc:
-        emit("FAIL", f"unable to parse {users_cfg_path} ({trim(str(exc))})")
-        print(f"[SUMMARY] ok={ok_count} warn={warn_count} fail={fail_count}")
-        return 1
-
-    users = users_cfg.get("users") or {}
-    if not users:
-        emit("FAIL", "no routed users found in shared users config")
-        print(f"[SUMMARY] ok={ok_count} warn={warn_count} fail={fail_count}")
-        return 1
-
-    agent_registry = agent_registry_early or fallback_agent_registry(users_cfg)
+    agent_registry = agent_registry_early
     monitor_agents = [
         a for a in agent_registry.get("agents", [])
         if a.get("enabled", True) and a.get("user")
     ]
 
-    jira_host = (users_cfg.get("jiraHost") or "").strip()
-    bitbucket_workspace = (users_cfg.get("bitbucketWorkspace") or "").strip()
-    bitbucket_repo = (users_cfg.get("bitbucketRepo") or "").strip()
+    jira_host = registry_value(agent_registry, "jiraHost", "jira_host")
+    bitbucket_workspace = registry_value(agent_registry, "bitbucketWorkspace", "bitbucket_workspace")
+    bitbucket_repo = registry_value(agent_registry, "bitbucketRepo", "bitbucket_repo")
+    jira_users = routed_usernames(agent_registry, "jira")
+    bitbucket_users = routed_usernames(agent_registry, "bitbucket")
 
     if jira_host:
         emit("OK", f"shared Jira host configured ({jira_host})")
+    elif not jira_users:
+        emit("OK", "shared Jira host not required (no Jira-routed coding agents)")
     else:
-        emit("FAIL", "shared Jira host missing from users config")
+        emit("FAIL", "shared Jira host missing from registry")
     if bitbucket_workspace and bitbucket_repo:
         emit("OK", f"shared Bitbucket target configured ({bitbucket_workspace}/{bitbucket_repo})")
+    elif not bitbucket_users:
+        emit("OK", "shared Bitbucket target not required (no Bitbucket-routed coding agents)")
     else:
-        emit("FAIL", "shared Bitbucket target missing from users config")
+        emit("FAIL", "shared Bitbucket target missing from registry")
 
-    check_dev_shared_files(users_cfg, agent_registry, monitor_user, monitor_home)
+    check_dev_shared_files(agent_registry, monitor_user, monitor_home)
     check_dev_env_drift(monitor_user, monitor_home, monitor_uid)
-    check_dev_public_ingress(list(users.keys()), monitor_user=monitor_user or "monitor")
+    public_users = sorted(set(jira_users + bitbucket_users))
+    check_dev_public_ingress(public_users, monitor_user=monitor_user or "monitor")
 
     for agent in monitor_agents:
         user = agent["user"]
-        user_cfg = users.get(user, {})
+        user_cfg = derived_user_cfg(agent)
         integrations = agent.get("integrations") or {}
 
         for service in agent.get("services") or []:
@@ -904,8 +967,12 @@ def main():
                 if not integrations.get(gate):
                     emit("OK", f"{user}/{label}: gated off (integrations.{gate}=false); not probed")
                     continue
+                expected = routed_usernames(agent_registry, gate)
+                if user == monitor_user and not expected:
+                    emit("OK", f"{user}/{label}: no registry-routed users; not probed")
+                    continue
                 check_webhook_health(f"{user}/{label}", port,
-                                     expected_users=list(users.keys()) if user == monitor_user else None)
+                                     expected_users=expected if user == monitor_user else None)
 
         openclaw_cfg_path = Path(f"/home/{user}/.openclaw/openclaw.json")
         if not openclaw_cfg_path.exists():

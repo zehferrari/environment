@@ -1,0 +1,746 @@
+// PM walking skeleton — Stage 1 schema (HOMELAB-43)
+// SQLite for v1; same schema portable to Postgres in v1.1+.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------------
+// Auth + identity
+// ------------------------------------------------------------------
+
+model User {
+  id                 String          @id @default(cuid())
+  username           String          @unique
+  email              String          @unique
+  kind               String // "human" | "agent"
+  // Human profile (admin-editable). Display name + uploaded avatar (a
+  // resized PNG stored inline; small, few human users). Agents take their
+  // name/avatar from the Agent registry instead, so these stay null for them.
+  name               String?
+  avatar             Bytes?
+  avatarUpdatedAt    DateTime?
+  passwordHash       String?
+  passwordSetAt      DateTime?
+  mustRotatePassword Boolean         @default(true)
+  status             String          @default("active") // "active" | "deactivated"
+  rolePermissionId   String?
+  rolePermission     RolePermission? @relation(fields: [rolePermissionId], references: [id])
+  agentId            String?         @unique
+  agent              Agent?          @relation(fields: [agentId], references: [id])
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  passwordResetTokens         PasswordResetToken[]
+  projectMembers              ProjectMember[]
+  assignedTasks               Task[]               @relation("TaskAssignee")
+  actingManagerOf             Task[]               @relation("TaskActingManager")
+  reportedTasks               Task[]               @relation("TaskReporter")
+  deletedTasks                Task[]               @relation("TaskDeletedBy")
+  assignedEpics               Epic[]               @relation("EpicAssignee")
+  actingManagerOfEpic         Epic[]               @relation("EpicActingManager")
+  reportedEpics               Epic[]               @relation("EpicReporter")
+  deletedEpics                Epic[]               @relation("EpicDeletedBy")
+  comments                    Comment[]
+  deletedComments             Comment[]            @relation("CommentDeletedBy")
+  activity                    ActivityLog[]
+  uploadedAttachments         Attachment[]
+  agentChatMessages           AgentChatMessage[]   @relation("AgentChatSender")
+  deletedAgentChatMessages    AgentChatMessage[]   @relation("AgentChatMessageDeletedBy")
+  archivedAgentChatRooms      AgentChatRoomArchive[] @relation("AgentChatRoomArchivedBy")
+  deletedAgentChatRoomArchives AgentChatRoomArchive[] @relation("AgentChatRoomArchiveDeletedBy")
+  directAgentChatMessages     DirectAgentChatMessage[] @relation("DirectAgentChatSender")
+  deletedDirectAgentChatMessages DirectAgentChatMessage[] @relation("DirectAgentChatMessageDeletedBy")
+  archivedDirectAgentChats    DirectAgentChatArchive[] @relation("DirectAgentChatArchivedBy")
+  deletedDirectAgentChatArchives DirectAgentChatArchive[] @relation("DirectAgentChatArchiveDeletedBy")
+  defaultAssigneeForProjects  Project[]            @relation("ProjectDefaultAssignee")
+  defaultReviewerForProjects  Project[]            @relation("ProjectDefaultReviewer")
+  deletedProjects             Project[]            @relation("ProjectDeletedBy")
+  workItemProposalsProposed   WorkItemProposal[]   @relation("WorkItemProposalProposedBy")
+  workItemProposalsApplied    WorkItemProposal[]   @relation("WorkItemProposalAppliedBy")
+  workItemProposalsRejected   WorkItemProposal[]   @relation("WorkItemProposalRejectedBy")
+
+  @@index([kind])
+  @@index([status])
+}
+
+model RolePermission {
+  id          String   @id @default(cuid())
+  name        String   @unique // e.g. "developer", "manager", "admin"
+  description String?
+  // Stage 2 (HOMELAB-44) will hang permission JSON / policy here.
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ------------------------------------------------------------------
+// Agent registry mirror (system-managed; sourced from /srv/agents/index.json)
+// ------------------------------------------------------------------
+
+model Agent {
+  id            String    @id @default(cuid())
+  // slug from index.json (e.g. "asdrubal", "barekbaal", "karen")
+  slug          String    @unique
+  name          String
+  email         String?
+  role          String // "coding" | "monitor" | ...
+  codeOwner     String? // codeOwner from index.json
+  gatewayPort   Int? // listeners[?owner=='openclaw-gateway'].port
+  avatar        String?
+  rawJson       String? // last-seen JSON entry (for debugging)
+  deactivatedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user User?
+
+  @@index([role])
+  @@index([deactivatedAt])
+}
+
+// ------------------------------------------------------------------
+// Projects + boards
+// ------------------------------------------------------------------
+
+model Project {
+  id          String    @id @default(cuid())
+  slug        String    @unique
+  name        String
+  description String?
+  // On-disk README for the project (zeh decision in HOMELAB-44 / Stage 2):
+  // points at /srv/Data/projects/<id>/README.md (deploy/runtime path,
+  // outside the app source tree). Server renders via lib/markdown.
+  readmePath  String?
+  archivedAt  DateTime?
+  // Project settings tab fields. Repo + git identity drive agent
+  // commits; defaults seed Task pickers; doneTtlDays hides aged Done
+  // tasks from the board view.
+  repositoryPath      String?
+  defaultGitUserName  String?
+  defaultGitUserEmail String?
+  defaultAssigneeId   String?
+  defaultAssignee     User?     @relation("ProjectDefaultAssignee", fields: [defaultAssigneeId], references: [id])
+  defaultReviewerId   String?
+  defaultReviewer     User?     @relation("ProjectDefaultReviewer", fields: [defaultReviewerId], references: [id])
+  // Null inherits the system default (SystemSettings.doneTtlDays → 5).
+  doneTtlDays         Int?
+  // Soft-delete: project bin with 30-day TTL (hard-purge via the
+  // hourly job in instrumentation.node.ts).
+  deletedAt   DateTime?
+  deletedById String?
+  deletedBy   User?     @relation("ProjectDeletedBy", fields: [deletedById], references: [id])
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  members      ProjectMember[]
+  epics        Epic[]
+  tasks        Task[]
+  activity     ActivityLog[]
+  attachments  Attachment[]
+  chatMessages AgentChatMessage[]
+  chatRoomArchives AgentChatRoomArchive[]
+  directChatMessages DirectAgentChatMessage[] @relation("DirectChatProject")
+  workItemProposals  WorkItemProposal[]
+
+  @@index([deletedAt])
+}
+
+model ProjectMember {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      String   @default("member")
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+
+model Epic {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title           String
+  description     String?
+  status          String   @default("Backlog") // "Backlog" | "Open" | "Done" | "Archive"
+  statusChangedAt DateTime?
+  // Epic-level assignee + acting manager. Independent of any Task's
+  // assignee/actingManager — an Epic can be owned by one agent while its
+  // tasks are assigned to others (HOMELAB-47). Same User pool as Task
+  // (active humans + Users linked to Agent.role='coding'); enforced via
+  // lib/principals.ts on the read side and lib/workflow.ts on writes.
+  assigneeId      String?
+  assignee        User?    @relation("EpicAssignee", fields: [assigneeId], references: [id])
+  actingManagerId String?
+  actingManager   User?    @relation("EpicActingManager", fields: [actingManagerId], references: [id])
+  reporterId      String?
+  reporter        User?    @relation("EpicReporter", fields: [reporterId], references: [id])
+  // Epic-level git defaults inherited by child Tasks when their own fields
+  // are blank. Task keeps its own branchName/commitPrefix once overridden.
+  branchName      String?
+  commitPrefix    String?
+  // Soft delete (HOMELAB-48). deletedAt != null means the row is in the
+  // bin; active reads filter deletedAt: null. Hard purge happens after
+  // 7 days via the instrumentation interval. deletedById captures the
+  // actor (User row, kind tells human vs agent).
+  deletedAt       DateTime?
+  deletedById     String?
+  deletedBy       User?    @relation("EpicDeletedBy", fields: [deletedById], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tasks       Task[]
+  attachments Attachment[]
+  comments    Comment[]
+  chats       AgentChatMessage[] @relation("EpicChat")
+  chatRoomArchives AgentChatRoomArchive[] @relation("EpicChatRoomArchive")
+
+  @@index([projectId])
+  @@index([status])
+  @@index([statusChangedAt])
+  @@index([assigneeId])
+  @@index([actingManagerId])
+  @@index([reporterId])
+  @@index([deletedAt])
+}
+
+model Task {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  epicId          String?
+  epic            Epic?    @relation(fields: [epicId], references: [id])
+  // Sub-task hierarchy: a sub-task is a Task with parentTaskId set. Stage 2
+  // keeps a single self-referential Task model (no parallel SubTask) per
+  // HOMELAB-44 manager guardrail. epic > task > subtask is expressed as
+  // epicId + parentTaskId.
+  parentTaskId    String?
+  parent          Task?    @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks        Task[]   @relation("TaskSubtasks")
+  title           String
+  description     String?
+  // Status uses the verbatim Stage 0 labels — no Jira aliases.
+  // Backlog | To Do | In Progress | Review | Done
+  status          String   @default("Backlog")
+  assigneeId      String?
+  assignee        User?    @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  // Acting manager: the User who is reviewing/owning the workflow for
+  // this task. Pulled from the same users/agents table as assignee per
+  // HOMELAB-44 description. Optional; agents may not set themselves as
+  // acting manager (see lib/workflow.ts checkActingManager).
+  actingManagerId String?
+  actingManager   User?    @relation("TaskActingManager", fields: [actingManagerId], references: [id])
+  reporterId      String?
+  reporter        User?    @relation("TaskReporter", fields: [reporterId], references: [id])
+  // Lexorank-style ordering within column; simple Int for v1.
+  rank            Int      @default(0)
+  // Set on every status transition; drives the Done-column TTL filter
+  // (hide Done tasks older than project.doneTtlDays) so plain updates
+  // to title/description don't reset the clock.
+  statusChangedAt DateTime?
+  // Free-text branch name the agent will use for commits on this task.
+  branchName      String?
+  // Free-text commit-message prefix (e.g. a ticket key) the agent prepends
+  // to commits on this task. Edited alongside branchName on the task form.
+  commitPrefix    String?
+  // Soft delete (HOMELAB-48). See Epic.deletedAt for semantics. Sub-tasks
+  // cascade with their parent task; an Epic delete cascades to its
+  // non-deleted Tasks (and through them to sub-tasks). Active read
+  // queries filter deletedAt: null.
+  deletedAt       DateTime?
+  deletedById     String?
+  deletedBy       User?    @relation("TaskDeletedBy", fields: [deletedById], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  comments    Comment[]
+  activity    ActivityLog[]
+  attachments Attachment[]
+  chats       AgentChatMessage[] @relation("TaskChat")
+  chatRoomArchives AgentChatRoomArchive[] @relation("TaskChatRoomArchive")
+
+  @@index([projectId])
+  @@index([status])
+  @@index([epicId])
+  @@index([assigneeId])
+  @@index([parentTaskId])
+  @@index([actingManagerId])
+  @@index([reporterId])
+  @@index([deletedAt])
+}
+
+// ------------------------------------------------------------------
+// HOMELAB-47 attachments — file metadata; bytes live on disk under
+// /srv/Data/projects/<projectId>/attachments/<sha256> (deploy host) or
+// ./.data/attachments/<projectId>/<sha256> (local-dev fallback). One of
+// taskId | epicId must be set — enforced server-side in
+// lib/attachments.ts since SQLite has no portable XOR check.
+// ------------------------------------------------------------------
+
+model Attachment {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId      String?
+  task        Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  epicId      String?
+  epic        Epic?    @relation(fields: [epicId], references: [id], onDelete: Cascade)
+  uploaderId  String
+  uploader    User     @relation(fields: [uploaderId], references: [id])
+  filename    String
+  storagePath String   // path relative to the project's attachments dir
+  mimeType    String
+  sizeBytes   Int
+  sha256      String
+  createdAt   DateTime @default(now())
+
+  @@index([projectId])
+  @@index([taskId])
+  @@index([epicId])
+  @@index([sha256])
+}
+
+// Cached, bounded text extraction for agent context. This is keyed by
+// content hash rather than Attachment.id so duplicate uploads reuse the
+// same extraction result.
+model AttachmentExtract {
+  id                 String   @id @default(cuid())
+  sourceAttachmentId String?
+  sha256             String
+  extractorVersion   String
+  status             String   // "ready" | "unsupported" | "failed"
+  text               String?
+  summary            String?
+  error              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([sha256, extractorVersion])
+  @@index([sourceAttachmentId])
+  @@index([status])
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  // A comment belongs to a Task XOR an Epic (mirrors Attachment). Both FKs
+  // are nullable; exactly one is set, enforced in the server actions.
+  taskId    String?
+  task      Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  epicId    String?
+  epic      Epic?    @relation(fields: [epicId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  body      String
+  createdAt DateTime @default(now())
+  // Soft delete (HOMELAB-41 / item 2). Active reads filter
+  // deletedAt: null; agent-context builders ALWAYS filter deleted rows
+  // out so deleted content never reaches an agent. The frontend renders
+  // deleted rows as a collapsed dotted divider with a [+] toggle so a
+  // human reviewer can expand them on demand.
+  deletedAt   DateTime?
+  deletedById String?
+  deletedBy   User?    @relation("CommentDeletedBy", fields: [deletedById], references: [id])
+
+  @@index([taskId])
+  @@index([epicId])
+  @@index([userId])
+  @@index([deletedAt])
+  @@index([deletedById])
+}
+
+model ActivityLog {
+  id          String   @id @default(cuid())
+  projectId   String?
+  project     Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  taskId      String?
+  task        Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  kind        String // "task.move" | "project.create" | "agent.sync" | ...
+  payload     String? // JSON string
+  // Optional denormalized target for cross-cutting audit events such as
+  // agent.profile.update (HOMELAB-52). Project/task/user relations stay
+  // nullable so agent-control-surface audit rows survive independently of
+  // PM project data.
+  targetAgent String?
+  targetFile  String?
+  createdAt   DateTime @default(now())
+
+  @@index([projectId])
+  @@index([taskId])
+  @@index([userId])
+  @@index([targetAgent])
+  @@index([targetFile])
+  @@index([createdAt])
+}
+
+// ------------------------------------------------------------------
+// HOMELAB-46 Slice 4: consumer-side delivery log.
+// UNIQUE(dedupeKey) drives the replay-test acceptance criterion —
+// re-firing the same envelope hits the unique index and the
+// downstream wake is suppressed. Truncating this table is safe;
+// HOMELAB-51 audit rows live on ActivityLog and survive separately.
+// ------------------------------------------------------------------
+
+model PmEventDelivery {
+  id                String   @id @default(cuid())
+  dedupeKey         String   @unique
+  eventId           String
+  kind              String
+  taskId            String
+  taskKey           String
+  projectKey        String
+  actorId           String
+  targetAgentSlug   String?
+  targetGatewayPort Int?
+  envelope          String   // JSON-stringified PmEvent for audit
+  receivedAt        DateTime @default(now())
+  deliveredAt       DateTime?
+  deliveryStatus    String?  // "delivered" | "failed" | "unmatched" | "skipped"
+  gatewayStatus     Int?
+  error             String?
+
+  @@index([eventId])
+  @@index([taskId])
+  @@index([targetAgentSlug])
+  @@index([deliveryStatus])
+  @@index([receivedAt])
+}
+
+// PM-owned binding between a PM conversation scope and OpenClaw session
+// routing. `openclawSessionKey` is what `/hooks/wake` and
+// `openclaw system event --session-key` use; `openclawSessionId` is
+// currently kept equal to the key for `openclaw agent --session-id`
+// callers until OpenClaw exposes a distinct persisted session id in the
+// reply metadata.
+model AgentSessionBinding {
+  id                 String   @id @default(cuid())
+  scopeType          String   // "task" | "epic" | "direct"
+  scopeId            String
+  agentSlug          String
+  openclawSessionKey String   @unique
+  openclawSessionId  String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@unique([scopeType, scopeId, agentSlug])
+  @@index([agentSlug])
+  @@index([openclawSessionId])
+}
+
+// Native OpenClaw PM-channel delivery/run state. This is the durable
+// counterpart to the in-process SSE stream cache: PM can tell whether a
+// local handoff was accepted, is streaming, completed, or failed even if
+// the browser leaves and later reconnects. For Task/Epic Discussion
+// work-item grants, this row is also the per-addressed-agent single-use
+// stamp, so All Coders messages can grant each coder independently.
+model PmChannelRun {
+  id          String    @id @default(cuid())
+  targetKey   String    @unique
+  kind        String
+  agentSlug   String
+  messageId   String
+  projectId   String?
+  taskId      String?
+  epicId      String?
+  sessionKey  String?
+  driver      String    @default("openclaw-pm-channel")
+  gatewayPort Int?
+  httpStatus  Int?
+  status      String    @default("queued") // queued | accepted | streaming | complete | failed
+  error       String?
+  acceptedAt  DateTime?
+  streamingAt DateTime?
+  completedAt DateTime?
+  failedAt    DateTime?
+  lastEventAt DateTime?
+  workItemGrantUsedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([agentSlug])
+  @@index([messageId])
+  @@index([messageId, agentSlug])
+  @@index([projectId])
+  @@index([taskId])
+  @@index([epicId])
+  @@index([status])
+  @@index([lastEventAt])
+}
+
+// ------------------------------------------------------------------
+// HOMELAB-48 agent chat — sidebar conversations between humans and a
+// specific agent, scoped to a Task XOR an Epic. The "allow description
+// edit" grant is per-message: when true, the targeted agent gets a
+// one-shot permission to overwrite the parent Task/Epic description via
+// POST /api/{tasks,epics}/[id]/description; editGrantUsedAt records the
+// moment that grant was consumed, so a single message can never grant
+// twice. XOR(taskId, epicId) is server-enforced — SQLite has no
+// portable check constraint.
+// ------------------------------------------------------------------
+
+model AgentChatMessage {
+  id                   String    @id @default(cuid())
+  projectId            String
+  project              Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId               String?
+  task                 Task?     @relation("TaskChat", fields: [taskId], references: [id], onDelete: Cascade)
+  epicId               String?
+  epic                 Epic?     @relation("EpicChat", fields: [epicId], references: [id], onDelete: Cascade)
+  // The agent this conversation is with (Agent.slug). Stored as a slug
+  // rather than agentId so chat history survives an Agent row being
+  // soft-deactivated and the index.json deciding to re-issue.
+  agentSlug            String
+  archiveId            String?
+  archive              AgentChatRoomArchive? @relation(fields: [archiveId], references: [id], onDelete: SetNull)
+  baseArchiveId        String?
+  targetType           String?
+  targetValue          String?
+  targetLabel          String?
+  // The sender — a User row (humans send via their own row, agents
+  // reply via their own seeded User row).
+  senderUserId         String
+  sender               User      @relation("AgentChatSender", fields: [senderUserId], references: [id])
+  body                 String
+  allowDescriptionEdit Boolean   @default(false)
+  editGrantUsedAt      DateTime?
+  // Human-authored Discussion messages grant work-item proposal capability
+  // by default. Consumption is tracked per addressed agent in PmChannelRun;
+  // this legacy message-level stamp is retained for compatibility.
+  allowWorkItemManagement Boolean @default(false)
+  workItemGrantUsedAt   DateTime?
+  // Where an agent reply should be posted. "chat" means the message
+  // originated in the task/epic chat sidebar; "comment" means it was
+  // mirrored from a task comment so the reply should return to comments.
+  originChannel        String    @default("chat")
+  originCommentId      String?
+  createdAt            DateTime  @default(now())
+  // Soft delete (HOMELAB-41 / item 2). See Comment.deletedAt for the
+  // same convention. Active reads filter deletedAt: null; agent context
+  // builders ALWAYS filter deleted out.
+  deletedAt            DateTime?
+  deletedById          String?
+  deletedBy            User?     @relation("AgentChatMessageDeletedBy", fields: [deletedById], references: [id])
+
+  @@index([taskId, createdAt])
+  @@index([epicId, createdAt])
+  @@index([taskId, archiveId, createdAt])
+  @@index([epicId, archiveId, createdAt])
+  @@index([archiveId, createdAt])
+  @@index([baseArchiveId, createdAt])
+  @@index([agentSlug])
+  @@index([originCommentId])
+  @@index([deletedAt])
+  @@index([deletedById])
+}
+
+model AgentChatRoomArchive {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId       String?
+  task         Task?    @relation("TaskChatRoomArchive", fields: [taskId], references: [id], onDelete: Cascade)
+  epicId       String?
+  epic         Epic?    @relation("EpicChatRoomArchive", fields: [epicId], references: [id], onDelete: Cascade)
+  archivedById String
+  archivedBy   User     @relation("AgentChatRoomArchivedBy", fields: [archivedById], references: [id])
+  deletedById  String?
+  deletedBy    User?    @relation("AgentChatRoomArchiveDeletedBy", fields: [deletedById], references: [id])
+  parentArchiveId String?
+  summary      String
+  startedAt    DateTime
+  endedAt      DateTime
+  messageCount Int      @default(0)
+  deletedAt    DateTime?
+  createdAt    DateTime @default(now())
+  messages     AgentChatMessage[]
+
+  @@index([projectId, taskId, deletedAt, createdAt])
+  @@index([projectId, epicId, deletedAt, createdAt])
+  @@index([taskId, createdAt])
+  @@index([epicId, createdAt])
+  @@index([parentArchiveId])
+  @@index([archivedById])
+  @@index([deletedById])
+}
+
+// ------------------------------------------------------------------
+// Direct agent chat — conversations opened from the global sidebar CHAT
+// section. Unlike AgentChatMessage, these are not tied to a Task/Epic
+// and carry no description-edit grant.
+// ------------------------------------------------------------------
+
+model DirectAgentChatMessage {
+  id           String   @id @default(cuid())
+  agentSlug    String
+  senderUserId String
+  sender       User     @relation("DirectAgentChatSender", fields: [senderUserId], references: [id])
+  archiveId    String?
+  archive      DirectAgentChatArchive? @relation(fields: [archiveId], references: [id], onDelete: SetNull)
+  // Active child continuations keep the parent archive immutable while
+  // still using it as context for the new conversation.
+  baseArchiveId String?
+  body         String
+  // A direct chat can be attached to a project (agent planning): the agent
+  // then gets that project's environment + board as context and may propose
+  // work-item changes scoped to it. allowWorkItemManagement is the per-message
+  // grant — generalises AgentChatMessage.allowDescriptionEdit; workItemGrantUsedAt
+  // stamps it single-use once a proposal is stored.
+  projectId               String?
+  project                 Project?  @relation("DirectChatProject", fields: [projectId], references: [id], onDelete: SetNull)
+  allowWorkItemManagement Boolean   @default(false)
+  workItemGrantUsedAt     DateTime?
+  createdAt    DateTime @default(now())
+  // Soft delete (HOMELAB-41 / item 2). See Comment.deletedAt for the
+  // same convention. The archive-level deletedAt on
+  // DirectAgentChatArchive remains separate — that one bins an entire
+  // archived conversation; this one bins an individual bubble inside
+  // the active or archived chat.
+  deletedAt    DateTime?
+  deletedById  String?
+  deletedBy    User?     @relation("DirectAgentChatMessageDeletedBy", fields: [deletedById], references: [id])
+
+  @@index([agentSlug, createdAt])
+  @@index([agentSlug, archiveId, createdAt])
+  @@index([agentSlug, baseArchiveId, createdAt])
+  @@index([archiveId, createdAt])
+  @@index([senderUserId])
+  @@index([projectId])
+  @@index([deletedAt])
+  @@index([deletedById])
+}
+
+model DirectAgentChatArchive {
+  id            String    @id @default(cuid())
+  agentSlug     String
+  archivedById  String
+  archivedBy    User      @relation("DirectAgentChatArchivedBy", fields: [archivedById], references: [id])
+  deletedById   String?
+  deletedBy     User?     @relation("DirectAgentChatArchiveDeletedBy", fields: [deletedById], references: [id])
+  // If this archived conversation was a continuation, parentArchiveId
+  // points to the frozen archive it used as its base.
+  parentArchiveId String?
+  summary       String
+  startedAt     DateTime
+  endedAt       DateTime
+  messageCount  Int       @default(0)
+  deletedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  messages      DirectAgentChatMessage[]
+
+  @@index([agentSlug, createdAt])
+  @@index([agentSlug, deletedAt, createdAt])
+  @@index([parentArchiveId])
+  @@index([archivedById])
+  @@index([deletedById])
+}
+
+// ------------------------------------------------------------------
+// Agent work-item proposals (propose → approve). An agent granted
+// "manage work items" on a direct chat message submits a change-set of
+// typed operations (create/update epics, tasks, sub-tasks; comment)
+// against one project via POST /api/agent/projects/[id]/proposals. PM
+// stores it pending; a human applies or rejects it. Nothing touches the
+// board until approval. `operations` is the JSON change-set; `validation`
+// is the per-op dry-run snapshot taken at submit time. `planId` is unique
+// so a retried agent turn is idempotent (mirrors PmEventDelivery.dedupeKey).
+// `grantMessageId` is a plain pointer (no FK) so the proposal survives the
+// originating chat message being deleted.
+// ------------------------------------------------------------------
+
+model WorkItemProposal {
+  id               String    @id @default(cuid())
+  planId           String    @unique
+  projectId        String
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agentSlug        String
+  grantMessageId   String?
+  proposedByUserId String
+  proposedBy       User      @relation("WorkItemProposalProposedBy", fields: [proposedByUserId], references: [id])
+  status           String    @default("pending") // pending | applied | rejected | superseded
+  summary          String?
+  operations       String // JSON change-set (ProposalOp[])
+  validation       String? // JSON ProposalValidation snapshot at submit time
+  appliedById      String?
+  appliedBy        User?     @relation("WorkItemProposalAppliedBy", fields: [appliedById], references: [id])
+  appliedAt        DateTime?
+  rejectedById     String?
+  rejectedBy       User?     @relation("WorkItemProposalRejectedBy", fields: [rejectedById], references: [id])
+  rejectedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([projectId, status])
+  @@index([agentSlug])
+  @@index([grantMessageId])
+}
+
+// ------------------------------------------------------------------
+// System-wide settings — a single row (id "system") holding the global
+// fallbacks used when a project leaves the matching field blank:
+//   - defaultGitUserName / defaultGitUserEmail → project git identity
+//   - doneTtlDays → project Done-column TTL (a null project value inherits)
+//   - binTtlDays → days before ANY soft-delete bin (Task/Epic, Project,
+//     direct-chat) is auto-emptied; overrides the PM_*_BIN_TTL_DAYS env
+//     defaults when set.
+// Edited at /system/settings. Singleton enforced by the fixed id default.
+// ------------------------------------------------------------------
+
+model SystemSettings {
+  id                  String   @id @default("system")
+  defaultGitUserName  String?
+  defaultGitUserEmail String?
+  doneTtlDays         Int?
+  binTtlDays          Int?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+// ------------------------------------------------------------------
+// DescriptionDraft (HOMELAB-41 / item 4):
+// Replaces the filesystem-based draft store at .data/drafts. An agent's
+// description proposal lands in this table tagged with the human who
+// requested it (requesterUserId = the senderUserId on the grant message,
+// i.e. whoever clicked "Ask AI to update description"). Only that user
+// sees the draft on the task/epic page; a heartbeat from the open page
+// bumps lastSeenAt, and a reaper purges rows whose lastSeenAt has gone
+// stale (page closed before the agent answered) or whose expiresAt has
+// passed.
+// ------------------------------------------------------------------
+
+model DescriptionDraft {
+  id              String   @id @default(cuid())
+  scope           String   // "task" | "epic"
+  targetId        String
+  requesterUserId String
+  agentSlug       String
+  body            String
+  createdAt       DateTime @default(now())
+  lastSeenAt      DateTime @default(now())
+  expiresAt       DateTime
+
+  @@unique([scope, targetId, requesterUserId])
+  @@index([expiresAt])
+  @@index([lastSeenAt])
+}

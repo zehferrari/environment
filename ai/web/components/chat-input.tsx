@@ -1,0 +1,182 @@
+"use client";
+
+import { sendDirectAgentMessage } from "@/lib/agents/direct-chat-actions";
+import MaximizableTextarea from "@/components/maximizable-textarea";
+import React, { useRef, useState } from "react";
+
+interface ChatInputProps {
+  agentSlug: string;
+  agentUsername: string;
+  viewingArchive: boolean;
+  selectedArchiveId?: string | null;
+  activeBaseArchiveId?: string | null;
+  projects?: Array<{ id: string; name: string }>;
+  attachedProjectId?: string | null;
+}
+
+export default function ChatInput({
+  agentSlug,
+  agentUsername,
+  viewingArchive,
+  selectedArchiveId,
+  activeBaseArchiveId,
+  projects = [],
+  attachedProjectId = null,
+}: ChatInputProps) {
+  const formRef = useRef<HTMLFormElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const [messageText, setMessageText] = useState("");
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [selectedFilesCount, setSelectedFilesCount] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const canSend = messageText.trim().length > 0 || selectedFilesCount > 0;
+
+  // Project attachment is carried forward across the conversation. Human
+  // project-scoped requests automatically carry the one-shot proposal capability.
+  const [projectId, setProjectId] = useState(attachedProjectId ?? "");
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (canSend) formRef.current?.requestSubmit();
+    }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSelectedFilesCount(e.target.files?.length ?? 0);
+  };
+
+  const closeComposer = () => {
+    setComposerOpen(false);
+    setSelectedFilesCount(0);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const actionHandler = async (formData: FormData) => {
+    setMessageText("");
+    setSelectedFilesCount(0);
+    await sendDirectAgentMessage(formData);
+    setComposerOpen(false);
+    if (textareaRef.current) {
+      textareaRef.current.value = "";
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
+  return (
+    <>
+      {composerOpen ? (
+        <div
+          className="fixed inset-0 z-50 bg-black/10 p-4 backdrop-blur-[1px]"
+          onClick={closeComposer}
+        >
+          <form
+            ref={formRef}
+            action={actionHandler}
+            encType="multipart/form-data"
+            onClick={(event) => event.stopPropagation()}
+            className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-2xl space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-2xl sm:right-6"
+          >
+            <input type="hidden" name="agentSlug" value={agentSlug} />
+            {selectedArchiveId ? (
+              <>
+                <input type="hidden" name="baseArchiveId" value={selectedArchiveId} />
+                <input type="hidden" name="continueFromArchive" value="1" />
+              </>
+            ) : activeBaseArchiveId ? (
+              <input type="hidden" name="baseArchiveId" value={activeBaseArchiveId} />
+            ) : null}
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                  {viewingArchive ? "Start child chat" : "New message"}
+                </div>
+                <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+                  Message @{agentUsername} with optional files and project context.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeComposer}
+                aria-label="Close chat composer"
+                className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-[var(--color-text-muted)] transition hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+              >
+                &times;
+              </button>
+            </div>
+            <MaximizableTextarea
+              ref={textareaRef}
+              name="body"
+              value={messageText}
+              onValueChange={setMessageText}
+              rows={5}
+              maxLength={8000}
+              placeholder={
+                viewingArchive
+                  ? `Start a child chat from this archive with @${agentUsername}...`
+                  : `Message @${agentUsername}...`
+              }
+              onKeyDown={handleKeyDown}
+              expandedTitle={`Message @${agentUsername}`}
+              className="w-full resize-none rounded-xl border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
+            />
+
+            {projects.length > 0 ? (
+              <label className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-muted)]">
+                <span className="select-none font-semibold">Project</span>
+                <select
+                  name="projectId"
+                  value={projectId}
+                  onChange={(e) => setProjectId(e.target.value)}
+                  className="rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1 text-xs text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+                >
+                  <option value="">No project</option>
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <label className="flex items-center gap-1.5 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer select-none">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                <span>{selectedFilesCount > 0 ? `${selectedFilesCount} selected` : "Attach files"}</span>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  name="attachments"
+                  multiple
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+              </label>
+
+              <button
+                type="submit"
+                disabled={!canSend}
+                className="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
+              >
+                {viewingArchive ? "Start Child Chat" : "Send"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      <button
+        type="button"
+        onClick={() => setComposerOpen(true)}
+        aria-label={viewingArchive ? "Start child chat" : `Message @${agentUsername}`}
+        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-accent)] text-3xl leading-none text-[var(--color-bg)] shadow-lg transition hover:opacity-90"
+      >
+        <span className="-mt-0.5">+</span>
+      </button>
+    </>
+  );
+}

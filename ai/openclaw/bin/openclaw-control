@@ -11,8 +11,8 @@ usage() {
   cat >&2 <<USAGE
 Usage:
   openclaw-control restart-services <user> [reason]
-  openclaw-control wake-agent       <user> [text...]
-  openclaw-control restart-and-wake <user> [text...]
+  openclaw-control wake-agent       <user> [--session-key <key>] [text...]
+  openclaw-control restart-and-wake <user> [--session-key <key>] [text...]
 
 Allowed users are read from the registry (${REGISTRY}); any agent with
 \`enabled: true\` is accepted.
@@ -161,6 +161,12 @@ PY
 wake_agent() {
   local user="$1"
   shift || true
+  local session_key=""
+  if [ "${1:-}" = "--session-key" ]; then
+    shift
+    session_key="${1:-}"
+    shift || true
+  fi
   local text="$*"
   local home
   home=$(_user_home "$user")
@@ -182,8 +188,12 @@ wake_agent() {
       set -a
       if [ -r "$1" ]; then . "$1"; fi
       set +a
-      exec openclaw system event --mode now --text "$2" --timeout 30000 --json
-    ' _ "$env_file" "$text" >/dev/null 2>"$err_file"; then
+      args=(system event --mode now --text "$2" --timeout 30000 --json)
+      if [ -n "$3" ]; then
+        args+=(--session-key "$3")
+      fi
+      exec openclaw "${args[@]}"
+    ' _ "$env_file" "$text" "$session_key" >/dev/null 2>"$err_file"; then
       rm -f "$err_file"
       return 0
     fi
