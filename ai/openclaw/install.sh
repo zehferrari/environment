@@ -6,17 +6,19 @@
 # repo working tree, or on a fresh host as part of bootstrap.
 #
 # What it does:
-#   1. install bin/ scripts to /usr/local/bin and /usr/local/sbin
+#   1. install bin/ scripts to /usr/local/bin and /usr/local/sbin and
+#      apply the OpenClaw session-fence runtime patch when present
 #   2. install systemd/ system units to /etc/systemd/system
 #   3. install systemd/user/ user units to /etc/systemd/user (admin-installed
 #      user units, visible to every user's systemd instance — only the
 #      monitor agent enables them based on derived services)
-#   4. generate openclaw-monitor-sync.path from agents.json (host-specific:
-#      systemd Path units don't support globs, so one PathChanged= per agent)
-#   5. reconcile per-agent private files under the host agent-files root
-#   6. symlink the frontend HTML for agent-dashboard
-#   7. systemctl daemon-reload (system + per-user) + restart running units
-#   8. reconcile per-agent user-systemd state against the derived services
+#   4. generate/sync host-specific assets from agents.json, including
+#      openclaw-monitor-sync.path, shared helpers, the host-wide PM web
+#      service, PM dispatch drop, the consumer service, local gateway
+#      /hooks/wake tokens, and the native PM channel plugin/token map
+#   5. symlink the frontend HTML for agent-dashboard
+#   6. systemctl daemon-reload (system + per-user) + restart running units
+#   7. reconcile per-agent user-systemd state against the derived services
 #      list — enable+start what should run, stop+disable orphans (e.g. the
 #      legacy openclaw-webhook-receiver after its split into jira+bitbucket
 #      receivers)
@@ -36,7 +38,29 @@ DRY=0
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="${OPENCLAW_AGENTS_JSON:-/etc/openclaw/agents.json}"
 DEFAULTS="${OPENCLAW_AGENT_DEFAULTS:-/etc/openclaw/agent-defaults.json}"
-AGENT_FILES_ROOT="${OPENCLAW_AGENT_FILES_ROOT:-}"
+PM_WEB_ROOT="${PM_WEB_ROOT:-$REPO_ROOT/../web}"
+PM_ENV_FILE="${PM_ENV_FILE:-/etc/default/pm}"
+PM_DROP_DIR="${PM_DROP_DIR:-/var/lib/pm/drop}"
+PM_STATE_DIR="${PM_STATE_DIR:-$(dirname "$PM_DROP_DIR")}"
+PM_ATTACHMENT_ROOT="${PM_ATTACHMENT_ROOT:-/srv/Data/projects}"
+PM_SAMBA_SHARED_ROOT="${PM_SAMBA_SHARED_ROOT:-/srv/samba/shared}"
+PM_CONSUMER_PNPM_HOME="${PM_CONSUMER_PNPM_HOME:-$PM_STATE_DIR/pnpm-home}"
+PM_CONSUMER_PNPM_CONFIG_HOME="${PM_CONSUMER_PNPM_CONFIG_HOME:-$PM_STATE_DIR/pnpm-config}"
+PM_CONSUMER_PNPM_CACHE_HOME="${PM_CONSUMER_PNPM_CACHE_HOME:-$PM_STATE_DIR/pnpm-cache}"
+PM_AGENT_CREDENTIALS_DIR="${PM_AGENT_CREDENTIALS_DIR:-/etc/openclaw/pm-agent-credentials}"
+PM_CONSUMER_TOKEN_FILE="${PM_CONSUMER_TOKEN_FILE:-/etc/openclaw/pm-consumer-tokens.json}"
+PM_APP_USER="${PM_APP_USER:-${PM_CONSUMER_USER:-karen}}"
+PM_APP_GROUP="${PM_APP_GROUP:-${PM_CONSUMER_GROUP:-$PM_APP_USER}}"
+PM_NODE_BIN="${PM_NODE_BIN:-/usr/bin/node24}"
+PM_OPENCLAW_CHANNEL_TOKEN_FILE="${PM_OPENCLAW_CHANNEL_TOKEN_FILE:-/etc/openclaw/pm-channel-tokens.json}"
+PM_OPENCLAW_CHANNEL_TOKEN_GROUP="${PM_OPENCLAW_CHANNEL_TOKEN_GROUP:-$PM_APP_GROUP}"
+OPENCLAW_SESSION_FENCE_PATCH="${OPENCLAW_SESSION_FENCE_PATCH:-1}"
+OPENCLAW_SESSION_FENCE_PATCH_FILE="${OPENCLAW_SESSION_FENCE_PATCH_FILE:-/usr/local/lib/node_modules/openclaw/dist/selection-hR-AeOeU.js}"
+# Final durable reply callback configured into the OpenClaw pm channel plugin.
+# The live partial-reply stream callback is sent by PM per turn as
+# /api/openclaw/pm-channel/stream, derived from PM_AGENT_CALLBACK_URL or
+# PM_INTERNAL_APP_URL in /etc/default/pm.
+PM_OPENCLAW_CHANNEL_CALLBACK_URL="${PM_OPENCLAW_CHANNEL_CALLBACK_URL:-http://127.0.0.1:3000/api/openclaw/pm-channel/reply}"
 
 if [ -t 1 ]; then
     C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_DIM=$'\e[2m'; C_RST=$'\e[0m'
@@ -66,44 +90,57 @@ do_install() {
     ok "$dst"
 }
 
-clone_dir_permissions() {
-    local src="$1" dst="$2"
-    if [ ! -d "$src" ] || [ ! -d "$dst" ]; then
+generate_hook_token() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 32
         return
     fi
-    if [ "$DRY" -eq 1 ]; then
-        log "  would clone permissions $src → $dst"
-        return
-    fi
-    chown "$(stat -c '%U:%G' "$src")" "$dst" 2>/dev/null || true
-    chmod --reference="$src" "$dst" 2>/dev/null || true
-    if command -v getfacl >/dev/null 2>&1 && command -v setfacl >/dev/null 2>&1; then
-        getfacl --omit-header "$src" 2>/dev/null | setfacl --set-file=- "$dst" 2>/dev/null || true
-    fi
+    LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 64
+    printf '\n'
 }
 
-set_agent_config_permissions() {
-    local user="$1" group="$2" mode="$3" path="$4"
-    [ -e "$path" ] || return
-    chown "$user:$group" "$path" 2>/dev/null || true
-    chmod "$mode" "$path" 2>/dev/null || true
-    if command -v setfacl >/dev/null 2>&1 && [ "$mode" = "0660" ]; then
-        setfacl -m "u:$user:rw-,g:$group:rw-,m::rw-,o::---" "$path" 2>/dev/null || true
+hook_token_for_agent() {
+    local agent="$1" cfg="$2" token=""
+    if [ -r "$PM_CONSUMER_TOKEN_FILE" ] && command -v jq >/dev/null 2>&1; then
+        token=$(jq -r --arg agent "$agent" '.[$agent] // empty' "$PM_CONSUMER_TOKEN_FILE" 2>/dev/null || true)
     fi
+    if [ -z "$token" ] && [ -r "$cfg" ] && command -v jq >/dev/null 2>&1; then
+        token=$(jq -r '.hooks.token // empty' "$cfg" 2>/dev/null || true)
+    fi
+    if [ -z "$token" ]; then
+        token=$(generate_hook_token)
+    fi
+    printf '%s\n' "$token"
 }
 
 # 1. bin scripts
-log "[1/8] bin scripts"
+log "[1/7] bin scripts"
 do_install 755 "$REPO_ROOT/bin/ai-monitor"                /usr/local/bin/ai-monitor
+do_install 755 "$REPO_ROOT/bin/openclaw-registry-check"   /usr/local/bin/openclaw-registry-check
 do_install 755 "$REPO_ROOT/bin/openclaw-integrity-check"  /usr/local/bin/openclaw-integrity-check
 do_install 755 "$REPO_ROOT/bin/openclaw-control"          /usr/local/sbin/openclaw-control
+do_install 755 "$REPO_ROOT/bin/pm-workflow-nudge"         /usr/local/sbin/pm-workflow-nudge
+do_install 755 "$REPO_ROOT/bin/openclaw-patch-session-fence" /usr/local/sbin/openclaw-patch-session-fence
 do_install 755 "$REPO_ROOT/bin/agent-dashboard"           /usr/local/bin/agent-dashboard
 do_install 755 "$REPO_ROOT/bin/openclaw-monitor-sync"     /usr/local/sbin/openclaw-monitor-sync
 do_install 755 "$REPO_ROOT/bin/openclaw-typing-keepalive" /usr/local/bin/openclaw-typing-keepalive
 do_install 755 "$REPO_ROOT/bin/gmail-watch-renew-all"     /usr/local/sbin/gmail-watch-renew-all
+do_install 755 "$REPO_ROOT/bin/code-tree-perms"           /usr/local/sbin/code-tree-perms
+if [ "$OPENCLAW_SESSION_FENCE_PATCH" != "0" ] && [ "$OPENCLAW_SESSION_FENCE_PATCH" != "false" ]; then
+    if [ "$DRY" -eq 1 ]; then
+        log "  would patch OpenClaw session fence at $OPENCLAW_SESSION_FENCE_PATCH_FILE"
+    elif [ -x "$PM_NODE_BIN" ]; then
+        "$PM_NODE_BIN" "$REPO_ROOT/bin/openclaw-patch-session-fence" --file "$OPENCLAW_SESSION_FENCE_PATCH_FILE" \
+            || warn "  OpenClaw session-fence patch failed (continuing)"
+    else
+        warn "  node not found/executable at $PM_NODE_BIN; skipping OpenClaw session-fence patch"
+    fi
+else
+    log "  OpenClaw session-fence patch disabled by OPENCLAW_SESSION_FENCE_PATCH=$OPENCLAW_SESSION_FENCE_PATCH"
+fi
 
 # 2. system-wide systemd units (host-portable)
-log "[2/8] systemd system units"
+log "[2/7] systemd system units"
 for u in agent-dashboard.service \
          openclaw-monitor-sync.service openclaw-monitor-sync.timer \
          openclaw-typing-keepalive.service \
@@ -115,7 +152,7 @@ done
 # /etc/systemd/user/ so every user's systemd instance can see them. The
 # monitor agent enables the openclaw-{jira,bitbucket}-receiver pair via
 # step 7's reconcile; other agents leave them disabled.
-log "[3/8] systemd user units (admin-installed, system-wide visible)"
+log "[3/7] systemd user units (admin-installed, system-wide visible)"
 if [ -d "$REPO_ROOT/systemd/user" ]; then
     if [ "$DRY" -eq 0 ]; then
         mkdir -p /etc/systemd/user
@@ -127,7 +164,7 @@ if [ -d "$REPO_ROOT/systemd/user" ]; then
 fi
 
 # 4. generate openclaw-monitor-sync.path
-log "[4/8] generate openclaw-monitor-sync.path from $REGISTRY"
+log "[4/7] generate openclaw-monitor-sync.path from $REGISTRY"
 if [ ! -r "$REGISTRY" ]; then
     warn "  $REGISTRY not readable; skipping .path generation"
 else
@@ -155,7 +192,7 @@ fi
 # loaded by the user-units (openclaw-{jira,bitbucket}-receiver.service).
 # The monitor agent runs them; coding agents don't need the scripts at
 # all. Discovered from the registry (role=monitor); no hardcoding.
-log "[4b/8] webhook scripts → monitor agent home"
+log "[4b/7] webhook scripts → monitor agent home"
 if [ -d "$REPO_ROOT/webhooks" ] && [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     MONITOR_LINE=$(jq -r '.agents[] | select(.role == "monitor" and .enabled == true) | "\(.user)\t\(.home // "/home/\(.user)")"' "$REGISTRY" | head -1)
     if [ -n "$MONITOR_LINE" ]; then
@@ -165,9 +202,6 @@ if [ -d "$REPO_ROOT/webhooks" ] && [ -r "$REGISTRY" ] && command -v jq >/dev/nul
         if [ "$DRY" -eq 1 ]; then
             log "  would install webhooks/*.js → $dst/ (owner=$m_user)"
         else
-            install -d -o "$m_user" -g "$m_user" -m 0775 /var/lib/ai-monitor/pending-mentions
-            install -d -o "$m_user" -g "$m_user" -m 0775 /var/lib/ai-monitor/pending-assignee-comments
-            install -d -o "$m_user" -g "$m_user" -m 0775 /var/lib/ai-monitor/pending-epic-comments
             for src in "$REPO_ROOT"/webhooks/*.js; do
                 [ -e "$src" ] || continue
                 mode=755; [ "$(basename "$src")" = "common.js" ] && mode=644
@@ -187,7 +221,7 @@ fi
 # resolution treats ../ relative to the symlink location — without an
 # agent-self symlink in the agent's own skills/ dir, the require fails.
 # Symlinking points back to the canonical repo copy so updates propagate.
-log "[4c/8] agent-self.js symlinks per agent"
+log "[4c/7] agent-self.js symlinks per agent"
 if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     while IFS=$'\t' read -r user home; do
         [ -z "$user" ] && continue
@@ -210,7 +244,7 @@ fi
 # Auto-create per-coding-agent ~/.gitconfig if missing, with an includeIf
 # block that pulls codeRoot/.gitconfig-shared (where the [user] block lives,
 # generated from the registry). Idempotent: never clobbers existing config.
-log "[4d/8] codeRoot drift check + per-agent git identity"
+log "[4d/7] codeRoot drift check + per-agent git identity"
 if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     CODE_ROOT=$(jq -r '.codeRoot // empty' "$REGISTRY")
     CODE_OWNER=$(jq -r '.codeOwner // empty' "$REGISTRY")
@@ -370,7 +404,7 @@ fi
 # would lose those. Symlinking individual files works in principle but
 # breaks Node's module resolution unless we also install node_modules
 # in the repo. Copying keeps each agent fully self-contained.
-log "[4e/8] sync gmail helpers to each gmail-integrated coding agent"
+log "[4e/7] sync gmail helpers to each gmail-integrated coding agent"
 if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     while IFS=$'\t' read -r u h; do
         [ -z "$u" ] && continue
@@ -397,177 +431,359 @@ if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     done < <(jq -r '.agents[] | select(.enabled == true and .role == "coding" and (.integrations.gmail // false)) | "\(.user)\t\(.home // "")"' "$REGISTRY")
 fi
 
-# 5. per-agent private files
-#
-# SOUL/USER/MEMORY/IDENTITY/TOOLS/HEARTBEAT and openclaw.json are private
-# per-agent content, not repo-owned shared docs. Keep the canonical copies
-# under a host-level agent-files root (default: /srv/agents/openclaw,
-# overrideable by agents.json agentFilesRoot or OPENCLAW_AGENT_FILES_ROOT),
-# and leave symlinks in the paths the runtime already reads.
-log "[5/8] per-agent private files root"
-if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
-    if [ -z "$AGENT_FILES_ROOT" ]; then
-        AGENT_FILES_ROOT=$(jq -r '.agentFilesRoot // "/srv/agents/openclaw"' "$REGISTRY")
+# 4f. PM web service + dispatch file-drop + consumer + local gateway hooks/channel
+log "[4f/7] PM web service + non-chat /hooks/wake + native channel"
+PM_WEB_ROOT="$(cd "$PM_WEB_ROOT" 2>/dev/null && pwd || printf '%s' "$PM_WEB_ROOT")"
+if [ ! -d "$PM_WEB_ROOT" ]; then
+    warn "  PM web root $PM_WEB_ROOT not found; skipping PM web/consumer install"
+else
+    pm_app_user="$PM_APP_USER"
+    pm_app_group="$PM_APP_GROUP"
+    pm_user="${PM_CONSUMER_USER:-$pm_app_user}"
+    pm_group="${PM_CONSUMER_GROUP:-$pm_app_group}"
+    pm_unit_src="$PM_WEB_ROOT/deploy/pm.service"
+    consumer_unit_src="$PM_WEB_ROOT/deploy/pm-consumer.service"
+    channel_installer="$PM_WEB_ROOT/deploy/install-openclaw-pm-channel.mjs"
+    pm_channel_agent_root="${PM_OPENCLAW_AGENT_ROOT:-/srv/agents/openclaw}"
+    pm_channel_agents=""
+    if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+        registry_agent_root=$(jq -r '.agentFilesRoot // empty' "$REGISTRY" 2>/dev/null || true)
+        [ -n "$registry_agent_root" ] && pm_channel_agent_root="$registry_agent_root"
+        pm_channel_agents=$(jq -r '[.agents[] | select(.enabled == true and (.user // "") != "") | .user] | join(",")' "$REGISTRY" 2>/dev/null || true)
     fi
-    CODE_ROOT_FOR_PERMS=$(jq -r '.codeRoot // empty' "$REGISTRY")
-    CODE_GROUP_FOR_AGENT_FILES=$(jq -r '.codeGroup // empty' "$REGISTRY")
-    AGENT_FILES_PARENT=$(dirname "$AGENT_FILES_ROOT")
-    PRIVATE_FILES="SOUL.md USER.md MEMORY.md IDENTITY.md TOOLS.md HEARTBEAT.md"
-    PRIVATE_CONFIG="openclaw.json"
 
     if [ "$DRY" -eq 1 ]; then
-        log "  would create $AGENT_FILES_ROOT"
-        [ -n "$CODE_ROOT_FOR_PERMS" ] && log "  would replicate $CODE_ROOT_FOR_PERMS permissions on $AGENT_FILES_PARENT and $AGENT_FILES_ROOT"
+        log "  would install -d -o $pm_app_user -g $pm_app_group -m 0700 $PM_AGENT_CREDENTIALS_DIR"
+        log "  would install -d -o $pm_user -g $pm_group -m 0700 $PM_DROP_DIR"
+        log "  would install -d -o $pm_app_user -g $pm_app_group -m 0700 $PM_ATTACHMENT_ROOT"
+        log "  would install -d -o root -g root -m 0755 $PM_SAMBA_SHARED_ROOT and grant $pm_app_user ACL write access"
+        log "  would provision pm-consumer pnpm home/config/cache under $PM_STATE_DIR"
+        log "  would remove stale per-agent user pm.service / pm-consumer.service units"
+        log "  would bind agent gateways to loopback, enable /hooks/wake for non-chat automation with hook:/pm: session keys, and reconcile $PM_CONSUMER_TOKEN_FILE (root:$pm_group 0640)"
+        log "  would reconcile native PM channel tokens at $PM_OPENCLAW_CHANNEL_TOKEN_FILE (root:$PM_OPENCLAW_CHANNEL_TOKEN_GROUP 0640)"
+        log "  would configure native PM channel final callback $PM_OPENCLAW_CHANNEL_CALLBACK_URL"
+        if [ -n "$pm_channel_agents" ]; then
+            log "  would configure native PM channel for enabled agents: $pm_channel_agents"
+        else
+            log "  would let native PM channel installer discover enabled agents from $REGISTRY"
+        fi
+        log "  PM sends the live stream callback per turn as /api/openclaw/pm-channel/stream from its callback base and tracks durable PmChannelRun state; success still requires the final reply callback"
+        if [ -f "$pm_unit_src" ]; then
+            log "  would render $pm_unit_src → /etc/systemd/system/pm.service"
+        else
+            warn "  missing $pm_unit_src; skipping pm.service"
+        fi
+        if [ -f "$consumer_unit_src" ]; then
+            log "  would render $consumer_unit_src → /etc/systemd/system/pm-consumer.service"
+        else
+            warn "  missing $consumer_unit_src; skipping pm-consumer.service"
+        fi
+        if [ -f "$channel_installer" ]; then
+            log "  would run $PM_NODE_BIN $channel_installer --registry $REGISTRY --agent-root $pm_channel_agent_root --callback-url $PM_OPENCLAW_CHANNEL_CALLBACK_URL --restart"
+        else
+            warn "  missing $channel_installer; skipping native PM channel install"
+        fi
     else
-        mkdir -p "$AGENT_FILES_ROOT"
-        if [ -n "$CODE_ROOT_FOR_PERMS" ] && [ -d "$CODE_ROOT_FOR_PERMS" ]; then
-            clone_dir_permissions "$CODE_ROOT_FOR_PERMS" "$AGENT_FILES_PARENT"
-            clone_dir_permissions "$CODE_ROOT_FOR_PERMS" "$AGENT_FILES_ROOT"
-        fi
-    fi
-
-    while IFS=$'\t' read -r u h workspace; do
-        [ -z "$u" ] && continue
-        home="${h:-/home/$u}"
-        primary_workspace="${workspace:-$home/workspace}"
-        openclaw_workspace="$home/.openclaw/workspace"
-        dst_dir="$AGENT_FILES_ROOT/$u"
-
-        if [ -n "$CODE_GROUP_FOR_AGENT_FILES" ] && getent group "$CODE_GROUP_FOR_AGENT_FILES" >/dev/null 2>&1; then
-            dst_group="$CODE_GROUP_FOR_AGENT_FILES"
-            config_mode=0660
+        install -d -o "$pm_app_user" -g "$pm_app_group" -m 0700 "$PM_AGENT_CREDENTIALS_DIR"
+        ok "$PM_AGENT_CREDENTIALS_DIR"
+        install -d -o "$pm_app_user" -g "$pm_app_group" -m 0770 "$PM_WEB_ROOT/.data"
+        ok "$PM_WEB_ROOT/.data"
+        install -d -o "$pm_user" -g "$pm_group" -m 0700 "$PM_DROP_DIR"
+        ok "$PM_DROP_DIR"
+        install -d -o "$pm_app_user" -g "$pm_app_group" -m 0700 "$PM_ATTACHMENT_ROOT"
+        ok "$PM_ATTACHMENT_ROOT"
+        install -d -o root -g root -m 0755 "$PM_SAMBA_SHARED_ROOT"
+        ok "$PM_SAMBA_SHARED_ROOT"
+        install -d -o "$pm_user" -g "$pm_group" -m 0700 \
+            "$PM_CONSUMER_PNPM_HOME" \
+            "$PM_CONSUMER_PNPM_CONFIG_HOME" \
+            "$PM_CONSUMER_PNPM_CACHE_HOME" \
+            "$PM_CONSUMER_PNPM_CONFIG_HOME/pnpm"
+        if [ ! -f "$PM_CONSUMER_PNPM_HOME/.npmrc" ]; then
+            install -o "$pm_user" -g "$pm_group" -m 0600 /dev/null "$PM_CONSUMER_PNPM_HOME/.npmrc"
         else
-            dst_group="$(id -gn "$u" 2>/dev/null || printf '%s' "$u")"
-            config_mode=0600
+            chown "$pm_user:$pm_group" "$PM_CONSUMER_PNPM_HOME/.npmrc" 2>/dev/null || true
+            chmod 0600 "$PM_CONSUMER_PNPM_HOME/.npmrc" 2>/dev/null || true
         fi
-
-        if [ "$DRY" -eq 1 ]; then
-            log "  would create $dst_dir (owner=$u group=$dst_group)"
+        if [ ! -f "$PM_CONSUMER_PNPM_CONFIG_HOME/pnpm/rc" ]; then
+            install -o "$pm_user" -g "$pm_group" -m 0600 /dev/null "$PM_CONSUMER_PNPM_CONFIG_HOME/pnpm/rc"
         else
-            install -d -o "$u" -g "$dst_group" -m 2770 "$dst_dir"
-            if command -v setfacl >/dev/null 2>&1; then
-                setfacl -m "u:$u:rwx" "$dst_dir" 2>/dev/null || true
-                setfacl -d -m "u:$u:rwx" "$dst_dir" 2>/dev/null || true
-            fi
+            chown "$pm_user:$pm_group" "$PM_CONSUMER_PNPM_CONFIG_HOME/pnpm/rc" 2>/dev/null || true
+            chmod 0600 "$PM_CONSUMER_PNPM_CONFIG_HOME/pnpm/rc" 2>/dev/null || true
         fi
-
-        for f in $PRIVATE_FILES; do
-            dst="$dst_dir/$f"
-            candidate=""
-
-            for src_dir in "$primary_workspace" "$openclaw_workspace"; do
-                [ -d "$src_dir" ] || continue
-                src="$src_dir/$f"
-                if [ -e "$src" ] && [ ! -L "$src" ]; then
-                    candidate="$src"
-                    break
-                fi
+        ok "pm-consumer pnpm home/config/cache under $PM_STATE_DIR"
+        if command -v setfacl >/dev/null 2>&1; then
+            acl_path="$PM_WEB_ROOT"
+            while [ "$acl_path" != "/" ] && [ -n "$acl_path" ]; do
+                setfacl -m "u:$pm_app_user:x" "$acl_path" 2>/dev/null || true
+                acl_path=$(dirname "$acl_path")
             done
+            setfacl -R -m "u:$pm_app_user:rx" "$PM_WEB_ROOT" 2>/dev/null || true
+            [ -d "$PM_WEB_ROOT/prisma" ] && setfacl -R -m "u:$pm_app_user:rwx" "$PM_WEB_ROOT/prisma" 2>/dev/null || true
+            [ -d "$PM_WEB_ROOT/prisma" ] && setfacl -dR -m "u:$pm_app_user:rwx" "$PM_WEB_ROOT/prisma" 2>/dev/null || true
+            [ -d "$PM_WEB_ROOT/.data" ] && setfacl -R -m "u:$pm_app_user:rwx" "$PM_WEB_ROOT/.data" 2>/dev/null || true
+            [ -d "$PM_WEB_ROOT/.data" ] && setfacl -dR -m "u:$pm_app_user:rwx" "$PM_WEB_ROOT/.data" 2>/dev/null || true
+            [ -d "$PM_SAMBA_SHARED_ROOT" ] && find "$PM_SAMBA_SHARED_ROOT" -type d -exec setfacl -m "u:$pm_app_user:rwx,d:u:$pm_app_user:rwx" {} + 2>/dev/null || true
+            [ -d "$PM_SAMBA_SHARED_ROOT" ] && find "$PM_SAMBA_SHARED_ROOT" -type f -exec setfacl -m "u:$pm_app_user:rw" {} + 2>/dev/null || true
+            ok "runtime ACLs for $pm_app_user on PM bundle/data paths"
+        else
+            warn "  setfacl unavailable; ensure $pm_app_user can read .next/standalone and write prisma/.data plus $PM_SAMBA_SHARED_ROOT"
+        fi
 
-            if [ ! -e "$dst" ] && [ -n "$candidate" ]; then
-                if [ "$DRY" -eq 1 ]; then
-                    log "    would move $candidate → $dst"
-                else
-                    mv "$candidate" "$dst"
-                    chown "$u:$u" "$dst" 2>/dev/null || true
-                    ok "  $u: moved $f to $dst"
+        if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+            while IFS=$'\t' read -r user uid home; do
+                [ -z "$user" ] && continue
+                [ -n "$home" ] || home="/home/$user"
+                unit_dir="$home/.config/systemd/user"
+                rm -rf \
+                    "$unit_dir/pm.service" \
+                    "$unit_dir/pm-consumer.service" \
+                    "$unit_dir/pm.service.d" \
+                    "$unit_dir/pm-consumer.service.d" \
+                    "$unit_dir/default.target.wants/pm.service" \
+                    "$unit_dir/default.target.wants/pm-consumer.service"
+                [ -n "$uid" ] || uid=$(id -u "$user" 2>/dev/null || true)
+                if [ -n "$uid" ]; then
+                    sudo -n -u "$user" \
+                        env XDG_RUNTIME_DIR="/run/user/$uid" \
+                            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+                        systemctl --user daemon-reload 2>/dev/null || true
                 fi
-            elif [ -e "$dst" ] && [ -n "$candidate" ]; then
-                if cmp -s "$candidate" "$dst" 2>/dev/null; then
-                    if [ "$DRY" -eq 1 ]; then
-                        log "    would replace duplicate $candidate with symlink"
-                    else
-                        rm -f "$candidate"
-                    fi
-                else
-                    warn "  $u: $f already exists at $dst and differs from $candidate; leaving source untouched"
-                fi
-            elif [ ! -e "$dst" ]; then
-                log "  $u: $f missing; no canonical file to link"
-                continue
+            done < <(jq -r '.agents[] | select(.enabled == true) | "\(.user)\t\(.uid // "")\t\(.home // "")"' "$REGISTRY")
+            ok "removed stale per-agent user pm.service / pm-consumer.service units"
+        else
+            warn "  registry or jq unavailable; cannot remove stale per-agent PM user units"
+        fi
+
+        install -d -o root -g root -m 0755 "$(dirname "$PM_CONSUMER_TOKEN_FILE")"
+        install -d -o root -g root -m 0755 "$(dirname "$PM_OPENCLAW_CHANNEL_TOKEN_FILE")"
+        if [ -f "$PM_ENV_FILE" ]; then
+            chown "root:$pm_app_group" "$PM_ENV_FILE" 2>/dev/null || true
+            chmod 0640 "$PM_ENV_FILE" 2>/dev/null || true
+            ok "$PM_ENV_FILE"
+            if grep -Eq '^(PM_AGENT_CALLBACK_URL|PM_INTERNAL_APP_URL)=' "$PM_ENV_FILE"; then
+                log "  PM callback base configured in $PM_ENV_FILE"
+            else
+                log "  PM callback base not set in $PM_ENV_FILE; PM defaults native reply/stream callbacks to http://127.0.0.1:3000"
             fi
+        else
+            warn "  $PM_ENV_FILE does not exist; create it from deploy/pm.env.example before starting pm.service"
+        fi
+        tmp_tokens=$(mktemp)
+        if [ -r "$PM_CONSUMER_TOKEN_FILE" ]; then
+            if command -v jq >/dev/null 2>&1 && jq empty "$PM_CONSUMER_TOKEN_FILE" >/dev/null 2>&1; then
+                cp "$PM_CONSUMER_TOKEN_FILE" "$tmp_tokens"
+            elif ! command -v jq >/dev/null 2>&1; then
+                cp "$PM_CONSUMER_TOKEN_FILE" "$tmp_tokens"
+                warn "  jq unavailable; preserving $PM_CONSUMER_TOKEN_FILE without hook-token reconciliation"
+            else
+                printf '{}\n' > "$tmp_tokens"
+                warn "  $PM_CONSUMER_TOKEN_FILE is not valid JSON; replacing it with a regenerated token map"
+            fi
+        else
+            printf '{}\n' > "$tmp_tokens"
+        fi
 
-            for src_dir in "$primary_workspace" "$openclaw_workspace"; do
-                [ -d "$src_dir" ] || continue
-                src="$src_dir/$f"
-                if [ -e "$src" ] && [ ! -L "$src" ]; then
-                    if cmp -s "$src" "$dst" 2>/dev/null; then
-                        if [ "$DRY" -eq 1 ]; then
-                            log "    would replace duplicate $src with symlink"
-                            continue
-                        fi
-                        rm -f "$src"
+        if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+            agent_files_root=$(jq -r '.agentFilesRoot // "/srv/agents/openclaw"' "$REGISTRY")
+            agent_config_group=$(jq -r '.codeGroup // empty' "$REGISTRY")
+            while IFS=$'\t' read -r user uid port home; do
+                [ -z "$user" ] && continue
+                [ -n "$home" ] || home="/home/$user"
+                cfg="$agent_files_root/$user/openclaw.json"
+                if [ ! -f "$cfg" ]; then
+                    warn "  $user: missing $cfg; cannot enable /hooks/wake"
+                    continue
+                fi
+
+                token=$(hook_token_for_agent "$user" "$cfg")
+                tmp_cfg=$(mktemp)
+                if ! jq --arg token "$token" '
+                    .gateway = ((.gateway // {}) + {
+                        bind: "loopback",
+                        trustedProxies: ["127.0.0.1", "::1"]
+                    })
+                    | .gateway.auth = ((.gateway.auth // {}) + {
+                        trustedProxy: ((.gateway.auth.trustedProxy // {}) + {
+                            allowLoopback: true
+                        })
+                    })
+                    | .hooks = ((.hooks // {}) + {
+                        enabled: true,
+                        path: "/hooks",
+                        token: $token,
+                        allowRequestSessionKey: true
+                    })
+                    | .hooks.allowedSessionKeyPrefixes = (((.hooks.allowedSessionKeyPrefixes // []) + ["hook:", "pm:"]) | unique)
+                ' "$cfg" > "$tmp_cfg"; then
+                    warn "  $user: $cfg is not valid JSON; leaving gateway bind/hooks unchanged"
+                    rm -f "$tmp_cfg"
+                    continue
+                fi
+
+                cfg_group="$agent_config_group"
+                [ -n "$cfg_group" ] || cfg_group=$(id -gn "$user" 2>/dev/null || stat -c '%G' "$cfg" 2>/dev/null || printf '%s' "$user")
+                cfg_mode=$(stat -c '%a' "$cfg" 2>/dev/null || printf '0660')
+                changed=0
+                if ! cmp -s "$tmp_cfg" "$cfg"; then
+                    if install -o "$user" -g "$cfg_group" -m "$cfg_mode" "$tmp_cfg" "$cfg"; then
+                        ok "  $user: bound gateway to loopback and enabled /hooks/wake hook:/pm: session keys in $cfg"
+                        changed=1
                     else
-                        warn "  $u: $src differs from $dst; leaving regular file untouched"
+                        warn "  $user: failed to write $cfg; leaving token map unchanged for this agent"
+                        rm -f "$tmp_cfg"
                         continue
                     fi
-                fi
-                if [ "$DRY" -eq 1 ]; then
-                    log "    would symlink $src → $dst"
                 else
-                    ln -snf "$dst" "$src"
-                    chown -h "$u:$u" "$src" 2>/dev/null || true
+                    chown "$user:$cfg_group" "$cfg" 2>/dev/null || true
+                    chmod "$cfg_mode" "$cfg" 2>/dev/null || true
+                    log "  $user: gateway already loopback-bound with /hooks/wake hook:/pm: session keys enabled"
                 fi
-            done
-        done
+                rm -f "$tmp_cfg"
 
-        src="$home/.openclaw/$PRIVATE_CONFIG"
-        dst="$dst_dir/$PRIVATE_CONFIG"
-        if [ ! -e "$dst" ] && [ -e "$src" ] && [ ! -L "$src" ]; then
-            if [ "$DRY" -eq 1 ]; then
-                log "    would move $src → $dst"
-                log "    would symlink $src → $dst"
-                continue
-            else
-                mv "$src" "$dst"
-                set_agent_config_permissions "$u" "$dst_group" "$config_mode" "$dst"
-                ok "  $u: moved $PRIVATE_CONFIG to $dst"
-            fi
-        elif [ -e "$dst" ] && [ -e "$src" ] && [ ! -L "$src" ]; then
-            if cmp -s "$src" "$dst" 2>/dev/null; then
-                if [ "$DRY" -eq 1 ]; then
-                    log "    would replace duplicate $src with symlink"
-                    log "    would symlink $src → $dst"
-                    continue
+                home_cfg="$home/.openclaw/openclaw.json"
+                cfg_real=$(readlink -f "$cfg" 2>/dev/null || printf '%s' "$cfg")
+                if [ -L "$home_cfg" ]; then
+                    home_real=$(readlink -f "$home_cfg" 2>/dev/null || true)
+                    if [ "$home_real" = "$cfg_real" ]; then
+                        log "  $user: $home_cfg already points at $cfg"
+                    else
+                        ln -snf "$cfg" "$home_cfg"
+                        chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
+                        ok "  $user: repointed $home_cfg -> $cfg"
+                    fi
+                elif [ -e "$home_cfg" ]; then
+                    if cmp -s "$home_cfg" "$cfg"; then
+                        backup="$home_cfg.pre-symlink-$(date +%Y%m%d%H%M%S)"
+                        mv "$home_cfg" "$backup"
+                        ln -s "$cfg" "$home_cfg"
+                        chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
+                        ok "  $user: replaced duplicate $home_cfg with symlink to $cfg (backup: $backup)"
+                    else
+                        warn "  $user: $home_cfg differs from $cfg; leaving regular file in place. Reconcile before symlinking."
+                    fi
                 else
-                    rm -f "$src"
-                    set_agent_config_permissions "$u" "$dst_group" "$config_mode" "$dst"
+                    install -d -o "$user" -g "$user" -m 0700 "$home/.openclaw" 2>/dev/null || true
+                    ln -s "$cfg" "$home_cfg"
+                    chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
+                    ok "  $user: created $home_cfg -> $cfg"
                 fi
-            else
-                warn "  $u: $PRIVATE_CONFIG already exists at $dst and differs from $src; leaving source untouched"
-            fi
-        elif [ ! -e "$dst" ]; then
-            log "  $u: $PRIVATE_CONFIG missing; no canonical file to link"
-            continue
-        fi
 
-        if [ -e "$src" ] && [ ! -L "$src" ]; then
-            if cmp -s "$src" "$dst" 2>/dev/null; then
-                if [ "$DRY" -eq 1 ]; then
-                    log "    would replace duplicate $src with symlink"
-                    continue
+                next_tokens=$(mktemp)
+                jq --arg agent "$user" --arg token "$token" '. + {($agent): $token}' "$tmp_tokens" > "$next_tokens"
+                mv "$next_tokens" "$tmp_tokens"
+
+                if [ "$changed" -eq 1 ]; then
+                    [ -n "$uid" ] || uid=$(id -u "$user" 2>/dev/null || true)
+                    if [ -n "$uid" ]; then
+                        if sudo -n -u "$user" \
+                            env XDG_RUNTIME_DIR="/run/user/$uid" \
+                                DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+                            systemctl --user restart openclaw-gateway.service 2>/dev/null; then
+                            ok "  $user: restarted openclaw-gateway.service for hook config"
+                        else
+                            warn "  $user: hook config changed; restart openclaw-gateway.service manually if it is already running"
+                        fi
+                    fi
                 fi
-                rm -f "$src"
-            else
-                warn "  $u: $src differs from $dst; leaving regular file untouched"
-                continue
-            fi
-        fi
-
-        if [ "$DRY" -eq 1 ]; then
-            log "    would symlink $src → $dst"
+            done < <(jq -r '
+                .agents[]
+                | select(.enabled == true)
+                | . as $a
+                | ($a.listeners // [] | map(select(.owner == "openclaw-gateway")) | .[0].port // empty) as $port
+                | select($port != "")
+                | "\($a.user)\t\($a.uid // "")\t\($port)\t\($a.home // "")"
+            ' "$REGISTRY")
         else
-            ln -snf "$dst" "$src"
-            chown -h "$u:$u" "$src" 2>/dev/null || true
-            set_agent_config_permissions "$u" "$dst_group" "$config_mode" "$dst"
+            warn "  registry or jq unavailable; $PM_CONSUMER_TOKEN_FILE remains an empty/preserved token map"
         fi
-    done < <(jq -r '.agents[] | "\(.user)\t\(.home // "")\t\(.workspace // "")"' "$REGISTRY")
-else
-    warn "  registry unreadable or jq unavailable; skipping per-agent private files"
+
+        install -o root -g "$pm_group" -m 0640 "$tmp_tokens" "$PM_CONSUMER_TOKEN_FILE"
+        rm -f "$tmp_tokens"
+        ok "$PM_CONSUMER_TOKEN_FILE"
+
+        if [ ! -f "$PM_OPENCLAW_CHANNEL_TOKEN_FILE" ]; then
+            tmp_channel_tokens=$(mktemp)
+            printf '{}\n' > "$tmp_channel_tokens"
+            install -o root -g "$PM_OPENCLAW_CHANNEL_TOKEN_GROUP" -m 0640 "$tmp_channel_tokens" "$PM_OPENCLAW_CHANNEL_TOKEN_FILE"
+            rm -f "$tmp_channel_tokens"
+        else
+            chown "root:$PM_OPENCLAW_CHANNEL_TOKEN_GROUP" "$PM_OPENCLAW_CHANNEL_TOKEN_FILE" 2>/dev/null || true
+            chmod 0640 "$PM_OPENCLAW_CHANNEL_TOKEN_FILE" 2>/dev/null || true
+        fi
+        ok "$PM_OPENCLAW_CHANNEL_TOKEN_FILE"
+
+        if [ -f "$pm_unit_src" ]; then
+            tmp_unit=$(mktemp)
+            sed -e "s|^User=.*|User=$pm_app_user|" \
+                -e "s|^Group=.*|Group=$pm_app_group|" \
+                -e "s|^WorkingDirectory=.*|WorkingDirectory=$PM_WEB_ROOT/.next/standalone|" \
+                -e "s|^EnvironmentFile=.*|EnvironmentFile=$PM_ENV_FILE|" \
+                -e "s|^Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=.*|Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=$PM_OPENCLAW_CHANNEL_TOKEN_FILE|" \
+                -e "s|^ExecStart=.*|ExecStart=$PM_NODE_BIN server.js|" \
+                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_WEB_ROOT/.data $PM_AGENT_CREDENTIALS_DIR $PM_DROP_DIR -$PM_ATTACHMENT_ROOT -$PM_SAMBA_SHARED_ROOT|" \
+                -e "s|^ReadOnlyPaths=.*|ReadOnlyPaths=/srv/agents $PM_OPENCLAW_CHANNEL_TOKEN_FILE|" \
+                "$pm_unit_src" > "$tmp_unit"
+            install -o root -g root -m 0644 "$tmp_unit" /etc/systemd/system/pm.service
+            rm -f "$tmp_unit"
+            ok "/etc/systemd/system/pm.service"
+        else
+            warn "  missing $pm_unit_src; skipping pm.service"
+        fi
+
+        if [ -f "$consumer_unit_src" ]; then
+            tmp_unit=$(mktemp)
+            sed -e "s|^User=.*|User=$pm_user|" \
+                -e "s|^Group=.*|Group=$pm_group|" \
+                -e "s|^WorkingDirectory=.*|WorkingDirectory=$PM_WEB_ROOT|" \
+                -e "s|^EnvironmentFile=.*|EnvironmentFile=$PM_ENV_FILE|" \
+                -e "s|^Environment=PM_CONSUMER_DROP_DIR=.*|Environment=PM_CONSUMER_DROP_DIR=$PM_DROP_DIR|" \
+                -e "s|^Environment=PM_CONSUMER_HOOK_TOKEN_FILE=.*|Environment=PM_CONSUMER_HOOK_TOKEN_FILE=$PM_CONSUMER_TOKEN_FILE|" \
+                -e "s|^Environment=HOME=.*|Environment=HOME=$PM_CONSUMER_PNPM_HOME|" \
+                -e "s|^Environment=XDG_CONFIG_HOME=.*|Environment=XDG_CONFIG_HOME=$PM_CONSUMER_PNPM_CONFIG_HOME|" \
+                -e "s|^Environment=XDG_CACHE_HOME=.*|Environment=XDG_CACHE_HOME=$PM_CONSUMER_PNPM_CACHE_HOME|" \
+                -e "s|^Environment=PNPM_HOME=.*|Environment=PNPM_HOME=$PM_CONSUMER_PNPM_HOME|" \
+                -e "s|^Environment=NPM_CONFIG_USERCONFIG=.*|Environment=NPM_CONFIG_USERCONFIG=$PM_CONSUMER_PNPM_HOME/.npmrc|" \
+                -e "s|^Environment=npm_config_userconfig=.*|Environment=npm_config_userconfig=$PM_CONSUMER_PNPM_HOME/.npmrc|" \
+                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_DROP_DIR $PM_CONSUMER_PNPM_HOME $PM_CONSUMER_PNPM_CONFIG_HOME $PM_CONSUMER_PNPM_CACHE_HOME|" \
+                "$consumer_unit_src" > "$tmp_unit"
+            install -o root -g root -m 0644 "$tmp_unit" /etc/systemd/system/pm-consumer.service
+            rm -f "$tmp_unit"
+            ok "/etc/systemd/system/pm-consumer.service"
+        else
+            warn "  missing $consumer_unit_src; skipping pm-consumer.service"
+        fi
+
+        if [ -f "$channel_installer" ]; then
+            if [ -x "$PM_NODE_BIN" ]; then
+                log "  native PM channel final callback: $PM_OPENCLAW_CHANNEL_CALLBACK_URL"
+                log "  native PM channel stream callback is supplied per turn by the PM app; no-reply turns fail visibly instead of completing on bare done"
+                channel_args=(
+                    --registry "$REGISTRY"
+                    --agent-root "$pm_channel_agent_root"
+                    --token-file "$PM_OPENCLAW_CHANNEL_TOKEN_FILE"
+                    --token-group "$PM_OPENCLAW_CHANNEL_TOKEN_GROUP"
+                    --callback-url "$PM_OPENCLAW_CHANNEL_CALLBACK_URL"
+                    --restart
+                )
+                if [ -n "$pm_channel_agents" ]; then
+                    channel_args+=(--agents "$pm_channel_agents")
+                fi
+                PM_OPENCLAW_CHANNEL_TOKEN_FILE="$PM_OPENCLAW_CHANNEL_TOKEN_FILE" \
+                PM_OPENCLAW_CHANNEL_TOKEN_GROUP="$PM_OPENCLAW_CHANNEL_TOKEN_GROUP" \
+                "$PM_NODE_BIN" "$channel_installer" "${channel_args[@]}" \
+                    || warn "  native PM channel installer failed (continuing)"
+            else
+                warn "  node not found/executable at $PM_NODE_BIN; skipping native PM channel installer"
+            fi
+        else
+            warn "  missing $channel_installer; skipping native PM channel installer"
+        fi
+    fi
 fi
 
-# 6. dashboard frontend symlink
-log "[6/8] dashboard frontend symlink"
+# 5. dashboard frontend symlink
+log "[5/7] dashboard frontend symlink"
 WEB_HTML="$REPO_ROOT/../web/agents.html"
 WEB_HTML="$(cd "$(dirname "$WEB_HTML")" && pwd)/$(basename "$WEB_HTML")"
 if [ -f "$WEB_HTML" ]; then
@@ -582,8 +798,8 @@ else
     warn "  frontend $WEB_HTML not found; skipping symlink"
 fi
 
-# 7. systemctl daemon-reload + restart running system units
-log "[7/8] systemctl daemon-reload (system + per-user)"
+# 6. systemctl daemon-reload + restart running system units
+log "[6/7] systemctl daemon-reload (system + per-user)"
 if [ "$DRY" -eq 1 ]; then
     log "  would: systemctl daemon-reload (system)"
     log "  would: per-user daemon-reload for each enabled agent"
@@ -592,6 +808,8 @@ else
     systemctl daemon-reload
     ok "systemctl daemon-reload (system)"
     for u in agent-dashboard.service \
+             pm.service \
+             pm-consumer.service \
              openclaw-typing-keepalive.service \
              openclaw-monitor-sync.path \
              openclaw-monitor-sync.timer \
@@ -603,7 +821,7 @@ else
     ok "running system units restarted"
 fi
 
-# 8. per-agent user-systemd reconcile
+# 7. per-agent user-systemd reconcile
 # For each enabled agent, derive the expected openclaw-*.service set
 # (from core + byRole + byIntegration in agent-defaults.json) and:
 #   - daemon-reload their user instance (pick up /etc/systemd/user/ changes)
@@ -611,23 +829,26 @@ fi
 #   - disable+stop any active openclaw-*.service NOT in the expected set
 #     (orphan cleanup — e.g. the legacy openclaw-webhook-receiver.service
 #      after the split into jira+bitbucket receivers)
-log "[8/8] per-agent user-systemd reconcile"
+log "[7/7] per-agent user-systemd reconcile"
 if [ ! -r "$REGISTRY" ] || [ ! -r "$DEFAULTS" ]; then
     warn "  registry or defaults unreadable; skipping reconcile"
 elif ! command -v jq >/dev/null 2>&1; then
     warn "  jq not available; skipping reconcile"
 else
-    # Derive expected openclaw-*.service set per agent, emit "<user> <uid> <svc>" lines.
     DERIVE=$(jq -r --slurpfile defs "$DEFAULTS" '
+      any(.agents[]; .enabled == true and .role == "coding" and .integrations.jira == true) as $has_jira |
+      any(.agents[]; .enabled == true and .role == "coding" and .integrations.bitbucket == true) as $has_bb |
       .agents[] | select(.enabled == true) | . as $a |
-      ($defs[0].core.services // []) +
-      (($defs[0].byRole[$a.role].services // [])) +
-      ([ ($a.integrations // {}) | to_entries[]
-         | select(.value == true)
-         | $defs[0].byIntegration[.key].services // [] ] | add // []) +
-      ($a.services // [])
+      (($defs[0].core.services // []) +
+       (($defs[0].byRole[$a.role].services // [])) +
+       ([ ($a.integrations // {}) | to_entries[]
+          | select(.value == true)
+          | $defs[0].byIntegration[.key].services // [] ] | add // []) +
+       ($a.services // []))
       | unique
       | map(select(startswith("openclaw-")))
+      | map(select(. != "openclaw-jira-receiver.service" or $has_jira))
+      | map(select(. != "openclaw-bitbucket-receiver.service" or $has_bb))
       | .[] as $svc
       | "\($a.user)\t\($a.uid)\t\($svc)"
     ' "$REGISTRY")
@@ -703,5 +924,5 @@ log "  sudo systemctl enable --now openclaw-typing-keepalive.service   # claude-
 log "  sudo systemctl enable --now gmail-watch-renew.timer            # gmail-integrated hosts only"
 log
 log "Per-agent user units (openclaw-gateway, gmail-listener, mail-listener,"
-log "jira-receiver, bitbucket-receiver, webhook-receiver) are reconciled"
-log "automatically by step [8/8] above based on each agent's derived service set."
+log "jira-receiver, bitbucket-receiver) are reconciled"
+log "automatically by step [7/7] above based on each agent's derived service set."
