@@ -1,10 +1,10 @@
 # Per-agent unique files
 
-These files stay separate for each registered coding agent. Each lives under `/home/<user>/`. The shared repo deliberately does not version-control them.
+These files stay separate for each registered agent. Private identity, memory, and runtime config files live under the host agent-files root; credentials, runtime state, sessions, logs, and task notes live under each agent's home. The shared repo deliberately does not version-control them.
 
-## Identity & persona — `~/workspace/*.md`
+## Identity & persona — `<agentFilesRoot>/<user>/*.md`
 
-`AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`, and `CODE_REPOS.md` are **shared by every agent** and live in this repo. The remaining files (`SOUL`, `IDENTITY`, `USER`, `TOOLS`, `MEMORY`, `HEARTBEAT`) are **per-agent in content** but **single-canonical in location**: each lives once at `~/workspace/<file>` and `~/.openclaw/workspace/<file>` is a symlink to it, so no matter which workspace path the runtime reads, it sees the same file.
+`AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`, and `CODE_REPOS.md` are **shared by every agent** and live in this repo. The remaining files (`SOUL`, `IDENTITY`, `USER`, `TOOLS`, `MEMORY`, `HEARTBEAT`, `openclaw.json`) are **per-agent in content** but **single-canonical in location**: each lives once under the host's private agent-files root, defaulting to `/srv/agents/openclaw/<user>/<file>` and overrideable with top-level `agentFilesRoot` in `/etc/openclaw/agents.json`. Workspace/config copies are symlinks back to that canonical file, so no matter which runtime path is read, it sees the same file.
 
 | File | Source of truth | Purpose |
 |---|---|---|
@@ -12,14 +12,15 @@ These files stay separate for each registered coding agent. Each lives under `/h
 | `ROLES.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/ROLES.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/ROLES.md`) | Role-specific behaviour (`## Manager`, `## Developer`, `## Monitor`). Agent identifies its role from `agents.json` and reads the matching section. Same symlink pattern as `AGENTS.md`. |
 | `TEAM_WORKFLOW.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/TEAM_WORKFLOW.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/TEAM_WORKFLOW.md`) | Action-indexed workflow playbook. Same symlink pattern. |
 | `CODE_REPOS.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/CODE_REPOS.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/CODE_REPOS.md`) | Shared-code workflow for `/srv/Code`, `claim-branch`, git identity, and the human-only PR boundary. Same symlink pattern. |
-| `SOUL.md` | `~/workspace/SOUL.md` (per-agent, not in this repo) | Personality, tone, decision-making heuristics. Free-form, agent-specific. |
-| `IDENTITY.md` | `~/workspace/IDENTITY.md` (per-agent) | Core "who am I" preamble loaded on every session start. |
-| `USER.md` | `~/workspace/USER.md` (per-agent) | What the agent knows about zeh from the agent's own perspective. |
-| `TOOLS.md` | `~/workspace/TOOLS.md` (per-agent) | Notes on the agent's own tool usage habits. |
-| `MEMORY.md` | `~/workspace/MEMORY.md` (per-agent) | Long-running per-agent memory (project history, recurring topics, pending follow-ups). |
-| `HEARTBEAT.md` | `~/workspace/HEARTBEAT.md` (per-agent) | Liveness marker / last-tick state. |
+| `SOUL.md` | `<agentFilesRoot>/<user>/SOUL.md` (per-agent, not in this repo) | Personality, tone, decision-making heuristics. Free-form, agent-specific. |
+| `IDENTITY.md` | `<agentFilesRoot>/<user>/IDENTITY.md` (per-agent) | Core "who am I" preamble loaded on every session start. |
+| `USER.md` | `<agentFilesRoot>/<user>/USER.md` (per-agent) | What the agent knows about zeh from the agent's own perspective. |
+| `TOOLS.md` | `<agentFilesRoot>/<user>/TOOLS.md` (per-agent) | Notes on the agent's own tool usage habits. |
+| `MEMORY.md` | `<agentFilesRoot>/<user>/MEMORY.md` (per-agent) | Long-running per-agent memory (project history, recurring topics, pending follow-ups). |
+| `HEARTBEAT.md` | `<agentFilesRoot>/<user>/HEARTBEAT.md` (per-agent) | Liveness marker / last-tick state. |
+| `openclaw.json` | `<agentFilesRoot>/<user>/openclaw.json` (per-agent, mode `0660` when `codeGroup` exists, otherwise `0600`) | OpenClaw runtime config for model providers, defaults, and limits. `~/.openclaw/openclaw.json` symlinks here. The agent owns the file; the configured `codeGroup` can edit it for PM/dashboard workflows. |
 
-The monitoring agent (`karen`) only has `~/.openclaw/workspace/`, no user-facing `~/workspace/`, so its per-agent files live there directly (no symlink needed).
+`install.sh` creates the agent-files root, mirrors the host `codeRoot` permissions onto the parent shared agent directory, creates one subdirectory per registered agent, migrates any existing regular private files from the agent's workspace/config paths, and leaves symlinks behind. Coding agents usually have both `~/workspace/` and `~/.openclaw/workspace/`; monitoring-only agents may have only `~/.openclaw/workspace/`.
 
 ## Authentication & secrets — `~/.ssh/`, `~/.config/`
 
@@ -32,7 +33,6 @@ The monitoring agent (`karen`) only has `~/.openclaw/workspace/`, no user-facing
 | `~/.ssh/id_*` | Per-agent SSH key pair (Bitbucket, optional GitHub). |
 | `~/.config/openclaw/openclaw-secrets.env` | Telegram bot token, OpenClaw gateway token, model-provider API keys (Moonshot, Z.ai). |
 | `~/.config/openclaw/openclaw-webhook.env` | Webhook signing secrets (Jira, Bitbucket). |
-| `~/.config/openclaw/openclaw.json` | Per-agent OpenClaw runtime config (model defaults, limits). |
 | `~/.local/share/openclaw/...` | OAuth refresh tokens for Gmail, Drive, Calendar, Photos. |
 
 ## Per-agent runtime state — `~/.openclaw/skills/google-workspace/*.json`

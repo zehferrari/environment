@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ai-monitor: AI judgment layer for an OpenClaw agent host.
+ai-monitor: AI judgment layer for the x1 agent host.
 
 Wraps /usr/local/bin/openclaw-integrity-check, augments with resource sensors
 and a functional ollama probe, asks a locally-hosted ollama model to reason
@@ -21,6 +21,7 @@ import os
 import pwd
 import re
 import shlex
+import sqlite3
 import socket
 import stat
 import subprocess
@@ -28,15 +29,10 @@ import sys
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
 from pathlib import Path
 
 CONFIG_PATH = "/etc/ai-monitor/config.json"
 STATE_PATH = "/var/lib/ai-monitor/state.json"
-
-
-def host_label():
-    return socket.gethostname().split(".", 1)[0] or "host"
 
 
 def run_cmd(argv, timeout=30, input_text=None):
@@ -481,66 +477,6 @@ def probe_session_idle_for_user(user, home_dir):
     return int(time.time() - best_mtime), best_path
 
 
-def _jira_search_for_user(user, email, host, sc, jql, fields, max_results=50):
-    body = json.dumps(
-        {"jql": jql, "fields": fields, "maxResults": max_results}
-    )
-    url = f"https://{host}/rest/api/3/search/jql"
-    cmd = [
-        "sudo", "-n", "-u", user, "bash", "-c",
-        f"T=$(cat ~/.ssh/jiraToken.txt 2>/dev/null); "
-        f"if [ -z \"$T\" ]; then echo NO_TOKEN >&2; exit 2; fi; "
-        f"curl -s --max-time {sc.get('http_timeout_s', 10)} -X POST "
-        f"-u {shlex.quote(email)}:\"$T\" "
-        f"-H 'Accept: application/json' -H 'Content-Type: application/json' "
-        f"--data {shlex.quote(body)} "
-        f"{shlex.quote(url)}",
-    ]
-    rc, out, err = run_cmd(cmd, timeout=sc.get("http_timeout_s", 10) + 4)
-    if rc != 0 or not out.strip():
-        return None, f"jira query failed for {user}: rc={rc} {err.strip()[:120]}"
-    try:
-        d = json.loads(out)
-    except Exception as e:
-        return None, f"jira parse for {user}: {e}; body[:120]={out[:120]}"
-    if d.get("errorMessages"):
-        return None, f"jira API error for {user}: {d['errorMessages']}"
-    return d, None
-
-
-def _issue_type_name(issue):
-    fields = issue.get("fields") or {}
-    return ((fields.get("issuetype") or {}).get("name") or "").strip()
-
-
-def _active_children_by_epic(user, email, host, sc, statuses, epic_keys):
-    if not epic_keys:
-        return {}, None
-    quoted_keys = ", ".join(epic_keys)
-    status_clause = " OR ".join([f'status="{s}"' for s in statuses])
-    jql = f"parent in ({quoted_keys}) AND ({status_clause})"
-    data, err = _jira_search_for_user(
-        user, email, host, sc, jql,
-        ["summary", "status", "parent", "assignee"], max_results=100,
-    )
-    if err:
-        return {}, err
-    out = {k: [] for k in epic_keys}
-    for child in data.get("issues", []) or []:
-        f = child.get("fields") or {}
-        parent_key = ((f.get("parent") or {}).get("key") or "").strip()
-        if parent_key not in out:
-            continue
-        assignee = f.get("assignee") or {}
-        out[parent_key].append({
-            "key": child.get("key"),
-            "summary": (f.get("summary") or "")[:80],
-            "status": (f.get("status") or {}).get("name"),
-            "assignee": assignee.get("displayName") or assignee.get("emailAddress"),
-        })
-    return out, None
-
-
 def probe_jira_stalled_for_agent(agent, cfg, sc):
     """Query Jira (using the agent's own token) for issues assigned to that agent
     in stall-watching statuses. Classifies each in-progress issue into one of:
@@ -563,12 +499,29 @@ def probe_jira_stalled_for_agent(agent, cfg, sc):
 
     status_clause = " OR ".join([f'status="{s}"' for s in statuses])
     jql = f"assignee=currentUser() AND ({status_clause})"
-    d, err = _jira_search_for_user(
-        user, email, host, sc, jql,
-        ["summary", "status", "updated", "issuetype"], max_results=20,
+    body = json.dumps(
+        {"jql": jql, "fields": ["summary", "status", "updated"], "maxResults": 20}
     )
-    if err:
-        return [{"_error": err}]
+    url = f"https://{host}/rest/api/3/search/jql"
+    cmd = [
+        "sudo", "-n", "-u", user, "bash", "-c",
+        f"T=$(cat ~/.ssh/jiraToken.txt 2>/dev/null); "
+        f"if [ -z \"$T\" ]; then echo NO_TOKEN >&2; exit 2; fi; "
+        f"curl -s --max-time {sc.get('http_timeout_s', 10)} -X POST "
+        f"-u {shlex.quote(email)}:\"$T\" "
+        f"-H 'Accept: application/json' -H 'Content-Type: application/json' "
+        f"--data {shlex.quote(body)} "
+        f"{shlex.quote(url)}",
+    ]
+    rc, out, err = run_cmd(cmd, timeout=sc.get("http_timeout_s", 10) + 4)
+    if rc != 0 or not out.strip():
+        return [{"_error": f"jira query failed for {user}: rc={rc} {err.strip()[:120]}"}]
+    try:
+        d = json.loads(out)
+    except Exception as e:
+        return [{"_error": f"jira parse for {user}: {e}; body[:120]={out[:120]}"}]
+    if d.get("errorMessages"):
+        return [{"_error": f"jira API error for {user}: {d['errorMessages']}"}]
 
     from datetime import datetime
     now_s = int(time.time())
@@ -584,19 +537,8 @@ def probe_jira_stalled_for_agent(agent, cfg, sc):
     # different failure mode.
     busy = probe_busy_state(user, home)
 
-    issues = d.get("issues", []) or []
-    epic_keys = [
-        issue.get("key") for issue in issues
-        if _issue_type_name(issue).lower() == "epic" and issue.get("key")
-    ]
-    active_children, child_err = _active_children_by_epic(
-        user, email, host, sc, statuses, epic_keys
-    )
-
     results = []
-    if child_err:
-        results.append({"_error": child_err})
-    for issue in issues:
+    for issue in d.get("issues", []) or []:
         f = issue.get("fields", {}) or {}
         updated_str = f.get("updated", "")
         updated_age_s = None
@@ -611,16 +553,11 @@ def probe_jira_stalled_for_agent(agent, cfg, sc):
             "key": issue.get("key"),
             "summary": (f.get("summary") or "")[:80],
             "status": (f.get("status") or {}).get("name"),
-            "issue_type": _issue_type_name(issue),
             "updated": updated_str,
             "updated_age_s": updated_age_s,
             "session_idle_s": session_idle_s,
             "busy_state": busy,
         }
-
-        children = active_children.get(issue.get("key")) or []
-        if common["issue_type"].lower() == "epic" and children:
-            continue
 
         # PRIMARY: session-idle stall — Jira says In Progress but the agent's
         # openclaw session has been silent. Skipped if busy (mid-turn).
@@ -911,43 +848,9 @@ def probe_pending_email_tasks(cfg, registry):
 def _iso_to_epoch(s):
     try:
         from datetime import datetime
-        if not s:
-            return None
-        raw = str(s).strip()
-        if raw.endswith("Z"):
-            raw = raw[:-1] + "+00:00"
-        return int(datetime.fromisoformat(raw).timestamp())
+        return int(datetime.fromisoformat(s).timestamp())
     except Exception:
         return None
-
-
-def _jira_fetch_issue(agent, cfg, issue_key, fields):
-    user = agent.get("user")
-    email = agent.get("email")
-    sc = cfg.get("stalled_tasks_check") or {}
-    host = sc.get("jira_host", "zeh-ferrari.atlassian.net")
-    http_timeout_s = int(sc.get("http_timeout_s", 15))
-    if not (user and email and issue_key):
-        return None, f"jira fetch missing user/email/issue_key for {issue_key}"
-    field_list = ",".join(fields)
-    url = f"https://{host}/rest/api/3/issue/{issue_key}?fields={field_list}"
-    cmd = [
-        "sudo", "-n", "-u", user, "bash", "-c",
-        f"T=$(cat ~/.ssh/jiraToken.txt 2>/dev/null); "
-        f"if [ -z \"$T\" ]; then echo NO_TOKEN >&2; exit 2; fi; "
-        f"curl -s --max-time {http_timeout_s} -u {shlex.quote(email)}:\"$T\" "
-        f"-H 'Accept: application/json' {shlex.quote(url)}",
-    ]
-    rc, out, err = run_cmd(cmd, timeout=http_timeout_s + 4)
-    if rc != 0 or not out.strip():
-        return None, f"jira issue fetch {user}/{issue_key}: rc={rc} {err.strip()[:120]}"
-    try:
-        d = json.loads(out)
-    except Exception as e:
-        return None, f"jira issue parse {user}/{issue_key}: {e}"
-    if d.get("errorMessages"):
-        return None, f"jira API error {user}/{issue_key}: {d['errorMessages']}"
-    return d, None
 
 
 def _agent_replied_since(agent, pending, cfg):
@@ -1000,194 +903,6 @@ def _agent_replied_since(agent, pending, cfg):
     return False, None
 
 
-def _jira_capable_coding_agents_by_user(registry):
-    by_user = {}
-    for a in (registry.get("agents") or []):
-        u = a.get("user")
-        integrations = a.get("integrations") or {}
-        if (
-            u
-            and a.get("enabled")
-            and a.get("role") == "coding"
-            and integrations.get("jira") is not False
-        ):
-            by_user[u] = a
-    return by_user
-
-
-def probe_pending_epic_comment_reviews(cfg, registry):
-    """When one known agent comments on a child Jira issue, the assignee of
-    the parent Epic is expected to read it and reply if required. Webhook
-    receivers write markers into this queue; this probe resolves the parent
-    Epic and watches for a later comment from the Epic owner."""
-    ecfg = cfg.get("pending_epic_comments") or {}
-    out = {"awaiting": [], "resolved": [], "errors": [], "enabled": ecfg.get("enabled", True)}
-    if not out["enabled"] or not registry:
-        return out
-    pdir = ecfg.get("dir", "/var/lib/ai-monitor/pending-epic-comments")
-    warn_s = int(ecfg.get("warn_minutes", 15)) * 60
-    crit_s = int(ecfg.get("crit_minutes", 60)) * 60
-    max_age_s = int(ecfg.get("max_age_hours", 168)) * 3600
-    if not os.path.isdir(pdir):
-        return out
-
-    by_user = {}
-    by_account = {}
-    fallback_agent = None
-    for a in (registry.get("agents") or []):
-        if not a.get("enabled"):
-            continue
-        u = a.get("user")
-        if u:
-            by_user[u] = a
-            fallback_agent = fallback_agent or a
-        acct = a.get("jira_account_id")
-        if acct:
-            by_account[acct] = a
-
-    for fn in sorted(os.listdir(pdir)):
-        if not fn.endswith(".json"):
-            continue
-        fpath = os.path.join(pdir, fn)
-        try:
-            with open(fpath) as f:
-                data = json.load(f)
-        except Exception as e:
-            out["errors"].append(f"unreadable {fn}: {e}")
-            continue
-
-        created_s = _iso_to_epoch(data.get("comment_created", ""))
-        if created_s is not None and (int(time.time()) - created_s) >= max_age_s:
-            try:
-                os.remove(fpath)
-            except Exception:
-                pass
-            out["resolved"].append({
-                "issue_key": data.get("issue_key"),
-                "comment_id": data.get("comment_id"),
-                "reason": f"stale-marker-age>{max_age_s}s",
-            })
-            continue
-
-        author_agent = by_user.get(data.get("author_agent"))
-        fetch_agent = author_agent or fallback_agent
-        if not fetch_agent:
-            out["errors"].append(f"{fn}: no Jira-capable agent available for lookup")
-            continue
-
-        issue_key = data.get("issue_key")
-        child, err = _jira_fetch_issue(
-            fetch_agent, cfg, issue_key,
-            ["summary", "status", "parent", "issuetype", "comment"],
-        )
-        if err:
-            out["errors"].append(err)
-            continue
-        fields = child.get("fields") or {}
-        child_cat = ((fields.get("status") or {}).get("statusCategory") or {}).get("key")
-        parent_ref = fields.get("parent") or {}
-        parent_key = parent_ref.get("key")
-        if child_cat == "done" or not parent_key:
-            try:
-                os.remove(fpath)
-            except Exception:
-                pass
-            out["resolved"].append({
-                "issue_key": issue_key,
-                "comment_id": data.get("comment_id"),
-                "reason": "child-done-or-no-parent",
-            })
-            continue
-
-        parent = None
-        parent_depth = 0
-        while parent_key and parent_depth < 3:
-            parent, err = _jira_fetch_issue(
-                fetch_agent, cfg, parent_key,
-                ["summary", "status", "assignee", "issuetype", "parent"],
-            )
-            if err:
-                out["errors"].append(err)
-                parent = None
-                break
-            pf = parent.get("fields") or {}
-            parent_type = ((pf.get("issuetype") or {}).get("name") or "").lower()
-            parent_cat = ((pf.get("status") or {}).get("statusCategory") or {}).get("key")
-            if parent_type == "epic" or parent_cat == "done":
-                break
-            parent_key = ((pf.get("parent") or {}).get("key"))
-            parent_depth += 1
-        if parent is None:
-            continue
-        pf = parent.get("fields") or {}
-        parent_type = ((pf.get("issuetype") or {}).get("name") or "").lower()
-        parent_cat = ((pf.get("status") or {}).get("statusCategory") or {}).get("key")
-        assignee = pf.get("assignee") or {}
-        target = by_account.get(assignee.get("accountId"))
-        if parent_cat == "done" or parent_type != "epic" or not target:
-            try:
-                os.remove(fpath)
-            except Exception:
-                pass
-            out["resolved"].append({
-                "issue_key": issue_key,
-                "comment_id": data.get("comment_id"),
-                "parent_key": parent_key,
-                "reason": "parent-done-not-epic-or-unowned",
-            })
-            continue
-        if target.get("user") == data.get("author_agent"):
-            try:
-                os.remove(fpath)
-            except Exception:
-                pass
-            out["resolved"].append({
-                "issue_key": issue_key,
-                "comment_id": data.get("comment_id"),
-                "parent_key": parent_key,
-                "agent": target.get("user"),
-                "reason": "epic-owner-authored-comment",
-            })
-            continue
-
-        resolved, err = _agent_replied_since(target, data, cfg)
-        if err:
-            out["errors"].append(err)
-            continue
-        if resolved:
-            try:
-                os.remove(fpath)
-            except Exception:
-                pass
-            out["resolved"].append({
-                "issue_key": issue_key,
-                "comment_id": data.get("comment_id"),
-                "parent_key": parent_key,
-                "agent": target.get("user"),
-                "reason": "child-done-or-epic-owner-replied",
-            })
-            continue
-        if created_s is None:
-            continue
-        age_s = int(time.time()) - created_s
-        if age_s >= crit_s:
-            severity = "crit"
-        elif age_s >= warn_s:
-            severity = "warn"
-        else:
-            continue
-        out["awaiting"].append({
-            **data,
-            "agent": target.get("user"),
-            "epic_key": parent_key,
-            "epic_summary": (pf.get("summary") or "")[:120],
-            "issue_summary": (fields.get("summary") or data.get("issue_summary") or "")[:120],
-            "age_s": age_s,
-            "severity": severity,
-        })
-    return out
-
-
 def probe_pending_mentions(cfg, registry):
     """Walks /var/lib/ai-monitor/pending-mentions/ (written by webhook-receiver
     when a Jira comment @-mentions a known agent). For each pending entry,
@@ -1211,13 +926,7 @@ def probe_pending_mentions(cfg, registry):
     by_user = {}
     for a in (registry.get("agents") or []):
         u = a.get("user")
-        integrations = a.get("integrations") or {}
-        if (
-            u
-            and a.get("enabled")
-            and a.get("role") == "coding"
-            and integrations.get("jira") is not False
-        ):
+        if u and a.get("enabled") and a.get("monitor"):
             by_user[u] = a
 
     for fn in sorted(os.listdir(pdir)):
@@ -1232,9 +941,10 @@ def probe_pending_mentions(cfg, registry):
             continue
         agent = by_user.get(data.get("agent"))
         if not agent:
-            out["errors"].append(
-                f"{fn}: mentioned agent {data.get('agent')!r} is not an enabled Jira-capable coding agent"
-            )
+            try:
+                os.remove(fpath)
+            except Exception:
+                pass
             continue
         # Pre-flight age check — if the marker is older than max_age_s,
         # drop it without consulting Jira (saves an API call AND prevents
@@ -1282,80 +992,458 @@ def probe_pending_mentions(cfg, registry):
     return out
 
 
-def probe_pending_assignee_comments(cfg, registry):
-    """Walk /var/lib/ai-monitor/pending-assignee-comments/. These markers are
-    written when someone comments on a Jira issue assigned to a coding agent.
-    The assignee must read the new comment and reply when required; because
-    the monitor cannot prove "read", unresolved markers fire until the assignee
-    comments back or the ticket moves to Done."""
-    pcfg = cfg.get("pending_assignee_comments") or {}
-    out = {"awaiting": [], "resolved": [], "errors": [], "enabled": pcfg.get("enabled", True)}
+def _sqlite_pm_db_path(cfg):
+    pc = cfg.get("pm_workflow") or {}
+    raw = (
+        pc.get("database_path")
+        or os.environ.get("PM_DATABASE_PATH")
+        or os.environ.get("DATABASE_URL")
+        or ""
+    )
+    if raw.startswith("file:"):
+        raw = raw[5:]
+        if raw.startswith("//"):
+            raw = raw[2:]
+            raw = "/" + raw.lstrip("/")
+        raw = raw.split("?", 1)[0]
+    if raw:
+        return raw
+    candidates = [
+        "/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma/prisma/dev.db",
+        "/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma/dev.db",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
+def _parse_pm_ts(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        # Prisma SQLite DateTime values are commonly stored as ms.
+        if value > 10_000_000_000:
+            return int(value / 1000)
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        from datetime import datetime, timezone
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return None
+
+
+def _pm_age_s(value):
+    ts = _parse_pm_ts(value)
+    if ts is None:
+        return None
+    return max(0, int(time.time()) - ts)
+
+
+def _pm_latest_assignment_s(conn, task_id, username, fallback_created_at):
+    try:
+        rows = conn.execute(
+            """
+            SELECT payload, createdAt
+            FROM ActivityLog
+            WHERE taskId = ? AND kind = 'task.assign'
+            ORDER BY createdAt DESC
+            LIMIT 20
+            """,
+            (task_id,),
+        ).fetchall()
+    except Exception:
+        return _parse_pm_ts(fallback_created_at)
+    for row in rows:
+        payload = row["payload"] or ""
+        try:
+            doc = json.loads(payload)
+        except Exception:
+            doc = {}
+        if doc.get("to") == username:
+            return _parse_pm_ts(row["createdAt"])
+    return _parse_pm_ts(fallback_created_at)
+
+
+def _pm_has_comment_since(conn, task_id, user_id, since_s):
+    if since_s is None:
+        since_s = 0
+    try:
+        rows = conn.execute(
+            """
+            SELECT createdAt
+            FROM Comment
+            WHERE taskId = ? AND userId = ?
+            ORDER BY createdAt DESC
+            LIMIT 20
+            """,
+            (task_id, user_id),
+        ).fetchall()
+    except Exception:
+        return False
+    for row in rows:
+        ts = _parse_pm_ts(row["createdAt"])
+        if ts is not None and ts >= since_s:
+            return True
+    return False
+
+
+def _pm_latest_comment_by(conn, task_id, user_id, since_s):
+    if not user_id:
+        return None
+    rows = conn.execute(
+        """
+        SELECT id, body, createdAt
+        FROM Comment
+        WHERE taskId = ? AND userId = ?
+        ORDER BY createdAt DESC
+        LIMIT 5
+        """,
+        (task_id, user_id),
+    ).fetchall()
+    for row in rows:
+        ts = _parse_pm_ts(row["createdAt"])
+        if ts is not None and (since_s is None or ts >= since_s):
+            return row
+    return None
+
+
+def _pm_workflow_notification_status(body):
+    text = body or ""
+    if not text.startswith("PM workflow notification for @"):
+        return None
+    if " while it is in Backlog." in text:
+        return "Backlog"
+    if " is now in To Do " in text:
+        return "To Do"
+    if " was moved to Review." in text:
+        return "Review"
+    return None
+
+
+def _pm_actor_slug(row, agent_key, username_key):
+    return row[agent_key] or row[username_key]
+
+
+def _pm_current_workflow_slugs(row):
+    status = row["status"]
+    if status in ("Backlog", "To Do", "In Progress"):
+        slug = _pm_actor_slug(row, "assigneeAgentSlug", "assigneeUsername")
+        return {slug} if slug else set()
+    if status == "Review":
+        slug = (
+            _pm_actor_slug(row, "reviewerAgentSlug", "reviewerUsername")
+            or (
+                _pm_actor_slug(row, "epicManagerAgentSlug", "epicManagerUsername")
+                if row["epicStatus"] == "Open"
+                else None
+            )
+            or row["reporterUsername"]
+        )
+        return {slug} if slug else set()
+    return set()
+
+
+def _pm_workflow_notification_is_current(row):
+    expected_status = _pm_workflow_notification_status(row["body"])
+    if not expected_status:
+        return True
+    if row["status"] != expected_status:
+        return False
+    return row["messageAgentSlug"] in _pm_current_workflow_slugs(row)
+
+
+def probe_pm_workflow(cfg, registry):
+    """Probe Mission Control / PM workflow invariants for Karen.
+
+    The PM webapp owns writes; this probe is read-only. It classifies tasks
+    into concrete reminders that ai-monitor can route to the responsible
+    agent with task id, status, Epic state, and next action.
+    """
+    pc = cfg.get("pm_workflow") or {}
+    out = {"items": [], "errors": [], "enabled": pc.get("enabled", True)}
     if not out["enabled"]:
         return out
-    pdir = pcfg.get("dir", "/var/lib/ai-monitor/pending-assignee-comments")
-    warn_s = pcfg.get("warn_minutes", 15) * 60
-    crit_s = pcfg.get("crit_minutes", 60) * 60
-    max_age_s = pcfg.get("max_age_hours", 168) * 3600
-    if not os.path.isdir(pdir):
+    db_path = _sqlite_pm_db_path(cfg)
+    out["database_path"] = db_path
+    if not os.path.exists(db_path):
+        out["errors"].append(f"PM database not found: {db_path}")
         return out
 
-    by_user = _jira_capable_coding_agents_by_user(registry)
-    for fn in sorted(os.listdir(pdir)):
-        if not fn.endswith(".json"):
-            continue
-        fpath = os.path.join(pdir, fn)
-        try:
-            with open(fpath) as f:
-                data = json.load(f)
-        except Exception as e:
-            out["errors"].append(f"unreadable {fn}: {e}")
-            continue
-        agent = by_user.get(data.get("agent"))
-        if not agent:
-            out["errors"].append(
-                f"{fn}: assignee {data.get('agent')!r} is not an enabled Jira-capable coding agent"
+    warn_backlog_s = int(pc.get("backlog_plan_warn_minutes", 2)) * 60
+    warn_todo_s = int(pc.get("todo_start_warn_minutes", 2)) * 60
+    warn_progress_s = int(pc.get("in_progress_stale_minutes", 5)) * 60
+    warn_review_s = int(pc.get("review_wait_warn_minutes", 10)) * 60
+    warn_channel_s = int(pc.get("channel_no_start_warn_minutes", 2)) * 60
+    max_items = int(pc.get("max_items", 50))
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except Exception as e:
+        out["errors"].append(f"PM database open failed: {e}")
+        return out
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+              t.id, t.title, t.status, t.statusChangedAt, t.createdAt, t.updatedAt,
+              t.assigneeId, t.actingManagerId, t.reporterId,
+              p.slug AS projectSlug,
+              a.username AS assigneeUsername,
+              aa.slug AS assigneeAgentSlug,
+              r.username AS reviewerUsername,
+              ra.slug AS reviewerAgentSlug,
+              rep.username AS reporterUsername,
+              er.username AS epicManagerUsername,
+              era.slug AS epicManagerAgentSlug,
+              e.status AS epicStatus,
+              e.actingManagerId AS epicManagerId
+            FROM Task t
+            JOIN Project p ON p.id = t.projectId
+            LEFT JOIN User a ON a.id = t.assigneeId
+            LEFT JOIN Agent aa ON aa.id = a.agentId
+            LEFT JOIN User r ON r.id = t.actingManagerId
+            LEFT JOIN Agent ra ON ra.id = r.agentId
+            LEFT JOIN User rep ON rep.id = t.reporterId
+            LEFT JOIN Epic e ON e.id = t.epicId
+            LEFT JOIN User er ON er.id = e.actingManagerId
+            LEFT JOIN Agent era ON era.id = er.agentId
+            WHERE t.deletedAt IS NULL
+              AND p.deletedAt IS NULL
+              AND t.status IN ('Backlog', 'To Do', 'In Progress', 'Review')
+            ORDER BY t.updatedAt DESC
+            LIMIT 500
+            """
+        ).fetchall()
+
+        orphan_rows = conn.execute(
+            """
+            SELECT
+              m.id AS messageId,
+              m.agentSlug AS messageAgentSlug,
+              m.body,
+              m.createdAt AS messageCreatedAt,
+              r.status AS runStatus,
+              r.lastEventAt AS runLastEventAt,
+              t.id, t.title, t.status, t.statusChangedAt, t.createdAt, t.updatedAt,
+              t.assigneeId, t.actingManagerId, t.reporterId,
+              p.slug AS projectSlug,
+              a.username AS assigneeUsername,
+              aa.slug AS assigneeAgentSlug,
+              rv.username AS reviewerUsername,
+              rva.slug AS reviewerAgentSlug,
+              rep.username AS reporterUsername,
+              er.username AS epicManagerUsername,
+              era.slug AS epicManagerAgentSlug,
+              e.status AS epicStatus,
+              e.actingManagerId AS epicManagerId
+            FROM AgentChatMessage m
+            JOIN User sender ON sender.id = m.senderUserId
+            JOIN Task t ON t.id = m.taskId
+            JOIN Project p ON p.id = t.projectId
+            LEFT JOIN PmChannelRun r
+              ON r.kind = 'task-comment'
+             AND r.taskId = t.id
+             AND r.messageId = m.id
+             AND r.agentSlug = m.agentSlug
+            LEFT JOIN User a ON a.id = t.assigneeId
+            LEFT JOIN Agent aa ON aa.id = a.agentId
+            LEFT JOIN User rv ON rv.id = t.actingManagerId
+            LEFT JOIN Agent rva ON rva.id = rv.agentId
+            LEFT JOIN User rep ON rep.id = t.reporterId
+            LEFT JOIN Epic e ON e.id = t.epicId
+            LEFT JOIN User er ON er.id = e.actingManagerId
+            LEFT JOIN Agent era ON era.id = er.agentId
+            WHERE m.originChannel = 'comment'
+              AND sender.kind != 'agent'
+              AND m.body LIKE 'PM workflow notification for @%'
+              AND t.deletedAt IS NULL
+              AND p.deletedAt IS NULL
+              AND (r.status IS NULL OR r.status IN ('queued', 'accepted', 'streaming'))
+            ORDER BY m.createdAt DESC
+            LIMIT 200
+            """
+        ).fetchall()
+
+        def add(row, kind, target_agent, age_s, required_action, severity="warn", extra=None):
+            if not target_agent:
+                return
+            out["items"].append({
+                "kind": kind,
+                "severity": severity,
+                "agent": target_agent,
+                "task_id": row["id"],
+                "task_title": (row["title"] or "")[:140],
+                "project": row["projectSlug"],
+                "status": row["status"],
+                "epic_status": row["epicStatus"],
+                "age_s": age_s,
+                "required_action": required_action,
+                **(extra or {}),
+            })
+
+        for row in orphan_rows:
+            if len(out["items"]) >= max_items:
+                break
+            is_current = _pm_workflow_notification_is_current(row)
+            age_s = (
+                _pm_age_s(row["runLastEventAt"])
+                or _pm_age_s(row["messageCreatedAt"])
+                or 0
             )
-            continue
-        created_s = _iso_to_epoch(data.get("comment_created", ""))
-        if created_s is not None and (int(time.time()) - created_s) >= max_age_s:
-            try:
-                os.remove(fpath)
-            except Exception:
-                pass
-            out["resolved"].append({
-                "issue_key": data.get("issue_key"),
-                "agent": data.get("agent"),
-                "reason": f"stale-marker-age>{max_age_s}s",
-            })
-            continue
-        resolved, err = _agent_replied_since(agent, data, cfg)
-        if err:
-            out["errors"].append(err)
-            continue
-        if resolved:
-            try:
-                os.remove(fpath)
-            except Exception:
-                pass
-            out["resolved"].append({
-                "issue_key": data.get("issue_key"),
-                "agent": data.get("agent"),
-                "reason": "ticket-done-or-assignee-replied",
-            })
-            continue
-        if created_s is None:
-            continue
-        age_s = int(time.time()) - created_s
-        if age_s >= crit_s:
-            severity = "crit"
-        elif age_s >= warn_s:
-            severity = "warn"
-        else:
-            continue
-        entry = dict(data)
-        entry["age_s"] = age_s
-        entry["severity"] = severity
-        out["awaiting"].append(entry)
+            if is_current:
+                if age_s < warn_channel_s:
+                    continue
+                run_status = row["runStatus"] or "missing"
+                kind = (
+                    "pm-channel-no-start"
+                    if run_status in ("queued", "accepted", "missing")
+                    else "pm-channel-stalled"
+                )
+                add(
+                    row,
+                    kind,
+                    row["messageAgentSlug"],
+                    age_s,
+                    "The native PM-channel workflow turn has not produced live output or a durable reply. Restart the agent services if needed and resend the PM-channel context.",
+                    extra={
+                        "message_id": row["messageId"],
+                        "run_status": run_status,
+                    },
+                )
+                continue
+            add(
+                row,
+                "pm-orphan-live-bubble",
+                "karen",
+                age_s,
+                "The PM app must hide or settle this stale workflow live bubble; do not wake the task agent.",
+                extra={
+                    "bubble_agent": row["messageAgentSlug"],
+                    "message_id": row["messageId"],
+                    "run_status": row["runStatus"] or "missing",
+                },
+            )
+
+        for row in rows:
+            if len(out["items"]) >= max_items:
+                break
+            status = row["status"]
+            changed_age = _pm_age_s(row["statusChangedAt"]) or _pm_age_s(row["updatedAt"]) or 0
+            assignee_slug = row["assigneeAgentSlug"] or row["assigneeUsername"]
+            reviewer_id = row["actingManagerId"] or (
+                row["epicManagerId"] if row["epicStatus"] == "Open" else None
+            ) or row["reporterId"]
+            reviewer_slug = (
+                row["reviewerAgentSlug"]
+                or (row["epicManagerAgentSlug"] if row["epicStatus"] == "Open" else None)
+                or row["reporterUsername"]
+            )
+
+            if row["epicStatus"] and row["epicStatus"] != "Open" and status in ("To Do", "In Progress"):
+                manager = row["epicManagerAgentSlug"] or row["epicManagerUsername"] or reviewer_slug
+                add(
+                    row,
+                    "pm-epic-not-open",
+                    manager,
+                    changed_age,
+                    "Open the Epic before agent work continues, or move the task back to Backlog.",
+                    extra={"assignee": assignee_slug},
+                )
+                continue
+
+            if status == "Backlog" and row["assigneeId"] and assignee_slug:
+                assigned_s = _pm_latest_assignment_s(
+                    conn,
+                    row["id"],
+                    row["assigneeUsername"],
+                    row["createdAt"],
+                )
+                age_s = max(0, int(time.time()) - assigned_s) if assigned_s else changed_age
+                if age_s >= warn_backlog_s and not _pm_has_comment_since(
+                    conn,
+                    row["id"],
+                    row["assigneeId"],
+                    assigned_s,
+                ):
+                    add(
+                        row,
+                        "pm-backlog-plan-missing",
+                        assignee_slug,
+                        age_s,
+                        "Post a concise task comment with your implementation plan/opinion. Do not change status or start work while the task is in Backlog.",
+                    )
+                continue
+
+            if status == "To Do" and row["assigneeId"] and assignee_slug:
+                if changed_age >= warn_todo_s:
+                    add(
+                        row,
+                        "pm-todo-not-started",
+                        assignee_slug,
+                        changed_age,
+                        "Move the task to In Progress through PM workflow and start work immediately.",
+                    )
+                continue
+
+            if status == "In Progress" and row["assigneeId"] and assignee_slug:
+                if changed_age >= warn_progress_s:
+                    add(
+                        row,
+                        "pm-in-progress-stale",
+                        assignee_slug,
+                        changed_age,
+                        "Update the task with progress, continue work, or move completed work to Review.",
+                    )
+                continue
+
+            if status == "Review":
+                status_s = _parse_pm_ts(row["statusChangedAt"])
+                feedback = _pm_latest_comment_by(conn, row["id"], reviewer_id, status_s)
+                if feedback and row["assigneeId"] and assignee_slug:
+                    feedback_age = _pm_age_s(feedback["createdAt"]) or 0
+                    if feedback_age >= warn_review_s and not _pm_has_comment_since(
+                        conn,
+                        row["id"],
+                        row["assigneeId"],
+                        _parse_pm_ts(feedback["createdAt"]),
+                    ):
+                        add(
+                            row,
+                            "pm-review-feedback-awaiting-assignee",
+                            assignee_slug,
+                            feedback_age,
+                            "Read the review feedback, respond in comments, and keep the task in Review until feedback is addressed.",
+                            extra={"reviewer": reviewer_slug, "comment_preview": (feedback["body"] or "")[:180]},
+                        )
+                    continue
+                if changed_age >= warn_review_s:
+                    add(
+                        row,
+                        "pm-review-awaiting-reviewer",
+                        reviewer_slug,
+                        changed_age,
+                        "Review the completed work. Move to Done if satisfied without posting an approval-only comment, or leave concise feedback/blockers while keeping the task in Review.",
+                        extra={"assignee": assignee_slug},
+                    )
+    except Exception as e:
+        out["errors"].append(f"PM workflow probe failed: {type(e).__name__}: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
     return out
 
 
@@ -1392,952 +1480,9 @@ def probe_ollama(cfg):
         }
 
 
-RATE_LIMIT_RE = re.compile(
-    r"(429|too[_ -]?many[_ -]?requests|rate[_ -]?limit(?:ed| error| reached| exceeded)|usage limit(?: reached| exceeded)?|you'?ve hit your limit|quota exceeded)",
-    re.I,
-)
+SYSTEM_PROMPT = """You are the AI judge for the host's agent monitor on openSUSE Tumbleweed.
 
-
-def _epoch_from_any(value):
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        v = float(value)
-        return v / 1000.0 if v > 100000000000 else v
-    if isinstance(value, str):
-        s = value.strip()
-        if not s:
-            return None
-        if re.fullmatch(r"\d+(\.\d+)?", s):
-            return _epoch_from_any(float(s))
-        try:
-            if s.endswith("Z"):
-                s = s[:-1] + "+00:00"
-            return datetime.fromisoformat(s).timestamp()
-        except Exception:
-            return None
-    return None
-
-
-def _model_leaf(model_id):
-    if not model_id:
-        return ""
-    return str(model_id).split("/", 1)[-1]
-
-
-def _resolve_main_model_policy(home_dir):
-    cfg_path = Path(home_dir) / ".openclaw/openclaw.json"
-    try:
-        cfg = json.loads(cfg_path.read_text())
-    except Exception as e:
-        return {"error": f"cannot read {cfg_path}: {e}"}
-
-    agents = cfg.get("agents") or {}
-    default_model = ((agents.get("defaults") or {}).get("model") or {})
-    primary = default_model.get("primary")
-    fallbacks = list(default_model.get("fallbacks") or [])
-    source = "agents.defaults.model"
-    string_override_masks_fallbacks = False
-
-    main = None
-    for entry in agents.get("list") or []:
-        if entry.get("id") == "main" or entry.get("default") is True:
-            main = entry
-            if entry.get("id") == "main":
-                break
-    if main and "model" in main:
-        m = main.get("model")
-        if isinstance(m, str):
-            primary = m
-            fallbacks = []
-            source = "agents.list.main.model:string"
-            string_override_masks_fallbacks = True
-        elif isinstance(m, dict):
-            primary = m.get("primary") or m.get("id") or primary
-            fallbacks = list(m.get("fallbacks") or [])
-            source = "agents.list.main.model:object"
-
-    return {
-        "primary": primary,
-        "fallbacks": fallbacks,
-        "source": source,
-        "string_override_masks_fallbacks": string_override_masks_fallbacks,
-    }
-
-
-def _read_session_entry(home_dir):
-    sj_path = Path(home_dir) / ".openclaw/agents/main/sessions/sessions.json"
-    try:
-        data = json.loads(sj_path.read_text())
-        entry = data.get("agent:main:main") or {}
-        return {
-            "path": str(sj_path),
-            "status": entry.get("status"),
-            "model": entry.get("model"),
-            "model_provider": entry.get("modelProvider"),
-            "updated_at": _epoch_from_any(entry.get("updatedAt")),
-            "started_at": _epoch_from_any(entry.get("startedAt")),
-            "fallback_notice_model": entry.get("fallbackNoticeActiveModel"),
-        }
-    except Exception as e:
-        return {"error": f"cannot read {sj_path}: {e}"}
-
-
-def _jsonl_recent_tail(path, max_bytes):
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - max_bytes), os.SEEK_SET)
-            return f.read().decode("utf-8", errors="replace").splitlines()
-    except Exception:
-        return []
-
-
-def _rate_limit_scan_text(obj, raw_line):
-    if not isinstance(obj, dict):
-        return raw_line
-    bits = []
-    for key in ("error", "stderr", "reason", "statusText", "failureReason"):
-        val = obj.get(key)
-        if val:
-            bits.append(str(val))
-    msg = obj.get("message")
-    if isinstance(msg, dict):
-        for key in ("error", "stop_reason", "statusText"):
-            val = msg.get(key)
-            if val:
-                bits.append(str(val))
-        role = msg.get("role")
-        if role != "toolResult":
-            content = msg.get("content")
-            if isinstance(content, str):
-                bits.append(content)
-            elif isinstance(content, list):
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    btype = block.get("type")
-                    if btype in ("toolCall", "toolResult", "tool_use", "tool_result"):
-                        continue
-                    for key in ("text", "content", "error"):
-                        val = block.get(key)
-                        if isinstance(val, str):
-                            bits.append(val)
-    for key in ("text", "content"):
-        val = obj.get(key)
-        if isinstance(val, str):
-            bits.append(val)
-    return "\n".join(bits)
-
-
-def _iter_recent_session_lines(home_dir, cutoff_ts, max_files=40, max_bytes=262144):
-    home = Path(home_dir)
-    patterns = [
-        home / ".claude/projects" / f"-home-{home.name}-workspace" / "*.jsonl",
-        home / ".openclaw/agents/main/sessions" / "*.jsonl",
-    ]
-    paths = []
-    for pat in patterns:
-        paths.extend(Path(p).resolve() for p in home.glob(str(pat.relative_to(home))))
-    uniq = []
-    seen = set()
-    for p in paths:
-        if p in seen:
-            continue
-        seen.add(p)
-        try:
-            if p.stat().st_mtime < cutoff_ts - 3600:
-                continue
-        except Exception:
-            continue
-        if any(x in p.name for x in (".checkpoint", ".reset", ".archive", ".deleted")):
-            continue
-        uniq.append(p)
-    uniq.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    for p in uniq[:max_files]:
-        for line in _jsonl_recent_tail(p, max_bytes):
-            yield p, line
-
-
-def _extract_log_event(path, line):
-    try:
-        obj = json.loads(line)
-    except Exception:
-        obj = None
-    ts = None
-    model = None
-    text = line
-    if isinstance(obj, dict):
-        ts = (
-            _epoch_from_any(obj.get("timestamp"))
-            or _epoch_from_any(obj.get("ts"))
-            or _epoch_from_any(obj.get("createdAt"))
-        )
-        model = obj.get("model")
-        msg = obj.get("message")
-        if isinstance(msg, dict):
-            model = model or msg.get("model")
-        provider = obj.get("provider") or obj.get("modelProvider")
-        if provider and model and "/" not in str(model):
-            model = f"{provider}/{model}"
-        try:
-            text = json.dumps(obj, default=str)
-        except Exception:
-            text = line
-        scan_text = _rate_limit_scan_text(obj, line)
-    else:
-        scan_text = line
-    if ts is None:
-        try:
-            ts = path.stat().st_mtime
-        except Exception:
-            ts = None
-    return {"ts": ts, "model": model, "text": text[:2000], "scan_text": scan_text[:2000]}
-
-
-def _find_recent_rate_limit(home_dir, cutoff_ts):
-    latest = None
-    fallback_models_seen = []
-    for path, line in _iter_recent_session_lines(home_dir, cutoff_ts):
-        ev = _extract_log_event(path, line)
-        if ev.get("ts") is not None and ev["ts"] < cutoff_ts:
-            continue
-        if RATE_LIMIT_RE.search(ev.get("scan_text") or ""):
-            if latest is None or (ev.get("ts") or 0) > (latest.get("ts") or 0):
-                latest = {
-                    "ts": ev.get("ts"),
-                    "path": str(path),
-                    "model": ev.get("model"),
-                    "snippet": (ev.get("scan_text") or ev.get("text") or "")[:220],
-                }
-        if ev.get("model"):
-            fallback_models_seen.append({
-                "ts": ev.get("ts"),
-                "model": ev.get("model"),
-                "path": str(path),
-            })
-    return latest, fallback_models_seen
-
-
-def _fallback_used_after(rate_limit, model_events, primary, fallbacks):
-    if not rate_limit:
-        return False, None
-    fb_leafs = {_model_leaf(m) for m in fallbacks or []}
-    primary_leaf = _model_leaf(primary)
-    after = rate_limit.get("ts") or 0
-    for ev in sorted(model_events, key=lambda e: e.get("ts") or 0, reverse=True):
-        if (ev.get("ts") or 0) < after:
-            continue
-        leaf = _model_leaf(ev.get("model"))
-        if leaf and leaf != primary_leaf and leaf in fb_leafs:
-            return True, ev
-    return False, None
-
-
-def probe_model_fallback_health(cfg, registry):
-    """Detect the failure mode where a rate-limited agent becomes quiet instead
-    of moving down its configured model fallback chain."""
-    mon_cfg = cfg.get("model_fallback_monitor") or {}
-    window_s = int(mon_cfg.get("recent_window_s", mon_cfg.get("recent_window_minutes", 120) * 60))
-    idle_warn_s = int(mon_cfg.get("silent_after_s", 10 * 60))
-    cutoff_ts = time.time() - window_s
-    out = {"enabled": True, "window_s": window_s, "agents": [], "issues": [], "errors": []}
-    for agent in (registry or {}).get("agents", []) or []:
-        if not agent.get("enabled") or agent.get("monitor", True) is False:
-            continue
-        user = agent.get("user")
-        home = agent.get("home") or f"/home/{user}"
-        if not user or not Path(home).exists():
-            continue
-        policy = _resolve_main_model_policy(home)
-        sess = _read_session_entry(home)
-        last_rate_limit, model_events = _find_recent_rate_limit(home, cutoff_ts)
-        idle_s, idle_path = probe_session_idle_for_user(user, home)
-        busy = probe_busy_state(user, home)
-        fallback_used, fallback_event = _fallback_used_after(
-            last_rate_limit, model_events, policy.get("primary"), policy.get("fallbacks")
-        )
-        record = {
-            "agent": user,
-            "home": home,
-            "policy": policy,
-            "session": sess,
-            "last_rate_limit": last_rate_limit,
-            "idle_s": idle_s,
-            "idle_path": idle_path,
-            "busy": busy,
-            "fallback_used_after_rate_limit": fallback_used,
-            "fallback_event": fallback_event,
-        }
-        out["agents"].append(record)
-
-        if policy.get("error"):
-            out["errors"].append(f"{user}: {policy['error']}")
-            continue
-        if sess.get("error"):
-            out["errors"].append(f"{user}: {sess['error']}")
-        if not last_rate_limit:
-            continue
-        is_silent = (
-            sess.get("status") == "failed"
-            or (
-                idle_s is not None
-                and idle_s >= idle_warn_s
-                and not busy.get("busy")
-                and sess.get("status") != "running"
-            )
-        )
-        if not is_silent:
-            continue
-        fallbacks = policy.get("fallbacks") or []
-        if not fallbacks:
-            kind = "model-fallback-disabled-after-rate-limit"
-        elif fallback_used:
-            continue
-        else:
-            notice = sess.get("fallback_notice_model")
-            if notice and _model_leaf(notice) != _model_leaf(policy.get("primary")):
-                continue
-            kind = "model-fallback-not-used-after-rate-limit"
-        out["issues"].append({
-            "agent": user,
-            "kind": kind,
-            "severity": "crit" if sess.get("status") == "failed" else "warn",
-            "primary": policy.get("primary"),
-            "fallbacks": fallbacks,
-            "source": policy.get("source"),
-            "idle_s": idle_s,
-            "status": sess.get("status"),
-            "last_rate_limit": last_rate_limit,
-        })
-    return out
-
-
-def _security_cache_path(cfg):
-    sec = cfg.get("openclaw_security") or {}
-    return Path(sec.get("cache_path", "/var/lib/ai-monitor/openclaw-security-status.json"))
-
-
-def _run_openclaw_json_for_user(user, home, uid, shell_cmd, timeout=90):
-    argv = [
-        "sudo", "-n", "-u", user, "env",
-        f"HOME={home}",
-        f"XDG_RUNTIME_DIR=/run/user/{uid}",
-        f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
-        "bash", "-lc", shell_cmd,
-    ]
-    rc, out, err = run_cmd(argv, timeout=timeout)
-    if rc != 0:
-        return {"ok": False, "rc": rc, "error": (err.strip() or out.strip())[:500]}
-    try:
-        return {"ok": True, "json": json.loads(out)}
-    except Exception as e:
-        return {"ok": False, "rc": rc, "error": f"json parse failed: {e}; output={out[:300]}"}
-
-
-def _load_security_cache(cfg, max_age_s):
-    path = _security_cache_path(cfg)
-    try:
-        data = json.loads(path.read_text())
-        age_s = int(time.time()) - int(data.get("ts", 0))
-        if age_s < max_age_s:
-            data["cached"] = True
-            data["cache_age_s"] = age_s
-            return data
-    except Exception:
-        pass
-    return None
-
-
-def _save_security_cache(cfg, data):
-    path = _security_cache_path(cfg)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2, default=str))
-        tmp.replace(path)
-    except Exception as e:
-        data.setdefault("errors", []).append(f"cache write failed: {e}")
-
-
-def probe_openclaw_security_status(cfg, registry):
-    """Periodic OpenClaw safety check: security audit plus update availability."""
-    sec = cfg.get("openclaw_security") or {}
-    if sec.get("enabled", True) is False:
-        return {"enabled": False}
-    interval_s = int(sec.get("interval_s", 6 * 60 * 60))
-    cached = _load_security_cache(cfg, interval_s)
-    if cached:
-        return cached
-
-    out = {
-        "enabled": True,
-        "cached": False,
-        "ts": int(time.time()),
-        "audit_results": [],
-        "update_status": None,
-        "errors": [],
-    }
-    agents = [
-        a for a in (registry or {}).get("agents", []) or []
-        if a.get("enabled") and a.get("user") and a.get("home")
-    ]
-    for agent in agents:
-        user = agent["user"]
-        home = agent.get("home") or f"/home/{user}"
-        uid = agent.get("uid") or resolve_user_uid(user)
-        if uid is None:
-            out["errors"].append(f"{user}: cannot resolve uid")
-            continue
-        res = _run_openclaw_json_for_user(
-            user, home, uid, "openclaw security audit --json",
-            timeout=int(sec.get("audit_timeout_s", 90)),
-        )
-        if not res.get("ok"):
-            out["audit_results"].append({
-                "user": user, "ok": False, "error": res.get("error"), "rc": res.get("rc")
-            })
-            continue
-        obj = res["json"]
-        findings = obj.get("findings") or []
-        top = [
-            {
-                "checkId": f.get("checkId"),
-                "severity": f.get("severity"),
-                "title": f.get("title"),
-                "summary": f.get("summary"),
-            }
-            for f in findings
-            if f.get("severity") in ("critical", "warn")
-        ][:8]
-        out["audit_results"].append({
-            "user": user,
-            "ok": True,
-            "summary": obj.get("summary") or {},
-            "top_findings": top,
-        })
-
-    monitor = get_monitor_agent(registry)
-    update_agent = monitor or (agents[0] if agents else None)
-    if update_agent:
-        user = update_agent["user"]
-        home = update_agent.get("home") or f"/home/{user}"
-        uid = update_agent.get("uid") or resolve_user_uid(user)
-        if uid is not None:
-            res = _run_openclaw_json_for_user(
-                user, home, uid, "openclaw update status --json",
-                timeout=int(sec.get("update_timeout_s", 90)),
-            )
-            if res.get("ok"):
-                obj = res["json"]
-                avail = obj.get("availability") or {}
-                upd = obj.get("update") or {}
-                out["update_status"] = {
-                    "ok": True,
-                    "available": bool(avail.get("available")),
-                    "latestVersion": avail.get("latestVersion"),
-                    "currentVersion": upd.get("currentVersion"),
-                    "packageManager": upd.get("packageManager"),
-                    "installKind": upd.get("installKind"),
-                }
-            else:
-                out["update_status"] = {
-                    "ok": False,
-                    "error": res.get("error"),
-                    "rc": res.get("rc"),
-                }
-        else:
-            out["errors"].append(f"{user}: cannot resolve uid for update status")
-    else:
-        out["errors"].append("no enabled agent available for update status")
-
-    _save_security_cache(cfg, out)
-    return out
-
-
-LOG_SECURITY_PATTERNS = [
-    (
-        "auth-failure",
-        re.compile(
-            r"(failed password|invalid user|authentication failure|failed publickey|"
-            r"maximum authentication attempts|disconnecting authenticating user|"
-            r"unable to negotiate|kex_exchange_identification|bad protocol version)",
-            re.I,
-        ),
-    ),
-    (
-        "web-probe",
-        re.compile(
-            r"(\.\./|%2e%2e|/\.env\b|/wp-login\.php|/wp-admin\b|/xmlrpc\.php|"
-            r"/phpmyadmin\b|/adminer\b|/vendor/phpunit|/cgi-bin\b|/boaform/|"
-            r"/HNAP1\b|/shell\b|/cmd=|/etc/passwd|union(\+|%20|\s)+select|"
-            r"<script|%3cscript|sqlmap|nikto|nmap)",
-            re.I,
-        ),
-    ),
-    (
-        "access-denied",
-        re.compile(
-            r"(permission denied|access denied|unauthorized|forbidden|not allowed|"
-            r"csrf|certificate verify failed|tls handshake error|ssl_do_handshake)",
-            re.I,
-        ),
-    ),
-    (
-        "malicious-payload",
-        re.compile(
-            r"(base64_decode|/bin/sh|/bin/bash|powershell|cmd\.exe|wget\s+http|"
-            r"curl\s+http|chmod\s+777|/tmp/[^ ]+\.(sh|php)|eval\()",
-            re.I,
-        ),
-    ),
-]
-
-
-def _service_log_cache_path(cfg):
-    sc = cfg.get("service_log_scan") or cfg.get("log_security_scan") or {}
-    return Path(sc.get("cache_path", "/var/lib/ai-monitor/service-log-security.json"))
-
-
-def _load_service_log_cache(cfg, max_age_s):
-    path = _service_log_cache_path(cfg)
-    try:
-        data = json.loads(path.read_text())
-        age_s = int(time.time()) - int(data.get("ts", 0))
-        if age_s < max_age_s:
-            data["cached"] = True
-            data["cache_age_s"] = age_s
-            return data
-    except Exception:
-        pass
-    return None
-
-
-def _save_service_log_cache(cfg, data):
-    path = _service_log_cache_path(cfg)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2, default=str))
-        tmp.replace(path)
-    except Exception as e:
-        data.setdefault("errors", []).append(f"cache write failed: {e}")
-
-
-def _scan_security_lines(lines, max_samples=5):
-    counts = {}
-    samples = {}
-    for line in lines:
-        if not line:
-            continue
-        for category, pattern in LOG_SECURITY_PATTERNS:
-            if not pattern.search(line):
-                continue
-            counts[category] = counts.get(category, 0) + 1
-            samples.setdefault(category, [])
-            if len(samples[category]) < max_samples:
-                samples[category].append(line.strip()[:240])
-    return counts, samples
-
-
-def _journal_lines_for_system_unit(unit, since_ts, max_lines, timeout_s):
-    rc, out, err = run_cmd(
-        [
-            "journalctl", "-u", unit,
-            "--since", f"@{int(since_ts)}",
-            "-n", str(max_lines),
-            "-o", "short-iso",
-            "--no-pager",
-        ],
-        timeout=timeout_s,
-    )
-    if rc != 0:
-        return [], (err.strip() or out.strip())[:240]
-    return out.splitlines(), None
-
-
-def _journal_lines_for_user_unit(user, uid, unit, since_ts, max_lines, timeout_s):
-    rc, out, err = run_cmd(
-        [
-            "sudo", "-n", "-u", user, "env",
-            f"XDG_RUNTIME_DIR=/run/user/{uid}",
-            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
-            "journalctl", "--user", "-u", unit,
-            "--since", f"@{int(since_ts)}",
-            "-n", str(max_lines),
-            "-o", "short-iso",
-            "--no-pager",
-        ],
-        timeout=timeout_s,
-    )
-    if rc != 0:
-        return [], (err.strip() or out.strip())[:240]
-    return out.splitlines(), None
-
-
-def _log_file_lines(path, max_lines, max_bytes):
-    p = Path(path)
-    if not p.exists() or not p.is_file():
-        return []
-    try:
-        with open(p, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - max_bytes), os.SEEK_SET)
-            lines = f.read().decode("utf-8", errors="replace").splitlines()
-        return lines[-max_lines:]
-    except Exception:
-        return []
-
-
-def _line_epoch_guess(line):
-    text = line.strip()
-    for pattern, fmt in (
-        (r"^(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})", "%Y/%m/%d %H:%M:%S"),
-        (r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})", "%Y-%m-%d %H:%M:%S"),
-    ):
-        m = re.search(pattern, text)
-        if not m:
-            continue
-        raw = m.group(1).replace("T", " ")
-        try:
-            return datetime.strptime(raw, fmt).timestamp()
-        except Exception:
-            pass
-    m = re.search(r"^([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})", text)
-    if m:
-        try:
-            dt = datetime.strptime(f"{datetime.now().year} {m.group(1)}", "%Y %b %d %H:%M:%S")
-            return dt.timestamp()
-        except Exception:
-            pass
-    return None
-
-
-def _filter_lines_since(lines, since_ts):
-    filtered = []
-    for line in lines:
-        ts = _line_epoch_guess(line)
-        if ts is not None and ts < since_ts:
-            continue
-        filtered.append(line)
-    return filtered
-
-
-def _default_log_file_targets():
-    return [
-        {"name": "nginx-access", "path": "/var/log/nginx/access.log", "owner": "nginx"},
-        {"name": "nginx-error", "path": "/var/log/nginx/error.log", "owner": "nginx"},
-        {"name": "mariadb", "path": "/var/log/mariadb/mariadb.log", "owner": "mariadb"},
-        {"name": "php-fpm-error", "path": "/var/log/php-fpm/error.log", "owner": "php-fpm"},
-        {"name": "php-fpm-www-error", "path": "/var/log/php-fpm/www-error.log", "owner": "php-fpm"},
-    ]
-
-
-def _finding_severity(category, count, thresholds):
-    warn = int((thresholds.get("warn") or {}).get(category, 5))
-    crit = int((thresholds.get("crit") or {}).get(category, 30))
-    if count >= crit:
-        return "crit"
-    if count >= warn:
-        return "warn"
-    return None
-
-
-def probe_service_log_security(cfg, registry):
-    """Periodically scan logs for watched services for common hostile probes
-    and auth failures. This is intentionally pattern/threshold based so Karen
-    gets concrete evidence instead of free-form log summaries."""
-    sc = cfg.get("service_log_scan") or cfg.get("log_security_scan") or {}
-    if sc.get("enabled", True) is False:
-        return {"enabled": False}
-    interval_s = int(sc.get("interval_s", 30 * 60))
-    cached = _load_service_log_cache(cfg, interval_s)
-    if cached:
-        return cached
-
-    window_s = int(sc.get("window_s", sc.get("window_minutes", 120) * 60))
-    since_ts = int(time.time() - window_s)
-    max_lines = int(sc.get("max_lines_per_target", 800))
-    max_file_bytes = int(sc.get("max_file_bytes", 512 * 1024))
-    timeout_s = int(sc.get("timeout_s", 20))
-    thresholds = {
-        "warn": {
-            "auth-failure": 5,
-            "web-probe": 10,
-            "access-denied": 8,
-            "malicious-payload": 1,
-            **((sc.get("thresholds") or {}).get("warn") or {}),
-        },
-        "crit": {
-            "auth-failure": 30,
-            "web-probe": 80,
-            "access-denied": 50,
-            "malicious-payload": 5,
-            **((sc.get("thresholds") or {}).get("crit") or {}),
-        },
-    }
-
-    out = {
-        "enabled": True,
-        "cached": False,
-        "ts": int(time.time()),
-        "window_s": window_s,
-        "findings": [],
-        "targets": [],
-        "errors": [],
-    }
-
-    for unit in (cfg.get("watch") or {}).get("system_units", []) or []:
-        lines, err = _journal_lines_for_system_unit(unit, since_ts, max_lines, timeout_s)
-        target = {"kind": "systemd", "name": unit, "lines": len(lines)}
-        out["targets"].append(target)
-        if err:
-            out["errors"].append(f"{unit}: journal scan failed: {err}")
-            continue
-        counts, samples = _scan_security_lines(lines)
-        for category, count in counts.items():
-            severity = _finding_severity(category, count, thresholds)
-            if severity:
-                out["findings"].append({
-                    "target": unit,
-                    "source": "journal",
-                    "category": category,
-                    "count": count,
-                    "severity": severity,
-                    "samples": samples.get(category, []),
-                })
-
-    for agent in (registry or {}).get("agents", []) or []:
-        if not agent.get("enabled"):
-            continue
-        user = agent.get("user")
-        uid = agent.get("uid") or (resolve_user_uid(user) if user else None)
-        if not user or uid is None:
-            continue
-        for unit in agent.get("services", []) or []:
-            lines, err = _journal_lines_for_user_unit(user, uid, unit, since_ts, max_lines, timeout_s)
-            target_name = f"{user}/{unit}"
-            out["targets"].append({"kind": "user-systemd", "name": target_name, "lines": len(lines)})
-            if err:
-                out["errors"].append(f"{target_name}: journal scan failed: {err}")
-                continue
-            counts, samples = _scan_security_lines(lines)
-            for category, count in counts.items():
-                severity = _finding_severity(category, count, thresholds)
-                if severity:
-                    out["findings"].append({
-                        "target": target_name,
-                        "source": "user-journal",
-                        "category": category,
-                        "count": count,
-                        "severity": severity,
-                        "samples": samples.get(category, []),
-                    })
-
-    file_targets = sc.get("files")
-    if file_targets is None:
-        file_targets = _default_log_file_targets()
-    for spec in file_targets:
-        paths = []
-        raw_path = spec.get("path") if isinstance(spec, dict) else str(spec)
-        if not raw_path:
-            continue
-        for p in sorted(Path("/").glob(raw_path.lstrip("/"))):
-            paths.append(str(p))
-        if not paths and Path(raw_path).exists():
-            paths.append(raw_path)
-        for path in paths:
-            lines = _log_file_lines(path, max_lines, max_file_bytes)
-            lines = _filter_lines_since(lines, since_ts)
-            target_name = (spec.get("name") if isinstance(spec, dict) else None) or path
-            out["targets"].append({"kind": "file", "name": target_name, "path": path, "lines": len(lines)})
-            counts, samples = _scan_security_lines(lines)
-            for category, count in counts.items():
-                severity = _finding_severity(category, count, thresholds)
-                if severity:
-                    out["findings"].append({
-                        "target": target_name,
-                        "path": path,
-                        "source": "file",
-                        "category": category,
-                        "count": count,
-                        "severity": severity,
-                        "samples": samples.get(category, []),
-                    })
-
-    _save_service_log_cache(cfg, out)
-    return out
-
-
-def _remove_cache_file(path):
-    try:
-        Path(path).unlink()
-    except FileNotFoundError:
-        pass
-    except Exception:
-        pass
-
-
-def _restart_openclaw_user_services(registry, timeout_s=60):
-    results = []
-    if not registry:
-        return results
-    for agent in registry.get("agents", []) or []:
-        if not agent.get("enabled"):
-            continue
-        user = agent.get("user")
-        if not user:
-            continue
-        services = [
-            s for s in (agent.get("services") or ["openclaw-gateway.service"])
-            if str(s).startswith("openclaw-")
-        ]
-        if not services:
-            services = ["openclaw-gateway.service"]
-        for svc in services:
-            rc, out, err = run_cmd(
-                [
-                    "sudo", "-n", "systemctl", "--user",
-                    "-M", f"{user}@", "restart", svc,
-                ],
-                timeout=timeout_s,
-            )
-            results.append({
-                "user": user,
-                "service": svc,
-                "rc": rc,
-                "error": (err.strip() or out.strip())[:240] if rc != 0 else "",
-            })
-    return results
-
-
-def _openclaw_audit_summary_after_update(cfg, registry):
-    _remove_cache_file(_security_cache_path(cfg))
-    fresh = probe_openclaw_security_status(cfg, registry)
-    return {
-        "audit_results": [
-            {
-                "user": r.get("user"),
-                "ok": r.get("ok"),
-                "summary": r.get("summary"),
-                "error": r.get("error"),
-            }
-            for r in fresh.get("audit_results", []) or []
-        ],
-        "update_status": fresh.get("update_status"),
-        "errors": fresh.get("errors", []),
-    }
-
-
-def maybe_auto_update_openclaw(cfg, registry, new_alert_issues, state, dry_run=False):
-    """Guarded OpenClaw auto-remediation.
-
-    Only updates when a critical OpenClaw security finding and update
-    availability are present together. Config-only security findings still
-    continue to the monitor after the update attempt.
-    """
-    auto_cfg = cfg.get("openclaw_auto_update") or {}
-    if auto_cfg.get("enabled", True) is False:
-        return None
-    security_critical = [
-        i for i in new_alert_issues
-        if i.get("kind") == "openclaw-security-critical"
-    ]
-    update_issues = [
-        i for i in new_alert_issues
-        if i.get("kind") == "openclaw-update-available"
-    ]
-    if auto_cfg.get("only_when_security_critical", True):
-        if not security_critical or not update_issues:
-            return None
-    elif not update_issues:
-        return None
-
-    now = int(time.time())
-    cooldown_s = int(auto_cfg.get("cooldown_s", 6 * 60 * 60))
-    au_state = state.setdefault("openclaw_auto_update", {})
-    if not dry_run and now < int(au_state.get("next_attempt_after", 0)):
-        return {
-            "type": "openclaw_auto_update_skipped_cooldown",
-            "next_attempt_after": au_state.get("next_attempt_after"),
-            "security_issue_count": len(security_critical),
-            "update_issue_count": len(update_issues),
-        }
-
-    timeout_s = int(auto_cfg.get("timeout_s", 1800))
-    cmd = [
-        "openclaw", "update",
-        "--yes",
-        "--json",
-        "--timeout", str(timeout_s),
-    ]
-    if auto_cfg.get("tag"):
-        cmd.extend(["--tag", str(auto_cfg["tag"])])
-    if auto_cfg.get("channel"):
-        cmd.extend(["--channel", str(auto_cfg["channel"])])
-
-    if dry_run:
-        return {
-            "type": "would_openclaw_auto_update",
-            "cmd": " ".join(shlex.quote(x) for x in cmd),
-            "security_issue_count": len(security_critical),
-            "update_issue_count": len(update_issues),
-        }
-
-    pre_status_rc, pre_status_out, pre_status_err = run_cmd(
-        ["openclaw", "update", "status", "--json", "--timeout", "15"],
-        timeout=30,
-    )
-    pre_status = None
-    try:
-        pre_status = json.loads(pre_status_out) if pre_status_out.strip() else None
-    except Exception:
-        pre_status = {"parse_error": pre_status_out[:300]}
-
-    rc, out, err = run_cmd(cmd, timeout=timeout_s + 120)
-    update_json = None
-    try:
-        update_json = json.loads(out) if out.strip() else None
-    except Exception:
-        update_json = {"parse_error": out[:600]}
-
-    au_state["last_attempt"] = now
-    au_state["last_rc"] = rc
-    au_state["next_attempt_after"] = now + cooldown_s
-
-    restart_results = []
-    if rc == 0 and auto_cfg.get("restart_services", True):
-        restart_results = _restart_openclaw_user_services(
-            registry, timeout_s=int(auto_cfg.get("restart_timeout_s", 60))
-        )
-
-    post_audit = None
-    if rc == 0 and auto_cfg.get("post_audit", True):
-        post_audit = _openclaw_audit_summary_after_update(cfg, registry)
-
-    return {
-        "type": "openclaw_auto_update",
-        "cmd": " ".join(shlex.quote(x) for x in cmd),
-        "rc": rc,
-        "ok": rc == 0,
-        "stdout": out[:2000],
-        "stderr": err[:1200],
-        "pre_status_rc": pre_status_rc,
-        "pre_status": pre_status,
-        "pre_status_error": pre_status_err[:500],
-        "update_json": update_json,
-        "restart_results": restart_results,
-        "post_audit": post_audit,
-        "security_issue_count": len(security_critical),
-        "update_issue_count": len(update_issues),
-    }
-
-
-SYSTEM_PROMPT = """You are the AI judge for an OpenClaw agent host monitor.
-
-The host may run on different Linux distributions and with different service mixes. Treat the probes as the source of truth: tenant users come from the configured OpenClaw agents registry, systemd units and listeners come from ai-monitor config plus registry-derived agent services, and local model/service liveness probes describe what exists on this machine. The procedural watchdog `openclaw-integrity-check` has already run; you receive its output plus host resources and service probes.
+The host runs one or more tenant users (registered in /etc/openclaw/agents.json) plus system services (ollama, nginx, mariadb, php-fpm). The procedural watchdog `openclaw-integrity-check` has already run; you receive its output plus host resources and an ollama liveness probe.
 
 Output ONLY a single JSON object with this shape:
 {
@@ -2361,7 +1506,7 @@ Rules:
 - Gmail watch expiring within 24h is WARN; expired is CRIT.
 - Resource threshold breaches in `resources.threshold_breaches` are WARN; if the same breach appears in `previously_open`, escalate to CRIT.
 - A listener marked open=false for an expected port is CRIT.
-- Functional model-service probe `ok=false` is CRIT.
+- Functional ollama probe `ok=false` is CRIT.
 - Healthy state: `healthy=true`, `issues=[]`, summary names the green services briefly.
 - Be terse. No prose outside JSON. Do NOT recommend `restart` — the procedural checker already restarts. Use `investigate` or `observe`.
 """
@@ -2423,6 +1568,13 @@ def build_compact_input(probes):
              "age_minutes": e["age_s"] // 60, "severity": e["severity"],
              "subject": e.get("subject", "")[:80]}
             for e in probes.get("pending_email_tasks", {}).get("pending", [])
+        ],
+        "pm_workflow": [
+            {"agent": p["agent"], "task_id": p["task_id"],
+             "kind": p["kind"], "status": p.get("status"),
+             "age_minutes": (p.get("age_s") or 0) // 60,
+             "required_action": p.get("required_action", "")[:140]}
+            for p in probes.get("pm_workflow", {}).get("items", [])
         ],
     }
 
@@ -2613,7 +1765,7 @@ def deterministic_issues(probes):
         age_min = (m.get("age_s") or 0) // 60
         preview = (m.get("preview") or "")[:140]
         out.append({
-            "unit": f"jira:{m['agent']}/{m['issue_key']}#{m.get('comment_id','')}",
+            "unit": f"jira:{m['agent']}/{m['issue_key']}",
             "kind": "mention-awaiting-reply",
             "severity": m.get("severity", "warn"),
             "reason": (
@@ -2631,162 +1783,27 @@ def deterministic_issues(probes):
             "reason": f"pending-mentions probe error: {err}",
             "suggested_action": "investigate",
         })
-    ac = probes.get("pending_assignee_comments", {})
-    for c in ac.get("awaiting", []) or []:
-        age_min = (c.get("age_s") or 0) // 60
-        preview = (c.get("preview") or "")[:140]
+    pmw = probes.get("pm_workflow", {})
+    for item in pmw.get("items", []) or []:
+        age_min = (item.get("age_s") or 0) // 60
         out.append({
-            "unit": f"jira:{c['agent']}/{c['issue_key']}#{c.get('comment_id','')}",
-            "kind": "assignee-comment-awaiting-reply",
-            "severity": c.get("severity", "warn"),
+            "unit": f"pm:{item['agent']}/{item['task_id']}",
+            "kind": item.get("kind", "pm-workflow"),
+            "severity": item.get("severity", "warn"),
             "reason": (
-                f"{c['issue_key']} is assigned to {c['agent']}; "
-                f"{c.get('commenter_name','someone')} commented {age_min}m ago "
-                f"and the assignee has not replied. Comment preview: \"{preview}\""
+                f"{item.get('project','?')} task {item['task_id']} "
+                f"({item.get('task_title','')}) is {item.get('status','?')} "
+                f"for {age_min} min; Epic={item.get('epic_status') or 'none'}. "
+                f"Required action: {item.get('required_action','follow PM workflow')}"
             ),
             "suggested_action": "investigate",
         })
-    for err in ac.get("errors", []) or []:
+    for err in pmw.get("errors", []) or []:
         out.append({
-            "unit": "jira:pending-assignee-comments",
-            "kind": "pending-assignee-comments-probe-failed",
+            "unit": "pm:workflow",
+            "kind": "pm-workflow-probe-failed",
             "severity": "warn",
-            "reason": f"pending-assignee-comments probe error: {err}",
-            "suggested_action": "investigate",
-        })
-    ec = probes.get("pending_epic_comments", {})
-    for c in ec.get("awaiting", []) or []:
-        age_min = (c.get("age_s") or 0) // 60
-        preview = (c.get("preview") or "")[:140]
-        out.append({
-            "unit": f"jira:{c['agent']}/{c['issue_key']}#{c.get('comment_id','')}",
-            "kind": "epic-comment-awaiting-reply",
-            "severity": c.get("severity", "warn"),
-            "reason": (
-                f"{c['issue_key']} is under Epic {c.get('epic_key','?')} "
-                f"assigned to {c['agent']}; {c.get('author_agent') or c.get('author_name') or 'another agent'} "
-                f"commented {age_min}m ago and the Epic owner has not replied. "
-                f"Comment preview: \"{preview}\""
-            ),
-            "suggested_action": "investigate",
-        })
-    for err in ec.get("errors", []) or []:
-        out.append({
-            "unit": "jira:pending-epic-comments",
-            "kind": "pending-epic-comments-probe-failed",
-            "severity": "warn",
-            "reason": f"pending-epic-comments probe error: {err}",
-            "suggested_action": "investigate",
-        })
-    mf = probes.get("model_fallback_health", {})
-    for issue in mf.get("issues", []) or []:
-        rl = issue.get("last_rate_limit") or {}
-        idle_m = (issue.get("idle_s") or 0) // 60
-        fb_count = len(issue.get("fallbacks") or [])
-        out.append({
-            "unit": f"openclaw:{issue['agent']}/model-fallback",
-            "kind": issue.get("kind", "model-fallback-not-used-after-rate-limit"),
-            "severity": issue.get("severity", "warn"),
-            "reason": (
-                f"{issue['agent']}: rate-limit signal seen on "
-                f"{rl.get('model') or issue.get('primary') or 'current model'}; "
-                f"session status={issue.get('status')}, idle {idle_m} min, "
-                f"{fb_count} configured fallback(s) from {issue.get('source')} "
-                f"but no later fallback model activity was detected"
-            ),
-            "suggested_action": "investigate",
-        })
-    for err in mf.get("errors", []) or []:
-        out.append({
-            "unit": "openclaw:model-fallback",
-            "kind": "model-fallback-probe-failed",
-            "severity": "warn",
-            "reason": f"model fallback probe error: {err}",
-            "suggested_action": "investigate",
-        })
-    sec = probes.get("openclaw_security", {})
-    for ar in sec.get("audit_results", []) or []:
-        if not ar.get("ok"):
-            out.append({
-                "unit": f"openclaw-security:{ar.get('user','?')}",
-                "kind": "openclaw-security-audit-failed",
-                "severity": "warn",
-                "reason": f"openclaw security audit failed: {ar.get('error','?')}",
-                "suggested_action": "investigate",
-            })
-            continue
-        summary = ar.get("summary") or {}
-        crit = int(summary.get("critical") or 0)
-        warn = int(summary.get("warn") or 0)
-        if crit or warn:
-            top = ", ".join(
-                f"{f.get('checkId') or f.get('title')}"
-                for f in (ar.get("top_findings") or [])[:4]
-                if f.get("checkId") or f.get("title")
-            )
-            out.append({
-                "unit": f"openclaw-security:{ar.get('user','?')}",
-                "kind": "openclaw-security-critical" if crit else "openclaw-security-warn",
-                "severity": "crit" if crit else "warn",
-                "reason": (
-                    f"openclaw security audit reports {crit} critical and "
-                    f"{warn} warning finding(s)"
-                    + (f": {top}" if top else "")
-                ),
-                "suggested_action": "investigate",
-            })
-    upd = sec.get("update_status") or {}
-    if upd:
-        if not upd.get("ok", True):
-            out.append({
-                "unit": "openclaw:update",
-                "kind": "openclaw-update-probe-failed",
-                "severity": "warn",
-                "reason": f"openclaw update status failed: {upd.get('error','?')}",
-                "suggested_action": "investigate",
-            })
-        elif upd.get("available"):
-            out.append({
-                "unit": "openclaw:update",
-                "kind": "openclaw-update-available",
-                "severity": "warn",
-                "reason": (
-                    f"OpenClaw update available: installed "
-                    f"{upd.get('currentVersion') or '?'} -> latest "
-                    f"{upd.get('latestVersion') or '?'} "
-                    f"({upd.get('packageManager') or upd.get('installKind') or 'package'})"
-                ),
-                "suggested_action": "investigate",
-            })
-    for err in sec.get("errors", []) or []:
-        out.append({
-            "unit": "openclaw-security",
-            "kind": "openclaw-security-probe-failed",
-            "severity": "warn",
-            "reason": f"openclaw security probe error: {err}",
-            "suggested_action": "investigate",
-        })
-    logs = probes.get("service_log_security", {})
-    for finding in logs.get("findings", []) or []:
-        samples = " | ".join((finding.get("samples") or [])[:2])
-        out.append({
-            "unit": f"service-log:{finding.get('target','?')}",
-            "kind": f"service-log-{finding.get('category','suspicious')}",
-            "severity": finding.get("severity", "warn"),
-            "reason": (
-                f"{finding.get('count', 0)} suspicious log line(s) in "
-                f"{finding.get('source','logs')} over "
-                f"{(logs.get('window_s') or 0)//60} min"
-                + (f"; sample: {samples}" if samples else "")
-            ),
-            "suggested_action": "investigate",
-        })
-    for err in logs.get("errors", []) or []:
-        out.append({
-            "unit": "service-log:scan",
-            "kind": "service-log-scan-failed",
-            "severity": "warn",
-            "reason": f"service log scan error: {err}",
+            "reason": f"PM workflow probe error: {err}",
             "suggested_action": "investigate",
         })
     return out
@@ -3005,6 +2022,64 @@ def _issues_resolved_for_user(user, bucket):
     return {"email_results": {}, "all_email_resolved": None}
 
 
+def _pm_required_action_from_reason(reason):
+    marker = "Required action:"
+    if marker not in (reason or ""):
+        return None
+    return reason.split(marker, 1)[1].strip()[:500]
+
+
+def _run_pm_workflow_nudges(user, bucket):
+    """Send PM workflow recovery through the native PM channel.
+
+    Generic openclaw-control wakes land in the heartbeat/system-event lane
+    and do not carry the Mission Control context packet or workflow endpoint.
+    PM drift must use the PM channel so the agent receives the same task
+    context and task-comment reply target as a normal comment/discussion.
+    """
+    results = []
+    for p in bucket.get("pm_tasks") or []:
+        cmd = [
+            "/usr/local/sbin/pm-workflow-nudge",
+            "--task-id", p.get("task_id") or "",
+            "--agent", user,
+            "--kind", p.get("kind") or "pm-workflow",
+        ]
+        required = _pm_required_action_from_reason(p.get("reason") or "")
+        if required:
+            cmd.extend(["--required-action", required])
+        rc, out, err = run_cmd(cmd, timeout=90)
+        parsed = None
+        if out.strip():
+            try:
+                parsed = json.loads(out)
+            except Exception:
+                parsed = None
+        results.append({
+            "task_id": p.get("task_id"),
+            "kind": p.get("kind"),
+            "rc": rc,
+            "ok": bool(parsed.get("ok")) if isinstance(parsed, dict) else rc == 0,
+            "out": out.strip()[:500],
+            "err": err.strip()[:300],
+            "parsed": parsed if isinstance(parsed, dict) else None,
+        })
+    return results
+
+
+def _bucket_only_pm(bucket):
+    return bool(bucket.get("pm_tasks")) and not (
+        bucket.get("tickets") or bucket.get("queue_keys") or bucket.get("emails")
+    )
+
+
+def _bucket_needs_pm_restart(bucket):
+    return any(
+        (p.get("kind") or "") in ("pm-channel-no-start", "pm-channel-stalled")
+        for p in bucket.get("pm_tasks") or []
+    )
+
+
 def restart_and_wake_stalled_agents(no_agent_issues):
     """Tier-2 escalation for bypass-monitor kinds: instead of `wake-agent`,
     run `openclaw-control restart-and-wake <user> <reminder>`. Same shape
@@ -3018,16 +2093,15 @@ def restart_and_wake_stalled_agents(no_agent_issues):
             rest = unit[5:]
         elif unit.startswith("email:"):
             rest = unit[6:]
-        elif unit.startswith("openclaw:"):
-            rest = unit[9:]
+        elif unit.startswith("pm:"):
+            rest = unit[3:]
         else:
             continue
         if "/" not in rest:
             continue
         user, tail = rest.split("/", 1)
         bucket = by_user.setdefault(user, {
-            "tickets": [], "queue_count": 0, "queue_keys": [], "emails": [],
-            "model_fallbacks": [], "epic_comments": [], "mentions": [], "assignee_comments": []
+            "tickets": [], "queue_count": 0, "queue_keys": [], "emails": [], "pm_tasks": []
         })
         if kind == "task-stalled-no-agent":
             bucket["tickets"].append(tail)
@@ -3047,33 +2121,43 @@ def restart_and_wake_stalled_agents(no_agent_issues):
             if m:
                 subject = m.group(1)
             bucket["emails"].append({"message_id": tail, "subject": subject[:100]})
-        elif kind in (
-            "model-fallback-not-used-after-rate-limit",
-            "model-fallback-disabled-after-rate-limit",
-        ):
-            bucket["model_fallbacks"].append({
-                "tail": tail,
+        elif kind.startswith("pm-"):
+            bucket["pm_tasks"].append({
+                "task_id": tail,
                 "kind": kind,
-                "reason": (issue.get("reason") or "")[:240],
-            })
-        elif kind == "epic-comment-awaiting-reply":
-            bucket["epic_comments"].append({
-                "tail": tail,
-                "reason": (issue.get("reason") or "")[:240],
-            })
-        elif kind == "mention-awaiting-reply":
-            bucket["mentions"].append({
-                "tail": tail,
-                "reason": (issue.get("reason") or "")[:240],
-            })
-        elif kind == "assignee-comment-awaiting-reply":
-            bucket["assignee_comments"].append({
-                "tail": tail,
                 "reason": (issue.get("reason") or "")[:240],
             })
 
     results = {}
     for user, b in by_user.items():
+        if _bucket_only_pm(b):
+            restart_cmd = [
+                "sudo", "-n", "/usr/local/sbin/openclaw-control",
+                "restart-services", user, "ai-monitor PM workflow retry",
+            ]
+            restart_rc, _, restart_err = run_cmd(restart_cmd, timeout=120)
+            nudge_results = _run_pm_workflow_nudges(user, b)
+            time.sleep(20)
+            post_idle_s, _ = probe_session_idle_for_user(user, f"/home/{user}")
+            recovered = any(r.get("ok") for r in nudge_results)
+            results[user] = {
+                "tickets": b["tickets"],
+                "queue_keys": b["queue_keys"],
+                "emails": b["emails"],
+                "pm_tasks": b["pm_tasks"],
+                "wake_rc": 0 if recovered else 1,
+                "wake_err": "; ".join(r.get("err") or "" for r in nudge_results if r.get("err"))[:200],
+                "post_idle_s": post_idle_s,
+                "recovered": bool(recovered),
+                "email_results": {},
+                "all_email_resolved": None,
+                "action": "restart-services-and-pm-channel-nudge",
+                "restart_rc": restart_rc,
+                "restart_err": restart_err.strip()[:200],
+                "pm_nudge_results": nudge_results,
+            }
+            continue
+
         parts = []
         if b["tickets"]:
             parts.append(
@@ -3104,42 +2188,14 @@ def restart_and_wake_stalled_agents(no_agent_issues):
                 f"and waking you to process them now. reply in the source email "
                 f"thread and update ~/tasks/current.md out of QUEUED"
             )
-        if b["model_fallbacks"]:
-            reasons = "; ".join(
-                m["reason"] for m in b["model_fallbacks"][:3] if m.get("reason")
+        if b["pm_tasks"]:
+            details = "; ".join(
+                f"{p['task_id']} {p['kind']}: {p['reason']}"
+                for p in b["pm_tasks"][:5]
             )
             parts.append(
-                "tier-2 escalation — wake-agent didn't take. your main OpenClaw "
-                "session hit a rate-limit signal and then went quiet without "
-                "observable fallback-model activity; restarting your session "
-                f"and waking you to continue on a usable fallback model ({reasons})"
-            )
-        if b["epic_comments"]:
-            reasons = "; ".join(
-                m["reason"] for m in b["epic_comments"][:3] if m.get("reason")
-            )
-            parts.append(
-                "tier-2 escalation — wake-agent didn't take. comments from "
-                "another agent are waiting on a child issue under your Epic; "
-                f"read the Jira comment(s) and reply if required ({reasons})"
-            )
-        if b["mentions"]:
-            reasons = "; ".join(
-                m["reason"] for m in b["mentions"][:3] if m.get("reason")
-            )
-            parts.append(
-                "tier-2 escalation — wake-agent didn't take. you were "
-                "@-mentioned in Jira and have not replied; read the comment "
-                f"and reply in Jira now ({reasons})"
-            )
-        if b["assignee_comments"]:
-            reasons = "; ".join(
-                m["reason"] for m in b["assignee_comments"][:3] if m.get("reason")
-            )
-            parts.append(
-                "tier-2 escalation — wake-agent didn't take. a new comment is "
-                "waiting on a Jira issue assigned to you; read it and reply if "
-                f"required ({reasons})"
+                f"PM workflow action required ({details}) — follow the "
+                f"Mission Control task context and respond/update status now"
             )
         reminder = "ai-monitor: " + "; ".join(parts) + "."
         cmd = [
@@ -3159,10 +2215,7 @@ def restart_and_wake_stalled_agents(no_agent_issues):
             "tickets": b["tickets"],
             "queue_keys": b["queue_keys"],
             "emails": b["emails"],
-            "model_fallbacks": b["model_fallbacks"],
-            "epic_comments": b["epic_comments"],
-            "mentions": b["mentions"],
-            "assignee_comments": b["assignee_comments"],
+            "pm_tasks": b["pm_tasks"],
             "wake_rc": rc,
             "wake_err": (err.strip()[:200] if rc != 0 else ""),
             "post_idle_s": post_idle_s,
@@ -3181,7 +2234,7 @@ def auto_wake_stalled_agents(no_agent_issues):
     ai-monitor itself runs `openclaw-control wake-agent <user>` for each
     affected user, sleeps 15 s, then re-probes session idleness. Returns
     dict of per-user results."""
-    # Group: user -> {ticket_keys: [...], queue_keys: [...], model_fallbacks: [...]}
+    # Group: user -> {ticket_keys: [...], queue_keys: [...]}
     by_user = {}
     for issue in no_agent_issues:
         kind = issue.get("kind")
@@ -3190,16 +2243,15 @@ def auto_wake_stalled_agents(no_agent_issues):
             rest = unit[5:]
         elif unit.startswith("email:"):
             rest = unit[6:]
-        elif unit.startswith("openclaw:"):
-            rest = unit[9:]
+        elif unit.startswith("pm:"):
+            rest = unit[3:]
         else:
             continue
         if "/" not in rest:
             continue
         user, tail = rest.split("/", 1)
         bucket = by_user.setdefault(user, {
-            "tickets": [], "queue_count": 0, "queue_keys": [], "emails": [],
-            "model_fallbacks": [], "epic_comments": [], "mentions": [], "assignee_comments": []
+            "tickets": [], "queue_count": 0, "queue_keys": [], "emails": [], "pm_tasks": []
         })
         if kind == "task-stalled-no-agent":
             bucket["tickets"].append(tail)
@@ -3225,33 +2277,49 @@ def auto_wake_stalled_agents(no_agent_issues):
             if m:
                 subject = m.group(1)
             bucket["emails"].append({"message_id": tail, "subject": subject[:100]})
-        elif kind in (
-            "model-fallback-not-used-after-rate-limit",
-            "model-fallback-disabled-after-rate-limit",
-        ):
-            bucket["model_fallbacks"].append({
-                "tail": tail,
+        elif kind.startswith("pm-"):
+            bucket["pm_tasks"].append({
+                "task_id": tail,
                 "kind": kind,
-                "reason": (issue.get("reason") or "")[:240],
-            })
-        elif kind == "epic-comment-awaiting-reply":
-            bucket["epic_comments"].append({
-                "tail": tail,
-                "reason": (issue.get("reason") or "")[:240],
-            })
-        elif kind == "mention-awaiting-reply":
-            bucket["mentions"].append({
-                "tail": tail,
-                "reason": (issue.get("reason") or "")[:240],
-            })
-        elif kind == "assignee-comment-awaiting-reply":
-            bucket["assignee_comments"].append({
-                "tail": tail,
                 "reason": (issue.get("reason") or "")[:240],
             })
 
     results = {}
     for user, b in by_user.items():
+        if _bucket_only_pm(b):
+            restart_rc = None
+            restart_err = ""
+            if _bucket_needs_pm_restart(b):
+                restart_cmd = [
+                    "sudo", "-n", "/usr/local/sbin/openclaw-control",
+                    "restart-services", user, "ai-monitor PM channel no-start",
+                ]
+                restart_rc, _, restart_err = run_cmd(restart_cmd, timeout=120)
+            nudge_results = _run_pm_workflow_nudges(user, b)
+            time.sleep(15)
+            post_idle_s, _ = probe_session_idle_for_user(user, f"/home/{user}")
+            recovered = any(r.get("ok") for r in nudge_results)
+            results[user] = {
+                "tickets": b["tickets"],
+                "queue_keys": b["queue_keys"],
+                "emails": b["emails"],
+                "pm_tasks": b["pm_tasks"],
+                "wake_rc": 0 if recovered else 1,
+                "wake_err": "; ".join(r.get("err") or "" for r in nudge_results if r.get("err"))[:200],
+                "post_idle_s": post_idle_s,
+                "recovered": bool(recovered),
+                "email_results": {},
+                "all_email_resolved": None,
+                "action": (
+                    "restart-services-and-pm-channel-nudge"
+                    if restart_rc is not None else "pm-channel-nudge"
+                ),
+                "restart_rc": restart_rc,
+                "restart_err": restart_err.strip()[:200],
+                "pm_nudge_results": nudge_results,
+            }
+            continue
+
         parts = []
         if b["tickets"]:
             parts.append(
@@ -3282,40 +2350,14 @@ def auto_wake_stalled_agents(no_agent_issues):
                 f"sign outbound email with the current runtime model, and update "
                 f"the task status out of QUEUED"
             )
-        if b["model_fallbacks"]:
-            reasons = "; ".join(
-                m["reason"] for m in b["model_fallbacks"][:3] if m.get("reason")
+        if b["pm_tasks"]:
+            details = "; ".join(
+                f"{p['task_id']} {p['kind']}: {p['reason']}"
+                for p in b["pm_tasks"][:5]
             )
             parts.append(
-                "your main OpenClaw session hit a rate-limit signal and then "
-                "went quiet without observable fallback-model activity — resume "
-                "on the next usable model in your configured fallback list "
-                f"({reasons})"
-            )
-        if b["epic_comments"]:
-            reasons = "; ".join(
-                m["reason"] for m in b["epic_comments"][:3] if m.get("reason")
-            )
-            parts.append(
-                "another agent commented on a Jira issue under an Epic assigned "
-                "to you — read the comment and reply in Jira if required "
-                f"({reasons})"
-            )
-        if b["mentions"]:
-            reasons = "; ".join(
-                m["reason"] for m in b["mentions"][:3] if m.get("reason")
-            )
-            parts.append(
-                "you were @-mentioned in Jira and have not replied — read the "
-                f"comment and reply in Jira now ({reasons})"
-            )
-        if b["assignee_comments"]:
-            reasons = "; ".join(
-                m["reason"] for m in b["assignee_comments"][:3] if m.get("reason")
-            )
-            parts.append(
-                "a new comment is waiting on a Jira issue assigned to you — "
-                f"read it and reply if required ({reasons})"
+                f"PM workflow action required ({details}) — follow the "
+                f"Mission Control task context and respond/update status now"
             )
         reminder = "ai-monitor: " + "; ".join(parts) + "."
         cmd = [
@@ -3335,10 +2377,7 @@ def auto_wake_stalled_agents(no_agent_issues):
             "tickets": b["tickets"],
             "queue_keys": b["queue_keys"],
             "emails": b["emails"],
-            "model_fallbacks": b["model_fallbacks"],
-            "epic_comments": b["epic_comments"],
-            "mentions": b["mentions"],
-            "assignee_comments": b["assignee_comments"],
+            "pm_tasks": b["pm_tasks"],
             "wake_rc": rc,
             "wake_err": (err.strip()[:200] if rc != 0 else ""),
             "post_idle_s": post_idle_s,
@@ -3613,7 +2652,7 @@ def format_alerts_message(issues):
     """Build a single Telegram message for all new-alert issues in this tick."""
     head_icon = SEVERITY_ICON.get(_worst_severity(issues), "⚪")
     n = len(issues)
-    header = f"{head_icon} {host_label()} — {n} issue{'s' if n != 1 else ''}"
+    header = f"{head_icon} x1 — {n} issue{'s' if n != 1 else ''}"
     blocks = []
     for issue in issues:
         sev_icon = SEVERITY_ICON.get(issue.get("severity"), "⚪")
@@ -3628,7 +2667,7 @@ def format_alerts_message(issues):
 def format_resolved_message(issues):
     """Build a single Telegram message for all resolved issues in this tick."""
     n = len(issues)
-    header = f"✅ {host_label()} — {n} resolved"
+    header = f"✅ x1 — {n} resolved"
     lines = [
         f"{issue.get('unit','?')} — {issue.get('kind','?')}" for issue in issues
     ]
@@ -3737,35 +2776,6 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
         new_alert_issues.append(issue)
         new_alert_keys.append(key)
 
-    auto_update_action = maybe_auto_update_openclaw(
-        cfg, registry, issues, state, dry_run=dry_run
-    )
-    if auto_update_action:
-        actions.append(auto_update_action)
-        if (
-            not dry_run
-            and auto_update_action.get("type") == "openclaw_auto_update"
-            and auto_update_action.get("ok")
-        ):
-            for issue in issues:
-                if issue.get("kind") != "openclaw-update-available":
-                    continue
-                k = event_key(issue)
-                ev = state["events"].get(k)
-                if not ev:
-                    continue
-                ev["alert_sent"] = True
-                ev.setdefault("attempt_history", []).append({
-                    "ts": now,
-                    "route": "bypass-monitor",
-                    "action": "openclaw-update",
-                    "result": {
-                        "rc": auto_update_action.get("rc"),
-                        "post_audit": auto_update_action.get("post_audit"),
-                    },
-                })
-                ev["next_attempt_after"] = now + confirmation_window_s
-
     if new_alert_issues:
         text = format_alerts_message(new_alert_issues)
         triage_cfg = cfg.get("monitor_triage") or cfg.get("karen_triage") or {}
@@ -3825,28 +2835,24 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
         # action is bounded and idempotent (wake-agent). No judgment needed;
         # routing through the monitor just adds latency and a chance of a
         # wrong suppress.
-        AUTO_ACTION_KINDS = set(triage_cfg.get(
-                "auto_action_kinds_bypass_monitor",
-                triage_cfg.get(
-                    "auto_action_kinds_bypass_karen",
-                    [
-                        "agent-idle-with-queue",
-                        "email-awaiting-action",
-                        "model-fallback-not-used-after-rate-limit",
-                        "model-fallback-disabled-after-rate-limit",
-                        "epic-comment-awaiting-reply",
-                        "mention-awaiting-reply",
-                        "assignee-comment-awaiting-reply",
-                    ],
-                ),
-            ))
-        AUTO_ACTION_KINDS.update({
-            "epic-comment-awaiting-reply",
-            "mention-awaiting-reply",
-            "assignee-comment-awaiting-reply",
-            "model-fallback-not-used-after-rate-limit",
-            "model-fallback-disabled-after-rate-limit",
-        })
+        default_auto_action_kinds = {
+            "agent-idle-with-queue",
+            "email-awaiting-action",
+            "pm-backlog-plan-missing",
+            "pm-todo-not-started",
+            "pm-in-progress-stale",
+            "pm-review-feedback-awaiting-assignee",
+            "pm-review-awaiting-reviewer",
+            "pm-channel-no-start",
+            "pm-channel-stalled",
+        }
+        configured_auto_action_kinds = (
+            triage_cfg.get("auto_action_kinds_bypass_monitor")
+            or triage_cfg.get("auto_action_kinds_bypass_karen")
+            or []
+        )
+        AUTO_ACTION_KINDS = default_auto_action_kinds | set(configured_auto_action_kinds)
+        AUTO_ACTION_KINDS -= set(triage_cfg.get("disable_auto_action_kinds", []))
         auto_issues = [i for i in new_alert_issues if i.get("kind") in AUTO_ACTION_KINDS]
         monitor_bound_issues = [
             i for i in new_alert_issues if i.get("kind") not in AUTO_ACTION_KINDS
@@ -4063,11 +3069,13 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                         "task-stalled-no-agent": ("wake-agent", "restart-and-wake"),
                         "agent-idle-with-queue": ("wake-agent", "restart-and-wake"),
                         "email-awaiting-action": ("wake-agent", "restart-and-wake"),
-                        "model-fallback-not-used-after-rate-limit": ("wake-agent", "restart-and-wake"),
-                        "model-fallback-disabled-after-rate-limit": ("wake-agent", "restart-and-wake"),
-                        "epic-comment-awaiting-reply": ("wake-agent", "restart-and-wake"),
-                        "mention-awaiting-reply": ("wake-agent", "restart-and-wake"),
-                        "assignee-comment-awaiting-reply": ("wake-agent", "restart-and-wake"),
+                        "pm-backlog-plan-missing": ("wake-agent", "restart-and-wake"),
+                        "pm-todo-not-started": ("wake-agent", "restart-and-wake"),
+                        "pm-in-progress-stale": ("wake-agent", "restart-and-wake"),
+                        "pm-review-feedback-awaiting-assignee": ("wake-agent", "restart-and-wake"),
+                        "pm-review-awaiting-reviewer": ("wake-agent", "restart-and-wake"),
+                        "pm-channel-no-start": ("pm-channel-nudge", "restart-services"),
+                        "pm-channel-stalled": ("pm-channel-nudge", "restart-services"),
                     }
                     actions_taken_lc = [a.lower() for a in (decision.get("actions_taken") or [])]
                     violations = []
@@ -4089,11 +3097,13 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                                 "task-stalled-no-agent",
                                 "agent-idle-with-queue",
                                 "email-awaiting-action",
-                                "model-fallback-not-used-after-rate-limit",
-                                "model-fallback-disabled-after-rate-limit",
-                                "epic-comment-awaiting-reply",
-                                "mention-awaiting-reply",
-                                "assignee-comment-awaiting-reply",
+                                "pm-backlog-plan-missing",
+                                "pm-todo-not-started",
+                                "pm-in-progress-stale",
+                                "pm-review-feedback-awaiting-assignee",
+                                "pm-review-awaiting-reviewer",
+                                "pm-channel-no-start",
+                                "pm-channel-stalled",
                             )
                         ]
                         wake_results = (
@@ -4358,7 +3368,7 @@ def load_agent_defaults(cfg):
                 "byRole": {}, "byIntegration": {}}
 
 
-def derive_effective_agent(agent, defaults):
+def derive_effective_agent(agent, defaults, all_agents=None):
     """Compute effective services and capabilities for an agent by
     merging the central defaults schema with the per-agent flags.
 
@@ -4436,11 +3446,25 @@ def derive_effective_agent(agent, defaults):
     import re as _re_recv
     _integ = agent.get("integrations") or {}
     _recv_re = _re_recv.compile(r"^openclaw-([a-z0-9-]+)-receiver\.service$")
+
+    has_active_integration = {}
+    if all_agents:
+        for a in all_agents:
+            if a.get("enabled", True) and a.get("role") == "coding":
+                for k, v in (a.get("integrations") or {}).items():
+                    if v:
+                        has_active_integration[k] = True
+
     def _keep(s):
         m = _recv_re.match(s)
         if not m:
             return True
-        return bool(_integ.get(m.group(1)))
+        gate = m.group(1)
+        if not _integ.get(gate):
+            return False
+        if agent.get("role") == "monitor" and not has_active_integration.get(gate):
+            return False
+        return True
     services = [s for s in services if _keep(s)]
 
     eff["services"] = services
@@ -4467,9 +3491,10 @@ def load_registry(cfg):
         health["age_s"] = age_s
         registry = json.loads(p.read_text())
         defaults = load_agent_defaults(cfg)
+        raw_agents = registry.get("agents") or []
         registry["agents"] = [
-            derive_effective_agent(a, defaults)
-            for a in (registry.get("agents") or [])
+            derive_effective_agent(a, defaults, raw_agents)
+            for a in raw_agents
         ]
         max_age_h = cfg["watch"].get("agents_registry_max_age_hours")
         if max_age_h:
@@ -4522,7 +3547,7 @@ def gather_probes(cfg):
 
     probes = {
         "ts": int(time.time()),
-        "host": host_label(),
+        "host": "x1",
         "integrity_check": probe_integrity_check(cfg),
         "integrity_journal": probe_journal_integrity(cfg),
         "ollama_probe": probe_ollama(cfg),
@@ -4537,11 +3562,7 @@ def gather_probes(cfg):
         "agent_queue": probe_agent_queue(cfg, registry),
         "pending_email_tasks": probe_pending_email_tasks(cfg, registry),
         "pending_mentions": probe_pending_mentions(cfg, registry),
-        "pending_assignee_comments": probe_pending_assignee_comments(cfg, registry),
-        "pending_epic_comments": probe_pending_epic_comment_reviews(cfg, registry),
-        "model_fallback_health": probe_model_fallback_health(cfg, registry),
-        "openclaw_security": probe_openclaw_security_status(cfg, registry),
-        "service_log_security": probe_service_log_security(cfg, registry),
+        "pm_workflow": probe_pm_workflow(cfg, registry),
     }
     for user, uid, unit in user_units_spec:
         key = f"{user}/{unit}"
@@ -4626,8 +3647,7 @@ def main():
     }
     append_jsonl(cfg["log"]["jsonl_path"], record)
     rotate_log(cfg["log"]["jsonl_path"], cfg["log"].get("max_age_days", 14))
-    if not args.dry_run:
-        save_state(state)
+    save_state(state)
 
     if args.dry_run:
         print(

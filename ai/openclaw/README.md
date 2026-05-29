@@ -55,13 +55,21 @@ Per-agent symlinks point into the host-specific OpenClaw checkout. Use `/srv/Cod
 | `/home/<user>/.openclaw/skills/google-workspace/*.js` | `<openclaw-root>/skills/google-workspace/` |
 | `/home/<user>/workspace/mail/*.js` | `<openclaw-root>/skills/local-mail/` on yoga510 |
 | `/etc/openclaw/agents.json` | `/srv/agents/index.json` (live runtime registry, NOT in this repo — edited by the dashboard's POST /agents/registry/toggle; see [`index.example.json`](./index.example.json) for the template) |
+| `/home/<user>/workspace/{SOUL,USER,MEMORY,IDENTITY,TOOLS,HEARTBEAT}.md` | `<agentFilesRoot>/<user>/...` per-agent private files |
+| `/home/<user>/.openclaw/workspace/{SOUL,USER,MEMORY,IDENTITY,TOOLS,HEARTBEAT}.md` | same |
+| `/home/<user>/.openclaw/openclaw.json` | `<agentFilesRoot>/<user>/openclaw.json` per-agent runtime config, agent-owned and writable by the configured `codeGroup` |
 
 Note: the `monitoring` agent (Linux user `karen`) has only the
 `~/.openclaw/workspace/` paths — the user-facing `~/workspace/` doesn't exist
 for the monitor user, so AGENTS/ROLES/TEAM_WORKFLOW are symlinked once each
 there.
 
-Per-agent **state**, **identity**, **tokens**, and **memory** are NOT symlinked and NOT in this repo — see [`AGENT_FILES.md`](./AGENT_FILES.md).
+Per-agent **identity**, **memory**, and **OpenClaw runtime config** are
+symlinked to the host's private agent-files root, defaulting to
+`/srv/agents/openclaw` and overrideable with `agentFilesRoot` in
+`/etc/openclaw/agents.json`. Per-agent **state** and **tokens** still live
+under each agent's home and are NOT in this repo — see
+[`AGENT_FILES.md`](./AGENT_FILES.md).
 
 On yoga510, local-mail is shared code and policy. The allowlist lives at
 `skills/local-mail/auto-reply-policy.json`; list/read helpers expose allowlist

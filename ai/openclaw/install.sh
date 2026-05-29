@@ -13,9 +13,10 @@
 #      monitor agent enables them based on derived services)
 #   4. generate openclaw-monitor-sync.path from agents.json (host-specific:
 #      systemd Path units don't support globs, so one PathChanged= per agent)
-#   5. symlink the frontend HTML for agent-dashboard
-#   6. systemctl daemon-reload (system + per-user) + restart running units
-#   7. reconcile per-agent user-systemd state against the derived services
+#   5. reconcile per-agent private files under the host agent-files root
+#   6. symlink the frontend HTML for agent-dashboard
+#   7. systemctl daemon-reload (system + per-user) + restart running units
+#   8. reconcile per-agent user-systemd state against the derived services
 #      list — enable+start what should run, stop+disable orphans (e.g. the
 #      legacy openclaw-webhook-receiver after its split into jira+bitbucket
 #      receivers)
@@ -35,6 +36,7 @@ DRY=0
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 REGISTRY="${OPENCLAW_AGENTS_JSON:-/etc/openclaw/agents.json}"
 DEFAULTS="${OPENCLAW_AGENT_DEFAULTS:-/etc/openclaw/agent-defaults.json}"
+AGENT_FILES_ROOT="${OPENCLAW_AGENT_FILES_ROOT:-}"
 
 if [ -t 1 ]; then
     C_OK=$'\e[32m'; C_WARN=$'\e[33m'; C_DIM=$'\e[2m'; C_RST=$'\e[0m'
@@ -64,8 +66,34 @@ do_install() {
     ok "$dst"
 }
 
+clone_dir_permissions() {
+    local src="$1" dst="$2"
+    if [ ! -d "$src" ] || [ ! -d "$dst" ]; then
+        return
+    fi
+    if [ "$DRY" -eq 1 ]; then
+        log "  would clone permissions $src → $dst"
+        return
+    fi
+    chown "$(stat -c '%U:%G' "$src")" "$dst" 2>/dev/null || true
+    chmod --reference="$src" "$dst" 2>/dev/null || true
+    if command -v getfacl >/dev/null 2>&1 && command -v setfacl >/dev/null 2>&1; then
+        getfacl --omit-header "$src" 2>/dev/null | setfacl --set-file=- "$dst" 2>/dev/null || true
+    fi
+}
+
+set_agent_config_permissions() {
+    local user="$1" group="$2" mode="$3" path="$4"
+    [ -e "$path" ] || return
+    chown "$user:$group" "$path" 2>/dev/null || true
+    chmod "$mode" "$path" 2>/dev/null || true
+    if command -v setfacl >/dev/null 2>&1 && [ "$mode" = "0660" ]; then
+        setfacl -m "u:$user:rw-,g:$group:rw-,m::rw-,o::---" "$path" 2>/dev/null || true
+    fi
+}
+
 # 1. bin scripts
-log "[1/7] bin scripts"
+log "[1/8] bin scripts"
 do_install 755 "$REPO_ROOT/bin/ai-monitor"                /usr/local/bin/ai-monitor
 do_install 755 "$REPO_ROOT/bin/openclaw-integrity-check"  /usr/local/bin/openclaw-integrity-check
 do_install 755 "$REPO_ROOT/bin/openclaw-control"          /usr/local/sbin/openclaw-control
@@ -75,7 +103,7 @@ do_install 755 "$REPO_ROOT/bin/openclaw-typing-keepalive" /usr/local/bin/opencla
 do_install 755 "$REPO_ROOT/bin/gmail-watch-renew-all"     /usr/local/sbin/gmail-watch-renew-all
 
 # 2. system-wide systemd units (host-portable)
-log "[2/7] systemd system units"
+log "[2/8] systemd system units"
 for u in agent-dashboard.service \
          openclaw-monitor-sync.service openclaw-monitor-sync.timer \
          openclaw-typing-keepalive.service \
@@ -87,7 +115,7 @@ done
 # /etc/systemd/user/ so every user's systemd instance can see them. The
 # monitor agent enables the openclaw-{jira,bitbucket}-receiver pair via
 # step 7's reconcile; other agents leave them disabled.
-log "[3/7] systemd user units (admin-installed, system-wide visible)"
+log "[3/8] systemd user units (admin-installed, system-wide visible)"
 if [ -d "$REPO_ROOT/systemd/user" ]; then
     if [ "$DRY" -eq 0 ]; then
         mkdir -p /etc/systemd/user
@@ -99,7 +127,7 @@ if [ -d "$REPO_ROOT/systemd/user" ]; then
 fi
 
 # 4. generate openclaw-monitor-sync.path
-log "[4/7] generate openclaw-monitor-sync.path from $REGISTRY"
+log "[4/8] generate openclaw-monitor-sync.path from $REGISTRY"
 if [ ! -r "$REGISTRY" ]; then
     warn "  $REGISTRY not readable; skipping .path generation"
 else
@@ -127,7 +155,7 @@ fi
 # loaded by the user-units (openclaw-{jira,bitbucket}-receiver.service).
 # The monitor agent runs them; coding agents don't need the scripts at
 # all. Discovered from the registry (role=monitor); no hardcoding.
-log "[4b/7] webhook scripts → monitor agent home"
+log "[4b/8] webhook scripts → monitor agent home"
 if [ -d "$REPO_ROOT/webhooks" ] && [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     MONITOR_LINE=$(jq -r '.agents[] | select(.role == "monitor" and .enabled == true) | "\(.user)\t\(.home // "/home/\(.user)")"' "$REGISTRY" | head -1)
     if [ -n "$MONITOR_LINE" ]; then
@@ -159,7 +187,7 @@ fi
 # resolution treats ../ relative to the symlink location — without an
 # agent-self symlink in the agent's own skills/ dir, the require fails.
 # Symlinking points back to the canonical repo copy so updates propagate.
-log "[4c/7] agent-self.js symlinks per agent"
+log "[4c/8] agent-self.js symlinks per agent"
 if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     while IFS=$'\t' read -r user home; do
         [ -z "$user" ] && continue
@@ -182,7 +210,7 @@ fi
 # Auto-create per-coding-agent ~/.gitconfig if missing, with an includeIf
 # block that pulls codeRoot/.gitconfig-shared (where the [user] block lives,
 # generated from the registry). Idempotent: never clobbers existing config.
-log "[4d/7] codeRoot drift check + per-agent git identity"
+log "[4d/8] codeRoot drift check + per-agent git identity"
 if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     CODE_ROOT=$(jq -r '.codeRoot // empty' "$REGISTRY")
     CODE_OWNER=$(jq -r '.codeOwner // empty' "$REGISTRY")
@@ -342,7 +370,7 @@ fi
 # would lose those. Symlinking individual files works in principle but
 # breaks Node's module resolution unless we also install node_modules
 # in the repo. Copying keeps each agent fully self-contained.
-log "[4e/7] sync gmail helpers to each gmail-integrated coding agent"
+log "[4e/8] sync gmail helpers to each gmail-integrated coding agent"
 if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     while IFS=$'\t' read -r u h; do
         [ -z "$u" ] && continue
@@ -369,8 +397,177 @@ if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     done < <(jq -r '.agents[] | select(.enabled == true and .role == "coding" and (.integrations.gmail // false)) | "\(.user)\t\(.home // "")"' "$REGISTRY")
 fi
 
-# 5. dashboard frontend symlink
-log "[5/7] dashboard frontend symlink"
+# 5. per-agent private files
+#
+# SOUL/USER/MEMORY/IDENTITY/TOOLS/HEARTBEAT and openclaw.json are private
+# per-agent content, not repo-owned shared docs. Keep the canonical copies
+# under a host-level agent-files root (default: /srv/agents/openclaw,
+# overrideable by agents.json agentFilesRoot or OPENCLAW_AGENT_FILES_ROOT),
+# and leave symlinks in the paths the runtime already reads.
+log "[5/8] per-agent private files root"
+if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+    if [ -z "$AGENT_FILES_ROOT" ]; then
+        AGENT_FILES_ROOT=$(jq -r '.agentFilesRoot // "/srv/agents/openclaw"' "$REGISTRY")
+    fi
+    CODE_ROOT_FOR_PERMS=$(jq -r '.codeRoot // empty' "$REGISTRY")
+    CODE_GROUP_FOR_AGENT_FILES=$(jq -r '.codeGroup // empty' "$REGISTRY")
+    AGENT_FILES_PARENT=$(dirname "$AGENT_FILES_ROOT")
+    PRIVATE_FILES="SOUL.md USER.md MEMORY.md IDENTITY.md TOOLS.md HEARTBEAT.md"
+    PRIVATE_CONFIG="openclaw.json"
+
+    if [ "$DRY" -eq 1 ]; then
+        log "  would create $AGENT_FILES_ROOT"
+        [ -n "$CODE_ROOT_FOR_PERMS" ] && log "  would replicate $CODE_ROOT_FOR_PERMS permissions on $AGENT_FILES_PARENT and $AGENT_FILES_ROOT"
+    else
+        mkdir -p "$AGENT_FILES_ROOT"
+        if [ -n "$CODE_ROOT_FOR_PERMS" ] && [ -d "$CODE_ROOT_FOR_PERMS" ]; then
+            clone_dir_permissions "$CODE_ROOT_FOR_PERMS" "$AGENT_FILES_PARENT"
+            clone_dir_permissions "$CODE_ROOT_FOR_PERMS" "$AGENT_FILES_ROOT"
+        fi
+    fi
+
+    while IFS=$'\t' read -r u h workspace; do
+        [ -z "$u" ] && continue
+        home="${h:-/home/$u}"
+        primary_workspace="${workspace:-$home/workspace}"
+        openclaw_workspace="$home/.openclaw/workspace"
+        dst_dir="$AGENT_FILES_ROOT/$u"
+
+        if [ -n "$CODE_GROUP_FOR_AGENT_FILES" ] && getent group "$CODE_GROUP_FOR_AGENT_FILES" >/dev/null 2>&1; then
+            dst_group="$CODE_GROUP_FOR_AGENT_FILES"
+            config_mode=0660
+        else
+            dst_group="$(id -gn "$u" 2>/dev/null || printf '%s' "$u")"
+            config_mode=0600
+        fi
+
+        if [ "$DRY" -eq 1 ]; then
+            log "  would create $dst_dir (owner=$u group=$dst_group)"
+        else
+            install -d -o "$u" -g "$dst_group" -m 2770 "$dst_dir"
+            if command -v setfacl >/dev/null 2>&1; then
+                setfacl -m "u:$u:rwx" "$dst_dir" 2>/dev/null || true
+                setfacl -d -m "u:$u:rwx" "$dst_dir" 2>/dev/null || true
+            fi
+        fi
+
+        for f in $PRIVATE_FILES; do
+            dst="$dst_dir/$f"
+            candidate=""
+
+            for src_dir in "$primary_workspace" "$openclaw_workspace"; do
+                [ -d "$src_dir" ] || continue
+                src="$src_dir/$f"
+                if [ -e "$src" ] && [ ! -L "$src" ]; then
+                    candidate="$src"
+                    break
+                fi
+            done
+
+            if [ ! -e "$dst" ] && [ -n "$candidate" ]; then
+                if [ "$DRY" -eq 1 ]; then
+                    log "    would move $candidate → $dst"
+                else
+                    mv "$candidate" "$dst"
+                    chown "$u:$u" "$dst" 2>/dev/null || true
+                    ok "  $u: moved $f to $dst"
+                fi
+            elif [ -e "$dst" ] && [ -n "$candidate" ]; then
+                if cmp -s "$candidate" "$dst" 2>/dev/null; then
+                    if [ "$DRY" -eq 1 ]; then
+                        log "    would replace duplicate $candidate with symlink"
+                    else
+                        rm -f "$candidate"
+                    fi
+                else
+                    warn "  $u: $f already exists at $dst and differs from $candidate; leaving source untouched"
+                fi
+            elif [ ! -e "$dst" ]; then
+                log "  $u: $f missing; no canonical file to link"
+                continue
+            fi
+
+            for src_dir in "$primary_workspace" "$openclaw_workspace"; do
+                [ -d "$src_dir" ] || continue
+                src="$src_dir/$f"
+                if [ -e "$src" ] && [ ! -L "$src" ]; then
+                    if cmp -s "$src" "$dst" 2>/dev/null; then
+                        if [ "$DRY" -eq 1 ]; then
+                            log "    would replace duplicate $src with symlink"
+                            continue
+                        fi
+                        rm -f "$src"
+                    else
+                        warn "  $u: $src differs from $dst; leaving regular file untouched"
+                        continue
+                    fi
+                fi
+                if [ "$DRY" -eq 1 ]; then
+                    log "    would symlink $src → $dst"
+                else
+                    ln -snf "$dst" "$src"
+                    chown -h "$u:$u" "$src" 2>/dev/null || true
+                fi
+            done
+        done
+
+        src="$home/.openclaw/$PRIVATE_CONFIG"
+        dst="$dst_dir/$PRIVATE_CONFIG"
+        if [ ! -e "$dst" ] && [ -e "$src" ] && [ ! -L "$src" ]; then
+            if [ "$DRY" -eq 1 ]; then
+                log "    would move $src → $dst"
+                log "    would symlink $src → $dst"
+                continue
+            else
+                mv "$src" "$dst"
+                set_agent_config_permissions "$u" "$dst_group" "$config_mode" "$dst"
+                ok "  $u: moved $PRIVATE_CONFIG to $dst"
+            fi
+        elif [ -e "$dst" ] && [ -e "$src" ] && [ ! -L "$src" ]; then
+            if cmp -s "$src" "$dst" 2>/dev/null; then
+                if [ "$DRY" -eq 1 ]; then
+                    log "    would replace duplicate $src with symlink"
+                    log "    would symlink $src → $dst"
+                    continue
+                else
+                    rm -f "$src"
+                    set_agent_config_permissions "$u" "$dst_group" "$config_mode" "$dst"
+                fi
+            else
+                warn "  $u: $PRIVATE_CONFIG already exists at $dst and differs from $src; leaving source untouched"
+            fi
+        elif [ ! -e "$dst" ]; then
+            log "  $u: $PRIVATE_CONFIG missing; no canonical file to link"
+            continue
+        fi
+
+        if [ -e "$src" ] && [ ! -L "$src" ]; then
+            if cmp -s "$src" "$dst" 2>/dev/null; then
+                if [ "$DRY" -eq 1 ]; then
+                    log "    would replace duplicate $src with symlink"
+                    continue
+                fi
+                rm -f "$src"
+            else
+                warn "  $u: $src differs from $dst; leaving regular file untouched"
+                continue
+            fi
+        fi
+
+        if [ "$DRY" -eq 1 ]; then
+            log "    would symlink $src → $dst"
+        else
+            ln -snf "$dst" "$src"
+            chown -h "$u:$u" "$src" 2>/dev/null || true
+            set_agent_config_permissions "$u" "$dst_group" "$config_mode" "$dst"
+        fi
+    done < <(jq -r '.agents[] | "\(.user)\t\(.home // "")\t\(.workspace // "")"' "$REGISTRY")
+else
+    warn "  registry unreadable or jq unavailable; skipping per-agent private files"
+fi
+
+# 6. dashboard frontend symlink
+log "[6/8] dashboard frontend symlink"
 WEB_HTML="$REPO_ROOT/../web/agents.html"
 WEB_HTML="$(cd "$(dirname "$WEB_HTML")" && pwd)/$(basename "$WEB_HTML")"
 if [ -f "$WEB_HTML" ]; then
@@ -385,8 +582,8 @@ else
     warn "  frontend $WEB_HTML not found; skipping symlink"
 fi
 
-# 6. systemctl daemon-reload + restart running system units
-log "[6/7] systemctl daemon-reload (system + per-user)"
+# 7. systemctl daemon-reload + restart running system units
+log "[7/8] systemctl daemon-reload (system + per-user)"
 if [ "$DRY" -eq 1 ]; then
     log "  would: systemctl daemon-reload (system)"
     log "  would: per-user daemon-reload for each enabled agent"
@@ -406,7 +603,7 @@ else
     ok "running system units restarted"
 fi
 
-# 7. per-agent user-systemd reconcile
+# 8. per-agent user-systemd reconcile
 # For each enabled agent, derive the expected openclaw-*.service set
 # (from core + byRole + byIntegration in agent-defaults.json) and:
 #   - daemon-reload their user instance (pick up /etc/systemd/user/ changes)
@@ -414,7 +611,7 @@ fi
 #   - disable+stop any active openclaw-*.service NOT in the expected set
 #     (orphan cleanup — e.g. the legacy openclaw-webhook-receiver.service
 #      after the split into jira+bitbucket receivers)
-log "[7/7] per-agent user-systemd reconcile"
+log "[8/8] per-agent user-systemd reconcile"
 if [ ! -r "$REGISTRY" ] || [ ! -r "$DEFAULTS" ]; then
     warn "  registry or defaults unreadable; skipping reconcile"
 elif ! command -v jq >/dev/null 2>&1; then
@@ -507,4 +704,4 @@ log "  sudo systemctl enable --now gmail-watch-renew.timer            # gmail-in
 log
 log "Per-agent user units (openclaw-gateway, gmail-listener, mail-listener,"
 log "jira-receiver, bitbucket-receiver, webhook-receiver) are reconciled"
-log "automatically by step [7/7] above based on each agent's derived service set."
+log "automatically by step [8/8] above based on each agent's derived service set."
