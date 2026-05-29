@@ -12,6 +12,7 @@ import { recordPmChannelRunEvent } from "@/lib/agents/pm-channel-runs";
 import { normalizeDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
 import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
 import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
+import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -253,7 +254,7 @@ async function persistTaskReply(
     });
   }
 
-  revalidatePath(`/projects/${original.project.slug}/tasks/${target.taskId}`);
+  revalidateTaskReplyScope(target.taskId, reply.channel);
   return {
     status: 200,
     body: { ok: true, id: reply.id, channel: reply.channel },

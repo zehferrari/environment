@@ -1,8 +1,8 @@
-import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { verifyTaskChatReplyToken } from "@/lib/agents/task-chat-token";
 import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
+import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -223,6 +223,6 @@ export async function POST(
     });
   }
 
-  revalidatePath(`/projects/${original.project.slug}/tasks/${taskId}`);
+  revalidateTaskReplyScope(taskId, reply.channel);
   return NextResponse.json({ ok: true, id: reply.id, channel: reply.channel });
 }

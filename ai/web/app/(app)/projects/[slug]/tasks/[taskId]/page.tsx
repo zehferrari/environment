@@ -34,6 +34,18 @@ import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteTask } from "@/lib/bin/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import {
+  getCachedLatestRepoVerifyActivity,
+  getCachedPendingTaskProposals,
+  getCachedProjectEpics,
+  getCachedRecentTaskChatMessages,
+  getCachedTaskActivity,
+  getCachedTaskAttachments,
+  getCachedTaskChatArchives,
+  getCachedTaskComments,
+  getCachedTaskDetailShell,
+  getCachedTaskRoomMessages,
+} from "@/lib/tasks/cache";
 import SortableTaskList from "@/components/sortable-task-list";
 import AttachmentUploadFab from "@/components/attachment-upload-fab";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
@@ -917,108 +929,12 @@ export default async function TaskDetailPage({
     searchParams,
   ]);
 
-  const task = await db.task.findUnique({
-    where: { id: taskId },
-    include: {
-      project: { select: { id: true, slug: true, name: true } },
-      assignee: {
-        select: {
-          id: true,
-          username: true,
-          name: true,
-          kind: true,
-          status: true,
-          avatarUpdatedAt: true,
-          agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
-        },
-      },
-      actingManager: {
-        select: {
-          id: true,
-          username: true,
-          name: true,
-          kind: true,
-          status: true,
-          avatarUpdatedAt: true,
-          agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
-        },
-      },
-      reporter: {
-        select: {
-          id: true,
-          username: true,
-          name: true,
-          kind: true,
-          status: true,
-          avatarUpdatedAt: true,
-          agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
-        },
-      },
-      epic: {
-        select: {
-          id: true,
-          title: true,
-          status: true,
-          branchName: true,
-          commitPrefix: true,
-          actingManager: {
-            select: {
-              id: true,
-              username: true,
-              name: true,
-              kind: true,
-              status: true,
-              avatarUpdatedAt: true,
-              agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
-            },
-          },
-        },
-      },
-      parent: { select: { id: true, title: true } },
-      subtasks: {
-        where: { deletedAt: null },
-        orderBy: { rank: "asc" },
-        select: {
-          id: true,
-          title: true,
-          status: true,
-          updatedAt: true,
-          assignee: { select: { username: true } },
-        },
-      },
-      comments: {
-        // Soft-deleted comments (HOMELAB-41 / item 2) are returned to
-        // humans on the task page so they can render the collapsed
-        // dotted divider. Agent context queries filter deletedAt: null
-        // upstream so agents never see deleted bodies.
-        orderBy: { createdAt: "asc" },
-        include: {
-          user: {
-            select: {
-              id: true,
-              username: true,
-              kind: true,
-              name: true,
-              avatarUpdatedAt: true,
-              agent: { select: { slug: true, name: true, avatar: true } },
-            },
-          },
-          deletedBy: {
-            select: {
-              id: true,
-              username: true,
-              name: true,
-              kind: true,
-            },
-          },
-        },
-      },
-      attachments: {
-        orderBy: { createdAt: "desc" },
-        include: { uploader: { select: { username: true } } },
-      },
-    },
-  });
+  const [taskShell, comments, attachments] = await Promise.all([
+    getCachedTaskDetailShell(taskId),
+    getCachedTaskComments(taskId),
+    getCachedTaskAttachments(taskId),
+  ]);
+  const task = taskShell ? { ...taskShell, comments, attachments } : null;
   if (!task || task.project.slug !== slug || task.deletedAt) notFound();
 
   // Only human viewers get comment-delete controls (see deleteComment).
@@ -1027,61 +943,13 @@ export default async function TaskDetailPage({
 
   const [principals, projectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify] = await Promise.all([
     listAssignablePrincipals(),
-    db.epic.findMany({
-      where: {
-        projectId: task.project.id,
-        status: { not: "Archive" },
-        deletedAt: null,
-      },
-      orderBy: [{ status: "asc" }, { title: "asc" }],
-      select: { id: true, title: true, status: true },
-    }),
+    getCachedProjectEpics(task.project.id),
     db.user.findMany({ select: { username: true } }),
-    db.agentChatMessage.findMany({
-      where: { taskId: task.id, archiveId: null },
-      orderBy: { createdAt: "desc" },
-      take: 80,
-      select: {
-        id: true,
-        agentSlug: true,
-        originChannel: true,
-        originCommentId: true,
-        createdAt: true,
-        body: true,
-        sender: { select: { kind: true } },
-      },
-    }),
-    db.activityLog.findMany({
-      where: {
-        taskId: task.id,
-        kind: {
-          in: [
-            "task.chat.reply",
-            "task.chat.silent",
-            "task.chat.dispatch",
-            "task.comment",
-            "task.comment.silent",
-            "task.chat.dispatch_failed",
-            "task.comment.dispatch_failed",
-            "task.workflow.dispatch_failed",
-            "task.chat.stream_error",
-          ],
-        },
-      },
-      orderBy: { createdAt: "desc" },
-      take: 160,
-      select: { kind: true, payload: true, targetAgent: true },
-    }),
+    getCachedRecentTaskChatMessages(task.id),
+    getCachedTaskActivity(task.id),
     // Latest Karen branch-verification row, if any. Used by the Review-state
     // Repo verification panel below.
-    db.activityLog.findFirst({
-      where: {
-        taskId: task.id,
-        kind: { in: ["pm.repo.verify.ok", "pm.repo.verify.fail", "pm.repo.verify.enqueue"] },
-      },
-      orderBy: { createdAt: "desc" },
-      select: { kind: true, payload: true, createdAt: true },
-    }),
+    getCachedLatestRepoVerifyActivity(task.id),
   ]);
   const mentionables = mentionableUsers.map((u) => ({ username: u.username }));
   const settledMessageIds = activityMessageIds(recentReplyActivity);
@@ -1111,40 +979,12 @@ export default async function TaskDetailPage({
     }))
     .filter((message, index, all) => all.findIndex((item) => item.agentSlug === message.agentSlug) === index)
     .slice(0, 4);
-  const chatMessages = await db.agentChatMessage.findMany({
-    where: {
-      taskId: task.id,
-      agentSlug: "room",
-      archiveId: null,
-    },
-    // Soft-deleted bubbles (HOMELAB-41 / item 2) stay in this list so
-    // the chat room can render the collapsed dotted divider. Agent
-    // context queries (lib/agents/context/task.ts) filter them out.
-    orderBy: { createdAt: "asc" },
-    include: {
-      sender: {
-        select: {
-          id: true,
-          username: true,
-          kind: true,
-          name: true,
-          avatarUpdatedAt: true,
-          agent: { select: { slug: true, name: true, avatar: true } },
-        },
-      },
-      deletedBy: { select: { username: true, name: true, kind: true } },
-    },
-  });
-  const pendingProposals = await db.workItemProposal.findMany({
-    where: {
-      status: "pending",
-      projectId: task.projectId,
-      grantMessageId: { in: chatMessages.map((m) => m.id) },
-    },
-    include: {
-      project: { select: { name: true } },
-    },
-  });
+  const chatMessages = await getCachedTaskRoomMessages(task.id);
+  const pendingProposals = await getCachedPendingTaskProposals(
+    task.id,
+    task.projectId,
+    chatMessages.map((m) => m.id),
+  );
   const pendingDescriptionMessages = await db.agentChatMessage.findMany({
     where: {
       taskId: task.id,
@@ -1178,32 +1018,8 @@ export default async function TaskDetailPage({
     requesterUserId: viewer.id,
   });
 
-  const [chatArchives, binChatArchives, selectedChatArchive] = await Promise.all([
-    db.agentChatRoomArchive.findMany({
-      where: { projectId: task.project.id, taskId: task.id, deletedAt: null },
-      orderBy: { createdAt: "desc" },
-      take: 20,
-      select: {
-        id: true,
-        summary: true,
-        startedAt: true,
-        endedAt: true,
-        messageCount: true,
-      },
-    }),
-    db.agentChatRoomArchive.findMany({
-      where: { projectId: task.project.id, taskId: task.id, deletedAt: { not: null } },
-      orderBy: { deletedAt: "desc" },
-      take: 20,
-      select: {
-        id: true,
-        summary: true,
-        startedAt: true,
-        endedAt: true,
-        messageCount: true,
-        deletedAt: true,
-      },
-    }),
+  const [[chatArchives, binChatArchives], selectedChatArchive] = await Promise.all([
+    getCachedTaskChatArchives(task.project.id, task.id),
     chatArchive
       ? db.agentChatRoomArchive.findFirst({
           where: { id: chatArchive, projectId: task.project.id, taskId: task.id },
