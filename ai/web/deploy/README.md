@@ -22,6 +22,7 @@ zeh sees exactly what changes on the host.
 | `/etc/openclaw/pm-channel-tokens.json` | host-created | `root:<pm-user-group>`, `0640` | per-agent native PM channel Bearer map; never commit. |
 | `nginx-agents.vixi.au.conf` | `/etc/nginx/sites-available/agents.vixi.au` (+ symlink in `sites-enabled/`) | root | TLS via Let's Encrypt. |
 | `rebuild-and-restart.sh` | run in place | — | coupled build + restart of the *currently-served* worktree. |
+| `move-sqlite-db.sh` | run in place | root | controlled SQLite relocation to `/srv/Data/pm/pm.db`: stop services, backup, `VACUUM INTO`, enable WAL, update `/etc/default/pm`, restart. |
 | `pm-switch.sh` | `-> /usr/local/sbin/pm-switch` | root | build a chosen worktree + flip `pm.service` to it (`pm-switch <wt>` / `pm-switch status`). |
 | `pm-apply-worktree` | `-> /usr/local/sbin/pm-apply-worktree` | root | the one privileged step (drop-in + daemon-reload + restart), path-validated. |
 | `pm-switch-runner` | `-> /usr/local/sbin/pm-switch-runner` | root | monitor-run runner behind `pm-switch-runner.service`; watches the spool, runs `pm-switch`. |
@@ -112,6 +113,11 @@ pnpm prisma migrate deploy
 # 3. Drop the env file into /etc/default and edit host secrets/paths.
 sudo install -o root -g karen -m 0640 deploy/pm.env.example /etc/default/pm
 sudo $EDITOR /etc/default/pm
+
+# 3a. Existing installs that still point DATABASE_URL into a worktree can
+#     relocate safely before continuing. The script backs up, VACUUMs, enables
+#     WAL, updates /etc/default/pm, and restarts PM units.
+# sudo PM_SQLITE_DIR=/srv/Data/pm deploy/move-sqlite-db.sh
 
 # 4. Install/reconcile PM units, PM token files, OpenClaw gateway hooks,
 #    and the native OpenClaw pm channel plugin.

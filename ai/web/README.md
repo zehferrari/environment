@@ -687,7 +687,10 @@ Migrations under `prisma/migrations/`:
 See `.env.example` for the full list. Highlights:
 
 - `DATABASE_URL` — `file:./pm.db` for dev; Prisma resolves it relative
-  to `prisma/schema.prisma`, landing the file at `prisma/pm.db`.
+  to `prisma/schema.prisma`, landing the file at `prisma/pm.db`. Production
+  must use an absolute path outside the worktree, e.g.
+  `file:///srv/Data/pm/pm.db`; use `deploy/move-sqlite-db.sh` for the
+  controlled backup + `VACUUM INTO` relocation.
 - `AUTH_SECRET` — `openssl rand -base64 32`.
 - `AUTH_TRUST_HOST=true` — required behind nginx.
 - `APP_URL` — public URL, used for cookies + reset links.
@@ -718,7 +721,10 @@ See `.env.example` for the full list. Highlights:
 - `PM_OPENCLAW_CHANNEL_TIMEOUT_MS` — ingest post timeout, default 5000.
 - `PM_INTERNAL_APP_URL` / `PM_AGENT_CALLBACK_URL` — loopback base PM
   hands to OpenClaw for the reply + stream callbacks, default
-  `http://127.0.0.1:3000`.
+  `http://127.0.0.1:3000`. PM records send→accepted→first-token→final
+  spans in `PmChannelRun` timestamps and surfaces them on the Agents and
+  System Activity views alongside SQLite page/freelist/journal/locking
+  health.
 - `PM_DIRECT_CHAT_CONTEXT_MESSAGES`,
   `PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`,
   `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT` — bounds on the direct-chat

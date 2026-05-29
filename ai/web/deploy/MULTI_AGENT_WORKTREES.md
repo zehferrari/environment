@@ -133,10 +133,10 @@ Everything is parameterized (`PM_MONITOR_USER`, `PM_WORKTREES_ROOT`,
   migrations can throw `P2022`. `pm-switch.sh` **warns** but never auto-migrates
   (it could break other worktrees on an older schema). Apply deliberately:
   `cd <ai/web> && set -a && . /etc/default/pm && set +a && pnpm exec prisma migrate deploy`.
-- **DB lives in a worktree.** The live SQLite DB sits in the HOMELAB-41
-  worktree's `prisma/prisma/`. Don't release that worktree; relocating the DB to
-  a neutral path (e.g. `/srv/Data/pm/`) + updating `DATABASE_URL` in
-  `/etc/default/pm` is a recommended durable follow-up.
+- **Shared DB outside worktrees.** Production SQLite should live at a neutral
+  path such as `/srv/Data/pm/pm.db`, not under any branch checkout. Use
+  `ai/web/deploy/move-sqlite-db.sh` for the controlled backup + `VACUUM INTO`
+  move, then keep `/etc/default/pm` pointed at the neutral `DATABASE_URL`.
 - **The switcher rides in the app it switches.** Switching to a worktree whose
   branch predates this feature lands you on a build without the UI — switch back
   with the CLI `pm-switch`. Resolved once this is merged to `main`.

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { resolveEffectiveAgentConfig } from "@/lib/agents/effective-config";
 import { describeActivity } from "@/lib/activity";
+import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel-latency";
 import AgentServiceControls, { type AgentService } from "./agent-service-controls";
 
 export const dynamic = "force-dynamic";
@@ -198,7 +199,12 @@ export default async function AgentsPage() {
         agentSlug: true,
         kind: true,
         status: true,
+        createdAt: true,
         updatedAt: true,
+        acceptedAt: true,
+        streamingAt: true,
+        completedAt: true,
+        failedAt: true,
         messageId: true,
       },
     }),
@@ -283,6 +289,7 @@ export default async function AgentsPage() {
               run.status === "queued" || run.status === "accepted" || run.status === "streaming"
             ));
             const newestPmRun = recentAgentPmRuns[0] ?? null;
+            const newestPmLatency = newestPmRun ? pmChannelLatencySpans(newestPmRun) : null;
             const status = statusFor(a, live);
             const ring = ringFor(status);
             const liveTask = live?.current_task ?? null;
@@ -356,6 +363,12 @@ export default async function AgentsPage() {
                       value={newestPmRun
                         ? `${newestPmRun.kind} ${newestPmRun.status} · ${formatAge(newestPmRun.updatedAt)}`
                         : "no PM channel turns"}
+                    />
+                    <Metric
+                      label="PM latency"
+                      value={newestPmLatency
+                        ? `send→accepted ${formatLatency(newestPmLatency.sendToAcceptedMs)} · accepted→first ${formatLatency(newestPmLatency.acceptedToFirstTokenMs)} · first→final ${formatLatency(newestPmLatency.firstTokenToFinalMs)}`
+                        : "no spans recorded"}
                     />
                     <Metric label="Last action" value={lastActivityLabel(live)} />
                     <Metric label="PM user" value={a.user ? `${a.user.username} · ${a.user.status}` : "not seeded"} />

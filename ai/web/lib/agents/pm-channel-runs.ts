@@ -341,31 +341,40 @@ export async function recordPmChannelRunEvent(args: {
       ? "complete"
       : "streaming";
   await record(
-    () => db.pmChannelRun.upsert({
-      where: { targetKey },
-      create: {
-        targetKey,
-        kind: args.target.kind,
-        agentSlug: args.target.agentSlug,
-        messageId: args.target.messageId,
-        taskId: ids.taskId,
-        epicId: ids.epicId,
-        status,
-        error: null,
-        streamingAt: status === "streaming" ? now : null,
-        completedAt: status === "complete" ? now : null,
-        failedAt: null,
-        lastEventAt: now,
-      },
-      update: {
-        status,
-        error: null,
-        streamingAt: status === "streaming" ? now : undefined,
-        completedAt: status === "complete" ? now : undefined,
-        failedAt: null,
-        lastEventAt: now,
-      },
-    }),
+    async () => {
+      const existing = await db.pmChannelRun.findUnique({
+        where: { targetKey },
+        select: { streamingAt: true },
+      });
+      const firstTokenAt = existing?.streamingAt ?? now;
+      await db.pmChannelRun.upsert({
+        where: { targetKey },
+        create: {
+          targetKey,
+          kind: args.target.kind,
+          agentSlug: args.target.agentSlug,
+          messageId: args.target.messageId,
+          taskId: ids.taskId,
+          epicId: ids.epicId,
+          status,
+          error: null,
+          // A final event can be the first emitted token for very short replies;
+          // keep first-token latency visible instead of leaving it blank.
+          streamingAt: firstTokenAt,
+          completedAt: status === "complete" ? now : null,
+          failedAt: null,
+          lastEventAt: now,
+        },
+        update: {
+          status,
+          error: null,
+          streamingAt: firstTokenAt,
+          completedAt: status === "complete" ? now : undefined,
+          failedAt: null,
+          lastEventAt: now,
+        },
+      });
+    },
     "stream run state",
   );
 }
