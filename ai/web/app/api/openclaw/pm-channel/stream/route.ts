@@ -14,6 +14,8 @@ import {
   pmChannelTargetHasDurableReply,
   recordPmChannelRunEvent,
 } from "@/lib/agents/pm-channel-runs";
+import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel-jobs";
+import { appendPmChannelStreamEventForTarget } from "@/lib/agents/pm-channel-stream-log";
 import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
 
 export const runtime = "nodejs";
@@ -117,8 +119,10 @@ export async function POST(req: NextRequest) {
   }
 
   if (event === "error" && await pmChannelTargetHasDurableReply(target)) {
-    const state = publishPmChannelStreamEvent({ target, event: "done" });
+    const persisted = await appendPmChannelStreamEventForTarget({ target, event: "done" });
+    const state = publishPmChannelStreamEvent({ target, event: "done", seq: persisted.seq });
     await recordPmChannelRunEvent({ target, event: "done" });
+    await markPmChannelJobCompleteForTarget(target);
     return NextResponse.json({ ok: true, key: state.key, status: state.status });
   }
 
@@ -131,14 +135,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, silent: true });
   }
 
-  const state = publishPmChannelStreamEvent({
+  const eventInput = {
     target,
     event,
     text,
     delta,
     replace: payload.replace === true,
     error: stringField(payload.error, 2_000),
-  });
+  };
+  const persisted = await appendPmChannelStreamEventForTarget(eventInput);
+  const state = publishPmChannelStreamEvent({ ...eventInput, seq: persisted.seq });
   await recordPmChannelRunEvent({
     target,
     event,

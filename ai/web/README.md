@@ -95,6 +95,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/api/agents/[agentId]/services/{toggle,restart}` | Atlas service controls. |
 | `app/api/agents/[agentId]/registry/toggle` | activate/deactivate registry entry. |
 | `app/api/agents/[agentId]/integrations/credentials` | per-agent credential surface. |
+| `app/api/agents/context/{task,epic,project}/[id]` | loopback-only live PM read API for agents; scoped `?grant=` URLs are preferred, with bearer fallback only while enabled. |
 | `app/api/openclaw/pm-channel/stream` | token-scoped native PM channel live partial-reply callback from OpenClaw. |
 | `app/api/openclaw/pm-channel/reply` | token-scoped native PM channel durable final-reply callback from OpenClaw. |
 | `app/api/openclaw/pm-channel/events` | auth-gated same-origin SSE stream consumed by the browser while a reply is running. |
@@ -105,10 +106,11 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 Agent-facing callbacks are deliberately not browser-session routes.
 `middleware.ts` lets token-scoped callbacks reach their route handlers:
 native PM channel reply/stream callbacks use per-agent Bearer tokens,
-legacy chat replies and description writes use one-shot HMAC tokens, and
-project proposals use a one-shot work-item grant token. Browser-only
-surfaces, including the SSE `/api/openclaw/pm-channel/events` route,
-still require a signed-in PM user.
+live context reads use scoped context grants, legacy chat replies and
+description writes use one-shot HMAC tokens, and project proposals use a
+one-shot work-item grant token. Browser-only surfaces, including the SSE
+`/api/openclaw/pm-channel/events` route, still require a signed-in PM
+user.
 
 ## Library layout
 
@@ -129,9 +131,12 @@ still require a signed-in PM user.
 | `lib/agents/chat-targets.ts` | broader chat-only resolver — all active agents regardless of role (includes monitors). |
 | `lib/agents/chat-actions.ts` | `sendAgentChatMessage` — persists the message, fires dispatch for task-scoped chats. |
 | `lib/agents/context/` | PM-owned context packet builders for agent turns, including task/Epic snapshots, related activity, and cached attachment text extraction. |
+| `lib/agents/context-grants.ts` | short-lived scoped grant URLs for loopback live-context reads; stores token hashes only. |
 | `lib/agents/session-bindings.ts` | PM-owned conversation-to-OpenClaw session bindings for task/comment and direct chats. |
-| `lib/agents/pm-channel-stream.ts` | in-process live stream state for native PM channel partial replies, bridged to browser SSE. |
-| `lib/agents/pm-channel-runs.ts` | durable native PM channel run state (`queued`/`accepted`/`streaming`/`complete`/`failed`) used when the browser reconnects. |
+| `lib/agents/pm-channel-stream.ts` | native PM channel stream reducer and SSE framing for live + replayed partial replies. |
+| `lib/agents/pm-channel-stream-log.ts` | durable append-only stream event log used to replay browser SSE after reconnect. |
+| `lib/agents/pm-channel-runs.ts` | durable native PM channel run state (`queued`/`accepted`/`streaming`/`retryable`/`complete`/`failed`) used when the browser reconnects. |
+| `lib/agents/pm-channel-jobs.ts` | durable PM-channel dispatch queue, retry worker, and queue health rollups. |
 | `lib/agents/direct-chat-actions.ts` | direct agent chat actions for sidebar-launched conversations (send, archive, restart-from-archive). |
 | `lib/agents/openclaw-pm-channel.ts` | native `pm` channel client — posts turns to `/pm-channel/ingest`, resolves per-agent Bearer tokens, types the reply-target envelope. |
 | `lib/agents/effective-config.ts` | merges `/etc/openclaw/agent-defaults.json` (core → byRole → byIntegration → per-agent) into the effective capability/service view shown on the agent deck. |
@@ -340,13 +345,12 @@ with an `epic-chat` reply target. Agent replies return only to the
 origin channel: messages started in task chat stay in task chat,
 messages started in Epic chat stay in Epic chat, and messages mirrored
 from task comments are posted back as task comments.
-Task chat, Epic chat, and task-comment turns still use the PM context packet
-builder in `lib/agents/context/`: the current turn is kept explicit,
-and the packet includes live task + Epic descriptions, recent
-comments, full active Discussion history for the Task/Epic once the
-agent is invited or mentioned, task activity, attachment metadata, and
-cached text excerpts for supported text attachments. Every task +
-agent conversation gets an `AgentSessionBinding`; its
+Task chat, Epic chat, and task-comment turns still use the PM context
+builders in `lib/agents/context/`: the current turn is kept explicit,
+recent Discussion/comments are included in the prompt, and scoped
+context grant URLs let the agent fetch full live task/Epic/project state
+when needed. Every task + agent conversation gets an
+`AgentSessionBinding`; its
 `openclawSessionKey` is the base for PM channel routing. Direct chats
 use the stable key for continuity; task, Epic, and task-comment turns
 derive a per-message key so stale or oversized OpenClaw transcripts do
@@ -474,11 +478,13 @@ message, or task comment that targets an agent, PM:
 
 1. Persists the PM-side row (`DirectAgentChatMessage`, `AgentChatMessage`,
    or `Comment` plus mirrored `AgentChatMessage` for comment origins).
-2. Builds a bounded context packet with the current turn, relevant
-   session/task/Epic/comment/activity history, project context where
-   applicable, and attachment extracts.
+2. Builds bounded channel guidance for the current turn. Task/Epic chat
+   prompts include the recent hot path plus scoped live-context grant
+   URLs; smaller workflow/comment paths may still include compact inline
+   context.
 3. Resolves an `AgentSessionBinding`, derives the channel session key
-   for that surface, and sends the turn to the target agent gateway:
+   for that surface, records a durable local run/job, and sends or queues
+   the turn for the target agent gateway:
 
 ```json
 {
@@ -487,7 +493,7 @@ message, or task comment that targets an agent, PM:
   "agentSlug": "asdrubal",
   "sessionKey": "pm:...",
   "text": "<latest user message>",
-  "contextText": "<PM context packet>",
+  "contextText": "<compact PM context packet or null>",
   "systemPrompt": "<channel guidance>",
   "actor": { "id": "usr_...", "username": "zeh", "kind": "human" },
   "replyTarget": { "kind": "direct | task-chat | task-comment | epic-chat", "...": "origin metadata" },
@@ -504,8 +510,11 @@ PM writes the final answer only to the origin channel: direct chat stays
 direct, task chat stays task chat, Epic chat stays Epic chat, and
 task-comment replies become task comments. PM records the turn in
 `PmChannelRun` before contacting the gateway and updates it from stream
-and reply callbacks. For Task/Epic Discussion work-item grants,
-`PmChannelRun.workItemGrantUsedAt` is the per-agent consumption stamp.
+and reply callbacks. Stream events are appended with monotonically
+increasing sequence numbers, so browser SSE clients can reconnect with
+`Last-Event-ID` and replay missed frames. For Task/Epic Discussion
+work-item grants, `PmChannelRun.workItemGrantUsedAt` is the per-agent
+consumption stamp.
 
 `/hooks/wake` remains installed for generic PM events such as assignment
 and ack-ready automation. It is no longer the normal chat/comment path.
@@ -612,8 +621,9 @@ the consumer service when the PM checkout is present.
 - `AgentSessionBinding` — PM-owned mapping from `(scopeType, scopeId,
   agentSlug)` to an OpenClaw session key. Direct chat uses this stable
   key for continuity; task/comment/Epic channel turns derive a
-  per-message key from it because the PM context packet already carries
-  the authoritative project state for each request.
+  per-message key from it so each request starts with a clean channel
+  transcript while PM supplies the current turn guidance and live-context
+  grant URLs.
 - `Task.deletedAt` / `Epic.deletedAt` + `deletedById` (HOMELAB-48) —
   soft-delete columns. `deletedAt != null` means in the bin; the value
   is also the cascade-batch anchor and the 7-day purge anchor.
@@ -681,6 +691,9 @@ Migrations under `prisma/migrations/`:
 - `20260526173500_pm_channel_run_work_item_grants` —
   `PmChannelRun.workItemGrantUsedAt` tracks Discussion proposal grant
   consumption per addressed agent.
+- `20260530180000_asdrubal_p0_kernel` — durable PM-channel jobs,
+  replayable stream events, scoped context grants, and per-run stream
+  sequence tracking.
 
 ## Environment
 
@@ -690,7 +703,9 @@ See `.env.example` for the full list. Highlights:
   to `prisma/schema.prisma`, landing the file at `prisma/pm.db`. Production
   must use an absolute path outside the worktree, e.g.
   `file:///srv/Data/pm/pm.db`; use `deploy/move-sqlite-db.sh` for the
-  controlled backup + `VACUUM INTO` relocation.
+  controlled backup + `VACUUM INTO` relocation. Live worktree previews
+  override this with `/srv/Data/pm/wt-<branch>.db` through the active
+  systemd drop-in.
 - `AUTH_SECRET` — `openssl rand -base64 32`.
 - `AUTH_TRUST_HOST=true` — required behind nginx.
 - `APP_URL` — public URL, used for cookies + reset links.
@@ -725,6 +740,12 @@ See `.env.example` for the full list. Highlights:
   spans in `PmChannelRun` timestamps and surfaces them on the Agents and
   System Activity views alongside SQLite page/freelist/journal/locking
   health.
+- `PM_ASYNC_DISPATCH`, `PM_ASYNC_DISPATCH_INLINE_NUDGE`,
+  `PM_CHANNEL_JOB_MAX_ATTEMPTS` — enable and tune the durable native
+  PM-channel queue/worker.
+- `PM_CONTEXT_GRANTS_REQUIRED`, `PM_CONTEXT_GRANT_TTL_MS`,
+  `PM_CONTEXT_GRANT_MAX_USES`, `PM_CONTEXT_GRANT_MAX_BYTES` — control
+  scoped live-context grant enforcement and limits.
 - `PM_DIRECT_CHAT_CONTEXT_MESSAGES`,
   `PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`,
   `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT` — bounds on the direct-chat

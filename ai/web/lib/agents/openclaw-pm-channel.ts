@@ -169,7 +169,12 @@ export async function sendOpenClawPmChannelTurn(
     gatewayPort: args.gatewayPort,
     sessionKey: args.sessionKey,
   });
+  return dispatchOpenClawPmChannelTurn(args);
+}
 
+export async function dispatchOpenClawPmChannelTurn(
+  args: SendPmChannelTurnArgs,
+): Promise<SendPmChannelTurnResult> {
   if (!args.gatewayPort) {
     const result: SendPmChannelTurnResult = {
       ok: false,

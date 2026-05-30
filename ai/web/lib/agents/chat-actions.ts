@@ -28,9 +28,9 @@ import { extractMentions } from "@/lib/markdown";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
 import {
   buildPmTurnSessionKey,
-  resolvePmChannelToken,
-  sendOpenClawPmChannelTurn,
 } from "@/lib/agents/openclaw-pm-channel";
+import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
+import { createContextGrantUrl } from "@/lib/agents/context-grants";
 import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/discussion-reply-format";
 import { createTaskDescriptionWriteToken } from "@/lib/agents/task-chat-token";
 import { createEpicDescriptionWriteToken } from "@/lib/agents/epic-chat-token";
@@ -501,28 +501,59 @@ export async function sendAgentChatMessage(formData: FormData) {
     const agentSlug = target.slug;
     const gatewayPort = target.gatewayPort;
 
-    // Live-fetch envelope (HOMELAB-41 follow-on). Instead of inlining a fat
-    // context packet on every turn, hand the agent the loopback fetch URL +
-    // their existing pm-channel bearer and let them retrieve the live JSON
-    // on demand. See ai/web/docs/agent-pm-api.md.
-    const agentBearer = (await resolvePmChannelToken(agentSlug)) ?? "";
+    // Live-fetch envelope: hand the model short-lived scoped grant URLs
+    // instead of a reusable PM-channel bearer token.
     const fetchBaseUrl = agentCallbackBaseUrl();
-    const liveContextAccess = {
+    const projectGrantUrl = await createContextGrantUrl({
       baseUrl: fetchBaseUrl,
-      bearer: agentBearer,
-      projectId: project.id,
-      inlineRecentBlock,
-    };
+      agentSlug,
+      scopeType: "project",
+      scopeId: project.id,
+      turnId: msg.id,
+    });
 
     const baseSystemPrompt = taskId
       ? buildTaskNativeChannelPrompt(task.title, agentSlug, directedDescriptor, {
-          ...liveContextAccess,
+          baseUrl: fetchBaseUrl,
+          projectId: project.id,
+          inlineRecentBlock,
           taskId: task.id,
           epicId: task.epicId ?? null,
+          grantUrls: {
+            task: await createContextGrantUrl({
+              baseUrl: fetchBaseUrl,
+              agentSlug,
+              scopeType: "task",
+              scopeId: task.id,
+              turnId: msg.id,
+            }),
+            epic: task.epicId
+              ? await createContextGrantUrl({
+                  baseUrl: fetchBaseUrl,
+                  agentSlug,
+                  scopeType: "epic",
+                  scopeId: task.epicId,
+                  turnId: msg.id,
+                })
+              : null,
+            project: projectGrantUrl,
+          },
         })
       : buildEpicNativeChannelPrompt(epic.title, agentSlug, directedDescriptor, {
-          ...liveContextAccess,
+          baseUrl: fetchBaseUrl,
+          projectId: project.id,
+          inlineRecentBlock,
           epicId: epic.id,
+          grantUrls: {
+            epic: await createContextGrantUrl({
+              baseUrl: fetchBaseUrl,
+              agentSlug,
+              scopeType: "epic",
+              scopeId: epic.id,
+              turnId: msg.id,
+            }),
+            project: projectGrantUrl,
+          },
         });
 
     const descriptionPrompt = allowDescriptionEdit
@@ -569,7 +600,7 @@ export async function sendAgentChatMessage(formData: FormData) {
       agentSlug,
     });
 
-    const delivery = await sendOpenClawPmChannelTurn({
+    const delivery = await sendOrQueueOpenClawPmChannelTurn({
       gatewayPort,
       agentSlug,
       sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),

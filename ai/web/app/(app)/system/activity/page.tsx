@@ -1,4 +1,5 @@
 import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel-latency";
+import { pmChannelQueueStats } from "@/lib/agents/pm-channel-jobs";
 import { compactDbPath, formatFreelistRatio, getSqliteDbHealth } from "@/lib/db-health";
 import { db } from "@/lib/db";
 
@@ -25,7 +26,7 @@ async function readSnapshot(): Promise<Snapshot | null> {
 }
 
 export default async function SystemActivityPage() {
-  const [events, agentSync, snapshot, dbHealth, recentPmRuns] = await Promise.all([
+  const [events, agentSync, snapshot, dbHealth, recentPmRuns, queueStats] = await Promise.all([
     db.activityLog.findMany({
       orderBy: { createdAt: "desc" },
       take: 60,
@@ -50,6 +51,7 @@ export default async function SystemActivityPage() {
         updatedAt: true,
       },
     }),
+    pmChannelQueueStats(),
   ]);
 
   const system = snapshot?.system ?? {};
@@ -73,6 +75,13 @@ export default async function SystemActivityPage() {
         <Tile label="Busy agents" value={String(busyAgents)} foot={`/ ${Object.keys(agents).length} reported`} />
         <Tile label="Open tickets" value={String(openTickets)} foot="From Atlas snapshot" />
         <Tile label="Host services" value={String(activeServices)} foot={`/ ${Object.keys(system).length} active`} />
+      </section>
+
+      <section className="grid gap-3 md:grid-cols-4">
+        <Tile label="Queued jobs" value={String(queueStats.queued)} foot="Waiting for worker" />
+        <Tile label="Claimed jobs" value={String(queueStats.claimed)} foot="In local dispatch" />
+        <Tile label="Retryable jobs" value={String(queueStats.retryable)} foot="Backoff pending" />
+        <Tile label="Failed jobs" value={String(queueStats.failed)} foot="Needs operator check" />
       </section>
 
       <section className="grid gap-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
@@ -121,6 +130,30 @@ export default async function SystemActivityPage() {
             </ul>
           )}
         </div>
+      </section>
+
+      <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+        <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">PM channel queue</h2>
+        {queueStats.oldestQueued ? (
+          <p className="text-sm text-[var(--color-text-muted)]">
+            Oldest available job: @{queueStats.oldestQueued.agentSlug} · {queueStats.oldestQueued.kind} · {queueStats.oldestQueued.availableAt.toISOString().slice(0, 19).replace("T", " ")}
+          </p>
+        ) : (
+          <p className="text-sm text-[var(--color-text-muted)]">No queued or retryable PM-channel jobs.</p>
+        )}
+        {queueStats.recentErrors.length > 0 ? (
+          <ul className="mt-3 divide-y divide-[var(--color-line)] text-xs">
+            {queueStats.recentErrors.map((job) => (
+              <li key={job.id} className="py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-medium">@{job.agentSlug} · {job.kind} · {job.status} · attempt {job.attemptCount}</span>
+                  <time className="font-mono text-[11px] text-[var(--color-text-muted)]" dateTime={job.updatedAt.toISOString()}>{job.updatedAt.toISOString().slice(0, 19).replace("T", " ")}</time>
+                </div>
+                <p className="mt-1 text-[var(--color-text-muted)]">{job.lastError}</p>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </section>
 
       <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">

@@ -14,7 +14,7 @@ import {
   type AgentSessionBinding,
 } from "@/lib/agents/session-bindings";
 import { wakeAgent as wakeGatewayAgent } from "@/lib/pm-consumer/gateway-client";
-import { sendOpenClawPmChannelTurn } from "@/lib/agents/openclaw-pm-channel";
+import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
 import {
   buildProjectEnvContext,
   buildWorkItemPlanningPrompt,
@@ -604,7 +604,7 @@ async function handleDirectAgentMessage(args: {
     .filter(Boolean)
     .join("\n\n");
 
-  const delivery = await sendOpenClawPmChannelTurn({
+  const delivery = await sendOrQueueOpenClawPmChannelTurn({
     gatewayPort: args.gatewayPort,
     agentSlug: args.agentSlug,
     sessionKey: args.sessionBinding.openclawSessionKey,

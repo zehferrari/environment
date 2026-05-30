@@ -3,7 +3,7 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import {
-  authenticateAgentBearer,
+  authenticateAgentContextRequest,
   isLoopbackRequest,
 } from "@/lib/agents/context-api/auth";
 import { buildEpicContextJson } from "@/lib/agents/context-api/serialize";
@@ -21,12 +21,12 @@ export async function GET(
       { status: 403 },
     );
   }
-  const identity = await authenticateAgentBearer(req.headers.get("authorization"));
+  const { id } = await ctx.params;
+  const identity = await authenticateAgentContextRequest(req, "epic", id);
   if (!identity) {
-    return NextResponse.json({ error: "Invalid or missing agent bearer token" }, { status: 401 });
+    return NextResponse.json({ error: "Invalid or missing agent context grant" }, { status: 401 });
   }
 
-  const { id } = await ctx.params;
   const data = await buildEpicContextJson(id);
   if (!data) return NextResponse.json({ error: "Epic not found" }, { status: 404 });
 

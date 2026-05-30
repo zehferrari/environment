@@ -10,6 +10,7 @@ export type PmChannelRunStatus =
   | "queued"
   | "accepted"
   | "streaming"
+  | "retryable"
   | "complete"
   | "failed";
 
@@ -93,9 +94,11 @@ async function failRun(target: PmChannelReplyTarget, error: string) {
       lastEventAt: now,
     },
     select: {
+      id: true,
       status: true,
       error: true,
       lastEventAt: true,
+      streamSeq: true,
       createdAt: true,
       updatedAt: true,
       acceptedAt: true,
@@ -115,8 +118,8 @@ export async function recordPmChannelRunQueued(args: {
 }) {
   const now = new Date();
   const ids = targetIds(args.target);
-  await record(
-    () => db.pmChannelRun.upsert({
+  try {
+    return await db.pmChannelRun.upsert({
       where: { targetKey: pmChannelRunTargetKey(args.target) },
       create: {
         targetKey: pmChannelRunTargetKey(args.target),
@@ -150,9 +153,17 @@ export async function recordPmChannelRunQueued(args: {
         failedAt: null,
         lastEventAt: now,
       },
-    }),
-    "queued run",
-  );
+      select: {
+        id: true,
+        targetKey: true,
+        status: true,
+        streamSeq: true,
+      },
+    });
+  } catch (err) {
+    console.warn("[pm-channel] failed to persist queued run", err);
+    return null;
+  }
 }
 
 export async function recordPmChannelRunDispatch(args: {
@@ -383,9 +394,11 @@ export async function getPmChannelRunSnapshot(target: PmChannelReplyTarget) {
   const run = await db.pmChannelRun.findUnique({
     where: { targetKey: pmChannelRunTargetKey(target) },
     select: {
+      id: true,
       status: true,
       error: true,
       lastEventAt: true,
+      streamSeq: true,
       createdAt: true,
       updatedAt: true,
       acceptedAt: true,

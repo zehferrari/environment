@@ -239,7 +239,10 @@ export function buildEpicPlainChatPrompt(epicTitle: string, slug: string): strin
 
 export interface LiveContextAccessEpic {
   baseUrl: string;
-  bearer: string;
+  grantUrls?: {
+    epic: string;
+    project: string;
+  };
   epicId: string;
   projectId: string;
   /** Inlined "recent exchange" block — same idea as the task variant. */
@@ -253,6 +256,7 @@ const SCOPE_ANCHORING_RULE = [
 
 function liveContextFetchBlockEpic(args: LiveContextAccessEpic) {
   const out: string[] = [];
+  const missingGrant = "  # No scoped grant URL was issued for this scope in this turn.";
   if (args.inlineRecentBlock && args.inlineRecentBlock.trim()) {
     out.push(args.inlineRecentBlock.trim());
     out.push("");
@@ -261,16 +265,20 @@ function liveContextFetchBlockEpic(args: LiveContextAccessEpic) {
   }
   out.push(
     "LIVE PM CONTEXT — FETCH WHEN YOU NEED DEEPER HISTORY:",
-    "The RECENT block above is your PRIMARY context. PM also exposes loopback-only JSON endpoints for older history and full project state. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL. Authenticate with the Bearer below (same value as channels.pm.token in your ~/.openclaw/openclaw.json):",
+    "The RECENT block above is your PRIMARY context. PM also exposes loopback-only JSON endpoints for older history and full project state. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL.",
     "",
     "  # Full epic: deeper history, full task list, comments, attachments:",
-    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/epic/${args.epicId}'`,
+    args.grantUrls?.epic
+      ? `  curl -s '${args.grantUrls.epic}'`
+      : missingGrant,
     "",
     "  # Required before proposing work-item changes:",
-    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/project/${args.projectId}'`,
+    args.grantUrls?.project
+      ? `  curl -s '${args.grantUrls.project}'`
+      : missingGrant,
     "",
     "  # Per-task detail when you need to dive into a specific task under this epic:",
-    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/task/<taskId>'`,
+    "  # No arbitrary-task grant is issued. Use the epic/project overview or ask for a task-scoped turn if deep task detail is required.",
     "",
     "Soft-deleted comments / chats are filtered server-side. Full contract: ai/web/docs/agent-pm-api.md.",
   );

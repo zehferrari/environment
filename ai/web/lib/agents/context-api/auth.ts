@@ -1,11 +1,8 @@
 // Bearer-token auth for the agent-facing PM read API
 // (GET /api/agents/context/{task,epic,project}/<id>).
 //
-// Reuses the existing per-agent PM-channel bearer secret — the same token
-// OpenClaw uses to call PM back on /api/openclaw/pm-channel/reply. Agents
-// already have this token in their ~/.openclaw/openclaw.json at
-// channels.pm.token, so adding a read API doesn't introduce a new auth
-// surface for operators to manage.
+// Preferred auth is a short-lived context grant handed to the agent in the
+// current turn. A legacy per-agent bearer fallback remains during rollout.
 //
 // We do NOT require the caller to identify themselves by slug. The data
 // returned is the same for every active agent (the soft-delete contract
@@ -17,6 +14,10 @@ import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { NextRequest } from "next/server";
 import { db } from "@/lib/db";
+import {
+  authenticateContextGrant,
+  type ContextScopeType,
+} from "@/lib/agents/context-grants";
 
 const LOOPBACK_HOSTS = new Set([
   "127.0.0.1",
@@ -88,6 +89,8 @@ export interface AgentBearerIdentity {
   agentSlug: string | null;
   /** Was this the shared PM_OPENCLAW_CHANNEL_TOKEN rather than a per-agent secret? */
   shared: boolean;
+  /** Context grant id when auth used a short-lived prompt-visible grant. */
+  grantId?: string;
 }
 
 /**
@@ -122,4 +125,26 @@ export async function authenticateAgentBearer(authorizationHeader: string | null
   if (shared && eq(presented, shared)) return { agentSlug: null, shared: true };
 
   return null;
+}
+
+function contextGrantsRequired() {
+  const value = process.env.PM_CONTEXT_GRANTS_REQUIRED;
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+export async function authenticateAgentContextRequest(
+  req: NextRequest,
+  scopeType: ContextScopeType,
+  scopeId: string,
+): Promise<AgentBearerIdentity | null> {
+  const grantToken = req.nextUrl.searchParams.get("grant") ?? "";
+  if (grantToken) {
+    const grant = await authenticateContextGrant({ scopeType, scopeId, token: grantToken });
+    return grant
+      ? { agentSlug: grant.agentSlug, shared: false, grantId: grant.grantId }
+      : null;
+  }
+
+  if (contextGrantsRequired()) return null;
+  return authenticateAgentBearer(req.headers.get("authorization"));
 }

@@ -475,9 +475,13 @@ model PmChannelRun {
   completedAt DateTime?
   failedAt    DateTime?
   lastEventAt DateTime?
+  streamSeq   Int       @default(0)
   workItemGrantUsedAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+  jobs         PmChannelJob[]
+  streamEvents PmChannelStreamEvent[]
+  contextGrants ContextGrant[]
 
   @@index([agentSlug])
   @@index([messageId])
@@ -487,6 +491,78 @@ model PmChannelRun {
   @@index([epicId])
   @@index([status])
   @@index([lastEventAt])
+}
+
+// Durable PM-channel dispatch queue. Server actions enqueue one job per
+// addressed run and return after local persistence; a worker claims and
+// delivers jobs to the local OpenClaw gateway.
+model PmChannelJob {
+  id                String       @id @default(cuid())
+  runId             String
+  run               PmChannelRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  agentSlug         String
+  kind              String       // direct | task-chat | task-comment | epic-chat | wake
+  payload           String       // JSON-stringified dispatch payload
+  status            String       @default("queued") // queued | claimed | accepted | retryable | failed | complete
+  attemptCount      Int          @default(0)
+  availableAt       DateTime     @default(now())
+  claimedBy         String?
+  claimedAt         DateTime?
+  acceptedAt        DateTime?
+  completedAt       DateTime?
+  lastError         String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@unique([runId])
+  @@index([agentSlug])
+  @@index([status, availableAt])
+  @@index([claimedAt])
+  @@index([createdAt])
+}
+
+// Append-only stream ledger for native PM-channel runs. Browser SSE replays
+// from this table via Last-Event-ID; the in-memory stream store is only a fanout
+// cache.
+model PmChannelStreamEvent {
+  id        String       @id @default(cuid())
+  runId     String
+  run       PmChannelRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  seq       Int
+  kind      String       // status | partial | reasoning | final | error | done
+  payload   String       // JSON-stringified event payload
+  createdAt DateTime     @default(now())
+
+  @@unique([runId, seq])
+  @@index([runId, createdAt])
+  @@index([kind])
+  @@index([createdAt])
+}
+
+// Opaque, short-lived read capability handed to agents instead of putting a
+// long-lived PM-channel bearer token in model-visible prompts.
+model ContextGrant {
+  id          String        @id @default(cuid())
+  tokenHash   String        @unique
+  runId       String?
+  run         PmChannelRun? @relation(fields: [runId], references: [id], onDelete: Cascade)
+  agentSlug   String
+  scopeType   String        // task | epic | project
+  scopeId     String
+  turnId      String
+  includes    String        // JSON-stringified include allow-list
+  maxBytes    Int
+  maxUses     Int           @default(1)
+  usedCount   Int           @default(0)
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  lastUsedAt  DateTime?
+  createdAt   DateTime      @default(now())
+
+  @@index([agentSlug])
+  @@index([scopeType, scopeId])
+  @@index([runId])
+  @@index([expiresAt])
 }
 
 // ------------------------------------------------------------------

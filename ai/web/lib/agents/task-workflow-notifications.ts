@@ -7,8 +7,8 @@ import {
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
 import {
   buildPmTurnSessionKey,
-  sendOpenClawPmChannelTurn,
 } from "@/lib/agents/openclaw-pm-channel";
+import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
 import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
 import { createTaskWorkflowToken } from "@/lib/agents/task-workflow-token";
 import { resolveDirectedFromComment } from "@/lib/agents/directed-targets";
@@ -265,7 +265,7 @@ export async function sendTaskWorkflowNotification(args: {
     scopeId: task.id,
     agentSlug: targetUser.agent.slug,
   });
-  const delivery = await sendOpenClawPmChannelTurn({
+  const delivery = await sendOrQueueOpenClawPmChannelTurn({
     gatewayPort: targetUser.agent.gatewayPort,
     agentSlug: targetUser.agent.slug,
     sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
@@ -502,7 +502,7 @@ export async function sendTaskCommentNotifications(args: {
       agentSlug: msg.agentSlug,
     });
     const target = targetAgents.get(msg.agentSlug);
-    const delivery = await sendOpenClawPmChannelTurn({
+    const delivery = await sendOrQueueOpenClawPmChannelTurn({
       gatewayPort: target?.gatewayPort ?? null,
       agentSlug: msg.agentSlug,
       sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),

@@ -1,6 +1,7 @@
 import type { PmChannelReplyTarget } from "@/lib/agents/openclaw-pm-channel";
 
 export type PmChannelStreamEventKind =
+  | "status"
   | "partial"
   | "reasoning"
   | "final"
@@ -14,6 +15,8 @@ export interface PmChannelStreamInput {
   delta?: string;
   replace?: boolean;
   error?: string;
+  seq?: number;
+  runStatus?: PmChannelStreamState["runStatus"];
 }
 
 export interface PmChannelStreamState {
@@ -22,8 +25,9 @@ export interface PmChannelStreamState {
   text: string;
   reasoning: string;
   status: "streaming" | "done" | "error";
-  runStatus?: "queued" | "accepted" | "streaming" | "complete" | "failed";
+  runStatus?: "queued" | "accepted" | "streaming" | "retryable" | "complete" | "failed";
   error: string | null;
+  seq?: number;
   updatedAt: number;
 }
 
@@ -65,7 +69,7 @@ export function pmChannelStreamKey(target: PmChannelReplyTarget): string {
   return `${target.kind}:${target.agentSlug}:${target.taskId}:${target.messageId}`;
 }
 
-function emptyState(target: PmChannelReplyTarget): PmChannelStreamState {
+export function emptyPmChannelStreamState(target: PmChannelReplyTarget): PmChannelStreamState {
   return {
     key: pmChannelStreamKey(target),
     target,
@@ -109,9 +113,35 @@ export function publishPmChannelStreamEvent(input: PmChannelStreamInput): PmChan
   sweepExpired();
   const s = store();
   const key = pmChannelStreamKey(input.target);
-  const state = s.states.get(key) ?? emptyState(input.target);
+  const state = applyPmChannelStreamInput(s.states.get(key) ?? emptyPmChannelStreamState(input.target), input);
 
-  if (input.event === "partial" || input.event === "final") {
+  s.states.set(key, state);
+  notify(key, input.event === "error" ? "stream-error" : input.event, state);
+  return state;
+}
+
+export function applyPmChannelStreamInput(
+  baseState: PmChannelStreamState,
+  input: PmChannelStreamInput,
+): PmChannelStreamState {
+  const state: PmChannelStreamState = {
+    ...baseState,
+    target: input.target,
+    key: pmChannelStreamKey(input.target),
+  };
+  if (input.seq != null) state.seq = input.seq;
+
+  if (input.event === "status") {
+    if (input.runStatus) {
+      state.runStatus = input.runStatus;
+      state.status = input.runStatus === "failed" || input.runStatus === "retryable"
+        ? "error"
+        : input.runStatus === "complete"
+          ? "done"
+          : "streaming";
+    }
+    if (input.error) state.error = input.error;
+  } else if (input.event === "partial" || input.event === "final") {
     if (input.replace) {
       state.text = clip(input.text ?? "");
     } else if (input.delta) {
@@ -141,18 +171,23 @@ export function publishPmChannelStreamEvent(input: PmChannelStreamInput): PmChan
   }
 
   state.updatedAt = Date.now();
-  s.states.set(key, state);
-  notify(key, input.event === "error" ? "stream-error" : input.event, state);
   return state;
 }
 
 function ssePayload(event: string, state: PmChannelStreamState) {
-  return `event: ${event}\ndata: ${JSON.stringify(state)}\n\n`;
+  const id = state.seq == null ? "" : `id: ${state.seq}\n`;
+  return `${id}event: ${event}\ndata: ${JSON.stringify(state)}\n\n`;
+}
+
+export interface PmChannelReplayFrame {
+  event: string;
+  state: PmChannelStreamState;
 }
 
 export function createPmChannelEventStream(
   key: string,
   initialState?: PmChannelStreamState | null,
+  replayFrames: PmChannelReplayFrame[] = [],
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   let cleanup = () => {};
@@ -176,8 +211,12 @@ export function createPmChannelEventStream(
       }
       subscribers.add(send);
 
-      const snapshot = s.states.get(key) ?? initialState;
-      if (snapshot) send("snapshot", snapshot);
+      if (replayFrames.length > 0) {
+        for (const frame of replayFrames) send(frame.event, frame.state);
+      } else {
+        const snapshot = s.states.get(key) ?? initialState;
+        if (snapshot) send("snapshot", snapshot);
+      }
 
       const keepAlive = setInterval(() => {
         try {

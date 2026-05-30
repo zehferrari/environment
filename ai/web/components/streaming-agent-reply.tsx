@@ -11,7 +11,7 @@ type StreamState = {
   text?: string;
   reasoning?: string;
   status?: "streaming" | "done" | "error";
-  runStatus?: "queued" | "accepted" | "streaming" | "complete" | "failed";
+  runStatus?: "queued" | "accepted" | "streaming" | "retryable" | "complete" | "failed";
   error?: string | null;
   updatedAt?: number;
 };
@@ -74,6 +74,9 @@ function waitingCopy(args: {
   }
   if (args.runStatus === "queued") {
     return `Queued for @${args.agentSlug}`;
+  }
+  if (args.runStatus === "retryable") {
+    return `Retrying @${args.agentSlug}`;
   }
   if (args.runStatus === "accepted" && args.elapsedMs < 12_000) {
     return `Delivered to @${args.agentSlug}`;

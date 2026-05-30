@@ -8,7 +8,12 @@ import {
   type PmChannelReplyTarget,
 } from "@/lib/agents/openclaw-pm-channel";
 import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel-stream";
-import { recordPmChannelRunEvent } from "@/lib/agents/pm-channel-runs";
+import {
+  pmChannelTargetHasDurableReply,
+  recordPmChannelRunEvent,
+} from "@/lib/agents/pm-channel-runs";
+import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel-jobs";
+import { appendPmChannelStreamEventForTarget } from "@/lib/agents/pm-channel-stream-log";
 import { normalizeDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
 import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
 import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
@@ -474,6 +479,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  if (await pmChannelTargetHasDurableReply(target)) {
+    const persisted = await appendPmChannelStreamEventForTarget({ target, event: "done" });
+    publishPmChannelStreamEvent({ target, event: "done", seq: persisted.seq });
+    await recordPmChannelRunEvent({ target, event: "done" });
+    await markPmChannelJobCompleteForTarget(target);
+    return NextResponse.json({ ok: true, duplicate: true });
+  }
+
   const result = isSilentPmReplyText(body)
     ? await persistSilentReply(target)
     : target.kind === "direct"
@@ -483,20 +496,30 @@ export async function POST(req: NextRequest) {
     : await persistTaskReply(target, body);
 
   if (result.status >= 200 && result.status < 300) {
-    publishPmChannelStreamEvent({
+    const eventInput = {
       target,
       event: "final",
       text: (result as { streamText?: string }).streamText ?? "",
       replace: true,
-    });
+    } as const;
+    const persisted = await appendPmChannelStreamEventForTarget(eventInput);
+    publishPmChannelStreamEvent({ ...eventInput, seq: persisted.seq });
     await recordPmChannelRunEvent({ target, event: "final" });
+    await markPmChannelJobCompleteForTarget(target);
   } else {
+    const error = "error" in result.body && typeof result.body.error === "string"
+      ? result.body.error
+      : `Reply callback failed with HTTP ${result.status}`;
+    const persisted = await appendPmChannelStreamEventForTarget({
+      target,
+      event: "error",
+      error,
+    });
+    publishPmChannelStreamEvent({ target, event: "error", error, seq: persisted.seq });
     await recordPmChannelRunEvent({
       target,
       event: "error",
-      error: "error" in result.body && typeof result.body.error === "string"
-        ? result.body.error
-        : `Reply callback failed with HTTP ${result.status}`,
+      error,
     });
   }
 

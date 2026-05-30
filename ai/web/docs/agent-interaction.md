@@ -7,10 +7,10 @@ land.
 
 > **Reading live PM state.** PM no longer inlines a fat task / epic
 > context packet into every turn. Instead each turn's system prompt
-> embeds the loopback URLs of three read endpoints (task, epic,
-> project) under a `LIVE PM CONTEXT — FETCH BEFORE YOU REPLY` block.
+> embeds scoped loopback grant URLs for the read endpoints (task, epic,
+> project) under a `LIVE PM CONTEXT` block.
 > Full contract: [`agent-pm-api.md`](./agent-pm-api.md). Always fetch
-> the task before composing a reply.
+> deeper task state when the current prompt context is not enough.
 
 ## Current Contract
 
@@ -27,7 +27,7 @@ Body: {
   "agentSlug": "<agent slug>",
   "sessionKey": "pm:...",
   "text": "<latest user message>",
-  "contextText": "<PM context packet>",
+  "contextText": "<compact PM context packet or null>",
   "systemPrompt": "<channel guidance>",
   "replyTarget": { "...": "origin channel metadata" },
   "callbackUrl": "http://127.0.0.1:3000/api/openclaw/pm-channel/reply",
@@ -48,15 +48,15 @@ events, but chat, task-comment, and epic-chat replies should not use
 `/hooks/wake` or prompt-visible callback contracts.
 
 PM stores every native-channel turn in `PmChannelRun` as soon as it is
-queued locally. The run moves through `accepted`, `streaming`,
-`complete`, or `failed` from the gateway response and stream/reply
-callbacks, so reconnecting browsers can resume from durable state rather
-than polling for a reply. A terminal stream `done` is not success by
-itself: PM only marks a run `complete` after a durable final reply, a
-valid workflow action, or a silent no-contribution reply is delivered.
-If a channel turn ends without one of those outcomes, PM marks the run
-`failed` and the browser keeps a visible failure bubble instead of
-waiting indefinitely.
+queued locally. The run moves through `queued`, `accepted`, `streaming`,
+`retryable`, `complete`, or `failed` from the durable queue, gateway
+response, and stream/reply callbacks, so reconnecting browsers can
+resume from durable state rather than polling for a reply. A terminal
+stream `done` is not success by itself: PM only marks a run `complete`
+after a durable final reply, a valid workflow action, or a silent
+no-contribution reply is delivered. If a channel turn ends without one
+of those outcomes, PM marks the run `failed` and the browser keeps a
+visible failure bubble instead of waiting indefinitely.
 
 ## Task, Epic, And Comment Chat
 
@@ -64,11 +64,13 @@ PM creates an `AgentSessionBinding` for every direct/task/epic
 conversation. Direct chats use that stable `pm:` key for continuity.
 Task, Epic, and task-comment turns derive a per-message key from the
 binding so each PM request starts with a clean OpenClaw transcript while
-still carrying the complete DB-backed PM context packet. OpenClaw owns
-inbound recording, model dispatch, and final reply delivery from there;
-those are channel behavior, not instructions shown to the model.
+still carrying PM-owned channel guidance. Task/Epic chat guidance now
+uses a recent hot-path slice plus scoped live-context grant URLs instead
+of putting the full DB-backed context packet in `contextText`. OpenClaw
+owns inbound recording, model dispatch, and final reply delivery from
+there; those are channel behavior, not instructions shown to the model.
 
-Task chat/comment payloads still include a PM context packet in
+Workflow/comment payloads may still include compact PM context in
 `contextText`, delivered to OpenClaw as supplemental context rather than
 duplicated into the visible wake text. PM is the source of truth for
 task, Epic, comments, activity, and attachment extracts; OpenClaw is the
@@ -158,8 +160,9 @@ is running:
 ```
 
 The stream route is `POST /api/openclaw/pm-channel/stream` with the same
-Bearer token. PM treats stream chunks as ephemeral UI state; the final
-durable answer still comes through the reply route.
+Bearer token. PM appends stream chunks to a replayable event log for
+browser reconnects; the final durable answer still comes through the
+reply route.
 
 The stream endpoint also accepts terminal `done` and `error` events.
 `done` is only a stream lifecycle marker. It must follow an already
@@ -207,8 +210,10 @@ callback boundary so the UI always has both display modes.
 
 ## Context Requirements
 
-Agents should answer from the whole provided context, not only the last
-line. The PM prompt can include:
+Agents should answer from PM's current state, not only the last line.
+The PM prompt includes the immediate hot path and may include scoped
+live-context grant URLs. Fetch those URLs when the hot path is not
+enough. The live context endpoints can return:
 
 - task title, description, status, project, assignee, reviewer, and
   parent/subtask context;
@@ -225,14 +230,11 @@ line. The PM prompt can include:
 - task and Epic attachment metadata;
 - cached text excerpts for supported text-like attachments.
 
-Every rendered packet starts with a `TIMELINE MANIFEST` listing every
-fetched comment/chat/activity row by id+actor+createdAt before the
-bodies. Per-body clips report the omitted character count inline
-(`[truncated: N more chars]`), and a packet annotates `[partial
-context: …]` when a row cap is hit so the agent can tell when older
-rows may exist beyond the packet.
+Rendered inline packets and fetched JSON preserve row identity,
+authorship, ordering, truncation notes, and `[partial context: ...]`
+markers so the agent can tell when older rows may exist beyond the cap.
 
-PM owns this context packet. OpenClaw private memory may help the agent
+PM owns this context data. OpenClaw private memory may help the agent
 reason, but PM task/Epic/comment/activity/attachment data is the source
 of truth for the reply.
 

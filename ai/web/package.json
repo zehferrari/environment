@@ -13,9 +13,11 @@
     "db:migrate": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "pm-consumer": "tsx scripts/pm-consumer.ts",
+    "pm-channel-worker": "tsx scripts/pm-channel-worker.ts",
     "seed": "tsx scripts/seed.ts",
     "sync:agents": "tsx scripts/sync-agents.ts",
-    "test:cache-scope": "tsx scripts/cache-scope-test.ts"
+    "test:cache-scope": "tsx scripts/cache-scope-test.ts",
+    "test:p0-kernel": "tsx scripts/p0-kernel-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",

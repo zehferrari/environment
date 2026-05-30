@@ -256,8 +256,12 @@ export function buildTaskPlainChatPrompt(taskTitle: string, slug: string): strin
 export interface LiveContextAccess {
   /** Absolute base URL where PM is reachable from this host — loopback only. */
   baseUrl: string;
-  /** Per-agent Bearer token (same value as channels.pm.token in this agent's openclaw.json). */
-  bearer: string;
+  /** Prompt-safe, short-lived context grant URLs. Preferred over bearer auth. */
+  grantUrls?: {
+    task: string;
+    epic?: string | null;
+    project: string;
+  };
   /** Current task id, embedded into a ready-to-curl URL for convenience. */
   taskId: string;
   /** Optional epic id, when the task lives under an Epic — agent should fetch the Epic too. */
@@ -278,6 +282,7 @@ const SCOPE_ANCHORING_RULE = [
 
 function liveContextFetchBlock(args: LiveContextAccess) {
   const out: string[] = [];
+  const missingGrant = "  # No scoped grant URL was issued for this scope in this turn.";
   if (args.inlineRecentBlock && args.inlineRecentBlock.trim()) {
     out.push(args.inlineRecentBlock.trim());
     out.push("");
@@ -286,20 +291,26 @@ function liveContextFetchBlock(args: LiveContextAccess) {
   }
   out.push(
     "LIVE PM CONTEXT — FETCH WHEN YOU NEED DEEPER HISTORY:",
-    "The RECENT block above is your PRIMARY context — the immediate conversational thread. PM also exposes loopback-only JSON endpoints for deeper history (older messages, full activity, project state). Call them when the RECENT block doesn't cover what you need. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL. Authenticate with the Bearer below (same value as channels.pm.token in your ~/.openclaw/openclaw.json):",
+    "The RECENT block above is your PRIMARY context — the immediate conversational thread. PM also exposes loopback-only JSON endpoints for deeper history (older messages, full activity, project state). Call them when the RECENT block doesn't cover what you need. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL.",
     "",
     "  # Full task: deeper history, comments, archived discussion, activity, attachments:",
-    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/task/${args.taskId}'`,
+    args.grantUrls?.task
+      ? `  curl -s '${args.grantUrls.task}'`
+      : missingGrant,
     "",
     args.epicId
       ? "  # Parent epic (this task lives under one):"
       : "  # Optional — only if you reference a different epic:",
-    args.epicId
-      ? `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/epic/${args.epicId}'`
-      : `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/epic/<epicId>'`,
+    args.epicId && args.grantUrls?.epic
+      ? `  curl -s '${args.grantUrls.epic}'`
+      : args.epicId
+        ? missingGrant
+        : "  # No arbitrary-epic grant is issued. Use the project overview or ask for a scoped turn if deep epic detail is required.",
     "",
     "  # Required before proposing work-item changes — project env + epics + open tasks + active principals:",
-    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/project/${args.projectId}'`,
+    args.grantUrls?.project
+      ? `  curl -s '${args.grantUrls.project}'`
+      : missingGrant,
     "",
     "Soft-deleted comments / chats are filtered server-side — anything missing from the JSON is deliberately invisible to you. Do not infer or invent content. Full contract: ai/web/docs/agent-pm-api.md.",
   );

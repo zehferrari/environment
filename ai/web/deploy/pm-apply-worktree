@@ -3,7 +3,8 @@
 # pm-apply-worktree — the ONLY privileged step of a worktree switch.
 #
 # Runs as root (the monitor calls it via a single NOPASSWD sudoers rule). Points
-# pm.service's WorkingDirectory at the given standalone build dir and restarts.
+# pm.service's WorkingDirectory and DATABASE_URL at the selected worktree build
+# and its forked DB, then restarts.
 # The input is validated against a strict allow-list (must be a real worktree's
 # built standalone dir under $PM_WORKTREES_ROOT), so a non-root caller can never
 # steer pm.service at an arbitrary path.
@@ -15,22 +16,48 @@
 set -euo pipefail
 
 STANDALONE="${1:-}"
+DB_URL="${2:-}"
 WT_ROOT="${PM_WORKTREES_ROOT:-/srv/Code/environment.worktrees}"
+DB_ROOT="${PM_DB_ROOT:-/srv/Data/pm}"
+BASE_ENV_FILE="${PM_SYSTEM_ENV_FILE:-/etc/default/pm}"
+ACTIVE_ENV_FILE="${PM_ACTIVE_ENV_FILE:-/etc/default/pm-active-worktree}"
 DROPIN_DIR=/etc/systemd/system/pm.service.d
 DROPIN="$DROPIN_DIR/20-active-worktree.conf"
 
 die(){ printf 'pm-apply-worktree: %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "must run as root (via sudo)"
-[[ -n "$STANDALONE" ]] || die "usage: pm-apply-worktree <…/ai/web/.next/standalone>"
+[[ -n "$STANDALONE" && -n "$DB_URL" ]] || die "usage: pm-apply-worktree <…/ai/web/.next/standalone> <file:/srv/Data/pm/wt-branch.db>"
 
 real="$(readlink -f "$STANDALONE" 2>/dev/null || true)"
 [[ -n "$real" ]]                                    || die "path does not resolve: $STANDALONE"
 [[ "$real" == "$WT_ROOT"/*/ai/web/.next/standalone ]] || die "refused: $real is not <$WT_ROOT>/*/ai/web/.next/standalone"
 [[ -f "$real/server.js" ]]                          || die "no server.js in $real (build the worktree first)"
 
+case "$DB_URL" in
+  file://*) db_path="${DB_URL#file://}" ;;
+  file:*)   db_path="${DB_URL#file:}" ;;
+  *)        die "DATABASE_URL must be file: URL, got $DB_URL" ;;
+esac
+db_root="$(readlink -f "$DB_ROOT" 2>/dev/null || true)"
+db_real="$(readlink -f "$db_path" 2>/dev/null || true)"
+[[ -n "$db_root" && -n "$db_real" ]] || die "DB path does not resolve: $db_path"
+[[ "$db_real" == "$db_root"/wt-*.db ]] || die "refused: $db_real is not a per-worktree DB under $db_root"
+[[ -f "$db_real" ]] || die "DB file does not exist: $db_real"
+[[ -f "$BASE_ENV_FILE" ]] || die "base PM env file does not exist: $BASE_ENV_FILE"
+env_group="$(stat -c '%G' "$BASE_ENV_FILE")"
+
 install -d "$DROPIN_DIR"
-printf '[Service]\nWorkingDirectory=\nWorkingDirectory=%s\n' "$real" > "$DROPIN"
+tmp_env="$(mktemp)"
+if grep -q '^DATABASE_URL=' "$BASE_ENV_FILE"; then
+  sed -E "s#^DATABASE_URL=.*#DATABASE_URL=file:$db_real#" "$BASE_ENV_FILE" > "$tmp_env"
+else
+  cp "$BASE_ENV_FILE" "$tmp_env"
+  printf 'DATABASE_URL=file:%s\n' "$db_real" >> "$tmp_env"
+fi
+install -o root -g "$env_group" -m 0640 "$tmp_env" "$ACTIVE_ENV_FILE"
+rm -f "$tmp_env"
+printf '[Service]\nEnvironmentFile=\nEnvironmentFile=%s\nWorkingDirectory=\nWorkingDirectory=%s\nReadWritePaths=%s\n' "$ACTIVE_ENV_FILE" "$real" "$db_root" > "$DROPIN"
 systemctl daemon-reload
 systemctl restart pm.service
-printf 'pm-apply-worktree: pm.service now serving %s\n' "$real"
+printf 'pm-apply-worktree: pm.service now serving %s with DATABASE_URL=file:%s\n' "$real" "$db_real"
