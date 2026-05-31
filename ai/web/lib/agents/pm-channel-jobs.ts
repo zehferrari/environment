@@ -233,6 +233,36 @@ export async function runPmChannelWorkerOnce(workerId = `pm-channel-worker:${pro
   return { claimed: true as const, jobId: job.id, ok: result.ok, error: result.error ?? null };
 }
 
+function workerDrainMaxJobs() {
+  const value = Number.parseInt(process.env.PM_CHANNEL_WORKER_DRAIN_MAX_JOBS ?? "25", 10);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 25;
+}
+
+export async function runPmChannelWorkerDrain(
+  workerId = `pm-channel-worker:${process.pid}`,
+  maxJobs = workerDrainMaxJobs(),
+) {
+  const limit = Number.isFinite(maxJobs) && maxJobs > 0 ? Math.floor(maxJobs) : 1;
+  let claimed = 0;
+  let accepted = 0;
+  let retryableOrFailed = 0;
+  const errors: string[] = [];
+
+  for (let i = 0; i < limit; i += 1) {
+    const outcome = await runPmChannelWorkerOnce(workerId);
+    if (!outcome.claimed) break;
+    claimed += 1;
+    if (outcome.ok) {
+      accepted += 1;
+    } else {
+      retryableOrFailed += 1;
+      if (outcome.error) errors.push(clippedError(outcome.error) ?? outcome.error);
+    }
+  }
+
+  return { claimed, accepted, retryableOrFailed, errors };
+}
+
 export async function markPmChannelJobCompleteForTarget(target: unknown) {
   const parsed = parsePmChannelReplyTarget(target);
   if (!parsed) return;

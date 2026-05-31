@@ -3,6 +3,48 @@ import { syncAgents } from "@/lib/agents/sync";
 import { purgeBin } from "@/lib/bin/purge";
 import { purgeProjectBin } from "@/lib/bin/purge-projects";
 import { purgeDirectAgentChatBin } from "@/lib/bin/purge-chats";
+import {
+  pmAsyncDispatchEnabled,
+  runPmChannelWorkerDrain,
+} from "@/lib/agents/pm-channel-jobs";
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __pmChannelWorkerPollStarted: boolean | undefined;
+}
+
+function pmChannelWorkerPollMs() {
+  const value = Number.parseInt(process.env.PM_CHANNEL_WORKER_POLL_MS ?? "1000", 10);
+  return Number.isFinite(value) && value > 0 ? Math.max(250, Math.floor(value)) : 1000;
+}
+
+function startPmChannelWorkerPoll() {
+  if (!pmAsyncDispatchEnabled() || globalThis.__pmChannelWorkerPollStarted) return;
+  globalThis.__pmChannelWorkerPollStarted = true;
+
+  const workerId = process.env.PM_CHANNEL_WORKER_ID ?? `pm-inproc:${process.pid}`;
+  const pollMs = pmChannelWorkerPollMs();
+  let running = false;
+
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const result = await runPmChannelWorkerDrain(workerId);
+      if (result.claimed > 0) {
+        console.log("[pm] channel worker drain:", JSON.stringify({ workerId, ...result }));
+      }
+    } catch (err) {
+      console.error("[pm] channel worker poll failed:", err);
+    } finally {
+      running = false;
+    }
+  };
+
+  setInterval(tick, pollMs).unref();
+  setTimeout(tick, 0).unref();
+  console.log("[pm] channel worker poll enabled:", JSON.stringify({ workerId, pollMs }));
+}
 
 try {
   const zeh = await seedZehUser();
@@ -11,6 +53,8 @@ try {
 } catch (err) {
   console.error("[pm] boot sync failed:", err);
 }
+
+startPmChannelWorkerPoll();
 
 const intervalMin = Number(process.env.AGENT_SYNC_INTERVAL_MIN ?? "5");
 const intervalMs = Math.max(1, intervalMin) * 60_000;

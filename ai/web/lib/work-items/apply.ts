@@ -18,6 +18,11 @@
 // lib/work-items/actions.ts add auth + cache revalidation.
 
 import { db } from "@/lib/db";
+import {
+  sendTaskCommentNotifications,
+  sendTaskWorkflowNotification,
+  type TaskWorkflowNotificationReason,
+} from "@/lib/agents/task-workflow-notifications";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { validateProposal } from "@/lib/work-items/proposal";
 
@@ -45,6 +50,54 @@ const ZERO: CommitCounts = { epics: 0, tasks: 0, subtasks: 0, updates: 0, commen
 
 function optionalText(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+type WorkflowNotification = {
+  taskId: string;
+  targetUserId: string;
+  reason: TaskWorkflowNotificationReason;
+  body: string;
+};
+
+type CommentNotification = {
+  taskId: string;
+  commentId: string;
+  body: string;
+};
+
+function taskWorkflowBody(args: {
+  title: string;
+  actorUsername: string | null;
+  reason: TaskWorkflowNotificationReason;
+}) {
+  const actor = args.actorUsername ? `@${args.actorUsername}` : "the workflow manager";
+  if (args.reason === "backlog_plan_requested") {
+    return [
+      `You have been assigned to "${args.title}" while it is in Backlog by ${actor}.`,
+      "Read the full task context and existing comments. Post a concise task comment with your implementation plan or opinion.",
+      "Do not change task status and do not start work until the task is moved to To Do.",
+    ].join("\n");
+  }
+  if (args.reason === "todo_start_required") {
+    return [
+      `Task "${args.title}" is now in To Do and assigned to you by ${actor}.`,
+      "Read the full task context, move it to In Progress through the workflow endpoint, and start work immediately.",
+      "Do not post a visible acknowledgement unless you have new task information to add.",
+    ].join("\n");
+  }
+  if (args.reason === "review_requested") {
+    return [
+      `Task "${args.title}" was moved to Review by ${actor}.`,
+      "Review the completed work and full task context. If satisfied, move the task to Done through the workflow endpoint without posting an approval-only comment. If changes or blockers remain, leave concise feedback while keeping it in Review.",
+    ].join("\n");
+  }
+  if (args.reason === "review_done") {
+    return [
+      `Task "${args.title}" was reviewed and moved to Done by ${actor}.`,
+      "No further action is required unless the task is reopened or follow-up feedback is posted.",
+    ].join("\n");
+  }
+  return `Follow the Mission Control workflow for "${args.title}".`;
 }
 
 export async function commitProposal(
@@ -153,10 +206,17 @@ export async function commitProposal(
   const counts: CommitCounts = { ...ZERO };
   const agentId = proposal.proposedByUserId;
   const projectId = proposal.projectId;
+  const workflowNotifications: WorkflowNotification[] = [];
+  const commentNotifications: CommentNotification[] = [];
   // reporterId on new epics/tasks: the requesting human if we resolved
   // one, otherwise fall back to the agent (preserves old behaviour for
   // grants whose original message is gone).
   const newItemReporterId = requesterUserId ?? agentId;
+  const actorUser = await db.user.findUnique({
+    where: { id: agentId },
+    select: { username: true, kind: true },
+  });
+  const actorUsername = actorUser?.username ?? null;
 
   await db.$transaction(
     async (tx) => {
@@ -186,9 +246,13 @@ export async function commitProposal(
       );
       let guard = pending.length + 1;
       while (pending.length > 0 && guard-- > 0) {
-        for (let k = pending.length - 1; k >= 0; k--) {
+        let progressed = false;
+        for (let k = 0; k < pending.length;) {
           const op = pending[k]!;
-          if (!depsOf(op).every((d) => refToId.has(d))) continue;
+          if (!depsOf(op).every((d) => refToId.has(d))) {
+            k += 1;
+            continue;
+          }
           const ref = String(op.ref);
 
           if (op.op === "create_epic") {
@@ -256,7 +320,7 @@ export async function commitProposal(
                 branchName: inheritedBranchName,
                 commitPrefix: inheritedCommitPrefix,
               },
-              select: { id: true, title: true },
+              select: { id: true, title: true, assigneeId: true },
             });
             refToId.set(ref, task.id);
             if (isSub) counts.subtasks++;
@@ -275,9 +339,23 @@ export async function commitProposal(
                 payload: JSON.stringify({ title: task.title, epicId, parentTaskId, parentTitle, proposalId: proposal.id }),
               },
             });
+            if (task.assigneeId) {
+              workflowNotifications.push({
+                taskId: task.id,
+                targetUserId: task.assigneeId,
+                reason: "backlog_plan_requested",
+                body: taskWorkflowBody({
+                  title: task.title,
+                  actorUsername,
+                  reason: "backlog_plan_requested",
+                }),
+              });
+            }
           }
           pending.splice(k, 1);
+          progressed = true;
         }
+        if (!progressed) break;
       }
       if (pending.length > 0) {
         throw new Error("unresolved temp-ref dependency cycle in proposal");
@@ -334,9 +412,10 @@ export async function commitProposal(
             where: { id },
             select: {
               id: true, title: true, description: true, status: true, epicId: true, parentTaskId: true,
-              assigneeId: true, actingManagerId: true,
+              assigneeId: true, actingManagerId: true, reporterId: true,
               assignee: { select: { username: true } },
               actingManager: { select: { username: true } },
+              epic: { select: { status: true, actingManagerId: true } },
             },
           });
           if (!task) continue;
@@ -390,6 +469,67 @@ export async function commitProposal(
               await tx.activityLog.create({ data: { projectId, taskId: id, userId: agentId, kind: l.kind as string, payload: JSON.stringify(l.payload) } });
             }
             counts.updates++;
+
+            const finalStatus = typeof op.status === "string" ? op.status : task.status;
+            const finalAssigneeId = asg !== undefined ? asg : task.assigneeId;
+            const finalActingManagerId = am !== undefined ? am : task.actingManagerId;
+            const assignmentChanged = asg !== undefined && asg !== task.assigneeId;
+            const statusChanged = typeof op.status === "string" && op.status !== task.status;
+            const reviewerId = finalActingManagerId
+              ?? (task.epic?.status === "Open" ? task.epic.actingManagerId : null)
+              ?? task.reporterId;
+
+            if (finalAssigneeId && (assignmentChanged || statusChanged)) {
+              if (finalStatus === "Backlog") {
+                workflowNotifications.push({
+                  taskId: id,
+                  targetUserId: finalAssigneeId,
+                  reason: "backlog_plan_requested",
+                  body: taskWorkflowBody({
+                    title: task.title,
+                    actorUsername,
+                    reason: "backlog_plan_requested",
+                  }),
+                });
+              } else if (finalStatus === "To Do") {
+                workflowNotifications.push({
+                  taskId: id,
+                  targetUserId: finalAssigneeId,
+                  reason: "todo_start_required",
+                  body: taskWorkflowBody({
+                    title: task.title,
+                    actorUsername,
+                    reason: "todo_start_required",
+                  }),
+                });
+              }
+            }
+
+            if (statusChanged && finalStatus === "Review" && reviewerId) {
+              workflowNotifications.push({
+                taskId: id,
+                targetUserId: reviewerId,
+                reason: "review_requested",
+                body: taskWorkflowBody({
+                  title: task.title,
+                  actorUsername,
+                  reason: "review_requested",
+                }),
+              });
+            }
+
+            if (statusChanged && finalStatus === "Done" && finalAssigneeId) {
+              workflowNotifications.push({
+                taskId: id,
+                targetUserId: finalAssigneeId,
+                reason: "review_done",
+                body: taskWorkflowBody({
+                  title: task.title,
+                  actorUsername,
+                  reason: "review_done",
+                }),
+              });
+            }
           }
         } else if (op.op === "comment_task") {
           const id = String(op.target);
@@ -408,6 +548,7 @@ export async function commitProposal(
               payload: JSON.stringify({ commentId: comment.id, proposalId: proposal.id }),
             },
           });
+          commentNotifications.push({ taskId: id, commentId: comment.id, body });
           counts.comments++;
         }
       }
@@ -428,6 +569,31 @@ export async function commitProposal(
     },
     { timeout: 20000, maxWait: 10000 },
   );
+
+  const actor = {
+    id: agentId,
+    username: actorUsername,
+    kind: actorUser?.kind === "agent" ? "agent" as const : "human" as const,
+  };
+  await Promise.allSettled([
+    ...workflowNotifications.map((notification) =>
+      sendTaskWorkflowNotification({
+        taskId: notification.taskId,
+        targetUserId: notification.targetUserId,
+        actor,
+        reason: notification.reason,
+        body: notification.body,
+      }),
+    ),
+    ...commentNotifications.map((notification) =>
+      sendTaskCommentNotifications({
+        taskId: notification.taskId,
+        commentId: notification.commentId,
+        body: notification.body,
+        actor,
+      }),
+    ),
+  ]);
 
   return { ok: true, projectSlug, agentSlug, taskId, epicId, counts };
 }

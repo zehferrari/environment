@@ -68,7 +68,7 @@ type ActorRow = {
   username: string;
   kind: string;
   name: string | null;
-  avatarUpdatedAt: Date | null;
+  avatarUpdatedAt: Date | string | null;
   agent: { slug: string; name: string; avatar: string | null } | null;
 };
 
@@ -79,7 +79,7 @@ function serializeActor(actor: ActorRow | null) {
     username: actor.username,
     kind: actor.kind,
     name: actor.name,
-    avatarUpdatedAt: actor.avatarUpdatedAt?.toISOString() ?? null,
+    avatarUpdatedAt: dateIso(actor.avatarUpdatedAt),
     agent: actor.agent,
   };
 }
@@ -737,7 +737,19 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MiB`;
 }
 
-function timeAgo(d: Date): string {
+function dateValue(value: Date | string | null | undefined): Date | null {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function dateIso(value: Date | string | null | undefined): string | null {
+  return dateValue(value)?.toISOString() ?? null;
+}
+
+function timeAgo(value: Date | string | null | undefined): string {
+  const d = dateValue(value);
+  if (!d) return "unknown";
   const diff = (Date.now() - d.getTime()) / 1000;
   if (diff < 60) return "just now";
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
@@ -1276,7 +1288,7 @@ export default async function TaskDetailPage({
             <div className="flex shrink-0 flex-col items-end gap-0.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                 Updated{" "}
-                <time dateTime={task.updatedAt.toISOString()} title={task.updatedAt.toISOString()}>
+                <time dateTime={dateIso(task.updatedAt) ?? undefined} title={dateIso(task.updatedAt) ?? undefined}>
                   {timeAgo(task.updatedAt)}
                 </time>
               </span>
@@ -1392,8 +1404,8 @@ export default async function TaskDetailPage({
                           <dt className="text-[var(--color-text-muted)]">Created</dt>
                           <dd>
                             <time
-                              dateTime={task.createdAt.toISOString()}
-                              title={task.createdAt.toISOString()}
+                              dateTime={dateIso(task.createdAt) ?? undefined}
+                              title={dateIso(task.createdAt) ?? undefined}
                               className="tabular-nums"
                             >
                               {timeAgo(task.createdAt)}
@@ -1404,8 +1416,8 @@ export default async function TaskDetailPage({
                           <dt className="text-[var(--color-text-muted)]">Updated</dt>
                           <dd>
                             <time
-                              dateTime={task.updatedAt.toISOString()}
-                              title={task.updatedAt.toISOString()}
+                              dateTime={dateIso(task.updatedAt) ?? undefined}
+                              title={dateIso(task.updatedAt) ?? undefined}
                               className="tabular-nums"
                             >
                               {timeAgo(task.updatedAt)}
@@ -1628,8 +1640,8 @@ export default async function TaskDetailPage({
                       {formatBytes(a.sizeBytes)} · {a.mimeType} · uploaded by{" "}
                       @{a.uploader.username} ·{" "}
                       <time
-                        dateTime={a.createdAt.toISOString()}
-                        title={a.createdAt.toISOString()}
+                        dateTime={dateIso(a.createdAt) ?? undefined}
+                        title={dateIso(a.createdAt) ?? undefined}
                       >
                         {timeAgo(a.createdAt)}
                       </time>

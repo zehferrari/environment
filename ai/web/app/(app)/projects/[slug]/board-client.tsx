@@ -83,6 +83,7 @@ const boardCollisionDetection: CollisionDetection = (args) => {
 };
 
 export default function Board({ projectSlug, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
+  const router = useRouter();
   const [items, setItems] = useState<Task[]>(tasks);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
@@ -358,9 +359,30 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
         tasks: items
           .filter((t) => t.status === col.id)
           .sort((a, b) => a.rank - b.rank),
-      })),
+        })),
     [workflowColumns, items],
   );
+  const workflowFocus = useMemo(() => {
+    const priority: Record<string, number> = {
+      Review: 0,
+      "To Do": 1,
+      "In Progress": 2,
+      Backlog: 3,
+    };
+    return items
+      .filter((task) =>
+        task.status === "Review" ||
+        task.status === "To Do" ||
+        task.status === "In Progress" ||
+        (task.status === "Backlog" && Boolean(task.assignee)),
+      )
+      .sort((a, b) => {
+        const byStatus = (priority[a.status] ?? 99) - (priority[b.status] ?? 99);
+        if (byStatus !== 0) return byStatus;
+        return a.rank - b.rank;
+      })
+      .slice(0, 6);
+  }, [items]);
 
   return (
     <DndContext
@@ -444,6 +466,47 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
             </button>
           </div>
         </div>
+      ) : null}
+
+      {workflowFocus.length > 0 ? (
+        <section className="mb-5 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] p-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              Workflow focus
+            </h2>
+            <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+              feedback → review → start
+            </span>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {workflowFocus.map((task) => (
+              <button
+                key={task.id}
+                type="button"
+                onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
+                className="min-w-0 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-left transition hover:border-[var(--color-accent)]"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <WorkflowPill task={task} />
+                  <time
+                    dateTime={task.updatedAt}
+                    title={task.updatedAt}
+                    className="shrink-0 text-[10px] tabular-nums text-[var(--color-text-muted)]"
+                    suppressHydrationWarning
+                  >
+                    {relativeUpdated(task.updatedAt)}
+                  </time>
+                </div>
+                <div className="mt-1 truncate text-sm font-medium text-[var(--color-text)]">
+                  {task.title}
+                </div>
+                <div className="mt-1 truncate text-xs text-[var(--color-text-muted)]">
+                  {workflowOwnerLabel(task)}
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
       ) : null}
 
       <section className="mb-6">
@@ -683,6 +746,7 @@ function TaskCard({
       </div>
       <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-[var(--color-text-muted)]">
         <span className="truncate">{actor ? actorDisplayName(actor) : "unassigned"}</span>
+        <WorkflowPill task={task} />
         <time
           dateTime={task.updatedAt}
           title={task.updatedAt}
@@ -872,6 +936,45 @@ function boardActorForTask(task: Task): BoardActor | null {
   }
   if (task.status === "Done") return task.reporter ?? task.assignee;
   return task.reporter ?? task.assignee ?? task.reviewer ?? task.manager;
+}
+
+function workflowPillText(task: Task) {
+  if (task.status === "Review") return "Review now";
+  if (task.status === "To Do") return task.assignee ? "Start now" : "Assign first";
+  if (task.status === "In Progress") return "Complete or update";
+  if (task.status === "Backlog" && task.assignee) return "Plan due";
+  return task.status;
+}
+
+function workflowOwnerLabel(task: Task) {
+  if (task.status === "Review") {
+    const reviewer = task.reviewer ?? task.manager ?? task.reporter;
+    return reviewer ? `${actorDisplayName(reviewer)} reviews` : "Needs reviewer";
+  }
+  if (task.status === "To Do") {
+    return task.assignee ? `${actorDisplayName(task.assignee)} starts` : "Manager must assign before work starts";
+  }
+  if (task.status === "In Progress") {
+    return task.assignee ? `${actorDisplayName(task.assignee)} owns implementation` : "In progress without assignee";
+  }
+  if (task.status === "Backlog" && task.assignee) {
+    return `${actorDisplayName(task.assignee)} should post a plan/opinion`;
+  }
+  return task.status;
+}
+
+function WorkflowPill({ task }: { task: Task }) {
+  const tone =
+    task.status === "Review" ? "border-amber-400/40 bg-amber-400/10 text-amber-200"
+      : task.status === "To Do" && !task.assignee ? "border-red-400/40 bg-red-400/10 text-red-200"
+        : task.status === "To Do" ? "border-sky-400/40 bg-sky-400/10 text-sky-200"
+          : task.status === "In Progress" ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
+            : "border-[var(--color-line)] bg-[var(--color-panel)] text-[var(--color-text-muted)]";
+  return (
+    <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${tone}`}>
+      {workflowPillText(task)}
+    </span>
+  );
 }
 
 function relativeUpdated(iso: string): string {

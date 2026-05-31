@@ -1,0 +1,601 @@
+Workflow Enforcement Handoff - asdrubal-vision
+================================================
+
+Repository/worktree
+-------------------
+
+- Main repo: /srv/Code/environment
+- Active worktree/branch used for this fix:
+  /srv/Code/environment.worktrees/asdrubal-vision
+- Web app root:
+  /srv/Code/environment.worktrees/asdrubal-vision/ai/web
+- Live PM database used for agents.vixi.au:
+  file:/srv/Data/pm/wt-asdrubal-vision.db
+- Live service:
+  pm.service
+- Live host:
+  agents.vixi.au
+
+
+Problem summary
+---------------
+
+The GreenID Epic workflow did not enforce the intended manager/assignee loop.
+
+Expected workflow:
+
+1. Manager opens an Epic and moves ordered tasks to To Do.
+2. Manager assigns the first task only.
+3. Assignee starts that task by moving it to In Progress.
+4. Assignee moves completed work to Review.
+5. Manager reviews.
+6. If accepted, manager moves it to Done.
+7. PM automatically assigns the next unassigned To Do task in the same Open Epic to the same assignee.
+8. If manager posts feedback instead, assignee prioritizes that feedback before taking new work.
+
+Observed failures:
+
+- Proposal-applied assignments changed task rows but did not wake the assigned agent.
+- The assignee stayed in To Do and did not move the task to In Progress.
+- Karen did not alert because ai-monitor was crashing before it could complete a run.
+- Karen was also not reliably reading the active worktree database.
+- The review_done workflow stopped at Done and did not assign the next Epic task.
+- GreenID task ranks were reversed from the intended dependency order after proposal apply.
+- Karen's Jira receiver was disabled/stopped, causing an additional monitor health failure.
+- After deployment, the task page hit a runtime error because cached Date fields came back as strings.
+
+
+Root causes
+-----------
+
+1. Missing notification path in work-item proposal apply
+
+   Normal task create/move/update paths call sendTaskWorkflowNotification().
+   The work-item proposal apply path in ai/web/lib/work-items/apply.ts directly
+   applied task.assign and task.acting_manager updates but did not send workflow
+   notifications after commit. The DB looked right, but the agent was not woken.
+
+2. No automatic next-task assignment after manager acceptance
+
+   The agent workflow endpoint handled review_done by moving the current task to
+   Done, but it did not find and assign the next task in the same Epic.
+
+3. Karen monitor crash
+
+   /usr/local/bin/ai-monitor crashed with KeyError: 'age_s' while building its
+   compact input. Some stalled-task rows use session_idle_s rather than age_s.
+
+4. Karen monitor database drift
+
+   ai-monitor was not explicitly tied to the active worktree DB. The active PM
+   service used /etc/default/pm-active-worktree, but ai-monitor only read its
+   own config/env/hardcoded fallback paths.
+
+5. pm-workflow-nudge environment drift
+
+   pm-workflow-nudge only sourced /etc/default/pm by default. It needed the
+   active worktree env file too, otherwise recovery nudges could run against
+   the wrong app root or DB.
+
+6. Live GreenID task order was wrong
+
+   Proposal task creation processed independent operations backward. The
+   resulting ranks made the last logical task appear before the next actual
+   implementation task. Auto-handoff depends on rank order, so the live data
+   needed correcting and the proposal apply loop needed fixing.
+
+7. Cached Date serialization
+
+   Next unstable_cache can return serialized strings for Date fields. The task
+   page assumed Date objects and called .toISOString(), causing production task
+   pages to throw.
+
+
+Operational recovery steps performed
+------------------------------------
+
+1. Verified live worktree and service configuration.
+
+   Commands used:
+
+   - sudo -n systemctl status pm.service --no-pager
+   - sudo -n journalctl -u pm.service -n 80 --no-pager
+   - sudo -n cat /etc/default/pm-active-worktree
+   - curl -I -H 'Host: agents.vixi.au' http://127.0.0.1/
+
+   Confirmed:
+
+   - pm.service was serving the asdrubal-vision standalone bundle.
+   - DATABASE_URL was file:/srv/Data/pm/wt-asdrubal-vision.db.
+   - nginx reached the app and returned the expected 307 login redirect.
+
+2. Diagnosed GreenID live task state.
+
+   GreenID Epic:
+
+   - Epic id: cmpswaqdo00hc5rypzq1rt55j
+   - Title: GreenID AML/CTF resolutions
+   - Project: patricia
+   - Acting manager: asdrubal
+   - Status: Open
+
+   First task:
+
+   - Task id: cmpt91u7601a45r22asxpfpml
+   - Title: GreenID API integration foundation (TEST + PROD, credentials, 2FA)
+   - Assignee: barekbaal
+   - Acting manager: asdrubal
+
+   The first task was assigned but initially not started because the proposal
+   apply path did not wake Barekbaal.
+
+3. Installed fixed Karen monitor.
+
+   Source file updated:
+
+   - ai/openclaw/bin/ai-monitor
+
+   Installed live:
+
+   - sudo -n install -m 0755 ai/openclaw/bin/ai-monitor /usr/local/bin/ai-monitor
+
+   Verified:
+
+   - python3 -m py_compile ai/openclaw/bin/ai-monitor
+   - sudo -n /usr/local/bin/ai-monitor --dry-run
+
+   Result:
+
+   - No KeyError crash.
+   - Monitor reported pm_workflow.database_path as /srv/Data/pm/wt-asdrubal-vision.db.
+
+4. Installed fixed pm-workflow-nudge helper.
+
+   Source file updated:
+
+   - ai/openclaw/bin/pm-workflow-nudge
+
+   Installed live:
+
+   - sudo -n install -m 0755 ai/openclaw/bin/pm-workflow-nudge /usr/local/sbin/pm-workflow-nudge
+
+5. Rebuilt and applied the web app.
+
+   From:
+
+   - /srv/Code/environment.worktrees/asdrubal-vision/ai/web
+
+   Commands:
+
+   - DATABASE_URL=file:/srv/Data/pm/wt-asdrubal-vision.db pnpm build
+   - sudo -n /srv/Code/environment.worktrees/asdrubal-vision/ai/web/deploy/pm-apply-worktree /srv/Code/environment.worktrees/asdrubal-vision/ai/web/.next/standalone file:/srv/Data/pm/wt-asdrubal-vision.db
+
+   Verification:
+
+   - sudo -n systemctl status pm.service --no-pager
+   - curl -I -H 'Host: agents.vixi.au' http://127.0.0.1/
+   - curl -I -H 'Host: agents.vixi.au' http://127.0.0.1/projects/patricia/tasks/cmpt91u7601a45r22asxpfpml
+
+6. Corrected live GreenID task order.
+
+   The intended order was restored in the live DB:
+
+   0. GreenID API integration foundation (TEST + PROD, credentials, 2FA)
+   1. Auto-classify clients into EB2B / EB2C / NB2B / NB2C on registration
+   2. Block guest checkout - require login before 'Order Online Now'
+   3. VOI / PEP / sanctions screening service (GreenID-backed)
+   4. Related-party data capture UI
+   5. Risk assessment engine (Low / Medium / High) for NB2B and NB2C
+   6. EB2B flow - Reliance Agreement tickbox gate on every login after 30 Jun 2026
+   7. EB2C flow - first-login VOI notice + related-party identification
+   8. NB2B onboarding flow - verify individual + KYB + risk + reliance tickboxes
+   9. NB2C onboarding flow - verify individual + KYB + trust + risk
+   10. Secretarial-change verification flows (Company Form 484 + trust)
+   11. Transition new clients to 'existing client' after 2nd order
+   12. Resolve AML/CTF open questions with stakeholders
+
+   Why:
+
+   - review_done auto-handoff chooses the next unassigned To Do task by rank.
+   - The live ranks had been reversed by the old proposal apply loop.
+
+7. Sent targeted workflow recovery nudges.
+
+   Start the stuck To Do task:
+
+   - sudo -n /usr/local/sbin/pm-workflow-nudge --task-id cmpt91u7601a45r22asxpfpml --agent barekbaal --kind pm-todo-not-started
+
+   Nudge stale In Progress work:
+
+   - sudo -n /usr/local/sbin/pm-workflow-nudge --task-id cmpt91u7601a45r22asxpfpml --agent barekbaal --kind pm-in-progress-stale --required-action 'Update the task with progress, continue work, or move completed work to Review.'
+
+   Result:
+
+   - Barekbaal moved the task to In Progress.
+   - Barekbaal posted a progress update.
+   - Asdrubal was notified and responded with review/placement feedback.
+   - Barekbaal received that manager feedback.
+
+8. Fixed Karen service health.
+
+   Karen's Jira receiver was inactive and disabled.
+
+   Commands:
+
+   - sudo -n systemctl --user --machine=karen@ status openclaw-jira-receiver.service --no-pager
+   - sudo -n journalctl _UID=$(id -u karen) _SYSTEMD_USER_UNIT=openclaw-jira-receiver.service -n 80 --no-pager
+   - sudo -n systemctl --user --machine=karen@ enable --now openclaw-jira-receiver.service
+   - sudo -n systemctl --user --machine=karen@ is-active openclaw-jira-receiver.service
+   - sudo -n systemctl --user --machine=karen@ is-enabled openclaw-jira-receiver.service
+
+   Result:
+
+   - openclaw-jira-receiver.service became active and enabled.
+
+9. Re-ran Karen monitor dry-run.
+
+   Command:
+
+   - sudo -n /usr/local/bin/ai-monitor --dry-run
+
+   Result:
+
+   - Karen gateway, Jira receiver, and Bitbucket receiver were active.
+   - PM workflow probe read /srv/Data/pm/wt-asdrubal-vision.db.
+   - PM workflow showed the GreenID task in In Progress and stale, which was
+     expected until Barekbaal posted progress or moved it to Review.
+
+10. Fixed and redeployed the task page runtime crash.
+
+    Error:
+
+    - TypeError: r.updatedAt.toISOString is not a function
+
+    Fix:
+
+    - Added Date/string coercion helpers on the task detail page.
+
+    Verification:
+
+    - DATABASE_URL=file:/tmp/pm-asdrubal-vision-test.db pnpm typecheck
+    - DATABASE_URL=file:/srv/Data/pm/wt-asdrubal-vision.db pnpm build
+    - sudo -n /srv/Code/environment.worktrees/asdrubal-vision/ai/web/deploy/pm-apply-worktree /srv/Code/environment.worktrees/asdrubal-vision/ai/web/.next/standalone file:/srv/Data/pm/wt-asdrubal-vision.db
+    - sudo -n systemctl status pm.service --no-pager
+    - curl -I -H 'Host: agents.vixi.au' http://127.0.0.1/
+
+
+Branch changes and rationale
+----------------------------
+
+ai/web/lib/work-items/apply.ts
+
+- Added workflow notification dispatch after proposal application.
+- Added task comment notification dispatch after proposal-applied comments.
+- Added taskWorkflowBody() helper for consistent Backlog, To Do, Review, and Done prompts.
+- Sends backlog_plan_requested when an assigned task is created in Backlog.
+- Sends todo_start_required when an assigned task lands in To Do.
+- Sends review_requested when a task is moved to Review.
+- Sends review_done when a task is moved to Done.
+- Resolves reviewer as acting manager, Open Epic acting manager, or reporter.
+- Runs notifications after the DB transaction with Promise.allSettled() so notification failure does not roll back proposal application.
+- Fixed pending create operation processing to preserve forward dependency/rank order instead of processing independent ops backward.
+
+Why:
+
+- Proposal apply was the missing trigger path for the GreenID task.
+- Agents must be woken whenever applied work changes assignment/status.
+- The rank order fix prevents future Epic task ordering reversals.
+
+
+ai/web/app/api/agent/tasks/[taskId]/workflow/route.ts
+
+- Added epicId to task selection.
+- Added assignNextEpicTaskAfterDone().
+- On review_done, after moving the current task to Done, PM finds the next unassigned To Do task in the same Epic ordered by rank and createdAt.
+- Assigns that next task to the completed task's assignee.
+- Sets acting manager to the existing next-task acting manager or the current reviewer.
+- Logs task.assign and task.acting_manager activity.
+- Sends todo_start_required to the assignee.
+- Revalidates current task, next task, and project board.
+- API response now includes nextTask when an automatic handoff occurred.
+
+Why:
+
+- The manager acceptance step must drive the next unit of work without manual latency.
+
+
+ai/web/lib/agents/task-workflow-notifications.ts
+
+- Updated workflow prompt rules.
+- Review rule now says review_done auto-assigns the next unassigned To Do task in the same Open Epic.
+- Assignee rule now explicitly prioritizes review feedback before newly assigned To Do work.
+
+Why:
+
+- The agents needed explicit workflow semantics in their PM context.
+
+
+ai/web/app/(app)/projects/[slug]/board-client.tsx
+
+- Added a Workflow focus panel above the board.
+- Focus order: Review, To Do, In Progress, assigned Backlog.
+- Added workflow pills on focus cards and task cards:
+  Review now, Start now, Assign first, Complete or update, Plan due.
+- Added owner labels explaining who should act next.
+
+Why:
+
+- The web interface goal is zero latency. The board should surface the next
+  actionable workflow item rather than making users infer it from columns.
+
+
+ai/web/app/(app)/projects/[slug]/tasks/[taskId]/page.tsx
+
+- Added dateValue(), dateIso(), and updated timeAgo() to accept Date or string.
+- Replaced direct task.createdAt/task.updatedAt/attachment.createdAt .toISOString() calls.
+- serializeActor() now handles avatarUpdatedAt as Date or string.
+
+Why:
+
+- Cached server data can return date fields as strings. Production task pages
+  were failing at runtime after rebuild/restart.
+
+
+ai/openclaw/bin/ai-monitor
+
+- Added DATABASE_URL parsing from /etc/default/pm-active-worktree.
+- Added DATABASE_URL parsing from /etc/default/pm.
+- Added robust file: URL to filesystem path conversion.
+- Added /srv/Data/pm/pm.db candidate fallback.
+- Changed compact input generation to use get("age_s") or fallback values rather than indexing age_s directly.
+
+Why:
+
+- Karen must monitor the same DB as the active worktree.
+- The KeyError crash prevented Karen from alerting or nudging PM workflow drift.
+
+
+ai/openclaw/bin/pm-workflow-nudge
+
+- Sources /etc/default/pm and /etc/default/pm-active-worktree by default.
+- Still allows explicit PM_ENV override.
+
+Why:
+
+- Recovery nudges must execute against the active worktree app root and DB.
+
+
+ai/web/deploy/pm-apply-worktree
+
+- Computes PM_APP_ROOT from the standalone path.
+- Writes PM_APP_ROOT into /etc/default/pm-active-worktree.
+
+Why:
+
+- Live helper scripts such as pm-workflow-nudge need to know the source app root,
+  not only the standalone runtime directory.
+
+
+ai/web/app/api/openclaw/pm-channel/reply/route.ts
+
+- Added PM channel callback rate limiting for replies.
+- Switched epic reply revalidation to scoped epic cache tags.
+- Uses pmChannelRunTargetKey() to rate-limit per target.
+
+Why:
+
+- Prevents agent callback floods and avoids invalidating more UI cache than necessary.
+
+
+ai/web/app/api/openclaw/pm-channel/stream/route.ts
+
+- Added PM channel callback rate limiting for stream callbacks.
+
+Why:
+
+- Streaming callbacks are higher volume. They need per-agent and per-target limits.
+
+
+ai/web/lib/agents/pm-channel-rate-limit.ts
+
+- New in-memory token bucket limiter for PM channel reply/stream callbacks.
+- Supports per-agent and per-target buckets.
+- Configurable by environment variables:
+  PM_CHANNEL_RATE_WINDOW_MS
+  PM_CHANNEL_REPLY_RATE_AGENT
+  PM_CHANNEL_REPLY_RATE_TARGET
+  PM_CHANNEL_STREAM_RATE_AGENT
+  PM_CHANNEL_STREAM_RATE_TARGET
+
+Why:
+
+- Protects the PM web process from runaway callback loops.
+
+
+ai/web/lib/epics/cache.ts
+
+- Added epic cache tag helpers.
+- Added revalidateEpicReplyScope().
+
+Why:
+
+- Epic chat/comment replies should revalidate only the relevant UI resources.
+
+
+ai/web/instrumentation.node.ts
+
+- Starts an in-process PM channel worker poll when async dispatch is enabled.
+- Poll interval controlled by PM_CHANNEL_WORKER_POLL_MS.
+- Worker drains multiple ready jobs with runPmChannelWorkerDrain().
+
+Why:
+
+- Async PM-channel jobs need a live drain loop in the deployed process, otherwise
+  queued/retryable jobs can sit until an external worker runs.
+
+
+ai/web/lib/agents/pm-channel-jobs.ts
+
+- Added runPmChannelWorkerDrain().
+- Drains up to PM_CHANNEL_WORKER_DRAIN_MAX_JOBS ready jobs in one tick.
+- Returns claimed/accepted/retryable counts and errors.
+
+Why:
+
+- Makes the in-process poller efficient and testable.
+
+
+ai/web/README.md
+
+- Documented PM_CHANNEL_WORKER_POLL_MS and the async dispatch worker model.
+
+Why:
+
+- Operators need to know async dispatch requires either the in-process poll loop
+  or an external worker.
+
+
+ai/web/deploy/pm.env.example
+
+- Added PM_CHANNEL_WORKER_POLL_MS=1000.
+
+Why:
+
+- Keeps deployment defaults aligned with the new in-process worker poller.
+
+
+ai/web/package.json
+
+- Added test:pm-channel-rate-limit.
+
+Why:
+
+- Provides a direct test entrypoint for callback rate limiting.
+
+
+ai/web/scripts/cache-scope-test.ts
+
+- Added epic cache scope assertions.
+
+Why:
+
+- Ensures task/epic reply cache invalidation stays narrow.
+
+
+ai/web/scripts/p0-kernel-test.ts
+
+- Added worker drain assertions.
+- Verifies retryable jobs do not drain before availableAt and do drain after.
+
+Why:
+
+- Guards the async PM-channel worker behaviour that the automatic workflow relies on.
+
+
+ai/web/scripts/pm-channel-rate-limit-test.ts
+
+- New test for reply and stream callback rate limiting.
+- Verifies per-target and per-agent buckets.
+
+Why:
+
+- Guards against callback flood regressions.
+
+
+Tests and verification run
+--------------------------
+
+Passed:
+
+- DATABASE_URL=file:/tmp/pm-asdrubal-vision-test.db pnpm typecheck
+- python3 -m py_compile ai/openclaw/bin/ai-monitor
+- bash -n ai/openclaw/bin/pm-workflow-nudge ai/web/deploy/pm-apply-worktree
+- DATABASE_URL=file:/srv/Data/pm/wt-asdrubal-vision.db pnpm build
+- sudo -n /usr/local/bin/ai-monitor --dry-run
+- sudo -n systemctl status pm.service --no-pager
+- curl -I -H 'Host: agents.vixi.au' http://127.0.0.1/
+
+Smoke test note:
+
+- DATABASE_URL=file:/tmp/pm-asdrubal-vision-test.db pnpm tsx scripts/work-item-proposal-smoke.ts
+  reached the proposal apply path successfully, but the script reported pre-existing
+  validator guardrail assertions:
+  self-assign blocked, self acting-manager blocked, transition out of Done blocked.
+  The proposal apply section itself completed.
+
+
+How to reproduce the live deployment
+------------------------------------
+
+1. Enter the worktree.
+
+   cd /srv/Code/environment.worktrees/asdrubal-vision/ai/web
+
+2. Typecheck.
+
+   DATABASE_URL=file:/tmp/pm-asdrubal-vision-test.db pnpm typecheck
+
+3. Build against the active worktree DB.
+
+   DATABASE_URL=file:/srv/Data/pm/wt-asdrubal-vision.db pnpm build
+
+4. Apply the standalone bundle.
+
+   sudo -n /srv/Code/environment.worktrees/asdrubal-vision/ai/web/deploy/pm-apply-worktree /srv/Code/environment.worktrees/asdrubal-vision/ai/web/.next/standalone file:/srv/Data/pm/wt-asdrubal-vision.db
+
+5. Install host helper scripts if they changed.
+
+   sudo -n install -m 0755 /srv/Code/environment.worktrees/asdrubal-vision/ai/openclaw/bin/ai-monitor /usr/local/bin/ai-monitor
+   sudo -n install -m 0755 /srv/Code/environment.worktrees/asdrubal-vision/ai/openclaw/bin/pm-workflow-nudge /usr/local/sbin/pm-workflow-nudge
+
+6. Verify service and route.
+
+   sudo -n systemctl status pm.service --no-pager
+   sudo -n journalctl -u pm.service -n 80 --no-pager
+   curl -I -H 'Host: agents.vixi.au' http://127.0.0.1/
+
+7. Verify Karen can see the active PM DB.
+
+   sudo -n /usr/local/bin/ai-monitor --dry-run
+
+   Confirm probes.pm_workflow.database_path is:
+
+   /srv/Data/pm/wt-asdrubal-vision.db
+
+8. If an existing assigned task is stuck, send a targeted nudge.
+
+   sudo -n /usr/local/sbin/pm-workflow-nudge --task-id <task-id> --agent <agent-slug> --kind pm-todo-not-started
+
+   For stale in-progress work:
+
+   sudo -n /usr/local/sbin/pm-workflow-nudge --task-id <task-id> --agent <agent-slug> --kind pm-in-progress-stale --required-action 'Update the task with progress, continue work, or move completed work to Review.'
+
+
+Expected behaviour after the fix
+--------------------------------
+
+- Applying a proposal that assigns a task wakes the assignee.
+- Applying a proposal comment wakes mentioned/relevant agents.
+- Assigned Backlog tasks ask the assignee for a plan/opinion only.
+- Assigned To Do tasks ask the assignee to move to In Progress and start work.
+- In Progress stale tasks are visible to Karen's PM workflow monitor.
+- Moving a task to Review wakes the resolved reviewer.
+- review_feedback leaves the task in Review and wakes the assignee.
+- Assignees prioritize review feedback over new To Do work.
+- review_done moves the task to Done, then auto-assigns the next unassigned To Do task in the same Open Epic to the same assignee.
+- The board highlights the workflow items most likely to require immediate action.
+
+
+Current GreenID status after recovery
+-------------------------------------
+
+- The first GreenID task is In Progress with Barekbaal assigned and Asdrubal as acting manager.
+- Barekbaal has posted progress.
+- Asdrubal has reviewed/commented with placement guidance.
+- Barekbaal received that manager feedback.
+- The next task to be assigned after review_done is:
+  Auto-classify clients into EB2B / EB2C / NB2B / NB2C on registration
+
+No task completion was faked. The workflow is now enforcing the automatic handoff,
+but real task completion still depends on the agents doing the work and the manager
+accepting it through review_done.

@@ -8,6 +8,7 @@ import {
   replayPmChannelStreamFrames,
 } from "@/lib/agents/pm-channel-stream-log";
 import {
+  runPmChannelWorkerDrain,
   runPmChannelWorkerOnce,
   sendOrQueueOpenClawPmChannelTurn,
 } from "@/lib/agents/pm-channel-jobs";
@@ -69,6 +70,24 @@ async function main() {
   assert.equal(retryable.status, "retryable");
   assert.equal(retryable.attemptCount, 1);
   assert.match(retryable.lastError ?? "", /no gateway port/);
+
+  const immediateDrain = await runPmChannelWorkerDrain(`test-drain-immediate:${nonce}`);
+  assert.equal(immediateDrain.claimed, 0, "retryable job should not drain before availableAt");
+
+  await db.pmChannelJob.update({
+    where: { runId: run.id },
+    data: { availableAt: new Date(Date.now() - 1000) },
+  });
+  const delayedDrain = await runPmChannelWorkerDrain(`test-drain-ready:${nonce}`, 5);
+  assert.equal(delayedDrain.claimed, 1, "drain should process a retryable job after availableAt");
+  assert.equal(delayedDrain.retryableOrFailed, 1);
+
+  const retried = await db.pmChannelJob.findUniqueOrThrow({
+    where: { runId: run.id },
+    select: { status: true, attemptCount: true },
+  });
+  assert.equal(retried.status, "retryable");
+  assert.equal(retried.attemptCount, 2);
 
   const wrongScope = await createContextGrant({
     agentSlug: "asdrubal",

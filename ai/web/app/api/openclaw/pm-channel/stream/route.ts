@@ -11,11 +11,13 @@ import {
   type PmChannelStreamEventKind,
 } from "@/lib/agents/pm-channel-stream";
 import {
+  pmChannelRunTargetKey,
   pmChannelTargetHasDurableReply,
   recordPmChannelRunEvent,
 } from "@/lib/agents/pm-channel-runs";
 import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel-jobs";
 import { appendPmChannelStreamEventForTarget } from "@/lib/agents/pm-channel-stream-log";
+import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel-rate-limit";
 import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
 
 export const runtime = "nodejs";
@@ -116,6 +118,21 @@ export async function POST(req: NextRequest) {
     !tokenMatches(actualToken, expectedAgent ?? "")
   ) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const rateLimit = checkPmChannelCallbackRateLimit({
+    kind: "stream",
+    agentSlug: target.agentSlug,
+    targetKey: pmChannelRunTargetKey(target),
+  });
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { error: "PM channel stream rate limit exceeded" },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
+      },
+    );
   }
 
   if (event === "error" && await pmChannelTargetHasDurableReply(target)) {

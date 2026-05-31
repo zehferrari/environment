@@ -33,6 +33,7 @@ real="$(readlink -f "$STANDALONE" 2>/dev/null || true)"
 [[ -n "$real" ]]                                    || die "path does not resolve: $STANDALONE"
 [[ "$real" == "$WT_ROOT"/*/ai/web/.next/standalone ]] || die "refused: $real is not <$WT_ROOT>/*/ai/web/.next/standalone"
 [[ -f "$real/server.js" ]]                          || die "no server.js in $real (build the worktree first)"
+app_root="${real%/.next/standalone}"
 
 case "$DB_URL" in
   file://*) db_path="${DB_URL#file://}" ;;
@@ -54,6 +55,11 @@ if grep -q '^DATABASE_URL=' "$BASE_ENV_FILE"; then
 else
   cp "$BASE_ENV_FILE" "$tmp_env"
   printf 'DATABASE_URL=file:%s\n' "$db_real" >> "$tmp_env"
+fi
+if grep -q '^PM_APP_ROOT=' "$tmp_env"; then
+  sed -i -E "s#^PM_APP_ROOT=.*#PM_APP_ROOT=$app_root#" "$tmp_env"
+else
+  printf 'PM_APP_ROOT=%s\n' "$app_root" >> "$tmp_env"
 fi
 install -o root -g "$env_group" -m 0640 "$tmp_env" "$ACTIVE_ENV_FILE"
 rm -f "$tmp_env"

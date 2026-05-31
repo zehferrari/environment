@@ -992,23 +992,51 @@ def probe_pending_mentions(cfg, registry):
     return out
 
 
-def _sqlite_pm_db_path(cfg):
-    pc = cfg.get("pm_workflow") or {}
-    raw = (
-        pc.get("database_path")
-        or os.environ.get("PM_DATABASE_PATH")
-        or os.environ.get("DATABASE_URL")
-        or ""
-    )
+def _database_url_to_path(raw):
+    raw = (raw or "").strip().strip('"').strip("'")
     if raw.startswith("file:"):
         raw = raw[5:]
         if raw.startswith("//"):
             raw = raw[2:]
             raw = "/" + raw.lstrip("/")
         raw = raw.split("?", 1)[0]
+    return raw
+
+
+def _read_pm_database_url_from_env_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                if key.strip() != "DATABASE_URL":
+                    continue
+                try:
+                    return shlex.split(value, comments=False, posix=True)[0]
+                except Exception:
+                    return value
+    except Exception:
+        return ""
+    return ""
+
+
+def _sqlite_pm_db_path(cfg):
+    pc = cfg.get("pm_workflow") or {}
+    raw = (
+        pc.get("database_path")
+        or os.environ.get("PM_DATABASE_PATH")
+        or os.environ.get("DATABASE_URL")
+        or _read_pm_database_url_from_env_file("/etc/default/pm-active-worktree")
+        or _read_pm_database_url_from_env_file("/etc/default/pm")
+        or ""
+    )
+    raw = _database_url_to_path(raw)
     if raw:
         return raw
     candidates = [
+        "/srv/Data/pm/pm.db",
         "/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma/prisma/dev.db",
         "/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma/dev.db",
     ]
@@ -1560,12 +1588,14 @@ def build_compact_input(probes):
         },
         "stalled_tasks": [
             {"agent": t["agent"], "key": t["key"],
-             "age_minutes": t["age_s"] // 60, "severity": t["severity"]}
+             "age_minutes": (t.get("age_s") or t.get("session_idle_s") or 0) // 60,
+             "severity": t["severity"]}
             for t in probes.get("stalled_tasks", {}).get("stalled_tasks", [])
         ],
         "pending_email_tasks": [
             {"agent": e["agent"], "message_id": e["message_id"],
-             "age_minutes": e["age_s"] // 60, "severity": e["severity"],
+             "age_minutes": (e.get("age_s") or 0) // 60,
+             "severity": e["severity"],
              "subject": e.get("subject", "")[:80]}
             for e in probes.get("pending_email_tasks", {}).get("pending", [])
         ],

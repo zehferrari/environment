@@ -64,6 +64,97 @@ async function moveTaskStatus(args: {
   ]);
 }
 
+async function assignNextEpicTaskAfterDone(args: {
+  completedTaskId: string;
+  projectId: string;
+  actorUserId: string;
+  actorUsername: string;
+  assigneeId: string | null;
+  epicId: string | null;
+  reviewerId: string | null;
+}) {
+  if (!args.epicId || !args.assigneeId) return null;
+
+  const nextTask = await db.task.findFirst({
+    where: {
+      epicId: args.epicId,
+      deletedAt: null,
+      status: "To Do",
+      assigneeId: null,
+    },
+    orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
+    select: {
+      id: true,
+      title: true,
+      assigneeId: true,
+      actingManagerId: true,
+      project: { select: { slug: true } },
+    },
+  });
+  if (!nextTask) return null;
+
+  await db.$transaction(async (tx) => {
+    await tx.task.update({
+      where: { id: nextTask.id },
+      data: {
+        assigneeId: args.assigneeId,
+        actingManagerId: nextTask.actingManagerId ?? args.reviewerId,
+      },
+    });
+    await tx.activityLog.create({
+      data: {
+        projectId: args.projectId,
+        taskId: nextTask.id,
+        userId: args.actorUserId,
+        kind: "task.assign",
+        payload: JSON.stringify({
+          from: null,
+          to: "previous-assignee",
+          via: "agent-workflow",
+          action: "review_done",
+          afterTaskId: args.completedTaskId,
+        }),
+      },
+    });
+    if (!nextTask.actingManagerId && args.reviewerId) {
+      await tx.activityLog.create({
+        data: {
+          projectId: args.projectId,
+          taskId: nextTask.id,
+          userId: args.actorUserId,
+          kind: "task.acting_manager",
+          payload: JSON.stringify({
+            from: null,
+            to: args.actorUsername,
+            via: "agent-workflow",
+            action: "review_done",
+            afterTaskId: args.completedTaskId,
+          }),
+        },
+      });
+    }
+  });
+
+  await sendTaskWorkflowNotification({
+    taskId: nextTask.id,
+    targetUserId: args.assigneeId,
+    actor: {
+      id: args.actorUserId,
+      username: args.actorUsername,
+      kind: "agent",
+    },
+    reason: "todo_start_required",
+    body: [
+      `Previous epic task was accepted by @${args.actorUsername}.`,
+      `Next task "${nextTask.title}" is now assigned to you in To Do.`,
+      "Read the full task context, move it to In Progress through the workflow endpoint, and start work immediately.",
+      "If you have unresolved review feedback on another Review-stage task, address that feedback first; otherwise start this task now.",
+    ].join("\n"),
+  });
+
+  return { id: nextTask.id, title: nextTask.title, projectSlug: nextTask.project.slug };
+}
+
 export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ taskId: string }> },
@@ -124,6 +215,7 @@ export async function POST(
         title: true,
         status: true,
         projectId: true,
+        epicId: true,
         assigneeId: true,
         actingManagerId: true,
         reporterId: true,
@@ -344,9 +436,21 @@ export async function POST(
         ].join("\n"),
       });
     }
+    const nextTask = await assignNextEpicTaskAfterDone({
+      completedTaskId: task.id,
+      projectId: task.projectId,
+      actorUserId: agent.user.id,
+      actorUsername: agent.user.username,
+      assigneeId: task.assigneeId,
+      epicId: task.epicId,
+      reviewerId,
+    });
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    if (nextTask) {
+      revalidatePath(`/projects/${task.project.slug}/tasks/${nextTask.id}`);
+    }
     revalidatePath(`/projects/${task.project.slug}`);
-    return NextResponse.json({ ok: true, taskId: task.id, status: "Done" });
+    return NextResponse.json({ ok: true, taskId: task.id, status: "Done", nextTask });
   }
 
   if (action === "triage_to_todo") {

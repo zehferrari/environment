@@ -741,8 +741,10 @@ See `.env.example` for the full list. Highlights:
   System Activity views alongside SQLite page/freelist/journal/locking
   health.
 - `PM_ASYNC_DISPATCH`, `PM_ASYNC_DISPATCH_INLINE_NUDGE`,
-  `PM_CHANNEL_JOB_MAX_ATTEMPTS` — enable and tune the durable native
-  PM-channel queue/worker.
+  `PM_CHANNEL_JOB_MAX_ATTEMPTS`, `PM_CHANNEL_WORKER_POLL_MS` — enable
+  and tune the durable native PM-channel queue/worker. Async dispatch
+  relies on the in-process poll loop or an external `pm-channel-worker`
+  process to retry jobs after backoff.
 - `PM_CONTEXT_GRANTS_REQUIRED`, `PM_CONTEXT_GRANT_TTL_MS`,
   `PM_CONTEXT_GRANT_MAX_USES`, `PM_CONTEXT_GRANT_MAX_BYTES` — control
   scoped live-context grant enforcement and limits.

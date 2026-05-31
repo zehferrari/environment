@@ -9,15 +9,18 @@ import {
 } from "@/lib/agents/openclaw-pm-channel";
 import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel-stream";
 import {
+  pmChannelRunTargetKey,
   pmChannelTargetHasDurableReply,
   recordPmChannelRunEvent,
 } from "@/lib/agents/pm-channel-runs";
 import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel-jobs";
 import { appendPmChannelStreamEventForTarget } from "@/lib/agents/pm-channel-stream-log";
+import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel-rate-limit";
 import { normalizeDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
 import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
 import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
 import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
+import { revalidateEpicReplyScope } from "@/lib/epics/cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -281,7 +284,6 @@ async function persistEpicReply(
       archiveId: true,
       baseArchiveId: true,
       originChannel: true,
-      project: { select: { slug: true } },
       epic: { select: { deletedAt: true } },
     },
   });
@@ -340,7 +342,7 @@ async function persistEpicReply(
     return { id: created.id, channel: "chat" as const };
   });
 
-  revalidatePath(`/projects/${original.project.slug}/epics/${target.epicId}`);
+  revalidateEpicReplyScope(target.epicId, "chat");
   return {
     status: 200,
     body: { ok: true, id: reply.id, channel: reply.channel },
@@ -387,7 +389,6 @@ async function persistSilentReply(target: PmChannelReplyTarget) {
         projectId: true,
         epicId: true,
         agentSlug: true,
-        project: { select: { slug: true } },
         epic: { select: { deletedAt: true } },
       },
     });
@@ -411,7 +412,7 @@ async function persistSilentReply(target: PmChannelReplyTarget) {
         }),
       },
     });
-    revalidatePath(`/projects/${original.project.slug}/epics/${target.epicId}`);
+    revalidateEpicReplyScope(target.epicId, "chat");
     return { status: 200, body: { ok: true, silent: true, channel: "epic-chat" } };
   }
 
@@ -477,6 +478,21 @@ export async function POST(req: NextRequest) {
     !tokenMatches(actualToken, expectedAgent ?? "")
   ) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const rateLimit = checkPmChannelCallbackRateLimit({
+    kind: "reply",
+    agentSlug: target.agentSlug,
+    targetKey: pmChannelRunTargetKey(target),
+  });
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { error: "PM channel reply rate limit exceeded" },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
+      },
+    );
   }
 
   if (await pmChannelTargetHasDurableReply(target)) {
