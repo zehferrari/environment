@@ -204,7 +204,7 @@ export default function SidebarNav({
             {!collapsed ? (
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold tracking-tight">
-                  Asdrubal Vision
+                  Zero Latency
                 </div>
                 <div className="truncate text-xs text-[var(--color-text-muted)]">
                   Mission Control
