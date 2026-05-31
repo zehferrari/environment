@@ -22,6 +22,8 @@
 import { db } from "@/lib/db";
 import { listAssignablePrincipals } from "@/lib/principals";
 import {
+  checkActingManager,
+  checkAssignment,
   checkHierarchy,
   checkStatusTransition,
   isTaskStatus,
@@ -243,6 +245,20 @@ export async function validateProposal(
       errors.push(`${label} @${username} is not an active assignable principal`);
       return;
     }
+    // Agents may not propose themselves as assignee or acting manager
+    // (lib/workflow self-* rules — TEAM_WORKFLOW.md). `actor` is the proposing
+    // agent and principal.id is the resolved User id, so a self-proposal matches.
+    const selfCheck =
+      label === "assignee"
+        ? checkAssignment({
+            actor: { id: actor.userId, kind: "agent" },
+            newAssigneeId: principal.id,
+          })
+        : checkActingManager({
+            actor: { id: actor.userId, kind: "agent" },
+            newActingManagerId: principal.id,
+          });
+    if (!selfCheck.ok) errors.push(selfCheck.message);
   };
 
   // Epic reference for create_task.epic / update_task.epic — tmp ref to a
@@ -317,10 +333,14 @@ export async function validateProposal(
       return;
     }
     if (fromStatus !== null) {
+      // Proposals are agent-driven: pass kind "agent" so checkStatusTransition
+      // enforces the Review/Done (EXPLICIT_USER_STATES) guard — e.g. a Done task
+      // cannot be re-opened to Review via a generic proposal; that must go
+      // through the native PM workflow endpoint where reviewer authority is checked.
       const check = checkStatusTransition({
         from: fromStatus,
         to: value,
-        actor: { id: actor.userId, kind: "human" },
+        actor: { id: actor.userId, kind: "agent" },
       });
       if (!check.ok) errors.push(check.message);
     }
