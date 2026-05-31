@@ -41,15 +41,27 @@ const LOOPBACK_HOSTS = new Set([
  * trust the loopback bind for the rest. The host header is informational.
  */
 export function isLoopbackRequest(req: NextRequest): boolean {
-  const xff = (req.headers.get("x-forwarded-for") ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (xff.length === 0) return true;
-  // If every IP in the chain is loopback, accept (some setups stamp the
-  // header even for in-process forwards). Reject as soon as a non-loopback
-  // IP appears.
-  return xff.every((ip) => LOOPBACK_HOSTS.has(ip));
+  // Defense in depth (HOMELAB-41): don't trust a single header. The
+  // agents.vixi.au nginx vhost sets BOTH X-Forwarded-For and X-Real-IP to the
+  // real client IP on every proxied request, while a direct on-host agent curl
+  // to 127.0.0.1:3000 sends neither. Collect every client-IP signal and reject
+  // as soon as ANY of them is non-loopback.
+  //
+  // We deliberately do NOT key off X-Forwarded-Host/Proto: Next.js 15 can stamp
+  // those on internal RSC navigations even for direct loopback requests.
+  // X-Real-IP is set only by nginx here, so it has no such ambiguity.
+  const candidates: string[] = [];
+  const xff = req.headers.get("x-forwarded-for");
+  if (xff) {
+    candidates.push(...xff.split(",").map((s) => s.trim()).filter(Boolean));
+  }
+  const realIp = req.headers.get("x-real-ip");
+  if (realIp?.trim()) candidates.push(realIp.trim());
+
+  // No client-IP header at all → a direct loopback request. Accept.
+  if (candidates.length === 0) return true;
+  // Otherwise every signal must be loopback.
+  return candidates.every((ip) => LOOPBACK_HOSTS.has(ip));
 }
 
 const DEFAULT_TOKEN_FILE =
