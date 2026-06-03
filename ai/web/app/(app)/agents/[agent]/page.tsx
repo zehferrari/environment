@@ -5,6 +5,12 @@ import { db } from "@/lib/db";
 import { canEditProfile, ProfileError, readAgentProfile } from "@/lib/agents/profile";
 import { readAgentModelSettings } from "@/lib/agents/model-settings";
 import { resolveEffectiveAgentConfig } from "@/lib/agents/effective-config";
+import {
+  actorDisplayName,
+  MessageAvatar,
+  MessageTimestamp,
+  type MessageActor,
+} from "@/components/message-avatar";
 import ProfileEditor from "./profile-editor";
 import AtlasControls from "./atlas-controls";
 import AgentTabs from "./agent-tabs";
@@ -36,6 +42,45 @@ type RawAgent = {
   telegram?: { bot?: string; enabled?: boolean };
   listeners?: Array<{ owner?: string; host?: string; port?: number; expected?: boolean }>;
 };
+
+const actorSelect = {
+  id: true,
+  username: true,
+  kind: true,
+  name: true,
+  avatarUpdatedAt: true,
+  agent: { select: { slug: true, name: true, avatar: true } },
+};
+
+type ActivityActorRow = {
+  id: string;
+  username: string;
+  kind: string;
+  name: string | null;
+  avatarUpdatedAt: Date | null;
+  agent: { slug: string; name: string; avatar: string | null } | null;
+};
+
+const systemActor: MessageActor = {
+  id: null,
+  username: "system",
+  kind: "system",
+  name: "System",
+  avatarUpdatedAt: null,
+  agent: null,
+};
+
+function serializeActivityActor(actor: ActivityActorRow | null): MessageActor | null {
+  if (!actor) return null;
+  return {
+    id: actor.id,
+    username: actor.username,
+    kind: actor.kind,
+    name: actor.name,
+    avatarUpdatedAt: actor.avatarUpdatedAt,
+    agent: actor.agent,
+  };
+}
 
 async function readSnapshot(): Promise<Snapshot | null> {
   try {
@@ -120,13 +165,13 @@ export default async function AgentProfilePage({
       where: { kind: "agent.profile.update", targetAgent: slug },
       orderBy: { createdAt: "desc" },
       take: 20,
-      include: { user: { select: { username: true } } },
+      include: { user: { select: actorSelect } },
     }),
     db.activityLog.findMany({
       where: { OR: [{ targetAgent: slug }, { userId: agent.user?.id ?? "__none__" }] },
       orderBy: { createdAt: "desc" },
       take: 12,
-      include: { user: { select: { username: true } }, task: { select: { title: true } } },
+      include: { user: { select: actorSelect }, task: { select: { title: true } } },
     }),
     readAgentModelSettings(slug),
   ]);
@@ -201,11 +246,15 @@ export default async function AgentProfilePage({
                   <ul className="divide-y divide-[var(--color-line)] text-sm">
                     {audit.map((row) => {
                       const payload = row.payload ? JSON.parse(row.payload) as { file?: string; shaBefore?: string; shaAfter?: string; byteDelta?: number; diff?: string } : {};
+                      const actor = serializeActivityActor(row.user) ?? systemActor;
                       return (
                         <li key={row.id} className="py-3">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span><strong>{row.user?.username ?? "Someone"}</strong> edited <span className="font-mono">{payload.file ?? row.targetFile}</span></span>
-                            <time className="text-xs text-[var(--color-text-muted)]" dateTime={row.createdAt.toISOString()}>{row.createdAt.toISOString().slice(0, 19).replace("T", " ")}</time>
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <MessageTimestamp value={row.createdAt} />
+                            <MessageAvatar actor={actor} size="sm" />
+                            <span className="min-w-0">
+                              <strong>{actorDisplayName(actor)}</strong> edited <span className="font-mono">{payload.file ?? row.targetFile}</span>
+                            </span>
                           </div>
                           <div className="mt-1 font-mono text-xs text-[var(--color-text-muted)]">{payload.shaBefore?.slice(0, 8)} → {payload.shaAfter?.slice(0, 8)} · Δ {payload.byteDelta ?? 0} bytes</div>
                           {payload.diff ? <details className="mt-2"><summary className="cursor-pointer text-xs text-[var(--color-accent)]">View diff</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--color-bg)] p-3 text-xs">{payload.diff}</pre></details> : null}
@@ -268,7 +317,22 @@ export default async function AgentProfilePage({
               <Panel title="Activity">
                 {activity.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No activity recorded.</p> : (
                   <ul className="divide-y divide-[var(--color-line)] text-sm">
-                    {activity.map((row) => <li key={row.id} className="py-2"><div className="font-medium">{row.kind}</div><div className="text-xs text-[var(--color-text-muted)]">{row.createdAt.toISOString().slice(0,19).replace("T", " ")}{row.task ? ` · ${row.task.title}` : ""}</div></li>)}
+                    {activity.map((row) => {
+                      const actor = serializeActivityActor(row.user) ?? systemActor;
+                      return (
+                        <li key={row.id} className="py-2">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <MessageTimestamp value={row.createdAt} />
+                            <MessageAvatar actor={actor} size="sm" />
+                            <span className="font-medium">{row.kind}</span>
+                          </div>
+                          <div className="mt-1 text-xs text-[var(--color-text-muted)]">
+                            {actorDisplayName(actor)}
+                            {row.task ? ` · ${row.task.title}` : ""}
+                          </div>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </Panel>

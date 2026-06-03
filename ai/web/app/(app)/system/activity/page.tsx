@@ -2,6 +2,12 @@ import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel-la
 import { pmChannelQueueStats } from "@/lib/agents/pm-channel-jobs";
 import { compactDbPath, formatFreelistRatio, getSqliteDbHealth } from "@/lib/db-health";
 import { db } from "@/lib/db";
+import {
+  actorDisplayName,
+  MessageAvatar,
+  MessageTimestamp,
+  type MessageActor,
+} from "@/components/message-avatar";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +17,45 @@ type Snapshot = {
   agents?: Record<string, { busy_state?: { is_busy?: boolean }; jira_tickets?: unknown[] }>;
   system?: Record<string, { is_active?: string }>;
 };
+
+const actorSelect = {
+  id: true,
+  username: true,
+  kind: true,
+  name: true,
+  avatarUpdatedAt: true,
+  agent: { select: { slug: true, name: true, avatar: true } },
+};
+
+type ActivityActorRow = {
+  id: string;
+  username: string;
+  kind: string;
+  name: string | null;
+  avatarUpdatedAt: Date | null;
+  agent: { slug: string; name: string; avatar: string | null } | null;
+};
+
+const systemActor: MessageActor = {
+  id: null,
+  username: "system",
+  kind: "system",
+  name: "System",
+  avatarUpdatedAt: null,
+  agent: null,
+};
+
+function serializeActivityActor(actor: ActivityActorRow | null): MessageActor | null {
+  if (!actor) return null;
+  return {
+    id: actor.id,
+    username: actor.username,
+    kind: actor.kind,
+    name: actor.name,
+    avatarUpdatedAt: actor.avatarUpdatedAt,
+    agent: actor.agent,
+  };
+}
 
 async function readSnapshot(): Promise<Snapshot | null> {
   try {
@@ -30,7 +75,7 @@ export default async function SystemActivityPage() {
     db.activityLog.findMany({
       orderBy: { createdAt: "desc" },
       take: 60,
-      include: { user: { select: { username: true } }, task: { select: { title: true } }, project: { select: { slug: true } } },
+      include: { user: { select: actorSelect }, task: { select: { title: true } }, project: { select: { slug: true } } },
     }),
     db.activityLog.findFirst({ where: { kind: "agent.sync" }, orderBy: { createdAt: "desc" } }),
     readSnapshot(),
@@ -183,14 +228,17 @@ export default async function SystemActivityPage() {
           <p className="text-sm text-[var(--color-text-muted)]">No activity recorded yet.</p>
         ) : (
           <ul className="divide-y divide-[var(--color-line)] text-sm">
-            {events.map((row) => (
+            {events.map((row) => {
+              const actor = serializeActivityActor(row.user) ?? systemActor;
+              return (
               <li key={row.id} className="py-3">
-                <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <MessageTimestamp value={row.createdAt} />
+                  <MessageAvatar actor={actor} size="sm" />
                   <span className="font-medium">{row.kind}</span>
-                  <time className="text-xs text-[var(--color-text-muted)]" dateTime={row.createdAt.toISOString()}>{row.createdAt.toISOString().slice(0, 19).replace("T", " ")}</time>
                 </div>
                 <div className="mt-1 text-xs text-[var(--color-text-muted)]">
-                  actor: {row.user?.username ?? "system"}
+                  actor: {actorDisplayName(actor)}
                   {row.project ? ` · project: ${row.project.slug}` : ""}
                   {row.task ? ` · task: ${row.task.title}` : ""}
                   {row.targetAgent ? ` · agent: ${row.targetAgent}` : ""}
@@ -198,7 +246,8 @@ export default async function SystemActivityPage() {
                 </div>
                 {row.payload ? <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--color-panel-soft)] p-2 text-xs text-[var(--color-text-muted)]">{row.payload}</pre> : null}
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </section>

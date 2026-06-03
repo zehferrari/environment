@@ -11,7 +11,7 @@
 import { db } from "@/lib/db";
 
 const DEFAULT_RECENT_DISCUSSION = 5;
-const DEFAULT_RECENT_COMMENTS = 3;
+const DEFAULT_RECENT_COMMENTS = 8;
 
 export interface RecentMessage {
   id: string;
@@ -40,6 +40,7 @@ export async function recentDiscussion(scope: { taskId?: string; epicId?: string
       ...(scope.taskId ? { taskId: scope.taskId } : { epicId: scope.epicId }),
       archiveId: null,
       deletedAt: null,
+      originChannel: "chat",
     },
     orderBy: { createdAt: "desc" },
     take: n,
@@ -109,7 +110,10 @@ export function formatRecentBlock(args: {
   }
   if (args.comments && args.comments.length > 0) {
     lines.push(`=== RECENT ${args.scope.toUpperCase()} COMMENTS (last ${args.comments.length}, oldest first) ===`);
+    lines.push("Latest explicit human, reviewer, or manager correction wins over older agent comments. Do not repeat a known blocker unless new information changed it.");
+    lines.push("");
     for (const c of args.comments) {
+      if (c.id === args.currentMessageId) continue;
       const who = c.sender ? `@${c.sender.username}${c.sender.kind === "agent" ? " (agent)" : ""}` : "(unknown author)";
       lines.push(`[${c.createdAt.toISOString()}] ${who}`);
       lines.push(c.body);

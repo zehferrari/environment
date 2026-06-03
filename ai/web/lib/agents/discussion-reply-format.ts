@@ -2,12 +2,12 @@ const SECTION_A_TITLE = "Section A - Full Response";
 const SECTION_B_TITLE = "Section B - Short Summary";
 
 export const DISCUSSION_REPLY_FORMAT_PROMPT = [
-  "For visible replies in this Discussion, always return exactly two markdown sections:",
+  "For visible replies in this Action Plan, return exactly two markdown sections:",
   `## ${SECTION_A_TITLE}`,
-  "Put your complete, final, fully formatted answer here.",
+  "Put the complete technical answer here. Be direct: consolidate current issues, blockers, findings, and decisions into one reply; do not post separate micro-updates.",
   "",
   `## ${SECTION_B_TITLE}`,
-  "Put a short, direct summary here: a few concise paragraphs focused on the human's latest request.",
+  "Put a short direct summary here. Avoid repeated status narration and approval-only acknowledgements.",
   "",
   "Do not add text before Section A or after Section B.",
 ].join("\n");

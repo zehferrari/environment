@@ -1,23 +1,9 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
+import { deleteAttachment } from "@/lib/attachments/actions";
+import AttachmentList from "@/components/attachment-list";
 
 export const dynamic = "force-dynamic";
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MiB`;
-}
-
-function timeAgo(d: Date): string {
-  const diff = (Date.now() - d.getTime()) / 1000;
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d ago`;
-  return d.toISOString().slice(0, 10);
-}
 
 export default async function ProjectLibraryPage({
   params,
@@ -63,49 +49,27 @@ export default async function ProjectLibraryPage({
           No attachments anywhere on this project yet.
         </p>
       ) : (
-        <ul className="divide-y divide-[var(--color-line)] rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)]">
-          {attachments.map((a) => {
-            const parentLabel = a.task
+        <AttachmentList
+          projectSlug={slug}
+          deleteAction={deleteAttachment}
+          attachments={attachments.map((a) => {
+            const contextLabel = a.task
               ? `Task · ${a.task.title}`
               : a.epic
                 ? `Epic · ${a.epic.title}`
                 : "Project";
-            const parentHref = a.task
+            const contextHref = a.task
               ? `/projects/${slug}/tasks/${a.task.id}`
               : a.epic
                 ? `/projects/${slug}/epics/${a.epic.id}`
                 : `/projects/${slug}`;
-            return (
-              <li key={a.id} className="flex items-center justify-between gap-4 px-4 py-3 text-sm">
-                <div className="min-w-0 flex-1">
-                  <a
-                    href={`/api/attachments/${a.id}`}
-                    className="truncate font-medium hover:underline"
-                  >
-                    {a.filename}
-                  </a>
-                  <div className="text-xs text-[var(--color-text-muted)]">
-                    {formatBytes(a.sizeBytes)} · {a.mimeType} · uploaded by{" "}
-                    @{a.uploader.username} ·{" "}
-                    <time
-                      dateTime={a.createdAt.toISOString()}
-                      title={a.createdAt.toISOString()}
-                    >
-                      {timeAgo(a.createdAt)}
-                    </time>
-                  </div>
-                </div>
-                <Link
-                  href={parentHref}
-                  className="shrink-0 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-accent)]"
-                  title={parentLabel}
-                >
-                  {parentLabel}
-                </Link>
-              </li>
-            );
+            return {
+              ...a,
+              contextLabel,
+              contextHref,
+            };
           })}
-        </ul>
+        />
       )}
     </section>
   );

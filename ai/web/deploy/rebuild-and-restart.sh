@@ -19,10 +19,10 @@
 # serves assets, and restarting it is the entire deploy. (A filesystem alias
 # in nginx is not viable here for that permission reason.)
 #
-# User model on this host: "zeh builds, Karen runs."
+# User model on this host: "zeh builds, PM runtime user runs."
 #   - zeh      owns the checkout + node_modules, is in `code-agents`, can
 #              build, has passwordless sudo — but cannot read .env.local.
-#   - karen    is the monitor agent and owns the running server secrets.
+#   - APP_USER owns the running server secrets.
 # So this script BUILDS as the caller (must own node_modules) and uses
 # `sudo -u karen` only for the env-seed + restart fallback.
 #
@@ -36,34 +36,57 @@
 set -euo pipefail
 
 # ---- configuration (override via environment) -----------------------------
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+DEFAULT_APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 APP_USER="${PM_APP_USER:-karen}"      # account that owns the server + secrets
-APP_DIR="${PM_APP_DIR:-/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web}"
+APP_DIR="${PM_APP_DIR:-${PM_APP_ROOT:-$DEFAULT_APP_DIR}}"
 PNPM="${PM_PNPM:-/usr/local/bin/pnpm}"
 NODE_BIN="${PM_NODE_BIN:-/usr/bin/node24}"
 PORT="${PORT:-3000}"
 HOST="${PM_HOST:-127.0.0.1}"          # bind loopback only; nginx fronts it
 ENV_FILE="${PM_ENV_FILE:-$APP_DIR/.env.local}"
 LOG_FILE="${PM_LOG_FILE:-$APP_DIR/.next/pm-server.log}"
+ATTACHMENT_ROOT="${PM_ATTACHMENT_ROOT:-/srv/Data/projects}"
 
 STANDALONE="$APP_DIR/.next/standalone"
 
 log() { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 as_app() { sudo -n -u "$APP_USER" "$@"; }
+set_acl() {
+  setfacl "$@" 2>/dev/null || sudo -n setfacl "$@" 2>/dev/null || true
+}
 
 grant_runtime_access() {
   command -v setfacl >/dev/null 2>&1 || return 0
   local acl_path="$APP_DIR"
   while [[ "$acl_path" != "/" && -n "$acl_path" ]]; do
-    setfacl -m "u:$APP_USER:x" "$acl_path" 2>/dev/null || true
+    set_acl -m "u:$APP_USER:x" "$acl_path"
     acl_path="$(dirname "$acl_path")"
   done
-  [[ -d "$STANDALONE" ]] && setfacl -R -m "u:$APP_USER:rx" "$STANDALONE" 2>/dev/null || true
-  [[ -d "$STANDALONE" ]] && setfacl -m "u:$APP_USER:rwx" "$STANDALONE" 2>/dev/null || true
-  [[ -d "$APP_DIR/prisma" ]] && setfacl -R -m "u:$APP_USER:rwx" "$APP_DIR/prisma" 2>/dev/null || true
-  [[ -d "$APP_DIR/prisma" ]] && setfacl -dR -m "u:$APP_USER:rwx" "$APP_DIR/prisma" 2>/dev/null || true
-  [[ -d "$APP_DIR/.data" ]] && setfacl -R -m "u:$APP_USER:rwx" "$APP_DIR/.data" 2>/dev/null || true
-  [[ -d "$APP_DIR/.data" ]] && setfacl -dR -m "u:$APP_USER:rwx" "$APP_DIR/.data" 2>/dev/null || true
+  if [[ -d "$STANDALONE" ]]; then
+    mkdir -p "$STANDALONE/.next/cache/fetch-cache"
+    set_acl -R -m "u:$APP_USER:rx" "$STANDALONE"
+    set_acl -m "u:$APP_USER:rwx" "$STANDALONE" "$STANDALONE/.next" "$STANDALONE/.next/cache" "$STANDALONE/.next/cache/fetch-cache"
+    set_acl -dR -m "u:$APP_USER:rwx" "$STANDALONE/.next/cache"
+  fi
+  if [[ -d "$APP_DIR/prisma" ]]; then
+    set_acl -R -m "u:$APP_USER:rwx" "$APP_DIR/prisma"
+    set_acl -dR -m "u:$APP_USER:rwx" "$APP_DIR/prisma"
+  fi
+  if [[ -d "$APP_DIR/.data" ]]; then
+    set_acl -R -m "u:$APP_USER:rwx" "$APP_DIR/.data"
+    set_acl -dR -m "u:$APP_USER:rwx" "$APP_DIR/.data"
+  fi
+  if [[ -d "$ATTACHMENT_ROOT" ]]; then
+    acl_path="$ATTACHMENT_ROOT"
+    while [[ "$acl_path" != "/" && -n "$acl_path" ]]; do
+      set_acl -m "u:$APP_USER:x" "$acl_path"
+      acl_path="$(dirname "$acl_path")"
+    done
+    set_acl -R -m "u:$APP_USER:rwx" "$ATTACHMENT_ROOT"
+    set_acl -dR -m "u:$APP_USER:rwx" "$ATTACHMENT_ROOT"
+  fi
 }
 
 # ---- preflight ------------------------------------------------------------

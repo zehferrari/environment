@@ -15,6 +15,7 @@
     "db:studio": "prisma studio",
     "pm-consumer": "tsx scripts/pm-consumer.ts",
     "pm-channel-worker": "tsx scripts/pm-channel-worker.ts",
+    "pm-auto-archive": "tsx scripts/pm-auto-archive-done.ts",
     "seed": "tsx scripts/seed.ts",
     "sync:agents": "tsx scripts/sync-agents.ts",
     "test:cache-scope": "tsx scripts/cache-scope-test.ts",

@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { resolveEffectiveAgentConfig } from "@/lib/agents/effective-config";
 import { describeActivity } from "@/lib/activity";
 import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel-latency";
+import { MessageAvatar, MessageTimestamp, type MessageActor } from "@/components/message-avatar";
 import AgentServiceControls, { type AgentService } from "./agent-service-controls";
 
 export const dynamic = "force-dynamic";
@@ -55,6 +56,45 @@ type MonitorState = {
     issue?: { unit?: string; kind?: string; severity?: string };
   }>;
 };
+
+const actorSelect = {
+  id: true,
+  username: true,
+  kind: true,
+  name: true,
+  avatarUpdatedAt: true,
+  agent: { select: { slug: true, name: true, avatar: true } },
+};
+
+type ActivityActorRow = {
+  id: string;
+  username: string;
+  kind: string;
+  name: string | null;
+  avatarUpdatedAt: Date | null;
+  agent: { slug: string; name: string; avatar: string | null } | null;
+};
+
+const systemActor: MessageActor = {
+  id: null,
+  username: "system",
+  kind: "system",
+  name: "System",
+  avatarUpdatedAt: null,
+  agent: null,
+};
+
+function serializeActivityActor(actor: ActivityActorRow | null): MessageActor | null {
+  if (!actor) return null;
+  return {
+    id: actor.id,
+    username: actor.username,
+    kind: actor.kind,
+    name: actor.name,
+    avatarUpdatedAt: actor.avatarUpdatedAt,
+    agent: actor.agent,
+  };
+}
 
 type Snapshot = {
   ts?: number;
@@ -124,13 +164,6 @@ function formatIdle(seconds?: number | null) {
   return `${Math.floor(seconds / 86400)}d`;
 }
 
-function formatTime(value: Date | string | number | null | undefined) {
-  if (!value) return "—";
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return "—";
-  return date.toISOString().slice(0, 19).replace("T", " ");
-}
-
 function formatAge(value: Date | string | number | null | undefined) {
   if (!value) return "unknown age";
   const date = value instanceof Date ? value : new Date(value);
@@ -181,7 +214,7 @@ export default async function AgentsPage() {
       },
       orderBy: { createdAt: "desc" },
       take: 18,
-      include: { user: { select: { username: true } }, task: { select: { title: true } } },
+      include: { user: { select: actorSelect }, task: { select: { title: true } } },
     }),
     readSnapshot(),
     db.task.count({
@@ -243,6 +276,7 @@ export default async function AgentsPage() {
     createdAt: row.createdAt,
     kind: row.kind,
     targetAgent: row.targetAgent,
+    actor: serializeActivityActor(row.user),
     label: describeActivity({
       kind: row.kind,
       payload: row.payload,
@@ -422,11 +456,10 @@ export default async function AgentsPage() {
             <ul className="divide-y divide-[var(--color-line)] text-sm">
               {recentActions.map((action) => (
                 <li key={action.id} className="py-2.5">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <span className="font-medium">{action.label}</span>
-                    <time className="font-mono text-[11px] text-[var(--color-text-muted)]" dateTime={action.createdAt.toISOString()}>
-                      {formatTime(action.createdAt)}
-                    </time>
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <MessageTimestamp value={action.createdAt} />
+                    <MessageAvatar actor={action.actor ?? systemActor} size="sm" />
+                    <span className="min-w-0 flex-1 font-medium">{action.label}</span>
                   </div>
                   <div className="mt-1 flex flex-wrap gap-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
                     <span>{action.kind}</span>

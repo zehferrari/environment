@@ -4,10 +4,22 @@
 // formatting is done from the ISO string slices so output is fully
 // deterministic (no locale/timezone hydration drift).
 
+import { MessageAvatar, type MessageActor } from "@/components/message-avatar";
+
 export type AgendaItem = {
   id: string;
   createdAt: string; // ISO 8601
   label: string;
+  actor?: MessageActor | null;
+};
+
+const systemActor: MessageActor = {
+  id: null,
+  username: "system",
+  kind: "system",
+  name: "System",
+  avatarUpdatedAt: null,
+  agent: null,
 };
 
 const MONTHS = [
@@ -65,13 +77,14 @@ export default function ActivityAgenda({
           </h3>
           <ul className="space-y-1.5">
             {group.items.map((item) => (
-              <li key={item.id} className="flex items-baseline gap-3">
+              <li key={item.id} className="flex items-center gap-3">
                 <time
                   dateTime={item.createdAt}
                   className="w-12 shrink-0 text-right text-xs font-medium tabular-nums text-[var(--color-accent)]"
                 >
                   {item.createdAt.slice(11, 16)}
                 </time>
+                <MessageAvatar actor={item.actor ?? systemActor} size="sm" />
                 <span className="text-sm leading-snug">{item.label}</span>
               </li>
             ))}

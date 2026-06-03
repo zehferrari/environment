@@ -1,8 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { verifyTaskChatReplyToken } from "@/lib/agents/task-chat-token";
 import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
-import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
+import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
+import { tryCompleteTaskFromReviewerComment } from "@/lib/tasks/review-automation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -209,7 +211,17 @@ export async function POST(
     return { id: created.id, channel: "chat" as const };
   });
 
-  if (reply.channel === "comment") {
+  const reviewAutomation = reply.channel === "comment"
+    ? await tryCompleteTaskFromReviewerComment({
+        taskId,
+        commentId: reply.id,
+        body,
+        agentUserId: agent.user.id,
+        agentSlug,
+      })
+    : null;
+
+  if (reply.channel === "comment" && !reviewAutomation?.completed) {
     await sendTaskCommentNotifications({
       taskId,
       commentId: reply.id,
@@ -224,5 +236,18 @@ export async function POST(
   }
 
   revalidateTaskReplyScope(taskId, reply.channel);
-  return NextResponse.json({ ok: true, id: reply.id, channel: reply.channel });
+  if (reviewAutomation?.completed) {
+    revalidateTaskShell(taskId);
+    if (reviewAutomation.nextTask) {
+      revalidateTaskShell(reviewAutomation.nextTask.id);
+      revalidatePath(`/projects/${reviewAutomation.nextTask.projectSlug}/tasks/${reviewAutomation.nextTask.id}`);
+    }
+    revalidatePath(`/projects/${reviewAutomation.projectSlug}`);
+  }
+  return NextResponse.json({
+    ok: true,
+    id: reply.id,
+    channel: reply.channel,
+    reviewAutomation,
+  });
 }

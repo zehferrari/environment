@@ -9,10 +9,12 @@ import {
 } from "@/lib/workflow";
 import { reorderTasks } from "@/lib/tasks/reorder";
 import { listAssignablePrincipals } from "@/lib/principals";
-import { resolveDoneTtlDays } from "@/lib/settings/system";
 import { binTask } from "@/lib/bin/actions";
 import { sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
+import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
+import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
 import { COLUMNS, COLUMN_IDS } from "./columns";
@@ -47,6 +49,30 @@ function serializeActor(actor: ActorRow | null) {
   };
 }
 
+type SerializedActor = NonNullable<ReturnType<typeof serializeActor>>;
+type TaskActivityActorRow = {
+  taskId: string | null;
+  kind: string;
+  user: ActorRow | null;
+};
+
+function buildTaskActivityActorMaps(rows: TaskActivityActorRow[]) {
+  const createdBy = new Map<string, SerializedActor>();
+  const updatedBy = new Map<string, SerializedActor>();
+
+  for (const row of rows) {
+    if (!row.taskId || !row.user) continue;
+    const actor = serializeActor(row.user);
+    if (!actor) continue;
+    if (!updatedBy.has(row.taskId)) updatedBy.set(row.taskId, actor);
+    if (row.kind === "task.create" && !createdBy.has(row.taskId)) {
+      createdBy.set(row.taskId, actor);
+    }
+  }
+
+  return { createdBy, updatedBy };
+}
+
 async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
   const session = await auth();
   const id = session?.user?.id;
@@ -69,7 +95,7 @@ async function createTask(formData: FormData) {
   const reviewerRaw = String(formData.get("actingManagerId") ?? "");
 
   const maxRank = await db.task.aggregate({
-    where: { projectId, status: "Backlog", deletedAt: null },
+    where: { projectId, status: "Backlog", archivedAt: null, deletedAt: null },
     _max: { rank: true },
   });
 
@@ -79,12 +105,13 @@ async function createTask(formData: FormData) {
   let epicDefaults: { branchName: string | null; commitPrefix: string | null } | null = null;
   if (epicId) {
     const epic = await db.epic.findFirst({
-      where: { id: epicId, projectId, deletedAt: null },
+      where: { id: epicId, projectId, archivedAt: null, deletedAt: null },
       select: { id: true, branchName: true, commitPrefix: true },
     });
     if (!epic) epicId = null;
     else epicDefaults = epic;
   }
+  const taskTitle = epicId ? await nextEpicTaskTitle(epicId, title) : title;
 
   // Assignee / reviewer come pre-selected (to the project defaults) from
   // the modal, so the submitted value is authoritative. Empty = unset.
@@ -94,7 +121,8 @@ async function createTask(formData: FormData) {
   const task = await db.task.create({
     data: {
       projectId,
-      title,
+      workItemKey: await allocateWorkItemKey(projectId),
+      title: taskTitle,
       description,
       status: "Backlog",
       rank: (maxRank._max.rank ?? 0) + 1,
@@ -127,7 +155,7 @@ async function createTask(formData: FormData) {
       reason: "backlog_plan_requested",
       body: [
         `You have been assigned to "${task.title}" while it is in Backlog.`,
-        "Read the full task context and existing comments. Post a concise task comment with your implementation plan or opinion.",
+        "Read the full task context and existing comments. Post one concise technical implementation plan in Action Plan.",
         "Do not change task status and do not start work until the task is moved to To Do.",
       ].join("\n"),
     });
@@ -169,7 +197,9 @@ async function moveTask(
       assigneeId: true,
       actingManagerId: true,
       reporterId: true,
+      approvedOn: true,
       deletedAt: true,
+      project: { select: { onlyReportersCanSetTasksDone: true } },
       epic: { select: { status: true, actingManagerId: true } },
     },
   });
@@ -186,9 +216,47 @@ async function moveTask(
   if (!check.ok) {
     return { ok: false, code: check.code, message: check.message };
   }
+  if (status === "In Progress" && !current.approvedOn) {
+    return {
+      ok: false,
+      code: "EXPLICIT_USER_ACTION_REQUIRED",
+      message: "Action Plan must be approved before this task can move to In Progress.",
+    };
+  }
+
+  if (current.status === "Review" && status === "Done") {
+    const actorUser = await db.user.findUnique({
+      where: { id: actor.id },
+      select: { username: true },
+    });
+    const completion = await completeReviewedTaskAndAssignNext({
+      taskId,
+      actor: {
+        id: actor.id,
+        username: actorUser?.username ?? "unknown",
+        kind: actor.kind,
+      },
+      via: "board-move",
+      requireReviewerUserId: actor.id,
+    });
+    if (!completion.completed) {
+      return {
+        ok: false,
+        code: "EXPLICIT_USER_ACTION_REQUIRED",
+        message: current.project.onlyReportersCanSetTasksDone
+          ? "Only the task reporter can move Review to Done for this project."
+          : "Only the resolved reviewer, Open Epic manager, or reporter fallback can move Review to Done.",
+      };
+    }
+    revalidatePath(`/projects/${slug}`);
+    if (completion.nextTask) {
+      revalidatePath(`/projects/${slug}/tasks/${completion.nextTask.id}`);
+    }
+    return { ok: true };
+  }
 
   const maxRank = await db.task.aggregate({
-    where: { status, deletedAt: null },
+    where: { status, archivedAt: null, deletedAt: null },
     _max: { rank: true },
   });
   await db.$transaction([
@@ -211,16 +279,23 @@ async function moveTask(
     }),
   ]);
   if (status === "To Do" && current.assigneeId) {
+    const approved = Boolean(current.approvedOn);
     await sendTaskWorkflowNotification({
       taskId,
       targetUserId: current.assigneeId,
       actor,
       reason: "todo_start_required",
-      body: [
-        `Task "${current.title}" is now in To Do and assigned to you.`,
-        "Read the full task context, move it to In Progress through the workflow endpoint, and start work immediately.",
-        "Do not post a visible acknowledgement unless you have new task information to add.",
-      ].join("\n"),
+      body: approved
+        ? [
+            `Task "${current.title}" is now in To Do and assigned to you.`,
+            "The Action Plan is approved. Move it to In Progress through the workflow endpoint and start work immediately.",
+            "Do not post a visible acknowledgement unless you have new task information to add.",
+          ].join("\n")
+        : [
+            `Task "${current.title}" is now in To Do and assigned to you.`,
+            "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
+            "Do not move it to In Progress until approved_on is set.",
+          ].join("\n"),
     });
   }
   if (status === "Review") {
@@ -252,7 +327,7 @@ export default async function ProjectBoardPage({
     where: { slug, deletedAt: null },
     include: {
       tasks: {
-        where: { deletedAt: null },
+        where: { deletedAt: null, archivedAt: null, parentTaskId: null },
         orderBy: [{ status: "asc" }, { rank: "asc" }],
         include: {
           reporter: { select: actorSelect },
@@ -270,28 +345,29 @@ export default async function ProjectBoardPage({
   });
   if (!project) notFound();
 
-  // Done-column TTL filter: keep Done tasks only if statusChangedAt is
-  // within doneTtlDays of now. Other columns pass through unchanged.
-  // statusChangedAt is null for rows that pre-date the migration; treat
-  // null as "recently touched" so legacy Done items aren't auto-hidden.
-  const doneTtlDays = await resolveDoneTtlDays(project.doneTtlDays);
-  const doneCutoff = new Date(Date.now() - doneTtlDays * 24 * 60 * 60 * 1000);
-  const filteredTasks = project.tasks.filter((t) => {
-    if (t.status !== "Done") return true;
-    if (!t.statusChangedAt) return true;
-    return t.statusChangedAt >= doneCutoff;
-  });
-
   // Data for the New Task modal: principals for assignee/reviewer pickers,
   // live epics for the Epic combobox.
-  const [principals, epicOptions] = await Promise.all([
+  const filteredTaskIds = project.tasks.map((task) => task.id);
+  const [principals, epicOptions, taskActivityRows] = await Promise.all([
     listAssignablePrincipals(),
     db.epic.findMany({
-      where: { projectId: project.id, status: { not: "Archive" }, deletedAt: null },
+      where: { projectId: project.id, archivedAt: null, deletedAt: null },
       orderBy: [{ status: "asc" }, { title: "asc" }],
       select: { id: true, title: true },
     }),
+    filteredTaskIds.length > 0
+      ? db.activityLog.findMany({
+          where: { taskId: { in: filteredTaskIds } },
+          orderBy: { createdAt: "desc" },
+          select: {
+            taskId: true,
+            kind: true,
+            user: { select: actorSelect },
+          },
+        })
+      : Promise.resolve([]),
   ]);
+  const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows);
 
   async function reorderBoardTasks(orderedIds: string[]): Promise<void> {
     "use server";
@@ -304,17 +380,22 @@ export default async function ProjectBoardPage({
       <Board
         projectSlug={project.slug}
         columns={COLUMNS}
-        tasks={filteredTasks.map((t) => ({
+        tasks={project.tasks.map((t) => ({
           id: t.id,
+          workItemKey: t.workItemKey ?? null,
           title: t.title,
           status: t.status,
           rank: t.rank,
           createdAt: t.createdAt.toISOString(),
           updatedAt: t.updatedAt.toISOString(),
+          statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
+          approvedOn: t.approvedOn?.toISOString() ?? null,
           reporter: serializeActor(t.reporter),
           assignee: serializeActor(t.assignee),
           reviewer: serializeActor(t.actingManager),
           manager: serializeActor(t.epic?.actingManager ?? null),
+          createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter),
+          updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter),
           epicTitle: t.epic?.title ?? null,
         }))}
         moveTaskAction={moveTask}

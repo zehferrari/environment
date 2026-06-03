@@ -12,12 +12,41 @@ import {
   runPmChannelWorkerOnce,
   sendOrQueueOpenClawPmChannelTurn,
 } from "@/lib/agents/pm-channel-jobs";
+import { extractActionPlanSteps } from "@/lib/tasks/action-plan-subtasks";
 
 process.env.PM_ASYNC_DISPATCH = "1";
 process.env.PM_ASYNC_DISPATCH_INLINE_NUDGE = "0";
 process.env.PM_CHANNEL_JOB_MAX_ATTEMPTS = "2";
 
 async function main() {
+  assert.deepEqual(
+    extractActionPlanSteps([
+      "## Action Plan",
+      "### Inputs",
+      "- Client type",
+      "- Geography",
+      "### Rule logic",
+      "- Hard override rules",
+      "### Deliverables",
+      "- Migration for risk tables.",
+      "- Engine service with rating tests.",
+      "- All commits prefixed greenID.",
+    ].join("\n")),
+    [
+      "Migration for risk tables",
+      "Engine service with rating tests",
+    ],
+  );
+  assert.deepEqual(
+    extractActionPlanSteps([
+      "## Action Plan",
+      "- Read files",
+      "- Patch code",
+      "- Test",
+    ].join("\n")),
+    [],
+  );
+
   const nonce = `p0-${Date.now()}`;
   const target = {
     kind: "direct" as const,

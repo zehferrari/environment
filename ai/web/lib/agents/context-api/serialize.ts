@@ -16,6 +16,7 @@
 // caps, page via ?before=<isoTimestamp> (Phase 2 — not yet implemented).
 
 import { db } from "@/lib/db";
+import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 
 // Generous caps — 99th-percentile tasks fit comfortably. PM database is
 // SQLite, all on local NVMe; reading 2k rows is sub-100ms.
@@ -31,6 +32,21 @@ type ActorLite = { username: string | null; kind: string | null } | null;
 function actor(u: ActorLite) {
   if (!u || !u.username) return null;
   return { username: u.username, kind: u.kind ?? "human" };
+}
+
+function attachmentDownloadPath(
+  id: string,
+  grant?: string | null,
+  scope?: { type: "task" | "epic"; id: string } | null,
+) {
+  const path = `/api/attachments/${id}`;
+  if (!grant) return path;
+  const params = new URLSearchParams({
+    grant,
+    scopeType: scope?.type ?? "",
+    scopeId: scope?.id ?? "",
+  });
+  return `${path}?${params.toString()}`;
 }
 
 type ParsedActivityPayload = unknown;
@@ -50,6 +66,7 @@ function parseActivityPayload(raw: string | null): ParsedActivityPayload {
 export interface TaskContextResponse {
   task: {
     id: string;
+    workItemKey: string | null;
     title: string;
     status: string;
     description: string | null;
@@ -71,6 +88,7 @@ export interface TaskContextResponse {
   };
   epic: null | {
     id: string;
+    workItemKey: string | null;
     title: string;
     status: string;
     description: string | null;
@@ -112,6 +130,7 @@ export interface TaskContextResponse {
     sizeBytes: number;
     uploader: ReturnType<typeof actor>;
     createdAt: string;
+    scope?: "task" | "epic";
     downloadPath: string;
   }>;
   /**
@@ -148,12 +167,15 @@ export interface TaskContextResponse {
   };
 }
 
-export async function buildTaskContextJson(taskId: string): Promise<TaskContextResponse | null> {
+export async function buildTaskContextJson(
+  taskId: string,
+  opts: { attachmentGrant?: string | null } = {},
+): Promise<TaskContextResponse | null> {
   const task = await db.task.findUnique({
-    where: { id: taskId, deletedAt: null },
+    where: { id: taskId, archivedAt: null, deletedAt: null },
     select: {
       id: true, title: true, status: true, description: true, branchName: true,
-      commitPrefix: true, createdAt: true, updatedAt: true,
+      commitPrefix: true, workItemKey: true, createdAt: true, updatedAt: true,
       project: {
         select: {
           id: true, slug: true, name: true, description: true,
@@ -162,7 +184,7 @@ export async function buildTaskContextJson(taskId: string): Promise<TaskContextR
       },
       epic: {
         select: {
-          id: true, title: true, status: true, description: true,
+          id: true, workItemKey: true, title: true, status: true, description: true,
           branchName: true, commitPrefix: true,
           assignee: { select: { username: true, kind: true } },
           actingManager: { select: { username: true, kind: true } },
@@ -170,7 +192,7 @@ export async function buildTaskContextJson(taskId: string): Promise<TaskContextR
       },
       parent: { select: { id: true, title: true, status: true } },
       subtasks: {
-        where: { deletedAt: null },
+        where: { archivedAt: null, deletedAt: null },
         orderBy: [{ status: "asc" }, { rank: "asc" }, { createdAt: "asc" }],
         select: {
           id: true, title: true, status: true,
@@ -184,7 +206,7 @@ export async function buildTaskContextJson(taskId: string): Promise<TaskContextR
   });
   if (!task) return null;
 
-  const [comments, liveChats, activity, attachments] = await Promise.all([
+  const [comments, liveChats, activity, taskAttachments, epicAttachments] = await Promise.all([
     db.comment.findMany({
       where: { taskId, deletedAt: null },
       orderBy: { createdAt: "asc" },
@@ -223,6 +245,18 @@ export async function buildTaskContextJson(taskId: string): Promise<TaskContextR
         uploader: { select: { username: true, kind: true } },
       },
     }),
+    task.epic
+      ? db.attachment.findMany({
+          where: { epicId: task.epic.id },
+          orderBy: { createdAt: "asc" },
+          take: MAX_ATTACHMENTS,
+          select: {
+            id: true, filename: true, mimeType: true, sizeBytes: true,
+            createdAt: true,
+            uploader: { select: { username: true, kind: true } },
+          },
+        })
+      : Promise.resolve([]),
   ]);
 
   // Archive chain (active room's ancestors), walked by baseArchiveId from
@@ -279,11 +313,15 @@ export async function buildTaskContextJson(taskId: string): Promise<TaskContextR
   return {
     task: {
       id: task.id,
+      workItemKey: task.workItemKey,
       title: task.title,
       status: task.status,
       description: task.description,
       branchName: task.branchName,
-      commitPrefix: task.commitPrefix,
+      commitPrefix: effectiveCommitPrefix({
+        commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
+        workItemKey: task.workItemKey,
+      }),
       createdAt: task.createdAt.toISOString(),
       updatedAt: task.updatedAt.toISOString(),
       assignee: actor(task.assignee),
@@ -301,11 +339,15 @@ export async function buildTaskContextJson(taskId: string): Promise<TaskContextR
     epic: task.epic
       ? {
           id: task.epic.id,
+          workItemKey: task.epic.workItemKey,
           title: task.epic.title,
           status: task.epic.status,
           description: task.epic.description,
           branchName: task.epic.branchName,
-          commitPrefix: task.epic.commitPrefix,
+          commitPrefix: effectiveCommitPrefix({
+            commitPrefix: task.epic.commitPrefix,
+            workItemKey: task.epic.workItemKey,
+          }),
           assignee: actor(task.epic.assignee),
           actingManager: actor(task.epic.actingManager),
         }
@@ -353,15 +395,34 @@ export async function buildTaskContextJson(taskId: string): Promise<TaskContextR
       targetAgent: a.targetAgent,
       payload: parseActivityPayload(a.payload),
     })),
-    attachments: attachments.map((a) => ({
-      id: a.id,
-      filename: a.filename,
-      mimeType: a.mimeType,
-      sizeBytes: a.sizeBytes,
-      uploader: actor(a.uploader),
-      createdAt: a.createdAt.toISOString(),
-      downloadPath: `/api/attachments/${a.id}`,
-    })),
+    attachments: [
+      ...taskAttachments.map((a) => ({
+        id: a.id,
+        filename: a.filename,
+        mimeType: a.mimeType,
+        sizeBytes: a.sizeBytes,
+        uploader: actor(a.uploader),
+        createdAt: a.createdAt.toISOString(),
+        scope: "task" as const,
+        downloadPath: attachmentDownloadPath(a.id, opts.attachmentGrant, {
+          type: "task",
+          id: taskId,
+        }),
+      })),
+      ...epicAttachments.map((a) => ({
+        id: a.id,
+        filename: a.filename,
+        mimeType: a.mimeType,
+        sizeBytes: a.sizeBytes,
+        uploader: actor(a.uploader),
+        createdAt: a.createdAt.toISOString(),
+        scope: "epic" as const,
+        downloadPath: attachmentDownloadPath(a.id, opts.attachmentGrant, {
+          type: "task",
+          id: taskId,
+        }),
+      })),
+    ],
     currentThread: liveChats.slice(-5).map((m) => ({
       id: m.id,
       createdAt: m.createdAt.toISOString(),
@@ -391,6 +452,7 @@ export async function buildTaskContextJson(taskId: string): Promise<TaskContextR
 export interface EpicContextResponse {
   epic: {
     id: string;
+    workItemKey: string | null;
     title: string;
     status: string;
     description: string | null;
@@ -405,6 +467,7 @@ export interface EpicContextResponse {
   project: TaskContextResponse["project"];
   tasks: Array<{
     id: string;
+    workItemKey: string | null;
     title: string;
     status: string;
     assignee: ReturnType<typeof actor>;
@@ -417,12 +480,15 @@ export interface EpicContextResponse {
   meta: TaskContextResponse["meta"];
 }
 
-export async function buildEpicContextJson(epicId: string): Promise<EpicContextResponse | null> {
+export async function buildEpicContextJson(
+  epicId: string,
+  opts: { attachmentGrant?: string | null } = {},
+): Promise<EpicContextResponse | null> {
   const epic = await db.epic.findUnique({
-    where: { id: epicId, deletedAt: null },
+    where: { id: epicId, archivedAt: null, deletedAt: null },
     select: {
       id: true, title: true, status: true, description: true, branchName: true,
-      commitPrefix: true, createdAt: true, updatedAt: true,
+      commitPrefix: true, workItemKey: true, createdAt: true, updatedAt: true,
       project: {
         select: {
           id: true, slug: true, name: true, description: true,
@@ -433,10 +499,10 @@ export async function buildEpicContextJson(epicId: string): Promise<EpicContextR
       actingManager: { select: { username: true, kind: true } },
       reporter: { select: { username: true, kind: true } },
       tasks: {
-        where: { deletedAt: null },
-        orderBy: [{ status: "asc" }, { rank: "asc" }, { createdAt: "asc" }],
+        where: { archivedAt: null, deletedAt: null, parentTaskId: null },
+        orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
         select: {
-          id: true, title: true, status: true,
+          id: true, workItemKey: true, title: true, status: true,
           assignee: { select: { username: true, kind: true } },
         },
       },
@@ -479,11 +545,15 @@ export async function buildEpicContextJson(epicId: string): Promise<EpicContextR
   return {
     epic: {
       id: epic.id,
+      workItemKey: epic.workItemKey,
       title: epic.title,
       status: epic.status,
       description: epic.description,
       branchName: epic.branchName,
-      commitPrefix: epic.commitPrefix,
+      commitPrefix: effectiveCommitPrefix({
+        commitPrefix: epic.commitPrefix,
+        workItemKey: epic.workItemKey,
+      }),
       createdAt: epic.createdAt.toISOString(),
       updatedAt: epic.updatedAt.toISOString(),
       assignee: actor(epic.assignee),
@@ -500,6 +570,7 @@ export async function buildEpicContextJson(epicId: string): Promise<EpicContextR
     },
     tasks: epic.tasks.map((t) => ({
       id: t.id,
+      workItemKey: t.workItemKey,
       title: t.title,
       status: t.status,
       assignee: actor(t.assignee),
@@ -527,7 +598,11 @@ export async function buildEpicContextJson(epicId: string): Promise<EpicContextR
       sizeBytes: a.sizeBytes,
       uploader: actor(a.uploader),
       createdAt: a.createdAt.toISOString(),
-      downloadPath: `/api/attachments/${a.id}`,
+      scope: "epic",
+      downloadPath: attachmentDownloadPath(a.id, opts.attachmentGrant, {
+        type: "epic",
+        id: epicId,
+      }),
     })),
     currentThread: liveChats.slice(-5).map((m) => ({
       id: m.id,
@@ -561,6 +636,7 @@ export interface ProjectContextResponse {
   principals: Array<{ id: string; username: string; kind: string }>;
   epics: Array<{
     id: string;
+    workItemKey: string | null;
     title: string;
     status: string;
     description: string | null;
@@ -571,6 +647,7 @@ export interface ProjectContextResponse {
   }>;
   openTasks: Array<{
     id: string;
+    workItemKey: string | null;
     title: string;
     status: string;
     epicId: string | null;
@@ -590,26 +667,27 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
       id: true, slug: true, name: true, description: true,
       readmePath: true, repositoryPath: true,
       defaultGitUserName: true, defaultGitUserEmail: true,
+      workItemKeyPrefix: true,
     },
   });
   if (!project) return null;
 
   const [epics, openTasks, principals] = await Promise.all([
     db.epic.findMany({
-      where: { projectId, deletedAt: null },
+      where: { projectId, archivedAt: null, deletedAt: null },
       orderBy: [{ status: "asc" }, { createdAt: "asc" }],
       select: {
-        id: true, title: true, status: true, description: true,
+        id: true, workItemKey: true, title: true, status: true, description: true,
         branchName: true, commitPrefix: true,
         assignee: { select: { username: true, kind: true } },
         actingManager: { select: { username: true, kind: true } },
       },
     }),
     db.task.findMany({
-      where: { projectId, status: { not: "Done" }, deletedAt: null },
-      orderBy: [{ status: "asc" }, { rank: "asc" }, { createdAt: "asc" }],
+      where: { projectId, parentTaskId: null, status: { not: "Done" }, archivedAt: null, deletedAt: null },
+      orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
       select: {
-        id: true, title: true, status: true, epicId: true, parentTaskId: true,
+        id: true, workItemKey: true, title: true, status: true, epicId: true, parentTaskId: true,
         branchName: true, commitPrefix: true,
         assignee: { select: { username: true, kind: true } },
         actingManager: { select: { username: true, kind: true } },
@@ -638,16 +716,18 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
     principals: principals.map((p) => ({ id: p.id, username: p.username, kind: p.kind })),
     epics: epics.map((e) => ({
       id: e.id,
+      workItemKey: e.workItemKey,
       title: e.title,
       status: e.status,
       description: e.description,
       branchName: e.branchName,
-      commitPrefix: e.commitPrefix,
+      commitPrefix: effectiveCommitPrefix({ commitPrefix: e.commitPrefix, workItemKey: e.workItemKey }),
       assignee: actor(e.assignee),
       actingManager: actor(e.actingManager),
     })),
     openTasks: openTasks.map((t) => ({
       id: t.id,
+      workItemKey: t.workItemKey,
       title: t.title,
       status: t.status,
       epicId: t.epicId,
@@ -655,11 +735,11 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
       assignee: actor(t.assignee),
       actingManager: actor(t.actingManager),
       branchName: t.branchName,
-      commitPrefix: t.commitPrefix,
+      commitPrefix: effectiveCommitPrefix({ commitPrefix: t.commitPrefix, workItemKey: t.workItemKey }),
     })),
     meta: {
       fetchedAt: new Date().toISOString(),
-      note: "Only OPEN tasks (status != Done) are listed. Use the task endpoint for full per-task detail.",
+      note: "Only top-level open tasks (status != Done, parentTaskId null) are listed. Use the task endpoint for full per-task and sub-task detail.",
     },
   };
 }

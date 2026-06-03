@@ -34,8 +34,10 @@ export async function POST(
       id: true,
       status: true,
       assigneeId: true,
+      approvedOn: true,
       projectId: true,
       title: true,
+      workItemKey: true,
       project: { select: { slug: true } },
     },
   });
@@ -54,6 +56,14 @@ export async function POST(
       taskId: task.id,
       status: task.status as TaskStatus,
       transitioned: false,
+    });
+  }
+  if (!task.approvedOn) {
+    return NextResponse.json({
+      taskId: task.id,
+      status: task.status as TaskStatus,
+      transitioned: false,
+      reason: "action_plan_not_approved",
     });
   }
 
@@ -92,7 +102,7 @@ export async function POST(
         actor: { id: userId, kind },
         task: {
           id: task.id,
-          key: task.id,
+          key: task.workItemKey ?? task.id,
           projectKey: task.project.slug,
           title: task.title,
         },

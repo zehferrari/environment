@@ -41,10 +41,14 @@ model User {
   assignedTasks               Task[]               @relation("TaskAssignee")
   actingManagerOf             Task[]               @relation("TaskActingManager")
   reportedTasks               Task[]               @relation("TaskReporter")
+  approvedTasks               Task[]               @relation("TaskApprovedBy")
+  archivedTasks               Task[]               @relation("TaskArchivedBy")
   deletedTasks                Task[]               @relation("TaskDeletedBy")
   assignedEpics               Epic[]               @relation("EpicAssignee")
   actingManagerOfEpic         Epic[]               @relation("EpicActingManager")
   reportedEpics               Epic[]               @relation("EpicReporter")
+  approvedEpics               Epic[]               @relation("EpicApprovedBy")
+  archivedEpics               Epic[]               @relation("EpicArchivedBy")
   deletedEpics                Epic[]               @relation("EpicDeletedBy")
   comments                    Comment[]
   deletedComments             Comment[]            @relation("CommentDeletedBy")
@@ -132,11 +136,15 @@ model Project {
   readmePath  String?
   archivedAt  DateTime?
   // Project settings tab fields. Repo + git identity drive agent
-  // commits; defaults seed Task pickers; doneTtlDays hides aged Done
-  // tasks from the board view.
+  // commits; defaults seed Task pickers; doneTtlDays controls automatic
+  // archiving of aged Done tasks.
   repositoryPath      String?
   defaultGitUserName  String?
   defaultGitUserEmail String?
+  workItemKeyPrefix   String? @unique @map("work_item_key_prefix")
+  nextWorkItemNumber  Int     @default(1) @map("next_work_item_number")
+  onlyReportersCanApproveActionPlans Boolean @default(false) @map("only_reporters_can_approve_action_plans")
+  onlyReportersCanSetTasksDone       Boolean @default(false) @map("only_reporters_can_set_tasks_done")
   defaultAssigneeId   String?
   defaultAssignee     User?     @relation("ProjectDefaultAssignee", fields: [defaultAssigneeId], references: [id])
   defaultReviewerId   String?
@@ -182,8 +190,9 @@ model Epic {
   projectId       String
   project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   title           String
+  workItemKey     String?  @unique @map("work_item_key")
   description     String?
-  status          String   @default("Backlog") // "Backlog" | "Open" | "Done" | "Archive"
+  status          String   @default("Backlog") // "Backlog" | "Open" | "Done"
   statusChangedAt DateTime?
   // Epic-level assignee + acting manager. Independent of any Task's
   // assignee/actingManager — an Epic can be owned by one agent while its
@@ -196,6 +205,12 @@ model Epic {
   actingManager   User?    @relation("EpicActingManager", fields: [actingManagerId], references: [id])
   reporterId      String?
   reporter        User?    @relation("EpicReporter", fields: [reporterId], references: [id])
+  approvedOn      DateTime? @map("approved_on")
+  approvedById    String?   @map("approved_by")
+  approvedBy      User?     @relation("EpicApprovedBy", fields: [approvedById], references: [id])
+  archivedAt      DateTime? @map("archived_at")
+  archivedById    String?   @map("archived_by")
+  archivedBy      User?     @relation("EpicArchivedBy", fields: [archivedById], references: [id])
   // Epic-level git defaults inherited by child Tasks when their own fields
   // are blank. Task keeps its own branchName/commitPrefix once overridden.
   branchName      String?
@@ -217,11 +232,15 @@ model Epic {
   chatRoomArchives AgentChatRoomArchive[] @relation("EpicChatRoomArchive")
 
   @@index([projectId])
+  @@index([workItemKey])
   @@index([status])
   @@index([statusChangedAt])
   @@index([assigneeId])
   @@index([actingManagerId])
   @@index([reporterId])
+  @@index([approvedById])
+  @@index([archivedAt])
+  @@index([archivedById])
   @@index([deletedAt])
 }
 
@@ -239,6 +258,7 @@ model Task {
   parent          Task?    @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
   subtasks        Task[]   @relation("TaskSubtasks")
   title           String
+  workItemKey     String?  @unique @map("work_item_key")
   description     String?
   // Status uses the verbatim Stage 0 labels — no Jira aliases.
   // Backlog | To Do | In Progress | Review | Done
@@ -253,11 +273,17 @@ model Task {
   actingManager   User?    @relation("TaskActingManager", fields: [actingManagerId], references: [id])
   reporterId      String?
   reporter        User?    @relation("TaskReporter", fields: [reporterId], references: [id])
+  approvedOn      DateTime? @map("approved_on")
+  approvedById    String?   @map("approved_by")
+  approvedBy      User?     @relation("TaskApprovedBy", fields: [approvedById], references: [id])
+  archivedAt      DateTime? @map("archived_at")
+  archivedById    String?   @map("archived_by")
+  archivedBy      User?     @relation("TaskArchivedBy", fields: [archivedById], references: [id])
   // Lexorank-style ordering within column; simple Int for v1.
   rank            Int      @default(0)
-  // Set on every status transition; drives the Done-column TTL filter
-  // (hide Done tasks older than project.doneTtlDays) so plain updates
-  // to title/description don't reset the clock.
+  // Set on every status transition; drives automatic archiving of Done
+  // tasks after project.doneTtlDays so plain updates to title/description
+  // don't reset the clock.
   statusChangedAt DateTime?
   // Free-text branch name the agent will use for commits on this task.
   branchName      String?
@@ -281,12 +307,16 @@ model Task {
   chatRoomArchives AgentChatRoomArchive[] @relation("TaskChatRoomArchive")
 
   @@index([projectId])
+  @@index([workItemKey])
   @@index([status])
   @@index([epicId])
   @@index([assigneeId])
   @@index([parentTaskId])
   @@index([actingManagerId])
   @@index([reporterId])
+  @@index([approvedById])
+  @@index([archivedAt])
+  @@index([archivedById])
   @@index([deletedAt])
 }
 
@@ -776,7 +806,7 @@ model WorkItemProposal {
 // System-wide settings — a single row (id "system") holding the global
 // fallbacks used when a project leaves the matching field blank:
 //   - defaultGitUserName / defaultGitUserEmail → project git identity
-//   - doneTtlDays → project Done-column TTL (a null project value inherits)
+//   - doneTtlDays → automatic archive days (a null project value inherits)
 //   - binTtlDays → days before ANY soft-delete bin (Task/Epic, Project,
 //     direct-chat) is auto-emptied; overrides the PM_*_BIN_TTL_DAYS env
 //     defaults when set.

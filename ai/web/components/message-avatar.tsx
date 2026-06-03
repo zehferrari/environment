@@ -30,6 +30,7 @@ function agentAvatarUrl(name: string) {
 }
 
 export function actorDisplayName(actor: MessageActor) {
+  if (actor.kind === "system") return actor.name ?? "System";
   if (actor.kind === "agent") {
     return actor.agent?.name ?? actor.name ?? actor.username;
   }
@@ -60,6 +61,18 @@ export function MessageAvatar({
   actor: MessageActor;
   size?: "sm" | "md";
 }) {
+  if (actor.kind === "system") {
+    return (
+      <div
+        className={`${size === "sm" ? "h-7 w-7 text-[11px]" : "h-9 w-9 text-xs"} grid shrink-0 place-items-center overflow-hidden rounded-lg bg-[var(--color-accent)] font-bold text-white shadow-sm`}
+        title={actorDisplayName(actor)}
+        aria-label={`${actorDisplayName(actor)} avatar`}
+      >
+        Z
+      </div>
+    );
+  }
+
   const src = actorAvatarSrc(actor);
   const label = actorDisplayName(actor);
   const sizeClass = size === "sm" ? "h-7 w-7 text-[11px]" : "h-9 w-9 text-xs";

@@ -10,6 +10,7 @@ import {
   type DirectedDescriptor,
 } from "@/lib/agents/directed-targets";
 import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
+import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
 // from agent.role. Coding agents (can_modify_code=true) get the 1M-token
@@ -54,10 +55,13 @@ export type AgentContextPacket = {
     } | null;
     task: {
       id: string;
+      workItemKey: string | null;
       title: string;
       status: string;
       description: string | null;
       branchName: string | null;
+      commitPrefix: string | null;
+      approvedOn: string | null;
       createdAt: string;
       updatedAt: string;
       assignee: string;
@@ -327,8 +331,13 @@ export function buildTaskNativeChannelPrompt(
     `You have a PM message on task "${taskTitle}", addressed to @${slug}.`,
     "This turn arrived through the native OpenClaw PM channel.",
     "Golden rule: only create a visible PM reply when you have new information, a concrete action result, a required plan, review feedback, a blocker, or a necessary question.",
-    `If you have no contribution to add, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else. PM will mark the turn complete without creating a visible comment.`,
+    `If you have no contribution to add, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else. PM will mark the turn complete without creating a visible comment. Never include this token inside another sentence.`,
     "Do not post acknowledgements, restatements, progress filler, or 'nothing to add' comments.",
+    "Do not post workflow-status acknowledgements like 'task moved to Review' after calling a workflow endpoint.",
+    "When you do post visibly, consolidate related blockers/findings/questions into one concise comment. Do not post one comment per minor issue.",
+    "For straightforward implementation tasks, do not debate the implementation in comments. Start the task, complete it, and post one concise ready-for-review note through the workflow.",
+    "If you are the reviewer and approve the task, use the workflow review_done action instead of an approval-only visible comment.",
+    "Latest explicit human, reviewer, or acting-manager instruction wins over older agent discussion. Correct yourself silently unless a visible correction is required.",
     "Markdown formatting in your reply is welcome.",
   ];
   if (contextAccess) {
@@ -381,10 +390,13 @@ export async function buildTaskAgentContextPacket(args: {
     where: { id: args.taskId },
     select: {
       id: true,
+      workItemKey: true,
       title: true,
       status: true,
       description: true,
       branchName: true,
+      commitPrefix: true,
+      approvedOn: true,
       createdAt: true,
       updatedAt: true,
       project: {
@@ -399,9 +411,11 @@ export async function buildTaskAgentContextPacket(args: {
       epic: {
         select: {
           id: true,
+          workItemKey: true,
           title: true,
           status: true,
           description: true,
+          commitPrefix: true,
           assignee: { select: { username: true, kind: true } },
           actingManager: { select: { username: true, kind: true } },
           attachments: {
@@ -424,7 +438,7 @@ export async function buildTaskAgentContextPacket(args: {
       assignee: { select: { username: true, kind: true } },
       actingManager: { select: { username: true, kind: true } },
       subtasks: {
-        where: { deletedAt: null },
+        where: { archivedAt: null, deletedAt: null },
         orderBy: [{ status: "asc" }, { rank: "asc" }, { createdAt: "asc" }],
         take: 25,
         select: {
@@ -462,8 +476,11 @@ export async function buildTaskAgentContextPacket(args: {
         },
       },
       chats: {
-        // Active discussion only, and never soft-deleted bubbles.
-        where: { archiveId: null, deletedAt: null },
+        // Active discussion only, and never soft-deleted bubbles. Comment
+        // notifications are mirrored into AgentChatMessage for delivery;
+        // they stay out of discussion context to avoid double-rendering
+        // the same task comment as both comment and chat.
+        where: { archiveId: null, deletedAt: null, originChannel: "chat" },
         orderBy: { createdAt: "desc" },
         take: caps.maxLiveChats,
         select: {
@@ -516,10 +533,16 @@ export async function buildTaskAgentContextPacket(args: {
       task: task
         ? {
             id: task.id,
+            workItemKey: task.workItemKey,
             title: task.title,
             status: task.status,
             description: task.description,
             branchName: task.branchName,
+            commitPrefix: effectiveCommitPrefix({
+              commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
+              workItemKey: task.workItemKey,
+            }),
+            approvedOn: formatDate(task.approvedOn),
             createdAt: formatDate(task.createdAt)!,
             updatedAt: formatDate(task.updatedAt)!,
             assignee: actorLabel(task.assignee),
@@ -573,6 +596,7 @@ export async function buildTaskAgentContextPacket(args: {
         where: {
           taskId: args.taskId,
           archiveId: { in: archiveIds },
+          originChannel: "chat",
           // Soft-deleted bubbles inside an archived discussion are
           // also hidden from agent context. HOMELAB-41 / item 2.
           deletedAt: null,
@@ -686,6 +710,32 @@ function renderAttachments(attachments: AttachmentContext[], caps: ContextCaps) 
   return lines;
 }
 
+function renderHotPath(
+  timeline: AgentContextPacket["timeline"],
+  caps: ContextCaps,
+) {
+  const items = timeline
+    .filter((item) => item.type === "comment" || item.type === "chat")
+    .slice(-12);
+  const lines: string[] = [
+    "RECENT PM HOT PATH (latest comments/discussion, oldest to newest):",
+    "Read this first. Latest explicit human, reviewer, or acting-manager correction wins over older agent comments.",
+  ];
+  if (items.length === 0) {
+    lines.push("(none)");
+    return lines;
+  }
+  for (const item of items) {
+    const clipped = clipWithMeta(item.body, Math.min(1600, caps.maxTimelineBody));
+    lines.push(
+      `[${item.createdAt}] ${item.type} ${item.actor} (${item.id}):`,
+      clipped.text,
+      "",
+    );
+  }
+  return lines;
+}
+
 export function renderAgentContextPacket(packet: AgentContextPacket): string {
   const lines = [
     "CURRENT TURN:",
@@ -723,6 +773,8 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
   }
 
   const { project, task, epic, parentTask, subtasks } = packet.snapshot;
+  lines.push(...renderHotPath(packet.timeline, packet.caps), "");
+
   lines.push(
     "PROJECT SNAPSHOT:",
     `Project: ${project.name} (${project.slug})`,
@@ -734,11 +786,13 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
   lines.push(
     "",
     "TASK SNAPSHOT:",
-    `Task: ${task.title} (${task.id})`,
+    `Task: ${task.title} (${task.workItemKey || task.id}; system id: ${task.id})`,
     `Status: ${task.status}`,
     `Assignee: ${task.assignee}`,
     `Reviewer: ${task.reviewer}`,
+    `Action Plan approved_on: ${task.approvedOn || "(not approved)"}`,
     `Branch: ${task.branchName || "(not set)"}`,
+    `Commit prefix: ${task.commitPrefix || "(not set)"}`,
     `Parent: ${parentTask ? `${parentTask.title} (${parentTask.status}, ${parentTask.id})` : "(none)"}`,
     `Created: ${task.createdAt}`,
     `Updated: ${task.updatedAt}`,
@@ -758,7 +812,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     lines.push("(none)");
   }
 
-  lines.push("", "SUBTASKS:");
+  lines.push("", "SUBTASKS (task-local checklist; not Epic implementation sequence):");
   if (subtasks.length === 0) {
     lines.push("(none)");
   } else {
@@ -820,6 +874,11 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     "RESPONSE GUIDANCE:",
     "Use the current turn together with the live PM task, Epic, timeline, and attachment context above. If an attachment is important but only metadata is available, say exactly which attachment needs inspection. Do not invent attachment contents.",
     "You can see EVERY comment and EVERY discussion message above, including messages between other people/agents that were not directed at you. Read them as background and use them in your reasoning.",
+    "Visible PM comments must be direct and consolidated: put all current issues, blockers, findings, and required questions in one comment whenever possible.",
+    "Do not repeat a blocker or decision already present in the recent hot path unless the current turn adds new information or asks for a status update.",
+    "If you are the assignee: before starting a To Do task, make sure your technical Action Plan is posted and approved_on is set. Then move To Do work to In Progress when you start. When implementation is complete, or when you are waiting for reviewer/manager/reporter feedback or response, use the workflow endpoint to move the task to Review with one concise note.",
+    "If your task is in Review because it was waiting for feedback or an external response, and that response has arrived, resume it with workflow action=start, complete the follow-up, then call ready_for_review again. Keep one concise visible note.",
+    "Create task-local subtasks only when you are the assignee, the Task Action Plan is approved, and the Task has no existing child subtasks. Never create subtasks under newly created tasks or under another subtask.",
     `If the current turn requires no visible contribution from you, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
   );
 

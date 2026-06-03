@@ -25,6 +25,8 @@ import {
 } from "@/lib/agents/task-workflow-notifications";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { validateProposal } from "@/lib/work-items/proposal";
+import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
+import { allocateWorkItemKey } from "@/lib/work-items/keys";
 
 type RawOp = Record<string, unknown>;
 
@@ -74,15 +76,15 @@ function taskWorkflowBody(args: {
   if (args.reason === "backlog_plan_requested") {
     return [
       `You have been assigned to "${args.title}" while it is in Backlog by ${actor}.`,
-      "Read the full task context and existing comments. Post a concise task comment with your implementation plan or opinion.",
+      "Read the full task context and existing comments. Post one concise technical implementation plan in Action Plan.",
       "Do not change task status and do not start work until the task is moved to To Do.",
     ].join("\n");
   }
   if (args.reason === "todo_start_required") {
     return [
       `Task "${args.title}" is now in To Do and assigned to you by ${actor}.`,
-      "Read the full task context, move it to In Progress through the workflow endpoint, and start work immediately.",
-      "Do not post a visible acknowledgement unless you have new task information to add.",
+      "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
+      "Do not move it to In Progress until approved_on is set.",
     ].join("\n");
   }
   if (args.reason === "review_requested") {
@@ -228,7 +230,7 @@ export async function commitProposal(
       };
 
       const maxRank = await tx.task.aggregate({
-        where: { projectId, status: "Backlog", deletedAt: null },
+        where: { projectId, status: "Backlog", archivedAt: null, deletedAt: null },
         _max: { rank: true },
       });
       let nextRank = (maxRank._max.rank ?? 0) + 1;
@@ -259,6 +261,7 @@ export async function commitProposal(
             const epic = await tx.epic.create({
               data: {
                 projectId,
+                workItemKey: await allocateWorkItemKey(projectId, tx),
                 title: String(op.title),
                 description: optionalText(op.description),
                 status: "Backlog",
@@ -304,12 +307,16 @@ export async function commitProposal(
               inheritedBranchName = epic?.branchName ?? null;
               inheritedCommitPrefix = epic?.commitPrefix ?? null;
             }
+            const title = !isSub && epicId
+              ? await nextEpicTaskTitle(epicId, String(op.title), tx)
+              : String(op.title);
             const task = await tx.task.create({
               data: {
                 projectId,
+                workItemKey: await allocateWorkItemKey(projectId, tx),
                 epicId,
                 parentTaskId,
-                title: String(op.title),
+                title,
                 description: optionalText(op.description),
                 status: "Backlog",
                 rank: nextRank++,
@@ -412,7 +419,7 @@ export async function commitProposal(
             where: { id },
             select: {
               id: true, title: true, description: true, status: true, epicId: true, parentTaskId: true,
-              assigneeId: true, actingManagerId: true, reporterId: true,
+              assigneeId: true, actingManagerId: true, reporterId: true, approvedOn: true,
               assignee: { select: { username: true } },
               actingManager: { select: { username: true } },
               epic: { select: { status: true, actingManagerId: true } },
@@ -432,7 +439,10 @@ export async function commitProposal(
           const asg = resolvePrincipal(op.assignee);
           if (asg !== undefined && asg !== task.assigneeId) {
             data.assigneeId = asg;
+            data.approvedOn = null;
+            data.approvedById = null;
             logs.push({ kind: "task.assign", payload: { from: task.assignee?.username ?? null, to: asg ? usernameById.get(asg) ?? null : null, proposalId: proposal.id } });
+            logs.push({ kind: "task.action_plan.reset", payload: { reason: "assignee_changed", from: task.assignee?.username ?? null, to: asg ? usernameById.get(asg) ?? null : null, proposalId: proposal.id } });
           }
           const am = resolvePrincipal(op.actingManager);
           if (am !== undefined && am !== task.actingManagerId) {
@@ -454,8 +464,11 @@ export async function commitProposal(
             }
           }
           if (typeof op.status === "string" && op.status !== task.status) {
+            if (op.status === "In Progress" && !task.approvedOn) {
+              throw new Error(`Task ${id} cannot move to In Progress before Action Plan approval`);
+            }
             const rankAgg = await tx.task.aggregate({
-              where: { projectId, status: op.status, deletedAt: null },
+              where: { projectId, status: op.status, archivedAt: null, deletedAt: null },
               _max: { rank: true },
             });
             data.status = op.status;

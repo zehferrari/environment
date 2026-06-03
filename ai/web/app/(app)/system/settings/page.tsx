@@ -53,8 +53,8 @@ export default async function SystemSettingsPage() {
         </div>
 
         <SettingsRow
-          label="Days to keep Done"
-          hint="Default Done-column TTL for projects that leave it blank. Built-in fallback is 5."
+          label="Automatic Archive (days)"
+          hint="Done tasks are automatically archived after this many days when a project leaves its own value blank. Built-in fallback is 5."
         >
           <input
             type="number"

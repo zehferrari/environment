@@ -27,13 +27,18 @@ import { formatGridDate } from "@/lib/date-format";
 
 export type SortableTaskItem = {
   id: string;
+  workItemKey?: string | null;
   title: string;
   status?: string;
   href: string;
   createdAt?: string | null;
+  statusChangedAt?: string | null;
+  approvedOn?: string | null;
   reporter?: MessageActor | null;
   assignee?: MessageActor | null;
   reviewer?: MessageActor | null;
+  createdBy?: MessageActor | null;
+  updatedBy?: MessageActor | null;
   assigneeName?: string | null;
   reviewerName?: string | null;
   updatedAt?: string | null;
@@ -73,6 +78,7 @@ export default function SortableTaskList({
   onSelectionChange,
 }: Props) {
   const [order, setOrder] = useState(items);
+  const [now, setNow] = useState<number | null>(null);
   const [, startTransition] = useTransition();
 
   // Server is source of truth: when revalidatePath refreshes the list,
@@ -80,6 +86,13 @@ export default function SortableTaskList({
   useEffect(() => {
     setOrder(items);
   }, [items]);
+
+  useEffect(() => {
+    if (!tableLayout) return;
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, [tableLayout]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -132,6 +145,7 @@ export default function SortableTaskList({
               projectSlug={projectSlug}
               selectedIds={selectedIds}
               onSelectionChange={onSelectionChange}
+              now={now}
             />
           ))}
         </ul>
@@ -143,10 +157,12 @@ export default function SortableTaskList({
 
   return (
     <div className="overflow-x-auto rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]">
-      <div className="grid min-w-[46rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_5rem_5rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+      <div className="grid min-w-[72rem] grid-cols-[minmax(16rem,1fr)_8rem_10rem_10rem_7rem_7rem_7rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
         <span>Task</span>
+        <span>Status</span>
         <span>Assignee</span>
         <span>Reviewer</span>
+        <span className="text-right">Elapsed</span>
         <span className="text-right">Created At</span>
         <span className="text-right">Updated</span>
         <span className="sr-only">Bin</span>
@@ -169,6 +185,7 @@ function SortableRow({
   projectSlug,
   selectedIds,
   onSelectionChange,
+  now,
 }: {
   item: SortableTaskItem;
   showStatusBadge: boolean;
@@ -182,6 +199,7 @@ function SortableRow({
   projectSlug?: string;
   selectedIds?: Set<string>;
   onSelectionChange?: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
+  now: number | null;
 }) {
   const router = useRouter();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -204,7 +222,7 @@ function SortableRow({
             router.push(item.href);
           }
         }}
-        className={`grid min-w-[46rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_5rem_5rem_2rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-[var(--color-panel)] ${
+        className={`grid min-w-[72rem] cursor-pointer grid-cols-[minmax(16rem,1fr)_8rem_10rem_10rem_7rem_7rem_7rem_2rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-[var(--color-panel)] ${statusRowClass(item.status)} ${
           isDragging ? "opacity-50" : ""
         }`}
       >
@@ -234,16 +252,25 @@ function SortableRow({
             />
           )}
           {showReporterAvatar && item.reporter ? <MessageAvatar actor={item.reporter} size="sm" /> : null}
-          <span className="min-w-0 flex-1 truncate">{item.title}</span>
+          <span className="min-w-0 flex-1 truncate">
+            {item.workItemKey ? (
+              <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
+                {item.workItemKey}
+              </span>
+            ) : null}
+            {item.title}
+          </span>
         </div>
+        {showStatusBadge ? <StatusCell status={item.status ?? null} /> : <span />}
         {showAssignee ? (
           <PersonCell actor={item.assignee ?? null} fallbackName={item.assigneeName} emptyLabel="unassigned" />
         ) : <span />}
         {showReviewer ? (
           <PersonCell actor={item.reviewer ?? null} fallbackName={item.reviewerName} emptyLabel="none" />
         ) : <span />}
-        {showCreated ? <TimeCell iso={item.createdAt ?? null} dateOnly /> : <span />}
-        {showUpdated ? <TimeCell iso={item.updatedAt ?? null} /> : <span />}
+        <ElapsedCell item={item} now={now} />
+        {showCreated ? <TimeCell iso={item.createdAt ?? null} actor={item.createdBy ?? null} dateOnly /> : <span />}
+        {showUpdated ? <TimeCell iso={item.updatedAt ?? null} actor={item.updatedBy ?? null} /> : <span />}
         {deleteTaskAction && projectSlug ? (
           <form
             action={deleteTaskAction}
@@ -299,6 +326,11 @@ function SortableRow({
         />
       )}
       <Link href={item.href} className="min-w-0 flex-1 truncate hover:underline">
+        {item.workItemKey ? (
+          <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
+            {item.workItemKey}
+          </span>
+        ) : null}
         {item.title}
       </Link>
       <div className="flex shrink-0 items-center gap-3 text-xs text-[var(--color-text-muted)]">
@@ -339,19 +371,112 @@ function PersonCell({
   );
 }
 
-function TimeCell({ iso, dateOnly = false }: { iso: string | null; dateOnly?: boolean }) {
+function TimeCell({
+  iso,
+  actor,
+  dateOnly = false,
+}: {
+  iso: string | null;
+  actor?: MessageActor | null;
+  dateOnly?: boolean;
+}) {
   if (!iso) {
     return <span className="text-right text-xs text-[var(--color-text-muted)]">—</span>;
   }
   return (
-    <time
-      dateTime={iso}
-      title={iso}
-      className="text-right text-xs tabular-nums text-[var(--color-text-muted)]"
-      suppressHydrationWarning
-    >
-      {dateOnly ? formatGridDate(iso) : relativeUpdated(iso)}
-    </time>
+    <span className="flex min-w-0 items-center justify-end gap-1.5 text-xs text-[var(--color-text-muted)]">
+      <time
+        dateTime={iso}
+        title={iso}
+        className="min-w-0 truncate text-right tabular-nums"
+        suppressHydrationWarning
+      >
+        {dateOnly ? formatGridDate(iso) : relativeUpdated(iso)}
+      </time>
+      {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
+    </span>
+  );
+}
+
+function StatusCell({ status }: { status: string | null }) {
+  if (!status) return <span />;
+  return (
+    <span className={`w-fit rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusPillClass(status)}`}>
+      {status}
+    </span>
+  );
+}
+
+function ElapsedCell({ item, now }: { item: SortableTaskItem; now: number | null }) {
+  const elapsed = elapsedMsForTask(item, now);
+  if (elapsed === null) {
+    return <span className="text-right text-xs text-[var(--color-text-muted)]">—</span>;
+  }
+  return (
+    <span className="flex items-center justify-end gap-1.5 text-xs tabular-nums text-[var(--color-text-muted)]">
+      <TimerIcon />
+      <span>{formatElapsed(elapsed)}</span>
+    </span>
+  );
+}
+
+function elapsedMsForTask(item: SortableTaskItem, now: number | null) {
+  const status = item.status ?? "";
+  const endIso = status === "Done" ? (item.statusChangedAt ?? item.updatedAt ?? null) : null;
+  const end = status === "Done" ? parseTime(endIso) : now;
+  if (end === null) return null;
+
+  const startIso =
+    status === "Done"
+      ? item.approvedOn ?? item.createdAt ?? null
+      : status === "Backlog"
+        ? item.createdAt ?? null
+        : item.statusChangedAt ?? item.updatedAt ?? item.createdAt ?? null;
+  const start = parseTime(startIso);
+  if (start === null) return null;
+  return Math.max(0, end - start);
+}
+
+function parseTime(iso: string | null | undefined) {
+  if (!iso) return null;
+  const time = new Date(iso).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function formatElapsed(ms: number) {
+  const totalMinutes = Math.max(0, Math.floor(ms / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+function statusRowClass(status: string | null | undefined) {
+  if (status === "To Do") return "border-l-4 border-l-sky-400 bg-sky-500/[0.10]";
+  if (status === "In Progress") return "border-l-4 border-l-emerald-400 bg-emerald-500/[0.11]";
+  if (status === "Review") return "border-l-4 border-l-amber-400 bg-amber-500/[0.13]";
+  if (status === "Done") return "border-l-4 border-l-lime-400 bg-lime-500/[0.10]";
+  if (status === "Backlog") return "border-l-4 border-l-slate-400 bg-[var(--color-panel-soft)]";
+  return "";
+}
+
+function statusPillClass(status: string) {
+  if (status === "To Do") return "border-sky-500/70 bg-sky-100 text-sky-950 shadow-[inset_0_0_0_1px_rgba(2,132,199,0.18)]";
+  if (status === "In Progress") return "border-emerald-500/70 bg-emerald-100 text-emerald-950 shadow-[inset_0_0_0_1px_rgba(5,150,105,0.18)]";
+  if (status === "Review") return "border-amber-500/80 bg-amber-100 text-amber-950 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.22)]";
+  if (status === "Done") return "border-lime-600/70 bg-lime-100 text-lime-950 shadow-[inset_0_0_0_1px_rgba(101,163,13,0.18)]";
+  return "border-slate-500/60 bg-slate-100 text-slate-950 shadow-[inset_0_0_0_1px_rgba(71,85,105,0.16)]";
+}
+
+function TimerIcon() {
+  return (
+    <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="13" r="8" />
+      <path d="M12 9v4l2.5 2" />
+      <path d="M9 2h6" />
+    </svg>
   );
 }
 

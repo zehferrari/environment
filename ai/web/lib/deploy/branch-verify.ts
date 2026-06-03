@@ -2,15 +2,15 @@
 //
 // When an assignee moves a code-touching task to Review (workflow action
 // ready_for_review with repoTouched=true), PM drops a JSON job here. The
-// karen-side runner (ai/web/scripts/pm-verify-branch-pushed.ts) consumes the
+// monitor-side runner (ai/web/scripts/pm-verify-branch-pushed.ts) consumes the
 // file, runs `git -C <repositoryPath> fetch origin <branchName>` against the
 // already-cloned local repo, looks for commits whose subject starts with the
 // task/epic commit prefix on origin/<branchName>, and posts a verification
 // task comment + pm.repo.verify.* ActivityLog row.
 //
-// The spool dir is karen-owned (0700) like the switch spool — created by the
-// installer (ai/web/deploy/install-pm-verify.sh). The PM web service runs as
-// karen so it can write here without sudo.
+// The spool dir is shared by the PM web service user and the verify runner
+// user (2770, usually group code-agents) so the runner can use a dedicated
+// local account with read-only git credentials while PM still writes jobs.
 
 import { mkdir, writeFile } from "fs/promises";
 import { join } from "path";
@@ -26,18 +26,20 @@ export interface BranchVerifyJob {
   repositoryPath: string;
   branchName: string;
   commitPrefix: string | null;
+  expectedGitUserName: string | null;
+  expectedGitUserEmail: string | null;
   requestedByAgentSlug: string;
   requestedByUserId: string;
   requestedAt: string;
 }
 
 export async function enqueueBranchVerifyJob(job: BranchVerifyJob): Promise<string> {
-  await mkdir(BRANCH_VERIFY_DIR, { recursive: true, mode: 0o700 });
+  await mkdir(BRANCH_VERIFY_DIR, { recursive: true, mode: 0o770 });
   const path = join(BRANCH_VERIFY_DIR, `${job.jobId}.json`);
   // Atomic write (write tmp + rename) so the runner never reads a partial
   // file. tmp filename starts with a dot so directory listings can ignore it.
   const tmp = join(BRANCH_VERIFY_DIR, `.${job.jobId}.json.tmp`);
-  await writeFile(tmp, JSON.stringify(job, null, 2), { mode: 0o600 });
+  await writeFile(tmp, JSON.stringify(job, null, 2), { mode: 0o660 });
   const { rename } = await import("fs/promises");
   await rename(tmp, path);
   return path;

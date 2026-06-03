@@ -36,12 +36,16 @@ function parseArgs(argv: string[]): Args {
 function reasonForKind(kind: string | undefined): TaskWorkflowNotificationReason {
   switch (kind) {
     case "pm-backlog-plan-missing":
+    case "pm-action-plan-missing":
       return "backlog_plan_requested";
+    case "pm-action-plan-awaiting-approval":
+      return "action_plan_review_requested";
     case "pm-todo-not-started":
       return "todo_start_required";
     case "pm-review-awaiting-reviewer":
       return "review_requested";
     case "pm-review-feedback-awaiting-assignee":
+    case "pm-review-response-awaiting-assignee":
       return "review_feedback";
     default:
       return "monitor_recovery";
@@ -49,20 +53,23 @@ function reasonForKind(kind: string | undefined): TaskWorkflowNotificationReason
 }
 
 function defaultRequiredAction(status: string, kind: string | undefined): string {
-  if (kind === "pm-backlog-plan-missing") {
-    return "Post a visible task comment with your implementation plan or perspective. Do not change status or start work while the task is in Backlog.";
+  if (kind === "pm-backlog-plan-missing" || kind === "pm-action-plan-missing") {
+    return "Post one concise technical Action Plan message. Do not change status or start work until reviewer/reporter approval stamps approved_on.";
+  }
+  if (kind === "pm-action-plan-awaiting-approval") {
+    return "Review the Action Plan. If acceptable, approve it so approved_on is set; otherwise reply with concise feedback in Action Plan.";
   }
   if (kind === "pm-todo-not-started") {
-    return "Move the task to In Progress through the workflow endpoint, then start work immediately. Do not post an acknowledgement unless you have new task information to add.";
+    return "The Action Plan is approved. Move the task to In Progress through the workflow endpoint, then start work immediately. Do not post an acknowledgement unless you have new task information to add.";
   }
   if (kind === "pm-in-progress-stale") {
-    return "Continue implementation now, post a visible progress/blocker comment if needed, or move completed work to Review through the workflow endpoint.";
+    return "Continue implementation now, or move the task to Review through the workflow endpoint with one concise note if work is complete or waiting for reviewer/manager/reporter feedback.";
   }
   if (kind === "pm-review-awaiting-reviewer") {
     return "Review the completed work using the full task context. If satisfied, move the task to Done without posting an approval-only comment. Leave concise feedback only when changes or blockers remain.";
   }
-  if (kind === "pm-review-feedback-awaiting-assignee") {
-    return "Respond to the reviewer feedback, continue the task, and move it back to Review when addressed.";
+  if (kind === "pm-review-feedback-awaiting-assignee" || kind === "pm-review-response-awaiting-assignee") {
+    return "If the task is in Review because it was waiting for feedback or an external response, call action=start to resume it in In Progress. Address the feedback/response, then call action=ready_for_review again with one concise note.";
   }
   return `Follow the Mission Control workflow for the current ${status} task state.`;
 }
@@ -93,7 +100,11 @@ async function main() {
       select: { id: true, username: true, kind: true },
     }),
     db.user.findFirst({
-      where: { username: "karen", status: "active" },
+      where: {
+        status: "active",
+        kind: "agent",
+        agent: { is: { role: "monitor", deactivatedAt: null } },
+      },
       select: { id: true, username: true, kind: true },
     }) ?? db.user.findFirst({
       where: { username: "zeh", status: "active" },
@@ -114,11 +125,11 @@ async function main() {
     `PM workflow recovery for @${args.agent}:`,
     "",
     `Task "${task.title}" is currently in ${task.status}.`,
-    `Karen detected workflow drift${args.kind ? ` (${args.kind})` : ""}.`,
+    `The monitor agent detected workflow drift${args.kind ? ` (${args.kind})` : ""}.`,
     "",
     `Required action: ${requiredAction}`,
     "",
-    "Read the full PM context packet attached to this turn, including task description, comments, activity, task chat, and project context. Use a visible task comment only for a plan, new progress, blocker, feedback, review finding, or necessary question.",
+    "Read the full PM context packet attached to this turn, including task description, comments, Action Plan, activity, and project context. Use one concise visible reply only for a plan, new progress, blocker, feedback, review finding, or necessary question.",
   ].join("\n");
 
   const result = await sendTaskWorkflowNotification({

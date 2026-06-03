@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# pm-switch.sh — build a chosen worktree and make pm.service serve it
+# pm-switch.sh — build a chosen worktree and make pm.service/pm-consumer use it
 # ("switchable single site": exactly one worktree is live at a time; each
 # worktree has its own forked SQLite DB so code and Prisma schema switch
 # together).
 #
 # Run by pm-switch-runner (as the monitor) or by hand (as any code-agent who
-# can `sudo pm-apply-worktree`). The single privileged step — drop-in +
-# daemon-reload + restart — is delegated to /usr/local/sbin/pm-apply-worktree.
+# can `sudo pm-apply-worktree`). The single privileged step — systemd drop-ins
+# + daemon-reload + restarts — is delegated to /usr/local/sbin/pm-apply-worktree.
 #
 # Usage:
 #   pm-switch.sh <worktree-name | path>
@@ -34,13 +34,30 @@ served_worktree() {
   [[ "$wd" == */ai/web/.next/standalone ]] && printf '%s\n' "${wd%/ai/web/.next/standalone}"
 }
 
+consumer_worktree() {
+  local wd; wd="$(systemctl show -p WorkingDirectory --value pm-consumer.service 2>/dev/null || true)"
+  [[ "$wd" == */ai/web ]] && printf '%s\n' "${wd%/ai/web}"
+}
+
+active_database_url() {
+  local env_file="${PM_ACTIVE_ENV_FILE:-/etc/default/pm-active-worktree}"
+  if [[ -r "$env_file" ]]; then
+    sed -n 's/^DATABASE_URL=//p' "$env_file" | tail -1
+  elif sudo -n test -r "$env_file" 2>/dev/null; then
+    sudo -n sed -n 's/^DATABASE_URL=//p' "$env_file" | tail -1
+  fi
+}
+
 [[ -n "${1:-}" ]] || die "usage: pm-switch.sh <worktree-name | path>   (or: status)"
 
 if [[ "$1" == "status" || "$1" == "--status" ]]; then
   wt="$(served_worktree || true)"; [[ -n "$wt" ]] || die "cannot read pm.service WorkingDirectory"
-  env_line="$(systemctl show -p Environment --value pm.service 2>/dev/null | tr ' ' '\n' | grep '^DATABASE_URL=' | tail -1 || true)"
-  printf 'pm.service serving:\n  worktree: %s\n  branch:   %s\n  db:       %s\n  active:   %s\n' \
-    "$wt" "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')" "${env_line#DATABASE_URL=}" "$(systemctl is-active pm.service)"
+  consumer_wt="$(consumer_worktree || true)"
+  db_url="$(active_database_url || true)"
+  consumer_active="$(systemctl is-active pm-consumer.service 2>/dev/null || echo unknown)"
+  printf 'pm.service serving:\n  worktree: %s\n  branch:   %s\n  db:       %s\n  active:   %s\npm-consumer.service:\n  worktree: %s\n  active:   %s\n' \
+    "$wt" "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')" "$db_url" "$(systemctl is-active pm.service)" \
+    "${consumer_wt:-unknown}" "$consumer_active"
   exit 0
 fi
 
@@ -91,19 +108,23 @@ log "Building $APP_DIR …"
 [[ -f "$STANDALONE/server.js" ]] || die "build did not produce $STANDALONE/server.js"
 
 # 3. The only privileged step.
-log "Pointing pm.service at $APP_DIR with $BRANCH_DB_URL and restarting…"
+log "Pointing pm.service and pm-consumer.service at $APP_DIR with $BRANCH_DB_URL and restarting…"
 sudo -n "$APPLY" "$STANDALONE" "$BRANCH_DB_URL"
 
 # 4. Verify the live site + that its hashed assets serve.
 log "Verifying…"
 ok=""; for _ in $(seq 1 30); do curl -fsS -o /dev/null "http://$HOST:$PORT/login" 2>/dev/null && { ok=1; break; }; sleep 0.5; done
 [[ -n "$ok" ]] || die "server did not come up on $HOST:$PORT — check: journalctl -u pm.service -n 50"
+consumer_wt="$(consumer_worktree || true)"
+[[ "$consumer_wt" == "$WT_ROOT" ]] || die "pm-consumer.service is not running from $WT_ROOT (got: ${consumer_wt:-unknown})"
+consumer_active="$(systemctl is-active pm-consumer.service 2>/dev/null || echo unknown)"
+[[ "$consumer_active" == "active" ]] || die "pm-consumer.service is not active (got: $consumer_active)"
 ref="$(curl -fsS "http://$HOST:$PORT/login" | grep -oE '/_next/static/css/[a-f0-9]+\.css' | head -1 || true)"
 if [[ -n "$ref" ]]; then
   code="$(curl -fsS -o /dev/null -w '%{http_code}' "http://$HOST:$PORT$ref" 2>/dev/null || echo 000)"
   [[ "$code" == "200" ]] \
-    && log "OK — pm.service now serves $APP_DIR (HTML references $ref, serves 200). Hard-refresh the site." \
+    && log "OK — pm.service and pm-consumer.service now use $APP_DIR (HTML references $ref, serves 200). Hard-refresh the site." \
     || die "asset mismatch: HTML references $ref but it returns HTTP $code"
 else
-  log "OK — pm.service now serves $APP_DIR (/login responded)."
+  log "OK — pm.service and pm-consumer.service now use $APP_DIR (/login responded)."
 fi

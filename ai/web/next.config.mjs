@@ -6,7 +6,7 @@ const nextConfig = {
   serverExternalPackages: ['@prisma/client', '@node-rs/argon2'],
   experimental: {
     serverActions: {
-      bodySizeLimit: '1mb',
+      bodySizeLimit: process.env.PM_ATTACHMENT_ACTION_BODY_LIMIT || '30mb',
     },
   },
 };

@@ -36,15 +36,20 @@ type BoardActor = MessageActor & { id: string };
 
 type Task = {
   id: string;
+  workItemKey: string | null;
   title: string;
   status: string;
   rank: number;
   createdAt: string;
   updatedAt: string;
+  statusChangedAt: string | null;
+  approvedOn: string | null;
   reporter: BoardActor | null;
   assignee: BoardActor | null;
   reviewer: BoardActor | null;
   manager: BoardActor | null;
+  createdBy: BoardActor | null;
+  updatedBy: BoardActor | null;
   epicTitle: string | null;
 };
 type Column = { id: string; label: string; description?: string };
@@ -91,6 +96,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
   const [bulkTarget, setBulkTarget] = useState("To Do");
   const [isPending, startTransition] = useTransition();
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [now, setNow] = useState<number | null>(null);
   // Server-render and first client-render both start hidden so React
   // hydration matches; the stored preference (if any) is applied in a
   // post-mount effect, which is a normal state update and not a
@@ -136,6 +142,12 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
     }
   }, [backlogVisible, projectSlug, prefsHydrated]);
 
+  useEffect(() => {
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, []);
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
   );
@@ -179,7 +191,11 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
   function crossColumnMove(task: Task, newStatus: string) {
     const previousStatus = task.status;
     setItems((prev) =>
-      prev.map((t) => (t.id === task.id ? { ...t, status: newStatus } : t)),
+      prev.map((t) => (
+        t.id === task.id
+          ? { ...t, status: newStatus, statusChangedAt: new Date().toISOString() }
+          : t
+      )),
     );
     setMoveError(null);
     startTransition(async () => {
@@ -243,7 +259,9 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
     const previousItems = items;
     setItems((prev) =>
       prev.map((task) =>
-        selectedIds.has(task.id) ? { ...task, status: bulkTarget } : task,
+        selectedIds.has(task.id)
+          ? { ...task, status: bulkTarget, statusChangedAt: new Date().toISOString() }
+          : task,
       ),
     );
     setMoveError(null);
@@ -358,7 +376,12 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
         col,
         tasks: items
           .filter((t) => t.status === col.id)
-          .sort((a, b) => a.rank - b.rank),
+          .sort((a, b) => {
+            if (col.id === "Done") {
+              return completedAtMs(b) - completedAtMs(a) || b.rank - a.rank;
+            }
+            return a.rank - b.rank;
+          }),
         })),
     [workflowColumns, items],
   );
@@ -484,10 +507,15 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                 key={task.id}
                 type="button"
                 onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
-                className="min-w-0 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-left transition hover:border-[var(--color-accent)]"
+                className={`min-w-0 rounded-lg border px-3 py-2 text-left transition hover:border-[var(--color-accent)] ${
+                  isPlanningAssigned(task)
+                    ? "border-yellow-300/30 bg-yellow-300/[0.08]"
+                    : "border-[var(--color-line)] bg-[var(--color-panel-soft)]"
+                }`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <WorkflowPill task={task} />
+                  <ElapsedClock task={task} now={now} />
                   <time
                     dateTime={task.updatedAt}
                     title={task.updatedAt}
@@ -498,6 +526,11 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                   </time>
                 </div>
                 <div className="mt-1 truncate text-sm font-medium text-[var(--color-text)]">
+                  {task.workItemKey ? (
+                    <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
+                      {task.workItemKey}
+                    </span>
+                  ) : null}
                   {task.title}
                 </div>
                 <div className="mt-1 truncate text-xs text-[var(--color-text-muted)]">
@@ -532,7 +565,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <div className="grid min-w-[62rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_5rem_5rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                   <div className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -548,6 +581,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                   <span>Epic</span>
                   <span>Assignee</span>
                   <span>Reviewer</span>
+                  <span className="text-right">Elapsed</span>
                   <span className="text-right">Created At</span>
                   <span className="text-right">Updated</span>
                   <span className="sr-only">Bin</span>
@@ -565,6 +599,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                         deleteTaskAction={deleteTaskAction}
                         selected={selectedIds.has(t.id)}
                         onSelectionChange={toggleTaskSelection}
+                        now={now}
                       />
                     ))}
                   </SortableContext>
@@ -599,6 +634,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                     task={t}
                     projectSlug={projectSlug}
                     deleteTaskAction={deleteTaskAction}
+                    now={now}
                     selected={selectedIds.has(t.id)}
                     onSelectionChange={toggleTaskSelection}
                   />
@@ -641,10 +677,10 @@ function ColumnDroppable({
   return (
     <div
       ref={setNodeRef}
-      className={`rounded-lg border bg-[var(--color-panel)] min-h-[60vh] p-2 transition-colors ${
+      className={`min-h-[60vh] rounded-lg border p-2 shadow-sm transition-colors ${columnSurfaceClass(id)} ${
         isOver
-          ? "border-[var(--color-accent)] bg-[var(--color-panel-soft)]"
-          : "border-[var(--color-line)]"
+          ? "ring-2 ring-[var(--color-accent)]/50"
+          : ""
       }`}
     >
       <div className="px-1 pb-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)] flex justify-between items-center">
@@ -678,12 +714,14 @@ function TaskCard({
   task,
   projectSlug,
   deleteTaskAction,
+  now,
   selected,
   onSelectionChange,
 }: {
   task: Task;
   projectSlug: string;
   deleteTaskAction: (formData: FormData) => Promise<void>;
+  now: number | null;
   selected: boolean;
   onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
 }) {
@@ -704,11 +742,13 @@ function TaskCard({
       {...attributes}
       {...listeners}
       onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
-      className={`rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-sm cursor-pointer select-none transition hover:bg-[var(--color-panel-soft)] ${
-        isDragging ? "opacity-30" : ""
-      }`}
+      className={`group/card relative overflow-hidden rounded-lg border px-3 py-2 text-sm cursor-pointer select-none shadow-[0_14px_34px_rgba(15,23,42,0.12)] ring-1 ring-white/10 backdrop-blur-xl transition-all before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/80 before:to-transparent after:pointer-events-none after:absolute after:inset-0 after:-translate-x-full after:bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.16),transparent)] after:opacity-0 after:transition-all after:duration-700 hover:-translate-y-0.5 hover:border-white/55 hover:shadow-[0_18px_46px_rgba(15,23,42,0.18)] hover:after:translate-x-full hover:after:opacity-100 ${
+        isPlanningAssigned(task)
+          ? "border-yellow-200/70 bg-[linear-gradient(135deg,rgba(254,240,138,0.22),rgba(255,255,255,0.08))]"
+          : "border-white/25 bg-[linear-gradient(135deg,rgba(255,255,255,0.18),rgba(255,255,255,0.06))]"
+      } ${isDragging ? "opacity-30" : ""}`}
     >
-      <div className="flex items-start justify-between gap-2">
+      <div className="relative z-10 flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <input
             type="checkbox"
@@ -723,7 +763,14 @@ function TaskCard({
             className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
           />
           {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
-          <span className="truncate">{task.title}</span>
+          <span className="min-w-0 truncate">
+            {task.workItemKey ? (
+              <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
+                {task.workItemKey}
+              </span>
+            ) : null}
+            {task.title}
+          </span>
         </div>
         <form
           action={deleteTaskAction}
@@ -744,8 +791,9 @@ function TaskCard({
           </button>
         </form>
       </div>
-      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-[var(--color-text-muted)]">
+      <div className="relative z-10 mt-1 flex items-center justify-between gap-2 text-[10px] text-[var(--color-text-muted)]">
         <span className="truncate">{actor ? actorDisplayName(actor) : "unassigned"}</span>
+        <ElapsedClock task={task} now={now} />
         <WorkflowPill task={task} />
         <time
           dateTime={task.updatedAt}
@@ -795,12 +843,14 @@ function BacklogRow({
   deleteTaskAction,
   selected,
   onSelectionChange,
+  now,
 }: {
   task: Task;
   projectSlug: string;
   deleteTaskAction: (formData: FormData) => Promise<void>;
   selected: boolean;
   onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
+  now: number | null;
 }) {
   const router = useRouter();
   const {
@@ -824,9 +874,9 @@ function BacklogRow({
           router.push(`/projects/${projectSlug}/tasks/${task.id}`);
         }
       }}
-      className={`grid min-w-[62rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_5rem_5rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-sm transition last:border-b-0 hover:bg-[var(--color-panel-soft)] ${
-        isDragging ? "bg-[var(--color-panel-soft)] opacity-40" : ""
-      }`}
+      className={`grid min-w-[68rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-sm transition last:border-b-0 hover:bg-[var(--color-panel-soft)] ${
+        isPlanningAssigned(task) ? "bg-yellow-300/[0.08]" : statusRowClass(task.status)
+      } ${isDragging ? "bg-[var(--color-panel-soft)] opacity-40" : ""}`}
     >
       <div className="flex min-w-0 items-center gap-2">
         <input
@@ -853,31 +903,23 @@ function BacklogRow({
           ⠿
         </button>
         {task.reporter ? <MessageAvatar actor={task.reporter} size="sm" /> : null}
-        <span className="truncate">{task.title}</span>
+        <span className="min-w-0 truncate">
+          {task.workItemKey ? (
+            <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
+              {task.workItemKey}
+            </span>
+          ) : null}
+          {task.title}
+        </span>
       </div>
       <span className="truncate text-xs text-[var(--color-text-muted)]">
         {task.epicTitle ?? "—"}
       </span>
       <PersonCell actor={task.assignee} emptyLabel="unassigned" />
       <PersonCell actor={task.reviewer} emptyLabel="none" />
-      <time
-        dateTime={task.createdAt}
-        title={task.createdAt}
-        className="text-right text-xs tabular-nums text-[var(--color-text-muted)]"
-        suppressHydrationWarning
-      >
-        {formatGridDate(task.createdAt)}
-      </time>
-      <time
-        dateTime={task.updatedAt}
-        title={task.updatedAt}
-        className="text-right text-xs tabular-nums text-[var(--color-text-muted)]"
-        // See TaskCard's <time>: suppress the timestamp hydration mismatch so
-        // an aged backlog row can't break hydration of the whole board.
-        suppressHydrationWarning
-      >
-        {relativeUpdated(task.updatedAt)}
-      </time>
+      <ElapsedClock task={task} now={now} align="right" />
+      <DateActorCell iso={task.createdAt} actor={task.createdBy} dateOnly />
+      <DateActorCell iso={task.updatedAt} actor={task.updatedBy} />
       <form
         action={deleteTaskAction}
         onClick={(event) => event.stopPropagation()}
@@ -938,6 +980,10 @@ function boardActorForTask(task: Task): BoardActor | null {
   return task.reporter ?? task.assignee ?? task.reviewer ?? task.manager;
 }
 
+function completedAtMs(task: Task) {
+  return parseTime(task.statusChangedAt ?? task.updatedAt) ?? 0;
+}
+
 function workflowPillText(task: Task) {
   if (task.status === "Review") return "Review now";
   if (task.status === "To Do") return task.assignee ? "Start now" : "Assign first";
@@ -963,17 +1009,147 @@ function workflowOwnerLabel(task: Task) {
   return task.status;
 }
 
+function isPlanningAssigned(task: Task) {
+  return Boolean(
+    task.assignee &&
+    !task.approvedOn &&
+    (task.status === "Backlog" || task.status === "To Do"),
+  );
+}
+
+function ElapsedClock({
+  task,
+  now,
+  align = "compact",
+}: {
+  task: Task;
+  now: number | null;
+  align?: "compact" | "right";
+}) {
+  const elapsed = elapsedMsForTask(task, now);
+  if (elapsed === null) {
+    if (align === "right") {
+      return <span className="text-right text-xs text-[var(--color-text-muted)]">—</span>;
+    }
+    return null;
+  }
+  return (
+    <span
+      title={elapsedTitle(task)}
+      className={`shrink-0 items-center gap-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-[var(--color-text-muted)] ${
+        align === "right" ? "ml-auto flex justify-end" : "inline-flex"
+      }`}
+    >
+      <TimerIcon />
+      {formatElapsed(elapsed)}
+    </span>
+  );
+}
+
+function elapsedMsForTask(task: Task, now: number | null) {
+  const end =
+    task.status === "Done"
+      ? parseTime(task.statusChangedAt ?? task.updatedAt)
+      : now;
+  if (end === null) return null;
+
+  const start =
+    task.status === "Done"
+      ? parseTime(task.approvedOn ?? task.createdAt)
+      : task.status === "Backlog"
+        ? parseTime(task.createdAt)
+        : parseTime(task.statusChangedAt ?? task.updatedAt ?? task.createdAt);
+  if (start === null) return null;
+  return Math.max(0, end - start);
+}
+
+function elapsedTitle(task: Task) {
+  if (task.status === "Done") {
+    return `Approved ${task.approvedOn ?? task.createdAt}; completed ${task.statusChangedAt ?? task.updatedAt}`;
+  }
+  if (task.status === "Backlog") return `Since creation: ${task.createdAt}`;
+  return `Since status change: ${task.statusChangedAt ?? task.updatedAt}`;
+}
+
+function parseTime(iso: string | null | undefined) {
+  if (!iso) return null;
+  const time = new Date(iso).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function DateActorCell({
+  iso,
+  actor,
+  dateOnly = false,
+}: {
+  iso: string;
+  actor: BoardActor | null;
+  dateOnly?: boolean;
+}) {
+  return (
+    <span className="flex min-w-0 items-center justify-end gap-1.5 text-xs text-[var(--color-text-muted)]">
+      <time
+        dateTime={iso}
+        title={iso}
+        className="min-w-0 truncate text-right tabular-nums"
+        suppressHydrationWarning
+      >
+        {dateOnly ? formatGridDate(iso) : relativeUpdated(iso)}
+      </time>
+      {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
+    </span>
+  );
+}
+
+function formatElapsed(ms: number) {
+  const totalMinutes = Math.max(0, Math.floor(ms / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 function WorkflowPill({ task }: { task: Task }) {
   const tone =
-    task.status === "Review" ? "border-amber-400/40 bg-amber-400/10 text-amber-200"
-      : task.status === "To Do" && !task.assignee ? "border-red-400/40 bg-red-400/10 text-red-200"
-        : task.status === "To Do" ? "border-sky-400/40 bg-sky-400/10 text-sky-200"
-          : task.status === "In Progress" ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
-            : "border-[var(--color-line)] bg-[var(--color-panel)] text-[var(--color-text-muted)]";
+    task.status === "Review" ? "border-amber-500/80 bg-amber-100 text-amber-950 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.22)]"
+      : task.status === "To Do" && !task.assignee ? "border-red-500/80 bg-red-100 text-red-950 shadow-[inset_0_0_0_1px_rgba(220,38,38,0.2)]"
+        : task.status === "To Do" ? "border-sky-500/70 bg-sky-100 text-sky-950 shadow-[inset_0_0_0_1px_rgba(2,132,199,0.18)]"
+          : task.status === "In Progress" ? "border-emerald-500/70 bg-emerald-100 text-emerald-950 shadow-[inset_0_0_0_1px_rgba(5,150,105,0.18)]"
+            : task.status === "Done" ? "border-lime-600/70 bg-lime-100 text-lime-950 shadow-[inset_0_0_0_1px_rgba(101,163,13,0.18)]"
+              : "border-slate-500/60 bg-slate-100 text-slate-950 shadow-[inset_0_0_0_1px_rgba(71,85,105,0.16)]";
   return (
     <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${tone}`}>
       {workflowPillText(task)}
     </span>
+  );
+}
+
+function statusRowClass(status: string) {
+  if (status === "To Do") return "bg-sky-400/[0.06]";
+  if (status === "In Progress") return "bg-emerald-400/[0.07]";
+  if (status === "Review") return "bg-amber-400/[0.09]";
+  if (status === "Done") return "bg-lime-400/[0.06]";
+  if (status === "Backlog") return "bg-[var(--color-panel-soft)]";
+  return "";
+}
+
+function columnSurfaceClass(status: string) {
+  if (status === "To Do") return "border-violet-200/35 bg-violet-300/[0.40]";
+  if (status === "In Progress") return "border-sky-300/35 bg-sky-500/[0.11]";
+  if (status === "Review") return "border-amber-300/40 bg-amber-500/[0.14]";
+  if (status === "Done") return "border-lime-300/35 bg-lime-500/[0.10]";
+  return "border-[var(--color-line)] bg-[var(--color-panel)]";
+}
+
+function TimerIcon() {
+  return (
+    <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="13" r="8" />
+      <path d="M12 9v4l2.5 2" />
+      <path d="M9 2h6" />
+    </svg>
   );
 }
 

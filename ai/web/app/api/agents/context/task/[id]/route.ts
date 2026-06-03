@@ -30,7 +30,9 @@ export async function GET(
     return NextResponse.json({ error: "Invalid or missing agent context grant" }, { status: 401 });
   }
 
-  const data = await buildTaskContextJson(id);
+  const data = await buildTaskContextJson(id, {
+    attachmentGrant: identity.grantId ? req.nextUrl.searchParams.get("grant") : null,
+  });
   if (!data) return NextResponse.json({ error: "Task not found" }, { status: 404 });
 
   return NextResponse.json(data, {

@@ -12,6 +12,15 @@ import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
 import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
 import { createTaskWorkflowToken } from "@/lib/agents/task-workflow-token";
 import { resolveDirectedFromComment } from "@/lib/agents/directed-targets";
+import { createContextGrantUrl } from "@/lib/agents/context-grants";
+import {
+  formatRecentBlock,
+  recentComments,
+  recentDiscussion,
+} from "@/lib/agents/context-api/recent";
+import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import { resolveGitIdentity } from "@/lib/settings/system";
+import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 
 type Actor = {
   id: string;
@@ -42,6 +51,7 @@ export type TaskWorkflowNotificationReason =
   | "review_requested"
   | "review_feedback"
   | "review_done"
+  | "action_plan_review_requested"
   | "policy_update";
 
 function agentCallbackBaseUrl() {
@@ -82,6 +92,14 @@ function addTargetAgent(
   });
 }
 
+function looksLikeReviewFeedback(body: string) {
+  return /\b(?:review\s+feedback|please\s+(?:fix|add|remove|change|address|update)|needs?\s+(?:changes?|fix(?:es)?|work|follow-?up)|missing|block(?:er|ing)?|not\s+(?:ready|approved|done)|fail(?:ed|ing|s)?)\b/i.test(body);
+}
+
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 function workflowPrompt(args: {
   taskTitle: string;
   taskId: string;
@@ -91,6 +109,10 @@ function workflowPrompt(args: {
   branchName: string | null;
   commitPrefix: string | null;
   repositoryPath: string | null;
+  expectedGitUserName: string | null;
+  expectedGitUserEmail: string | null;
+  onlyReportersCanApproveActionPlans: boolean;
+  onlyReportersCanSetTasksDone: boolean;
 }) {
   const token = createTaskWorkflowToken(args.messageId, args.taskId, args.agentSlug);
   const workflowUrl = new URL(
@@ -101,8 +123,8 @@ function workflowPrompt(args: {
     {
       messageId: args.messageId,
       token,
-      action: "<start | ready_for_review | review_feedback | review_done | triage_to_todo>",
-      comment: "<required only for review_feedback>",
+      action: "<start | approve_plan | ready_for_review | review_feedback | review_done | triage_to_todo>",
+      comment: "<optional on ready_for_review; required for review_feedback; use on ready_for_review when waiting for reviewer/manager/reporter feedback>",
       repoTouched: "<true | false, only on ready_for_review; default true when branchName is set>",
     },
     null,
@@ -112,17 +134,30 @@ function workflowPrompt(args: {
   const codeTouching = Boolean(args.branchName && args.repositoryPath);
   const commitHygiene: string[] = [];
   if (codeTouching) {
+    const identityConfigured = Boolean(args.expectedGitUserName && args.expectedGitUserEmail);
     commitHygiene.push(
       "",
       "COMMIT HYGIENE (this task touches the repository):",
       `- Repository: ${args.repositoryPath}`,
       `- Branch: ${args.branchName}`,
+      identityConfigured
+        ? `- Required Git identity: ${args.expectedGitUserName} <${args.expectedGitUserEmail}>. Set it in the task worktree before editing or committing:`
+        : "- Required Git identity is not configured on the project/system settings. Ask zeh to configure defaultGitUserName/defaultGitUserEmail before committing.",
+      ...(identityConfigured
+        ? [
+            `  git -C ${shellQuote(args.repositoryPath!)} config extensions.worktreeConfig true`,
+            `  git -C ${shellQuote(args.repositoryPath!)} config --worktree user.name ${shellQuote(args.expectedGitUserName!)}`,
+            `  git -C ${shellQuote(args.repositoryPath!)} config --worktree user.email ${shellQuote(args.expectedGitUserEmail!)}`,
+            `  test "$(git -C ${shellQuote(args.repositoryPath!)} config --get user.name)" = ${shellQuote(args.expectedGitUserName!)} && test "$(git -C ${shellQuote(args.repositoryPath!)} config --get user.email)" = ${shellQuote(args.expectedGitUserEmail!)}`,
+            "- Do not commit if the identity check fails. PM verifier rejects branches whose matching commit author or committer differs from the required identity.",
+          ]
+        : []),
       args.commitPrefix
         ? `- COMMIT_PREFIX: ${args.commitPrefix} — every commit message on this task MUST start with this exact prefix (e.g. "${args.commitPrefix} short imperative summary").`
-        : "- COMMIT_PREFIX is not set on the task or its epic. Use the task id as a fallback prefix, and ask zeh to set commitPrefix on the task or epic.",
+        : "- COMMIT_PREFIX is not set. Ask zeh to set a project key or task/epic commit prefix before committing.",
       `- All local changes must be committed (each with the prefix) and pushed to origin/${args.branchName} BEFORE you call action=ready_for_review.`,
-      "- On ready_for_review: include `repoTouched: true` in the body. PM will dispatch Karen to verify origin reflects your work and post a pm.repo.verify.* comment.",
-      "- If this task changed nothing in the repository (docs-only, decision-only, etc.), set `repoTouched: false` on ready_for_review and Karen will skip the check.",
+      "- On ready_for_review: include `repoTouched: true` in the body. PM will dispatch the monitor verifier to verify origin reflects your work and post a pm.repo.verify.* comment.",
+      "- If this task changed nothing in the repository (docs-only, decision-only, etc.), set `repoTouched: false` on ready_for_review and the monitor verifier will skip the check.",
     );
   }
 
@@ -131,10 +166,11 @@ function workflowPrompt(args: {
     reviewerVerify.push(
       "",
       "REVIEW VERIFICATION (first check, you are the resolved reviewer):",
-      `- This task touched ${args.repositoryPath} on branch ${args.branchName}. Before reviewing, look for a pm.repo.verify.* task comment from Karen confirming origin/${args.branchName} reflects the work.`,
+      `- This task touched ${args.repositoryPath} on branch ${args.branchName}. Before reviewing, look for a pm.repo.verify.* task comment from the monitor verifier confirming origin/${args.branchName} reflects the work.`,
       "- If pm.repo.verify.ok is present and recent, proceed with the review.",
-      "- If pm.repo.verify.fail is present (no push found / no prefix match), leave concise review_feedback asking the assignee to commit (with the prefix) and push BEFORE you proceed. Do not approve work that isn't on origin yet.",
-      "- If no pm.repo.verify.* comment has appeared yet, wait briefly for Karen to publish one. The runner picks up the job within seconds of the assignee's ready_for_review call.",
+      "- If pm.repo.verify.fail reports no branch/no commits/no prefix match, leave concise review_feedback asking the assignee to commit (with the prefix) and push BEFORE you proceed. Do not approve work that isn't on origin yet.",
+      "- If pm.repo.verify.fail reports Unauthorized, permission denied, or cannot read from remote, treat it as a monitor verifier credential problem. Do not tell the assignee to repush solely for a verifier credential failure.",
+      "- If no pm.repo.verify.* comment has appeared yet, wait briefly for the monitor verifier to publish one. The runner picks up the job within seconds of the assignee's ready_for_review call.",
     );
   }
 
@@ -143,14 +179,29 @@ function workflowPrompt(args: {
     `This notification is addressed to @${args.agentSlug}. Its workflow reason is ${args.reason}.`,
     "",
     "Workflow rules:",
-    "- Backlog is for planning and opinions only. If you are the assignee and the task is in Backlog, reply with your implementation plan/opinion as a task comment. Do not change task status and do not start work.",
-    "- To Do means the plan/request is approved for execution. If you are the assignee and the task is in To Do, call the workflow endpoint with action=start, then begin work immediately.",
+    "- Backlog is for planning and opinions only. If you are the assignee and the task is in Backlog, reply in Action Plan with one concrete technical plan. Do not change task status and do not start work.",
+    "- To Do means the task is actionable, but execution is still blocked until the Action Plan has approved_on set. If you are the assignee and approved_on is empty, reply in Action Plan with one concrete technical plan and wait.",
+    "- If you are the resolved reviewer or reporter and you accept the assignee's Action Plan, call action=approve_plan and include one concise `comment` explaining why the plan is acceptable or naming any constraints. If the task was in Backlog, PM will move it to To Do and wake the assignee.",
+    args.onlyReportersCanApproveActionPlans
+      ? "- Project policy: only the reporter can approve Action Plans. Reviewers and acting managers should comment with feedback or agreement, but must wait for reporter approval."
+      : "- Project policy: the reporter or resolved reviewer may approve Action Plans.",
+    "- If you are the assignee and the task is in To Do with approved_on set, call the workflow endpoint with action=start, then begin work immediately.",
+    "- If you are the assignee and the task is in Review because you were waiting for reviewer, manager, reporter, or human input, and that response has now arrived, call action=start to move it back to In Progress and continue. When the follow-up work is complete, call action=ready_for_review again.",
     "- In Progress means active implementation. When implementation is complete, call the workflow endpoint with action=ready_for_review.",
-    "- Review means the completed work is waiting for reviewer feedback. If you are the resolved reviewer and are satisfied, call action=review_done. PM will then assign the next unassigned To Do task in the same Open Epic to the same assignee and wake them. If changes or blockers remain, call action=review_feedback with a clear comment.",
-    "- If you are an assignee with review feedback waiting, address that feedback before starting newly assigned To Do work.",
-    "- If you are the reviewer or Open Epic acting manager and accept a Backlog plan, call action=triage_to_todo.",
+    "- After Action Plan approval, do not keep discussing straightforward implementation. Start it, complete it, then use one concise ready_for_review note when the work is ready.",
+    "- Task-local subtasks are progress/checklist rows for the parent Task. Do not treat them as top-level Epic implementation tasks or as independent next-task assignments unless a human explicitly promotes one.",
+    "- If you are the assignee and you are waiting for reviewer, manager, or reporter feedback/response, call action=ready_for_review with one concise `comment` explaining the blocker/question. Do not leave waiting work in In Progress.",
+    "- Review means the completed work is waiting for reviewer feedback. If you are allowed by project policy to complete the task and are satisfied, call action=review_done; do not write an approval-only comment. PM will then assign the next unassigned To Do task in the same Open Epic to the same assignee and wake them. If changes or blockers remain, call action=review_feedback with a clear comment.",
+    args.onlyReportersCanSetTasksDone
+      ? "- Project policy: only the reporter can set Tasks to Done. Reviewers should leave concise review feedback or agreement, then wait for the reporter to complete it."
+      : "- Project policy: the resolved reviewer can set Tasks to Done.",
+    "- If you are an assignee with review feedback or an unblocking response waiting, address that work before starting newly assigned To Do work.",
+    "- If you are the reviewer or Open Epic acting manager and accept a Backlog or To Do Action Plan, call action=approve_plan with a concise approval comment. If the plan needs adjustment, reply in Action Plan with one consolidated feedback comment instead of approving.",
     "- For tasks under an Epic, do not start or advance work unless the Epic status in the context is Open.",
-    "- Do not post visible acknowledgements, restatements, or filler. If your workflow action fully handles the turn and you have no new information to add, finish with the exact reply token below.",
+    "- Do not post visible acknowledgements, status narration, restatements, or filler. Consolidate all current issues/blockers/findings into one concise visible comment when a comment is needed.",
+    "- Latest explicit human, reviewer, or acting-manager correction wins over older agent comments. Do not repeat a blocker or decision already settled in the recent context.",
+    "- If your workflow action fully handles the turn and you have no new information to add, finish with the exact reply token below. Do not add any other words before or after it.",
+    "- Never include the silent reply token inside a visible sentence or after a workflow-status acknowledgement.",
     ...commitHygiene,
     ...reviewerVerify,
     "",
@@ -160,7 +211,7 @@ function workflowPrompt(args: {
     bodyShape,
     "",
     `Silent reply token: ${PM_SILENT_REPLY_TOKEN}`,
-    "Replies to this PM-channel turn are stored as normal task comments. Use a visible comment only for a plan, opinion, completion evidence, review feedback, blocker, or necessary question.",
+    "Replies to this PM-channel turn are stored in the channel that woke you: Action Plan for plan/assignment turns, or task comments for review/completion turns. Use a visible reply only for a plan, opinion, completion evidence, review feedback, blocker, or necessary question. Do not post 'task moved' acknowledgements after calling the workflow endpoint.",
   ].join("\n");
 }
 
@@ -180,9 +231,20 @@ export async function sendTaskWorkflowNotification(args: {
         projectId: true,
         branchName: true,
         commitPrefix: true,
+        workItemKey: true,
+        approvedOn: true,
         deletedAt: true,
-        project: { select: { slug: true, repositoryPath: true } },
-        epic: { select: { commitPrefix: true } },
+        project: {
+          select: {
+            slug: true,
+            repositoryPath: true,
+            defaultGitUserName: true,
+            defaultGitUserEmail: true,
+            onlyReportersCanApproveActionPlans: true,
+            onlyReportersCanSetTasksDone: true,
+          },
+        },
+        epic: { select: { id: true, commitPrefix: true } },
       },
     }),
     db.user.findUnique({
@@ -217,18 +279,25 @@ export async function sendTaskWorkflowNotification(args: {
     "",
     args.body,
   ].join("\n");
+  const planChannelNotification =
+    args.reason === "backlog_plan_requested" ||
+    args.reason === "action_plan_review_requested" ||
+    (args.reason === "todo_start_required" && !task.approvedOn);
 
   const msg = await db.agentChatMessage.create({
     data: {
       projectId: task.projectId,
       taskId: task.id,
       epicId: null,
-      agentSlug: targetUser.agent.slug,
+      agentSlug: planChannelNotification ? "room" : targetUser.agent.slug,
       senderUserId: args.actor.id,
       body: mirroredBody,
       allowDescriptionEdit: false,
-      originChannel: "comment",
+      originChannel: planChannelNotification ? "chat" : "comment",
       originCommentId: null,
+      targetType: planChannelNotification ? "agent" : null,
+      targetValue: planChannelNotification ? `agent:${targetUser.agent.slug}` : null,
+      targetLabel: planChannelNotification ? targetUser.username : null,
     },
     select: { id: true, createdAt: true },
   });
@@ -254,27 +323,80 @@ export async function sendTaskWorkflowNotification(args: {
     currentTurn: {
       id: msg.id,
       agentChatMessageId: msg.id,
-      source: "task comment",
+      source: planChannelNotification ? "task chat" : "task comment",
       actorUsername: args.actor.username ?? actorUser?.username ?? null,
       actorKind: args.actor.kind,
       body: args.body,
       createdAt: msg.createdAt,
     },
   });
+  const scopeForRecent = { taskId: task.id };
+  const [recentDisc, recentCmts] = await Promise.all([
+    recentDiscussion(scopeForRecent),
+    recentComments(scopeForRecent),
+  ]);
+  const inlineRecentBlock = formatRecentBlock({
+    scope: "task",
+    discussion: recentDisc,
+    comments: recentCmts,
+    currentMessageId: msg.id,
+  });
+  const fetchBaseUrl = agentCallbackBaseUrl();
+  const [taskGrantUrl, epicGrantUrl, projectGrantUrl] = await Promise.all([
+    createContextGrantUrl({
+      baseUrl: fetchBaseUrl,
+      agentSlug: targetUser.agent.slug,
+      scopeType: "task",
+      scopeId: task.id,
+      turnId: msg.id,
+    }),
+    task.epic?.id
+      ? createContextGrantUrl({
+          baseUrl: fetchBaseUrl,
+          agentSlug: targetUser.agent.slug,
+          scopeType: "epic",
+          scopeId: task.epic.id,
+          turnId: msg.id,
+        })
+      : Promise.resolve(null),
+    createContextGrantUrl({
+      baseUrl: fetchBaseUrl,
+      agentSlug: targetUser.agent.slug,
+      scopeType: "project",
+      scopeId: task.projectId,
+      turnId: msg.id,
+    }),
+  ]);
   const sessionBinding = await getOrCreateAgentSessionBinding({
     scopeType: "task",
     scopeId: task.id,
     agentSlug: targetUser.agent.slug,
   });
+  const gitIdentity = await resolveGitIdentity(task.project);
+  const commitPrefix = effectiveCommitPrefix({
+    commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
+    workItemKey: task.workItemKey,
+  });
   const delivery = await sendOrQueueOpenClawPmChannelTurn({
     gatewayPort: targetUser.agent.gatewayPort,
     agentSlug: targetUser.agent.slug,
     sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
-    kind: "task-comment",
+    kind: planChannelNotification ? "task-chat" : "task-comment",
     text: args.body,
     contextText: userMessage,
     systemPrompt: [
-      buildTaskNativeChannelPrompt(task.title, targetUser.agent.slug),
+      buildTaskNativeChannelPrompt(task.title, targetUser.agent.slug, null, {
+        baseUrl: fetchBaseUrl,
+        projectId: task.projectId,
+        taskId: task.id,
+        epicId: task.epic?.id ?? null,
+        inlineRecentBlock,
+        grantUrls: {
+          task: taskGrantUrl,
+          epic: epicGrantUrl,
+          project: projectGrantUrl,
+        },
+      }),
       workflowPrompt({
         taskTitle: task.title,
         taskId: task.id,
@@ -282,8 +404,12 @@ export async function sendTaskWorkflowNotification(args: {
         messageId: msg.id,
         reason: args.reason,
         branchName: task.branchName ?? null,
-        commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
+        commitPrefix,
         repositoryPath: task.project.repositoryPath ?? null,
+        expectedGitUserName: gitIdentity.name,
+        expectedGitUserEmail: gitIdentity.email,
+        onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
+        onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
       }),
     ].join("\n\n"),
     projectId: task.projectId,
@@ -293,7 +419,7 @@ export async function sendTaskWorkflowNotification(args: {
       kind: args.actor.kind,
     },
     replyTarget: {
-      kind: "task-comment",
+      kind: planChannelNotification ? "task-chat" : "task-comment",
       agentSlug: targetUser.agent.slug,
       taskId: task.id,
       messageId: msg.id,
@@ -336,8 +462,23 @@ export async function sendTaskCommentNotifications(args: {
       projectId: true,
       title: true,
       status: true,
+      assigneeId: true,
+      actingManagerId: true,
+      reporterId: true,
+      branchName: true,
+      commitPrefix: true,
+      workItemKey: true,
       deletedAt: true,
-      project: { select: { slug: true } },
+      project: {
+        select: {
+          slug: true,
+          repositoryPath: true,
+          defaultGitUserName: true,
+          defaultGitUserEmail: true,
+          onlyReportersCanApproveActionPlans: true,
+          onlyReportersCanSetTasksDone: true,
+        },
+      },
       assignee: {
         select: {
           id: true,
@@ -367,7 +508,11 @@ export async function sendTaskCommentNotifications(args: {
       },
       epic: {
         select: {
+          id: true,
           status: true,
+          actingManagerId: true,
+          commitPrefix: true,
+          workItemKey: true,
           actingManager: {
             select: {
               id: true,
@@ -404,17 +549,43 @@ export async function sendTaskCommentNotifications(args: {
   }
 
   const targetAgents = new Map<string, AgentTarget>();
-  addTargetAgent(targetAgents, task.assignee, "assigned", excluded);
-  addTargetAgent(targetAgents, task.actingManager, "reviewer", excluded);
-  const hasOpenEpicManager = task.epic?.status === "Open" && task.epic.actingManager;
-  if (task.epic?.status === "Open") {
-    addTargetAgent(targetAgents, task.epic.actingManager, "epic-manager", excluded);
-  }
-  if (!task.actingManager && !hasOpenEpicManager) {
-    addTargetAgent(targetAgents, task.reporter, "reporter", excluded);
-  }
-  for (const user of mentionedUsers) {
-    addTargetAgent(targetAgents, user, "mentioned", excluded);
+  const mentionedAgentUsers = mentionedUsers.filter((user) => user.kind === "agent");
+  const addReviewOwner = () => {
+    addTargetAgent(targetAgents, task.actingManager, "reviewer", excluded);
+    const hasOpenEpicManager = task.epic?.status === "Open" && task.epic.actingManager;
+    if (task.epic?.status === "Open") {
+      addTargetAgent(targetAgents, task.epic.actingManager, "epic-manager", excluded);
+    }
+    if (!task.actingManager && !hasOpenEpicManager) {
+      addTargetAgent(targetAgents, task.reporter, "reporter", excluded);
+    }
+  };
+
+  if (args.actor.kind !== "agent") {
+    addTargetAgent(targetAgents, task.assignee, "assigned", excluded);
+    addReviewOwner();
+    for (const user of mentionedUsers) {
+      addTargetAgent(targetAgents, user, "mentioned", excluded);
+    }
+  } else {
+    for (const user of mentionedAgentUsers) {
+      addTargetAgent(targetAgents, user, "mentioned", excluded);
+    }
+    if (mentionedAgentUsers.length === 0) {
+      const actorId = actorUser?.id ?? args.actor.id;
+      const reviewOwnerId = resolveReviewOwnerId(task);
+      if (task.status === "Backlog" && actorId === task.assigneeId) {
+        addReviewOwner();
+      } else if (task.status === "Review" && actorId === task.assigneeId) {
+        addReviewOwner();
+      } else if (
+        task.status === "Review" &&
+        actorId === reviewOwnerId &&
+        looksLikeReviewFeedback(args.body)
+      ) {
+        addTargetAgent(targetAgents, task.assignee, "review-feedback", excluded);
+      }
+    }
   }
 
   // Directed-message descriptor for the silence rule. A comment with no
@@ -482,6 +653,24 @@ export async function sendTaskCommentNotifications(args: {
     return mirrored;
   });
 
+  const scopeForRecent = { taskId: task.id };
+  const [recentDisc, recentCmts] = await Promise.all([
+    recentDiscussion(scopeForRecent),
+    recentComments(scopeForRecent),
+  ]);
+  const inlineRecentBlock = formatRecentBlock({
+    scope: "task",
+    discussion: recentDisc,
+    comments: recentCmts,
+    currentMessageId: args.commentId,
+  });
+  const fetchBaseUrl = agentCallbackBaseUrl();
+  const gitIdentity = await resolveGitIdentity(task.project);
+  const commitPrefix = effectiveCommitPrefix({
+    commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
+    workItemKey: task.workItemKey,
+  });
+
   await Promise.all(mirroredMessages.map(async (msg) => {
     const userMessage = await buildTaskAgentUserMessage({
       taskId: task.id,
@@ -503,6 +692,44 @@ export async function sendTaskCommentNotifications(args: {
       agentSlug: msg.agentSlug,
     });
     const target = targetAgents.get(msg.agentSlug);
+    const reviewOwnerId = resolveReviewOwnerId(task);
+    const workflowReason: TaskWorkflowNotificationReason =
+      task.status === "Review" && target?.userId === reviewOwnerId
+        ? "review_requested"
+        : task.status === "Review" && target?.userId === task.assigneeId
+          ? "review_feedback"
+          : task.status === "Backlog" && target?.userId === task.assigneeId
+            ? "backlog_plan_requested"
+            : task.status === "To Do" && target?.userId === task.assigneeId
+              ? "todo_start_required"
+              : (task.status === "Backlog" || task.status === "To Do") && target?.userId === reviewOwnerId
+                ? "action_plan_review_requested"
+                : "monitor_recovery";
+    const [taskGrantUrl, epicGrantUrl, projectGrantUrl] = await Promise.all([
+      createContextGrantUrl({
+        baseUrl: fetchBaseUrl,
+        agentSlug: msg.agentSlug,
+        scopeType: "task",
+        scopeId: task.id,
+        turnId: msg.id,
+      }),
+      task.epic?.id
+        ? createContextGrantUrl({
+            baseUrl: fetchBaseUrl,
+            agentSlug: msg.agentSlug,
+            scopeType: "epic",
+            scopeId: task.epic.id,
+            turnId: msg.id,
+          })
+        : Promise.resolve(null),
+      createContextGrantUrl({
+        baseUrl: fetchBaseUrl,
+        agentSlug: msg.agentSlug,
+        scopeType: "project",
+        scopeId: task.projectId,
+        turnId: msg.id,
+      }),
+    ]);
     const delivery = await sendOrQueueOpenClawPmChannelTurn({
       gatewayPort: target?.gatewayPort ?? null,
       agentSlug: msg.agentSlug,
@@ -510,7 +737,34 @@ export async function sendTaskCommentNotifications(args: {
       kind: "task-comment",
       text: args.body,
       contextText: userMessage,
-      systemPrompt: buildTaskNativeChannelPrompt(task.title, msg.agentSlug, directedDescriptor),
+      systemPrompt: [
+        buildTaskNativeChannelPrompt(task.title, msg.agentSlug, directedDescriptor, {
+          baseUrl: fetchBaseUrl,
+          projectId: task.projectId,
+          taskId: task.id,
+          epicId: task.epic?.id ?? null,
+          inlineRecentBlock,
+          grantUrls: {
+            task: taskGrantUrl,
+            epic: epicGrantUrl,
+            project: projectGrantUrl,
+          },
+        }),
+        workflowPrompt({
+          taskTitle: task.title,
+          taskId: task.id,
+          agentSlug: msg.agentSlug,
+          messageId: msg.id,
+          reason: workflowReason,
+          branchName: task.branchName ?? null,
+          commitPrefix,
+          repositoryPath: task.project.repositoryPath ?? null,
+          expectedGitUserName: gitIdentity.name,
+          expectedGitUserEmail: gitIdentity.email,
+          onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
+          onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
+        }),
+      ].join("\n\n"),
       projectId: task.projectId,
       actor: {
         id: args.actor.id,

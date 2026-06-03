@@ -17,10 +17,15 @@ import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel-jobs"
 import { appendPmChannelStreamEventForTarget } from "@/lib/agents/pm-channel-stream-log";
 import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel-rate-limit";
 import { normalizeDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
-import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
+import {
+  sendTaskCommentNotifications,
+  sendTaskWorkflowNotification,
+} from "@/lib/agents/task-workflow-notifications";
 import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
-import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
+import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { revalidateEpicReplyScope } from "@/lib/epics/cache";
+import { tryCompleteTaskFromReviewerComment } from "@/lib/tasks/review-automation";
+import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -248,7 +253,53 @@ async function persistTaskReply(
     return { id: created.id, channel: "chat" as const };
   });
 
-  if (reply.channel === "comment") {
+  const reviewAutomation = reply.channel === "comment"
+    ? await tryCompleteTaskFromReviewerComment({
+        taskId: target.taskId,
+        commentId: reply.id,
+        body: persistedBody,
+        agentUserId: agentUser.id,
+        agentSlug: target.agentSlug,
+      })
+    : null;
+
+  if (reply.channel === "chat") {
+    const task = await db.task.findUnique({
+      where: { id: target.taskId },
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        assigneeId: true,
+        actingManagerId: true,
+        reporterId: true,
+        approvedOn: true,
+        epic: { select: { status: true, actingManagerId: true } },
+      },
+    });
+    const reviewerId = task ? resolveReviewOwnerId(task) : null;
+    if (
+      task &&
+      !task.approvedOn &&
+      task.assigneeId === agentUser.id &&
+      (task.status === "Backlog" || task.status === "To Do") &&
+      reviewerId &&
+      reviewerId !== agentUser.id
+    ) {
+      await sendTaskWorkflowNotification({
+        taskId: task.id,
+        targetUserId: reviewerId,
+        actor: { id: agentUser.id, kind: "agent", username: target.agentSlug },
+        reason: "action_plan_review_requested",
+        body: [
+          `@${target.agentSlug} posted an Action Plan for "${task.title}".`,
+          "Review the plan in Action Plan. If it is acceptable, call the workflow endpoint with action=approve_plan. If it needs changes, reply in Action Plan with concise feedback.",
+        ].join("\n"),
+      });
+    }
+  }
+
+  if (reply.channel === "comment" && !reviewAutomation?.completed) {
     await sendTaskCommentNotifications({
       taskId: target.taskId,
       commentId: reply.id,
@@ -263,9 +314,22 @@ async function persistTaskReply(
   }
 
   revalidateTaskReplyScope(target.taskId, reply.channel);
+  if (reviewAutomation?.completed) {
+    revalidateTaskShell(target.taskId);
+    if (reviewAutomation.nextTask) {
+      revalidateTaskShell(reviewAutomation.nextTask.id);
+      revalidatePath(`/projects/${reviewAutomation.nextTask.projectSlug}/tasks/${reviewAutomation.nextTask.id}`);
+    }
+    revalidatePath(`/projects/${reviewAutomation.projectSlug}`);
+  }
   return {
     status: 200,
-    body: { ok: true, id: reply.id, channel: reply.channel },
+    body: {
+      ok: true,
+      id: reply.id,
+      channel: reply.channel,
+      reviewAutomation,
+    },
     streamText: persistedBody,
   };
 }
@@ -334,6 +398,7 @@ async function persistEpicReply(
         payload: JSON.stringify({
           driver: "openclaw-pm-channel",
           messageId: created.id,
+          epicId: target.epicId,
           inReplyToMessageId: target.messageId,
           agentSlug: target.agentSlug,
         }),
@@ -406,6 +471,7 @@ async function persistSilentReply(target: PmChannelReplyTarget) {
         targetAgent: target.agentSlug,
         payload: JSON.stringify({
           driver: "openclaw-pm-channel",
+          epicId: target.epicId,
           inReplyToMessageId: target.messageId,
           agentSlug: target.agentSlug,
           reason: "no_new_information",

@@ -123,7 +123,17 @@ async function main(): Promise<void> {
       data: { slug: "wip-smoke", name: "WIP Smoke" },
     });
     const epic = await prisma.epic.create({
-      data: { projectId: project.id, title: "Existing Epic", status: "open" },
+      data: { projectId: project.id, title: "Existing Epic", status: "Open" },
+    });
+    const approvedEpic = await prisma.epic.create({
+      data: {
+        projectId: project.id,
+        title: "Approved Empty Epic",
+        status: "Open",
+        approvedOn: new Date(),
+        approvedById: human.id,
+        actingManagerId: agentUser.id,
+      },
     });
     const tDone = await prisma.task.create({
       data: {
@@ -143,6 +153,18 @@ async function main(): Promise<void> {
         statusChangedAt: new Date(),
       },
     });
+    const tApprovedParent = await prisma.task.create({
+      data: {
+        projectId: project.id,
+        title: "Approved parent task",
+        status: "To Do",
+        rank: 3,
+        statusChangedAt: new Date(),
+        approvedOn: new Date(),
+        approvedById: human.id,
+        assigneeId: agentUser.id,
+      },
+    });
 
     const actor = { userId: agentUser.id, agentSlug: agent.slug };
     const P = project.id;
@@ -160,15 +182,14 @@ async function main(): Promise<void> {
     // --- unknown op ---
     expectOpError("unknown op", await validateProposal(P, [{ op: "frobnicate" }], actor), 0, "unknown op");
 
-    // --- happy path: epic + task under it + subtask under task ---
+    // --- happy path: initial approved-epic task + approved-task subtask ---
     expectOk(
-      "nested create (epic→task→subtask)",
+      "create approved epic task and approved task subtask",
       await validateProposal(
         P,
         [
-          { op: "create_epic", ref: "tmp:e1", title: "Epic One", description: "x" },
-          { op: "create_task", ref: "tmp:t1", title: "Task One", epic: "tmp:e1" },
-          { op: "create_subtask", ref: "tmp:s1", parent: "tmp:t1", title: "Sub One" },
+          { op: "create_task", ref: "tmp:t1", title: "Task One", epic: approvedEpic.id },
+          { op: "create_subtask", ref: "tmp:s1", parent: tApprovedParent.id, title: "Sub One" },
         ],
         actor,
       ),
@@ -178,9 +199,30 @@ async function main(): Promise<void> {
     expectOpError("epic requires title", await validateProposal(P, [{ op: "create_epic", ref: "tmp:e1" }], actor), 0, "title is required");
     expectOpError("create requires tmp ref", await validateProposal(P, [{ op: "create_task", ref: "t1", title: "X" }], actor), 0, "tmp:");
     expectOpError("undeclared epic ref", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: "tmp:nope" }], actor), 0, "not declared");
-    expectOk("link existing epic id", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: epic.id }], actor));
+    expectOpError("task under new epic ref blocked until epic plan approval", await validateProposal(P, [
+      { op: "create_epic", ref: "tmp:e1", title: "Epic One", description: "x" },
+      { op: "create_task", ref: "tmp:t1", title: "X", epic: "tmp:e1" },
+    ], actor), 1, "approve the Epic Action Plan first");
+    expectOpError("unapproved epic blocks task breakdown", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: epic.id }], actor), 0, "Epic Action Plan must be approved");
+    expectOk("link approved existing epic id", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: approvedEpic.id }], actor));
+    await prisma.task.create({
+      data: {
+        projectId: project.id,
+        epicId: approvedEpic.id,
+        title: "Existing epic task",
+        status: "To Do",
+        rank: 4,
+        statusChangedAt: new Date(),
+      },
+    });
+    expectOpError("existing epic task sequence blocks more agent-created epic tasks", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: approvedEpic.id }], actor), 0, "already has top-level tasks");
     expectOpError("bogus epic id", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: "c_nope" }], actor), 0, "not found");
     expectOpError("subtask requires parent", await validateProposal(P, [{ op: "create_subtask", ref: "tmp:s1", title: "X" }], actor), 0, "parent");
+    expectOpError("subtask under new task blocked", await validateProposal(P, [
+      { op: "create_task", ref: "tmp:t1", title: "Task", epic: approvedEpic.id },
+      { op: "create_subtask", ref: "tmp:s1", parent: "tmp:t1", title: "Sub" },
+    ], actor), 1, "requires an existing approved parent Task");
+    expectOpError("unapproved parent blocks subtask", await validateProposal(P, [{ op: "create_subtask", ref: "tmp:s1", parent: tTodo.id, title: "Sub" }], actor), 0, "Task Action Plan must be approved");
 
     // --- duplicate ref ---
     {
@@ -229,11 +271,33 @@ async function main(): Promise<void> {
 
     // --- apply (commitProposal) end-to-end ---
     const { commitProposal } = await import("../lib/work-items/apply");
+    const approvedApplyEpic = await prisma.epic.create({
+      data: {
+        projectId: P,
+        title: "Approved Apply Epic",
+        status: "Open",
+        approvedOn: new Date(),
+        approvedById: human.id,
+        actingManagerId: agentUser.id,
+      },
+    });
+    const approvedApplyParent = await prisma.task.create({
+      data: {
+        projectId: P,
+        title: "Approved apply parent",
+        status: "To Do",
+        rank: 10,
+        statusChangedAt: new Date(),
+        approvedOn: new Date(),
+        approvedById: human.id,
+        assigneeId: agentUser.id,
+      },
+    });
 
     const applyOps = [
       { op: "create_epic", ref: "tmp:e", title: "Smoke Epic", description: "from smoke" },
-      { op: "create_task", ref: "tmp:t", title: "Smoke Task", epic: "tmp:e", assignee: human.username },
-      { op: "create_subtask", ref: "tmp:s", parent: "tmp:t", title: "Smoke Sub" },
+      { op: "create_task", ref: "tmp:t", title: "Smoke Task", epic: approvedApplyEpic.id, assignee: human.username },
+      { op: "create_subtask", ref: "tmp:s", parent: approvedApplyParent.id, title: "Smoke Sub" },
       { op: "comment_task", target: tTodo.id, body: "smoke comment" },
     ];
     const applyProposal = await prisma.workItemProposal.create({
@@ -261,17 +325,17 @@ async function main(): Promise<void> {
     const createdEpic = await prisma.epic.findFirst({ where: { projectId: P, title: "Smoke Epic" }, select: { id: true } });
     check("epic created", !!createdEpic);
     const createdTask = await prisma.task.findFirst({
-      where: { projectId: P, title: "Smoke Task" },
+      where: { projectId: P, title: { contains: "Smoke Task" } },
       select: { id: true, epicId: true, assigneeId: true, status: true },
     });
     check("task created in Backlog", createdTask?.status === "Backlog", createdTask);
-    check("task linked to created epic", !!createdTask && createdTask.epicId === createdEpic?.id, createdTask);
+    check("task linked to approved apply epic", !!createdTask && createdTask.epicId === approvedApplyEpic.id, createdTask);
     check("task assigned to human", createdTask?.assigneeId === human.id, createdTask);
     const createdSub = await prisma.task.findFirst({
       where: { projectId: P, title: "Smoke Sub" },
       select: { id: true, parentTaskId: true },
     });
-    check("subtask parented under task", !!createdSub && createdSub.parentTaskId === createdTask?.id, createdSub);
+    check("subtask parented under approved task", !!createdSub && createdSub.parentTaskId === approvedApplyParent.id, createdSub);
     const smokeComment = await prisma.comment.findFirst({
       where: { taskId: tTodo.id, body: "smoke comment" },
       select: { userId: true },

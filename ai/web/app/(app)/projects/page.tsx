@@ -3,18 +3,10 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { listAssignablePrincipals } from "@/lib/principals";
+import { normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
 import AddProjectFab from "./add-project-fab";
 
 export const dynamic = "force-dynamic";
-
-function slugify(s: string) {
-  return s
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 64);
-}
 
 // Create a project with its settings up front (mirrors the task/epic "new"
 // modal: one form, the project's own fields).
@@ -23,8 +15,17 @@ async function createProject(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
   if (!name || name.length > 200) return;
   const description = String(formData.get("description") ?? "").trim() || null;
-  const repositoryPath =
-    String(formData.get("repositoryPath") ?? "").trim() || null;
+  const slug = String(formData.get("slug") ?? "").trim().toLowerCase();
+  if (!slug || !/^[a-zA-Z0-9\-_]+$/.test(slug)) {
+    throw new Error("Project slug is required and may only contain letters, numbers, hyphens, and underscores.");
+  }
+  const repositoryPath = String(formData.get("repositoryPath") ?? "").trim();
+  if (!repositoryPath) throw new Error("Repository folder is required");
+  const rawWorkItemKeyPrefix = String(formData.get("workItemKeyPrefix") ?? "").trim();
+  const workItemKeyPrefix = normalizeWorkItemKeyPrefix(rawWorkItemKeyPrefix);
+  if (!workItemKeyPrefix) {
+    throw new Error("Project key must start with a letter and contain only 2-10 letters or numbers.");
+  }
   const defaultGitUserName =
     String(formData.get("defaultGitUserName") ?? "").trim() || null;
   const defaultGitUserEmail =
@@ -37,10 +38,11 @@ async function createProject(formData: FormData) {
   const doneTtlDays =
     doneTtlRaw === "" ? null : Math.max(1, Math.min(365, Number(doneTtlRaw) || 5));
 
-  // Unique slug from the name; append a short suffix on collision.
-  let slug = slugify(name) || `proj-${Date.now().toString(36)}`;
   if (await db.project.findUnique({ where: { slug }, select: { id: true } })) {
-    slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
+    throw new Error("Project slug is already in use.");
+  }
+  if (await db.project.findUnique({ where: { workItemKeyPrefix }, select: { id: true } })) {
+    throw new Error("Project key is already in use.");
   }
 
   await db.project.create({
@@ -49,6 +51,7 @@ async function createProject(formData: FormData) {
       name,
       description,
       repositoryPath,
+      workItemKeyPrefix,
       defaultGitUserName,
       defaultGitUserEmail,
       defaultAssigneeId,
@@ -136,7 +139,7 @@ export default async function ProjectsPage() {
                   </div>
                 ) : null}
                 <div className="flex gap-2">
-                  <dt className="shrink-0 uppercase tracking-wider">Done TTL</dt>
+                  <dt className="shrink-0 uppercase tracking-wider">Auto archive</dt>
                   <dd>
                     {p.doneTtlDays != null ? `${p.doneTtlDays}d` : "default"}
                   </dd>

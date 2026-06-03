@@ -5,8 +5,18 @@ import { db } from "@/lib/db";
 import { sendTaskCommentNotifications, sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
 import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel-runs";
 import { verifyTaskWorkflowToken } from "@/lib/agents/task-workflow-token";
-import { epicAllowsAgentAction, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import {
+  canApproveActionPlanForActor,
+  epicAllowsAgentAction,
+  resolveDoneOwnerId,
+  resolveReviewOwnerId,
+} from "@/lib/tasks/workflow-actors";
 import { enqueueBranchVerifyJob } from "@/lib/deploy/branch-verify";
+import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
+import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
+import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
+import { resolveGitIdentity } from "@/lib/settings/system";
+import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +28,7 @@ const ACTIONS = [
   "review_feedback",
   "review_done",
   "triage_to_todo",
+  "approve_plan",
 ] as const;
 
 type WorkflowAction = (typeof ACTIONS)[number];
@@ -64,97 +75,6 @@ async function moveTaskStatus(args: {
   ]);
 }
 
-async function assignNextEpicTaskAfterDone(args: {
-  completedTaskId: string;
-  projectId: string;
-  actorUserId: string;
-  actorUsername: string;
-  assigneeId: string | null;
-  epicId: string | null;
-  reviewerId: string | null;
-}) {
-  if (!args.epicId || !args.assigneeId) return null;
-
-  const nextTask = await db.task.findFirst({
-    where: {
-      epicId: args.epicId,
-      deletedAt: null,
-      status: "To Do",
-      assigneeId: null,
-    },
-    orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
-    select: {
-      id: true,
-      title: true,
-      assigneeId: true,
-      actingManagerId: true,
-      project: { select: { slug: true } },
-    },
-  });
-  if (!nextTask) return null;
-
-  await db.$transaction(async (tx) => {
-    await tx.task.update({
-      where: { id: nextTask.id },
-      data: {
-        assigneeId: args.assigneeId,
-        actingManagerId: nextTask.actingManagerId ?? args.reviewerId,
-      },
-    });
-    await tx.activityLog.create({
-      data: {
-        projectId: args.projectId,
-        taskId: nextTask.id,
-        userId: args.actorUserId,
-        kind: "task.assign",
-        payload: JSON.stringify({
-          from: null,
-          to: "previous-assignee",
-          via: "agent-workflow",
-          action: "review_done",
-          afterTaskId: args.completedTaskId,
-        }),
-      },
-    });
-    if (!nextTask.actingManagerId && args.reviewerId) {
-      await tx.activityLog.create({
-        data: {
-          projectId: args.projectId,
-          taskId: nextTask.id,
-          userId: args.actorUserId,
-          kind: "task.acting_manager",
-          payload: JSON.stringify({
-            from: null,
-            to: args.actorUsername,
-            via: "agent-workflow",
-            action: "review_done",
-            afterTaskId: args.completedTaskId,
-          }),
-        },
-      });
-    }
-  });
-
-  await sendTaskWorkflowNotification({
-    taskId: nextTask.id,
-    targetUserId: args.assigneeId,
-    actor: {
-      id: args.actorUserId,
-      username: args.actorUsername,
-      kind: "agent",
-    },
-    reason: "todo_start_required",
-    body: [
-      `Previous epic task was accepted by @${args.actorUsername}.`,
-      `Next task "${nextTask.title}" is now assigned to you in To Do.`,
-      "Read the full task context, move it to In Progress through the workflow endpoint, and start work immediately.",
-      "If you have unresolved review feedback on another Review-stage task, address that feedback first; otherwise start this task now.",
-    ].join("\n"),
-  });
-
-  return { id: nextTask.id, title: nextTask.title, projectSlug: nextTask.project.slug };
-}
-
 export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ taskId: string }> },
@@ -183,6 +103,9 @@ export async function POST(
       { status: 400 },
     );
   }
+  if (comment.length > 8000) {
+    return NextResponse.json({ error: "comment must be <= 8000 chars" }, { status: 400 });
+  }
 
   const original = await db.agentChatMessage.findUnique({
     where: { id: messageId },
@@ -190,18 +113,26 @@ export async function POST(
       id: true,
       taskId: true,
       agentSlug: true,
+      targetType: true,
+      targetValue: true,
     },
   });
   if (!original || original.taskId !== taskId) {
     return NextResponse.json({ error: "Workflow grant message not found" }, { status: 404 });
   }
-  if (!verifyTaskWorkflowToken(messageId, taskId, original.agentSlug, token)) {
+  const grantAgentSlug =
+    original.agentSlug === "room" &&
+    original.targetType === "agent" &&
+    original.targetValue?.startsWith("agent:")
+      ? original.targetValue.slice("agent:".length)
+      : original.agentSlug;
+  if (!verifyTaskWorkflowToken(messageId, taskId, grantAgentSlug, token)) {
     return NextResponse.json({ error: "Invalid workflow token" }, { status: 403 });
   }
 
   const [agent, task] = await Promise.all([
     db.agent.findUnique({
-      where: { slug: original.agentSlug },
+      where: { slug: grantAgentSlug },
       select: {
         slug: true,
         deactivatedAt: true,
@@ -219,10 +150,21 @@ export async function POST(
         assigneeId: true,
         actingManagerId: true,
         reporterId: true,
+        approvedOn: true,
         branchName: true,
         commitPrefix: true,
+        workItemKey: true,
         deletedAt: true,
-        project: { select: { slug: true, repositoryPath: true } },
+        project: {
+          select: {
+            slug: true,
+            repositoryPath: true,
+            defaultGitUserName: true,
+            defaultGitUserEmail: true,
+            onlyReportersCanApproveActionPlans: true,
+            onlyReportersCanSetTasksDone: true,
+          },
+        },
         epic: { select: { status: true, actingManagerId: true, commitPrefix: true } },
       },
     }),
@@ -241,12 +183,19 @@ export async function POST(
     username: agent.user.username,
   };
   const reviewerId = resolveReviewOwnerId(task);
+  const doneOwnerId = resolveDoneOwnerId(task);
   const isReviewer = reviewerId === agent.user.id;
+  const canSetDone = doneOwnerId === agent.user.id;
   const isAssignee = task.assigneeId === agent.user.id;
 
   if (action === "start") {
     if (!isAssignee) return NextResponse.json({ error: "Only the assignee can start this task" }, { status: 403 });
-    if (task.status !== "To Do") return NextResponse.json({ error: "Task must be in To Do before start" }, { status: 409 });
+    if (task.status !== "To Do" && task.status !== "Review") {
+      return NextResponse.json({ error: "Task must be in To Do or Review before start/resume" }, { status: 409 });
+    }
+    if (!task.approvedOn) {
+      return NextResponse.json({ error: "Action Plan must be approved before start" }, { status: 409 });
+    }
     if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be Open before task work starts" }, { status: 409 });
 
     await moveTaskStatus({
@@ -265,12 +214,131 @@ export async function POST(
     });
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
-    return NextResponse.json({ ok: true, taskId: task.id, status: "In Progress" });
+    return NextResponse.json({ ok: true, taskId: task.id, status: "In Progress", resumed: task.status === "Review" });
+  }
+
+  if (action === "approve_plan") {
+    if (!canApproveActionPlanForActor(task, agent.user.id)) {
+      return NextResponse.json({
+        error: task.project.onlyReportersCanApproveActionPlans
+          ? "Only the task reporter can approve the Action Plan"
+          : "Only the resolved reviewer or reporter can approve the Action Plan",
+      }, { status: 403 });
+    }
+    if (task.approvedOn) {
+      return NextResponse.json({ ok: true, taskId: task.id, approved: true, alreadyApproved: true });
+    }
+    const approvedAt = new Date();
+    const moveToTodo = task.status === "Backlog";
+    await db.$transaction([
+      db.task.update({
+        where: { id: task.id },
+        data: {
+          approvedOn: approvedAt,
+          approvedById: agent.user.id,
+          ...(moveToTodo ? { status: "To Do", statusChangedAt: approvedAt } : {}),
+        },
+      }),
+      db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId: task.id,
+          userId: agent.user.id,
+          kind: "task.action_plan.approve",
+          targetAgent: agent.slug,
+          payload: JSON.stringify({
+            taskId: task.id,
+            previousStatus: task.status,
+            status: moveToTodo ? "To Do" : task.status,
+            via: "agent-workflow",
+          }),
+        },
+      }),
+      ...(comment
+        ? [
+            db.agentChatMessage.create({
+              data: {
+                projectId: task.projectId,
+                taskId: task.id,
+                epicId: null,
+                agentSlug: "room",
+                senderUserId: agent.user.id,
+                body: comment,
+                allowDescriptionEdit: false,
+                originChannel: "chat",
+              },
+            }),
+            db.activityLog.create({
+              data: {
+                projectId: task.projectId,
+                taskId: task.id,
+                userId: agent.user.id,
+                kind: "task.chat.reply",
+                targetAgent: agent.slug,
+                payload: JSON.stringify({
+                  agentSlug: agent.slug,
+                  workflowAction: "approve_plan",
+                  source: "approval_comment",
+                }),
+              },
+            }),
+          ]
+        : []),
+      ...(moveToTodo
+        ? [
+            db.activityLog.create({
+              data: {
+                projectId: task.projectId,
+                taskId: task.id,
+                userId: agent.user.id,
+                kind: "task.move",
+                targetAgent: agent.slug,
+                payload: JSON.stringify({
+                  from: "Backlog",
+                  to: "To Do",
+                  via: "action-plan-approval",
+                  action,
+                }),
+              },
+            }),
+          ]
+        : []),
+    ]);
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
+    await createActionPlanSubtasksForTask({
+      taskId: task.id,
+      approvedAt,
+      approvedById: agent.user.id,
+    });
+    if (task.assigneeId) {
+      await sendTaskWorkflowNotification({
+        taskId: task.id,
+        targetUserId: task.assigneeId,
+        actor,
+        reason: "todo_start_required",
+        body: [
+          `The Action Plan for "${task.title}" was approved by @${agent.user.username}.`,
+          "You may now call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
+          "Do not post a visible acknowledgement unless a blocker or material plan change appears.",
+        ].join("\n"),
+      });
+    }
+    if (comment) revalidateTaskReplyScope(task.id, "chat");
+    revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    revalidatePath(`/projects/${task.project.slug}`);
+    return NextResponse.json({ ok: true, taskId: task.id, approved: true, status: moveToTodo ? "To Do" : task.status });
   }
 
   if (action === "ready_for_review" || action === "submit_review") {
     if (!isAssignee) return NextResponse.json({ error: "Only the assignee can send this task to Review" }, { status: 403 });
-    if (task.status !== "In Progress") return NextResponse.json({ error: "Task must be In Progress before Review" }, { status: 409 });
+    if (task.status !== "In Progress" && task.status !== "Review") {
+      return NextResponse.json({ error: "Task must be In Progress or already in Review before ready_for_review" }, { status: 409 });
+    }
     if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be Open before task work advances" }, { status: 409 });
 
     // Resolve repoTouched. The assignee can override by sending an explicit
@@ -280,16 +348,21 @@ export async function POST(
     const repoTouched = typeof payload.repoTouched === "boolean"
       ? payload.repoTouched
       : codeTouching;
-    const resolvedCommitPrefix = task.commitPrefix ?? task.epic?.commitPrefix ?? null;
-
-    await moveTaskStatus({
-      taskId: task.id,
-      projectId: task.projectId,
-      actorUserId: agent.user.id,
-      from: task.status,
-      to: "Review",
-      action,
+    const resolvedCommitPrefix = effectiveCommitPrefix({
+      commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
+      workItemKey: task.workItemKey,
     });
+
+    if (task.status !== "Review") {
+      await moveTaskStatus({
+        taskId: task.id,
+        projectId: task.projectId,
+        actorUserId: agent.user.id,
+        from: task.status,
+        to: "Review",
+        action,
+      });
+    }
     await recordPmChannelRunWorkflowAction({
       taskId: task.id,
       agentSlug: agent.slug,
@@ -297,13 +370,40 @@ export async function POST(
       action,
     });
 
-    // Karen verifier: only enqueue when the task plausibly touched the repo.
-    // If branchName or repositoryPath is unset, there's nothing for Karen to
+    let reviewCommentId: string | null = null;
+    if (comment) {
+      const created = await db.$transaction(async (tx) => {
+        const row = await tx.comment.create({
+          data: { taskId: task.id, userId: agent.user!.id, body: comment },
+          select: { id: true },
+        });
+        await tx.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: task.id,
+            userId: agent.user!.id,
+            kind: "task.comment",
+            targetAgent: agent.slug,
+            payload: JSON.stringify({
+              commentId: row.id,
+              workflowAction: action,
+              agentSlug: agent.slug,
+            }),
+          },
+        });
+        return row;
+      });
+      reviewCommentId = created.id;
+    }
+
+    // Monitor verifier: only enqueue when the task plausibly touched the repo.
+    // If branchName or repositoryPath is unset, there's nothing for the verifier to
     // check against — skip silently. If the assignee declared repoTouched=
     // false (e.g., doc-only task), also skip.
     let verifyJobId: string | null = null;
     if (repoTouched && task.branchName && task.project.repositoryPath) {
       const jobId = randomUUID();
+      const gitIdentity = await resolveGitIdentity(task.project);
       try {
         await enqueueBranchVerifyJob({
           jobId,
@@ -313,6 +413,8 @@ export async function POST(
           repositoryPath: task.project.repositoryPath,
           branchName: task.branchName,
           commitPrefix: resolvedCommitPrefix,
+          expectedGitUserName: gitIdentity.name,
+          expectedGitUserEmail: gitIdentity.email,
           requestedByAgentSlug: agent.slug,
           requestedByUserId: agent.user.id,
           requestedAt: new Date().toISOString(),
@@ -330,6 +432,8 @@ export async function POST(
               branchName: task.branchName,
               commitPrefix: resolvedCommitPrefix,
               repositoryPath: task.project.repositoryPath,
+              expectedGitUserName: gitIdentity.name,
+              expectedGitUserEmail: gitIdentity.email,
             }),
           },
         });
@@ -348,16 +452,19 @@ export async function POST(
         reason: "review_requested",
         body: [
           `Task "${task.title}" was moved to Review by @${agent.user.username}.`,
+          comment
+            ? `Assignee note:\n${comment}`
+            : null,
           repoTouched && verifyJobId
-            ? `Karen has been asked to verify origin/${task.branchName} reflects the work; a pm.repo.verify.* task comment will follow. Check it before reviewing.`
+            ? `The monitor verifier has been asked to verify origin/${task.branchName} reflects the work; a pm.repo.verify.* task comment will follow. Check it before reviewing.`
             : "The assignee indicated this task did not change the repository (or no branch is set). Verify the non-code work directly.",
-          "Review the completed work and full task context. If satisfied, move the task to Done through the workflow endpoint without posting an approval-only comment. If changes or blockers remain, leave concise feedback while keeping it in Review.",
-        ].join("\n"),
+          "Review the completed work or respond to the assignee's blocker/question using the full task context. If satisfied, move the task to Done through the workflow endpoint without posting an approval-only comment. If changes or blockers remain, leave concise feedback while keeping it in Review.",
+        ].filter(Boolean).join("\n"),
       });
     }
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
-    return NextResponse.json({ ok: true, taskId: task.id, status: "Review", verifyJobId, repoTouched });
+    return NextResponse.json({ ok: true, taskId: task.id, status: "Review", verifyJobId, repoTouched, commentId: reviewCommentId });
   }
 
   if (action === "review_feedback") {
@@ -407,50 +514,36 @@ export async function POST(
   }
 
   if (action === "review_done") {
-    if (!isReviewer) return NextResponse.json({ error: "Only the resolved reviewer can complete this task" }, { status: 403 });
+    if (!canSetDone) {
+      return NextResponse.json({
+        error: task.project.onlyReportersCanSetTasksDone
+          ? "Only the task reporter can complete this task"
+          : "Only the resolved reviewer can complete this task",
+      }, { status: 403 });
+    }
     if (task.status !== "Review") return NextResponse.json({ error: "Task must be in Review before Done" }, { status: 409 });
 
-    await moveTaskStatus({
+    const completion = await completeReviewedTaskAndAssignNext({
       taskId: task.id,
-      projectId: task.projectId,
-      actorUserId: agent.user.id,
-      from: task.status,
-      to: "Done",
-      action,
+      actor,
+      via: "agent-workflow",
+      requireReviewerUserId: agent.user.id,
     });
+    if (!completion.completed) {
+      return NextResponse.json({ error: `Could not complete task: ${completion.reason}` }, { status: 409 });
+    }
     await recordPmChannelRunWorkflowAction({
       taskId: task.id,
       agentSlug: agent.slug,
       messageId,
       action,
     });
-    if (task.assigneeId) {
-      await sendTaskWorkflowNotification({
-        taskId: task.id,
-        targetUserId: task.assigneeId,
-        actor,
-        reason: "review_done",
-        body: [
-          `Task "${task.title}" was reviewed and moved to Done by @${agent.user.username}.`,
-          "No further action is required unless the task is reopened.",
-        ].join("\n"),
-      });
-    }
-    const nextTask = await assignNextEpicTaskAfterDone({
-      completedTaskId: task.id,
-      projectId: task.projectId,
-      actorUserId: agent.user.id,
-      actorUsername: agent.user.username,
-      assigneeId: task.assigneeId,
-      epicId: task.epicId,
-      reviewerId,
-    });
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
-    if (nextTask) {
-      revalidatePath(`/projects/${task.project.slug}/tasks/${nextTask.id}`);
+    if (completion.nextTask) {
+      revalidatePath(`/projects/${task.project.slug}/tasks/${completion.nextTask.id}`);
     }
     revalidatePath(`/projects/${task.project.slug}`);
-    return NextResponse.json({ ok: true, taskId: task.id, status: "Done", nextTask });
+    return NextResponse.json({ ok: true, taskId: task.id, status: "Done", nextTask: completion.nextTask });
   }
 
   if (action === "triage_to_todo") {
@@ -480,7 +573,9 @@ export async function POST(
         reason: "todo_start_required",
         body: [
           `Task "${task.title}" is now in To Do and assigned to you.`,
-          "Read the full task context, move it to In Progress through the workflow endpoint, and start work immediately.",
+          task.approvedOn
+            ? "The Action Plan is approved. Move it to In Progress through the workflow endpoint and start work immediately."
+            : "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
         ].join("\n"),
       });
     }

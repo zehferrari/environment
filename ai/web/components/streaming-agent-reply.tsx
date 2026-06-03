@@ -28,10 +28,16 @@ interface StreamingAgentReplyProps {
 
 function TypingDots() {
   return (
-    <span className="inline-flex items-end gap-0.5 pl-1" aria-hidden="true">
-      <span className="h-1 w-1 animate-bounce rounded-full bg-current [animation-delay:-240ms]" />
-      <span className="h-1 w-1 animate-bounce rounded-full bg-current [animation-delay:-120ms]" />
-      <span className="h-1 w-1 animate-bounce rounded-full bg-current" />
+    <span className="inline-flex items-end gap-1 pl-1.5" aria-hidden="true">
+      <style>{`
+        @keyframes pm-typing-dot {
+          0%, 80%, 100% { transform: translateY(2px); opacity: 0.55; }
+          38% { transform: translateY(-5px); opacity: 1; }
+        }
+      `}</style>
+      <span className="h-1 w-1 rounded-full bg-current [animation:pm-typing-dot_720ms_cubic-bezier(0.33,0,0.2,1)_infinite] [animation-delay:-280ms]" />
+      <span className="h-1 w-1 rounded-full bg-current [animation:pm-typing-dot_720ms_cubic-bezier(0.33,0,0.2,1)_infinite] [animation-delay:-140ms]" />
+      <span className="h-1 w-1 rounded-full bg-current [animation:pm-typing-dot_720ms_cubic-bezier(0.33,0,0.2,1)_infinite]" />
     </span>
   );
 }
@@ -64,30 +70,27 @@ function waitingCopy(args: {
   runStatus?: StreamState["runStatus"];
   elapsedMs: number;
   error: string | null;
-  agentSlug: string;
 }) {
   if (args.status === "error") {
     return args.error ?? "Agent stream failed";
   }
-  if (args.status === "connecting") {
-    return "Connecting to live reply";
-  }
   if (args.runStatus === "queued") {
-    return `Queued for @${args.agentSlug}`;
+    return "Queued...";
   }
   if (args.runStatus === "retryable") {
-    return `Retrying @${args.agentSlug}`;
+    return "Retrying...";
   }
-  if (args.runStatus === "accepted" && args.elapsedMs < 12_000) {
-    return `Delivered to @${args.agentSlug}`;
-  }
-  if (args.elapsedMs < 30_000) {
-    return `@${args.agentSlug} is starting`;
-  }
-  if (args.elapsedMs < 90_000) {
-    return `Still waiting for @${args.agentSlug}'s first token`;
-  }
-  return `Still checking @${args.agentSlug}'s saved reply`;
+
+  const phases = [
+    { until: 4_000, label: "Waking..." },
+    { until: 12_000, label: "Thinking..." },
+    { until: 24_000, label: "Reading..." },
+    { until: 40_000, label: "Planning..." },
+    { until: 64_000, label: "Writing..." },
+    { until: 92_000, label: "Checking..." },
+    { until: 125_000, label: "Sending..." },
+  ];
+  return phases.find((phase) => args.elapsedMs < phase.until)?.label ?? "Recovering reply...";
 }
 
 export default function StreamingAgentReply({
@@ -219,7 +222,6 @@ export default function StreamingAgentReply({
     runStatus,
     elapsedMs,
     error,
-    agentSlug,
   });
   const displayText = targetKind === "task-chat" || targetKind === "epic-chat"
     ? extractDiscussionSectionA(text)

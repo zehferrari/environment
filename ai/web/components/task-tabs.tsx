@@ -1,6 +1,7 @@
 "use client";
 
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 // Lightweight tab set for the task form. Server-rendered panels are passed
 // as children of <TabPanel> (the standard "server content inside a client
@@ -18,6 +19,14 @@ import { createContext, useContext, useState, type ReactNode } from "react";
 type TabsCtx = { active: string; setActive: (tab: string) => void };
 const Ctx = createContext<TabsCtx | null>(null);
 
+function tabParam(tab: string) {
+  return tab
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 export function TabsProvider({
   defaultTab,
   children,
@@ -26,12 +35,33 @@ export function TabsProvider({
   children: ReactNode;
 }) {
   const [active, setActive] = useState(defaultTab);
+  useEffect(() => {
+    setActive(defaultTab);
+  }, [defaultTab]);
   return <Ctx.Provider value={{ active, setActive }}>{children}</Ctx.Provider>;
 }
 
-export function TabsNav({ tabs, sticky = false }: { tabs: string[]; sticky?: boolean }) {
+export function TabsNav({ tabs, sticky = false }: { tabs: readonly string[]; sticky?: boolean }) {
   const ctx = useContext(Ctx);
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   if (!ctx) return null;
+  const selectTab = (tab: string) => {
+    ctx.setActive(tab);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("tab", tabParam(tab));
+    if (tab !== "Action Plan") {
+      params.delete("chatArchive");
+      params.delete("chatRoom");
+    }
+    if (tab !== "Changes") {
+      params.delete("commit");
+      params.delete("file");
+    }
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false });
+  };
   return (
     <div
       role="tablist"
@@ -49,7 +79,7 @@ export function TabsNav({ tabs, sticky = false }: { tabs: string[]; sticky?: boo
             type="button"
             role="tab"
             aria-selected={selected}
-            onClick={() => ctx.setActive(tab)}
+            onClick={() => selectTab(tab)}
             className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition ${
               selected
                 ? "border-[var(--color-accent)] text-[var(--color-text)]"

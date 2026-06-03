@@ -211,6 +211,8 @@ export async function sendAgentChatMessage(formData: FormData) {
     ? ["all-coders"]
     : requestedTargets.filter((value) => value !== "all-coders");
   const requestedBaseArchiveId = String(formData.get("baseArchiveId") ?? "").trim() || null;
+  const requestedOriginChannel = String(formData.get("originChannel") ?? "").trim();
+  const originChannel = requestedOriginChannel === "description" ? "description" : "chat";
   const allowDescriptionEdit = actor.kind === "human";
   const allowWorkItemManagement = actor.kind === "human";
 
@@ -437,6 +439,7 @@ export async function sendAgentChatMessage(formData: FormData) {
       body,
       allowDescriptionEdit,
       allowWorkItemManagement,
+      originChannel,
     },
     select: { id: true },
   });
@@ -450,8 +453,10 @@ export async function sendAgentChatMessage(formData: FormData) {
       payload: JSON.stringify({
         messageId: msg.id,
         agentSlug: dbAgentSlug,
+        epicId,
         allowDescriptionEdit,
         allowWorkItemManagement,
+        originChannel,
         baseArchiveId,
         targetType,
         targetValue,
@@ -643,6 +648,7 @@ export async function sendAgentChatMessage(formData: FormData) {
         payload: JSON.stringify({
           messageId: msg.id,
           agentSlug,
+          epicId,
           driver: delivery.driver,
           status: delivery.status ?? null,
           error: delivery.error ?? null,

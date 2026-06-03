@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import type { ActorKind } from "@/lib/workflow";
+import { normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
 
 async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
   const session = await auth();
@@ -27,7 +28,7 @@ export async function setProjectSettings(formData: FormData) {
 
   const project = await db.project.findUnique({
     where: { slug },
-    select: { id: true, deletedAt: true },
+    select: { id: true, deletedAt: true, workItemKeyPrefix: true },
   });
   if (!project || project.deletedAt) return;
 
@@ -52,11 +53,31 @@ export async function setProjectSettings(formData: FormData) {
   }
 
   const repositoryPath = trimOrNull(formData.get("repositoryPath"));
+  if (!repositoryPath) throw new Error("Repository folder is required");
   const defaultGitUserName = trimOrNull(formData.get("defaultGitUserName"));
   const defaultGitUserEmail = trimOrNull(formData.get("defaultGitUserEmail"));
+  const rawWorkItemKeyPrefix = trimOrNull(formData.get("workItemKeyPrefix"));
+  if (!rawWorkItemKeyPrefix) {
+    throw new Error("Project key is required");
+  }
+  const workItemKeyPrefix = normalizeWorkItemKeyPrefix(rawWorkItemKeyPrefix);
+  if (!workItemKeyPrefix) {
+    throw new Error("Project key must start with a letter and contain only 2-10 letters or numbers.");
+  }
+  if (workItemKeyPrefix && workItemKeyPrefix !== project.workItemKeyPrefix) {
+    const existing = await db.project.findUnique({
+      where: { workItemKeyPrefix },
+      select: { id: true },
+    });
+    if (existing && existing.id !== project.id) {
+      throw new Error("Project key is already in use by another project.");
+    }
+  }
+  const onlyReportersCanApproveActionPlans = formData.get("onlyReportersCanApproveActionPlans") === "on";
+  const onlyReportersCanSetTasksDone = formData.get("onlyReportersCanSetTasksDone") === "on";
   const defaultAssigneeId = trimOrNull(formData.get("defaultAssigneeId"));
   const defaultReviewerId = trimOrNull(formData.get("defaultReviewerId"));
-  // Blank Done-TTL inherits the system default (resolved on read).
+  // Blank automatic archive age inherits the system default (resolved on read).
   const doneTtlDaysRaw = String(formData.get("doneTtlDays") ?? "").trim();
   const doneTtlDays =
     doneTtlDaysRaw === "" ? null : Math.max(1, Math.min(365, Number(doneTtlDaysRaw) || 5));
@@ -70,6 +91,9 @@ export async function setProjectSettings(formData: FormData) {
         repositoryPath,
         defaultGitUserName,
         defaultGitUserEmail,
+        workItemKeyPrefix,
+        onlyReportersCanApproveActionPlans,
+        onlyReportersCanSetTasksDone,
         defaultAssigneeId,
         defaultReviewerId,
         doneTtlDays,
@@ -86,6 +110,9 @@ export async function setProjectSettings(formData: FormData) {
           repositoryPath,
           defaultGitUserName,
           defaultGitUserEmail,
+          workItemKeyPrefix,
+          onlyReportersCanApproveActionPlans,
+          onlyReportersCanSetTasksDone,
           defaultAssigneeId,
           defaultReviewerId,
           doneTtlDays,

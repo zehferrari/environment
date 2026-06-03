@@ -95,7 +95,7 @@ creating a chat or comment row.
 
 ### Soft-deleted content is hidden from agents
 
-A human can delete a comment, a Task/Epic Discussion bubble, or a
+A human can delete a comment, a Task/Epic Action Plan bubble, or a
 direct-agent-chat bubble. PM does **not** hard-delete the row — it
 sets `deletedAt` + `deletedById` and keeps the body for human-side
 review (the UI shows a collapsed dotted divider with a `[+]` toggle).
@@ -193,7 +193,7 @@ If the final reply text is exactly `PM_SILENT_NO_CONTRIBUTION`, PM does
 not write a visible reply. It records a `*.silent` ActivityLog row with
 `inReplyToMessageId` so pending live bubbles settle cleanly.
 
-Task and Epic Discussion replies must use two markdown sections:
+Task and Epic Action Plan replies must use two markdown sections:
 
 ```markdown
 ## Section A - Full Response
@@ -203,9 +203,9 @@ Task and Epic Discussion replies must use two markdown sections:
 <short direct summary focused on the human's latest request>
 ```
 
-The browser shows Section B by default in saved Discussion bubbles and
+The browser shows Section B by default in saved Action Plan bubbles and
 lets the user flip to Section A. Live streaming and pending reply blocks
-show Section A. PM normalizes non-conforming Discussion replies at the
+show Section A. PM normalizes non-conforming Action Plan replies at the
 callback boundary so the UI always has both display modes.
 
 ## Context Requirements
@@ -221,7 +221,7 @@ enough. The live context endpoints can return:
 - **every** comment on the item (up to a generous breadth cap, currently
   40), regardless of who wrote it or whether the agent was directly
   addressed by it;
-- **every** live Task/Epic Discussion message on the item (up to a
+- **every** live Task/Epic Action Plan message on the item (up to a
   generous breadth cap, currently 50), plus the archived-discussion
   chain that produced the current room, regardless of which agent each
   message was directed at and including other agents' replies and
@@ -246,10 +246,10 @@ identified by filename and `/api/attachments/<id>` path.
 ## Work-Item Proposals (propose → approve)
 
 Implemented for direct PM chats attached to a project and for Task/Epic
-Discussion messages. Every human-authored project-scoped message carries
+Action Plan messages. Every human-authored project-scoped message carries
 the project environment (repo path, git identity, picker defaults,
 existing epics + open tasks) plus a single-use proposal grant. In
-Task/Epic Discussion, the grant is consumed per addressed agent so an
+Task/Epic Action Plan, the grant is consumed per addressed agent so an
 `All Coders` message can let each coder submit one proposal. The agent
 must use that grant only when the current human message directly asks for
 project work-item changes. The agent does NOT mutate the board — it
@@ -359,10 +359,26 @@ comments only when they add useful task information; no-contribution
 turns use the silent reply token.
 
 Backlog assignment is planning/opinion only: the assigned agent replies
-with a task-comment implementation plan and does not change status.
-`To Do` is the approval-to-execute signal: the assigned agent moves the
-task to `In Progress` and starts immediately. `Review` is only for
-completed implementation review.
+in Action Plan with a technical implementation plan and does not change
+status. `To Do` is executable only after the Action Plan has
+`approved_on` and `approved_by`; until then the assignee waits for the
+reviewer or reporter. Reviewers/reporters reply in Action Plan with
+consolidated feedback when the plan needs adjustment, or approve with a
+concise note explaining why the plan is acceptable or naming any
+constraints. When a Task Action Plan has an explicit `Deliverables`,
+`Implementation steps`, `Checklist`, `Subtasks`, or `Milestones` section
+and the Task has no subtasks yet, PM creates those entries as ordered
+task-local subtasks for progress tracking. Bullets under `Inputs`, `Rule
+logic`, context, risks, or open questions are not subtasks. Subtasks can
+be created only by the task assignee, only after the Task Action Plan is
+approved, and only when the Task has no existing child subtasks. Epic
+implementation tasks can be created only by the Epic acting manager, only
+after the Epic Action Plan is approved, and only when the Epic has no
+existing child tasks. `Review` is only for completed
+implementation review or a real blocker/question that needs reviewer,
+manager, or reporter input; when the awaited response arrives, the
+assignee resumes with workflow action `start`, completes the follow-up,
+then calls `ready_for_review` again.
 
 ### Commit hygiene + Review verification
 
@@ -381,21 +397,26 @@ assignee must:
   set), or `repoTouched: false` for docs-only / decision-only tasks.
 
 When `repoTouched` resolves true, PM drops a JSON job into
-`/var/lib/pm/branch-verify/<jobId>.json`. The karen-side runner
-(`pm-verify-runner.service`) runs `git -C <repositoryPath> fetch
-origin <branchName>` on the already-cloned repo, looks for commits
-whose subject starts with the COMMIT_PREFIX on
+`/var/lib/pm/branch-verify/<jobId>.json`. The branch-verify runner
+(`pm-verify-runner.service`) runs as `PM_VERIFY_RUN_USER`, executes
+`git -C <repositoryPath> fetch origin <branchName>` on the already-cloned
+repo, looks for commits whose subject starts with the COMMIT_PREFIX on
 `origin/<branchName>`, and posts a `pm.repo.verify.ok` task comment
 (with HEAD sha, the latest prefix-matching commit, push timestamp) or
-`pm.repo.verify.fail` (no push found / no prefix match). The Review
-transition itself is NOT blocked — the verifier publishes its result
-asynchronously and the reviewer reads it before approving.
+`pm.repo.verify.fail` (no push found / no prefix match / verifier
+credential failure) as `PM_MONITOR_USER`. The Review transition itself
+is NOT blocked — the verifier publishes its result asynchronously and
+the reviewer reads it before approving.
 
 The reviewer's `review_requested` workflow turn adds a **Review
 verification** block instructing them to read the latest
-`pm.repo.verify.*` comment first: on `ok` proceed; on `fail` send
-`review_feedback` asking the assignee to push (with prefix) before
-review; if neither has appeared, wait briefly for Karen.
+`pm.repo.verify.*` comment first: on `ok` proceed; on fail because no
+branch/no commit/no prefix match, send `review_feedback` asking the
+assignee to push with the prefix before review. On fail because the
+monitor verifier cannot fetch the remote (`Unauthorized`, permission
+denied, cannot read from remote), treat it as monitor credential
+configuration, not an assignee push problem. If neither has appeared,
+wait briefly for the monitor verifier.
 
 ## Future Agent Actions
 

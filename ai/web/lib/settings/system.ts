@@ -3,7 +3,7 @@
 // A single `SystemSettings` row (id "system") holds global defaults used
 // when a project leaves the matching field blank:
 //   - git identity (name/email) for agent commits;
-//   - doneTtlDays for the board's Done-column TTL;
+//   - doneTtlDays for automatic archiving of Done tasks;
 //   - binTtlDays for how long ANY soft-delete bin is kept before purge.
 //
 // This module is read-only (no "use server") so server components and the
@@ -40,7 +40,7 @@ export async function getSystemSettings(): Promise<SystemSettingsValues> {
   return row ?? EMPTY;
 }
 
-// Done-column TTL (days): project value → system value → hardcoded fallback.
+// Automatic archive age (days): project value → system value → hardcoded fallback.
 export async function resolveDoneTtlDays(
   projectDoneTtlDays: number | null,
 ): Promise<number> {

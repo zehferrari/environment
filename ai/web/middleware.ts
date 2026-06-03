@@ -40,6 +40,16 @@ function isTokenScopedAgentContextRead(path: string) {
   return /^\/api\/agents\/context\/(task|epic|project)\/[^/]+$/.test(path);
 }
 
+function isTokenScopedAttachmentRead(req: NextRequest, path: string) {
+  return (
+    /^\/api\/attachments\/[^/]+$/.test(path) &&
+    (
+      req.nextUrl.searchParams.has("grant") ||
+      req.headers.get("authorization")?.trim().startsWith("Bearer ")
+    )
+  );
+}
+
 function isTokenScopedAgentCallback(path: string) {
   return (
     isTokenScopedAgentReply(path) ||
@@ -77,6 +87,7 @@ export async function middleware(req: NextRequest) {
   if (
     isPublic(pathname) ||
     isTokenScopedAgentCallback(pathname) ||
+    isTokenScopedAttachmentRead(req, pathname) ||
     isOpenClawPmChannelReply(pathname) ||
     isOpenClawPmChannelStream(pathname) ||
     isOpenClawPmChannelEvents(pathname)

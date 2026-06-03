@@ -17,7 +17,6 @@
 import { createReadStream, type ReadStream } from "node:fs";
 import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024; // 25 MiB
@@ -92,15 +91,17 @@ export async function writeAttachment(params: {
   const existing = await stat(finalAbs).catch(() => null);
   if (!existing) {
     const tmpAbs = path.join(
-      tmpdir(),
-      `pm-attach-${sha}-${process.pid}-${Date.now()}`,
+      projectDir,
+      `.pm-attach-${sha}-${process.pid}-${Date.now()}`,
     );
     await writeFile(tmpAbs, params.data, { mode: 0o640 });
     try {
       await rename(tmpAbs, finalAbs);
     } catch (err) {
       await rm(tmpAbs, { force: true }).catch(() => undefined);
-      throw err;
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw err;
+      }
     }
   }
 

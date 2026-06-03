@@ -24,6 +24,7 @@ Source-specific workflow lives in focused files:
 | Pick your next task after finishing one | [Picking your next task](#picking-your-next-task) |
 | Start work on an assigned work item | [Working a tracked task](#working-a-tracked-task) plus the source-specific file |
 | See unassigned work or want to assign work | [Assignment and ownership](#assignment-and-ownership) plus the source-specific file |
+| Operate or debug Zero Latency workflow automation | [Zero Latency workflow enforcement](#zero-latency-workflow-enforcement) |
 | Push code, prepare a branch, or think a PR is needed | [`BITBUCKET.md`](./BITBUCKET.md) and [Code and PR boundary](#code-and-pr-boundary) |
 | Hand off work to another agent | [Task handoff](#task-handoff) |
 | Review someone else's work | [Reviewing](#reviewing) |
@@ -77,7 +78,7 @@ Worked examples (do not hardcode these - read your own record):
 
 ```text
 From: Asdrubal Irwin <a@zeh.me>
-From: Karen Sideye <karen@...>
+From: Monitor Agent <monitor@...>
 ```
 
 - Pull `name` and `email` verbatim from your entry in
@@ -279,6 +280,189 @@ agent.
   rules, or a valid handoff.
 - If a webhook/event says "assigned to me" but the actor is yourself,
   treat it as a policy error and do not start work.
+
+---
+
+## Zero Latency workflow enforcement
+
+This section is the durable workflow contract formerly documented in the
+`workflow-enforcement.txt` handoff. Use it with [`ZEROLATENCY.md`](./ZEROLATENCY.md)
+when operating or debugging the local PM workflow.
+
+### Manager / assignee / reviewer loop
+
+1. A manager opens an Epic and orders the implementation tasks. Child
+   task titles must start with `1.`, `2.`, `3.`, matching the intended
+   implementation order.
+2. Epic implementation tasks may be created only by the Epic acting
+   manager, only after the Epic Action Plan is approved, and only when
+   the Epic has no existing child tasks. Additional work inside a Task is
+   tracked as task-local subtasks, not new Epic tasks.
+3. The manager moves the ordered tasks to `To Do`.
+4. The manager assigns only the first executable task.
+5. The assignee posts one concrete technical plan in the task's Action
+   Plan tab before implementation.
+6. The reviewer or reporter reviews the Action Plan in the Action Plan
+   tab. If it needs adjustment, they reply there with one consolidated
+   feedback comment. If it is acceptable, they approve it with a concise
+   approval note explaining why the plan is acceptable or naming any
+   constraints; approval stamps `approved_on` and `approved_by`.
+   When a Task Action Plan has an explicit `Deliverables`,
+   `Implementation steps`, `Checklist`, `Subtasks`, or `Milestones`
+   section and the Task has no subtasks yet, PM creates those entries as
+   ordered task-local subtasks so progress can be tracked against the
+   approved plan. Do not treat bullets under `Inputs`, `Rule logic`,
+   context, risks, or open questions as subtasks.
+   Subtasks may be created only by the task assignee, only after the Task
+   Action Plan is approved, and only when the Task has no existing child
+   subtasks.
+7. The assignee starts that approved task by moving it to `In Progress`
+   through the PM workflow endpoint, then does the work.
+8. When implementation is complete, or when the assignee is waiting for
+   reviewer/manager/reporter feedback or response, the assignee moves the
+   task to `Review` through the PM workflow endpoint with one concise
+   note explaining the result, blocker, or question.
+9. If the task was in `Review` only because the assignee was waiting for
+   feedback or an external response, and that response arrives, the
+   assignee resumes with workflow action `start`, completes the follow-up,
+   then calls `ready_for_review` again with one concise note.
+10. The resolved reviewer reviews the task. If satisfied, the reviewer
+   moves it to `Done`; otherwise they leave concrete feedback while the
+   task stays in `Review`.
+11. After `review_done`, PM assigns the next unassigned top-level `To Do`
+   task in the same Open Epic to the completed task's assignee. Task-local
+   subtasks are checklist/progress rows and must not be used as the next
+   Epic implementation task.
+12. Assignees must always answer unresolved review feedback before taking
+   a new `To Do` task. If no feedback is waiting, they should start the
+   next assigned and approved `To Do` task while waiting for review on
+   other work. If the next assigned task is not approved yet, they post
+   its Action Plan and wait.
+
+No agent should fake task completion. The workflow is considered complete
+only when source-channel evidence exists: branch/commit/tests where code
+changed, PM comments where feedback was addressed, and the correct PM
+status transition.
+
+Task and Epic comments are durable workflow evidence, not a stream of
+thinking. Keep visible comments direct and consolidated: one comment per
+turn should contain the current issues, blockers, findings, and required
+questions whenever possible. Do not repeat a known blocker unless the
+state changed or the current turn asks for an update.
+Straightforward implementation tasks should not generate implementation
+debate in comments: start the task, do the work, and leave one concise
+ready-for-review note when there is evidence for the reviewer.
+Never post workflow-status acknowledgements such as "task moved to
+Review" after calling a workflow endpoint. If the endpoint action fully
+handled the turn, reply only with the exact silent token and no other
+text.
+
+### Enforcement paths
+
+- Proposal application must wake affected agents after assignment,
+  status, manager, or comment changes. The database row changing is not
+  enough.
+- Assigned `Backlog` work asks for an Action Plan message only. It does
+  not authorize implementation or status changes.
+- Assigned `To Do` work asks the assignee to post an Action Plan if
+  `approved_on` is empty. Only approved `To Do` work can move to
+  `In Progress`.
+- Moving work to `Review` wakes the resolved reviewer.
+- Waiting for reviewer/manager/reporter feedback is a `Review` state,
+  not a stale `In Progress` state. The assignee should include one
+  concise blocker/question/comment in the `ready_for_review` workflow
+  call.
+- `review_feedback` keeps the task in `Review` and wakes the assignee.
+- `review_done` moves the task to `Done` and triggers the next-task Epic
+  handoff when one exists.
+- Approval-only reviewer comments are treated as a workflow error. The
+  resolved reviewer must use `review_done`; PM also auto-completes a
+  `Review` task when the resolved reviewer posts an unmistakable approval
+  comment, then assigns/wakes the next Epic task if one exists.
+- Agent-authored comments should only wake other agents when they carry a
+  specific workflow action: assignee plan/re-review, reviewer feedback,
+  or an explicit mention. Routine agent status comments must not create a
+  new round of agent discussion.
+- PM-channel callback handling must be rate-limited so a wedged agent or
+  stream cannot flood the web process.
+- Async PM-channel jobs require a live worker drain path: either the
+  in-process poller (`PM_CHANNEL_WORKER_POLL_MS`) or an external worker.
+
+### Monitor-agent fallback
+
+`ai-monitor` is the fallback when normal PM wake paths do not produce
+action. It must read the same PM SQLite database as the active worktree.
+On this host that database is:
+
+```text
+file:/srv/Data/pm/wt-asdrubal-vision.db
+```
+
+The PM workflow probe detects:
+
+- assigned `Backlog` tasks missing a plan/opinion comment;
+- assigned `To Do` tasks not moved to `In Progress`;
+- stale `In Progress` tasks;
+- `Review` tasks waiting on the reviewer;
+- review feedback waiting on the assignee;
+- reviewer/manager/reporter responses waiting on the assignee while the
+  task is in `Review`;
+- active PM-channel turns that never started or stopped producing output.
+
+For `In Progress`, the stale timer uses the assignee's latest task comment
+after the task entered `In Progress`. A real progress comment resets the
+timer; silence after that still escalates. If the assignee is no longer
+actively implementing because they need reviewer/manager/reporter input,
+they must move the task to `Review` with one concise note instead of
+leaving it in `In Progress`.
+
+PM workflow drift is deterministic and bypasses monitor-agent judgment:
+
+```text
+T1 = native PM-channel nudge / wake
+T2 = restart services and nudge again
+T3 = final restart/nudge recovery attempt
+T4 = Telegram only if the issue is still present after T3's confirmation window
+```
+
+`monitor_triage.escalation_ladder.max_attempts` controls the recovery
+attempt count, and `pm_workflow.retry_after_tier3_seconds` controls when
+PM workflow drift starts a new recovery cycle after a Telegram. A nudge or
+Telegram does not resolve a PM workflow issue; only the PM probe no longer
+emitting that issue resolves it.
+
+Live monitor ticks must be single-instance locked. `--dry-run` and
+`--probe-only` must not write monitor state, otherwise debugging can
+accidentally suppress recovery or duplicate nudges.
+
+### Replicating on a new AI server
+
+- Keep host secrets and literal runtime users out of git.
+- Copy the repo template
+  `ai/openclaw/config/ai-monitor.config.json.example` to
+  `/etc/ai-monitor/config.json` and fill host-specific values.
+- Ensure `monitor_triage.auto_action_kinds_bypass_monitor` includes PM
+  workflow kinds:
+  `pm-backlog-plan-missing`, `pm-todo-not-started`,
+  `pm-in-progress-stale`, `pm-review-feedback-awaiting-assignee`,
+  `pm-review-awaiting-reviewer`, `pm-channel-no-start`, and
+  `pm-channel-stalled`.
+- Ensure the monitor can discover the active PM database from
+  `/etc/default/pm-active-worktree` or `/etc/default/pm`.
+- Install changed host helpers after deployment:
+
+```bash
+sudo -n install -m 0755 ai/openclaw/bin/ai-monitor /usr/local/bin/ai-monitor
+sudo -n install -m 0755 ai/openclaw/bin/pm-workflow-nudge /usr/local/sbin/pm-workflow-nudge
+```
+
+- Verify the active DB before relying on alerts:
+
+```bash
+sudo -n /usr/local/bin/ai-monitor --probe-only
+```
+
+Confirm `pm_workflow.database_path` points at the active worktree database.
 
 ---
 

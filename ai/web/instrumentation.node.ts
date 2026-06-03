@@ -3,6 +3,7 @@ import { syncAgents } from "@/lib/agents/sync";
 import { purgeBin } from "@/lib/bin/purge";
 import { purgeProjectBin } from "@/lib/bin/purge-projects";
 import { purgeDirectAgentChatBin } from "@/lib/bin/purge-chats";
+import { autoArchiveDoneTasks } from "@/lib/archive/auto";
 import {
   pmAsyncDispatchEnabled,
   runPmChannelWorkerDrain,
@@ -67,11 +68,17 @@ setInterval(async () => {
   }
 }, intervalMs).unref();
 
-// Hourly bin purge (HOMELAB-48). Hard-deletes Task/Epic rows whose
-// deletedAt is older than PM_BIN_TTL_DAYS (default 7). Runs once at
-// boot so a long downtime doesn't park bin entries past their TTL.
+// Hourly maintenance (HOMELAB-48): archive aged Done tasks, then hard-delete
+// bin rows whose deletedAt is older than the configured bin TTL. Runs once at
+// boot so a long downtime doesn't park stale rows past their TTL.
 const purgeIntervalMin = Number(process.env.PM_BIN_PURGE_INTERVAL_MIN ?? "60");
 const purgeIntervalMs = Math.max(1, purgeIntervalMin) * 60_000;
+try {
+  const r = await autoArchiveDoneTasks();
+  console.log("[pm] boot auto archive:", JSON.stringify(r));
+} catch (err) {
+  console.error("[pm] boot auto archive failed:", err);
+}
 try {
   const r = await purgeBin();
   console.log("[pm] boot bin purge:", JSON.stringify(r));
@@ -91,6 +98,12 @@ try {
   console.error("[pm] boot direct chat bin purge failed:", err);
 }
 setInterval(async () => {
+  try {
+    const r = await autoArchiveDoneTasks();
+    console.log("[pm] periodic auto archive:", JSON.stringify(r));
+  } catch (err) {
+    console.error("[pm] periodic auto archive failed:", err);
+  }
   try {
     const r = await purgeBin();
     console.log("[pm] periodic bin purge:", JSON.stringify(r));

@@ -56,7 +56,16 @@ export function getCachedTaskDetailShell(taskId: string) {
     async () => db.task.findUnique({
       where: { id: taskId },
       include: {
-        project: { select: { id: true, slug: true, name: true } },
+        project: {
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+            repositoryPath: true,
+            onlyReportersCanApproveActionPlans: true,
+            onlyReportersCanSetTasksDone: true,
+          },
+        },
         assignee: {
           select: {
             id: true,
@@ -90,13 +99,35 @@ export function getCachedTaskDetailShell(taskId: string) {
             agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
           },
         },
+        approvedBy: {
+          select: {
+            id: true,
+            username: true,
+            name: true,
+            kind: true,
+            avatarUpdatedAt: true,
+            agent: { select: { slug: true, name: true, avatar: true } },
+          },
+        },
+        archivedBy: {
+          select: {
+            id: true,
+            username: true,
+            name: true,
+            kind: true,
+            avatarUpdatedAt: true,
+            agent: { select: { slug: true, name: true, avatar: true } },
+          },
+        },
         epic: {
           select: {
             id: true,
+            workItemKey: true,
             title: true,
             status: true,
             branchName: true,
             commitPrefix: true,
+            actingManagerId: true,
             actingManager: {
               select: {
                 id: true,
@@ -112,10 +143,11 @@ export function getCachedTaskDetailShell(taskId: string) {
         },
         parent: { select: { id: true, title: true } },
         subtasks: {
-          where: { deletedAt: null },
+          where: { deletedAt: null, archivedAt: null },
           orderBy: { rank: "asc" },
           select: {
             id: true,
+            workItemKey: true,
             title: true,
             status: true,
             updatedAt: true,
@@ -180,7 +212,7 @@ export function getCachedProjectEpics(projectId: string) {
     async () => db.epic.findMany({
       where: {
         projectId,
-        status: { not: "Archive" },
+        archivedAt: null,
         deletedAt: null,
       },
       orderBy: [{ status: "asc" }, { title: "asc" }],
