@@ -21,6 +21,23 @@ function trimOrNull(v: unknown): string | null {
   return t === "" ? null : t;
 }
 
+const DEPLOYMENT_PROVIDERS = new Set(["bitbucket"]);
+const DEPLOYMENT_MODES = new Set(["pr-only", "script", "pipeline", "manual"]);
+
+function deploymentChoice(value: unknown, allowed: Set<string>, fallback: string): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  return allowed.has(raw) ? raw : fallback;
+}
+
+function branchOrNull(value: unknown): string | null {
+  const branch = trimOrNull(value);
+  if (!branch) return null;
+  if (!/^[A-Za-z0-9._\/-]+$/.test(branch) || branch.includes("..") || branch.startsWith("/") || branch.endsWith("/")) {
+    throw new Error("Deployment branches may only contain letters, numbers, dot, underscore, slash, and hyphen.");
+  }
+  return branch;
+}
+
 export async function setProjectSettings(formData: FormData) {
   const actor = await requireActor();
   const slug = String(formData.get("projectSlug") ?? "");
@@ -28,7 +45,22 @@ export async function setProjectSettings(formData: FormData) {
 
   const project = await db.project.findUnique({
     where: { slug },
-    select: { id: true, deletedAt: true, workItemKeyPrefix: true },
+    select: {
+      id: true,
+      deletedAt: true,
+      workItemKeyPrefix: true,
+      deploymentProvider: true,
+      deploymentProductionBranch: true,
+      deploymentPrTargetBranch: true,
+      deploymentMode: true,
+      deploymentOnMerge: true,
+      deploymentPipelineName: true,
+      deploymentHost: true,
+      deploymentEnvironment: true,
+      deploymentBitbucketWorkspace: true,
+      deploymentBitbucketRepoSlug: true,
+      members: { where: { userId: actor.id }, select: { role: true } },
+    },
   });
   if (!project || project.deletedAt) return;
 
@@ -82,6 +114,26 @@ export async function setProjectSettings(formData: FormData) {
   const doneTtlDays =
     doneTtlDaysRaw === "" ? null : Math.max(1, Math.min(365, Number(doneTtlDaysRaw) || 5));
 
+  const actorUser = await db.user.findUnique({ where: { id: actor.id }, select: { username: true, kind: true } });
+  const canEditDeployment =
+    actorUser?.username === "zeh" ||
+    project.members.some((member) => member.role === "owner");
+  const deploymentMode = deploymentChoice(formData.get("deploymentMode"), DEPLOYMENT_MODES, project.deploymentMode);
+  const deploymentData = canEditDeployment
+    ? {
+        deploymentProvider: deploymentChoice(formData.get("deploymentProvider"), DEPLOYMENT_PROVIDERS, project.deploymentProvider),
+        deploymentProductionBranch: branchOrNull(formData.get("deploymentProductionBranch")) ?? "main",
+        deploymentPrTargetBranch: branchOrNull(formData.get("deploymentPrTargetBranch")) ?? branchOrNull(formData.get("deploymentProductionBranch")) ?? "main",
+        deploymentMode,
+        deploymentOnMerge: deploymentMode === "script" ? trimOrNull(formData.get("deploymentOnMerge")) : null,
+        deploymentPipelineName: deploymentMode === "pipeline" ? trimOrNull(formData.get("deploymentPipelineName")) : null,
+        deploymentHost: trimOrNull(formData.get("deploymentHost")),
+        deploymentEnvironment: trimOrNull(formData.get("deploymentEnvironment")),
+        deploymentBitbucketWorkspace: trimOrNull(formData.get("deploymentBitbucketWorkspace")),
+        deploymentBitbucketRepoSlug: trimOrNull(formData.get("deploymentBitbucketRepoSlug")),
+      }
+    : {};
+
   await db.$transaction([
     db.project.update({
       where: { id: project.id },
@@ -97,6 +149,7 @@ export async function setProjectSettings(formData: FormData) {
         defaultAssigneeId,
         defaultReviewerId,
         doneTtlDays,
+        ...deploymentData,
       },
     }),
     db.activityLog.create({
@@ -116,6 +169,7 @@ export async function setProjectSettings(formData: FormData) {
           defaultAssigneeId,
           defaultReviewerId,
           doneTtlDays,
+          ...(canEditDeployment ? { deployment: deploymentData } : {}),
         }),
       },
     }),

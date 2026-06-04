@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+BRANCH="${DEPLOY_BRANCH:-main}"
+SERVICE="${OPENCLAW_GATEWAY_SERVICE:-openclaw-gateway}"
+DRY_RUN="${DRY_RUN:-${DEPLOY_DRY_RUN:-0}}"
+
+run() {
+  if [[ "$DRY_RUN" == "1" || "$DRY_RUN" == "true" ]]; then
+    printf '[dry-run]'
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+cd "$REPO_ROOT"
+current_branch="$(git rev-parse --abbrev-ref HEAD)"
+if [[ "$current_branch" != "$BRANCH" ]]; then
+  run git checkout "$BRANCH"
+fi
+run git fetch origin "$BRANCH"
+run git pull --ff-only origin "$BRANCH"
+
+if command -v systemctl >/dev/null 2>&1; then
+  if systemctl --user list-unit-files "$SERVICE.service" >/dev/null 2>&1; then
+    run systemctl --user restart "$SERVICE.service"
+  else
+    run sudo systemctl restart "$SERVICE.service"
+  fi
+else
+  printf 'systemctl not available; cannot restart %s\n' "$SERVICE" >&2
+  exit 1
+fi

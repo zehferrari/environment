@@ -31,11 +31,13 @@ export default async function ProjectSettingsPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
+  const session = await auth();
   const project = await db.project.findUnique({
     where: { slug, deletedAt: null },
     include: {
       defaultAssignee: { select: { username: true } },
       defaultReviewer: { select: { username: true } },
+      members: { where: { userId: session?.user?.id ?? "__anonymous__" }, select: { role: true } },
     },
   });
   if (!project) notFound();
@@ -44,8 +46,9 @@ export default async function ProjectSettingsPage({
   // whose repo is a git checkout exposed to the shared worktree approach.
   // Scope the worktree options to THIS project's repo, and hide the block
   // entirely when that repo has no worktrees to choose from.
-  const session = await auth();
   const isAdmin = session?.user?.name === "zeh";
+  const canEditDeployment = isAdmin || project.members.some((member) => member.role === "owner");
+  const deploymentInputClass = "w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-70";
   const repoKey = worktreeRepoKey(project.repositoryPath);
   const eligible = isAdmin && isWorktreeExposedRepo(project.repositoryPath) && !!repoKey;
   const switchState = eligible ? await readSwitchState() : null;
@@ -241,6 +244,66 @@ export default async function ProjectSettingsPage({
               className="w-40 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
             />
           </SettingsRow>
+
+
+          <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                  Deployment
+                </div>
+                <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+                  Project deployment config is visible to everyone; only project owners can edit it.
+                </p>
+              </div>
+              {!canEditDeployment ? (
+                <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5 text-[11px] text-[var(--color-text-muted)]">Read-only</span>
+              ) : null}
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <SettingsRow label="Provider" hint="Repository provider for deployment PRs.">
+                <select name="deploymentProvider" defaultValue={project.deploymentProvider} disabled={!canEditDeployment} className={deploymentInputClass}>
+                  <option value="bitbucket">Bitbucket</option>
+                </select>
+              </SettingsRow>
+              <SettingsRow label="Production branch" hint="Canonical production branch.">
+                <input type="text" name="deploymentProductionBranch" defaultValue={project.deploymentProductionBranch ?? "main"} disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+              <SettingsRow label="PR target branch" hint="Destination branch for deployment PRs.">
+                <input type="text" name="deploymentPrTargetBranch" defaultValue={project.deploymentPrTargetBranch ?? project.deploymentProductionBranch ?? "main"} disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <SettingsRow label="Mode" hint="How Monitor deploys after merge.">
+                <select name="deploymentMode" defaultValue={project.deploymentMode} disabled={!canEditDeployment} className={deploymentInputClass}>
+                  <option value="pr-only">PR only</option>
+                  <option value="script">Script</option>
+                  <option value="pipeline">Pipeline</option>
+                  <option value="manual">Manual</option>
+                </select>
+              </SettingsRow>
+              <SettingsRow label="Host" hint="Deployment host label.">
+                <input type="text" name="deploymentHost" defaultValue={project.deploymentHost ?? ""} placeholder="x1" disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+              <SettingsRow label="Environment" hint="Environment name.">
+                <input type="text" name="deploymentEnvironment" defaultValue={project.deploymentEnvironment ?? ""} placeholder="production" disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+            </div>
+            <SettingsRow label="On-merge script" hint="Shell command/path run from repository root when mode is script.">
+              <input type="text" name="deploymentOnMerge" defaultValue={project.deploymentOnMerge ?? ""} placeholder="./ai/openclaw/bin/deploy-on-merge" disabled={!canEditDeployment} className={`${deploymentInputClass} font-mono`} />
+            </SettingsRow>
+            <div className="grid gap-3 md:grid-cols-3">
+              <SettingsRow label="Pipeline name" hint="Provider pipeline selector when mode is pipeline.">
+                <input type="text" name="deploymentPipelineName" defaultValue={project.deploymentPipelineName ?? ""} disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+              <SettingsRow label="Bitbucket workspace" hint="Optional override; otherwise inferred from origin.">
+                <input type="text" name="deploymentBitbucketWorkspace" defaultValue={project.deploymentBitbucketWorkspace ?? ""} disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+              <SettingsRow label="Bitbucket repo slug" hint="Optional override; otherwise inferred from origin.">
+                <input type="text" name="deploymentBitbucketRepoSlug" defaultValue={project.deploymentBitbucketRepoSlug ?? ""} disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+            </div>
+          </div>
 
           <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">

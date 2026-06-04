@@ -153,8 +153,12 @@ model Project {
   doneTtlDays         Int?
   deploymentProvider String @default("bitbucket") @map("deployment_provider")
   deploymentProductionBranch String? @map("deployment_production_branch")
+  deploymentPrTargetBranch String? @map("deployment_pr_target_branch")
   deploymentMode String @default("pr-only") @map("deployment_mode")
   deploymentOnMerge String? @map("deployment_on_merge")
+  deploymentPipelineName String? @map("deployment_pipeline_name")
+  deploymentHost String? @map("deployment_host")
+  deploymentEnvironment String? @map("deployment_environment")
   deploymentBitbucketWorkspace String? @map("deployment_bitbucket_workspace")
   deploymentBitbucketRepoSlug String? @map("deployment_bitbucket_repo_slug")
   // Soft-delete: project bin with 30-day TTL (hard-purge via the

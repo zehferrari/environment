@@ -30,10 +30,14 @@ export interface DeploymentProjectConfig {
   repositoryPath: string;
   provider: "bitbucket";
   productionBranch: string;
+  prTargetBranch: string;
   workspace: string;
   repoSlug: string;
   mode: "pr-only" | "script" | "pipeline" | "manual";
   onMerge: string | null;
+  pipelineName: string | null;
+  deploymentHost: string | null;
+  deploymentEnvironment: string | null;
 }
 
 export interface DeploymentPlan {
@@ -114,6 +118,10 @@ type DeploymentPrRow = {
     repositoryPath: string | null;
     deploymentMode: string;
     deploymentOnMerge: string | null;
+    deploymentPrTargetBranch?: string | null;
+    deploymentPipelineName?: string | null;
+    deploymentHost?: string | null;
+    deploymentEnvironment?: string | null;
     deploymentBitbucketWorkspace: string | null;
     deploymentBitbucketRepoSlug: string | null;
   };
@@ -205,10 +213,14 @@ export async function resolveDeploymentPlan(args: {
         repositoryPath: epic.project.repositoryPath,
         provider: "bitbucket",
         productionBranch: epic.project.deploymentProductionBranch ?? "main",
+        prTargetBranch: epic.project.deploymentPrTargetBranch ?? epic.project.deploymentProductionBranch ?? "main",
         workspace: epic.project.deploymentBitbucketWorkspace ?? repo.workspace,
         repoSlug: epic.project.deploymentBitbucketRepoSlug ?? repo.repoSlug,
         mode: deploymentMode(epic.project.deploymentMode),
         onMerge: epic.project.deploymentOnMerge,
+        pipelineName: epic.project.deploymentPipelineName ?? null,
+        deploymentHost: epic.project.deploymentHost ?? null,
+        deploymentEnvironment: epic.project.deploymentEnvironment ?? null,
       },
       reporter: { userId: epic.reporter.id, name: reporterName(epic.reporter), email: epic.reporter.email },
       targets,
@@ -238,10 +250,14 @@ export async function resolveDeploymentPlan(args: {
       repositoryPath: task.project.repositoryPath,
       provider: "bitbucket",
       productionBranch: task.project.deploymentProductionBranch ?? "main",
+      prTargetBranch: task.project.deploymentPrTargetBranch ?? task.project.deploymentProductionBranch ?? "main",
       workspace: task.project.deploymentBitbucketWorkspace ?? repo.workspace,
       repoSlug: task.project.deploymentBitbucketRepoSlug ?? repo.repoSlug,
       mode: deploymentMode(task.project.deploymentMode),
       onMerge: task.project.deploymentOnMerge,
+      pipelineName: task.project.deploymentPipelineName ?? null,
+      deploymentHost: task.project.deploymentHost ?? null,
+      deploymentEnvironment: task.project.deploymentEnvironment ?? null,
     },
     reporter: { userId: task.reporter.id, name: reporterName(task.reporter), email: task.reporter.email },
     targets: [{
@@ -315,7 +331,8 @@ export async function createBitbucketPullRequest(args: {
   const body = [
     `Reporter: ${args.reporter.name} <${args.reporter.email}>`,
     `Source: ${args.target.branchName}`,
-    `Target: ${args.project.productionBranch}`,
+    `Production: ${args.project.productionBranch}`,
+    `Target: ${args.project.prTargetBranch}`,
     `Latest commit: ${args.latestCommitSha}`,
   ].join("\n");
   const res = await fetch(
@@ -331,7 +348,7 @@ export async function createBitbucketPullRequest(args: {
         title,
         description: body,
         source: { branch: { name: args.target.branchName } },
-        destination: { branch: { name: args.project.productionBranch } },
+        destination: { branch: { name: args.project.prTargetBranch } },
         close_source_branch: false,
       }),
     },
@@ -343,7 +360,7 @@ export async function createBitbucketPullRequest(args: {
     url: json.links?.html?.href ?? "",
     providerPrId: String(json.id ?? ""),
     sourceBranch: args.target.branchName,
-    targetBranch: args.project.productionBranch,
+    targetBranch: args.project.prTargetBranch,
     latestCommitSha: args.latestCommitSha,
   };
 }
@@ -375,7 +392,7 @@ export async function handleDeploymentApproved(args: {
       branchName: target.branchName,
       commitPrefix: target.commitPrefix,
       reporter: plan.reporter,
-      targetBranch: plan.project.productionBranch,
+      targetBranch: plan.project.prTargetBranch,
     });
     const pr = await createPr({
       project: plan.project,
