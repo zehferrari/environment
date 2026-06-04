@@ -75,7 +75,7 @@ export async function createActionPlanSubtasksForTask(args: {
       approvedOn: true,
       branchName: true,
       commitPrefix: true,
-      subtasks: { where: { archivedAt: null, deletedAt: null }, select: { id: true }, take: 1 },
+      subtasks: { where: { deletedAt: null }, select: { id: true }, take: 1 },
     },
   });
   if (!task || task.parentTaskId !== null || task.subtasks.length > 0 || !task.assigneeId || !task.approvedOn) {

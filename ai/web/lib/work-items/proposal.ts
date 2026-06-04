@@ -212,7 +212,6 @@ export async function validateProposal(
             projectId,
             epicId: { in: [...epicIds] },
             parentTaskId: null,
-            archivedAt: null,
             deletedAt: null,
           },
           _count: { _all: true },
@@ -224,7 +223,6 @@ export async function validateProposal(
           where: {
             projectId,
             parentTaskId: { in: [...taskIds] },
-            archivedAt: null,
             deletedAt: null,
           },
           _count: { _all: true },

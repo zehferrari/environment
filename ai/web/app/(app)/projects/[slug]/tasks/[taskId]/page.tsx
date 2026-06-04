@@ -823,7 +823,7 @@ async function createSubtask(formData: FormData) {
       parentTaskId: true,
       assigneeId: true,
       approvedOn: true,
-      subtasks: { where: { archivedAt: null, deletedAt: null }, select: { id: true }, take: 1 },
+      subtasks: { where: { deletedAt: null }, select: { id: true }, take: 1 },
       project: {
         select: {
           slug: true,

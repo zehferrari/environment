@@ -69,7 +69,7 @@ export default async function EpicsListPage({
       reporter: { select: actorSelect },
       _count: {
         select: {
-          tasks: { where: { archivedAt: null, deletedAt: null, parentTaskId: null } },
+          tasks: { where: { deletedAt: null, parentTaskId: null } },
         },
       },
     },

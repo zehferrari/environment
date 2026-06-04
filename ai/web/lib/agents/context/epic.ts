@@ -372,7 +372,7 @@ export async function buildEpicAgentContextPacket(args: {
       assignee: { select: { username: true, kind: true } },
       actingManager: { select: { username: true, kind: true } },
       tasks: {
-        where: { archivedAt: null, deletedAt: null, parentTaskId: null },
+        where: { deletedAt: null, parentTaskId: null },
         orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
         select: {
           id: true,

@@ -641,7 +641,7 @@ export async function createTaskInEpic(formData: FormData) {
       deletedAt: true,
       _count: {
         select: {
-          tasks: { where: { archivedAt: null, deletedAt: null, parentTaskId: null } },
+          tasks: { where: { deletedAt: null, parentTaskId: null } },
         },
       },
       project: {

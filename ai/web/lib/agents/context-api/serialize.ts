@@ -499,7 +499,7 @@ export async function buildEpicContextJson(
       actingManager: { select: { username: true, kind: true } },
       reporter: { select: { username: true, kind: true } },
       tasks: {
-        where: { archivedAt: null, deletedAt: null, parentTaskId: null },
+        where: { deletedAt: null, parentTaskId: null },
         orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
         select: {
           id: true, workItemKey: true, title: true, status: true,

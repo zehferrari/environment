@@ -34,6 +34,7 @@ export type SortableTaskItem = {
   createdAt?: string | null;
   statusChangedAt?: string | null;
   approvedOn?: string | null;
+  archivedAt?: string | null;
   reporter?: MessageActor | null;
   assignee?: MessageActor | null;
   reviewer?: MessageActor | null;
@@ -261,7 +262,7 @@ function SortableRow({
             {item.title}
           </span>
         </div>
-        {showStatusBadge ? <StatusCell status={item.status ?? null} /> : <span />}
+        {showStatusBadge ? <StatusCell status={item.status ?? null} archivedAt={item.archivedAt ?? null} /> : <span />}
         {showAssignee ? (
           <PersonCell actor={item.assignee ?? null} fallbackName={item.assigneeName} emptyLabel="unassigned" />
         ) : <span />}
@@ -398,11 +399,21 @@ function TimeCell({
   );
 }
 
-function StatusCell({ status }: { status: string | null }) {
+function StatusCell({ status, archivedAt }: { status: string | null; archivedAt?: string | null }) {
   if (!status) return <span />;
   return (
-    <span className={`w-fit rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusPillClass(status)}`}>
-      {status}
+    <span className="flex flex-wrap gap-1">
+      <span className={`w-fit rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusPillClass(status)}`}>
+        {status}
+      </span>
+      {archivedAt ? (
+        <span
+          className="w-fit rounded-full border border-slate-400/60 bg-slate-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-700"
+          title={`Archived ${archivedAt}`}
+        >
+          Archived
+        </span>
+      ) : null}
     </span>
   );
 }

@@ -157,7 +157,7 @@ async function approveEpicActionPlan(formData: FormData) {
       project: { select: { slug: true, onlyReportersCanApproveActionPlans: true } },
       _count: {
         select: {
-          tasks: { where: { deletedAt: null, archivedAt: null, parentTaskId: null } },
+          tasks: { where: { deletedAt: null, parentTaskId: null } },
         },
       },
       actingManager: {
@@ -376,7 +376,7 @@ export default async function EpicDetailPage({
         },
       },
       tasks: {
-        where: { deletedAt: null, archivedAt: null, parentTaskId: null },
+        where: { deletedAt: null, parentTaskId: null },
         orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
         select: {
           id: true,
@@ -387,6 +387,7 @@ export default async function EpicDetailPage({
           updatedAt: true,
           statusChangedAt: true,
           approvedOn: true,
+          archivedAt: true,
           reporter: {
             select: {
               id: true,
@@ -1190,6 +1191,7 @@ export default async function EpicDetailPage({
                 createdAt: t.createdAt.toISOString(),
                 statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
                 approvedOn: t.approvedOn?.toISOString() ?? null,
+                archivedAt: t.archivedAt?.toISOString() ?? null,
                 reporter: serializeActor(t.reporter),
                 assignee: serializeActor(t.assignee),
                 reviewer: serializeActor(t.actingManager),

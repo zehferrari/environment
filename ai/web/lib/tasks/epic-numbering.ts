@@ -17,7 +17,6 @@ export async function nextEpicTaskTitle(
     where: {
       epicId,
       parentTaskId: null,
-      archivedAt: null,
       deletedAt: null,
     },
   });
