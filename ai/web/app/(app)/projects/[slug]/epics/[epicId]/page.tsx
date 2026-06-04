@@ -44,6 +44,7 @@ import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
 import EpicTasksClient from "./epic-tasks-client";
 import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
+import DeploymentTab, { canShowDeploymentAction, type DeploymentPrRow } from "@/components/deployment-tab";
 
 type ActorRow = {
   id: string;
@@ -268,7 +269,7 @@ function settledAgentSlugsForMessage(
   return slugs;
 }
 
-const EPIC_TABS = ["Description", "Action Plan", "Tasks", "Attachments", "Comments", "Activities", "Changes"] as const;
+const EPIC_TABS = ["Description", "Action Plan", "Deployment", "Tasks", "Attachments", "Comments", "Activities", "Changes"] as const;
 
 function tabParam(tab: string) {
   return tab
@@ -453,7 +454,7 @@ export default async function EpicDetailPage({
   const session = await auth();
   const canDeleteComments = session?.user?.kind !== "agent";
   const taskIds = epic.tasks.map((task) => task.id);
-  const [principals, recentReplyActivity, allActivity, taskActivityRows] = await Promise.all([
+  const [principals, recentReplyActivity, allActivity, taskActivityRows, deploymentPullRequests] = await Promise.all([
     listAssignablePrincipals(),
     db.activityLog.findMany({
       where: {
@@ -499,6 +500,11 @@ export default async function EpicDetailPage({
           },
         })
       : Promise.resolve([]),
+    db.deploymentPullRequest.findMany({
+      where: { OR: [{ epicId: epic.id }, ...(taskIds.length ? [{ taskId: { in: taskIds } }] : [])] },
+      orderBy: [{ taskId: "asc" }, { updatedAt: "desc" }],
+      include: { task: { select: { workItemKey: true, title: true } } },
+    }) as Promise<DeploymentPrRow[]>,
   ]);
   const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows);
   const selectedAgentSlug = chat || epic.actingManager?.agent?.slug || null;
@@ -1117,6 +1123,22 @@ export default async function EpicDetailPage({
                     </form>
                   </aside>
                 </div>
+              </TabPanel>
+
+
+              <TabPanel name="Deployment">
+                <DeploymentTab
+                  mode="epic"
+                  title={epic.title}
+                  deploymentStatus={epic.deploymentStatus}
+                  rows={deploymentPullRequests}
+                  canAct={(row) => canShowDeploymentAction({
+                    provider: row.provider,
+                    viewerKind: session?.user?.kind === "agent" ? "agent" : "human",
+                    viewerId: session?.user?.id ?? null,
+                    reporterId: epic.reporterId,
+                  })}
+                />
               </TabPanel>
 
               <TabPanel name="Action Plan">

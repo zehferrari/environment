@@ -77,6 +77,7 @@ import PmOptions from "@/components/pm-options";
 import { findPmOptionResolution, parsePmOptions, isPmOptionsTargetedAtCurrentUser } from "@/lib/pm-options";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import TaskEpicPicker from "./task-epic-picker";
+import DeploymentTab, { canShowDeploymentAction, canShowDeploymentTab, type DeploymentPrRow } from "@/components/deployment-tab";
 
 type ActorRow = {
   id: string;
@@ -1134,7 +1135,7 @@ function discussionTargetValue(
   return `user:${principal.id}`;
 }
 
-const TASK_TABS = ["Description", "Action Plan", "Sub-Tasks", "Attachments", "Comments", "Activities", "Changes"] as const;
+const TASK_TABS = ["Description", "Action Plan", "Deployment", "Sub-Tasks", "Attachments", "Comments", "Activities", "Changes"] as const;
 
 function tabParam(tab: string) {
   return tab
@@ -1166,7 +1167,7 @@ export default async function TaskDetailPage({
     params,
     searchParams,
   ]);
-  const selectedTab = chatArchive || chatRoom === "current"
+  let selectedTab = chatArchive || chatRoom === "current"
     ? "Action Plan"
     : tabFromSearchParam(tab, TASK_TABS) ?? "Description";
 
@@ -1177,6 +1178,9 @@ export default async function TaskDetailPage({
   ]);
   const task = taskShell ? { ...taskShell, comments, attachments } : null;
   if (!task || task.project.slug !== slug || task.deletedAt) notFound();
+  const showDeploymentTab = canShowDeploymentTab(task);
+  const taskTabs = showDeploymentTab ? TASK_TABS : TASK_TABS.filter((name) => name !== "Deployment");
+  if (!showDeploymentTab && selectedTab === "Deployment") selectedTab = "Description";
 
   // Only human viewers get comment-delete controls (see deleteComment).
   const viewer = await requireActor();
@@ -1236,6 +1240,13 @@ export default async function TaskDetailPage({
     }))
     .filter((message, index, all) => all.findIndex((item) => item.agentSlug === message.agentSlug) === index)
     .slice(0, 4);
+  const deploymentPullRequests: DeploymentPrRow[] = showDeploymentTab
+    ? await db.deploymentPullRequest.findMany({
+        where: { taskId: task.id },
+        orderBy: { updatedAt: "desc" },
+        include: { task: { select: { workItemKey: true, title: true } } },
+      })
+    : [];
   const chatMessages = await getCachedTaskRoomMessages(task.id);
   const pendingProposals = await getCachedPendingTaskProposals(
     task.id,
@@ -1663,7 +1674,7 @@ export default async function TaskDetailPage({
           {/* Tabbed content */}
           <TabsProvider defaultTab={selectedTab}>
             <TabsNav
-              tabs={TASK_TABS}
+              tabs={taskTabs}
               sticky
             />
             <div className="pt-4">
@@ -1911,6 +1922,24 @@ export default async function TaskDetailPage({
                   </aside>
                 </div>
               </TabPanel>
+
+
+              {showDeploymentTab ? (
+                <TabPanel name="Deployment">
+                  <DeploymentTab
+                    mode="task"
+                    title={task.title}
+                    deploymentStatus={task.deploymentStatus}
+                    rows={deploymentPullRequests}
+                    canAct={(row) => canShowDeploymentAction({
+                      provider: row.provider,
+                      viewerKind: viewer.kind,
+                      viewerId: viewer.id,
+                      reporterId: task.reporterId,
+                    })}
+                  />
+                </TabPanel>
+              ) : null}
 
               <TabPanel name="Action Plan">
                 <div className="space-y-3 pt-2">

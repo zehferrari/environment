@@ -21,7 +21,8 @@
     "test:cache-scope": "tsx scripts/cache-scope-test.ts",
     "test:pm-channel-rate-limit": "tsx scripts/pm-channel-rate-limit-test.ts",
     "test:p0-kernel": "tsx scripts/p0-kernel-test.ts",
-    "test:deployment-monitor": "tsx scripts/deployment-monitor-test.ts"
+    "test:deployment-monitor": "tsx scripts/deployment-monitor-test.ts",
+    "test:deployment-tab": "tsx scripts/deployment-tab-test.tsx"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",
