@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const BASE_TABS = [
   { href: "", label: "Board" },
   { href: "/epics", label: "Epics" },
+  { href: "/tasks", label: "Tasks" },
   { href: "/library", label: "Library" },
   { href: "/settings", label: "Settings" },
   { href: "/bin", label: "Bin" },
@@ -25,12 +26,10 @@ export default function ProjectTabs({
   const tabs = hasSummary
     ? [{ href: "/summary", label: "Summary" }, ...BASE_TABS]
     : BASE_TABS;
-  // The board is the only tab whose href is the bare base — match it
-  // when sub is empty OR points at a tasks/[id] subroute (those open
-  // from board cards and conceptually belong to the board view).
+  // The board is the only tab whose href is the bare base.
   function isActive(href: string): boolean {
     if (href === "") {
-      return sub === "" || sub.startsWith("/tasks/");
+      return sub === "";
     }
     if (href === "/epics") {
       return sub === "/epics" || sub.startsWith("/epics/");

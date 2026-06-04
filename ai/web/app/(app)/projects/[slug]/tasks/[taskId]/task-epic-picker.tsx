@@ -1,0 +1,80 @@
+"use client";
+
+import Link from "next/link";
+import { useMemo, useState } from "react";
+
+type EpicOption = {
+  id: string;
+  title: string;
+  status: string;
+};
+
+function SearchIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  );
+}
+
+export default function TaskEpicPicker({
+  formId,
+  name,
+  projectSlug,
+  defaultValue,
+  epics,
+}: {
+  formId: string;
+  name: string;
+  projectSlug: string;
+  defaultValue: string;
+  epics: EpicOption[];
+}) {
+  const [selectedEpicId, setSelectedEpicId] = useState(defaultValue);
+  const selectedEpic = useMemo(
+    () => epics.find((epic) => epic.id === selectedEpicId) ?? null,
+    [epics, selectedEpicId],
+  );
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <select
+        form={formId}
+        name={name}
+        value={selectedEpicId}
+        onChange={(event) => setSelectedEpicId(event.currentTarget.value)}
+        className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 text-xs outline-none focus:border-[var(--color-accent)]"
+        aria-label="Epic"
+      >
+        <option value="">No epic</option>
+        {epics.map((epic) => (
+          <option key={epic.id} value={epic.id}>
+            {epic.title}
+            {epic.status !== "Open" ? ` · ${epic.status}` : ""}
+          </option>
+        ))}
+      </select>
+      {selectedEpic ? (
+        <Link
+          href={`/projects/${projectSlug}/epics/${selectedEpic.id}`}
+          aria-label={`Open Epic ${selectedEpic.title}`}
+          title={`Open Epic: ${selectedEpic.title}`}
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+        >
+          <SearchIcon />
+        </Link>
+      ) : null}
+    </div>
+  );
+}

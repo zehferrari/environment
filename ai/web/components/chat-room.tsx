@@ -102,6 +102,10 @@ function participantKey(actor: MessageActor) {
   return actor.id ?? actor.agent?.slug ?? actor.username;
 }
 
+function isInternalWorkflowNotification(message: Message) {
+  return message.body.startsWith("PM workflow notification for @");
+}
+
 function RoomArchiveButton({
   projectSlug,
   taskId,
@@ -150,7 +154,7 @@ function RoomArchiveButton({
         }}
         className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-[11px] font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
       >
-        New Discussion
+        New Action Plan
       </button>
 
       {open ? (
@@ -328,27 +332,31 @@ export default function ChatRoom({
   const [targetPickerOpen, setTargetPickerOpen] = useState(false);
   const [archiveSidebarOpen, setArchiveSidebarOpen] = useState(false);
   const [archiveViewMode, setArchiveViewMode] = useState<"archives" | "bin">("archives");
+  const visibleMessages = useMemo(
+    () => messages.filter((message) => !isInternalWorkflowNotification(message)),
+    [messages],
+  );
   const canSend = messageText.trim().length > 0 || selectedFilesCount > 0;
-  const activeCount = activeMessageCount ?? messages.length;
+  const activeCount = activeMessageCount ?? visibleMessages.length;
   const canContinueArchive = viewingArchive && !selectedArchiveDeleted && activeCount === 0;
-  const discussionIsVisible = activeTab === null || activeTab === "Discussion";
+  const discussionIsVisible = activeTab === null || activeTab === "Action Plan";
   const latestEventKey = [
     viewingArchive ? "archive" : "current",
     selectedArchiveId ?? "",
-    messages.length,
-    messages.at(-1)?.id ?? "",
+    visibleMessages.length,
+    visibleMessages.at(-1)?.id ?? "",
     latestMessageId ?? "",
     pendingAgents.map((agent) => agent.slug).join(","),
   ].join("|");
   const participantIndexes = useMemo(() => {
     const map = new Map<string, number>();
-    for (const message of messages) {
+    for (const message of visibleMessages) {
       if (currentUserId && message.sender.id === currentUserId) continue;
       const key = participantKey(message.sender);
       if (!map.has(key)) map.set(key, map.size);
     }
     return map;
-  }, [messages, currentUserId]);
+  }, [visibleMessages, currentUserId]);
 
   useLayoutEffect(() => {
     if (!discussionIsVisible) return;
@@ -463,8 +471,8 @@ export default function ChatRoom({
             type="button"
             onClick={() => setArchiveSidebarOpen((open) => !open)}
             className="grid h-8 w-8 place-items-center rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer"
-            aria-label={archiveSidebarOpen ? "Hide discussion archives" : "Show discussion archives"}
-            title={archiveSidebarOpen ? "Hide discussion archives" : "Show discussion archives"}
+            aria-label={archiveSidebarOpen ? "Hide action plan archives" : "Show action plan archives"}
+            title={archiveSidebarOpen ? "Hide action plan archives" : "Show action plan archives"}
           >
             {archiveSidebarOpen ? (
               <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -497,7 +505,7 @@ export default function ChatRoom({
               projectSlug={projectSlug}
               taskId={taskId}
               epicId={epicId}
-              hasActiveHistory={(activeMessageCount ?? messages.length) > 0}
+              hasActiveHistory={(activeMessageCount ?? visibleMessages.length) > 0}
             />
           )}
         </div>
@@ -510,7 +518,7 @@ export default function ChatRoom({
             <div>
               <div className="flex items-center gap-1.5">
                 <p className="text-xs font-semibold text-[var(--color-text)]">
-                  {archiveViewMode === "archives" ? "Archived discussions" : "Discussion bin"}
+                  {archiveViewMode === "archives" ? "Archived action plans" : "Action plan bin"}
                 </p>
                 <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
                   archiveViewMode === "archives"
@@ -529,7 +537,7 @@ export default function ChatRoom({
                 type="button"
                 onClick={() => setArchiveSidebarOpen(false)}
                 className="grid h-7 w-7 place-items-center rounded-md border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer"
-                aria-label="Close discussion archives"
+                aria-label="Close action plan archives"
                 title="Hide sidebar"
               >
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -573,7 +581,7 @@ export default function ChatRoom({
                   : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
               }`}
             >
-              <span className="font-semibold">Current discussion</span>
+              <span className="font-semibold">Current action plan</span>
               <span className="mt-1 block text-[10px] uppercase tracking-wider">
                 {activeCount} message{activeCount === 1 ? "" : "s"}
               </span>
@@ -582,7 +590,7 @@ export default function ChatRoom({
             {archiveViewMode === "archives" ? (
               archives.length === 0 ? (
                 <p className="rounded-lg border border-dashed border-[var(--color-line)] p-3 text-center text-xs text-[var(--color-text-muted)]">
-                  No archived discussions.
+                  No archived action plans.
                 </p>
               ) : (
                 <div className="space-y-3">
@@ -612,7 +620,7 @@ export default function ChatRoom({
               )
             ) : binArchives.length === 0 ? (
                 <p className="rounded-lg border border-dashed border-[var(--color-line)] p-3 text-center text-xs text-[var(--color-text-muted)]">
-                  No deleted discussions.
+                  No deleted action plans.
                 </p>
               ) : (
                 <div className="space-y-3">
@@ -658,7 +666,7 @@ export default function ChatRoom({
         ref={scrollRef}
         className="flex-1 overflow-y-auto p-4 space-y-6 min-h-0 scrollbar-thin"
       >
-        {messages.length === 0 ? (
+        {visibleMessages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-6 border border-dashed border-[var(--color-line)] rounded-xl bg-[var(--color-panel-soft)]/20">
             <span className="text-xl">💬</span>
             <p className="mt-2 text-xs font-semibold text-[var(--color-text)]">
@@ -669,9 +677,9 @@ export default function ChatRoom({
             </p>
           </div>
         ) : (
-          messages.map((m) => {
+          visibleMessages.map((m) => {
             if (m.deletedAt) {
-              // Soft-deleted discussion bubble (HOMELAB-41 / item 2).
+              // Soft-deleted action-plan bubble (HOMELAB-41 / item 2).
               // Restore (↺) only offered when viewing the live room —
               // archived views stay read-only. Agents never see these
               // in their context until restored.
@@ -702,7 +710,7 @@ export default function ChatRoom({
                     fields={{ projectSlug, messageId: m.id }}
                     label="×"
                     title="Delete message"
-                    description="The discussion bubble will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
+                    description="The action plan bubble will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
                     confirmLabel="Delete message"
                     buttonTitle="Delete message"
                     ariaLabel="Delete message"
@@ -749,14 +757,14 @@ export default function ChatRoom({
       {viewingArchive && !canContinueArchive ? (
         <div className="border-t border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3 text-xs text-[var(--color-text-muted)] shrink-0">
           {selectedArchiveDeleted ? (
-            "Deleted discussions are read-only."
+            "Deleted action plans are read-only."
           ) : activeCount > 0 ? (
-            "Archive the current discussion before continuing from this archived discussion."
+            "Archive the current action plan before continuing from this archived action plan."
           ) : (
-            "Archived discussions are read-only."
+            "Archived action plans are read-only."
           )}{" "}
           <Link href={`${pathname}?chatRoom=current`} className="font-semibold text-[var(--color-accent)] hover:underline">
-            Open the current discussion
+            Open the current action plan
           </Link>
           .
         </div>
@@ -794,7 +802,7 @@ export default function ChatRoom({
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                      {canContinueArchive ? "Continue discussion" : "Discussion message"}
+                      {canContinueArchive ? "Continue action plan" : "Action plan message"}
                     </div>
                     <p className="mt-1 text-xs text-[var(--color-text-muted)]">
                       Choose recipients, attach files, and send the room a message.
@@ -803,7 +811,7 @@ export default function ChatRoom({
                   <button
                     type="button"
                     onClick={closeComposer}
-                    aria-label="Close discussion composer"
+                    aria-label="Close action plan composer"
                     className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-[var(--color-text-muted)] transition hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
                   >
                     &times;
@@ -894,9 +902,9 @@ export default function ChatRoom({
                   onValueChange={setMessageText}
                   rows={5}
                   maxLength={8000}
-                  placeholder={canContinueArchive ? "Continue this discussion..." : "Message the discussion..."}
+                  placeholder={canContinueArchive ? "Continue this action plan..." : "Message the action plan..."}
                   onKeyDown={handleKeyDown}
-                  expandedTitle={canContinueArchive ? "Continue Discussion" : "Discussion Message"}
+                  expandedTitle={canContinueArchive ? "Continue Action Plan" : "Action Plan Message"}
                   className="w-full resize-none rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-xs outline-none focus:border-[var(--color-accent)]"
                 />
 
@@ -930,7 +938,7 @@ export default function ChatRoom({
           <button
             type="button"
             onClick={() => setComposerOpen(true)}
-            aria-label={canContinueArchive ? "Continue discussion" : "Message discussion"}
+            aria-label={canContinueArchive ? "Continue action plan" : "Message action plan"}
             className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-accent)] text-3xl leading-none text-[var(--color-bg)] shadow-lg transition hover:opacity-90"
           >
             <span className="-mt-0.5">+</span>

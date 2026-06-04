@@ -6,16 +6,16 @@ import {
 } from "@/lib/agents/openclaw-pm-channel";
 import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
 
-const POLICY_UPDATE_ID = "2026-05-28-pm-silent-contribution";
+const POLICY_UPDATE_ID = "2026-06-01-action-plan-approval-feedback";
 
 const body = [
   "PM workflow policy update:",
   "",
-  "- Backlog assignments are for planning/opinions only. If assigned in Backlog, read the full PM task context and post a concise task comment with your implementation plan or perspective. Do not change status and do not start work.",
-  "- Reassignment while a task remains in Backlog is allowed to request another agent perspective; the new assignee posts their own plan/opinion.",
-  "- To Do means the plan/request is approved for execution. If assigned in To Do, move the task to In Progress through the PM workflow endpoint and start immediately. Do not post an acknowledgement unless you have new task information to add.",
-  "- Move completed implementation from In Progress to Review through the PM workflow endpoint.",
-  "- Review is for completed-work review. The resolved reviewer is task reviewer, then Open Epic acting manager, then task reporter. The reviewer moves satisfied work to Done without approval-only comments, or leaves concise feedback/blockers while keeping the task in Review.",
+  "- Backlog assignments are for planning/opinions only. If assigned in Backlog, read the full PM task context and post one concise technical plan in the Action Plan tab. Do not change status and do not start work.",
+  "- To Do is executable only after the Action Plan is approved. If approved_on is empty, post the technical Action Plan and wait for reviewer/reporter approval. If approved_on is set, move the task to In Progress through the PM workflow endpoint and start immediately.",
+  "- Reviewers/reporters approve acceptable Action Plans through the PM workflow endpoint with action=approve_plan and include one concise comment explaining why the plan is acceptable or naming any constraints. If the plan needs adjustment, reply in Action Plan with consolidated feedback instead of approving.",
+  "- Move completed implementation from In Progress to Review through the PM workflow endpoint with one concise ready-for-review note.",
+  "- Review is for completed-work review. The resolved reviewer is task acting manager, then Open Epic acting manager, then task reporter. If satisfied, call action=review_done without posting an approval-only comment; PM will move the task to Done, assign the next To Do task in the Epic when one exists, and wake the assignee. If changes/blockers remain, call action=review_feedback with concise feedback.",
   "- Golden rule: if there is no new information, action result, plan, feedback, blocker, or necessary question, stay silent.",
   "- Tasks under an Epic are actionable only when that Epic is Open.",
   "",

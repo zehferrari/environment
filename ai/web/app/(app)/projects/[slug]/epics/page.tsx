@@ -5,7 +5,6 @@ import { listAssignablePrincipals } from "@/lib/principals";
 import { actorDisplayName, MessageAvatar } from "@/components/message-avatar";
 import { binEpic } from "@/lib/bin/actions";
 import { createEpic } from "@/lib/epics/actions";
-import { resolveDoneTtlDays } from "@/lib/settings/system";
 import { formatGridDate } from "@/lib/date-format";
 import NewEpicFab from "./new-epic-fab";
 import EpicStatusFilter from "./epic-status-filter";
@@ -13,6 +12,14 @@ import EpicStatusFilter from "./epic-status-filter";
 export const dynamic = "force-dynamic";
 
 const BOARD_STATUSES = ["Backlog", "Open", "Done"] as const;
+const actorSelect = {
+  id: true,
+  username: true,
+  kind: true,
+  name: true,
+  avatarUpdatedAt: true,
+  agent: { select: { slug: true, name: true, avatar: true } },
+};
 
 function normalizeView(value: string | undefined) {
   return value?.toLowerCase() === "archive" ? "archive" : "board";
@@ -40,43 +47,34 @@ export default async function EpicsListPage({
 
   const project = await db.project.findUnique({
     where: { slug },
-    select: { id: true, name: true, doneTtlDays: true },
+    select: { id: true, name: true },
   });
   if (!project) notFound();
 
   const view = normalizeView(rawView ?? (status?.toLowerCase() === "archive" ? "archive" : undefined));
   const selectedStatuses = parseBoardStatuses(statuses, status);
-  const doneTtlDays = await resolveDoneTtlDays(project.doneTtlDays);
-  const doneCutoff = new Date(Date.now() - doneTtlDays * 24 * 60 * 60 * 1000);
 
   const principals = await listAssignablePrincipals();
 
   const epics = await db.epic.findMany({
     where: {
       projectId: project.id,
-      status: view === "archive" ? "Archive" : { in: selectedStatuses },
+      archivedAt: view === "archive" ? { not: null } : null,
+      ...(view === "board" ? { status: { in: selectedStatuses } } : {}),
       deletedAt: null,
     },
     orderBy: { updatedAt: "desc" },
     include: {
-      assignee: { select: { username: true } },
-      actingManager: { select: { username: true } },
-      reporter: {
+      actingManager: { select: actorSelect },
+      reporter: { select: actorSelect },
+      _count: {
         select: {
-          id: true,
-          username: true,
-          kind: true,
-          name: true,
-          avatarUpdatedAt: true,
-          agent: { select: { slug: true, name: true, avatar: true } },
+          tasks: { where: { deletedAt: null, parentTaskId: null } },
         },
       },
-      _count: { select: { tasks: true } },
     },
   });
-  const visibleEpics = view === "board"
-    ? epics.filter((epic) => epic.status !== "Done" || !epic.statusChangedAt || epic.statusChangedAt >= doneCutoff)
-    : epics;
+  const visibleEpics = epics;
 
   return (
     <div className="space-y-6">
@@ -135,11 +133,10 @@ export default async function EpicsListPage({
         </p>
       ) : (
         <div className="overflow-hidden rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] shadow-sm">
-          <div className="grid grid-cols-[minmax(0,1fr)_6rem_8rem_8rem_8rem_3rem_5rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+          <div className="grid grid-cols-[minmax(0,1fr)_6rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
             <span>Epic</span>
             <span>Status</span>
             <span>Report by</span>
-            <span>Assignee</span>
             <span>Acting mgr</span>
             <span className="text-right">Tasks</span>
             <span className="text-right">Created At</span>
@@ -153,8 +150,13 @@ export default async function EpicsListPage({
                   className="absolute inset-0 z-0"
                   aria-label={`Open ${e.title}`}
                 />
-                <div className="grid grid-cols-[minmax(0,1fr)_6rem_8rem_8rem_8rem_3rem_5rem_2rem] items-center gap-3 px-4 py-2.5 text-sm">
+                <div className="grid grid-cols-[minmax(0,1fr)_6rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3 px-4 py-2.5 text-sm">
                   <span className="min-w-0">
+                    {e.workItemKey ? (
+                      <span className="mb-0.5 inline-flex rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
+                        {e.workItemKey}
+                      </span>
+                    ) : null}
                     <span className="block truncate font-medium">{e.title}</span>
                     {e.description ? (
                       <span className="block truncate text-xs text-[var(--color-text-muted)]">
@@ -171,11 +173,9 @@ export default async function EpicsListPage({
                     {e.reporter ? <MessageAvatar actor={e.reporter} size="sm" /> : null}
                     <span className="truncate">{e.reporter ? actorDisplayName(e.reporter) : "—"}</span>
                   </span>
-                  <span className="truncate text-xs text-[var(--color-text-muted)]">
-                    {e.assignee ? `@${e.assignee.username}` : "—"}
-                  </span>
-                  <span className="truncate text-xs text-[var(--color-text-muted)]">
-                    {e.actingManager ? `@${e.actingManager.username}` : "—"}
+                  <span className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-muted)]">
+                    {e.actingManager ? <MessageAvatar actor={e.actingManager} size="sm" /> : null}
+                    <span className="truncate">{e.actingManager ? actorDisplayName(e.actingManager) : "—"}</span>
                   </span>
                   <span className="text-right text-xs tabular-nums">
                     {e._count.tasks}

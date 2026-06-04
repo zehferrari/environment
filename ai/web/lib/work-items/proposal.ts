@@ -22,6 +22,8 @@
 import { db } from "@/lib/db";
 import { listAssignablePrincipals } from "@/lib/principals";
 import {
+  checkActingManager,
+  checkAssignment,
   checkHierarchy,
   checkStatusTransition,
   isTaskStatus,
@@ -32,7 +34,7 @@ const MAX_TITLE = 200;
 const MAX_BODY = 8000;
 const MAX_DESCRIPTION = 20000;
 
-export const EPIC_STATUSES = ["Backlog", "Open", "Done", "Archive"] as const;
+export const EPIC_STATUSES = ["Backlog", "Open", "Done"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
 
 // A principal reference is a username (optionally @-prefixed) or null to
@@ -184,24 +186,59 @@ export async function validateProposal(
     if (op === "comment_task") addExistingTask(raw.target);
   }
 
-  const [loadedEpicRows, loadedTaskRows, principals] = await Promise.all([
+  const [loadedEpicRows, loadedTaskRows, existingEpicTaskCounts, existingSubtaskCounts, principals] = await Promise.all([
     epicIds.size
       ? db.epic.findMany({
-          where: { id: { in: [...epicIds] }, projectId, deletedAt: null },
-          select: { id: true, status: true },
+          where: { id: { in: [...epicIds] }, projectId, archivedAt: null, deletedAt: null },
+          select: { id: true, status: true, approvedOn: true, actingManagerId: true },
         })
-      : Promise.resolve([] as Array<{ id: string; status: string }>),
+      : Promise.resolve([] as Array<{ id: string; status: string; approvedOn: Date | null; actingManagerId: string | null }>),
     taskIds.size
       ? db.task.findMany({
-          where: { id: { in: [...taskIds] }, projectId, deletedAt: null },
-          select: { id: true, status: true },
+          where: { id: { in: [...taskIds] }, projectId, archivedAt: null, deletedAt: null },
+          select: { id: true, status: true, parentTaskId: true, assigneeId: true, approvedOn: true },
         })
-      : Promise.resolve([] as Array<{ id: string; status: string }>),
+      : Promise.resolve([] as Array<{
+          id: string;
+          status: string;
+          parentTaskId: string | null;
+          assigneeId: string | null;
+          approvedOn: Date | null;
+        }>),
+    epicIds.size
+      ? db.task.groupBy({
+          by: ["epicId"],
+          where: {
+            projectId,
+            epicId: { in: [...epicIds] },
+            parentTaskId: null,
+            deletedAt: null,
+          },
+          _count: { _all: true },
+        })
+      : Promise.resolve([] as Array<{ epicId: string | null; _count: { _all: number } }>),
+    taskIds.size
+      ? db.task.groupBy({
+          by: ["parentTaskId"],
+          where: {
+            projectId,
+            parentTaskId: { in: [...taskIds] },
+            deletedAt: null,
+          },
+          _count: { _all: true },
+        })
+      : Promise.resolve([] as Array<{ parentTaskId: string | null; _count: { _all: number } }>),
     listAssignablePrincipals(),
   ]);
 
   const loadedEpics = new Map(loadedEpicRows.map((e) => [e.id, e]));
   const loadedTasks = new Map(loadedTaskRows.map((t) => [t.id, t]));
+  const topLevelTaskCountByEpic = new Map(
+    existingEpicTaskCounts.flatMap((row) => row.epicId ? [[row.epicId, row._count._all] as const] : []),
+  );
+  const childTaskCountByParent = new Map(
+    existingSubtaskCounts.flatMap((row) => row.parentTaskId ? [[row.parentTaskId, row._count._all] as const] : []),
+  );
   const byUsername = new Map(principals.map((p) => [p.username, p]));
 
   // ---- per-op field validators (closures over the loaded maps) ----
@@ -243,6 +280,20 @@ export async function validateProposal(
       errors.push(`${label} @${username} is not an active assignable principal`);
       return;
     }
+    // Agents may not propose themselves as assignee or acting manager
+    // (lib/workflow self-* rules — TEAM_WORKFLOW.md). `actor` is the proposing
+    // agent and principal.id is the resolved User id, so a self-proposal matches.
+    const selfCheck =
+      label === "assignee"
+        ? checkAssignment({
+            actor: { id: actor.userId, kind: "agent" },
+            newAssigneeId: principal.id,
+          })
+        : checkActingManager({
+            actor: { id: actor.userId, kind: "agent" },
+            newActingManagerId: principal.id,
+          });
+    if (!selfCheck.ok) errors.push(selfCheck.message);
   };
 
   // Epic reference for create_task.epic / update_task.epic — tmp ref to a
@@ -317,10 +368,14 @@ export async function validateProposal(
       return;
     }
     if (fromStatus !== null) {
+      // Proposals are agent-driven: pass kind "agent" so checkStatusTransition
+      // enforces the Review/Done (EXPLICIT_USER_STATES) guard — e.g. a Done task
+      // cannot be re-opened to Review via a generic proposal; that must go
+      // through the native PM workflow endpoint where reviewer authority is checked.
       const check = checkStatusTransition({
         from: fromStatus,
         to: value,
-        actor: { id: actor.userId, kind: "human" },
+        actor: { id: actor.userId, kind: "agent" },
       });
       if (!check.ok) errors.push(check.message);
     }
@@ -354,6 +409,26 @@ export async function validateProposal(
         validateTitle(raw.title, errors, true);
         validateDescription(raw.description, errors);
         validateEpicLink(raw.epic, errors);
+        if (isTempRef(raw.epic)) {
+          errors.push("create_task under a newly created Epic is not allowed; approve the Epic Action Plan first, then the Epic acting manager can create the initial top-level task breakdown.");
+        }
+        if (
+          typeof raw.epic === "string" &&
+          raw.epic &&
+          !isTempRef(raw.epic) &&
+          (topLevelTaskCountByEpic.get(raw.epic) ?? 0) > 0
+        ) {
+          errors.push("epic already has top-level tasks; do not create additional Epic implementation tasks from an agent proposal. Use create_subtask for task-local checklist steps or ask a human to add another Epic task explicitly.");
+        }
+        if (typeof raw.epic === "string" && raw.epic && !isTempRef(raw.epic)) {
+          const epic = loadedEpics.get(raw.epic);
+          if (epic && !epic.approvedOn) {
+            errors.push("Epic Action Plan must be approved before creating top-level Epic tasks.");
+          }
+          if (epic && epic.actingManagerId !== actor.userId) {
+            errors.push("Only the Epic acting manager can create the initial top-level task breakdown.");
+          }
+        }
         validatePrincipal(raw.assignee, errors, "assignee");
         validatePrincipal(raw.actingManager, errors, "actingManager");
         const h = checkHierarchy({ level: "task", parentTaskId: null });
@@ -364,6 +439,24 @@ export async function validateProposal(
         validateTitle(raw.title, errors, true);
         validateDescription(raw.description, errors);
         validateParentLink(raw.parent, errors, true);
+        if (isTempRef(raw.parent)) {
+          errors.push("create_subtask requires an existing approved parent Task; newly created Tasks need Action Plan approval before subtasks can be created.");
+        }
+        if (typeof raw.parent === "string" && raw.parent && !isTempRef(raw.parent)) {
+          const parent = loadedTasks.get(raw.parent);
+          if (parent?.parentTaskId) {
+            errors.push("Subtasks can only be created directly under top-level Tasks, not under another subtask.");
+          }
+          if (parent && !parent.approvedOn) {
+            errors.push("Task Action Plan must be approved before creating task-local subtasks.");
+          }
+          if (parent && parent.assigneeId !== actor.userId) {
+            errors.push("Only the task assignee can create task-local subtasks.");
+          }
+          if ((childTaskCountByParent.get(raw.parent) ?? 0) > 0) {
+            errors.push("Task-local subtasks can only be created when the parent Task has no existing child subtasks.");
+          }
+        }
         validatePrincipal(raw.assignee, errors, "assignee");
         validatePrincipal(raw.actingManager, errors, "actingManager");
         const parentId = typeof raw.parent === "string" ? raw.parent : "x";

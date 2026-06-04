@@ -4,10 +4,27 @@ import { useState } from "react";
 
 type Principal = { id: string; name: string };
 
+function slugFromName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 64);
+}
+
+function keyFromName(value: string) {
+  const tokens = value.match(/[A-Za-z][A-Za-z0-9]*/g) ?? [];
+  const candidate = tokens.length === 1
+    ? tokens[0]!.slice(0, 3)
+    : tokens.map((token) => token[0]).join("").slice(0, 4);
+  const key = candidate.toUpperCase();
+  return /^[A-Z][A-Z0-9]{1,9}$/.test(key) ? key : "";
+}
+
 // Floating "+" button + modal for creating a project. Mirrors the New Task /
 // New Epic modals (HOMELAB-41) but the fields are the project's own settings
-// (repo path, git identity, picker defaults, Done TTL). Only the name is
-// required; everything else is optional and validated server-side.
+// (repo path, project key, git identity, picker defaults, auto archive age).
 export default function AddProjectFab({
   principals,
   createProjectAction,
@@ -16,6 +33,11 @@ export default function AddProjectFab({
   createProjectAction: (formData: FormData) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  const [key, setKey] = useState("");
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [keyTouched, setKeyTouched] = useState(false);
 
   const labelCls =
     "mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]";
@@ -57,6 +79,13 @@ export default function AddProjectFab({
                 maxLength={200}
                 autoFocus
                 placeholder="Project name"
+                value={name}
+                onChange={(event) => {
+                  const next = event.currentTarget.value;
+                  setName(next);
+                  if (!slugTouched) setSlug(slugFromName(next));
+                  if (!keyTouched) setKey(keyFromName(next));
+                }}
                 className={inputCls}
               />
             </label>
@@ -71,14 +100,49 @@ export default function AddProjectFab({
               />
             </label>
 
-            <label className="block">
-              <span className={labelCls}>Repository path</span>
-              <input
-                name="repositoryPath"
-                placeholder="/srv/Code/…"
-                className={`${inputCls} font-mono`}
-              />
-            </label>
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[35fr_15fr_50fr]">
+              <label className="block">
+                <span className={labelCls}>Project slug</span>
+                <input
+                  name="slug"
+                  required
+                  value={slug}
+                  onChange={(event) => {
+                    setSlugTouched(true);
+                    setSlug(event.currentTarget.value.toLowerCase());
+                  }}
+                  pattern="[a-zA-Z0-9\-_]+"
+                  title="Only letters, numbers, hyphens, and underscores are allowed"
+                  placeholder="patricia"
+                  className={inputCls}
+                />
+              </label>
+              <label className="block">
+                <span className={labelCls}>Project key</span>
+                <input
+                  name="workItemKeyPrefix"
+                  required
+                  value={key}
+                  onChange={(event) => {
+                    setKeyTouched(true);
+                    setKey(event.currentTarget.value.toUpperCase());
+                  }}
+                  pattern="[a-zA-Z][a-zA-Z0-9]{1,9}"
+                  title="Start with a letter; use 2-10 letters or numbers"
+                  placeholder="PH"
+                  className={`${inputCls} font-mono`}
+                />
+              </label>
+              <label className="block">
+                <span className={labelCls}>Repository folder</span>
+                <input
+                  name="repositoryPath"
+                  required
+                  placeholder="/srv/Code/environment"
+                  className={`${inputCls} font-mono`}
+                />
+              </label>
+            </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label className="block">
@@ -126,7 +190,7 @@ export default function AddProjectFab({
             </div>
 
             <label className="block">
-              <span className={labelCls}>Days to keep Done</span>
+              <span className={labelCls}>Automatic Archive (days)</span>
               <input
                 type="number"
                 name="doneTtlDays"

@@ -7,10 +7,10 @@ land.
 
 > **Reading live PM state.** PM no longer inlines a fat task / epic
 > context packet into every turn. Instead each turn's system prompt
-> embeds the loopback URLs of three read endpoints (task, epic,
-> project) under a `LIVE PM CONTEXT — FETCH BEFORE YOU REPLY` block.
+> embeds scoped loopback grant URLs for the read endpoints (task, epic,
+> project) under a `LIVE PM CONTEXT` block.
 > Full contract: [`agent-pm-api.md`](./agent-pm-api.md). Always fetch
-> the task before composing a reply.
+> deeper task state when the current prompt context is not enough.
 
 ## Current Contract
 
@@ -27,7 +27,7 @@ Body: {
   "agentSlug": "<agent slug>",
   "sessionKey": "pm:...",
   "text": "<latest user message>",
-  "contextText": "<PM context packet>",
+  "contextText": "<compact PM context packet or null>",
   "systemPrompt": "<channel guidance>",
   "replyTarget": { "...": "origin channel metadata" },
   "callbackUrl": "http://127.0.0.1:3000/api/openclaw/pm-channel/reply",
@@ -48,15 +48,15 @@ events, but chat, task-comment, and epic-chat replies should not use
 `/hooks/wake` or prompt-visible callback contracts.
 
 PM stores every native-channel turn in `PmChannelRun` as soon as it is
-queued locally. The run moves through `accepted`, `streaming`,
-`complete`, or `failed` from the gateway response and stream/reply
-callbacks, so reconnecting browsers can resume from durable state rather
-than polling for a reply. A terminal stream `done` is not success by
-itself: PM only marks a run `complete` after a durable final reply, a
-valid workflow action, or a silent no-contribution reply is delivered.
-If a channel turn ends without one of those outcomes, PM marks the run
-`failed` and the browser keeps a visible failure bubble instead of
-waiting indefinitely.
+queued locally. The run moves through `queued`, `accepted`, `streaming`,
+`retryable`, `complete`, or `failed` from the durable queue, gateway
+response, and stream/reply callbacks, so reconnecting browsers can
+resume from durable state rather than polling for a reply. A terminal
+stream `done` is not success by itself: PM only marks a run `complete`
+after a durable final reply, a valid workflow action, or a silent
+no-contribution reply is delivered. If a channel turn ends without one
+of those outcomes, PM marks the run `failed` and the browser keeps a
+visible failure bubble instead of waiting indefinitely.
 
 ## Task, Epic, And Comment Chat
 
@@ -64,11 +64,13 @@ PM creates an `AgentSessionBinding` for every direct/task/epic
 conversation. Direct chats use that stable `pm:` key for continuity.
 Task, Epic, and task-comment turns derive a per-message key from the
 binding so each PM request starts with a clean OpenClaw transcript while
-still carrying the complete DB-backed PM context packet. OpenClaw owns
-inbound recording, model dispatch, and final reply delivery from there;
-those are channel behavior, not instructions shown to the model.
+still carrying PM-owned channel guidance. Task/Epic chat guidance now
+uses a recent hot-path slice plus scoped live-context grant URLs instead
+of putting the full DB-backed context packet in `contextText`. OpenClaw
+owns inbound recording, model dispatch, and final reply delivery from
+there; those are channel behavior, not instructions shown to the model.
 
-Task chat/comment payloads still include a PM context packet in
+Workflow/comment payloads may still include compact PM context in
 `contextText`, delivered to OpenClaw as supplemental context rather than
 duplicated into the visible wake text. PM is the source of truth for
 task, Epic, comments, activity, and attachment extracts; OpenClaw is the
@@ -93,7 +95,7 @@ creating a chat or comment row.
 
 ### Soft-deleted content is hidden from agents
 
-A human can delete a comment, a Task/Epic Discussion bubble, or a
+A human can delete a comment, a Task/Epic Action Plan bubble, or a
 direct-agent-chat bubble. PM does **not** hard-delete the row — it
 sets `deletedAt` + `deletedById` and keeps the body for human-side
 review (the UI shows a collapsed dotted divider with a `[+]` toggle).
@@ -158,8 +160,9 @@ is running:
 ```
 
 The stream route is `POST /api/openclaw/pm-channel/stream` with the same
-Bearer token. PM treats stream chunks as ephemeral UI state; the final
-durable answer still comes through the reply route.
+Bearer token. PM appends stream chunks to a replayable event log for
+browser reconnects; the final durable answer still comes through the
+reply route.
 
 The stream endpoint also accepts terminal `done` and `error` events.
 `done` is only a stream lifecycle marker. It must follow an already
@@ -190,7 +193,7 @@ If the final reply text is exactly `PM_SILENT_NO_CONTRIBUTION`, PM does
 not write a visible reply. It records a `*.silent` ActivityLog row with
 `inReplyToMessageId` so pending live bubbles settle cleanly.
 
-Task and Epic Discussion replies must use two markdown sections:
+Task and Epic Action Plan replies must use two markdown sections:
 
 ```markdown
 ## Section A - Full Response
@@ -200,15 +203,17 @@ Task and Epic Discussion replies must use two markdown sections:
 <short direct summary focused on the human's latest request>
 ```
 
-The browser shows Section B by default in saved Discussion bubbles and
+The browser shows Section B by default in saved Action Plan bubbles and
 lets the user flip to Section A. Live streaming and pending reply blocks
-show Section A. PM normalizes non-conforming Discussion replies at the
+show Section A. PM normalizes non-conforming Action Plan replies at the
 callback boundary so the UI always has both display modes.
 
 ## Context Requirements
 
-Agents should answer from the whole provided context, not only the last
-line. The PM prompt can include:
+Agents should answer from PM's current state, not only the last line.
+The PM prompt includes the immediate hot path and may include scoped
+live-context grant URLs. Fetch those URLs when the hot path is not
+enough. The live context endpoints can return:
 
 - task title, description, status, project, assignee, reviewer, and
   parent/subtask context;
@@ -216,7 +221,7 @@ line. The PM prompt can include:
 - **every** comment on the item (up to a generous breadth cap, currently
   40), regardless of who wrote it or whether the agent was directly
   addressed by it;
-- **every** live Task/Epic Discussion message on the item (up to a
+- **every** live Task/Epic Action Plan message on the item (up to a
   generous breadth cap, currently 50), plus the archived-discussion
   chain that produced the current room, regardless of which agent each
   message was directed at and including other agents' replies and
@@ -225,14 +230,11 @@ line. The PM prompt can include:
 - task and Epic attachment metadata;
 - cached text excerpts for supported text-like attachments.
 
-Every rendered packet starts with a `TIMELINE MANIFEST` listing every
-fetched comment/chat/activity row by id+actor+createdAt before the
-bodies. Per-body clips report the omitted character count inline
-(`[truncated: N more chars]`), and a packet annotates `[partial
-context: …]` when a row cap is hit so the agent can tell when older
-rows may exist beyond the packet.
+Rendered inline packets and fetched JSON preserve row identity,
+authorship, ordering, truncation notes, and `[partial context: ...]`
+markers so the agent can tell when older rows may exist beyond the cap.
 
-PM owns this context packet. OpenClaw private memory may help the agent
+PM owns this context data. OpenClaw private memory may help the agent
 reason, but PM task/Epic/comment/activity/attachment data is the source
 of truth for the reply.
 
@@ -244,10 +246,10 @@ identified by filename and `/api/attachments/<id>` path.
 ## Work-Item Proposals (propose → approve)
 
 Implemented for direct PM chats attached to a project and for Task/Epic
-Discussion messages. Every human-authored project-scoped message carries
+Action Plan messages. Every human-authored project-scoped message carries
 the project environment (repo path, git identity, picker defaults,
 existing epics + open tasks) plus a single-use proposal grant. In
-Task/Epic Discussion, the grant is consumed per addressed agent so an
+Task/Epic Action Plan, the grant is consumed per addressed agent so an
 `All Coders` message can let each coder submit one proposal. The agent
 must use that grant only when the current human message directly asks for
 project work-item changes. The agent does NOT mutate the board — it
@@ -357,10 +359,26 @@ comments only when they add useful task information; no-contribution
 turns use the silent reply token.
 
 Backlog assignment is planning/opinion only: the assigned agent replies
-with a task-comment implementation plan and does not change status.
-`To Do` is the approval-to-execute signal: the assigned agent moves the
-task to `In Progress` and starts immediately. `Review` is only for
-completed implementation review.
+in Action Plan with a technical implementation plan and does not change
+status. `To Do` is executable only after the Action Plan has
+`approved_on` and `approved_by`; until then the assignee waits for the
+reviewer or reporter. Reviewers/reporters reply in Action Plan with
+consolidated feedback when the plan needs adjustment, or approve with a
+concise note explaining why the plan is acceptable or naming any
+constraints. When a Task Action Plan has an explicit `Deliverables`,
+`Implementation steps`, `Checklist`, `Subtasks`, or `Milestones` section
+and the Task has no subtasks yet, PM creates those entries as ordered
+task-local subtasks for progress tracking. Bullets under `Inputs`, `Rule
+logic`, context, risks, or open questions are not subtasks. Subtasks can
+be created only by the task assignee, only after the Task Action Plan is
+approved, and only when the Task has no existing child subtasks. Epic
+implementation tasks can be created only by the Epic acting manager, only
+after the Epic Action Plan is approved, and only when the Epic has no
+existing child tasks. `Review` is only for completed
+implementation review or a real blocker/question that needs reviewer,
+manager, or reporter input; when the awaited response arrives, the
+assignee resumes with workflow action `start`, completes the follow-up,
+then calls `ready_for_review` again.
 
 ### Commit hygiene + Review verification
 
@@ -379,21 +397,26 @@ assignee must:
   set), or `repoTouched: false` for docs-only / decision-only tasks.
 
 When `repoTouched` resolves true, PM drops a JSON job into
-`/var/lib/pm/branch-verify/<jobId>.json`. The karen-side runner
-(`pm-verify-runner.service`) runs `git -C <repositoryPath> fetch
-origin <branchName>` on the already-cloned repo, looks for commits
-whose subject starts with the COMMIT_PREFIX on
+`/var/lib/pm/branch-verify/<jobId>.json`. The branch-verify runner
+(`pm-verify-runner.service`) runs as `PM_VERIFY_RUN_USER`, executes
+`git -C <repositoryPath> fetch origin <branchName>` on the already-cloned
+repo, looks for commits whose subject starts with the COMMIT_PREFIX on
 `origin/<branchName>`, and posts a `pm.repo.verify.ok` task comment
 (with HEAD sha, the latest prefix-matching commit, push timestamp) or
-`pm.repo.verify.fail` (no push found / no prefix match). The Review
-transition itself is NOT blocked — the verifier publishes its result
-asynchronously and the reviewer reads it before approving.
+`pm.repo.verify.fail` (no push found / no prefix match / verifier
+credential failure) as `PM_MONITOR_USER`. The Review transition itself
+is NOT blocked — the verifier publishes its result asynchronously and
+the reviewer reads it before approving.
 
 The reviewer's `review_requested` workflow turn adds a **Review
 verification** block instructing them to read the latest
-`pm.repo.verify.*` comment first: on `ok` proceed; on `fail` send
-`review_feedback` asking the assignee to push (with prefix) before
-review; if neither has appeared, wait briefly for Karen.
+`pm.repo.verify.*` comment first: on `ok` proceed; on fail because no
+branch/no commit/no prefix match, send `review_feedback` asking the
+assignee to push with the prefix before review. On fail because the
+monitor verifier cannot fetch the remote (`Unauthorized`, permission
+denied, cannot read from remote), treat it as monitor credential
+configuration, not an assignee push problem. If neither has appeared,
+wait briefly for the monitor verifier.
 
 ## Future Agent Actions
 

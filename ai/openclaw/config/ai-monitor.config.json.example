@@ -1,0 +1,161 @@
+{
+  "_doc": "Example config for /etc/ai-monitor/config.json. Version monitor policy and defaults here so new AI servers can reproduce behaviour. Keep secrets and host-specific credentials out of git; resolve those through /etc/openclaw/agents.json or local secret files.",
+  "ai": {
+    "endpoint": "http://127.0.0.1:11434",
+    "model": "glm-5.1:cloud",
+    "fallback_models": [
+      "kimi-k2.6:cloud",
+      "qwen2.5:3b-instruct"
+    ],
+    "timeout_s": 30,
+    "keep_alive": "30m"
+  },
+  "integrity": {
+    "binary": "/usr/local/bin/openclaw-integrity-check",
+    "journal_tag": "openclaw-integrity",
+    "journal_window": "-3min"
+  },
+  "ollama_probe": {
+    "endpoint": "http://127.0.0.1:11434",
+    "timeout_s": 5
+  },
+  "resources": {
+    "thresholds": {
+      "load1_per_core": 3,
+      "mem_used_pct": 90,
+      "swap_used_pct": 80,
+      "temp_c": 92,
+      "fan_rpm_max": 7500,
+      "battery_low_pct": 15,
+      "rootfs_used_pct": 90
+    }
+  },
+  "stalled_tasks_check": {
+    "enabled": true,
+    "jira_host": "example.atlassian.net",
+    "statuses": [
+      "In Progress"
+    ],
+    "session_idle_warn_minutes": 15,
+    "session_idle_crit_minutes": 30,
+    "update_warn_minutes": 30,
+    "http_timeout_s": 15
+  },
+  "agent_queue_check": {
+    "enabled": true,
+    "queue_statuses": [
+      "Selected for Development",
+      "To Do"
+    ],
+    "queue_idle_warn_minutes": 15,
+    "queue_idle_crit_minutes": 30,
+    "http_timeout_s": 15
+  },
+  "pending_mentions": {
+    "enabled": true,
+    "dir": "/var/lib/ai-monitor/pending-mentions",
+    "warn_minutes": 15,
+    "crit_minutes": 30,
+    "max_age_hours": 168
+  },
+  "watch": {
+    "agents_registry": "/etc/openclaw/agents.json",
+    "agents_registry_max_age_hours": 720,
+    "system_units": [
+      "ollama.service",
+      "nginx.service",
+      "mariadb.service",
+      "php-fpm.service",
+      "openclaw-integrity.timer",
+      "sshd.service",
+      "firewalld.service"
+    ],
+    "system_listeners": [
+      {
+        "host": "127.0.0.1",
+        "port": 11434,
+        "owner": "ollama",
+        "expected": true
+      },
+      {
+        "host": "0.0.0.0",
+        "port": 80,
+        "owner": "nginx",
+        "expected": true
+      },
+      {
+        "host": "0.0.0.0",
+        "port": 22,
+        "owner": "sshd",
+        "expected": true
+      }
+    ]
+  },
+  "notify": {
+    "channel": "telegram_direct",
+    "telegram_bot_handle": "@yourMonitorBot",
+    "telegram_bot_persona": "Monitor",
+    "dedupe": {
+      "resolved_after_runs": 3,
+      "long_suppress_hours": 0
+    }
+  },
+  "log": {
+    "jsonl_path": "/var/log/ai-monitor/log.jsonl",
+    "max_age_days": 14
+  },
+  "monitor_triage": {
+    "enabled": true,
+    "incidents_dir": "/var/lib/ai-monitor/incidents",
+    "decisions_dir": "/var/lib/ai-monitor/decisions",
+    "timeout_s": 180,
+    "poll_interval_s": 2,
+    "escalation_ladder": {
+      "max_attempts": 3,
+      "confirmation_window_s": 300
+    },
+    "transient_kinds": [
+      "jira-probe-failed",
+      "agent-queue-probe-failed",
+      "pending-mentions-probe-failed",
+      "gmail-pubsub-timeout",
+      "gmail-pubsub-failing",
+      "telegram-network-unreachable",
+      "telegram-unreachable",
+      "telegram-connection-failing",
+      "judge-failed",
+      "pending-email-probe-failed"
+    ],
+    "transient_consecutive_threshold": 5,
+    "transient_cooldown_s": 3600,
+    "auto_action_kinds_bypass_monitor": [
+      "agent-idle-with-queue",
+      "email-awaiting-action",
+      "pm-backlog-plan-missing",
+      "pm-action-plan-missing",
+      "pm-action-plan-awaiting-approval",
+      "pm-todo-not-started",
+      "pm-in-progress-stale",
+      "pm-review-feedback-awaiting-assignee",
+      "pm-review-awaiting-reviewer",
+      "pm-channel-no-start",
+      "pm-channel-stalled"
+    ]
+  },
+  "pending_email_tasks": {
+    "enabled": true,
+    "warn_minutes": 15,
+    "crit_minutes": 30,
+    "max_items_per_agent": 10,
+    "max_age_hours": 24
+  },
+  "pm_workflow": {
+    "enabled": true,
+    "backlog_plan_warn_minutes": 2,
+    "todo_start_warn_minutes": 2,
+    "in_progress_stale_minutes": 5,
+    "review_wait_warn_minutes": 10,
+    "channel_no_start_warn_minutes": 2,
+    "retry_after_tier3_seconds": 1800
+  }
+}

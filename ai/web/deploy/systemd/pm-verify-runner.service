@@ -1,21 +1,22 @@
 [Unit]
-Description=PM branch-verify runner (Karen post-Review push check)
+Description=PM branch-verify runner (monitor post-Review push check)
 Documentation=https://zeh-ferrari.atlassian.net/browse/HOMELAB-41
 After=network-online.target pm.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-# Runs as the monitor agent — same user that runs pm.service so it can read
-# DATABASE_URL from /etc/default/pm and write into the SQLite DB without sudo.
+# Runs as the repo-fetch user so `git fetch` can use that account's SSH
+# credentials. PM_MONITOR_USER controls which PM user authors verifier comments.
 # Decoupled from pm.service: a worktree switch during a Review must not kill
 # the verifier (and vice versa).
-User=__PM_MONITOR_USER__
+User=__PM_VERIFY_RUN_USER__
 Group=code-agents
-Environment=HOME=/home/__PM_MONITOR_USER__
+Environment=HOME=/home/__PM_VERIFY_RUN_USER__
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PM_BRANCH_VERIFY_DIR=/var/lib/pm/branch-verify
-EnvironmentFile=/etc/default/pm
+Environment=PM_MONITOR_USER=__PM_MONITOR_USER__
+EnvironmentFile=/etc/default/pm-active-worktree
 ExecStart=/usr/local/sbin/pm-verify-runner
 Restart=on-failure
 RestartSec=5s

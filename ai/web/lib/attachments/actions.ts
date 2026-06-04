@@ -17,12 +17,20 @@ import {
   deleteAttachmentFile,
   writeAttachment,
 } from "@/lib/attachments/storage";
+import { normalizeAttachmentMimeType } from "@/lib/attachments/mime";
+import { revalidateTaskAttachments } from "@/lib/tasks/cache";
 
 async function requireActorId(): Promise<string> {
   const session = await auth();
   const id = session?.user?.id;
   if (!id) throw new Error("Unauthenticated");
   return id;
+}
+
+function uploadedFiles(formData: FormData): File[] {
+  return [...formData.getAll("files"), ...formData.getAll("file")].filter(
+    (entry): entry is File => entry instanceof File && entry.size > 0,
+  );
 }
 
 export async function uploadAttachment(formData: FormData) {
@@ -32,8 +40,8 @@ export async function uploadAttachment(formData: FormData) {
   const epicIdRaw = String(formData.get("epicId") ?? "");
   const taskId = taskIdRaw === "" ? null : taskIdRaw;
   const epicId = epicIdRaw === "" ? null : epicIdRaw;
-  const file = formData.get("file");
-  if (!slug || !(file instanceof File) || file.size === 0) return;
+  const files = uploadedFiles(formData);
+  if (!slug || files.length === 0) return;
 
   const project = await db.project.findUnique({
     where: { slug },
@@ -58,51 +66,59 @@ export async function uploadAttachment(formData: FormData) {
     if (!e || e.projectId !== project.id) return;
   }
 
-  if (file.size > attachmentMaxBytes()) {
-    throw new Error(
-      `Attachment exceeds size cap (${file.size} > ${attachmentMaxBytes()})`,
-    );
+  const maxBytes = attachmentMaxBytes();
+  for (const file of files) {
+    if (file.size > maxBytes) {
+      throw new Error(
+        `Attachment exceeds size cap (${file.name}: ${file.size} > ${maxBytes})`,
+      );
+    }
   }
 
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const written = await writeAttachment({
-    projectId: project.id,
-    filename: file.name,
-    mimeType: file.type || "application/octet-stream",
-    data: buffer,
-  });
-
-  const row = await db.attachment.create({
-    data: {
+  for (const file of files) {
+    const filename = file.name || "attachment";
+    const mimeType = normalizeAttachmentMimeType(filename, file.type);
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const written = await writeAttachment({
       projectId: project.id,
-      taskId,
-      epicId,
-      uploaderId: actorId,
-      filename: file.name,
-      storagePath: written.storagePath,
-      mimeType: written.mimeType,
-      sizeBytes: written.sizeBytes,
-      sha256: written.sha256,
-    },
-    select: { id: true },
-  });
+      filename,
+      mimeType,
+      data: buffer,
+    });
 
-  await db.activityLog.create({
-    data: {
-      projectId: project.id,
-      taskId,
-      userId: actorId,
-      kind: taskId ? "task.attachment.add" : "epic.attachment.add",
-      payload: JSON.stringify({
-        attachmentId: row.id,
-        filename: file.name,
+    const row = await db.attachment.create({
+      data: {
+        projectId: project.id,
+        taskId,
+        epicId,
+        uploaderId: actorId,
+        filename,
+        storagePath: written.storagePath,
+        mimeType: written.mimeType,
         sizeBytes: written.sizeBytes,
         sha256: written.sha256,
-      }),
-    },
-  });
+      },
+      select: { id: true },
+    });
+
+    await db.activityLog.create({
+      data: {
+        projectId: project.id,
+        taskId,
+        userId: actorId,
+        kind: taskId ? "task.attachment.add" : "epic.attachment.add",
+        payload: JSON.stringify({
+          attachmentId: row.id,
+          filename,
+          sizeBytes: written.sizeBytes,
+          sha256: written.sha256,
+        }),
+      },
+    });
+  }
 
   if (taskId) {
+    revalidateTaskAttachments(taskId);
     revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   }
   if (epicId) {
@@ -149,6 +165,7 @@ export async function deleteAttachment(formData: FormData) {
   });
 
   if (row.taskId) {
+    revalidateTaskAttachments(row.taskId);
     revalidatePath(`/projects/${slug}/tasks/${row.taskId}`);
   }
   if (row.epicId) {

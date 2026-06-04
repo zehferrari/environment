@@ -15,30 +15,31 @@ zeh sees exactly what changes on the host.
 
 | File | Lands at | Owner | Notes |
 | --- | --- | --- | --- |
-| `pm.service` | `/etc/systemd/system/pm.service` | root | systemd unit; runs the one host-wide standalone Next server as the PM app user (`karen` on x1). |
-| `pm-consumer.service` | `/etc/systemd/system/pm-consumer.service` | root | systemd unit; runs as the PM consumer user (`karen` on x1), drains `/var/lib/pm/drop`, and wakes agent gateways. |
+| `pm.service` | `/etc/systemd/system/pm.service` | root | systemd unit; runs the one host-wide standalone Next server as the PM app user. |
+| `pm-consumer.service` | `/etc/systemd/system/pm-consumer.service` | root | systemd unit; runs as the PM consumer user, drains `/var/lib/pm/drop`, and wakes agent gateways. |
 | `pm.env.example` | copy -> `/etc/default/pm` | `root:<pm-user-group>`, `0640` | secrets file; not committed. |
 | `/etc/openclaw/pm-consumer-tokens.json` | host-created | `root:<pm-consumer-group>`, `0640` | per-agent `/hooks/wake` Bearer map; never commit. |
 | `/etc/openclaw/pm-channel-tokens.json` | host-created | `root:<pm-user-group>`, `0640` | per-agent native PM channel Bearer map; never commit. |
 | `nginx-agents.vixi.au.conf` | `/etc/nginx/sites-available/agents.vixi.au` (+ symlink in `sites-enabled/`) | root | TLS via Let's Encrypt. |
 | `rebuild-and-restart.sh` | run in place | — | coupled build + restart of the *currently-served* worktree. |
-| `pm-switch.sh` | `-> /usr/local/sbin/pm-switch` | root | build a chosen worktree + flip `pm.service` to it (`pm-switch <wt>` / `pm-switch status`). |
-| `pm-apply-worktree` | `-> /usr/local/sbin/pm-apply-worktree` | root | the one privileged step (drop-in + daemon-reload + restart), path-validated. |
+| `move-sqlite-db.sh` | run in place | root | controlled SQLite relocation to `/srv/Data/pm/pm.db`: stop services, backup, `VACUUM INTO`, enable WAL, update `/etc/default/pm`, restart. |
+| `pm-switch.sh` | `-> /usr/local/sbin/pm-switch` | root | build a chosen worktree + flip `pm.service` and `pm-consumer.service` to it (`pm-switch <wt>` / `pm-switch status`). |
+| `pm-apply-worktree` | `-> /usr/local/sbin/pm-apply-worktree` | root | the one privileged step (web + consumer drop-ins, daemon-reload + restarts), path-validated. |
 | `pm-switch-runner` | `-> /usr/local/sbin/pm-switch-runner` | root | monitor-run runner behind `pm-switch-runner.service`; watches the spool, runs `pm-switch`. |
 | `systemd/pm-switch-runner.service` | `/etc/systemd/system/` | root | runner unit (`User=<monitor>`, templated). |
 | `sudoers.d/pm-switch` | `/etc/sudoers.d/pm-switch`, `0440` | root | one NOPASSWD rule: monitor -> `pm-apply-worktree`. |
 | `install-pm-switch.sh` | run as root | — | idempotent installer for the switcher (scripts, unit, sudoers, spool, RW drop-in). |
-| `pm-verify-runner` | `-> /usr/local/sbin/pm-verify-runner` | root | monitor-run runner behind `pm-verify-runner.service`; polls `/var/lib/pm/branch-verify/*.json` and invokes the TS verifier in the active worktree. |
-| `systemd/pm-verify-runner.service` | `/etc/systemd/system/` | root | runner unit (`User=<monitor>`, templated). No sudo / no privileged step. |
+| `pm-verify-runner` | `-> /usr/local/sbin/pm-verify-runner` | root | repo-fetch-user runner behind `pm-verify-runner.service`; polls `/var/lib/pm/branch-verify/*.json` and invokes the TS verifier in the active worktree. |
+| `systemd/pm-verify-runner.service` | `/etc/systemd/system/` | root | runner unit (`User=<repo-fetch-user>`, templated; PM comments still use `<monitor-user>`). No sudo / no privileged step. |
 | `install-pm-verify.sh` | run as root | — | idempotent installer for the branch verifier (runner, unit, spool, RW drop-in). |
 
 ## Worktree switcher (live preview)
 
 Lets the monitor agent build any git worktree and flip which one `pm.service`
-serves — from the CLI (`pm-switch <wt>`) or, in the PM webapp, a
-git/worktree-exposed project's **Settings → Worktree live preview** panel
-(admin only). Install with
-`sudo PM_MONITOR_USER=karen ai/web/deploy/install-pm-switch.sh` (after
+serves and which source tree `pm-consumer.service` uses — from the CLI
+(`pm-switch <wt>`) or, in the PM webapp, a git/worktree-exposed project's
+**Settings → Worktree live preview** panel (admin only). Install with
+`sudo PM_MONITOR_USER=<monitor-user> ai/web/deploy/install-pm-switch.sh` (after
 `code-tree-perms` has made `/srv/Code` group-collaborative). Full design,
 mechanism, and caveats: [`MULTI_AGENT_WORKTREES.md`](./MULTI_AGENT_WORKTREES.md).
 
@@ -47,25 +48,34 @@ mechanism, and caveats: [`MULTI_AGENT_WORKTREES.md`](./MULTI_AGENT_WORKTREES.md)
 When an assignee moves a code-touching task (`branchName` set on a project
 with `repositoryPath`) to Review through the workflow endpoint with
 `repoTouched: true` (default for branch-bearing tasks), PM drops a JSON job
-into `/var/lib/pm/branch-verify/<jobId>.json`. The monitor-run
+into `/var/lib/pm/branch-verify/<jobId>.json`. The repo-fetch-user
 `pm-verify-runner.service` picks it up, finds the active PM worktree (by
 reading `pm.service`'s `WorkingDirectory`), and runs the TS verifier
 (`ai/web/scripts/pm-verify-branch-pushed.ts`) inside it. The verifier:
 
 - `git -C <repositoryPath> fetch --quiet origin <branchName>` on the local
-  clone — the remote IS Bitbucket, but Karen reuses whatever credentials are
-  already configured on the local clone (no Bitbucket REST in this pass);
+  clone — the remote IS Bitbucket, but the runner reuses the SSH credentials
+  configured for `PM_VERIFY_RUN_USER` on the local clone (no Bitbucket REST in
+  this pass);
 - looks for a commit on `origin/<branchName>` whose subject starts with the
   resolved COMMIT_PREFIX (`task.commitPrefix` → fallback `epic.commitPrefix`);
-- writes a Karen-authored task Comment plus a `pm.repo.verify.ok` or
+- writes a monitor-authored task Comment plus a `pm.repo.verify.ok` or
   `pm.repo.verify.fail` `ActivityLog` row.
+
+If `pm.repo.verify.fail` reports `Unauthorized`, `permission denied`, or
+`Could not read from remote repository`, that is a monitor verifier
+credential problem. Set `PM_VERIFY_RUN_USER` to a local account that can fetch
+the project repository, add that account's SSH public key as a read-capable
+Bitbucket repo/workspace key, or configure an equivalent read-only deploy key,
+then re-trigger `ready_for_review`. `PM_MONITOR_USER` is only the PM identity
+used for verifier comments and activity rows.
 
 The reviewer's task page shows a Review verification panel reading the
 latest `pm.repo.verify.*` row, so they can see at a glance whether
 `origin/<branch>` reflects the work BEFORE approving. The transition
 itself is not blocked — async verification means a flaky `git fetch`
 doesn't kill legitimate Reviews. Install with
-`sudo PM_MONITOR_USER=karen ai/web/deploy/install-pm-verify.sh`.
+`sudo PM_MONITOR_USER=<monitor-user> PM_VERIFY_RUN_USER=<repo-fetch-user> ai/web/deploy/install-pm-verify.sh`.
 
 ## Service Model
 
@@ -75,21 +85,21 @@ task/comment persistence, and native `pm` channel callbacks, then
 routes work to each agent through that agent's loopback OpenClaw
 gateway.
 
-On x1 the service user is `karen`, because Karen is the monitor agent
-with host-level visibility into the local agent fleet. A future
-dedicated `pm` Unix user is still the cleaner long-term option; set
+The service user is currently the monitor agent account because it has
+host-level visibility into the local agent fleet. A future dedicated `pm`
+Unix user is still the cleaner long-term option; set
 `PM_APP_USER` / `PM_APP_GROUP` when running `openclaw/install.sh` to
 render the units for a different service account.
 
 The PM units are host-wide system services. Their unit files are
 root-owned under `/etc/systemd/system`, while the runtime processes use
-`User=karen` / `Group=karen` on x1. Do not install or enable
+the configured PM service account. Do not install or enable
 `pm.service` or `pm-consumer.service` under
 `/home/<agent>/.config/systemd/user`; `openclaw/install.sh` removes
 those stale per-agent user units during PM reconciliation.
 
 `pm-consumer.service` keeps `ProtectHome=true`. To avoid `pnpm`
-probing hidden `/home/karen` config files, the unit points `HOME`,
+probing hidden service-user config files, the unit points `HOME`,
 `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `PNPM_HOME`, and
 `NPM_CONFIG_USERCONFIG` at service-private directories under
 `/var/lib/pm`.
@@ -110,8 +120,15 @@ pnpm build
 pnpm prisma migrate deploy
 
 # 3. Drop the env file into /etc/default and edit host secrets/paths.
-sudo install -o root -g karen -m 0640 deploy/pm.env.example /etc/default/pm
+PM_APP_USER=<pm-app-user>
+PM_APP_GROUP=<pm-app-group>
+sudo install -o root -g "$PM_APP_GROUP" -m 0640 deploy/pm.env.example /etc/default/pm
 sudo $EDITOR /etc/default/pm
+
+# 3a. Existing installs that still point DATABASE_URL into a worktree can
+#     relocate safely before continuing. The script backs up, VACUUMs, enables
+#     WAL, updates /etc/default/pm, and restarts PM units.
+# sudo PM_SQLITE_DIR=/srv/Data/pm deploy/move-sqlite-db.sh
 
 # 4. Install/reconcile PM units, PM token files, OpenClaw gateway hooks,
 #    and the native OpenClaw pm channel plugin.
@@ -123,21 +140,21 @@ sudo install -o root -g root -m 0644 deploy/pm-consumer.service /etc/systemd/sys
 sudo systemctl daemon-reload
 
 # 4a. Create directories used by PM and the consumer when doing manual unit install.
-sudo install -d -o karen -g karen -m 0700 /etc/openclaw/pm-agent-credentials
-sudo install -d -o karen -g karen -m 0700 /var/lib/pm/drop
-sudo install -d -o karen -g karen -m 0700 /var/lib/pm/pnpm-home /var/lib/pm/pnpm-config /var/lib/pm/pnpm-cache
-sudo install -d -o karen -g karen -m 0700 /var/lib/pm/pnpm-config/pnpm
-sudo install -o karen -g karen -m 0600 /dev/null /var/lib/pm/pnpm-home/.npmrc
-sudo install -o karen -g karen -m 0600 /dev/null /var/lib/pm/pnpm-config/pnpm/rc
-sudo install -d -o karen -g karen -m 0700 /srv/Data/projects
+sudo install -d -o "$PM_APP_USER" -g "$PM_APP_GROUP" -m 0700 /etc/openclaw/pm-agent-credentials
+sudo install -d -o "$PM_APP_USER" -g "$PM_APP_GROUP" -m 0700 /var/lib/pm/drop
+sudo install -d -o "$PM_APP_USER" -g "$PM_APP_GROUP" -m 0700 /var/lib/pm/pnpm-home /var/lib/pm/pnpm-config /var/lib/pm/pnpm-cache
+sudo install -d -o "$PM_APP_USER" -g "$PM_APP_GROUP" -m 0700 /var/lib/pm/pnpm-config/pnpm
+sudo install -o "$PM_APP_USER" -g "$PM_APP_GROUP" -m 0600 /dev/null /var/lib/pm/pnpm-home/.npmrc
+sudo install -o "$PM_APP_USER" -g "$PM_APP_GROUP" -m 0600 /dev/null /var/lib/pm/pnpm-config/pnpm/rc
+sudo install -d -o "$PM_APP_USER" -g "$PM_APP_GROUP" -m 0700 /srv/Data/projects
 sudo install -d -o root -g root -m 0755 /srv/samba/shared
-sudo find /srv/samba/shared -type d -exec setfacl -m u:karen:rwx,d:u:karen:rwx {} +
-sudo find /srv/samba/shared -type f -exec setfacl -m u:karen:rw {} +
+sudo find /srv/samba/shared -type d -exec setfacl -m u:"$PM_APP_USER":rwx,d:u:"$PM_APP_USER":rwx {} +
+sudo find /srv/samba/shared -type f -exec setfacl -m u:"$PM_APP_USER":rw {} +
 sudo test -f /etc/openclaw/pm-consumer-tokens.json || echo '{}' | sudo tee /etc/openclaw/pm-consumer-tokens.json >/dev/null
-sudo chown root:karen /etc/openclaw/pm-consumer-tokens.json
+sudo chown root:"$PM_APP_GROUP" /etc/openclaw/pm-consumer-tokens.json
 sudo chmod 0640 /etc/openclaw/pm-consumer-tokens.json
 sudo test -f /etc/openclaw/pm-channel-tokens.json || echo '{}' | sudo tee /etc/openclaw/pm-channel-tokens.json >/dev/null
-sudo chown root:karen /etc/openclaw/pm-channel-tokens.json
+sudo chown root:"$PM_APP_GROUP" /etc/openclaw/pm-channel-tokens.json
 sudo chmod 0640 /etc/openclaw/pm-channel-tokens.json
 
 # Remove stale per-agent PM user units if they were ever installed.
@@ -270,10 +287,9 @@ preserve the existing `hooks.internal` config, and set:
 The same token must be mirrored into
 `/etc/openclaw/pm-consumer-tokens.json` under that agent's slug. The
 token file should be `0640` and owned by `root:<pm-consumer-group>`
-(`root:karen` on x1 when using the default installer settings). The
-committed service file is only a template; `openclaw/install.sh` renders
-the installed unit with `PM_CONSUMER_USER` / `PM_CONSUMER_GROUP` or the
-PM app user/group defaults.
+using the configured PM consumer group. The committed service file is only a
+template; `openclaw/install.sh` renders the installed unit with
+`PM_CONSUMER_USER` / `PM_CONSUMER_GROUP` or the PM app user/group defaults.
 OpenClaw requires `hook:` in the allowed session-key prefixes when no
 default hook session key is configured; PM chat/comment routing uses
 `pm:` keys created in `AgentSessionBinding`.
@@ -287,15 +303,15 @@ should show `127.0.0.1:<gateway_port>`, not
 nginx, proxy it to `127.0.0.1:<gateway_port>` and explicitly block the
 prefixed hook path (`/<agent>/hooks`), because the dashboard proxy strips
 the public prefix before forwarding to the gateway.
-Karen's `pm-karen-wake-agent` helper remains only as a fallback for old
-hosts or temporary hook failures.
+The legacy monitor wake helper remains only as a fallback for old hosts
+or temporary hook failures.
 
 ## Seeded credentials
 
 - **zeh (human)** — password `password1`, `must_rotate_password=1`. First login forces rotation.
 - **Each co-located agent** — random password written to
   `/etc/openclaw/pm-agent-credentials/<agent>.json` (mode `0600`, owner
-  `<pm-app-user>`, `karen` on x1). The credential is host-private, never
+  `<pm-app-user>`). The credential is host-private, never
   logged, and used only for the agent's first login + forced rotation flow.
 
 The boot-time sync (in `instrumentation.node.ts`) reads `/srv/agents/index.json`,
@@ -308,7 +324,7 @@ After install:
 
 1. `curl -I https://agents.vixi.au/login` → `200 OK`.
 2. Sign in as `zeh` / `password1` → forced to `/rotate-password`.
-3. `/agents` lists asdrubal, barekbaal, karen.
+3. `/agents` lists each configured local agent, including the monitor agent.
 4. Create a project → /projects/<slug> board loads with 5 columns.
 5. Add a task → drag across columns → reload, position persisted.
 6. `journalctl -u pm.service` shows one `[pm] boot sync` log line and then a

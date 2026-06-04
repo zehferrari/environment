@@ -16,6 +16,14 @@ import WorktreeSwitcher from "@/components/worktree-switcher";
 export const dynamic = "force-dynamic";
 
 const ACTIVITY_FEED_LIMIT = 30;
+const actorSelect = {
+  id: true,
+  username: true,
+  kind: true,
+  name: true,
+  avatarUpdatedAt: true,
+  agent: { select: { slug: true, name: true, avatar: true } },
+};
 
 export default async function ProjectSettingsPage({
   params,
@@ -53,7 +61,7 @@ export default async function ProjectSettingsPage({
       orderBy: { createdAt: "desc" },
       take: ACTIVITY_FEED_LIMIT,
       include: {
-        user: { select: { username: true } },
+        user: { select: actorSelect },
         task: { select: { title: true } },
       },
     }),
@@ -68,6 +76,16 @@ export default async function ProjectSettingsPage({
       actorName: row.user?.username ?? null,
       taskTitle: row.task?.title ?? null,
     }),
+    actor: row.user
+      ? {
+          id: row.user.id,
+          username: row.user.username,
+          kind: row.user.kind,
+          name: row.user.name,
+          avatarUpdatedAt: row.user.avatarUpdatedAt?.toISOString() ?? null,
+          agent: row.user.agent,
+        }
+      : null,
   }));
 
   return (
@@ -93,34 +111,53 @@ export default async function ProjectSettingsPage({
             />
           </SettingsRow>
 
-          <SettingsRow
-            label="Project slug"
-            hint="The URL slug of this project (e.g. zero-latency)."
-          >
-            <input
-              type="text"
-              name="slug"
-              defaultValue={slug}
-              required
-              placeholder="my-project"
-              pattern="[a-zA-Z0-9\-_]+"
-              title="Only letters, numbers, hyphens, and underscores are allowed"
-              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
-            />
-          </SettingsRow>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[35fr_15fr_50fr]">
+            <SettingsRow
+              label="Project slug"
+              hint="URL slug, for example patricia."
+            >
+              <input
+                type="text"
+                name="slug"
+                defaultValue={slug}
+                required
+                placeholder="my-project"
+                pattern="[a-zA-Z0-9\-_]+"
+                title="Only letters, numbers, hyphens, and underscores are allowed"
+                className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+              />
+            </SettingsRow>
 
-          <SettingsRow
-            label="Repository folder"
-            hint="Absolute path on the host where this project's git checkout lives."
-          >
-            <input
-              type="text"
-              name="repositoryPath"
-              defaultValue={project.repositoryPath ?? ""}
-              placeholder="/srv/Code/environment"
-              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 font-mono text-sm outline-none focus:border-[var(--color-accent)]"
-            />
-          </SettingsRow>
+            <SettingsRow
+              label="Project key"
+              hint="Epic/Task key prefix."
+            >
+              <input
+                type="text"
+                name="workItemKeyPrefix"
+                defaultValue={project.workItemKeyPrefix ?? ""}
+                required
+                placeholder="PH"
+                pattern="[a-zA-Z][a-zA-Z0-9]{1,9}"
+                title="Start with a letter; use 2-10 letters or numbers"
+                className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 font-mono text-sm uppercase outline-none focus:border-[var(--color-accent)]"
+              />
+            </SettingsRow>
+
+            <SettingsRow
+              label="Repository folder"
+              hint="Absolute git checkout path on the host."
+            >
+              <input
+                type="text"
+                name="repositoryPath"
+                defaultValue={project.repositoryPath ?? ""}
+                required
+                placeholder="/srv/Code/environment"
+                className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 font-mono text-sm outline-none focus:border-[var(--color-accent)]"
+              />
+            </SettingsRow>
+          </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <SettingsRow
@@ -191,8 +228,8 @@ export default async function ProjectSettingsPage({
           </div>
 
           <SettingsRow
-            label="Days to keep Done"
-            hint="Tasks in Done older than this many days are hidden from the board. They stay reachable via direct links. Leave blank to use the system default."
+            label="Automatic Archive (days)"
+            hint="Done tasks are automatically archived after this many days. Leave blank to use the system default."
           >
             <input
               type="number"
@@ -204,6 +241,42 @@ export default async function ProjectSettingsPage({
               className="w-40 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
             />
           </SettingsRow>
+
+          <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              Only Reporters:
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="flex items-start gap-3 text-sm">
+                <input
+                  type="checkbox"
+                  name="onlyReportersCanApproveActionPlans"
+                  defaultChecked={project.onlyReportersCanApproveActionPlans}
+                  className="mt-1 h-4 w-4 rounded border-[var(--color-line)] accent-[var(--color-accent)]"
+                />
+                <span>
+                  <span className="block font-medium">Can Approve Plan of Actions</span>
+                  <span className="block text-xs text-[var(--color-text-muted)]">
+                    Reviewers and acting managers can comment on plans but cannot approve them.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 text-sm">
+                <input
+                  type="checkbox"
+                  name="onlyReportersCanSetTasksDone"
+                  defaultChecked={project.onlyReportersCanSetTasksDone}
+                  className="mt-1 h-4 w-4 rounded border-[var(--color-line)] accent-[var(--color-accent)]"
+                />
+                <span>
+                  <span className="block font-medium">Can Set Tasks to Done</span>
+                  <span className="block text-xs text-[var(--color-text-muted)]">
+                    Review can still happen normally; the final Done transition is reserved for the reporter.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
 
           <div className="flex justify-end pt-1">
             <button

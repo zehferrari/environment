@@ -57,6 +57,7 @@ export type EpicAgentContextPacket = {
       title: string;
       status: string;
       description: string | null;
+      approvedOn: string | null;
       assignee: string;
       actingManager: string;
     } | null;
@@ -239,7 +240,10 @@ export function buildEpicPlainChatPrompt(epicTitle: string, slug: string): strin
 
 export interface LiveContextAccessEpic {
   baseUrl: string;
-  bearer: string;
+  grantUrls?: {
+    epic: string;
+    project: string;
+  };
   epicId: string;
   projectId: string;
   /** Inlined "recent exchange" block — same idea as the task variant. */
@@ -253,6 +257,7 @@ const SCOPE_ANCHORING_RULE = [
 
 function liveContextFetchBlockEpic(args: LiveContextAccessEpic) {
   const out: string[] = [];
+  const missingGrant = "  # No scoped grant URL was issued for this scope in this turn.";
   if (args.inlineRecentBlock && args.inlineRecentBlock.trim()) {
     out.push(args.inlineRecentBlock.trim());
     out.push("");
@@ -261,16 +266,20 @@ function liveContextFetchBlockEpic(args: LiveContextAccessEpic) {
   }
   out.push(
     "LIVE PM CONTEXT — FETCH WHEN YOU NEED DEEPER HISTORY:",
-    "The RECENT block above is your PRIMARY context. PM also exposes loopback-only JSON endpoints for older history and full project state. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL. Authenticate with the Bearer below (same value as channels.pm.token in your ~/.openclaw/openclaw.json):",
+    "The RECENT block above is your PRIMARY context. PM also exposes loopback-only JSON endpoints for older history and full project state. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL.",
     "",
     "  # Full epic: deeper history, full task list, comments, attachments:",
-    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/epic/${args.epicId}'`,
+    args.grantUrls?.epic
+      ? `  curl -s '${args.grantUrls.epic}'`
+      : missingGrant,
     "",
     "  # Required before proposing work-item changes:",
-    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/project/${args.projectId}'`,
+    args.grantUrls?.project
+      ? `  curl -s '${args.grantUrls.project}'`
+      : missingGrant,
     "",
     "  # Per-task detail when you need to dive into a specific task under this epic:",
-    `  curl -s -H 'Authorization: Bearer ${args.bearer}' '${args.baseUrl}/api/agents/context/task/<taskId>'`,
+    "  # No arbitrary-task grant is issued. Use the epic/project overview or ask for a task-scoped turn if deep task detail is required.",
     "",
     "Soft-deleted comments / chats are filtered server-side. Full contract: ai/web/docs/agent-pm-api.md.",
   );
@@ -287,7 +296,12 @@ export function buildEpicNativeChannelPrompt(
     `You have a PM message on epic "${epicTitle}", addressed to @${slug}.`,
     "This turn arrived through the native OpenClaw PM channel.",
     "Golden rule: only create a visible PM reply when you have new information, a concrete action result, a required plan, review feedback, a blocker, or a necessary question.",
-    `If you have no contribution to add, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else. PM will mark the turn complete without creating a visible comment.`,
+    `If you have no contribution to add, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else. PM will mark the turn complete without creating a visible comment. Never include this token inside another sentence.`,
+    "Do not post acknowledgements, restatements, progress filler, or 'nothing to add' comments.",
+    "Do not post workflow-status acknowledgements like 'task moved to Review' after calling a workflow endpoint.",
+    "When you do post visibly, consolidate related blockers/findings/questions into one concise comment. Do not post one comment per minor issue.",
+    "For straightforward work sequencing, decide once, update the task/Epic state, and avoid repeated implementation debate in comments.",
+    "Latest explicit human, reviewer, or acting-manager instruction wins over older agent discussion. Correct yourself silently unless a visible correction is required.",
     "Markdown formatting in your reply is welcome.",
   ];
   if (contextAccess) {
@@ -343,6 +357,7 @@ export async function buildEpicAgentContextPacket(args: {
       title: true,
       status: true,
       description: true,
+      approvedOn: true,
       createdAt: true,
       updatedAt: true,
       project: {
@@ -357,8 +372,8 @@ export async function buildEpicAgentContextPacket(args: {
       assignee: { select: { username: true, kind: true } },
       actingManager: { select: { username: true, kind: true } },
       tasks: {
-        where: { deletedAt: null },
-        orderBy: [{ status: "asc" }, { rank: "asc" }, { createdAt: "asc" }],
+        where: { deletedAt: null, parentTaskId: null },
+        orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
         select: {
           id: true,
           title: true,
@@ -394,7 +409,7 @@ export async function buildEpicAgentContextPacket(args: {
         },
       },
       chats: {
-        where: { archiveId: null, deletedAt: null },
+        where: { archiveId: null, deletedAt: null, originChannel: "chat" },
         orderBy: { createdAt: "desc" },
         take: caps.maxLiveChats,
         select: {
@@ -437,6 +452,7 @@ export async function buildEpicAgentContextPacket(args: {
             title: epic.title,
             status: epic.status,
             description: epic.description,
+            approvedOn: formatDate(epic.approvedOn),
             assignee: actorLabel(epic.assignee),
             actingManager: actorLabel(epic.actingManager),
           }
@@ -477,6 +493,7 @@ export async function buildEpicAgentContextPacket(args: {
         where: {
           epicId: args.epicId,
           archiveId: { in: archiveIds },
+          originChannel: "chat",
           // Soft-deleted archived bubbles stay hidden from agent
           // context too. HOMELAB-41 / item 2.
           deletedAt: null,
@@ -606,6 +623,32 @@ function renderAttachments(attachments: AttachmentContext[], caps: ContextCaps) 
   return lines;
 }
 
+function renderHotPath(
+  timeline: EpicAgentContextPacket["timeline"],
+  caps: ContextCaps,
+) {
+  const items = timeline
+    .filter((item) => item.type === "comment" || item.type === "chat")
+    .slice(-12);
+  const lines: string[] = [
+    "RECENT PM HOT PATH (latest comments/discussion, oldest to newest):",
+    "Read this first. Latest explicit human, reviewer, or acting-manager correction wins over older agent comments.",
+  ];
+  if (items.length === 0) {
+    lines.push("(none)");
+    return lines;
+  }
+  for (const item of items) {
+    const clipped = clipWithMeta(item.body, Math.min(1600, caps.maxTimelineBody));
+    lines.push(
+      `[${item.createdAt}] ${item.type} ${item.actor} (${item.id}):`,
+      clipped.text,
+      "",
+    );
+  }
+  return lines;
+}
+
 export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): string {
   const lines = [
     "CURRENT TURN:",
@@ -643,6 +686,8 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
   }
 
   const { project, epic, tasks } = packet.snapshot;
+  lines.push(...renderHotPath(packet.timeline, packet.caps), "");
+
   lines.push(
     "PROJECT SNAPSHOT:",
     `Project: ${project.name} (${project.slug})`,
@@ -654,6 +699,7 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
   lines.push("", "EPIC SNAPSHOT:");
   lines.push(
     `Epic: ${epic.title} (${epic.status}, ${epic.id})`,
+    `Action Plan approved_on: ${epic.approvedOn || "(not approved)"}`,
     `Assignee: ${epic.assignee}`,
     `Acting manager: ${epic.actingManager}`,
   );
@@ -720,6 +766,9 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
     "RESPONSE GUIDANCE:",
     "Use the current turn together with the live PM Epic, timeline, tasks, and attachment context above. If an attachment is important but only metadata is available, say exactly which attachment needs inspection. Do not invent attachment contents.",
     "You can see EVERY comment and EVERY discussion message above, including messages between other people/agents that were not directed at you. Read them as background and use them in your reasoning.",
+    "Visible PM comments must be direct and consolidated: put all current issues, blockers, findings, and required questions in one comment whenever possible.",
+    "Do not repeat a blocker or decision already present in the recent hot path unless the current turn adds new information or asks for a status update.",
+    "For tasks under this Epic, assignees must post a technical Action Plan and wait for approved_on before starting To Do work. Once approved, they move To Do work to In Progress when they start and move work to Review when complete or waiting for reviewer/manager/reporter feedback.",
     `If the current turn requires no visible contribution from you, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
   );
 

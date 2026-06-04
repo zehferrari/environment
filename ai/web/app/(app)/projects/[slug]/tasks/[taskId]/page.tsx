@@ -32,13 +32,37 @@ import {
 import { uploadAttachment, deleteAttachment } from "@/lib/attachments/actions";
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteTask } from "@/lib/bin/actions";
+import { archiveTask, unarchiveTask } from "@/lib/archive/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
-import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import {
+  canApproveActionPlanForActor,
+  resolveDoneOwnerId,
+  resolveReviewOwnerId,
+} from "@/lib/tasks/workflow-actors";
+import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
+import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
+import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
+import { allocateWorkItemKey, effectiveCommitPrefix } from "@/lib/work-items/keys";
+import {
+  getCachedLatestRepoVerifyActivity,
+  getCachedPendingTaskProposals,
+  getCachedProjectEpics,
+  getCachedRecentTaskChatMessages,
+  getCachedTaskActivity,
+  getCachedTaskAttachments,
+  getCachedTaskChatArchives,
+  getCachedTaskComments,
+  getCachedTaskDetailShell,
+  getCachedTaskRoomMessages,
+} from "@/lib/tasks/cache";
 import SortableTaskList from "@/components/sortable-task-list";
+import AttachmentList from "@/components/attachment-list";
 import AttachmentUploadFab from "@/components/attachment-upload-fab";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import ChatRoom from "@/components/chat-room";
+import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activity-timeline";
+import TaskChangesPanel from "@/components/task-changes-panel";
 import CommentComposerFab from "@/components/comment-composer-fab";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
@@ -50,13 +74,14 @@ import {
 import DescriptionField from "@/components/description-field";
 import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
+import TaskEpicPicker from "./task-epic-picker";
 
 type ActorRow = {
   id: string;
   username: string;
   kind: string;
   name: string | null;
-  avatarUpdatedAt: Date | null;
+  avatarUpdatedAt: Date | string | null;
   agent: { slug: string; name: string; avatar: string | null } | null;
 };
 
@@ -67,7 +92,7 @@ function serializeActor(actor: ActorRow | null) {
     username: actor.username,
     kind: actor.kind,
     name: actor.name,
-    avatarUpdatedAt: actor.avatarUpdatedAt?.toISOString() ?? null,
+    avatarUpdatedAt: dateIso(actor.avatarUpdatedAt),
     agent: actor.agent,
   };
 }
@@ -136,8 +161,16 @@ async function updateTask(formData: FormData) {
       assigneeId: true,
       actingManagerId: true,
       reporterId: true,
-      project: { select: { slug: true } },
-      epic: { select: { title: true, branchName: true, commitPrefix: true } },
+      approvedOn: true,
+      workItemKey: true,
+      project: {
+        select: {
+          slug: true,
+          onlyReportersCanApproveActionPlans: true,
+          onlyReportersCanSetTasksDone: true,
+        },
+      },
+      epic: { select: { title: true, status: true, actingManagerId: true, branchName: true, commitPrefix: true } },
       assignee: { select: { id: true, username: true, kind: true } },
       actingManager: { select: { username: true } },
       reporter: { select: { username: true } },
@@ -151,6 +184,7 @@ async function updateTask(formData: FormData) {
     null;
   let assignmentChanged = false;
   let statusChangedTo: string | null = null;
+  let completeReviewAfterSave = false;
 
   // Title / description
   const titleChanged = task.title !== titleRaw;
@@ -177,18 +211,31 @@ async function updateTask(formData: FormData) {
       actor,
     });
     if (!check.ok) throw new Error(check.message);
-    const maxRank = await db.task.aggregate({
-      where: { status: newStatus, deletedAt: null },
-      _max: { rank: true },
-    });
-    data.status = newStatus;
-    data.rank = (maxRank._max.rank ?? 0) + 1;
-    data.statusChangedAt = new Date();
-    statusChangedTo = newStatus;
-    activity.push({
-      kind: "task.move",
-      payload: JSON.stringify({ from: task.status, to: newStatus }),
-    });
+    if (newStatus === "In Progress" && !task.approvedOn) {
+      throw new Error("Action Plan must be approved before this task can move to In Progress.");
+    }
+    if (task.status === "Review" && newStatus === "Done") {
+      const doneOwnerId = resolveDoneOwnerId(task);
+      if (doneOwnerId !== actor.id) {
+        throw new Error(task.project.onlyReportersCanSetTasksDone
+          ? "Only the task reporter can move Review to Done for this project."
+          : "Only the resolved reviewer, Open Epic manager, or reporter fallback can move Review to Done.");
+      }
+      completeReviewAfterSave = true;
+    } else {
+      const maxRank = await db.task.aggregate({
+        where: { status: newStatus, archivedAt: null, deletedAt: null },
+        _max: { rank: true },
+      });
+      data.status = newStatus;
+      data.rank = (maxRank._max.rank ?? 0) + 1;
+      data.statusChangedAt = new Date();
+      statusChangedTo = newStatus;
+      activity.push({
+        kind: "task.move",
+        payload: JSON.stringify({ from: task.status, to: newStatus }),
+      });
+    }
   }
 
   // Epic (must belong to the same project)
@@ -266,10 +313,20 @@ async function updateTask(formData: FormData) {
       newAssigneeId === null
         ? { disconnect: true }
         : { connect: { id: newAssigneeId } };
+    data.approvedOn = null;
+    data.approvedBy = { disconnect: true };
     assignmentChanged = true;
     activity.push({
       kind: "task.assign",
       payload: JSON.stringify({
+        from: task.assignee?.username ?? null,
+        to: assignmentTarget?.username ?? null,
+      }),
+    });
+    activity.push({
+      kind: "task.action_plan.reset",
+      payload: JSON.stringify({
+        reason: "assignee_changed",
         from: task.assignee?.username ?? null,
         to: assignmentTarget?.username ?? null,
       }),
@@ -330,22 +387,24 @@ async function updateTask(formData: FormData) {
     });
   }
 
-  if (activity.length === 0) return; // nothing changed
+  if (activity.length === 0 && !completeReviewAfterSave) return; // nothing changed
 
-  await db.$transaction([
-    db.task.update({ where: { id: taskId }, data }),
-    ...activity.map((a) =>
-      db.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId,
-          userId: actor.id,
-          kind: a.kind,
-          payload: a.payload,
-        },
-      }),
-    ),
-  ]);
+  if (activity.length > 0) {
+    await db.$transaction([
+      db.task.update({ where: { id: taskId }, data }),
+      ...activity.map((a) =>
+        db.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId,
+            userId: actor.id,
+            kind: a.kind,
+            payload: a.payload,
+          },
+        }),
+      ),
+    ]);
+  }
 
   try {
     const { deleteDescriptionDraft } = await import("@/lib/description-drafts");
@@ -368,7 +427,7 @@ async function updateTask(formData: FormData) {
           id: randomUUID(),
           occurredAt: new Date().toISOString(),
           actor,
-          task: { id: task.id, key: task.id, projectKey: slug, title: titleRaw },
+          task: { id: task.id, key: task.workItemKey ?? task.id, projectKey: slug, title: titleRaw },
         },
         {
           assignee: assignmentTarget
@@ -405,14 +464,31 @@ async function updateTask(formData: FormData) {
       body: finalStatus === "Backlog"
         ? [
             `You have been assigned to "${titleRaw}" while it is in Backlog.`,
-            "Read the full task context and existing comments. Post a concise task comment with your implementation plan or opinion.",
+            "Read the full task context and existing comments. Post one concise technical implementation plan in Action Plan.",
             "Do not change task status and do not start work until the task is moved to To Do.",
           ].join("\n")
         : [
             `Task "${titleRaw}" is now in To Do and assigned to you.`,
-            "Read the full task context, move it to In Progress through the workflow endpoint, and start work immediately.",
-            "Do not post a visible acknowledgement unless you have new task information to add.",
+            "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
+            "Do not move it to In Progress until approved_on is set.",
           ].join("\n"),
+    });
+  }
+
+  if (completeReviewAfterSave) {
+    const actorUser = await db.user.findUnique({
+      where: { id: actor.id },
+      select: { username: true },
+    });
+    await completeReviewedTaskAndAssignNext({
+      taskId: task.id,
+      actor: {
+        id: actor.id,
+        username: actorUser?.username ?? "unknown",
+        kind: actor.kind,
+      },
+      via: "task-edit",
+      requireReviewerUserId: actor.id,
     });
   }
 
@@ -439,6 +515,109 @@ async function updateTask(formData: FormData) {
       });
     }
   }
+}
+
+async function approveTaskActionPlan(formData: FormData) {
+  "use server";
+  const actor = await requireActor();
+  const taskId = String(formData.get("taskId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  if (!taskId || !slug) return;
+
+  const task = await db.task.findUnique({
+    where: { id: taskId },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      projectId: true,
+      approvedOn: true,
+      assigneeId: true,
+      actingManagerId: true,
+      reporterId: true,
+      deletedAt: true,
+      project: { select: { slug: true, onlyReportersCanApproveActionPlans: true } },
+      epic: { select: { status: true, actingManagerId: true } },
+    },
+  });
+  if (!task || task.deletedAt || task.project.slug !== slug) return;
+
+  if (!canApproveActionPlanForActor(task, actor.id)) {
+    throw new Error(task.project.onlyReportersCanApproveActionPlans
+      ? "Only the task reporter can approve the Action Plan for this project."
+      : "Only the task reviewer or reporter can approve the Action Plan.");
+  }
+  if (task.approvedOn) return;
+
+  const approvedAt = new Date();
+  const statusUpdate =
+    task.status === "Backlog"
+      ? { status: "To Do", statusChangedAt: approvedAt }
+      : {};
+
+  await db.$transaction([
+    db.task.update({
+      where: { id: task.id },
+      data: {
+        approvedOn: approvedAt,
+        approvedById: actor.id,
+        ...statusUpdate,
+      },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: task.projectId,
+        taskId: task.id,
+        userId: actor.id,
+        kind: "task.action_plan.approve",
+        payload: JSON.stringify({
+          taskId: task.id,
+          previousStatus: task.status,
+          status: task.status === "Backlog" ? "To Do" : task.status,
+        }),
+      },
+    }),
+    ...(task.status === "Backlog"
+      ? [
+          db.activityLog.create({
+            data: {
+              projectId: task.projectId,
+              taskId: task.id,
+              userId: actor.id,
+              kind: "task.move",
+              payload: JSON.stringify({
+                from: "Backlog",
+                to: "To Do",
+                via: "action-plan-approval",
+              }),
+            },
+          }),
+        ]
+      : []),
+  ]);
+
+  await createActionPlanSubtasksForTask({
+    taskId: task.id,
+    approvedAt,
+    approvedById: actor.id,
+  });
+
+  if (task.assigneeId) {
+    await sendTaskWorkflowNotification({
+      taskId: task.id,
+      targetUserId: task.assigneeId,
+      actor,
+      reason: "todo_start_required",
+      body: [
+        `The Action Plan for "${task.title}" was approved.`,
+        "You may now call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
+        "Keep visible replies concise; use a comment only if a blocker or material plan change appears.",
+      ].join("\n"),
+    });
+  }
+
+  revalidatePath(`/projects/${slug}/tasks/${task.id}`);
+  revalidatePath(`/projects/${slug}`);
 }
 
 async function createComment(formData: FormData) {
@@ -642,11 +821,12 @@ async function createSubtask(formData: FormData) {
       branchName: true,
       commitPrefix: true,
       parentTaskId: true,
+      assigneeId: true,
+      approvedOn: true,
+      subtasks: { where: { deletedAt: null }, select: { id: true }, take: 1 },
       project: {
         select: {
           slug: true,
-          defaultAssigneeId: true,
-          defaultReviewerId: true,
         },
       },
       epic: { select: { branchName: true, commitPrefix: true } },
@@ -657,26 +837,36 @@ async function createSubtask(formData: FormData) {
   if (parent.parentTaskId !== null) {
     throw new Error("Cannot create sub-task under another sub-task");
   }
+  if (actor.id !== parent.assigneeId) {
+    throw new Error("Only the task assignee can create task-local subtasks.");
+  }
+  if (!parent.approvedOn) {
+    throw new Error("Task Action Plan must be approved before subtasks can be created.");
+  }
+  if (parent.subtasks.length > 0) {
+    throw new Error("Task-local subtasks can only be created when the task has no child subtasks yet.");
+  }
 
   const check = checkHierarchy({ level: "subtask", parentTaskId });
   if (!check.ok) throw new Error(check.message);
 
   const maxRank = await db.task.aggregate({
-    where: { projectId: parent.projectId, status: "Backlog", deletedAt: null },
+    where: { projectId: parent.projectId, status: "Backlog", archivedAt: null, deletedAt: null },
     _max: { rank: true },
   });
 
   const child = await db.task.create({
     data: {
       projectId: parent.projectId,
+      workItemKey: await allocateWorkItemKey(parent.projectId),
       epicId: parent.epicId,
       parentTaskId,
       title,
       status: "Backlog",
       rank: (maxRank._max.rank ?? 0) + 1,
       statusChangedAt: new Date(),
-      assigneeId: parent.project.defaultAssigneeId ?? null,
-      actingManagerId: parent.project.defaultReviewerId ?? null,
+      assigneeId: null,
+      actingManagerId: null,
       reporterId: actor.id,
       branchName: parent.branchName ?? parent.epic?.branchName ?? null,
       commitPrefix: parent.commitPrefix ?? parent.epic?.commitPrefix ?? null,
@@ -698,20 +888,6 @@ async function createSubtask(formData: FormData) {
     },
   });
 
-  if (parent.project.defaultAssigneeId) {
-    await sendTaskWorkflowNotification({
-      taskId: child.id,
-      targetUserId: parent.project.defaultAssigneeId,
-      actor,
-      reason: "backlog_plan_requested",
-      body: [
-        `You have been assigned to "${child.title}" while it is in Backlog.`,
-        "Read the full task context and existing comments. Post a concise task comment with your implementation plan or opinion.",
-        "Do not change task status and do not start work until the task is moved to To Do.",
-      ].join("\n"),
-    });
-  }
-
   revalidatePath(`/projects/${slug}/tasks/${parentTaskId}`);
   revalidatePath(`/projects/${slug}/tasks/${child.id}`);
   revalidatePath(`/projects/${slug}`);
@@ -725,13 +901,66 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MiB`;
 }
 
-function timeAgo(d: Date): string {
+function dateValue(value: Date | string | null | undefined): Date | null {
+  if (!value) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function dateIso(value: Date | string | null | undefined): string | null {
+  return dateValue(value)?.toISOString() ?? null;
+}
+
+function timeAgo(value: Date | string | null | undefined): string {
+  const d = dateValue(value);
+  if (!d) return "unknown";
   const diff = (Date.now() - d.getTime()) / 1000;
   if (diff < 60) return "just now";
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d ago`;
   return d.toISOString().slice(0, 10);
+}
+
+function payloadValue(payload: string | null | undefined, key: string) {
+  if (!payload) return null;
+  try {
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    const value = parsed[key];
+    return typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function taskWorkWindows(
+  rows: Array<{ kind: string; payload: string | null; createdAt: Date | string }>,
+  fallback: { status: string; statusChangedAt: Date | string | null },
+) {
+  const windows: Array<{ since: Date | string; until: Date | string | null }> = [];
+  let openStart: Date | string | null = null;
+
+  for (const row of [...rows].reverse()) {
+    if (row.kind !== "task.move") continue;
+    const to = payloadValue(row.payload, "to");
+    if (to === "In Progress") {
+      openStart = row.createdAt;
+      continue;
+    }
+    if (openStart && (to === "Review" || to === "Done")) {
+      windows.push({ since: openStart, until: row.createdAt });
+      openStart = null;
+    }
+  }
+
+  if (openStart) {
+    windows.push({ since: openStart, until: null });
+  }
+  if (windows.length === 0 && fallback.status === "In Progress" && fallback.statusChangedAt) {
+    windows.push({ since: fallback.statusChangedAt, until: null });
+  }
+
+  return windows;
 }
 
 function activityMessageIds(rows: Array<{ kind: string; payload: string | null }>) {
@@ -799,7 +1028,7 @@ function workflowNotificationStatus(body: string) {
   if (!body.startsWith("PM workflow notification for @")) return null;
   if (body.includes(" while it is in Backlog.")) return "Backlog";
   if (body.includes(" is now in To Do ")) return "To Do";
-  if (body.includes(" was moved to Review.")) return "Review";
+  if (body.includes(" was moved to Review")) return "Review";
   return null;
 }
 
@@ -903,6 +1132,25 @@ function discussionTargetValue(
   return `user:${principal.id}`;
 }
 
+const TASK_TABS = ["Description", "Action Plan", "Sub-Tasks", "Attachments", "Comments", "Activities", "Changes"] as const;
+
+function tabParam(tab: string) {
+  return tab
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function tabFromSearchParam(raw: string | undefined, tabs: readonly string[]) {
+  if (!raw) return null;
+  const normalized = tabParam(raw);
+  if (normalized === "discussion") {
+    return tabs.find((tab) => tab === "Action Plan") ?? null;
+  }
+  return tabs.find((tab) => tabParam(tab) === normalized) ?? null;
+}
+
 // ---- Page -----------------------------------------------------------
 
 export default async function TaskDetailPage({
@@ -910,178 +1158,53 @@ export default async function TaskDetailPage({
   searchParams,
 }: {
   params: Promise<{ slug: string; taskId: string }>;
-  searchParams: Promise<{ chat?: string; chatArchive?: string; chatRoom?: string }>;
+  searchParams: Promise<{ chat?: string; chatArchive?: string; chatRoom?: string; tab?: string; commit?: string; file?: string }>;
 }) {
-  const [{ slug, taskId }, { chatArchive = "", chatRoom = "" }] = await Promise.all([
+  const [{ slug, taskId }, { chatArchive = "", chatRoom = "", tab = "", commit = "", file = "" }] = await Promise.all([
     params,
     searchParams,
   ]);
+  const selectedTab = chatArchive || chatRoom === "current"
+    ? "Action Plan"
+    : tabFromSearchParam(tab, TASK_TABS) ?? "Description";
 
-  const task = await db.task.findUnique({
-    where: { id: taskId },
-    include: {
-      project: { select: { id: true, slug: true, name: true } },
-      assignee: {
-        select: {
-          id: true,
-          username: true,
-          name: true,
-          kind: true,
-          status: true,
-          avatarUpdatedAt: true,
-          agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
-        },
-      },
-      actingManager: {
-        select: {
-          id: true,
-          username: true,
-          name: true,
-          kind: true,
-          status: true,
-          avatarUpdatedAt: true,
-          agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
-        },
-      },
-      reporter: {
-        select: {
-          id: true,
-          username: true,
-          name: true,
-          kind: true,
-          status: true,
-          avatarUpdatedAt: true,
-          agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
-        },
-      },
-      epic: {
-        select: {
-          id: true,
-          title: true,
-          status: true,
-          branchName: true,
-          commitPrefix: true,
-          actingManager: {
-            select: {
-              id: true,
-              username: true,
-              name: true,
-              kind: true,
-              status: true,
-              avatarUpdatedAt: true,
-              agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
-            },
-          },
-        },
-      },
-      parent: { select: { id: true, title: true } },
-      subtasks: {
-        where: { deletedAt: null },
-        orderBy: { rank: "asc" },
-        select: {
-          id: true,
-          title: true,
-          status: true,
-          updatedAt: true,
-          assignee: { select: { username: true } },
-        },
-      },
-      comments: {
-        // Soft-deleted comments (HOMELAB-41 / item 2) are returned to
-        // humans on the task page so they can render the collapsed
-        // dotted divider. Agent context queries filter deletedAt: null
-        // upstream so agents never see deleted bodies.
-        orderBy: { createdAt: "asc" },
-        include: {
-          user: {
-            select: {
-              id: true,
-              username: true,
-              kind: true,
-              name: true,
-              avatarUpdatedAt: true,
-              agent: { select: { slug: true, name: true, avatar: true } },
-            },
-          },
-          deletedBy: {
-            select: {
-              id: true,
-              username: true,
-              name: true,
-              kind: true,
-            },
-          },
-        },
-      },
-      attachments: {
-        orderBy: { createdAt: "desc" },
-        include: { uploader: { select: { username: true } } },
-      },
-    },
-  });
+  const [taskShell, comments, attachments] = await Promise.all([
+    getCachedTaskDetailShell(taskId),
+    getCachedTaskComments(taskId),
+    getCachedTaskAttachments(taskId),
+  ]);
+  const task = taskShell ? { ...taskShell, comments, attachments } : null;
   if (!task || task.project.slug !== slug || task.deletedAt) notFound();
 
   // Only human viewers get comment-delete controls (see deleteComment).
   const viewer = await requireActor();
   const canDeleteComments = viewer.kind === "human";
 
-  const [principals, projectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify] = await Promise.all([
+  const [principals, projectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify, allActivity] = await Promise.all([
     listAssignablePrincipals(),
-    db.epic.findMany({
-      where: {
-        projectId: task.project.id,
-        status: { not: "Archive" },
-        deletedAt: null,
-      },
-      orderBy: [{ status: "asc" }, { title: "asc" }],
-      select: { id: true, title: true, status: true },
-    }),
+    getCachedProjectEpics(task.project.id),
     db.user.findMany({ select: { username: true } }),
-    db.agentChatMessage.findMany({
-      where: { taskId: task.id, archiveId: null },
-      orderBy: { createdAt: "desc" },
-      take: 80,
-      select: {
-        id: true,
-        agentSlug: true,
-        originChannel: true,
-        originCommentId: true,
-        createdAt: true,
-        body: true,
-        sender: { select: { kind: true } },
-      },
-    }),
+    getCachedRecentTaskChatMessages(task.id),
+    getCachedTaskActivity(task.id),
+    // Latest monitor-verifier branch row, if any. Used by the Review-state
+    // Repo verification panel below.
+    getCachedLatestRepoVerifyActivity(task.id),
     db.activityLog.findMany({
-      where: {
-        taskId: task.id,
-        kind: {
-          in: [
-            "task.chat.reply",
-            "task.chat.silent",
-            "task.chat.dispatch",
-            "task.comment",
-            "task.comment.silent",
-            "task.chat.dispatch_failed",
-            "task.comment.dispatch_failed",
-            "task.workflow.dispatch_failed",
-            "task.chat.stream_error",
-          ],
+      where: { taskId: task.id },
+      orderBy: { createdAt: "desc" },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            kind: true,
+            name: true,
+            avatarUpdatedAt: true,
+            agent: { select: { slug: true, name: true, avatar: true } },
+          },
         },
       },
-      orderBy: { createdAt: "desc" },
-      take: 160,
-      select: { kind: true, payload: true, targetAgent: true },
-    }),
-    // Latest Karen branch-verification row, if any. Used by the Review-state
-    // Repo verification panel below.
-    db.activityLog.findFirst({
-      where: {
-        taskId: task.id,
-        kind: { in: ["pm.repo.verify.ok", "pm.repo.verify.fail", "pm.repo.verify.enqueue"] },
-      },
-      orderBy: { createdAt: "desc" },
-      select: { kind: true, payload: true, createdAt: true },
-    }),
+    }) as Promise<ActivityTimelineRow[]>,
   ]);
   const mentionables = mentionableUsers.map((u) => ({ username: u.username }));
   const settledMessageIds = activityMessageIds(recentReplyActivity);
@@ -1111,44 +1234,17 @@ export default async function TaskDetailPage({
     }))
     .filter((message, index, all) => all.findIndex((item) => item.agentSlug === message.agentSlug) === index)
     .slice(0, 4);
-  const chatMessages = await db.agentChatMessage.findMany({
-    where: {
-      taskId: task.id,
-      agentSlug: "room",
-      archiveId: null,
-    },
-    // Soft-deleted bubbles (HOMELAB-41 / item 2) stay in this list so
-    // the chat room can render the collapsed dotted divider. Agent
-    // context queries (lib/agents/context/task.ts) filter them out.
-    orderBy: { createdAt: "asc" },
-    include: {
-      sender: {
-        select: {
-          id: true,
-          username: true,
-          kind: true,
-          name: true,
-          avatarUpdatedAt: true,
-          agent: { select: { slug: true, name: true, avatar: true } },
-        },
-      },
-      deletedBy: { select: { username: true, name: true, kind: true } },
-    },
-  });
-  const pendingProposals = await db.workItemProposal.findMany({
-    where: {
-      status: "pending",
-      projectId: task.projectId,
-      grantMessageId: { in: chatMessages.map((m) => m.id) },
-    },
-    include: {
-      project: { select: { name: true } },
-    },
-  });
+  const chatMessages = await getCachedTaskRoomMessages(task.id);
+  const pendingProposals = await getCachedPendingTaskProposals(
+    task.id,
+    task.projectId,
+    chatMessages.map((m) => m.id),
+  );
   const pendingDescriptionMessages = await db.agentChatMessage.findMany({
     where: {
       taskId: task.id,
       allowDescriptionEdit: true,
+      originChannel: "description",
       editGrantUsedAt: null,
     },
     select: { id: true },
@@ -1178,32 +1274,8 @@ export default async function TaskDetailPage({
     requesterUserId: viewer.id,
   });
 
-  const [chatArchives, binChatArchives, selectedChatArchive] = await Promise.all([
-    db.agentChatRoomArchive.findMany({
-      where: { projectId: task.project.id, taskId: task.id, deletedAt: null },
-      orderBy: { createdAt: "desc" },
-      take: 20,
-      select: {
-        id: true,
-        summary: true,
-        startedAt: true,
-        endedAt: true,
-        messageCount: true,
-      },
-    }),
-    db.agentChatRoomArchive.findMany({
-      where: { projectId: task.project.id, taskId: task.id, deletedAt: { not: null } },
-      orderBy: { deletedAt: "desc" },
-      take: 20,
-      select: {
-        id: true,
-        summary: true,
-        startedAt: true,
-        endedAt: true,
-        messageCount: true,
-        deletedAt: true,
-      },
-    }),
+  const [[chatArchives, binChatArchives], selectedChatArchive] = await Promise.all([
+    getCachedTaskChatArchives(task.project.id, task.id),
     chatArchive
       ? db.agentChatRoomArchive.findFirst({
           where: { id: chatArchive, projectId: task.project.id, taskId: task.id },
@@ -1228,6 +1300,12 @@ export default async function TaskDetailPage({
       : Promise.resolve(null),
   ]);
   const visibleChatMessages = selectedChatArchive?.messages ?? chatMessages;
+  const visibleActionPlanMessages = visibleChatMessages.filter(
+    (message) => !message.body.startsWith("PM workflow notification for @"),
+  );
+  const activeActionPlanMessageCount = chatMessages.filter(
+    (message) => !message.body.startsWith("PM workflow notification for @"),
+  ).length;
   const viewingChatArchive = Boolean(selectedChatArchive);
   const selectedChatArchiveDeleted = Boolean(selectedChatArchive?.deletedAt);
   const humanChatMessageIds = chatMessages
@@ -1390,6 +1468,45 @@ export default async function TaskDetailPage({
   ].find((value) => Boolean(value?.startsWith("agent:") && aiTargetOptions.some((option) => option.value === value)))
     ?? aiTargetOptions[0]?.value
     ?? "";
+  const canApproveActionPlan =
+    !task.approvedOn &&
+    canApproveActionPlanForActor(task, viewer.id);
+  const doneActivity = allActivity.find((row) =>
+    row.kind === "task.move" && payloadValue(row.payload, "to") === "Done"
+  );
+  const createdActivity = [...allActivity].reverse().find((row) => row.kind === "task.create");
+  const updatedActivity = allActivity.find((row) => (
+    row.kind === "task.update" ||
+    row.kind === "task.move" ||
+    row.kind === "task.assign" ||
+    row.kind === "task.acting_manager" ||
+    row.kind === "task.action_plan.approve" ||
+    row.kind === "task.action_plan.reset"
+  )) ?? createdActivity;
+  const changeWindows = taskWorkWindows(allActivity, {
+    status: task.status,
+    statusChangedAt: task.statusChangedAt,
+  });
+  const taskExplicitCommitPrefix = task.commitPrefix ?? task.epic?.commitPrefix ?? null;
+  const taskCommitPrefix = effectiveCommitPrefix({
+    commitPrefix: taskExplicitCommitPrefix,
+    workItemKey: task.workItemKey ?? null,
+  });
+  const taskChanges = selectedTab === "Changes"
+    ? await getTaskGitChanges({
+        repositoryPath: task.project.repositoryPath,
+        branchName: task.branchName ?? task.epic?.branchName ?? null,
+        commitPrefix: taskCommitPrefix,
+        windows: changeWindows,
+      })
+    : { commits: [], ref: null, error: null };
+  const selectedDiff = selectedTab === "Changes"
+    ? await getTaskGitFileDiff({
+        repositoryPath: task.project.repositoryPath,
+        commitHash: commit,
+        filePath: file,
+      })
+    : null;
 
   async function reorderSubtasks(orderedIds: string[]): Promise<void> {
     "use server";
@@ -1408,6 +1525,11 @@ export default async function TaskDetailPage({
             <label className="min-w-[18rem] flex-1">
               <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                 Task title
+                {task.workItemKey ? (
+                  <span className="ml-2 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-text-muted)]">
+                    {task.workItemKey}
+                  </span>
+                ) : null}
               </span>
               <input
                 form="taskMain"
@@ -1419,26 +1541,18 @@ export default async function TaskDetailPage({
                 aria-label="Task title"
               />
             </label>
-            <label className="min-w-[12rem] flex-[0_1_16rem]">
+            <div className="min-w-[12rem] flex-[0_1_16rem]">
               <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                 Epic
               </span>
-              <select
-                form="taskMain"
+              <TaskEpicPicker
+                formId="taskMain"
                 name="epicId"
+                projectSlug={slug}
                 defaultValue={task.epicId ?? ""}
-                className="h-9 w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 text-xs outline-none focus:border-[var(--color-accent)]"
-                aria-label="Epic"
-              >
-                <option value="">No epic</option>
-                {projectEpics.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.title}
-                    {e.status !== "Open" ? ` · ${e.status}` : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
+                epics={projectEpics}
+              />
+            </div>
             <label className="w-32 shrink-0">
               <span className="mb-0.5 block text-left text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                 Status
@@ -1460,7 +1574,7 @@ export default async function TaskDetailPage({
             <div className="flex shrink-0 flex-col items-end gap-0.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                 Updated{" "}
-                <time dateTime={task.updatedAt.toISOString()} title={task.updatedAt.toISOString()}>
+                <time dateTime={dateIso(task.updatedAt) ?? undefined} title={dateIso(task.updatedAt) ?? undefined}>
                   {timeAgo(task.updatedAt)}
                 </time>
               </span>
@@ -1474,17 +1588,22 @@ export default async function TaskDetailPage({
             </div>
           </div>
           {/* Review verification panel — only shown on tasks in Review with
-              a branchName set on the task or its epic. Surfaces Karen's
+              a branchName set on the task or its epic. Surfaces the monitor
+              verifier's
               latest pm.repo.verify.* result so the reviewer doesn't approve
               work that isn't on origin/<branch> yet. */}
           {task.status === "Review" && (task.branchName || task.epic?.branchName) ? (() => {
             const branchName = task.branchName ?? task.epic?.branchName ?? "";
-            const commitPrefix = task.commitPrefix ?? task.epic?.commitPrefix ?? null;
+            const commitPrefix = taskCommitPrefix;
             let kind: string | null = latestRepoVerify?.kind ?? null;
             let payload: { headSha?: string | null; matchSha?: string | null; branchName?: string | null; fetchError?: string | null; logError?: string | null } = {};
             try {
               payload = latestRepoVerify?.payload ? JSON.parse(latestRepoVerify.payload) : {};
             } catch { /* ignore */ }
+            const fetchAuthError = Boolean(
+              payload.fetchError &&
+              /(?:unauthorized|permission denied|could not read from remote|access rights|repository not found)/i.test(payload.fetchError),
+            );
             const tone =
               kind === "pm.repo.verify.ok" ? "ok" :
               kind === "pm.repo.verify.fail" ? "fail" :
@@ -1493,7 +1612,7 @@ export default async function TaskDetailPage({
             const palette = {
               ok:      { border: "var(--color-line)", bg: "rgba(34,197,94,0.08)",  dot: "#22c55e", title: "✓ origin verified" },
               fail:    { border: "var(--color-line)", bg: "rgba(239,68,68,0.10)",  dot: "#ef4444", title: "⚠ origin not verified" },
-              pending: { border: "var(--color-line)", bg: "rgba(59,130,246,0.08)", dot: "#3b82f6", title: "… Karen verifying" },
+              pending: { border: "var(--color-line)", bg: "rgba(59,130,246,0.08)", dot: "#3b82f6", title: "... monitor verifier running" },
               missing: { border: "var(--color-line)", bg: "rgba(148,163,184,0.10)", dot: "#94a3b8", title: "Repo verification not yet requested" },
             }[tone];
             return (
@@ -1514,10 +1633,12 @@ export default async function TaskDetailPage({
                     ? <>HEAD <code className="text-[var(--color-text)]">{payload.headSha.slice(0, 10)}</code> matches the COMMIT_PREFIX — safe to review.</>
                     : null}
                   {tone === "fail"
-                    ? <>{payload.fetchError ? <>fetch failed: <code className="text-[var(--color-text)]">{payload.fetchError}</code>.</> : null} See the latest <code className="text-[var(--color-text)]">pm.repo.verify.fail</code> comment below. Ask the assignee to push (with the prefix) before reviewing.</>
+                    ? fetchAuthError
+                      ? <>{payload.fetchError ? <>fetch failed: <code className="text-[var(--color-text)]">{payload.fetchError}</code>.</> : null} This is a monitor verifier repository-access problem. Fix the verifier credentials and retry; do not ask the assignee to repush solely for this error.</>
+                      : <>{payload.fetchError ? <>fetch failed: <code className="text-[var(--color-text)]">{payload.fetchError}</code>.</> : null} See the latest <code className="text-[var(--color-text)]">pm.repo.verify.fail</code> comment below. Ask the assignee to push or fix the commit prefix before reviewing.</>
                     : null}
                   {tone === "pending"
-                    ? <>Karen has been asked to verify <code className="text-[var(--color-text)]">origin/{branchName}</code>. The result will appear as a new task comment.</>
+                    ? <>The monitor verifier has been asked to verify <code className="text-[var(--color-text)]">origin/{branchName}</code>. The result will appear as a new task comment.</>
                     : null}
                   {tone === "missing"
                     ? <>No <code className="text-[var(--color-text)]">pm.repo.verify.*</code> activity yet — either the task pre-dates the verifier, or the assignee declared <code className="text-[var(--color-text)]">repoTouched: false</code> on ready_for_review.</>
@@ -1538,9 +1659,9 @@ export default async function TaskDetailPage({
           <input form="taskMain" type="hidden" name="projectSlug" value={slug} />
 
           {/* Tabbed content */}
-          <TabsProvider defaultTab={chatArchive || chatRoom === "current" ? "Discussion" : "Description"}>
+          <TabsProvider defaultTab={selectedTab}>
             <TabsNav
-              tabs={["Description", "Sub-Tasks", "Attachments", "Comments", "Discussion"]}
+              tabs={TASK_TABS}
               sticky
             />
             <div className="pt-4">
@@ -1574,28 +1695,81 @@ export default async function TaskDetailPage({
                       <dl className="mt-2 space-y-1 text-xs">
                         <div className="flex items-center justify-between gap-3">
                           <dt className="text-[var(--color-text-muted)]">Created</dt>
-                          <dd>
+                          <dd className="flex items-center gap-2">
                             <time
-                              dateTime={task.createdAt.toISOString()}
-                              title={task.createdAt.toISOString()}
+                              dateTime={dateIso(task.createdAt) ?? undefined}
+                              title={dateIso(task.createdAt) ?? undefined}
                               className="tabular-nums"
                             >
                               {timeAgo(task.createdAt)}
                             </time>
+                            {createdActivity?.user ? (
+                              <MessageAvatar actor={createdActivity.user} size="sm" />
+                            ) : task.reporter ? (
+                              <MessageAvatar actor={serializeActor(task.reporter)!} size="sm" />
+                            ) : null}
                           </dd>
                         </div>
                         <div className="flex items-center justify-between gap-3">
                           <dt className="text-[var(--color-text-muted)]">Updated</dt>
-                          <dd>
+                          <dd className="flex items-center gap-2">
                             <time
-                              dateTime={task.updatedAt.toISOString()}
-                              title={task.updatedAt.toISOString()}
+                              dateTime={dateIso(task.updatedAt) ?? undefined}
+                              title={dateIso(task.updatedAt) ?? undefined}
                               className="tabular-nums"
                             >
                               {timeAgo(task.updatedAt)}
                             </time>
+                            {updatedActivity?.user ? (
+                              <MessageAvatar actor={updatedActivity.user} size="sm" />
+                            ) : null}
                           </dd>
                         </div>
+                        {task.approvedOn ? (
+                          <div className="flex items-center justify-between gap-3">
+                            <dt className="text-[var(--color-text-muted)]">Approved</dt>
+                            <dd className="flex items-center gap-2">
+                              <time
+                                dateTime={dateIso(task.approvedOn) ?? undefined}
+                                title={dateIso(task.approvedOn) ?? undefined}
+                                className="tabular-nums"
+                              >
+                                {timeAgo(task.approvedOn)}
+                              </time>
+                              {task.approvedBy ? <MessageAvatar actor={serializeActor(task.approvedBy)!} size="sm" /> : null}
+                            </dd>
+                          </div>
+                        ) : null}
+                        {task.status === "Done" && task.statusChangedAt ? (
+                          <div className="flex items-center justify-between gap-3">
+                            <dt className="text-[var(--color-text-muted)]">Done</dt>
+                            <dd className="flex items-center gap-2">
+                              <time
+                                dateTime={dateIso(task.statusChangedAt) ?? undefined}
+                                title={dateIso(task.statusChangedAt) ?? undefined}
+                                className="tabular-nums"
+                              >
+                                {timeAgo(task.statusChangedAt)}
+                              </time>
+                              {doneActivity?.user ? <MessageAvatar actor={doneActivity.user} size="sm" /> : null}
+                            </dd>
+                          </div>
+                        ) : null}
+                        {task.archivedAt ? (
+                          <div className="flex items-center justify-between gap-3">
+                            <dt className="text-[var(--color-text-muted)]">Archived</dt>
+                            <dd className="flex items-center gap-2">
+                              <time
+                                dateTime={dateIso(task.archivedAt) ?? undefined}
+                                title={dateIso(task.archivedAt) ?? undefined}
+                                className="tabular-nums"
+                              >
+                                {timeAgo(task.archivedAt)}
+                              </time>
+                              {task.archivedBy ? <MessageAvatar actor={serializeActor(task.archivedBy)!} size="sm" /> : null}
+                            </dd>
+                          </div>
+                        ) : null}
                       </dl>
                     </div>
 
@@ -1666,21 +1840,12 @@ export default async function TaskDetailPage({
                           name="commitPrefix"
                           defaultValue={task.commitPrefix ?? task.epic?.commitPrefix ?? ""}
                           maxLength={200}
-                          placeholder="e.g. HOMELAB-99"
+                          placeholder={task.workItemKey ? `defaults to ${task.workItemKey}` : "e.g. HOMELAB-99"}
                           className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs font-mono outline-none focus:border-[var(--color-accent)]"
                           aria-label="Commit prefix"
                         />
                       </label>
                     </div>
-
-                    {task.epic ? (
-                      <Link
-                        href={`/projects/${slug}/epics/${task.epic.id}`}
-                        className="block rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-accent)]"
-                      >
-                        Open epic →
-                      </Link>
-                    ) : null}
 
                     {task.parent ? (
                       <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
@@ -1695,6 +1860,28 @@ export default async function TaskDetailPage({
                         </Link>
                       </div>
                     ) : null}
+
+                    <form
+                      action={task.archivedAt ? unarchiveTask : archiveTask}
+                      className="space-y-2 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4"
+                    >
+                      <input type="hidden" name="taskId" value={task.id} />
+                      <input type="hidden" name="projectSlug" value={slug} />
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                        Archive
+                      </div>
+                      <p className="text-xs text-[var(--color-text-muted)]">
+                        {task.archivedAt
+                          ? "Restore this task to active project views without changing its status."
+                          : "Hide this task from active boards and grids without changing its status."}
+                      </p>
+                      <button
+                        type="submit"
+                        className="w-full rounded-lg border border-[var(--color-line)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                      >
+                        {task.archivedAt ? "Restore from archive" : "Archive task"}
+                      </button>
+                    </form>
 
                     {/* Danger zone — soft delete moves the task (and any sub-tasks) to
                         the bin for 7 days, then hard-deletes. Its own form, separate
@@ -1723,6 +1910,40 @@ export default async function TaskDetailPage({
                 </div>
               </TabPanel>
 
+              <TabPanel name="Action Plan">
+                <div className="space-y-3 pt-2">
+                  {canApproveActionPlan ? (
+                    <form action={approveTaskActionPlan} className="flex justify-end">
+                      <input type="hidden" name="taskId" value={task.id} />
+                      <input type="hidden" name="projectSlug" value={slug} />
+                      <button
+                        type="submit"
+                        className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-bg)] hover:opacity-90"
+                      >
+                        Approve Plan
+                      </button>
+                    </form>
+                  ) : null}
+                  <ChatRoom
+                    projectSlug={slug}
+                    taskId={task.id}
+                    messages={visibleActionPlanMessages}
+                    activeMessageCount={activeActionPlanMessageCount}
+                    archives={chatArchives}
+                    binArchives={binChatArchives}
+                    selectedArchiveId={selectedChatArchive?.id ?? null}
+                    selectedArchiveDeleted={selectedChatArchiveDeleted}
+                    viewingArchive={viewingChatArchive}
+                    discussionTargets={discussionTargets}
+                    defaultDiscussionTarget={defaultDiscussionTarget}
+                    pendingAgents={pendingAgents}
+                    latestMessageId={viewingChatArchive ? null : pendingChatMessageId}
+                    currentUserId={viewer.id}
+                    pendingProposals={pendingProposals}
+                  />
+                </div>
+              </TabPanel>
+
               <TabPanel name="Sub-Tasks">
                 <div>
           <div className="mb-3 flex items-center justify-between">
@@ -1745,6 +1966,7 @@ export default async function TaskDetailPage({
               showStatusBadge
               items={task.subtasks.map((st) => ({
                 id: st.id,
+                workItemKey: st.workItemKey,
                 title: st.title,
                 status: st.status,
                 href: `/projects/${slug}/tasks/${st.id}`,
@@ -1790,49 +2012,11 @@ export default async function TaskDetailPage({
               Max {formatBytes(attachmentMaxBytes())} per file
             </span>
           </div>
-          {task.attachments.length === 0 ? (
-            <p className="text-xs text-[var(--color-text-muted)]">
-              No attachments yet.
-            </p>
-          ) : (
-            <ul className="divide-y divide-[var(--color-line)]">
-              {task.attachments.map((a) => (
-                <li
-                  key={a.id}
-                  className="flex items-center justify-between gap-3 py-2 text-sm"
-                >
-                  <div className="min-w-0 flex-1">
-                    <a
-                      href={`/api/attachments/${a.id}`}
-                      className="truncate font-medium hover:underline"
-                    >
-                      {a.filename}
-                    </a>
-                    <div className="text-xs text-[var(--color-text-muted)]">
-                      {formatBytes(a.sizeBytes)} · {a.mimeType} · uploaded by{" "}
-                      @{a.uploader.username} ·{" "}
-                      <time
-                        dateTime={a.createdAt.toISOString()}
-                        title={a.createdAt.toISOString()}
-                      >
-                        {timeAgo(a.createdAt)}
-                      </time>
-                    </div>
-                  </div>
-                  <form action={deleteAttachment}>
-                    <input type="hidden" name="projectSlug" value={slug} />
-                    <input type="hidden" name="attachmentId" value={a.id} />
-                    <button
-                      type="submit"
-                      className="rounded border border-transparent px-2 py-1 text-xs text-[var(--color-text-muted)] hover:border-[var(--color-line)] hover:text-[var(--color-crit)]"
-                    >
-                      Remove
-                    </button>
-                  </form>
-                </li>
-              ))}
-            </ul>
-          )}
+          <AttachmentList
+            attachments={task.attachments}
+            projectSlug={slug}
+            deleteAction={deleteAttachment}
+          />
 
           <AttachmentUploadFab
             projectSlug={slug}
@@ -1947,26 +2131,20 @@ export default async function TaskDetailPage({
                 </div>
               </TabPanel>
 
-              <TabPanel name="Discussion">
+              <TabPanel name="Activities">
                 <div className="pt-2">
-                  <ChatRoom
-                    projectSlug={slug}
-                    taskId={task.id}
-                    messages={visibleChatMessages}
-                    activeMessageCount={chatMessages.length}
-                    archives={chatArchives}
-                    binArchives={binChatArchives}
-                    selectedArchiveId={selectedChatArchive?.id ?? null}
-                    selectedArchiveDeleted={selectedChatArchiveDeleted}
-                    viewingArchive={viewingChatArchive}
-                    discussionTargets={discussionTargets}
-                    defaultDiscussionTarget={defaultDiscussionTarget}
-                    pendingAgents={pendingAgents}
-                    latestMessageId={viewingChatArchive ? null : pendingChatMessageId}
-                    currentUserId={viewer.id}
-                    pendingProposals={pendingProposals}
-                  />
+                  <ActivityTimeline rows={allActivity} />
                 </div>
+              </TabPanel>
+
+              <TabPanel name="Changes">
+                <TaskChangesPanel
+                  changes={taskChanges}
+                  branchName={task.branchName ?? task.epic?.branchName ?? null}
+                  commitPrefix={taskCommitPrefix}
+                  baseHref={`/projects/${slug}/tasks/${task.id}`}
+                  selectedDiff={selectedDiff}
+                />
               </TabPanel>
             </div>
           </TabsProvider>

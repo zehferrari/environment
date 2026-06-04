@@ -88,18 +88,23 @@ browser ─▶ POST action ─▶ /var/lib/pm/switch/request.json   (web app, as
 ### From the CLI
 
 ```bash
-pm-switch <worktree-name | path>    # build + flip + verify (as monitor or any code-agent w/ the sudoers rule)
-pm-switch status                    # which worktree/branch is live
+pm-switch <worktree-name | path>    # build + flip PM web + PM consumer + verify
+pm-switch status                    # which worktree/branch is live for both services
 ```
 
 ### Mechanism
 
-- A drop-in `/etc/systemd/system/pm.service.d/20-active-worktree.conf` overrides
-  `WorkingDirectory` to the chosen worktree's **literal** `.next/standalone`
-  (a *symlinked* WorkingDirectory fails `CHDIR` under the unit's
-  `ProtectSystem=strict` sandbox). Only `pm-apply-worktree` (root) writes it,
-  after validating the path is a real worktree build under
-  `$PM_WORKTREES_ROOT`.
+- Drop-ins under `/etc/systemd/system/pm.service.d/` and
+  `/etc/systemd/system/pm-consumer.service.d/` move the web server and PM
+  consumer together. The web server `WorkingDirectory` points to the chosen
+  worktree's **literal** `.next/standalone`; the consumer `WorkingDirectory`
+  points to the same worktree's `ai/web` directory. A *symlinked*
+  `WorkingDirectory` fails `CHDIR` under the units' `ProtectSystem=strict`
+  sandbox. Only `pm-apply-worktree` (root) writes these drop-ins, after
+  validating the path is a real worktree build under `$PM_WORKTREES_ROOT`.
+- `pm-consumer.service` must switch with `pm.service`; otherwise the web UI
+  can serve new workflow rules while the consumer still wakes agents with
+  stale code from an older worktree.
 - `30-switch-spool.conf` adds the spool to pm.service's `ReadWritePaths` so the
   web app can drop a request.
 
@@ -110,8 +115,8 @@ Versioned under `ai/web/deploy/` (PM-specific) and `ai/openclaw/` (generic):
 | Path | Role |
 | --- | --- |
 | `ai/openclaw/bin/code-tree-perms` | generic: collaborative perms + monitor secret-lock (any host) |
-| `ai/web/deploy/pm-switch.sh` | build a worktree + delegate the privileged flip |
-| `ai/web/deploy/pm-apply-worktree` | **root** helper: write drop-in + daemon-reload + restart (path-validated) |
+| `ai/web/deploy/pm-switch.sh` | build a worktree + delegate the privileged web/consumer flip |
+| `ai/web/deploy/pm-apply-worktree` | **root** helper: write pm.service + pm-consumer.service drop-ins, daemon-reload, restart (path-validated) |
 | `ai/web/deploy/pm-switch-runner` | monitor-run runner: watch spool, run pm-switch, publish state |
 | `ai/web/deploy/systemd/pm-switch-runner.service` | runner unit (`User=<monitor>`, templated) |
 | `ai/web/deploy/sudoers.d/pm-switch` | one NOPASSWD rule: monitor → `pm-apply-worktree` |
@@ -133,10 +138,10 @@ Everything is parameterized (`PM_MONITOR_USER`, `PM_WORKTREES_ROOT`,
   migrations can throw `P2022`. `pm-switch.sh` **warns** but never auto-migrates
   (it could break other worktrees on an older schema). Apply deliberately:
   `cd <ai/web> && set -a && . /etc/default/pm && set +a && pnpm exec prisma migrate deploy`.
-- **DB lives in a worktree.** The live SQLite DB sits in the HOMELAB-41
-  worktree's `prisma/prisma/`. Don't release that worktree; relocating the DB to
-  a neutral path (e.g. `/srv/Data/pm/`) + updating `DATABASE_URL` in
-  `/etc/default/pm` is a recommended durable follow-up.
+- **Shared DB outside worktrees.** Production SQLite should live at a neutral
+  path such as `/srv/Data/pm/pm.db`, not under any branch checkout. Use
+  `ai/web/deploy/move-sqlite-db.sh` for the controlled backup + `VACUUM INTO`
+  move, then keep `/etc/default/pm` pointed at the neutral `DATABASE_URL`.
 - **The switcher rides in the app it switches.** Switching to a worktree whose
   branch predates this feature lands you on a build without the UI — switch back
   with the CLI `pm-switch`. Resolved once this is merged to `main`.

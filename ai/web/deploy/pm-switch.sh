@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
-# pm-switch.sh — build a chosen worktree and make pm.service serve it
-# ("switchable single site": exactly one worktree is live at a time; all share
-# the same DB + env via /etc/default/pm, so only the served CODE changes).
+# pm-switch.sh — build a chosen worktree and make pm.service/pm-consumer use it
+# ("switchable single site": exactly one worktree is live at a time; each
+# worktree has its own forked SQLite DB so code and Prisma schema switch
+# together).
 #
 # Run by pm-switch-runner (as the monitor) or by hand (as any code-agent who
-# can `sudo pm-apply-worktree`). The single privileged step — drop-in +
-# daemon-reload + restart — is delegated to /usr/local/sbin/pm-apply-worktree.
+# can `sudo pm-apply-worktree`). The single privileged step — systemd drop-ins
+# + daemon-reload + restarts — is delegated to /usr/local/sbin/pm-apply-worktree.
 #
 # Usage:
 #   pm-switch.sh <worktree-name | path>
@@ -21,6 +22,8 @@ PORT="${PORT:-3000}"
 HOST="${PM_HOST:-127.0.0.1}"
 PM_ENV_FILE="${PM_SYSTEM_ENV_FILE:-/etc/default/pm}"
 APPLY="${PM_APPLY_HELPER:-/usr/local/sbin/pm-apply-worktree}"
+PM_DB_DIR="${PM_DB_DIR:-/srv/Data/pm}"
+PM_CANONICAL_DB="${PM_CANONICAL_DB:-$PM_DB_DIR/pm.db}"
 
 log()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
@@ -31,12 +34,30 @@ served_worktree() {
   [[ "$wd" == */ai/web/.next/standalone ]] && printf '%s\n' "${wd%/ai/web/.next/standalone}"
 }
 
+consumer_worktree() {
+  local wd; wd="$(systemctl show -p WorkingDirectory --value pm-consumer.service 2>/dev/null || true)"
+  [[ "$wd" == */ai/web ]] && printf '%s\n' "${wd%/ai/web}"
+}
+
+active_database_url() {
+  local env_file="${PM_ACTIVE_ENV_FILE:-/etc/default/pm-active-worktree}"
+  if [[ -r "$env_file" ]]; then
+    sed -n 's/^DATABASE_URL=//p' "$env_file" | tail -1
+  elif sudo -n test -r "$env_file" 2>/dev/null; then
+    sudo -n sed -n 's/^DATABASE_URL=//p' "$env_file" | tail -1
+  fi
+}
+
 [[ -n "${1:-}" ]] || die "usage: pm-switch.sh <worktree-name | path>   (or: status)"
 
 if [[ "$1" == "status" || "$1" == "--status" ]]; then
   wt="$(served_worktree || true)"; [[ -n "$wt" ]] || die "cannot read pm.service WorkingDirectory"
-  printf 'pm.service serving:\n  worktree: %s\n  branch:   %s\n  active:   %s\n' \
-    "$wt" "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')" "$(systemctl is-active pm.service)"
+  consumer_wt="$(consumer_worktree || true)"
+  db_url="$(active_database_url || true)"
+  consumer_active="$(systemctl is-active pm-consumer.service 2>/dev/null || echo unknown)"
+  printf 'pm.service serving:\n  worktree: %s\n  branch:   %s\n  db:       %s\n  active:   %s\npm-consumer.service:\n  worktree: %s\n  active:   %s\n' \
+    "$wt" "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')" "$db_url" "$(systemctl is-active pm.service)" \
+    "${consumer_wt:-unknown}" "$consumer_active"
   exit 0
 fi
 
@@ -49,10 +70,29 @@ else die "cannot resolve worktree '$TARGET' (looked for ./ai/web, $WT_DIR/$TARGE
 fi
 APP_DIR="$(readlink -f "$APP_DIR")"
 STANDALONE="$APP_DIR/.next/standalone"
+WT_ROOT="${APP_DIR%/ai/web}"
+BRANCH="$(git -C "$WT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+[[ -n "$BRANCH" && "$BRANCH" != "HEAD" ]] || die "cannot resolve branch for $WT_ROOT"
+BRANCH_SLUG="${BRANCH//\//_}"
+BRANCH_DB="${PM_BRANCH_DB:-$PM_DB_DIR/wt-$BRANCH_SLUG.db}"
+BRANCH_DB_URL="file:$BRANCH_DB"
 
 [[ -x "$PNPM" ]]                 || die "pnpm not executable at $PNPM (set PM_PNPM)."
 [[ -d "$APP_DIR/node_modules" ]] || die "no node_modules in $APP_DIR — run 'pnpm install' there (worktrees don't share it; created via: claim-branch environment <branch>)."
 [[ -x "$APPLY" ]]                || die "privileged helper missing: $APPLY (run ai/web/deploy/install-pm-switch.sh)."
+command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is required for per-worktree DB forks."
+
+# 0. Ensure this branch has an isolated DB fork, then apply this branch's
+#    migrations to that fork only.
+log "Preparing DB fork $BRANCH_DB for branch $BRANCH …"
+mkdir -p "$PM_DB_DIR"
+if [[ ! -f "$BRANCH_DB" ]]; then
+  [[ -f "$PM_CANONICAL_DB" ]] || die "canonical DB not found at $PM_CANONICAL_DB"
+  sqlite3 "$PM_CANONICAL_DB" ".backup '$BRANCH_DB'"
+fi
+sqlite3 "$BRANCH_DB" 'PRAGMA journal_mode=WAL;' >/dev/null
+chmod g+rw "$BRANCH_DB" "$BRANCH_DB"-wal "$BRANCH_DB"-shm 2>/dev/null || true
+DATABASE_URL="$BRANCH_DB_URL" "$PNPM" --dir "$APP_DIR" exec prisma migrate deploy
 
 # 1. Clean the generated Prisma client so `prisma generate` writes files owned
 #    by THIS builder. Node's copyfile fchmod's the destination, and only the
@@ -64,33 +104,27 @@ rm -rf "$APP_DIR"/node_modules/.pnpm/@prisma+client*/node_modules/.prisma 2>/dev
 # 2. Build. Group-collaborative /srv/Code perms let any code-agent build; the
 #    serving user reads the bundle through the shared code-agents group.
 log "Building $APP_DIR …"
-( cd "$APP_DIR" && "$PNPM" build )
+( cd "$APP_DIR" && DATABASE_URL="$BRANCH_DB_URL" "$PNPM" build )
 [[ -f "$STANDALONE/server.js" ]] || die "build did not produce $STANDALONE/server.js"
 
-# 3. Warn (don't auto-apply) on schema drift — the DB is shared across worktrees.
-DB_URL="$(grep -E '^DATABASE_URL=' "$PM_ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
-if [[ -n "$DB_URL" ]] && ! DATABASE_URL="$DB_URL" "$PNPM" --dir "$APP_DIR" exec prisma migrate status >"/tmp/pm-switch-migrate.$$" 2>&1; then
-  if grep -qiE 'not yet been applied|pending|following migration' "/tmp/pm-switch-migrate.$$"; then
-    warn "Target branch has migrations the shared DB lacks — NOT auto-applied (could break other worktrees)."
-    warn "Apply deliberately: cd $APP_DIR && set -a && . $PM_ENV_FILE && set +a && $PNPM exec prisma migrate deploy"
-  fi
-fi
-rm -f "/tmp/pm-switch-migrate.$$" 2>/dev/null || true
+# 3. The only privileged step.
+log "Pointing pm.service and pm-consumer.service at $APP_DIR with $BRANCH_DB_URL and restarting…"
+sudo -n "$APPLY" "$STANDALONE" "$BRANCH_DB_URL"
 
-# 4. The only privileged step.
-log "Pointing pm.service at $APP_DIR and restarting…"
-sudo -n "$APPLY" "$STANDALONE"
-
-# 5. Verify the live site + that its hashed assets serve.
+# 4. Verify the live site + that its hashed assets serve.
 log "Verifying…"
 ok=""; for _ in $(seq 1 30); do curl -fsS -o /dev/null "http://$HOST:$PORT/login" 2>/dev/null && { ok=1; break; }; sleep 0.5; done
 [[ -n "$ok" ]] || die "server did not come up on $HOST:$PORT — check: journalctl -u pm.service -n 50"
+consumer_wt="$(consumer_worktree || true)"
+[[ "$consumer_wt" == "$WT_ROOT" ]] || die "pm-consumer.service is not running from $WT_ROOT (got: ${consumer_wt:-unknown})"
+consumer_active="$(systemctl is-active pm-consumer.service 2>/dev/null || echo unknown)"
+[[ "$consumer_active" == "active" ]] || die "pm-consumer.service is not active (got: $consumer_active)"
 ref="$(curl -fsS "http://$HOST:$PORT/login" | grep -oE '/_next/static/css/[a-f0-9]+\.css' | head -1 || true)"
 if [[ -n "$ref" ]]; then
   code="$(curl -fsS -o /dev/null -w '%{http_code}' "http://$HOST:$PORT$ref" 2>/dev/null || echo 000)"
   [[ "$code" == "200" ]] \
-    && log "OK — pm.service now serves $APP_DIR (HTML references $ref, serves 200). Hard-refresh the site." \
+    && log "OK — pm.service and pm-consumer.service now use $APP_DIR (HTML references $ref, serves 200). Hard-refresh the site." \
     || die "asset mismatch: HTML references $ref but it returns HTTP $code"
 else
-  log "OK — pm.service now serves $APP_DIR (/login responded)."
+  log "OK — pm.service and pm-consumer.service now use $APP_DIR (/login responded)."
 fi

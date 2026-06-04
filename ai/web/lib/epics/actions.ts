@@ -14,13 +14,17 @@ import { redirect } from "next/navigation";
 import { Prisma } from "@prisma/client";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
+import { sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
 import {
   checkAssignment,
   checkActingManager,
   type ActorKind,
 } from "@/lib/workflow";
+import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
+import { allocateWorkItemKey } from "@/lib/work-items/keys";
 
-const EPIC_STATUSES = ["Backlog", "Open", "Done", "Archive"] as const;
+const EPIC_STATUSES = ["Backlog", "Open", "Done"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
 
 function isEpicStatus(value: unknown): value is EpicStatus {
@@ -48,6 +52,51 @@ async function loadEpicScoped(epicId: string, slug: string) {
       reporter: { select: { username: true } },
     },
   });
+}
+
+async function notifyEpicActingManagerAssigned(args: {
+  projectSlug: string;
+  epicId: string;
+  epicTitle: string;
+  managerUserId: string | null;
+}) {
+  if (!args.managerUserId) return;
+
+  const manager = await db.user.findUnique({
+    where: { id: args.managerUserId },
+    select: {
+      kind: true,
+      status: true,
+      agent: { select: { slug: true, deactivatedAt: true } },
+    },
+  });
+  const managerSlug = manager?.kind === "agent" &&
+    manager.status === "active" &&
+    manager.agent &&
+    !manager.agent.deactivatedAt
+      ? manager.agent.slug
+      : null;
+  if (!managerSlug) return;
+
+  const notify = new FormData();
+  notify.set("projectSlug", args.projectSlug);
+  notify.set("epicId", args.epicId);
+  notify.set("discussionTarget", `agent:${managerSlug}`);
+  notify.set("body", [
+    `PM workflow notification for @${managerSlug}:`,
+    "",
+    `You have been assigned as Acting Manager for Epic "${args.epicTitle}".`,
+    "Read the Epic description, Action Plan thread, attachments, current tasks, and related project context before replying.",
+    "If the Action Plan still needs work, post one concise technical manager response in Action Plan with the plan, concerns, blocker, or necessary question.",
+    "After the Action Plan is approved, if the Epic has no top-level child tasks, prepare the ordered implementation task breakdown through the work-item proposal flow.",
+    "Do not post an acknowledgement-only response.",
+  ].join("\n"));
+
+  try {
+    await sendAgentChatMessage(notify);
+  } catch (err) {
+    console.error("Failed to notify Epic acting manager assignment:", err);
+  }
 }
 
 export async function createEpic(formData: FormData) {
@@ -108,6 +157,7 @@ export async function createEpic(formData: FormData) {
   const epic = await db.epic.create({
     data: {
       projectId: project.id,
+      workItemKey: await allocateWorkItemKey(project.id),
       title,
       description: description || null,
       actingManagerId,
@@ -223,7 +273,7 @@ export async function setEpicAssignee(formData: FormData) {
   await db.$transaction([
     db.epic.update({
       where: { id: epicId },
-      data: { assigneeId: newAssigneeId },
+      data: { assigneeId: newAssigneeId, approvedOn: null, approvedById: null },
     }),
     db.activityLog.create({
       data: {
@@ -232,6 +282,19 @@ export async function setEpicAssignee(formData: FormData) {
         kind: "epic.assign",
         payload: JSON.stringify({
           epicId,
+          from: epic.assignee?.username ?? null,
+          to: toUsername,
+        }),
+      },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: epic.project.id,
+        userId: actor.id,
+        kind: "epic.action_plan.reset",
+        payload: JSON.stringify({
+          epicId,
+          reason: "assignee_changed",
           from: epic.assignee?.username ?? null,
           to: toUsername,
         }),
@@ -273,7 +336,7 @@ export async function setEpicActingManager(formData: FormData) {
   await db.$transaction([
     db.epic.update({
       where: { id: epicId },
-      data: { actingManagerId: newActingManagerId },
+      data: { actingManagerId: newActingManagerId, approvedOn: null, approvedById: null },
     }),
     db.activityLog.create({
       data: {
@@ -287,7 +350,27 @@ export async function setEpicActingManager(formData: FormData) {
         }),
       },
     }),
+    db.activityLog.create({
+      data: {
+        projectId: epic.project.id,
+        userId: actor.id,
+        kind: "epic.action_plan.reset",
+        payload: JSON.stringify({
+          epicId,
+          reason: "acting_manager_changed",
+          from: epic.actingManager?.username ?? null,
+          to: toUsername,
+        }),
+      },
+    }),
   ]);
+
+  await notifyEpicActingManagerAssigned({
+    projectSlug: slug,
+    epicId,
+    epicTitle: epic.title,
+    managerUserId: newActingManagerId,
+  });
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}/epics`);
@@ -309,8 +392,8 @@ export async function updateEpic(formData: FormData) {
   const descriptionRaw = String(formData.get("description") ?? "");
   const newDescription = descriptionRaw.trim() === "" ? null : descriptionRaw;
   const status = String(formData.get("status") ?? "");
+  const hasAssigneeField = formData.has("assigneeId");
   const assigneeRaw = String(formData.get("assigneeId") ?? "");
-  const newAssigneeId = assigneeRaw === "" ? null : assigneeRaw;
   const acmRaw = String(formData.get("actingManagerId") ?? "");
   const newActingManagerId = acmRaw === "" ? null : acmRaw;
   const reporterRaw = String(formData.get("reporterId") ?? "");
@@ -326,6 +409,9 @@ export async function updateEpic(formData: FormData) {
 
   const epic = await loadEpicScoped(epicId, slug);
   if (!epic || epic.project.slug !== slug) return;
+  const newAssigneeId = hasAssigneeField
+    ? assigneeRaw === "" ? null : assigneeRaw
+    : epic.assigneeId;
 
   const data: Prisma.EpicUpdateInput = {};
   const activity: { kind: string; payload: string }[] = [];
@@ -385,10 +471,21 @@ export async function updateEpic(formData: FormData) {
       newAssigneeId === null
         ? { disconnect: true }
         : { connect: { id: newAssigneeId } };
+    data.approvedOn = null;
+    data.approvedBy = { disconnect: true };
     activity.push({
       kind: "epic.assign",
       payload: JSON.stringify({
         epicId,
+        from: epic.assignee?.username ?? null,
+        to: toUsername,
+      }),
+    });
+    activity.push({
+      kind: "epic.action_plan.reset",
+      payload: JSON.stringify({
+        epicId,
+        reason: "assignee_changed",
         from: epic.assignee?.username ?? null,
         to: toUsername,
       }),
@@ -414,10 +511,21 @@ export async function updateEpic(formData: FormData) {
       newActingManagerId === null
         ? { disconnect: true }
         : { connect: { id: newActingManagerId } };
+    data.approvedOn = null;
+    data.approvedBy = { disconnect: true };
     activity.push({
       kind: "epic.acting_manager",
       payload: JSON.stringify({
         epicId,
+        from: epic.actingManager?.username ?? null,
+        to: toUsername,
+      }),
+    });
+    activity.push({
+      kind: "epic.action_plan.reset",
+      payload: JSON.stringify({
+        epicId,
+        reason: "acting_manager_changed",
         from: epic.actingManager?.username ?? null,
         to: toUsername,
       }),
@@ -476,7 +584,7 @@ export async function updateEpic(formData: FormData) {
     db.epic.update({ where: { id: epicId }, data }),
     ...(taskCascade
       ? [db.task.updateMany({
-          where: { epicId, deletedAt: null, status: { not: "Done" } },
+          where: { epicId, archivedAt: null, deletedAt: null, status: { not: "Done" } },
           data: { status: taskCascade, statusChangedAt },
         })]
       : []),
@@ -491,6 +599,13 @@ export async function updateEpic(formData: FormData) {
       }),
     ),
   ]);
+
+  await notifyEpicActingManagerAssigned({
+    projectSlug: slug,
+    epicId,
+    epicTitle: title,
+    managerUserId: newActingManagerId !== epic.actingManagerId ? newActingManagerId : null,
+  });
 
   try {
     const { deleteDescriptionDraft } = await import("@/lib/description-drafts");
@@ -521,7 +636,14 @@ export async function createTaskInEpic(formData: FormData) {
       projectId: true,
       branchName: true,
       commitPrefix: true,
+      approvedOn: true,
+      actingManagerId: true,
       deletedAt: true,
+      _count: {
+        select: {
+          tasks: { where: { deletedAt: null, parentTaskId: null } },
+        },
+      },
       project: {
         select: {
           slug: true,
@@ -532,17 +654,28 @@ export async function createTaskInEpic(formData: FormData) {
     },
   });
   if (!epic || epic.project.slug !== slug || epic.deletedAt) return;
+  if (actor.id !== epic.actingManagerId) {
+    throw new Error("Only the Epic acting manager can create the initial Epic task breakdown.");
+  }
+  if (!epic.approvedOn) {
+    throw new Error("Epic Action Plan must be approved before tasks can be created.");
+  }
+  if (epic._count.tasks > 0) {
+    throw new Error("Epic tasks can only be created when the Epic has no top-level child tasks yet.");
+  }
 
   const maxRank = await db.task.aggregate({
-    where: { projectId: epic.projectId, status: "Backlog", deletedAt: null },
+    where: { projectId: epic.projectId, status: "Backlog", archivedAt: null, deletedAt: null },
     _max: { rank: true },
   });
+  const numberedTitle = await nextEpicTaskTitle(epic.id, title);
 
   const task = await db.task.create({
     data: {
       projectId: epic.projectId,
+      workItemKey: await allocateWorkItemKey(epic.projectId),
       epicId: epic.id,
-      title,
+      title: numberedTitle,
       description,
       status: "Backlog",
       rank: (maxRank._max.rank ?? 0) + 1,
@@ -565,6 +698,20 @@ export async function createTaskInEpic(formData: FormData) {
       payload: JSON.stringify({ title: task.title, epicId: epic.id }),
     },
   });
+
+  if (epic.project.defaultAssigneeId) {
+    await sendTaskWorkflowNotification({
+      taskId: task.id,
+      targetUserId: epic.project.defaultAssigneeId,
+      actor,
+      reason: "backlog_plan_requested",
+      body: [
+        `You have been assigned to "${task.title}" while it is in Backlog.`,
+        "Read the full task context and existing comments. Post one concise technical implementation plan in Action Plan.",
+        "Do not change task status and do not start work until the task is moved to To Do.",
+      ].join("\n"),
+    });
+  }
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}`);
@@ -596,7 +743,7 @@ export async function setEpicStatus(formData: FormData) {
     }),
     ...(taskCascade
       ? [db.task.updateMany({
-          where: { epicId, deletedAt: null, status: { not: "Done" } },
+          where: { epicId, archivedAt: null, deletedAt: null, status: { not: "Done" } },
           data: { status: taskCascade, statusChangedAt },
         })]
       : []),

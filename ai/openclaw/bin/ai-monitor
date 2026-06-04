@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -33,6 +34,21 @@ from pathlib import Path
 
 CONFIG_PATH = "/etc/ai-monitor/config.json"
 STATE_PATH = "/var/lib/ai-monitor/state.json"
+RUN_LOCK_PATH = "/var/lib/ai-monitor/run.lock"
+
+
+def acquire_run_lock():
+    for path in (RUN_LOCK_PATH, "/tmp/ai-monitor.run.lock"):
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            fh = open(path, "a")
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except BlockingIOError:
+            return None
+        except Exception:
+            continue
+    return True
 
 
 def run_cmd(argv, timeout=30, input_text=None):
@@ -992,23 +1008,51 @@ def probe_pending_mentions(cfg, registry):
     return out
 
 
-def _sqlite_pm_db_path(cfg):
-    pc = cfg.get("pm_workflow") or {}
-    raw = (
-        pc.get("database_path")
-        or os.environ.get("PM_DATABASE_PATH")
-        or os.environ.get("DATABASE_URL")
-        or ""
-    )
+def _database_url_to_path(raw):
+    raw = (raw or "").strip().strip('"').strip("'")
     if raw.startswith("file:"):
         raw = raw[5:]
         if raw.startswith("//"):
             raw = raw[2:]
             raw = "/" + raw.lstrip("/")
         raw = raw.split("?", 1)[0]
+    return raw
+
+
+def _read_pm_database_url_from_env_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                if key.strip() != "DATABASE_URL":
+                    continue
+                try:
+                    return shlex.split(value, comments=False, posix=True)[0]
+                except Exception:
+                    return value
+    except Exception:
+        return ""
+    return ""
+
+
+def _sqlite_pm_db_path(cfg):
+    pc = cfg.get("pm_workflow") or {}
+    raw = (
+        pc.get("database_path")
+        or os.environ.get("PM_DATABASE_PATH")
+        or os.environ.get("DATABASE_URL")
+        or _read_pm_database_url_from_env_file("/etc/default/pm-active-worktree")
+        or _read_pm_database_url_from_env_file("/etc/default/pm")
+        or ""
+    )
+    raw = _database_url_to_path(raw)
     if raw:
         return raw
     candidates = [
+        "/srv/Data/pm/pm.db",
         "/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma/prisma/dev.db",
         "/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma/dev.db",
     ]
@@ -1096,6 +1140,32 @@ def _pm_has_comment_since(conn, task_id, user_id, since_s):
     return False
 
 
+def _pm_has_action_plan_since(conn, task_id, user_id, since_s):
+    if since_s is None:
+        since_s = 0
+    try:
+        rows = conn.execute(
+            """
+            SELECT createdAt
+            FROM AgentChatMessage
+            WHERE taskId = ?
+              AND senderUserId = ?
+              AND originChannel = 'chat'
+              AND deletedAt IS NULL
+            ORDER BY createdAt DESC
+            LIMIT 20
+            """,
+            (task_id, user_id),
+        ).fetchall()
+    except Exception:
+        return False
+    for row in rows:
+        ts = _parse_pm_ts(row["createdAt"])
+        if ts is not None and ts >= since_s:
+            return True
+    return False
+
+
 def _pm_latest_comment_by(conn, task_id, user_id, since_s):
     if not user_id:
         return None
@@ -1116,6 +1186,27 @@ def _pm_latest_comment_by(conn, task_id, user_id, since_s):
     return None
 
 
+def _pm_latest_comment_not_by(conn, task_id, user_id, since_s):
+    if not user_id:
+        return None
+    rows = conn.execute(
+        """
+        SELECT c.id, c.body, c.createdAt, u.username, u.kind
+        FROM Comment c
+        LEFT JOIN User u ON u.id = c.userId
+        WHERE c.taskId = ? AND c.userId != ?
+        ORDER BY c.createdAt DESC
+        LIMIT 10
+        """,
+        (task_id, user_id),
+    ).fetchall()
+    for row in rows:
+        ts = _parse_pm_ts(row["createdAt"])
+        if ts is not None and (since_s is None or ts >= since_s):
+            return row
+    return None
+
+
 def _pm_workflow_notification_status(body):
     text = body or ""
     if not text.startswith("PM workflow notification for @"):
@@ -1124,7 +1215,7 @@ def _pm_workflow_notification_status(body):
         return "Backlog"
     if " is now in To Do " in text:
         return "To Do"
-    if " was moved to Review." in text:
+    if " was moved to Review" in text:
         return "Review"
     return None
 
@@ -1162,7 +1253,7 @@ def _pm_workflow_notification_is_current(row):
 
 
 def probe_pm_workflow(cfg, registry):
-    """Probe Mission Control / PM workflow invariants for Karen.
+    """Probe Mission Control / PM workflow invariants for the monitor agent.
 
     The PM webapp owns writes; this probe is read-only. It classifies tasks
     into concrete reminders that ai-monitor can route to the responsible
@@ -1197,6 +1288,7 @@ def probe_pm_workflow(cfg, registry):
             """
             SELECT
               t.id, t.title, t.status, t.statusChangedAt, t.createdAt, t.updatedAt,
+              t.approved_on AS approvedOn,
               t.assigneeId, t.actingManagerId, t.reporterId,
               p.slug AS projectSlug,
               a.username AS assigneeUsername,
@@ -1220,6 +1312,7 @@ def probe_pm_workflow(cfg, registry):
             LEFT JOIN Agent era ON era.id = er.agentId
             WHERE t.deletedAt IS NULL
               AND p.deletedAt IS NULL
+              AND t.parentTaskId IS NULL
               AND t.status IN ('Backlog', 'To Do', 'In Progress', 'Review')
             ORDER BY t.updatedAt DESC
             LIMIT 500
@@ -1230,12 +1323,17 @@ def probe_pm_workflow(cfg, registry):
             """
             SELECT
               m.id AS messageId,
-              m.agentSlug AS messageAgentSlug,
+              CASE
+                WHEN m.agentSlug = 'room' AND m.targetValue LIKE 'agent:%'
+                  THEN substr(m.targetValue, 7)
+                ELSE m.agentSlug
+              END AS messageAgentSlug,
               m.body,
               m.createdAt AS messageCreatedAt,
               r.status AS runStatus,
               r.lastEventAt AS runLastEventAt,
               t.id, t.title, t.status, t.statusChangedAt, t.createdAt, t.updatedAt,
+              t.approved_on AS approvedOn,
               t.assigneeId, t.actingManagerId, t.reporterId,
               p.slug AS projectSlug,
               a.username AS assigneeUsername,
@@ -1252,10 +1350,14 @@ def probe_pm_workflow(cfg, registry):
             JOIN Task t ON t.id = m.taskId
             JOIN Project p ON p.id = t.projectId
             LEFT JOIN PmChannelRun r
-              ON r.kind = 'task-comment'
+              ON r.kind IN ('task-comment', 'task-chat')
              AND r.taskId = t.id
              AND r.messageId = m.id
-             AND r.agentSlug = m.agentSlug
+             AND r.agentSlug = CASE
+                WHEN m.agentSlug = 'room' AND m.targetValue LIKE 'agent:%'
+                  THEN substr(m.targetValue, 7)
+                ELSE m.agentSlug
+              END
             LEFT JOIN User a ON a.id = t.assigneeId
             LEFT JOIN Agent aa ON aa.id = a.agentId
             LEFT JOIN User rv ON rv.id = t.actingManagerId
@@ -1264,11 +1366,11 @@ def probe_pm_workflow(cfg, registry):
             LEFT JOIN Epic e ON e.id = t.epicId
             LEFT JOIN User er ON er.id = e.actingManagerId
             LEFT JOIN Agent era ON era.id = er.agentId
-            WHERE m.originChannel = 'comment'
-              AND sender.kind != 'agent'
-              AND m.body LIKE 'PM workflow notification for @%'
+            WHERE m.body LIKE 'PM workflow notification for @%'
               AND t.deletedAt IS NULL
               AND p.deletedAt IS NULL
+              AND t.parentTaskId IS NULL
+              AND t.status != 'Done'
               AND (r.status IS NULL OR r.status IN ('queued', 'accepted', 'streaming'))
             ORDER BY m.createdAt DESC
             LIMIT 200
@@ -1292,9 +1394,18 @@ def probe_pm_workflow(cfg, registry):
                 **(extra or {}),
             })
 
+        monitor_agent = get_monitor_agent(registry) or {}
+        monitor_agent_slug = (
+            monitor_agent.get("slug")
+            or monitor_agent.get("user")
+            or "monitor-agent"
+        )
+
         for row in orphan_rows:
             if len(out["items"]) >= max_items:
                 break
+            if row["status"] == "Done":
+                continue
             is_current = _pm_workflow_notification_is_current(row)
             age_s = (
                 _pm_age_s(row["runLastEventAt"])
@@ -1325,7 +1436,7 @@ def probe_pm_workflow(cfg, registry):
             add(
                 row,
                 "pm-orphan-live-bubble",
-                "karen",
+                monitor_agent_slug,
                 age_s,
                 "The PM app must hide or settle this stale workflow live bubble; do not wake the task agent.",
                 extra={
@@ -1370,7 +1481,7 @@ def probe_pm_workflow(cfg, registry):
                     row["createdAt"],
                 )
                 age_s = max(0, int(time.time()) - assigned_s) if assigned_s else changed_age
-                if age_s >= warn_backlog_s and not _pm_has_comment_since(
+                if age_s >= warn_backlog_s and not _pm_has_action_plan_since(
                     conn,
                     row["id"],
                     row["assigneeId"],
@@ -1381,11 +1492,42 @@ def probe_pm_workflow(cfg, registry):
                         "pm-backlog-plan-missing",
                         assignee_slug,
                         age_s,
-                        "Post a concise task comment with your implementation plan/opinion. Do not change status or start work while the task is in Backlog.",
+                        "Post a concise technical Action Plan message. Do not change status or start work while the task is in Backlog.",
                     )
                 continue
 
             if status == "To Do" and row["assigneeId"] and assignee_slug:
+                assigned_s = _pm_latest_assignment_s(
+                    conn,
+                    row["id"],
+                    row["assigneeUsername"],
+                    row["createdAt"],
+                )
+                action_plan_posted = _pm_has_action_plan_since(
+                    conn,
+                    row["id"],
+                    row["assigneeId"],
+                    assigned_s,
+                )
+                if not row["approvedOn"]:
+                    if changed_age >= warn_todo_s and not action_plan_posted:
+                        add(
+                            row,
+                            "pm-action-plan-missing",
+                            assignee_slug,
+                            changed_age,
+                            "Post one concise technical Action Plan message and wait for reviewer/reporter approval before starting.",
+                        )
+                    elif changed_age >= warn_todo_s and action_plan_posted:
+                        add(
+                            row,
+                            "pm-action-plan-awaiting-approval",
+                            reviewer_slug,
+                            changed_age,
+                            "Review the Action Plan. If acceptable, approve it so approved_on is set; otherwise reply with concise feedback in Action Plan.",
+                            extra={"assignee": assignee_slug},
+                        )
+                    continue
                 if changed_age >= warn_todo_s:
                     add(
                         row,
@@ -1397,13 +1539,25 @@ def probe_pm_workflow(cfg, registry):
                 continue
 
             if status == "In Progress" and row["assigneeId"] and assignee_slug:
-                if changed_age >= warn_progress_s:
+                status_s = _parse_pm_ts(row["statusChangedAt"]) or _parse_pm_ts(row["updatedAt"]) or _parse_pm_ts(row["createdAt"])
+                latest_assignee_comment = _pm_latest_comment_by(conn, row["id"], row["assigneeId"], status_s)
+                latest_progress_s = (
+                    _parse_pm_ts(latest_assignee_comment["createdAt"])
+                    if latest_assignee_comment
+                    else status_s
+                )
+                progress_age = (
+                    max(0, int(time.time()) - latest_progress_s)
+                    if latest_progress_s is not None
+                    else changed_age
+                )
+                if progress_age >= warn_progress_s:
                     add(
                         row,
                         "pm-in-progress-stale",
                         assignee_slug,
-                        changed_age,
-                        "Update the task with progress, continue work, or move completed work to Review.",
+                        progress_age,
+                        "Continue work, or move the task to Review with one concise note if it is complete or waiting for reviewer/manager/reporter feedback.",
                     )
                 continue
 
@@ -1426,6 +1580,26 @@ def probe_pm_workflow(cfg, registry):
                             "Read the review feedback, respond in comments, and keep the task in Review until feedback is addressed.",
                             extra={"reviewer": reviewer_slug, "comment_preview": (feedback["body"] or "")[:180]},
                         )
+                    continue
+                response = _pm_latest_comment_not_by(conn, row["id"], row["assigneeId"], status_s)
+                if response and row["assigneeId"] and assignee_slug:
+                    response_ts = _parse_pm_ts(response["createdAt"])
+                    if response_ts and not _pm_has_comment_since(
+                        conn,
+                        row["id"],
+                        row["assigneeId"],
+                        response_ts,
+                    ):
+                        response_age = _pm_age_s(response["createdAt"]) or 0
+                        if response_age >= warn_review_s:
+                            add(
+                                row,
+                                "pm-review-response-awaiting-assignee",
+                                assignee_slug,
+                                response_age,
+                                "A reviewer/manager/reporter/human response arrived while this task is in Review. If this unblocks the assignee, resume with action=start, finish the follow-up, then call action=ready_for_review again.",
+                                extra={"reviewer": reviewer_slug, "comment_preview": (response["body"] or "")[:180]},
+                            )
                     continue
                 if changed_age >= warn_review_s:
                     add(
@@ -1560,12 +1734,14 @@ def build_compact_input(probes):
         },
         "stalled_tasks": [
             {"agent": t["agent"], "key": t["key"],
-             "age_minutes": t["age_s"] // 60, "severity": t["severity"]}
+             "age_minutes": (t.get("age_s") or t.get("session_idle_s") or 0) // 60,
+             "severity": t["severity"]}
             for t in probes.get("stalled_tasks", {}).get("stalled_tasks", [])
         ],
         "pending_email_tasks": [
             {"agent": e["agent"], "message_id": e["message_id"],
-             "age_minutes": e["age_s"] // 60, "severity": e["severity"],
+             "age_minutes": (e.get("age_s") or 0) // 60,
+             "severity": e["severity"],
              "subject": e.get("subject", "")[:80]}
             for e in probes.get("pending_email_tasks", {}).get("pending", [])
         ],
@@ -1945,6 +2121,24 @@ def event_key(issue):
         f"{issue.get('unit','?')}|{issue.get('kind','?')}|{issue.get('severity','?')}"
     )
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
+PM_WORKFLOW_RETRY_KINDS = {
+    "pm-backlog-plan-missing",
+    "pm-action-plan-missing",
+    "pm-action-plan-awaiting-approval",
+    "pm-todo-not-started",
+    "pm-in-progress-stale",
+    "pm-review-feedback-awaiting-assignee",
+    "pm-review-response-awaiting-assignee",
+    "pm-review-awaiting-reviewer",
+    "pm-channel-no-start",
+    "pm-channel-stalled",
+}
+
+
+def _is_pm_workflow_retry_kind(kind):
+    return kind in PM_WORKFLOW_RETRY_KINDS
 
 
 def get_monitor_agent(registry):
@@ -2439,7 +2633,7 @@ def _clear_monitor_pending_delivery(monitor_user, monitor_home=None,
 
 def hand_off_to_monitor(cfg, registry, incident_id, incident_payload):
     """Write the incident to disk, wake the monitor agent via
-    `openclaw system event`, then poll for her decision file with timeout.
+    `openclaw system event`, then poll for its decision file with timeout.
     The monitor agent is identified by `role: 'monitor'` in the registry.
     Returns the decision dict or {"_error": "..."} on failure/timeout."""
     triage = cfg.get("monitor_triage") or cfg.get("karen_triage") or {}
@@ -2746,6 +2940,14 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
         # Reset is handled by the missed_runs eviction path below.
         ev["consecutive_seen"] = int(ev.get("consecutive_seen", 0)) + 1
 
+        if ev.get("alert_sent") and _is_pm_workflow_retry_kind(kind):
+            # Old monitor state treated a Telegram/nudge as final. For PM
+            # workflow drift, the task itself must resolve the issue.
+            if now >= ev.get("next_attempt_after", 0):
+                ev["alert_sent"] = False
+                ev["attempts"] = 0
+                ev["next_attempt_after"] = 0
+
         if sev not in ("warn", "crit") or ev["alert_sent"]:
             continue
 
@@ -2839,9 +3041,12 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
             "agent-idle-with-queue",
             "email-awaiting-action",
             "pm-backlog-plan-missing",
+            "pm-action-plan-missing",
+            "pm-action-plan-awaiting-approval",
             "pm-todo-not-started",
             "pm-in-progress-stale",
             "pm-review-feedback-awaiting-assignee",
+            "pm-review-response-awaiting-assignee",
             "pm-review-awaiting-reviewer",
             "pm-channel-no-start",
             "pm-channel-stalled",
@@ -2864,13 +3069,14 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
 
         if auto_issues and not dry_run:
             # Tier framework for bypass-monitor kinds:
-            #   T1 = wake-agent
-            #   T2 = restart-and-wake
-            #   T3 = telegram (with attempt history)
+            #   T1 = wake-agent / native PM-channel nudge
+            #   T2 = restart-and-wake / restart services + PM-channel nudge
+            #   T3 = final recovery attempt
+            #   T4 = Telegram only if the issue is still present after T3
             # The ev["attempts"] counter on each event tracks how many
             # tiers have already fired. Recovery from a tier resets the
             # counter; eviction (issue stops appearing) is silent.
-            tier1_issues, tier2_issues, tier3_issues = [], [], []
+            tier1_issues, tier2_issues, tier3_issues, exhausted_issues = [], [], [], []
             for i in auto_issues:
                 k = event_key(i)
                 ev = state["events"].get(k, {})
@@ -2879,8 +3085,10 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                     tier1_issues.append(i)
                 elif attempt == 2:
                     tier2_issues.append(i)
-                else:
+                elif attempt <= max_attempts:
                     tier3_issues.append(i)
+                else:
+                    exhausted_issues.append(i)
 
             tier_actions = []
 
@@ -2927,13 +3135,34 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                 })
 
             if tier3_issues:
-                # Final tier — telegram with attempt history.
-                hist_text_parts = [text]
-                hist_text_parts.append(
-                    "\n\n[Tier 3 — bypass-monitor ladder exhausted. "
-                    "Prior attempts:"
-                )
+                final_results = restart_and_wake_stalled_agents(tier3_issues)
                 for i in tier3_issues:
+                    k = event_key(i)
+                    ev = state["events"].get(k, {})
+                    ev["attempts"] = max_attempts
+                    ev.setdefault("attempt_history", []).append({
+                        "ts": now,
+                        "tier": max_attempts,
+                        "kind": i.get("kind"),
+                        "route": "bypass-monitor",
+                        "action": "final-recovery",
+                        "wake_results": final_results,
+                    })
+                    ev["next_attempt_after"] = now + confirmation_window_s
+                tier_actions.append({
+                    "type": "auto_action_bypass_monitor_tier3_final_recovery",
+                    "keys": [event_key(i) for i in tier3_issues],
+                    "wake_results": final_results,
+                })
+
+            if exhausted_issues:
+                # Recovery already had max_attempts chances. Now alert.
+                hist_text_parts = [format_alerts_message(exhausted_issues)]
+                hist_text_parts.append(
+                    f"\n\n[Recovery failed after {max_attempts} attempt(s). "
+                    "Attempt history:"
+                )
+                for i in exhausted_issues:
                     k = event_key(i)
                     ev = state["events"].get(k, {})
                     for h in (ev.get("attempt_history") or [])[-3:]:
@@ -2944,13 +3173,19 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                 hist_text_parts.append("\n]")
                 tier3_text = "".join(hist_text_parts)
                 r = send_telegram(cfg, tier3_text, registry=registry)
-                for i in tier3_issues:
+                pm_retry_cooldown_s = int(
+                    (cfg.get("pm_workflow") or {}).get(
+                        "retry_after_tier3_seconds",
+                        max(1800, confirmation_window_s),
+                    )
+                )
+                for i in exhausted_issues:
                     k = event_key(i)
                     ev = state["events"].get(k, {})
-                    ev["attempts"] = 3
+                    ev["attempts"] = max_attempts + 1
                     ev.setdefault("attempt_history", []).append({
                         "ts": now,
-                        "tier": 3,
+                        "tier": max_attempts + 1,
                         "kind": i.get("kind"),
                         "route": "bypass-monitor",
                         "action": "telegram",
@@ -2966,11 +3201,23 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                             ev["attempts"] = 0
                             ev["next_attempt_after"] = now + max(1800, confirmation_window_s)
                             ev["last_tier3_telegram"] = now
+                        elif _is_pm_workflow_retry_kind(i.get("kind")):
+                            # Same reasoning as email-awaiting-action: a
+                            # Telegram or accepted PM-channel nudge is not
+                            # task completion. Retry the PM-channel ladder
+                            # after cooldown until the PM workflow probe no
+                            # longer sees this task as stale.
+                            ev["attempts"] = 0
+                            ev["next_attempt_after"] = now + max(
+                                300,
+                                pm_retry_cooldown_s,
+                            )
+                            ev["last_tier3_telegram"] = now
                         else:
                             ev["alert_sent"] = True
                 tier_actions.append({
-                    "type": "auto_action_bypass_monitor_tier3_telegram",
-                    "keys": [event_key(i) for i in tier3_issues],
+                    "type": "auto_action_bypass_monitor_recovery_failed_telegram",
+                    "keys": [event_key(i) for i in exhausted_issues],
                     "result": r,
                 })
 
@@ -3070,9 +3317,12 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                         "agent-idle-with-queue": ("wake-agent", "restart-and-wake"),
                         "email-awaiting-action": ("wake-agent", "restart-and-wake"),
                         "pm-backlog-plan-missing": ("wake-agent", "restart-and-wake"),
+                        "pm-action-plan-missing": ("wake-agent", "restart-and-wake"),
+                        "pm-action-plan-awaiting-approval": ("wake-agent", "restart-and-wake"),
                         "pm-todo-not-started": ("wake-agent", "restart-and-wake"),
                         "pm-in-progress-stale": ("wake-agent", "restart-and-wake"),
                         "pm-review-feedback-awaiting-assignee": ("wake-agent", "restart-and-wake"),
+                        "pm-review-response-awaiting-assignee": ("wake-agent", "restart-and-wake"),
                         "pm-review-awaiting-reviewer": ("wake-agent", "restart-and-wake"),
                         "pm-channel-no-start": ("pm-channel-nudge", "restart-services"),
                         "pm-channel-stalled": ("pm-channel-nudge", "restart-services"),
@@ -3098,9 +3348,12 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                                 "agent-idle-with-queue",
                                 "email-awaiting-action",
                                 "pm-backlog-plan-missing",
+                                "pm-action-plan-missing",
+                                "pm-action-plan-awaiting-approval",
                                 "pm-todo-not-started",
                                 "pm-in-progress-stale",
                                 "pm-review-feedback-awaiting-assignee",
+                                "pm-review-response-awaiting-assignee",
                                 "pm-review-awaiting-reviewer",
                                 "pm-channel-no-start",
                                 "pm-channel-stalled",
@@ -3594,6 +3847,13 @@ def main():
         print(json.dumps(r))
         sys.exit(0 if r.get("ok") else 1)
 
+    run_lock = None
+    if not args.dry_run and not args.probe_only:
+        run_lock = acquire_run_lock()
+        if run_lock is None:
+            print("healthy=True issues=0 actions=0 model=lock summary=another ai-monitor run is active")
+            sys.exit(0)
+
     state = load_state()
     probes = gather_probes(cfg)
 
@@ -3645,9 +3905,10 @@ def main():
             ],
         },
     }
-    append_jsonl(cfg["log"]["jsonl_path"], record)
-    rotate_log(cfg["log"]["jsonl_path"], cfg["log"].get("max_age_days", 14))
-    save_state(state)
+    if not args.dry_run:
+        append_jsonl(cfg["log"]["jsonl_path"], record)
+        rotate_log(cfg["log"]["jsonl_path"], cfg["log"].get("max_age_days", 14))
+        save_state(state)
 
     if args.dry_run:
         print(

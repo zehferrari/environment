@@ -8,10 +8,24 @@ import {
   type PmChannelReplyTarget,
 } from "@/lib/agents/openclaw-pm-channel";
 import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel-stream";
-import { recordPmChannelRunEvent } from "@/lib/agents/pm-channel-runs";
+import {
+  pmChannelRunTargetKey,
+  pmChannelTargetHasDurableReply,
+  recordPmChannelRunEvent,
+} from "@/lib/agents/pm-channel-runs";
+import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel-jobs";
+import { appendPmChannelStreamEventForTarget } from "@/lib/agents/pm-channel-stream-log";
+import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel-rate-limit";
 import { normalizeDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
-import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
+import {
+  sendTaskCommentNotifications,
+  sendTaskWorkflowNotification,
+} from "@/lib/agents/task-workflow-notifications";
 import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
+import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
+import { revalidateEpicReplyScope } from "@/lib/epics/cache";
+import { tryCompleteTaskFromReviewerComment } from "@/lib/tasks/review-automation";
+import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -239,7 +253,53 @@ async function persistTaskReply(
     return { id: created.id, channel: "chat" as const };
   });
 
-  if (reply.channel === "comment") {
+  const reviewAutomation = reply.channel === "comment"
+    ? await tryCompleteTaskFromReviewerComment({
+        taskId: target.taskId,
+        commentId: reply.id,
+        body: persistedBody,
+        agentUserId: agentUser.id,
+        agentSlug: target.agentSlug,
+      })
+    : null;
+
+  if (reply.channel === "chat") {
+    const task = await db.task.findUnique({
+      where: { id: target.taskId },
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        assigneeId: true,
+        actingManagerId: true,
+        reporterId: true,
+        approvedOn: true,
+        epic: { select: { status: true, actingManagerId: true } },
+      },
+    });
+    const reviewerId = task ? resolveReviewOwnerId(task) : null;
+    if (
+      task &&
+      !task.approvedOn &&
+      task.assigneeId === agentUser.id &&
+      (task.status === "Backlog" || task.status === "To Do") &&
+      reviewerId &&
+      reviewerId !== agentUser.id
+    ) {
+      await sendTaskWorkflowNotification({
+        taskId: task.id,
+        targetUserId: reviewerId,
+        actor: { id: agentUser.id, kind: "agent", username: target.agentSlug },
+        reason: "action_plan_review_requested",
+        body: [
+          `@${target.agentSlug} posted an Action Plan for "${task.title}".`,
+          "Review the plan in Action Plan. If it is acceptable, call the workflow endpoint with action=approve_plan. If it needs changes, reply in Action Plan with concise feedback.",
+        ].join("\n"),
+      });
+    }
+  }
+
+  if (reply.channel === "comment" && !reviewAutomation?.completed) {
     await sendTaskCommentNotifications({
       taskId: target.taskId,
       commentId: reply.id,
@@ -253,10 +313,23 @@ async function persistTaskReply(
     });
   }
 
-  revalidatePath(`/projects/${original.project.slug}/tasks/${target.taskId}`);
+  revalidateTaskReplyScope(target.taskId, reply.channel);
+  if (reviewAutomation?.completed) {
+    revalidateTaskShell(target.taskId);
+    if (reviewAutomation.nextTask) {
+      revalidateTaskShell(reviewAutomation.nextTask.id);
+      revalidatePath(`/projects/${reviewAutomation.nextTask.projectSlug}/tasks/${reviewAutomation.nextTask.id}`);
+    }
+    revalidatePath(`/projects/${reviewAutomation.projectSlug}`);
+  }
   return {
     status: 200,
-    body: { ok: true, id: reply.id, channel: reply.channel },
+    body: {
+      ok: true,
+      id: reply.id,
+      channel: reply.channel,
+      reviewAutomation,
+    },
     streamText: persistedBody,
   };
 }
@@ -275,7 +348,6 @@ async function persistEpicReply(
       archiveId: true,
       baseArchiveId: true,
       originChannel: true,
-      project: { select: { slug: true } },
       epic: { select: { deletedAt: true } },
     },
   });
@@ -326,6 +398,7 @@ async function persistEpicReply(
         payload: JSON.stringify({
           driver: "openclaw-pm-channel",
           messageId: created.id,
+          epicId: target.epicId,
           inReplyToMessageId: target.messageId,
           agentSlug: target.agentSlug,
         }),
@@ -334,7 +407,7 @@ async function persistEpicReply(
     return { id: created.id, channel: "chat" as const };
   });
 
-  revalidatePath(`/projects/${original.project.slug}/epics/${target.epicId}`);
+  revalidateEpicReplyScope(target.epicId, "chat");
   return {
     status: 200,
     body: { ok: true, id: reply.id, channel: reply.channel },
@@ -381,7 +454,6 @@ async function persistSilentReply(target: PmChannelReplyTarget) {
         projectId: true,
         epicId: true,
         agentSlug: true,
-        project: { select: { slug: true } },
         epic: { select: { deletedAt: true } },
       },
     });
@@ -399,13 +471,14 @@ async function persistSilentReply(target: PmChannelReplyTarget) {
         targetAgent: target.agentSlug,
         payload: JSON.stringify({
           driver: "openclaw-pm-channel",
+          epicId: target.epicId,
           inReplyToMessageId: target.messageId,
           agentSlug: target.agentSlug,
           reason: "no_new_information",
         }),
       },
     });
-    revalidatePath(`/projects/${original.project.slug}/epics/${target.epicId}`);
+    revalidateEpicReplyScope(target.epicId, "chat");
     return { status: 200, body: { ok: true, silent: true, channel: "epic-chat" } };
   }
 
@@ -473,6 +546,29 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const rateLimit = checkPmChannelCallbackRateLimit({
+    kind: "reply",
+    agentSlug: target.agentSlug,
+    targetKey: pmChannelRunTargetKey(target),
+  });
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { error: "PM channel reply rate limit exceeded" },
+      {
+        status: 429,
+        headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
+      },
+    );
+  }
+
+  if (await pmChannelTargetHasDurableReply(target)) {
+    const persisted = await appendPmChannelStreamEventForTarget({ target, event: "done" });
+    publishPmChannelStreamEvent({ target, event: "done", seq: persisted.seq });
+    await recordPmChannelRunEvent({ target, event: "done" });
+    await markPmChannelJobCompleteForTarget(target);
+    return NextResponse.json({ ok: true, duplicate: true });
+  }
+
   const result = isSilentPmReplyText(body)
     ? await persistSilentReply(target)
     : target.kind === "direct"
@@ -482,20 +578,30 @@ export async function POST(req: NextRequest) {
     : await persistTaskReply(target, body);
 
   if (result.status >= 200 && result.status < 300) {
-    publishPmChannelStreamEvent({
+    const eventInput = {
       target,
       event: "final",
       text: (result as { streamText?: string }).streamText ?? "",
       replace: true,
-    });
+    } as const;
+    const persisted = await appendPmChannelStreamEventForTarget(eventInput);
+    publishPmChannelStreamEvent({ ...eventInput, seq: persisted.seq });
     await recordPmChannelRunEvent({ target, event: "final" });
+    await markPmChannelJobCompleteForTarget(target);
   } else {
+    const error = "error" in result.body && typeof result.body.error === "string"
+      ? result.body.error
+      : `Reply callback failed with HTTP ${result.status}`;
+    const persisted = await appendPmChannelStreamEventForTarget({
+      target,
+      event: "error",
+      error,
+    });
+    publishPmChannelStreamEvent({ target, event: "error", error, seq: persisted.seq });
     await recordPmChannelRunEvent({
       target,
       event: "error",
-      error: "error" in result.body && typeof result.body.error === "string"
-        ? result.body.error
-        : `Reply callback failed with HTTP ${result.status}`,
+      error,
     });
   }
 

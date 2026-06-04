@@ -1,7 +1,7 @@
 # Monitoring
 
-The monitoring agent runs under Linux user `karen`. Identity, capabilities, and
-Telegram bot handle live in `/etc/openclaw/agents.json`.
+The monitoring agent runs under a host-local monitor user. Identity,
+capabilities, and Telegram bot handle live in `/etc/openclaw/agents.json`.
 
 For full architecture (triage flow, decision contract, fallback rules,
 self-incident guard), see [`../README.md`](../README.md) § *Monitoring and Recovery*. This file is
@@ -57,11 +57,12 @@ the entry-point overview.
   under `agent_queue_check`). Closes the gap `task-stalled-no-agent`
   cannot see (after a ticket transitions out of In Progress, that probe
   loses the attachment point). Handled deterministically by ai-monitor —
-  bypasses Karen entirely (see `karen_triage.auto_action_kinds_bypass_karen`)
-  and runs `openclaw-control wake-agent <user>` directly with a reminder
-  naming the queued ticket keys and referencing TEAM_WORKFLOW.md
-  *"Picking the Next Task"*. Rationale: situation is unambiguous and the
-  action is bounded; no triage judgment needed.
+  bypasses monitor-agent judgment entirely (see
+  `monitor_triage.auto_action_kinds_bypass_monitor`) and runs
+  `openclaw-control wake-agent <user>` directly with a reminder naming the
+  queued ticket keys and referencing TEAM_WORKFLOW.md *"Picking the Next
+  Task"*. Rationale: situation is unambiguous and the action is bounded; no
+  triage judgment needed.
 - **Pending email tasks** for any coding agent with email integration.
   Gmail and local Maildir listeners are the first responders: when an
   allowlisted sender or local email-capable agent sends an actionable request,
@@ -70,9 +71,9 @@ the entry-point overview.
   is the fallback if that immediate wake does not result in action. It scans
   `~/tasks/current.md` for sections with `Gmail messageId:` and
   `Status: QUEUED`. It fires `email-awaiting-action` at warn 15 min / crit
-  60 min, ignores entries older than 24 h, and bypasses Karen so ai-monitor can
-  run `wake-agent` directly. The wake reminder tells the agent to process the
-  queued email, reply in the original thread when required, include the
+  60 min, ignores entries older than 24 h, and bypasses monitor-agent judgment
+  so ai-monitor can run `wake-agent` directly. The wake reminder tells the
+  agent to process the queued email, reply in the original thread when required, include the
   configured signature/runtime model, and update the task status out of
   `QUEUED`.
   Recovery for this kind is task-status based: the wake/restart is not
@@ -90,12 +91,21 @@ the entry-point overview.
   owner/status. Defaults are intentionally short because Mission Control is
   the source of truth and the first wake already happened: Backlog plan
   missing after 2 min, `To Do` not started after 2 min, `In Progress` stale
-  after 5 min, and Review waiting after 10 min. PM workflow kinds bypass
-  Karen and use the deterministic ladder directly: T1 sends a native
-  PM-channel workflow nudge with the full PM task context packet, T2
-  restarts agent services and sends the PM-channel nudge again, and T3
-  sends Telegram with attempt history. Wake reminders include task id,
-  project, status, Epic status, and the required next PM action.
+  after 5 min, and Review waiting after 10 min. `In Progress` means active
+  implementation; waiting for reviewer/manager/reporter feedback belongs in
+  `Review` with one concise assignee note. For `In Progress` tasks, the
+  stale timer is reset by the assignee's latest task comment after the
+  task entered `In Progress`, so real progress suppresses repeat nudges while
+  silence still escalates. PM workflow kinds bypass monitor-agent judgment and
+  use the deterministic ladder directly: T1 sends a native PM-channel workflow
+  nudge with the full PM task context packet, T2 restarts agent services and
+  sends the PM-channel nudge again, and T3 performs a final restart/nudge
+  recovery attempt. Telegram is sent only on the next tick if the same issue
+  is still present after T3's confirmation window. Wake reminders include
+  task id, project, status, Epic status, and the required next PM action.
+  PM workflow drift is retryable after Telegram via
+  `pm_workflow.retry_after_tier3_seconds` instead of being permanently
+  suppressed while the task remains stale.
 
 ## Registry-driven
 
@@ -186,27 +196,28 @@ Validate drift after any registry/service edit:
 
 `/etc/ai-monitor/config.json` routes alerts through the monitoring agent.
 Telegram bot, secrets, and chat allowlist are per-agent — see the registry
-(`telegram.bot` for the `karen` user), `~/.config/openclaw/openclaw-secrets.env`,
+(`telegram.bot` for the monitor user), `~/.config/openclaw/openclaw-secrets.env`,
 and `~/.openclaw/credentials/telegram-allowFrom.json`.
 
-### Tier framework — try twice, telegram on the third
+### Tier framework — recover first, telegram after failure
 
-Every alert key gets up to **3 attempts** before zeh is paged. Configured
-under `karen_triage.escalation_ladder` in `/etc/ai-monitor/config.json`
-(`max_attempts: 3`, `confirmation_window_s: 300`). Two execution paths:
+Every alert key gets up to **3 recovery attempts** before zeh is paged.
+Configured under `monitor_triage.escalation_ladder` in
+`/etc/ai-monitor/config.json` (`max_attempts: 3`,
+`confirmation_window_s: 300`). Two execution paths:
 
-- **Bypass-Karen kinds** (default `agent-idle-with-queue`,
+- **Bypass-monitor kinds** (default `agent-idle-with-queue`,
   `email-awaiting-action`, and all `pm-*` workflow-action kinds):
   T1 = `wake-agent` for generic queues/email or native PM-channel nudge for
   PM workflow drift, T2 = `restart-and-wake` / restart-services plus PM-channel
-  nudge, T3 = telegram with attempt history. ai-monitor runs the actions
-  itself; Karen is never involved.
-- **Karen-bound kinds** (everything else): incident payload now includes
+  nudge, T3 = final recovery attempt, T4 = Telegram with attempt history only
+  if the issue remains after T3. ai-monitor runs the actions itself; the
+  monitor agent is not in this judgment loop.
+- **Monitor-agent-bound kinds** (everything else): incident payload includes
   an `escalation_context` block (`{attempt, max_attempts, is_final,
-  prior_attempts, guidance}`). On T1/T2 Karen is told to act and
-  `suppress` with `telegram_sent: false`. On T3 Karen is told this is
-  the final attempt — act and send Telegram. If Karen punts on T3,
-  ai-monitor falls back to telegramming the attempt history itself.
+  prior_attempts, guidance}`). On non-final attempts the monitor agent is told
+  to act and `suppress` with `telegram_sent: false`. On final failure,
+  ai-monitor includes the recovery history before paging.
 
 Between tiers, ai-monitor sets `next_attempt_after = now + 300 s` on the
 event. New alerts for the same key are silently skipped during the
@@ -215,15 +226,15 @@ clears the event silently via `missed_runs` eviction. Per-event state
 (`attempts`, `attempt_history`, `next_attempt_after`) is in
 `/var/lib/ai-monitor/state.json`.
 
-Karen's playbook (which kind → which fix on which tier) lives at
-`INCIDENT_HANDLING.md`. Karen now also has `systemctl restart` permission
+The monitor agent playbook (which kind -> which fix on which tier) lives at
+`INCIDENT_HANDLING.md`. The monitor agent also has `systemctl restart` permission
 for `ollama`, `nginx`, `mariadb`, `php-fpm`, `agent-dashboard`, and
-`openclaw-typing-keepalive` (sudoers: `/etc/sudoers.d/karen-openclaw-control`).
+`openclaw-typing-keepalive` through the host sudoers policy.
 
 ### Monitor agent heartbeat hygiene
 
 `openclaw system event --mode now` (the wake mechanism ai-monitor uses to
-hand the monitor agent an incident) marks her `agent:main:main` entry's
+hand the monitor agent an incident) marks the monitor agent's `agent:main:main` entry's
 `pendingFinalDelivery: true` after each turn — openclaw is trying to
 deliver the response back to the invoking channel. ai-monitor invokes
 via CLI and exits, so there's no channel; openclaw retries ~40 times
@@ -240,7 +251,7 @@ The skip-if-running guard prevents stomping on an in-flight turn. The
 monitor agent is identified by `role: "monitor"` in the registry — no
 hardcoded user name. To manually clear if needed:
 `sudo /usr/local/sbin/openclaw-control restart-and-wake <monitor-user>
-"<reason>"` (the user is whatever the registry says — `karen` here).
+"<reason>"` (the user is whatever the registry says).
 
 The same stale-delivery preflight now runs in `openclaw-control` for every
 agent before `wake-agent` / `restart-and-wake`. If `agent:main:main` points at
@@ -255,7 +266,7 @@ the upstream API hiccup. These kinds skip the monitor entirely and require
 **N consecutive ticks**
 of the same key being seen before they emit a single rolled-up telegram, then
 enter a cooldown window before they can re-fire. Configured under
-`karen_triage`:
+`monitor_triage`:
 
 - `transient_kinds`: list of kinds bypassed (default includes
   `jira-probe-failed`, `agent-queue-probe-failed`,
@@ -274,7 +285,7 @@ payloads gain `_transient: true` and `_consecutive_seen` when graduated.
 ### Self-healing scheduled tasks (no triage needed)
 
 Some "alerts" are predictable token expiries that should be auto-renewed
-by cron, not handed to Karen:
+by cron, not handed to the monitor agent:
 
 - **Gmail watch tokens** expire every 7 days. Renewed daily at 04:00 by
   `gmail-watch-renew.timer` → `gmail-watch-renew.service` →
@@ -305,7 +316,7 @@ the agent's `openclaw|claude` pids over a 1 s sample > 5 %. Both
 `is_busy=true`. `task-stalled-no-progress` (active session but no Jira
 update — heartbeat-loop pattern) is unaffected by design. Dashboard
 runs the cheap version (signals 1+2) and surfaces a `⚙ busy` chip on
-agent cards. Karen's `INCIDENT_HANDLING.md` Step 2 also re-checks busy
+agent cards. The monitor agent's `INCIDENT_HANDLING.md` Step 2 also re-checks busy
 before acting.
 
 ## Dashboard
@@ -323,7 +334,7 @@ Read-only, real-time, basic-auth-gated:
   playgrounds, and remediation. Disk-loss risk is bounded only as long as
   off-host backup stays current.
 - **Gmail watches expire** and must keep renewing successfully.
-- **Self-incidents** (issues affecting `karen` or `ai-monitor` itself) bypass
+- **Self-incidents** (issues affecting the monitor user or `ai-monitor` itself) bypass
   the triage handoff and go to direct Telegram — the monitoring agent can't
   safely triage its own outage.
 - **Per-user secret split** is correct for least privilege but makes audits

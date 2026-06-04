@@ -277,7 +277,7 @@ export default function DescriptionField({
   return (
     <div className="relative rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-4 py-3">
       {aiRunning ? (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center rounded-lg bg-[var(--color-panel)]/90 backdrop-blur-[2px] p-6 space-y-4 overflow-y-auto">
+        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center rounded-lg bg-[var(--color-panel)]/95 p-6 space-y-4 overflow-y-auto">
           <div className="relative flex items-center justify-center shrink-0">
             <div className="h-10 w-10 rounded-full border-4 border-[var(--color-accent)]/20 border-t-[var(--color-accent)] animate-spin" />
             <span className="absolute text-[10px] font-bold text-[var(--color-accent)] uppercase">z</span>
@@ -433,7 +433,7 @@ export default function DescriptionField({
             className="relative w-full max-w-xl space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-2xl"
           >
             {aiSubmitting ? (
-              <div className="absolute inset-0 z-40 flex flex-col items-center justify-center rounded-2xl bg-[var(--color-panel)]/90 backdrop-blur-[2px] p-6 space-y-4">
+              <div className="absolute inset-0 z-40 flex flex-col items-center justify-center rounded-2xl bg-[var(--color-panel)]/95 p-6 space-y-4">
                 <div className="relative flex items-center justify-center">
                   <div className="h-10 w-10 rounded-full border-4 border-[var(--color-accent)]/20 border-t-[var(--color-accent)] animate-spin" />
                   <span className="absolute text-[10px] font-bold text-[var(--color-accent)] uppercase">z</span>
@@ -448,6 +448,7 @@ export default function DescriptionField({
             {projectSlug ? <input type="hidden" name="projectSlug" value={projectSlug} /> : null}
             {taskId ? <input type="hidden" name="taskId" value={taskId} /> : null}
             {epicId ? <input type="hidden" name="epicId" value={epicId} /> : null}
+            <input type="hidden" name="originChannel" value="description" />
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">

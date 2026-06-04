@@ -37,10 +37,10 @@ export default function AttachmentUploadFab({
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                  Add attachment
+                  Add attachments
                 </div>
                 <p className="mt-1 text-xs text-[var(--color-text-muted)]">
-                  Max {maxLabel} per file.
+                  Max {maxLabel} per file. You can select multiple files.
                 </p>
               </div>
               <button
@@ -54,7 +54,8 @@ export default function AttachmentUploadFab({
             </div>
             <input
               type="file"
-              name="file"
+              name="files"
+              multiple
               required
               className="w-full rounded-lg border border-dashed border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-6 text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--color-accent)] file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-[var(--color-bg)] hover:file:opacity-90"
             />
@@ -70,7 +71,7 @@ export default function AttachmentUploadFab({
                 type="submit"
                 className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
               >
-                Upload
+                Upload files
               </button>
             </div>
           </form>

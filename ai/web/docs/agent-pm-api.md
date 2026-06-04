@@ -20,7 +20,7 @@ GET /api/agents/context/task/<taskId>
 GET /api/agents/context/epic/<epicId>
 GET /api/agents/context/project/<projectId>
 
-Authorization: Bearer <agent's pm-channel token>
+?grant=<short-lived scoped context grant>
 Host:          must be 127.0.0.1, localhost, or [::1]
 ```
 
@@ -57,20 +57,29 @@ Implementation: [`lib/agents/context-api/auth.ts:isLoopbackRequest`](../lib/agen
 
 ## Authentication
 
-The Authorization header carries an agent's PM-channel bearer — the same
-secret OpenClaw uses to call PM back on `/api/openclaw/pm-channel/reply`.
-**Agents do not need a new token.** The value lives in:
+PM-channel turns should use prompt-safe context grant URLs. A grant is an
+opaque `?grant=...` query token minted by PM for one addressed agent and
+one scope (`task`, `epic`, or `project`). PM stores only the token hash,
+binds it to the target agent and scope id, and enforces expiry plus a
+bounded use count.
 
-- Per-agent: `~/.openclaw/openclaw.json` at `channels.pm.token`. This is
-  the field every gateway reads on startup; reusing it is intentional.
-- File map (the same source the agent reads from):
+The per-turn system prompt includes ready-to-curl URLs with the grant
+already attached. Agents should call those URLs directly and should not
+need to read or repeat their long-lived PM-channel bearer token.
+
+Legacy bearer auth is still available only as a compatibility and
+operator-smoke fallback while `PM_CONTEXT_GRANTS_REQUIRED=0`:
+
+- Per-agent: `~/.openclaw/openclaw.json` at `channels.pm.token`.
+- File map:
   `/etc/openclaw/pm-channel-tokens.json` (root-owned, `{ "<slug>": "<token>", "default": "<token>" }`).
-- Env var: `PM_OPENCLAW_CHANNEL_TOKEN_<SLUG>` (uppercased, non-alphanum →
+- Env var: `PM_OPENCLAW_CHANNEL_TOKEN_<SLUG>` (uppercased, non-alphanum ->
   `_`) or the shared `PM_OPENCLAW_CHANNEL_TOKEN`.
 
-PM looks up the right per-agent token from any of those sources; a
-caller may also present the shared token and authenticate as "an active
-agent". Validation: [`lib/agents/context-api/auth.ts:authenticateAgentBearer`](../lib/agents/context-api/auth.ts).
+When `PM_CONTEXT_GRANTS_REQUIRED=1`, context endpoints reject bearer-only
+requests. Validation lives in
+[`lib/agents/context-api/auth.ts`](../lib/agents/context-api/auth.ts) and
+[`lib/agents/context-grants.ts`](../lib/agents/context-grants.ts).
 
 Unauthorised request → **401 Unauthorized**.
 
@@ -183,8 +192,9 @@ Shape:
 > per-turn system prompt under a `=== RECENT … DISCUSSION ===` heading,
 > so an agent has it even if they decide not to fetch the JSON.
 
-Status codes: **200 OK** on success, **401** for bad bearer, **403** for
-non-loopback, **404** when the task is missing or soft-deleted.
+Status codes: **200 OK** on success, **401** for a missing/invalid grant
+or disabled legacy bearer, **403** for non-loopback, **404** when the
+task is missing or soft-deleted.
 
 ### `GET /api/agents/context/epic/<epicId>`
 
@@ -223,26 +233,25 @@ system prompt:
    that warns against silently widening agreed scope. This is the
    primary context for the current turn — no fetch required.
 2. A `LIVE PM CONTEXT — FETCH WHEN YOU NEED DEEPER HISTORY` block with
-   ready-to-curl commands (bearer + URL pre-filled) for the relevant
-   task / epic / project. Use these when the RECENT block doesn't
-   cover what you need.
+   ready-to-curl grant URLs for the relevant task / epic / project. Use
+   these when the RECENT block doesn't cover what you need.
 
 The expected pattern is:
 
 ```bash
 # 1. Read the task — always, on every turn that lands on a task.
-TASK=$(curl -s -H "Authorization: Bearer <bearer>" \
-  'http://127.0.0.1:3000/api/agents/context/task/<taskId>')
+TASK=$(curl -s \
+  'http://127.0.0.1:3000/api/agents/context/task/<taskId>?grant=<task-grant>')
 
 # 2. If the task lives under an epic AND the conversation discusses the
 #    epic, also pull the epic.
-EPIC=$(curl -s -H "Authorization: Bearer <bearer>" \
-  'http://127.0.0.1:3000/api/agents/context/epic/<epicId>')
+EPIC=$(curl -s \
+  'http://127.0.0.1:3000/api/agents/context/epic/<epicId>?grant=<epic-grant>')
 
 # 3. Before proposing work-item changes, pull project state to avoid
 #    duplicating an existing epic or task.
-PROJ=$(curl -s -H "Authorization: Bearer <bearer>" \
-  'http://127.0.0.1:3000/api/agents/context/project/<projectId>')
+PROJ=$(curl -s \
+  'http://127.0.0.1:3000/api/agents/context/project/<projectId>?grant=<project-grant>')
 ```
 
 Then parse the JSON and use it as your primary source of truth for the
@@ -255,9 +264,13 @@ current state.
   field is `null` now.
 - The OpenClaw pm-channel plugin no longer needs to do anything special
   with the supplemental context — there isn't any. The system prompt
-  carries the live-fetch URLs and the agent does the fetch themselves.
+  carries scoped live-fetch grant URLs and the agent does the fetch
+  themselves.
 - `pm-comment` / workflow-notification dispatches are unchanged in this
   pass; they still send a small inlined context body.
+- Context endpoints now prefer short-lived grant URLs. The old
+  PM-channel bearer still works only while `PM_CONTEXT_GRANTS_REQUIRED=0`
+  so existing boxes can be rolled forward without a flag day.
 - New routes are added to the middleware allowlist
   ([`middleware.ts:isTokenScopedAgentContextRead`](../middleware.ts)) so
   session cookies aren't required.
@@ -271,12 +284,14 @@ When this repo lands on a new host:
    and `PM_AGENT_CALLBACK_URL`. Set both to `http://127.0.0.1:<pm-port>`
    on the replicated host. The system prompts the agents receive use
    `PM_AGENT_CALLBACK_URL` first.
-3. Each agent's `~/.openclaw/openclaw.json` already has
-   `channels.pm.token` — that **is** the bearer for these endpoints; no
-   additional secret to provision.
+3. No additional agent secret is needed for live context reads. PM mints
+   grant URLs per channel turn and puts them in the prompt.
 4. **No nginx changes needed.** These endpoints are deliberately
    loopback-only and should never be exposed via the public vhost.
-5. Once `pm.service` is up, smoke the endpoints from any agent's home:
+5. Once `pm.service` is up, smoke the grant path by sending a Task or
+   Epic Discussion turn and checking that the prompt contains `?grant=`
+   URLs that return JSON from loopback. While `PM_CONTEXT_GRANTS_REQUIRED=0`,
+   operators can also run a legacy bearer smoke from any agent's home:
    ```bash
    sudo -n -u barekbaal curl -s \
      -H "Authorization: Bearer $(jq -r .channels.pm.token /home/barekbaal/.openclaw/openclaw.json)" \

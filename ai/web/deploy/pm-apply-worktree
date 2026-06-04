@@ -3,7 +3,8 @@
 # pm-apply-worktree — the ONLY privileged step of a worktree switch.
 #
 # Runs as root (the monitor calls it via a single NOPASSWD sudoers rule). Points
-# pm.service's WorkingDirectory at the given standalone build dir and restarts.
+# pm.service and pm-consumer.service at the selected worktree build and its
+# forked DB, then restarts them.
 # The input is validated against a strict allow-list (must be a real worktree's
 # built standalone dir under $PM_WORKTREES_ROOT), so a non-root caller can never
 # steer pm.service at an arbitrary path.
@@ -15,22 +16,137 @@
 set -euo pipefail
 
 STANDALONE="${1:-}"
+DB_URL="${2:-}"
 WT_ROOT="${PM_WORKTREES_ROOT:-/srv/Code/environment.worktrees}"
-DROPIN_DIR=/etc/systemd/system/pm.service.d
-DROPIN="$DROPIN_DIR/20-active-worktree.conf"
+DB_ROOT="${PM_DB_ROOT:-/srv/Data/pm}"
+BASE_ENV_FILE="${PM_SYSTEM_ENV_FILE:-/etc/default/pm}"
+ACTIVE_ENV_FILE="${PM_ACTIVE_ENV_FILE:-/etc/default/pm-active-worktree}"
+PM_DROPIN_DIR=/etc/systemd/system/pm.service.d
+PM_DROPIN="$PM_DROPIN_DIR/20-active-worktree.conf"
+CONSUMER_DROPIN_DIR=/etc/systemd/system/pm-consumer.service.d
+CONSUMER_DROPIN="$CONSUMER_DROPIN_DIR/20-active-worktree.conf"
+DROP_DIR="${PM_DISPATCH_DROP_DIR:-/var/lib/pm/drop}"
+SWITCH_DIR="${PM_SWITCH_DIR:-/var/lib/pm/switch}"
+VERIFY_DIR="${PM_BRANCH_VERIFY_DIR:-/var/lib/pm/branch-verify}"
+SHARED_GROUP="${PM_SHARED_GROUP:-code-agents}"
+PNPM_HOME_DIR="${PM_CONSUMER_PNPM_HOME:-/var/lib/pm/pnpm-home}"
+PNPM_CONFIG_DIR="${PM_CONSUMER_PNPM_CONFIG:-/var/lib/pm/pnpm-config}"
+PNPM_CACHE_DIR="${PM_CONSUMER_PNPM_CACHE:-/var/lib/pm/pnpm-cache}"
 
 die(){ printf 'pm-apply-worktree: %s\n' "$*" >&2; exit 1; }
+set_acl(){ setfacl "$@" 2>/dev/null || true; }
+
+service_user() {
+  systemctl show -p User --value "$1" 2>/dev/null || true
+}
+
+grant_service_access() {
+  local user="${1:-}"
+  [[ -n "$user" && "$user" != "root" ]] || return 0
+  command -v setfacl >/dev/null 2>&1 || return 0
+
+  local acl_path="$app_root"
+  while [[ "$acl_path" != "/" && -n "$acl_path" ]]; do
+    set_acl -m "u:$user:x" "$acl_path"
+    acl_path="$(dirname "$acl_path")"
+  done
+
+  # pm-consumer runs from ai/web and needs package.json, scripts, lib, and
+  # node_modules readable. Keep the tree read-only except runtime write paths.
+  set_acl -R -m "u:$user:rx" "$app_root"
+
+  mkdir -p "$real/.next/cache/fetch-cache"
+  set_acl -m "u:$user:rwx" "$real" "$real/.next" "$real/.next/cache" "$real/.next/cache/fetch-cache"
+  set_acl -dR -m "u:$user:rwx" "$real/.next/cache"
+
+  if [[ -d "$app_root/prisma" ]]; then
+    set_acl -R -m "u:$user:rwx" "$app_root/prisma"
+    set_acl -dR -m "u:$user:rwx" "$app_root/prisma"
+  fi
+  if [[ -d "$app_root/.data" ]]; then
+    set_acl -R -m "u:$user:rwx" "$app_root/.data"
+    set_acl -dR -m "u:$user:rwx" "$app_root/.data"
+  fi
+}
 
 [[ $EUID -eq 0 ]] || die "must run as root (via sudo)"
-[[ -n "$STANDALONE" ]] || die "usage: pm-apply-worktree <…/ai/web/.next/standalone>"
+[[ -n "$STANDALONE" && -n "$DB_URL" ]] || die "usage: pm-apply-worktree <…/ai/web/.next/standalone> <file:/srv/Data/pm/wt-branch.db>"
 
 real="$(readlink -f "$STANDALONE" 2>/dev/null || true)"
 [[ -n "$real" ]]                                    || die "path does not resolve: $STANDALONE"
 [[ "$real" == "$WT_ROOT"/*/ai/web/.next/standalone ]] || die "refused: $real is not <$WT_ROOT>/*/ai/web/.next/standalone"
 [[ -f "$real/server.js" ]]                          || die "no server.js in $real (build the worktree first)"
+app_root="${real%/.next/standalone}"
 
-install -d "$DROPIN_DIR"
-printf '[Service]\nWorkingDirectory=\nWorkingDirectory=%s\n' "$real" > "$DROPIN"
+case "$DB_URL" in
+  file://*) db_path="${DB_URL#file://}" ;;
+  file:*)   db_path="${DB_URL#file:}" ;;
+  *)        die "DATABASE_URL must be file: URL, got $DB_URL" ;;
+esac
+db_root="$(readlink -f "$DB_ROOT" 2>/dev/null || true)"
+db_real="$(readlink -f "$db_path" 2>/dev/null || true)"
+[[ -n "$db_root" && -n "$db_real" ]] || die "DB path does not resolve: $db_path"
+[[ "$db_real" == "$db_root"/wt-*.db ]] || die "refused: $db_real is not a per-worktree DB under $db_root"
+[[ -f "$db_real" ]] || die "DB file does not exist: $db_real"
+[[ -f "$BASE_ENV_FILE" ]] || die "base PM env file does not exist: $BASE_ENV_FILE"
+env_group="$(stat -c '%G' "$BASE_ENV_FILE")"
+pm_user="$(service_user pm.service)"
+consumer_user="$(service_user pm-consumer.service)"
+
+grant_service_access "$pm_user"
+grant_service_access "$consumer_user"
+if [[ -n "$pm_user" && "$pm_user" != "root" ]]; then
+  if getent group "$SHARED_GROUP" >/dev/null 2>&1; then
+    install -d -o "$pm_user" -g "$SHARED_GROUP" -m 2770 "$VERIFY_DIR"
+    chmod g+s "$VERIFY_DIR"
+  else
+    install -d -o "$pm_user" -g "$(id -gn "$pm_user")" -m 0700 "$VERIFY_DIR"
+  fi
+else
+  install -d -m 0700 "$VERIFY_DIR"
+fi
+
+install -d "$PM_DROPIN_DIR"
+tmp_env="$(mktemp)"
+if grep -q '^DATABASE_URL=' "$BASE_ENV_FILE"; then
+  sed -E "s#^DATABASE_URL=.*#DATABASE_URL=file:$db_real#" "$BASE_ENV_FILE" > "$tmp_env"
+else
+  cp "$BASE_ENV_FILE" "$tmp_env"
+  printf 'DATABASE_URL=file:%s\n' "$db_real" >> "$tmp_env"
+fi
+if grep -q '^PM_APP_ROOT=' "$tmp_env"; then
+  sed -i -E "s#^PM_APP_ROOT=.*#PM_APP_ROOT=$app_root#" "$tmp_env"
+else
+  printf 'PM_APP_ROOT=%s\n' "$app_root" >> "$tmp_env"
+fi
+install -o root -g "$env_group" -m 0640 "$tmp_env" "$ACTIVE_ENV_FILE"
+rm -f "$tmp_env"
+cat > "$PM_DROPIN" <<EOF
+[Service]
+EnvironmentFile=
+EnvironmentFile=$ACTIVE_ENV_FILE
+WorkingDirectory=
+WorkingDirectory=$real
+ReadWritePaths=
+ReadWritePaths=$db_root $app_root/prisma -$app_root/.data $real/.next/cache /etc/openclaw/pm-agent-credentials $DROP_DIR $VERIFY_DIR -/srv/Data/projects -/srv/samba/shared $SWITCH_DIR
+EOF
+
+if systemctl list-unit-files 'pm-consumer.service' --no-legend 2>/dev/null | grep -q '^pm-consumer\.service'; then
+  install -d "$CONSUMER_DROPIN_DIR"
+  cat > "$CONSUMER_DROPIN" <<EOF
+[Service]
+EnvironmentFile=
+EnvironmentFile=$ACTIVE_ENV_FILE
+WorkingDirectory=
+WorkingDirectory=$app_root
+ReadWritePaths=
+ReadWritePaths=$db_root $DROP_DIR $PNPM_HOME_DIR $PNPM_CONFIG_DIR $PNPM_CACHE_DIR
+EOF
+fi
 systemctl daemon-reload
 systemctl restart pm.service
-printf 'pm-apply-worktree: pm.service now serving %s\n' "$real"
+if systemctl list-unit-files 'pm-consumer.service' --no-legend 2>/dev/null | grep -q '^pm-consumer\.service'; then
+  systemctl restart pm-consumer.service
+fi
+printf 'pm-apply-worktree: pm.service now serving %s with DATABASE_URL=file:%s\n' "$real" "$db_real"
+printf 'pm-apply-worktree: pm-consumer.service now running from %s\n' "$app_root"

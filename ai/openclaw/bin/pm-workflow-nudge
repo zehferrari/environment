@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PM_ENV=${PM_ENV:-/etc/default/pm}
-if [[ -r "$PM_ENV" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "$PM_ENV"
-  set +a
+if [[ -n "${PM_ENV:-}" ]]; then
+  env_files=("$PM_ENV")
+else
+  env_files=(/etc/default/pm /etc/default/pm-active-worktree)
 fi
+for env_file in "${env_files[@]}"; do
+  if [[ -r "$env_file" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$env_file"
+    set +a
+  fi
+done
 
 WEB_ROOT=${PM_APP_ROOT:-}
 if [[ -z "$WEB_ROOT" && "${DATABASE_URL:-}" == file://* ]]; then

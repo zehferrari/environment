@@ -5,8 +5,6 @@ import SortableTaskList from "@/components/sortable-task-list";
 import { bulkBinTasks } from "@/lib/bin/actions";
 import ConfirmPopup from "@/components/confirm-popup";
 
-const TASK_STATUS_ORDER = ["Backlog", "To Do", "In Progress", "Review", "Done"];
-
 export default function EpicTasksClient({
   initialTasks,
   projectSlug,
@@ -33,15 +31,6 @@ export default function EpicTasksClient({
     });
   }, [initialTasks]);
 
-  const tasksByStatus = new Map<string, any[]>();
-  for (const s of TASK_STATUS_ORDER) tasksByStatus.set(s, []);
-  for (const t of tasks) {
-    const status = t.status || "Backlog";
-    const list = tasksByStatus.get(status) ?? [];
-    list.push(t);
-    tasksByStatus.set(status, list);
-  }
-
   function toggleTaskSelection(taskId: string, selected: boolean, shiftKey?: boolean) {
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return;
@@ -50,20 +39,17 @@ export default function EpicTasksClient({
       const next = new Set(current);
 
       if (shiftKey && lastCheckedId) {
-        const status = task.status || "Backlog";
-        const list = tasksByStatus.get(status) ?? [];
-
-        const lastIdx = list.findIndex((t) => t.id === lastCheckedId);
-        const currIdx = list.findIndex((t) => t.id === taskId);
+        const lastIdx = tasks.findIndex((t) => t.id === lastCheckedId);
+        const currIdx = tasks.findIndex((t) => t.id === taskId);
 
         if (lastIdx !== -1 && currIdx !== -1) {
           const start = Math.min(lastIdx, currIdx);
           const end = Math.max(lastIdx, currIdx);
           for (let i = start; i <= end; i++) {
             if (selected) {
-              next.add(list[i].id);
+              next.add(tasks[i].id);
             } else {
-              next.delete(list[i].id);
+              next.delete(tasks[i].id);
             }
           }
         } else {
@@ -80,11 +66,10 @@ export default function EpicTasksClient({
     });
   }
 
-  function toggleSelectAllStatus(status: string, checked: boolean) {
-    const list = tasksByStatus.get(status) ?? [];
+  function toggleSelectAll(checked: boolean) {
     setSelectedIds((current) => {
       const next = new Set(current);
-      list.forEach((t) => {
+      tasks.forEach((t) => {
         if (checked) next.add(t.id);
         else next.delete(t.id);
       });
@@ -121,6 +106,7 @@ export default function EpicTasksClient({
   }
 
   const selectedCount = selectedIds.size;
+  const allSelected = tasks.length > 0 && tasks.every((t) => selectedIds.has(t.id));
 
   return (
     <div className="space-y-4">
@@ -165,46 +151,34 @@ export default function EpicTasksClient({
         onCancel={() => setConfirmDeleteOpen(false)}
       />
 
-      <div className="space-y-3">
-        {TASK_STATUS_ORDER.map((s) => {
-          const list = tasksByStatus.get(s) ?? [];
-          if (list.length === 0) return null;
-
-          const allSelected = list.every((t) => selectedIds.has(t.id));
-
-          return (
-            <div key={s} className="space-y-1">
-              <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={allSelected}
-                    onChange={(e) => toggleSelectAllStatus(s, e.target.checked)}
-                    className="h-3.5 w-3.5 accent-[var(--color-accent)]"
-                    aria-label={`Select all in ${s}`}
-                  />
-                  <span>
-                    {s} ({list.length})
-                  </span>
-                </div>
-              </div>
-              <SortableTaskList
-                ariaLabel={`Tasks in ${s}`}
-                reorderAction={reorderEpicTasks}
-                tableLayout
-                showReporterAvatar
-                showAssignee
-                showReviewer
-                showCreated
-                showUpdated
-                projectSlug={projectSlug}
-                items={list}
-                selectedIds={selectedIds}
-                onSelectionChange={toggleTaskSelection}
-              />
-            </div>
-          );
-        })}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={(e) => toggleSelectAll(e.target.checked)}
+              className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+              aria-label="Select all tasks"
+            />
+            <span>Implementation order ({tasks.length})</span>
+          </div>
+        </div>
+        <SortableTaskList
+          ariaLabel="Epic tasks in implementation order"
+          reorderAction={reorderEpicTasks}
+          tableLayout
+          showStatusBadge
+          showReporterAvatar
+          showAssignee
+          showReviewer
+          showCreated
+          showUpdated
+          projectSlug={projectSlug}
+          items={tasks}
+          selectedIds={selectedIds}
+          onSelectionChange={toggleTaskSelection}
+        />
       </div>
     </div>
   );

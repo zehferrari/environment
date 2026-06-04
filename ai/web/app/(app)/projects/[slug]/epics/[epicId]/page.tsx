@@ -16,13 +16,18 @@ import {
 } from "@/lib/attachments/actions";
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { binTask, deleteEpic } from "@/lib/bin/actions";
+import { archiveEpic, unarchiveEpic } from "@/lib/archive/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
 import SortableTaskList from "@/components/sortable-task-list";
+import AttachmentList from "@/components/attachment-list";
 import AttachmentUploadFab from "@/components/attachment-upload-fab";
 import { renderFullMarkdown, extractMentions } from "@/lib/markdown";
 import { listAssignablePrincipals } from "@/lib/principals";
+import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
 import ChatRoom from "@/components/chat-room";
+import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activity-timeline";
+import TaskChangesPanel from "@/components/task-changes-panel";
 import CommentComposerFab from "@/components/comment-composer-fab";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
@@ -37,6 +42,8 @@ import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-c
 import AddEpicTaskFab from "./add-epic-task-fab";
 import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
 import EpicTasksClient from "./epic-tasks-client";
+import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
+import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 
 type ActorRow = {
   id: string;
@@ -45,6 +52,15 @@ type ActorRow = {
   name: string | null;
   avatarUpdatedAt: Date | null;
   agent: { slug: string; name: string; avatar: string | null } | null;
+};
+
+const actorSelect = {
+  id: true,
+  username: true,
+  kind: true,
+  name: true,
+  avatarUpdatedAt: true,
+  agent: { select: { slug: true, name: true, avatar: true } },
 };
 
 function serializeActor(actor: ActorRow | null) {
@@ -57,6 +73,30 @@ function serializeActor(actor: ActorRow | null) {
     avatarUpdatedAt: actor.avatarUpdatedAt?.toISOString() ?? null,
     agent: actor.agent,
   };
+}
+
+type SerializedActor = NonNullable<ReturnType<typeof serializeActor>>;
+type TaskActivityActorRow = {
+  taskId: string | null;
+  kind: string;
+  user: ActorRow | null;
+};
+
+function buildTaskActivityActorMaps(rows: TaskActivityActorRow[]) {
+  const createdBy = new Map<string, SerializedActor>();
+  const updatedBy = new Map<string, SerializedActor>();
+
+  for (const row of rows) {
+    if (!row.taskId || !row.user) continue;
+    const actor = serializeActor(row.user);
+    if (!actor) continue;
+    if (!updatedBy.has(row.taskId)) updatedBy.set(row.taskId, actor);
+    if (row.kind === "task.create" && !createdBy.has(row.taskId)) {
+      createdBy.set(row.taskId, actor);
+    }
+  }
+
+  return { createdBy, updatedBy };
 }
 
 export const dynamic = "force-dynamic";
@@ -74,6 +114,111 @@ function timeAgo(d: Date): string {
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d ago`;
   return d.toISOString().slice(0, 10);
+}
+
+function payloadValue(payload: string | null | undefined, key: string) {
+  if (!payload) return null;
+  try {
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    const value = parsed[key];
+    return typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> {
+  const session = await auth();
+  const id = session?.user?.id;
+  if (!id) throw new Error("Unauthenticated");
+  return {
+    id,
+    kind: session.user?.kind === "agent" ? "agent" : "human",
+  };
+}
+
+async function approveEpicActionPlan(formData: FormData) {
+  "use server";
+  const actor = await requireActor();
+  const epicId = String(formData.get("epicId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  if (!epicId || !slug) return;
+
+  const epic = await db.epic.findUnique({
+    where: { id: epicId },
+    select: {
+      id: true,
+      title: true,
+      projectId: true,
+      reporterId: true,
+      actingManagerId: true,
+      approvedOn: true,
+      deletedAt: true,
+      project: { select: { slug: true, onlyReportersCanApproveActionPlans: true } },
+      _count: {
+        select: {
+          tasks: { where: { deletedAt: null, parentTaskId: null } },
+        },
+      },
+      actingManager: {
+        select: {
+          id: true,
+          kind: true,
+          username: true,
+          agent: { select: { slug: true } },
+        },
+      },
+    },
+  });
+  if (!epic || epic.deletedAt || epic.project.slug !== slug) return;
+  const canApprove = epic.project.onlyReportersCanApproveActionPlans
+    ? actor.id === epic.reporterId
+    : actor.id === epic.reporterId || actor.id === epic.actingManagerId;
+  if (!canApprove) {
+    throw new Error(epic.project.onlyReportersCanApproveActionPlans
+      ? "Only the Epic reporter can approve the Action Plan for this project."
+      : "Only the Epic reporter or acting manager can approve the Action Plan.");
+  }
+  if (epic.approvedOn) return;
+
+  const approvedAt = new Date();
+  await db.$transaction([
+    db.epic.update({
+      where: { id: epic.id },
+      data: {
+        approvedOn: approvedAt,
+        approvedById: actor.id,
+      },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: epic.projectId,
+        userId: actor.id,
+        kind: "epic.action_plan.approve",
+        payload: JSON.stringify({ epicId: epic.id }),
+      },
+    }),
+  ]);
+
+  const managerSlug = epic.actingManager?.kind === "agent"
+    ? epic.actingManager.agent?.slug ?? null
+    : null;
+  if (managerSlug && epic._count.tasks === 0) {
+    const notify = new FormData();
+    notify.set("projectSlug", slug);
+    notify.set("epicId", epic.id);
+    notify.set("discussionTarget", `agent:${managerSlug}`);
+    notify.set("body", [
+      `Action Plan approved for Epic "${epic.title}".`,
+      "Create the ordered child tasks for this Epic now. Use the work-item proposal endpoint from this turn.",
+      "Only create top-level Epic tasks when the Epic has no existing top-level tasks. If the Epic already has its implementation sequence, do not add duplicate tasks.",
+      "Each child task title must start with the implementation order: `1.`, `2.`, `3.`, and so on. Keep each task standalone and assignable.",
+    ].join("\n"));
+    await sendAgentChatMessage(notify);
+  }
+
+  revalidatePath(`/projects/${slug}/epics/${epic.id}`);
+  revalidatePath(`/projects/${slug}`);
 }
 
 function discussionTargetValue(
@@ -123,6 +268,25 @@ function settledAgentSlugsForMessage(
   return slugs;
 }
 
+const EPIC_TABS = ["Description", "Action Plan", "Tasks", "Attachments", "Comments", "Activities", "Changes"] as const;
+
+function tabParam(tab: string) {
+  return tab
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function tabFromSearchParam(raw: string | undefined, tabs: readonly string[]) {
+  if (!raw) return null;
+  const normalized = tabParam(raw);
+  if (normalized === "discussion") {
+    return tabs.find((tab) => tab === "Action Plan") ?? null;
+  }
+  return tabs.find((tab) => tabParam(tab) === normalized) ?? null;
+}
+
 const TASK_STATUS_ORDER = [
   "Backlog",
   "To Do",
@@ -136,17 +300,28 @@ export default async function EpicDetailPage({
   searchParams,
 }: {
   params: Promise<{ slug: string; epicId: string }>;
-  searchParams: Promise<{ chat?: string; chatArchive?: string; chatRoom?: string }>;
+  searchParams: Promise<{ chat?: string; chatArchive?: string; chatRoom?: string; tab?: string; commit?: string; file?: string }>;
 }) {
-  const [{ slug, epicId }, { chat = "", chatArchive = "", chatRoom = "" }] = await Promise.all([
+  const [{ slug, epicId }, { chat = "", chatArchive = "", chatRoom = "", tab = "", commit = "", file = "" }] = await Promise.all([
     params,
     searchParams,
   ]);
+  const selectedTab = chatArchive || chatRoom === "current"
+    ? "Action Plan"
+    : tabFromSearchParam(tab, EPIC_TABS) ?? "Description";
 
   const epic = await db.epic.findUnique({
     where: { id: epicId },
     include: {
-      project: { select: { id: true, slug: true, name: true } },
+      project: {
+        select: {
+          id: true,
+          slug: true,
+          name: true,
+          repositoryPath: true,
+          onlyReportersCanApproveActionPlans: true,
+        },
+      },
       actingManager: {
         select: {
           id: true,
@@ -180,15 +355,39 @@ export default async function EpicDetailPage({
           agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
         },
       },
-      tasks: {
-        where: { deletedAt: null },
-        orderBy: [{ status: "asc" }, { rank: "asc" }],
+      approvedBy: {
         select: {
           id: true,
+          username: true,
+          name: true,
+          kind: true,
+          avatarUpdatedAt: true,
+          agent: { select: { slug: true, name: true, avatar: true } },
+        },
+      },
+      archivedBy: {
+        select: {
+          id: true,
+          username: true,
+          name: true,
+          kind: true,
+          avatarUpdatedAt: true,
+          agent: { select: { slug: true, name: true, avatar: true } },
+        },
+      },
+      tasks: {
+        where: { deletedAt: null, parentTaskId: null },
+        orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
+        select: {
+          id: true,
+          workItemKey: true,
           title: true,
           status: true,
           createdAt: true,
           updatedAt: true,
+          statusChangedAt: true,
+          approvedOn: true,
+          archivedAt: true,
           reporter: {
             select: {
               id: true,
@@ -253,7 +452,8 @@ export default async function EpicDetailPage({
   // Comment delete is a human-only control (mirrors the task editor).
   const session = await auth();
   const canDeleteComments = session?.user?.kind !== "agent";
-  const [principals, recentReplyActivity] = await Promise.all([
+  const taskIds = epic.tasks.map((task) => task.id);
+  const [principals, recentReplyActivity, allActivity, taskActivityRows] = await Promise.all([
     listAssignablePrincipals(),
     db.activityLog.findMany({
       where: {
@@ -269,7 +469,38 @@ export default async function EpicDetailPage({
       take: 160,
       select: { kind: true, payload: true, targetAgent: true },
     }),
+    db.activityLog.findMany({
+      where: {
+        projectId: epic.project.id,
+        payload: { contains: epic.id },
+      },
+      orderBy: { createdAt: "desc" },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            kind: true,
+            name: true,
+            avatarUpdatedAt: true,
+            agent: { select: { slug: true, name: true, avatar: true } },
+          },
+        },
+      },
+    }) as Promise<ActivityTimelineRow[]>,
+    taskIds.length > 0
+      ? db.activityLog.findMany({
+          where: { taskId: { in: taskIds } },
+          orderBy: { createdAt: "desc" },
+          select: {
+            taskId: true,
+            kind: true,
+            user: { select: actorSelect },
+          },
+        })
+      : Promise.resolve([]),
   ]);
+  const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows);
   const selectedAgentSlug = chat || epic.actingManager?.agent?.slug || null;
 
   const chatMessages = await db.agentChatMessage.findMany({
@@ -310,6 +541,7 @@ export default async function EpicDetailPage({
     where: {
       epicId: epic.id,
       allowDescriptionEdit: true,
+      originChannel: "description",
       editGrantUsedAt: null,
     },
     select: { id: true },
@@ -388,6 +620,30 @@ export default async function EpicDetailPage({
       : Promise.resolve(null),
   ]);
   const visibleChatMessages = selectedChatArchive?.messages ?? chatMessages;
+  const visibleActionPlanMessages = visibleChatMessages.filter(
+    (message) => !message.body.startsWith("PM workflow notification for @"),
+  );
+  const activeActionPlanMessageCount = chatMessages.filter(
+    (message) => !message.body.startsWith("PM workflow notification for @"),
+  ).length;
+  const epicCommitPrefix = effectiveCommitPrefix({
+    commitPrefix: epic.commitPrefix,
+    workItemKey: epic.workItemKey,
+  });
+  const epicChanges = selectedTab === "Changes"
+    ? await getTaskGitChanges({
+        repositoryPath: epic.project.repositoryPath,
+        branchName: epic.branchName,
+        commitPrefix: epicCommitPrefix,
+      })
+    : { commits: [], ref: null, error: null };
+  const selectedDiff = selectedTab === "Changes"
+    ? await getTaskGitFileDiff({
+        repositoryPath: epic.project.repositoryPath,
+        commitHash: commit,
+        filePath: file,
+      })
+    : null;
   const viewingChatArchive = Boolean(selectedChatArchive);
   const selectedChatArchiveDeleted = Boolean(selectedChatArchive?.deletedAt);
   const humanChatMessageIds = chatMessages
@@ -540,6 +796,22 @@ export default async function EpicDetailPage({
   const defaultAiTarget = [discussionTargetValue(epic.actingManager)].find((value) =>
     Boolean(value?.startsWith("agent:") && aiTargetOptions.some((option) => option.value === value)),
   ) ?? aiTargetOptions[0]?.value ?? "";
+  const canApproveActionPlan =
+    !epic.approvedOn &&
+    Boolean(session?.user?.id && (
+      epic.project.onlyReportersCanApproveActionPlans
+        ? session.user.id === epic.reporterId
+        : session.user.id === epic.reporterId || session.user.id === epic.actingManagerId
+    ));
+  const doneActivity = allActivity.find((row) =>
+    row.kind === "epic.status" && payloadValue(row.payload, "to") === "Done"
+  );
+  const createdActivity = [...allActivity].reverse().find((row) => row.kind === "epic.create");
+  const updatedActivity = allActivity.find((row) => (
+    row.kind === "epic.update" ||
+    row.kind === "epic.status" ||
+    row.kind === "epic.action_plan.approve"
+  )) ?? createdActivity;
 
   const tasksByStatus = new Map<string, typeof epic.tasks>();
   for (const s of TASK_STATUS_ORDER) tasksByStatus.set(s, []);
@@ -566,6 +838,11 @@ export default async function EpicDetailPage({
             <label className="min-w-[18rem] flex-1">
               <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                 Epic title
+                {epic.workItemKey ? (
+                  <span className="ml-2 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-text-muted)]">
+                    {epic.workItemKey}
+                  </span>
+                ) : null}
               </span>
               <input
                 form="epicMain"
@@ -621,9 +898,9 @@ export default async function EpicDetailPage({
           <input form="epicMain" type="hidden" name="projectSlug" value={slug} />
 
           {/* Tabbed content */}
-          <TabsProvider defaultTab={chatArchive || chatRoom === "current" ? "Discussion" : "Description"}>
+          <TabsProvider defaultTab={selectedTab}>
             <TabsNav
-              tabs={["Description", "Tasks", "Attachments", "Comments", "Discussion"]}
+              tabs={EPIC_TABS}
               sticky
             />
             <div className="pt-4">
@@ -654,7 +931,7 @@ export default async function EpicDetailPage({
                       <dl className="mt-2 space-y-1 text-xs">
                         <div className="flex items-center justify-between gap-3">
                           <dt className="text-[var(--color-text-muted)]">Created</dt>
-                          <dd>
+                          <dd className="flex items-center gap-2">
                             <time
                               dateTime={epic.createdAt.toISOString()}
                               title={epic.createdAt.toISOString()}
@@ -662,11 +939,16 @@ export default async function EpicDetailPage({
                             >
                               {timeAgo(epic.createdAt)}
                             </time>
+                            {createdActivity?.user ? (
+                              <MessageAvatar actor={createdActivity.user} size="sm" />
+                            ) : epic.reporter ? (
+                              <MessageAvatar actor={serializeActor(epic.reporter)!} size="sm" />
+                            ) : null}
                           </dd>
                         </div>
                         <div className="flex items-center justify-between gap-3">
                           <dt className="text-[var(--color-text-muted)]">Updated</dt>
-                          <dd>
+                          <dd className="flex items-center gap-2">
                             <time
                               dateTime={epic.updatedAt.toISOString()}
                               title={epic.updatedAt.toISOString()}
@@ -674,8 +956,56 @@ export default async function EpicDetailPage({
                             >
                               {timeAgo(epic.updatedAt)}
                             </time>
+                            {updatedActivity?.user ? (
+                              <MessageAvatar actor={updatedActivity.user} size="sm" />
+                            ) : null}
                           </dd>
                         </div>
+                        {epic.approvedOn ? (
+                          <div className="flex items-center justify-between gap-3">
+                            <dt className="text-[var(--color-text-muted)]">Approved</dt>
+                            <dd className="flex items-center gap-2">
+                              <time
+                                dateTime={epic.approvedOn.toISOString()}
+                                title={epic.approvedOn.toISOString()}
+                                className="tabular-nums"
+                              >
+                                {timeAgo(epic.approvedOn)}
+                              </time>
+                              {epic.approvedBy ? <MessageAvatar actor={serializeActor(epic.approvedBy)!} size="sm" /> : null}
+                            </dd>
+                          </div>
+                        ) : null}
+                        {epic.status === "Done" && epic.statusChangedAt ? (
+                          <div className="flex items-center justify-between gap-3">
+                            <dt className="text-[var(--color-text-muted)]">Done</dt>
+                            <dd className="flex items-center gap-2">
+                              <time
+                                dateTime={epic.statusChangedAt.toISOString()}
+                                title={epic.statusChangedAt.toISOString()}
+                                className="tabular-nums"
+                              >
+                                {timeAgo(epic.statusChangedAt)}
+                              </time>
+                              {doneActivity?.user ? <MessageAvatar actor={doneActivity.user} size="sm" /> : null}
+                            </dd>
+                          </div>
+                        ) : null}
+                        {epic.archivedAt ? (
+                          <div className="flex items-center justify-between gap-3">
+                            <dt className="text-[var(--color-text-muted)]">Archived</dt>
+                            <dd className="flex items-center gap-2">
+                              <time
+                                dateTime={epic.archivedAt.toISOString()}
+                                title={epic.archivedAt.toISOString()}
+                                className="tabular-nums"
+                              >
+                                {timeAgo(epic.archivedAt)}
+                              </time>
+                              {epic.archivedBy ? <MessageAvatar actor={serializeActor(epic.archivedBy)!} size="sm" /> : null}
+                            </dd>
+                          </div>
+                        ) : null}
                       </dl>
                     </div>
 
@@ -691,19 +1021,6 @@ export default async function EpicDetailPage({
                           options={reporterOptions}
                           emptyLabel="No reporter"
                           ariaLabel="Report by"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                          Assignee
-                        </span>
-                        <AvatarCombobox
-                          formId="epicMain"
-                          name="assigneeId"
-                          defaultValue={epic.assigneeId ?? ""}
-                          options={principalOptions}
-                          emptyLabel="Unassigned"
-                          ariaLabel="Assignee"
                         />
                       </label>
                       <label className="block">
@@ -745,12 +1062,34 @@ export default async function EpicDetailPage({
                           name="commitPrefix"
                           defaultValue={epic.commitPrefix ?? ""}
                           maxLength={200}
-                          placeholder="HOMELAB-99"
+                          placeholder={epic.workItemKey ? `defaults to ${epic.workItemKey}` : "HOMELAB-99"}
                           className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 font-mono text-xs outline-none focus:border-[var(--color-accent)]"
                           aria-label="Commit prefix"
                         />
                       </label>
                     </div>
+
+                    <form
+                      action={epic.archivedAt ? unarchiveEpic : archiveEpic}
+                      className="space-y-2 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4"
+                    >
+                      <input type="hidden" name="epicId" value={epic.id} />
+                      <input type="hidden" name="projectSlug" value={slug} />
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                        Archive
+                      </div>
+                      <p className="text-xs text-[var(--color-text-muted)]">
+                        {epic.archivedAt
+                          ? "Restore this epic to active project views without changing its status."
+                          : "Hide this epic from active grids without changing its status."}
+                      </p>
+                      <button
+                        type="submit"
+                        className="w-full rounded-lg border border-[var(--color-line)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                      >
+                        {epic.archivedAt ? "Restore from archive" : "Archive epic"}
+                      </button>
+                    </form>
 
                     {/* Danger zone — soft delete moves the Epic and all its non-deleted
                         tasks (plus sub-tasks) to the bin. Its own form. Auto-purged after
@@ -777,6 +1116,40 @@ export default async function EpicDetailPage({
                       </button>
                     </form>
                   </aside>
+                </div>
+              </TabPanel>
+
+              <TabPanel name="Action Plan">
+                <div className="space-y-3 pt-2">
+                  {canApproveActionPlan ? (
+                    <form action={approveEpicActionPlan} className="flex justify-end">
+                      <input type="hidden" name="epicId" value={epic.id} />
+                      <input type="hidden" name="projectSlug" value={slug} />
+                      <button
+                        type="submit"
+                        className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-bg)] hover:opacity-90"
+                      >
+                        Approve Plan
+                      </button>
+                    </form>
+                  ) : null}
+                  <ChatRoom
+                    projectSlug={slug}
+                    epicId={epic.id}
+                    messages={visibleActionPlanMessages}
+                    activeMessageCount={activeActionPlanMessageCount}
+                    archives={chatArchives}
+                    binArchives={binChatArchives}
+                    selectedArchiveId={selectedChatArchive?.id ?? null}
+                    selectedArchiveDeleted={selectedChatArchiveDeleted}
+                    viewingArchive={viewingChatArchive}
+                    discussionTargets={discussionTargets}
+                    defaultDiscussionTarget={defaultDiscussionTarget}
+                    pendingAgents={pendingAgents}
+                    latestMessageId={viewingChatArchive ? null : pendingChatMessageId}
+                    currentUserId={session?.user?.id ?? null}
+                    pendingProposals={pendingProposals}
+                  />
                 </div>
               </TabPanel>
 
@@ -811,13 +1184,19 @@ export default async function EpicDetailPage({
             <EpicTasksClient
               initialTasks={epic.tasks.map((t) => ({
                 id: t.id,
+                workItemKey: t.workItemKey,
                 title: t.title,
                 status: t.status,
                 href: `/projects/${slug}/tasks/${t.id}`,
                 createdAt: t.createdAt.toISOString(),
+                statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
+                approvedOn: t.approvedOn?.toISOString() ?? null,
+                archivedAt: t.archivedAt?.toISOString() ?? null,
                 reporter: serializeActor(t.reporter),
                 assignee: serializeActor(t.assignee),
                 reviewer: serializeActor(t.actingManager),
+                createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter),
+                updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter),
                 assigneeName: t.assignee?.username ?? null,
                 reviewerName: t.actingManager?.username ?? null,
                 updatedAt: t.updatedAt.toISOString(),
@@ -846,49 +1225,11 @@ export default async function EpicDetailPage({
               Max {formatBytes(attachmentMaxBytes())} per file
             </span>
           </div>
-          {epic.attachments.length === 0 ? (
-            <p className="text-xs text-[var(--color-text-muted)]">
-              No attachments yet.
-            </p>
-          ) : (
-            <ul className="divide-y divide-[var(--color-line)]">
-              {epic.attachments.map((a) => (
-                <li
-                  key={a.id}
-                  className="flex items-center justify-between gap-3 py-2 text-sm"
-                >
-                  <div className="min-w-0 flex-1">
-                    <a
-                      href={`/api/attachments/${a.id}`}
-                      className="truncate font-medium hover:underline"
-                    >
-                      {a.filename}
-                    </a>
-                    <div className="text-xs text-[var(--color-text-muted)]">
-                      {formatBytes(a.sizeBytes)} · {a.mimeType} · uploaded by{" "}
-                      @{a.uploader.username} ·{" "}
-                      <time
-                        dateTime={a.createdAt.toISOString()}
-                        title={a.createdAt.toISOString()}
-                      >
-                        {timeAgo(a.createdAt)}
-                      </time>
-                    </div>
-                  </div>
-                  <form action={deleteAttachment}>
-                    <input type="hidden" name="projectSlug" value={slug} />
-                    <input type="hidden" name="attachmentId" value={a.id} />
-                    <button
-                      type="submit"
-                      className="rounded border border-transparent px-2 py-1 text-xs text-[var(--color-text-muted)] hover:border-[var(--color-line)] hover:text-[var(--color-crit)]"
-                    >
-                      Remove
-                    </button>
-                  </form>
-                </li>
-              ))}
-            </ul>
-          )}
+          <AttachmentList
+            attachments={epic.attachments}
+            projectSlug={slug}
+            deleteAction={deleteAttachment}
+          />
 
           <AttachmentUploadFab
             projectSlug={slug}
@@ -986,26 +1327,20 @@ export default async function EpicDetailPage({
                 </div>
               </TabPanel>
 
-              <TabPanel name="Discussion">
+              <TabPanel name="Activities">
                 <div className="pt-2">
-                  <ChatRoom
-                    projectSlug={slug}
-                    epicId={epic.id}
-                    messages={visibleChatMessages}
-                    activeMessageCount={chatMessages.length}
-                    archives={chatArchives}
-                    binArchives={binChatArchives}
-                    selectedArchiveId={selectedChatArchive?.id ?? null}
-                    selectedArchiveDeleted={selectedChatArchiveDeleted}
-                    viewingArchive={viewingChatArchive}
-                    discussionTargets={discussionTargets}
-                    defaultDiscussionTarget={defaultDiscussionTarget}
-                    pendingAgents={pendingAgents}
-                    latestMessageId={viewingChatArchive ? null : pendingChatMessageId}
-                    currentUserId={session?.user?.id ?? null}
-                    pendingProposals={pendingProposals}
-                  />
+                  <ActivityTimeline rows={allActivity} />
                 </div>
+              </TabPanel>
+
+              <TabPanel name="Changes">
+                <TaskChangesPanel
+                  changes={epicChanges}
+                  branchName={epic.branchName}
+                  commitPrefix={epicCommitPrefix}
+                  baseHref={`/projects/${slug}/epics/${epic.id}`}
+                  selectedDiff={selectedDiff}
+                />
               </TabPanel>
             </div>
           </TabsProvider>

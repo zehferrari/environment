@@ -1,4 +1,13 @@
+import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel-latency";
+import { pmChannelQueueStats } from "@/lib/agents/pm-channel-jobs";
+import { compactDbPath, formatFreelistRatio, getSqliteDbHealth } from "@/lib/db-health";
 import { db } from "@/lib/db";
+import {
+  actorDisplayName,
+  MessageAvatar,
+  MessageTimestamp,
+  type MessageActor,
+} from "@/components/message-avatar";
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +17,45 @@ type Snapshot = {
   agents?: Record<string, { busy_state?: { is_busy?: boolean }; jira_tickets?: unknown[] }>;
   system?: Record<string, { is_active?: string }>;
 };
+
+const actorSelect = {
+  id: true,
+  username: true,
+  kind: true,
+  name: true,
+  avatarUpdatedAt: true,
+  agent: { select: { slug: true, name: true, avatar: true } },
+};
+
+type ActivityActorRow = {
+  id: string;
+  username: string;
+  kind: string;
+  name: string | null;
+  avatarUpdatedAt: Date | null;
+  agent: { slug: string; name: string; avatar: string | null } | null;
+};
+
+const systemActor: MessageActor = {
+  id: null,
+  username: "system",
+  kind: "system",
+  name: "System",
+  avatarUpdatedAt: null,
+  agent: null,
+};
+
+function serializeActivityActor(actor: ActivityActorRow | null): MessageActor | null {
+  if (!actor) return null;
+  return {
+    id: actor.id,
+    username: actor.username,
+    kind: actor.kind,
+    name: actor.name,
+    avatarUpdatedAt: actor.avatarUpdatedAt,
+    agent: actor.agent,
+  };
+}
 
 async function readSnapshot(): Promise<Snapshot | null> {
   try {
@@ -23,14 +71,32 @@ async function readSnapshot(): Promise<Snapshot | null> {
 }
 
 export default async function SystemActivityPage() {
-  const [events, agentSync, snapshot] = await Promise.all([
+  const [events, agentSync, snapshot, dbHealth, recentPmRuns, queueStats] = await Promise.all([
     db.activityLog.findMany({
       orderBy: { createdAt: "desc" },
       take: 60,
-      include: { user: { select: { username: true } }, task: { select: { title: true } }, project: { select: { slug: true } } },
+      include: { user: { select: actorSelect }, task: { select: { title: true } }, project: { select: { slug: true } } },
     }),
     db.activityLog.findFirst({ where: { kind: "agent.sync" }, orderBy: { createdAt: "desc" } }),
     readSnapshot(),
+    getSqliteDbHealth(),
+    db.pmChannelRun.findMany({
+      orderBy: { updatedAt: "desc" },
+      take: 12,
+      select: {
+        id: true,
+        agentSlug: true,
+        kind: true,
+        status: true,
+        createdAt: true,
+        acceptedAt: true,
+        streamingAt: true,
+        completedAt: true,
+        failedAt: true,
+        updatedAt: true,
+      },
+    }),
+    pmChannelQueueStats(),
   ]);
 
   const system = snapshot?.system ?? {};
@@ -54,6 +120,85 @@ export default async function SystemActivityPage() {
         <Tile label="Busy agents" value={String(busyAgents)} foot={`/ ${Object.keys(agents).length} reported`} />
         <Tile label="Open tickets" value={String(openTickets)} foot="From Atlas snapshot" />
         <Tile label="Host services" value={String(activeServices)} foot={`/ ${Object.keys(system).length} active`} />
+      </section>
+
+      <section className="grid gap-3 md:grid-cols-4">
+        <Tile label="Queued jobs" value={String(queueStats.queued)} foot="Waiting for worker" />
+        <Tile label="Claimed jobs" value={String(queueStats.claimed)} foot="In local dispatch" />
+        <Tile label="Retryable jobs" value={String(queueStats.retryable)} foot="Backoff pending" />
+        <Tile label="Failed jobs" value={String(queueStats.failed)} foot="Needs operator check" />
+      </section>
+
+      <section className="grid gap-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+        <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">SQLite health</h2>
+              <p className="mt-1 font-mono text-xs text-[var(--color-text-muted)]">{compactDbPath(dbHealth.path)}</p>
+            </div>
+            <span className={dbHealth.outsideWorktree ? "text-xs font-semibold text-[var(--color-ok)]" : "text-xs font-semibold text-[var(--color-crit)]"}>
+              {dbHealth.outsideWorktree ? "outside worktree" : "inside/unknown"}
+            </span>
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
+            <MiniMetric label="Pages" value={dbHealth.pageCount == null ? "—" : String(dbHealth.pageCount)} />
+            <MiniMetric label="Freelist" value={dbHealth.freelistCount == null ? "—" : `${dbHealth.freelistCount} (${formatFreelistRatio(dbHealth.freelistRatio)})`} />
+            <MiniMetric label="Journal" value={dbHealth.journalMode ?? "—"} />
+            <MiniMetric label="Locking" value={dbHealth.lockingMode ?? "—"} />
+          </div>
+          <p className="mt-3 text-xs text-[var(--color-text-muted)]">
+            busy_timeout {dbHealth.busyTimeoutMs ?? "—"}ms · WAL {dbHealth.walExists ? "present" : "absent"} · SHM {dbHealth.shmExists ? "present" : "absent"}
+          </p>
+          {dbHealth.error ? <p className="mt-2 text-xs text-[var(--color-crit)]">{dbHealth.error}</p> : null}
+        </div>
+
+        <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+          <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">PM latency spans</h2>
+          {recentPmRuns.length === 0 ? (
+            <p className="mt-3 text-sm text-[var(--color-text-muted)]">No PM channel runs recorded yet.</p>
+          ) : (
+            <ul className="mt-3 divide-y divide-[var(--color-line)] text-xs">
+              {recentPmRuns.map((run) => {
+                const spans = pmChannelLatencySpans(run);
+                return (
+                  <li key={run.id} className="py-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-medium">@{run.agentSlug} · {run.kind} · {run.status}</span>
+                      <time className="font-mono text-[11px] text-[var(--color-text-muted)]" dateTime={run.updatedAt.toISOString()}>{run.updatedAt.toISOString().slice(0, 19).replace("T", " ")}</time>
+                    </div>
+                    <div className="mt-1 font-mono text-[11px] text-[var(--color-text-muted)]">
+                      send→accepted {formatLatency(spans.sendToAcceptedMs)} · accepted→first-token {formatLatency(spans.acceptedToFirstTokenMs)} · first-token→final {formatLatency(spans.firstTokenToFinalMs)} · send→final {formatLatency(spans.sendToFinalMs)}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+        <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">PM channel queue</h2>
+        {queueStats.oldestQueued ? (
+          <p className="text-sm text-[var(--color-text-muted)]">
+            Oldest available job: @{queueStats.oldestQueued.agentSlug} · {queueStats.oldestQueued.kind} · {queueStats.oldestQueued.availableAt.toISOString().slice(0, 19).replace("T", " ")}
+          </p>
+        ) : (
+          <p className="text-sm text-[var(--color-text-muted)]">No queued or retryable PM-channel jobs.</p>
+        )}
+        {queueStats.recentErrors.length > 0 ? (
+          <ul className="mt-3 divide-y divide-[var(--color-line)] text-xs">
+            {queueStats.recentErrors.map((job) => (
+              <li key={job.id} className="py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-medium">@{job.agentSlug} · {job.kind} · {job.status} · attempt {job.attemptCount}</span>
+                  <time className="font-mono text-[11px] text-[var(--color-text-muted)]" dateTime={job.updatedAt.toISOString()}>{job.updatedAt.toISOString().slice(0, 19).replace("T", " ")}</time>
+                </div>
+                <p className="mt-1 text-[var(--color-text-muted)]">{job.lastError}</p>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </section>
 
       <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
@@ -83,14 +228,17 @@ export default async function SystemActivityPage() {
           <p className="text-sm text-[var(--color-text-muted)]">No activity recorded yet.</p>
         ) : (
           <ul className="divide-y divide-[var(--color-line)] text-sm">
-            {events.map((row) => (
+            {events.map((row) => {
+              const actor = serializeActivityActor(row.user) ?? systemActor;
+              return (
               <li key={row.id} className="py-3">
-                <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <MessageTimestamp value={row.createdAt} />
+                  <MessageAvatar actor={actor} size="sm" />
                   <span className="font-medium">{row.kind}</span>
-                  <time className="text-xs text-[var(--color-text-muted)]" dateTime={row.createdAt.toISOString()}>{row.createdAt.toISOString().slice(0, 19).replace("T", " ")}</time>
                 </div>
                 <div className="mt-1 text-xs text-[var(--color-text-muted)]">
-                  actor: {row.user?.username ?? "system"}
+                  actor: {actorDisplayName(actor)}
                   {row.project ? ` · project: ${row.project.slug}` : ""}
                   {row.task ? ` · task: ${row.task.title}` : ""}
                   {row.targetAgent ? ` · agent: ${row.targetAgent}` : ""}
@@ -98,7 +246,8 @@ export default async function SystemActivityPage() {
                 </div>
                 {row.payload ? <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--color-panel-soft)] p-2 text-xs text-[var(--color-text-muted)]">{row.payload}</pre> : null}
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </section>
@@ -112,6 +261,15 @@ function Tile({ label, value, foot }: { label: string; value: string; foot: stri
       <div className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">{label}</div>
       <div className="mt-3 text-3xl font-semibold tracking-tight">{value}</div>
       <div className="mt-2 text-xs text-[var(--color-text-muted)]">{foot}</div>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
+      <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">{label}</div>
+      <div className="mt-1 truncate font-mono text-xs text-[var(--color-text)]" title={value}>{value}</div>
     </div>
   );
 }

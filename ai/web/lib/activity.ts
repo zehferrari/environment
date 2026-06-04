@@ -29,8 +29,14 @@ export type ActivityKind =
   | "epic.attachment.delete"
   | "task.delete"
   | "task.restore"
+  | "task.archive"
+  | "task.unarchive"
+  | "task.auto_archive"
+  | "task.auto_archive.summary"
   | "epic.delete"
   | "epic.restore"
+  | "epic.archive"
+  | "epic.unarchive"
   | "bin.purge"
   | "task.chat.send"
   | "task.chat.silent"
@@ -291,6 +297,17 @@ export function describeActivity(row: ActivityRow): string {
         ? `${actor(row.actorName)} restored ${task(row.taskTitle)} + ${n} sub-task${n === 1 ? "" : "s"}`
         : `${actor(row.actorName)} restored ${task(row.taskTitle)}`;
     }
+    case "task.archive":
+      return `${actor(row.actorName)} archived ${task(row.taskTitle)}`;
+    case "task.unarchive":
+      return `${actor(row.actorName)} restored ${task(row.taskTitle)} from archive`;
+    case "task.auto_archive":
+      return `System archived ${task(row.taskTitle)} after the automatic archive window`;
+    case "task.auto_archive.summary": {
+      const p = parsePayload<{ archivedTasks?: number; projectsChecked?: number }>(row.payload);
+      const n = p?.archivedTasks ?? 0;
+      return `System automatic archive — ${n} task${n === 1 ? "" : "s"} archived`;
+    }
     case "epic.delete": {
       const p = parsePayload<{ cascadedTaskIds?: string[] }>(row.payload);
       const n = p?.cascadedTaskIds?.length ?? 0;
@@ -305,6 +322,10 @@ export function describeActivity(row: ActivityRow): string {
         ? `${actor(row.actorName)} restored an epic + ${n} task${n === 1 ? "" : "s"}`
         : `${actor(row.actorName)} restored an epic`;
     }
+    case "epic.archive":
+      return `${actor(row.actorName)} archived an epic`;
+    case "epic.unarchive":
+      return `${actor(row.actorName)} restored an epic from archive`;
     case "bin.purge": {
       const p = parsePayload<{
         purgedEpics?: number;
