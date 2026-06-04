@@ -741,7 +741,7 @@ export default function ChatRoom({
         )}
 
         {/* Streaming Replies */}
-        {!viewingArchive && latestMessageId && pendingAgents.map((agent) => (
+        {!viewingArchive && latestMessageId && pendingAgents.map((agent, index) => (
           <StreamingAgentReply
             key={agent.slug}
             targetKind={taskId ? "task-chat" : "epic-chat"}
@@ -750,6 +750,9 @@ export default function ChatRoom({
             taskId={taskId}
             epicId={epicId}
             label={agent.username}
+            anonymizeTyping
+            typingSlotIndex={index}
+            typingSlotTotal={pendingAgents.length}
           />
         ))}
 

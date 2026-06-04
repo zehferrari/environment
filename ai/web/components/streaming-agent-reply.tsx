@@ -24,6 +24,14 @@ interface StreamingAgentReplyProps {
   epicId?: string;
   label: string;
   className?: string;
+  anonymizeTyping?: boolean;
+  typingSlotIndex?: number;
+  typingSlotTotal?: number;
+}
+
+export function anonymousTypingLabel(total: number) {
+  const count = Math.max(1, Math.min(4, Math.floor(total)));
+  return `${Array.from({ length: count }, () => "🤖").join(" + ")} typing`;
 }
 
 function TypingDots() {
@@ -58,6 +66,7 @@ function applyStreamState(
 }
 
 const REFRESH_FALLBACK_MS = 8_000;
+const ANONYMOUS_TYPING_IDLE_MS = 8_000;
 
 function formatElapsed(ms: number) {
   const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -101,6 +110,9 @@ export default function StreamingAgentReply({
   epicId,
   label,
   className = "",
+  anonymizeTyping = false,
+  typingSlotIndex = 0,
+  typingSlotTotal = 1,
 }: StreamingAgentReplyProps) {
   const router = useRouter();
   const [text, setText] = useState("");
@@ -214,6 +226,12 @@ export default function StreamingAgentReply({
     name: label,
     agent: { slug: agentSlug, name: label, avatar: "placeholder" },
   };
+  const anonymousTypingActor: MessageActor = {
+    username: "agent",
+    kind: "agent",
+    name: "Agent",
+    agent: null,
+  };
 
   if (finalized) return null;
 
@@ -232,20 +250,37 @@ export default function StreamingAgentReply({
     : "border-[var(--color-accent)]/20 bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]";
 
   if (!text.trim() && !reasoning.trim()) {
+    const typingLastSeenAt = lastUpdateAt ?? startedAt;
+    if (anonymizeTyping && status !== "error" && Date.now() - typingLastSeenAt > ANONYMOUS_TYPING_IDLE_MS) return null;
+    if (anonymizeTyping && typingSlotIndex > 0 && status !== "error") return null;
+    const typingActor = anonymizeTyping ? anonymousTypingActor : actor;
+    const typingText = anonymizeTyping && status !== "error"
+      ? anonymousTypingLabel(typingSlotTotal)
+      : waitLabel;
     return (
       <div className={`flex items-start gap-2.5 ${className}`}>
-        <MessageAvatar actor={actor} />
+        {anonymizeTyping ? (
+          <div
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] text-lg shadow-sm"
+            title="Agent typing"
+            aria-label="Anonymous agent typing avatar"
+          >
+            🤖
+          </div>
+        ) : (
+          <MessageAvatar actor={typingActor} />
+        )}
         <div className={`w-fit max-w-[min(34rem,82%)] rounded-[1.15rem] rounded-bl-md border px-3.5 py-2.5 text-sm shadow-[0_8px_22px_rgba(15,23,42,0.05)] ring-1 ring-black/[0.02] ${liveTone}`}>
           <div className="flex min-w-0 items-center gap-2">
             <span className="shrink-0 rounded-full border border-current/20 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider">
-              {status === "error" ? "failed" : runStatus === "accepted" ? "accepted" : "live"}
+              {status === "error" ? "failed" : anonymizeTyping ? "typing" : runStatus === "accepted" ? "accepted" : "live"}
             </span>
-            <span className="min-w-0 break-words">{waitLabel}</span>
+            <span className="min-w-0 break-words">{typingText}</span>
             {status === "error" ? null : <TypingDots />}
           </div>
           {status === "error" ? null : (
             <div className="mt-2 flex items-center gap-2 text-[11px] text-[var(--color-text-muted)]">
-              <span>waiting {formatElapsed(elapsedMs)}</span>
+              <span>active {formatElapsed(elapsedMs)}</span>
               <span className="h-1 flex-1 overflow-hidden rounded-full bg-[var(--color-line)]">
                 <span className="block h-full w-1/2 animate-pulse rounded-full bg-[var(--color-accent)]/60" />
               </span>

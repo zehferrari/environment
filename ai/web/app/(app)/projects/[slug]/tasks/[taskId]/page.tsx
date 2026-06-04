@@ -2197,6 +2197,7 @@ export default async function TaskDetailPage({
                   taskId={task.id}
                   messageId={message.id}
                   label={`@${message.agentSlug}`}
+                  anonymizeTyping
                 />
               ))}
             </div>
