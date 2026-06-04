@@ -151,6 +151,12 @@ model Project {
   defaultReviewer     User?     @relation("ProjectDefaultReviewer", fields: [defaultReviewerId], references: [id])
   // Null inherits the system default (SystemSettings.doneTtlDays → 5).
   doneTtlDays         Int?
+  deploymentProvider String @default("bitbucket") @map("deployment_provider")
+  deploymentProductionBranch String? @map("deployment_production_branch")
+  deploymentMode String @default("pr-only") @map("deployment_mode")
+  deploymentOnMerge String? @map("deployment_on_merge")
+  deploymentBitbucketWorkspace String? @map("deployment_bitbucket_workspace")
+  deploymentBitbucketRepoSlug String? @map("deployment_bitbucket_repo_slug")
   // Soft-delete: project bin with 30-day TTL (hard-purge via the
   // hourly job in instrumentation.node.ts).
   deletedAt   DateTime?
@@ -168,6 +174,7 @@ model Project {
   chatRoomArchives AgentChatRoomArchive[]
   directChatMessages DirectAgentChatMessage[] @relation("DirectChatProject")
   workItemProposals  WorkItemProposal[]
+  deploymentPullRequests DeploymentPullRequest[]
 
   @@index([deletedAt])
 }
@@ -219,6 +226,7 @@ model Epic {
   // bin; active reads filter deletedAt: null. Hard purge happens after
   // 7 days via the instrumentation interval. deletedById captures the
   // actor (User row, kind tells human vs agent).
+  deploymentStatus String @default("Not Required") @map("deployment_status")
   deletedAt       DateTime?
   deletedById     String?
   deletedBy       User?    @relation("EpicDeletedBy", fields: [deletedById], references: [id])
@@ -228,6 +236,7 @@ model Epic {
   tasks       Task[]
   attachments Attachment[]
   comments    Comment[]
+  deploymentPullRequests DeploymentPullRequest[]
   chats       AgentChatMessage[] @relation("EpicChat")
   chatRoomArchives AgentChatRoomArchive[] @relation("EpicChatRoomArchive")
 
@@ -294,6 +303,7 @@ model Task {
   // cascade with their parent task; an Epic delete cascades to its
   // non-deleted Tasks (and through them to sub-tasks). Active read
   // queries filter deletedAt: null.
+  deploymentStatus String @default("Not Required") @map("deployment_status")
   deletedAt       DateTime?
   deletedById     String?
   deletedBy       User?    @relation("TaskDeletedBy", fields: [deletedById], references: [id])
@@ -302,6 +312,7 @@ model Task {
 
   comments    Comment[]
   activity    ActivityLog[]
+  deploymentPullRequests DeploymentPullRequest[]
   attachments Attachment[]
   chats       AgentChatMessage[] @relation("TaskChat")
   chatRoomArchives AgentChatRoomArchive[] @relation("TaskChatRoomArchive")
@@ -423,6 +434,35 @@ model ActivityLog {
   @@index([targetAgent])
   @@index([targetFile])
   @@index([createdAt])
+}
+
+
+model DeploymentPullRequest {
+  id              String   @id @default(cuid())
+  projectId       String
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId          String?
+  task            Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  epicId          String?
+  epic            Epic?    @relation(fields: [epicId], references: [id], onDelete: Cascade)
+  provider        String
+  providerPrId    String   @map("provider_pr_id")
+  url             String
+  sourceBranch    String   @map("source_branch")
+  targetBranch    String   @map("target_branch")
+  latestCommitSha String   @map("latest_commit_sha")
+  reporterUserId  String   @map("reporter_user_id")
+  reporterName    String   @map("reporter_name")
+  reporterEmail   String   @map("reporter_email")
+  status          String   @default("open")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([provider, providerPrId])
+  @@index([projectId])
+  @@index([taskId])
+  @@index([epicId])
+  @@index([status])
 }
 
 // ------------------------------------------------------------------

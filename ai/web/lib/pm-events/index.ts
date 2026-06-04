@@ -22,6 +22,7 @@ export const EVENT_KINDS = [
   // payload.targetAgentSlug, NOT by task.assignee — chats can target
   // any active agent regardless of who owns the task.
   "task.agent_chat",
+  "deployment.approved",
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
@@ -87,6 +88,12 @@ export interface TaskAckReadyPayload {
 // `replyEndpoint` tells the agent runtime which URL + method to POST
 // against with a signed one-shot token, and `systemPrompt` carries the
 // callback contract that the runtime should pass to its LLM verbatim.
+export interface DeploymentApprovedPayload {
+  scope: "epic" | "task";
+  scopeId: string;
+  deploymentStatus: "Deployment Approved";
+}
+
 export interface TaskAgentChatPayload {
   chatMessageId: string;
   targetAgentSlug: string;
@@ -146,13 +153,18 @@ export type TaskAgentChatEvent = EventEnvelopeBase<
   "task.agent_chat",
   TaskAgentChatPayload
 >;
+export type DeploymentApprovedEvent = EventEnvelopeBase<
+  "deployment.approved",
+  DeploymentApprovedPayload
+>;
 
 export type PmEvent =
   | TaskAssignedEvent
   | TaskCommentedEvent
   | TaskMentionedEvent
   | TaskAckReadyEvent
-  | TaskAgentChatEvent;
+  | TaskAgentChatEvent
+  | DeploymentApprovedEvent;
 
 interface BuilderCommon {
   id: string;
@@ -210,6 +222,13 @@ export function buildTaskAgentChat(
   payload: TaskAgentChatPayload,
 ): TaskAgentChatEvent {
   return envelope("task.agent_chat", common, payload);
+}
+
+export function buildDeploymentApproved(
+  common: BuilderCommon,
+  payload: DeploymentApprovedPayload,
+): DeploymentApprovedEvent {
+  return envelope("deployment.approved", common, payload);
 }
 
 // Defensive parser for events arriving from the wire (file-drop /
