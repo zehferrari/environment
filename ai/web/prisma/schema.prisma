@@ -455,6 +455,11 @@ model DeploymentPullRequest {
   reporterName    String   @map("reporter_name")
   reporterEmail   String   @map("reporter_email")
   status          String   @default("open")
+  mergeSha        String?  @map("merge_sha")
+  deploymentExitCode Int?  @map("deployment_exit_code")
+  deploymentStdout String? @map("deployment_stdout")
+  deploymentStderr String? @map("deployment_stderr")
+  deploymentReportedAt DateTime? @map("deployment_reported_at")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

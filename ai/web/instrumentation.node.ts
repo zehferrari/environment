@@ -4,14 +4,44 @@ import { purgeBin } from "@/lib/bin/purge";
 import { purgeProjectBin } from "@/lib/bin/purge-projects";
 import { purgeDirectAgentChatBin } from "@/lib/bin/purge-chats";
 import { autoArchiveDoneTasks } from "@/lib/archive/auto";
+import { pollDeploymentPullRequests } from "@/lib/deploy/monitor";
 import {
   pmAsyncDispatchEnabled,
   runPmChannelWorkerDrain,
 } from "@/lib/agents/pm-channel-jobs";
 
 declare global {
-  // eslint-disable-next-line no-var
   var __pmChannelWorkerPollStarted: boolean | undefined;
+  var __deploymentWatcherPollStarted: boolean | undefined;
+}
+
+function deploymentWatcherPollMs() {
+  const value = Number.parseInt(process.env.PM_DEPLOYMENT_WATCHER_POLL_MS ?? "60000", 10);
+  return Number.isFinite(value) && value > 0 ? Math.max(5000, Math.floor(value)) : 60000;
+}
+
+function startDeploymentWatcherPoll() {
+  if (globalThis.__deploymentWatcherPollStarted) return;
+  globalThis.__deploymentWatcherPollStarted = true;
+  const pollMs = deploymentWatcherPollMs();
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const result = await pollDeploymentPullRequests();
+      if (result.checked > 0) {
+        console.log("[pm] deployment watcher:", JSON.stringify(result));
+      }
+    } catch (err) {
+      console.error("[pm] deployment watcher failed:", err);
+    } finally {
+      running = false;
+    }
+  };
+  setInterval(tick, pollMs).unref();
+  setTimeout(tick, 0).unref();
+  console.log("[pm] deployment watcher enabled:", JSON.stringify({ pollMs }));
 }
 
 function pmChannelWorkerPollMs() {
@@ -56,6 +86,7 @@ try {
 }
 
 startPmChannelWorkerPoll();
+startDeploymentWatcherPoll();
 
 const intervalMin = Number(process.env.AGENT_SYNC_INTERVAL_MIN ?? "5");
 const intervalMs = Math.max(1, intervalMin) * 60_000;

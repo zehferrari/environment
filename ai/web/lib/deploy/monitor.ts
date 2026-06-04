@@ -3,9 +3,11 @@ import { promisify } from "node:util";
 import { db as defaultDb } from "@/lib/db";
 
 const execFileAsync = promisify(execFile);
+const LOG_EXCERPT_MAX = 4000;
 
 export type DeploymentScope = "epic" | "task";
 export type DeploymentMonitorAction = "opened-prs" | "reporter-email-required";
+export type DeploymentPrTerminalStatus = "deployed" | "deployment_error" | "declined" | "pipeline_failed";
 
 export interface ReporterIdentity {
   userId: string;
@@ -30,6 +32,8 @@ export interface DeploymentProjectConfig {
   productionBranch: string;
   workspace: string;
   repoSlug: string;
+  mode: "pr-only" | "script" | "pipeline" | "manual";
+  onMerge: string | null;
 }
 
 export interface DeploymentPlan {
@@ -64,11 +68,64 @@ export interface DeploymentMonitorResult {
   prs?: OpenedDeploymentPr[];
 }
 
+export interface ProviderPullRequestState {
+  state: "open" | "merged" | "declined";
+  mergeSha: string | null;
+  pipelineFailed?: boolean;
+}
+
+export interface OnMergeResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+export interface DeploymentWatcherResult {
+  checked: number;
+  completed: number;
+  failed: number;
+  skipped: number;
+}
+
 type DbClient = typeof defaultDb;
 const prisma = (client: DbClient) => client as unknown as any;
 
+type DeploymentPrRow = {
+  id: string;
+  projectId: string;
+  taskId: string | null;
+  epicId: string | null;
+  provider: string;
+  providerPrId: string;
+  url: string;
+  sourceBranch: string;
+  targetBranch: string;
+  latestCommitSha: string;
+  reporterUserId: string;
+  reporterName: string;
+  reporterEmail: string;
+  status: string;
+  mergeSha?: string | null;
+  deploymentExitCode?: number | null;
+  deploymentStdout?: string | null;
+  deploymentStderr?: string | null;
+  deploymentReportedAt?: Date | string | null;
+  project?: {
+    repositoryPath: string | null;
+    deploymentMode: string;
+    deploymentOnMerge: string | null;
+    deploymentBitbucketWorkspace: string | null;
+    deploymentBitbucketRepoSlug: string | null;
+  };
+};
+
 function reporterName(user: { name: string | null; username: string }) {
   return user.name?.trim() || user.username;
+}
+
+function deploymentMode(value: string | null | undefined): DeploymentProjectConfig["mode"] {
+  if (value === "script" || value === "pipeline" || value === "manual" || value === "pr-only") return value;
+  return "pr-only";
 }
 
 function parseBitbucketRemote(url: string): { workspace: string; repoSlug: string } | null {
@@ -150,6 +207,8 @@ export async function resolveDeploymentPlan(args: {
         productionBranch: epic.project.deploymentProductionBranch ?? "main",
         workspace: epic.project.deploymentBitbucketWorkspace ?? repo.workspace,
         repoSlug: epic.project.deploymentBitbucketRepoSlug ?? repo.repoSlug,
+        mode: deploymentMode(epic.project.deploymentMode),
+        onMerge: epic.project.deploymentOnMerge,
       },
       reporter: { userId: epic.reporter.id, name: reporterName(epic.reporter), email: epic.reporter.email },
       targets,
@@ -181,6 +240,8 @@ export async function resolveDeploymentPlan(args: {
       productionBranch: task.project.deploymentProductionBranch ?? "main",
       workspace: task.project.deploymentBitbucketWorkspace ?? repo.workspace,
       repoSlug: task.project.deploymentBitbucketRepoSlug ?? repo.repoSlug,
+      mode: deploymentMode(task.project.deploymentMode),
+      onMerge: task.project.deploymentOnMerge,
     },
     reporter: { userId: task.reporter.id, name: reporterName(task.reporter), email: task.reporter.email },
     targets: [{
@@ -342,6 +403,200 @@ export async function handleDeploymentApproved(args: {
     });
   }
   return { action: "opened-prs", reporter: plan.reporter, prs };
+}
+
+export async function fetchBitbucketPullRequestState(row: DeploymentPrRow): Promise<ProviderPullRequestState> {
+  const configuredRepo = row.project?.deploymentBitbucketWorkspace && row.project?.deploymentBitbucketRepoSlug
+    ? { workspace: row.project.deploymentBitbucketWorkspace, repoSlug: row.project.deploymentBitbucketRepoSlug }
+    : row.project?.repositoryPath
+      ? await remoteBitbucketRepo(row.project.repositoryPath)
+      : null;
+  if (!configuredRepo) throw new Error("Bitbucket workspace/repo slug is required to poll deployment PRs");
+  const base = `https://api.bitbucket.org/2.0/repositories/${encodeURIComponent(configuredRepo.workspace)}/${encodeURIComponent(configuredRepo.repoSlug)}`;
+  const res = await fetch(`${base}/pullrequests/${encodeURIComponent(row.providerPrId)}`, {
+    headers: { authorization: `Basic ${bitbucketAuth()}`, accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(`Bitbucket PR poll failed (${res.status}): ${await res.text()}`);
+  const json = await res.json() as any;
+  const rawState = String(json.state ?? "").toUpperCase();
+  const state: ProviderPullRequestState["state"] = rawState === "MERGED" || rawState === "FULFILLED"
+    ? "merged"
+    : rawState === "DECLINED" || rawState === "SUPERSEDED"
+      ? "declined"
+      : "open";
+  const mergeSha = json.merge_commit?.hash ?? json.destination?.commit?.hash ?? null;
+  let pipelineFailed = false;
+  const commit = mergeSha ?? row.latestCommitSha;
+  if (commit) {
+    const pipelines = await fetch(`${base}/pipelines/?target.commit.hash=${encodeURIComponent(commit)}&pagelen=5`, {
+      headers: { authorization: `Basic ${bitbucketAuth()}`, accept: "application/json" },
+    }).catch(() => null);
+    if (pipelines?.ok) {
+      const body = await pipelines.json() as any;
+      pipelineFailed = Array.isArray(body.values) && body.values.some((p: any) => String(p.state?.result?.name ?? p.state?.name ?? "").toUpperCase() === "FAILED");
+    }
+  }
+  return { state, mergeSha, pipelineFailed };
+}
+
+export async function runProjectOnMerge(args: {
+  repositoryPath: string;
+  mode: DeploymentProjectConfig["mode"];
+  onMerge: string | null;
+  pipelineFailed?: boolean;
+}): Promise<OnMergeResult> {
+  if (args.mode === "pipeline") {
+    return { exitCode: args.pipelineFailed ? 1 : 0, stdout: args.pipelineFailed ? "" : "Pipeline succeeded", stderr: args.pipelineFailed ? "Pipeline failed" : "" };
+  }
+  if (args.mode !== "script") {
+    return { exitCode: 0, stdout: `${args.mode} deployment completed by PR merge`, stderr: "" };
+  }
+  if (!args.onMerge?.trim()) throw new Error("deployment.onMerge script is required for script deployment mode");
+  try {
+    const { stdout, stderr } = await execFileAsync("sh", ["-lc", args.onMerge], {
+      cwd: args.repositoryPath,
+      maxBuffer: 1024 * 1024 * 2,
+      timeout: Number(process.env.PM_DEPLOYMENT_ON_MERGE_TIMEOUT_MS ?? "300000"),
+    });
+    return { exitCode: 0, stdout: String(stdout), stderr: String(stderr) };
+  } catch (err: any) {
+    return { exitCode: typeof err.code === "number" ? err.code : 1, stdout: String(err.stdout ?? ""), stderr: String(err.stderr ?? err.message ?? err) };
+  }
+}
+
+export async function pollDeploymentPullRequests(args: {
+  db?: DbClient;
+  fetchState?: (row: DeploymentPrRow) => Promise<ProviderPullRequestState>;
+  runOnMerge?: (args: { repositoryPath: string; mode: DeploymentProjectConfig["mode"]; onMerge: string | null; pipelineFailed?: boolean }) => Promise<OnMergeResult>;
+} = {}): Promise<DeploymentWatcherResult> {
+  const db = prisma(args.db ?? defaultDb);
+  const fetchState = args.fetchState ?? fetchBitbucketPullRequestState;
+  const runOnMerge = args.runOnMerge ?? runProjectOnMerge;
+  const rows: DeploymentPrRow[] = await db.deploymentPullRequest.findMany({
+    where: { status: "open" },
+    include: { project: true },
+    orderBy: { updatedAt: "asc" },
+  });
+  const result: DeploymentWatcherResult = { checked: rows.length, completed: 0, failed: 0, skipped: 0 };
+  for (const row of rows) {
+    const state = await fetchState(row);
+    if (state.state === "open" && !state.pipelineFailed) {
+      result.skipped += 1;
+      continue;
+    }
+    if (state.state === "declined") {
+      await finalizeDeploymentPr({ db, row, status: "declined", mergeSha: state.mergeSha, exitCode: 1, stdout: "", stderr: "Pull request declined" });
+      result.failed += 1;
+      continue;
+    }
+    if (state.pipelineFailed) {
+      await finalizeDeploymentPr({ db, row, status: "pipeline_failed", mergeSha: state.mergeSha, exitCode: 1, stdout: "", stderr: "Pipeline failed" });
+      result.failed += 1;
+      continue;
+    }
+    if (!row.project?.repositoryPath) throw new Error(`Project repositoryPath is required for deployment PR ${row.id}`);
+    const mode = deploymentMode(row.project.deploymentMode);
+    const deploy = await runOnMerge({ repositoryPath: row.project.repositoryPath, mode, onMerge: row.project.deploymentOnMerge, pipelineFailed: false });
+    await finalizeDeploymentPr({
+      db,
+      row,
+      status: deploy.exitCode === 0 ? "deployed" : "deployment_error",
+      mergeSha: state.mergeSha,
+      exitCode: deploy.exitCode,
+      stdout: deploy.stdout,
+      stderr: deploy.stderr,
+    });
+    if (deploy.exitCode === 0) result.completed += 1;
+    else result.failed += 1;
+  }
+  return result;
+}
+
+async function finalizeDeploymentPr(args: {
+  db: any;
+  row: DeploymentPrRow;
+  status: DeploymentPrTerminalStatus;
+  mergeSha: string | null;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}) {
+  const existing = await args.db.deploymentPullRequest.findUnique({ where: { id: args.row.id }, select: { status: true, deploymentReportedAt: true } }).catch(() => null);
+  if (existing && existing.status !== "open") return;
+  await args.db.deploymentPullRequest.update({
+    where: { id: args.row.id },
+    data: {
+      status: args.status,
+      mergeSha: args.mergeSha,
+      deploymentExitCode: args.exitCode,
+      deploymentStdout: excerpt(args.stdout),
+      deploymentStderr: excerpt(args.stderr),
+      deploymentReportedAt: new Date(),
+    },
+  });
+  await writeDeploymentOutcome({ db: args.db, row: args.row, status: args.status, mergeSha: args.mergeSha, exitCode: args.exitCode, stdout: args.stdout, stderr: args.stderr });
+}
+
+async function writeDeploymentOutcome(args: {
+  db: any;
+  row: DeploymentPrRow;
+  status: DeploymentPrTerminalStatus;
+  mergeSha: string | null;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}) {
+  const failed = args.status !== "deployed";
+  const body = deploymentReportBody(args);
+  if (args.row.epicId) {
+    const allRows: DeploymentPrRow[] = await args.db.deploymentPullRequest.findMany({ where: { epicId: args.row.epicId } });
+    const statuses = allRows.map((r) => r.id === args.row.id ? args.status : r.status);
+    const anyFailed = statuses.some((status) => ["deployment_error", "declined", "pipeline_failed"].includes(status));
+    const allDeployed = statuses.length > 0 && statuses.every((status) => status === "deployed");
+    if (anyFailed || allDeployed) {
+      await args.db.epic.update({ where: { id: args.row.epicId }, data: { deploymentStatus: anyFailed ? "Deployment Error" : "Successfully Deployed" } });
+    }
+    await args.db.comment.create({ data: { epicId: args.row.epicId, userId: args.row.reporterUserId, body } });
+  } else if (args.row.taskId) {
+    await args.db.task.update({ where: { id: args.row.taskId }, data: { deploymentStatus: failed ? "Deployment Error" : "Successfully Deployed" } });
+    await args.db.comment.create({ data: { taskId: args.row.taskId, userId: args.row.reporterUserId, body } });
+  }
+  await args.db.activityLog.create({
+    data: {
+      projectId: args.row.projectId,
+      taskId: args.row.taskId,
+      userId: args.row.reporterUserId,
+      kind: "deployment.outcome",
+      payload: JSON.stringify({ prId: args.row.id, providerPrId: args.row.providerPrId, status: args.status, mergeSha: args.mergeSha, exitCode: args.exitCode }),
+    },
+  }).catch(() => null);
+}
+
+function deploymentReportBody(args: { row: DeploymentPrRow; status: DeploymentPrTerminalStatus; mergeSha: string | null; exitCode: number; stdout: string; stderr: string }) {
+  const statusLabel = args.status === "deployed" ? "Successfully Deployed" : "Deployment Error";
+  const lines = [
+    `Deployment report: ${statusLabel}`,
+    `PR: ${args.row.url}`,
+    `Merge SHA: ${args.mergeSha ?? "n/a"}`,
+    `Exit status: ${args.exitCode}`,
+    `Outcome: ${oneLineOutcome(args.status, args.exitCode)}`,
+  ];
+  const error = excerpt(args.stderr || args.stdout);
+  if (args.status !== "deployed" && error) lines.push(`Error excerpt:\n${error}`);
+  return lines.join("\n");
+}
+
+function oneLineOutcome(status: DeploymentPrTerminalStatus, exitCode: number) {
+  if (status === "deployed") return "PR merged and deployment completed successfully.";
+  if (status === "declined") return "PR was declined before deployment.";
+  if (status === "pipeline_failed") return "Provider pipeline failed before deployment.";
+  return `deployment.onMerge exited with ${exitCode}.`;
+}
+
+function excerpt(value: string | null | undefined) {
+  const text = String(value ?? "").trim();
+  if (text.length <= LOG_EXCERPT_MAX) return text;
+  return `${text.slice(0, LOG_EXCERPT_MAX)}\n… truncated`;
 }
 
 async function recordReporterEmailPrompt(args: { db: any; plan: DeploymentPlan }) {

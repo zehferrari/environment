@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { verifyDeploymentBranch, handleDeploymentApproved } from "@/lib/deploy/monitor";
+import { verifyDeploymentBranch, handleDeploymentApproved, pollDeploymentPullRequests } from "@/lib/deploy/monitor";
 
 function git(cwd: string, args: string[]) {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -85,9 +85,113 @@ async function missingReporterEmailReturnsPrompt() {
   }
 }
 
+async function mergedScriptSuccessWritesReporterReport() {
+  const calls: any[] = [];
+  const rows: any[] = [{
+    id: "pr1",
+    projectId: "p1",
+    taskId: "task1",
+    epicId: null,
+    provider: "bitbucket",
+    providerPrId: "12",
+    url: "https://bitbucket.org/workspace/repo/pull-requests/12",
+    sourceBranch: "feature/deploy",
+    targetBranch: "main",
+    latestCommitSha: "abc",
+    reporterUserId: "u1",
+    reporterName: "Zeh Ferrari",
+    reporterEmail: "e@zeh.me",
+    status: "open",
+    project: { repositoryPath: "/repo", deploymentMode: "script", deploymentOnMerge: "deploy.sh", deploymentBitbucketWorkspace: "workspace", deploymentBitbucketRepoSlug: "repo" },
+  }];
+  const mockDb = {
+    deploymentPullRequest: {
+      findMany: async (q: any) => q.where?.status === "open" ? rows.filter((r) => r.status === "open") : rows.filter((r) => r.epicId === q.where.epicId),
+      findUnique: async () => ({ status: rows[0].status, deploymentReportedAt: null }),
+      update: async ({ data }: any) => { calls.push(["pr.update", data]); Object.assign(rows[0], data); },
+    },
+    task: { update: async ({ data }: any) => calls.push(["task.update", data]) },
+    epic: { update: async ({ data }: any) => calls.push(["epic.update", data]) },
+    comment: { create: async ({ data }: any) => calls.push(["comment.create", data]) },
+    activityLog: { create: async ({ data }: any) => calls.push(["activity.create", data]) },
+  };
+  const result = await pollDeploymentPullRequests({
+    db: mockDb as never,
+    fetchState: async () => ({ state: "merged", mergeSha: "merge123" }),
+    runOnMerge: async () => ({ exitCode: 0, stdout: "ok", stderr: "" }),
+  });
+  assert.deepEqual(result, { checked: 1, completed: 1, failed: 0, skipped: 0 });
+  assert.equal(calls.find((c) => c[0] === "task.update")?.[1].deploymentStatus, "Successfully Deployed");
+  const comment = calls.find((c) => c[0] === "comment.create")?.[1];
+  assert.equal(comment.userId, "u1");
+  assert.match(comment.body, /Merge SHA: merge123/);
+}
+
+async function nonZeroScriptIsDeploymentErrorAndIdempotent() {
+  let commentCount = 0;
+  const rows: any[] = [{
+    id: "pr1", projectId: "p1", taskId: "task1", epicId: null, provider: "bitbucket", providerPrId: "12", url: "url", sourceBranch: "feature", targetBranch: "main", latestCommitSha: "abc", reporterUserId: "u1", reporterName: "Zeh", reporterEmail: "e@zeh.me", status: "open",
+    project: { repositoryPath: "/repo", deploymentMode: "script", deploymentOnMerge: "deploy.sh", deploymentBitbucketWorkspace: "workspace", deploymentBitbucketRepoSlug: "repo" },
+  }];
+  const mockDb = {
+    deploymentPullRequest: {
+      findMany: async (q: any) => q.where?.status === "open" ? rows.filter((r) => r.status === "open") : rows,
+      findUnique: async () => ({ status: rows[0].status, deploymentReportedAt: rows[0].deploymentReportedAt }),
+      update: async ({ data }: any) => { Object.assign(rows[0], data); },
+    },
+    task: { update: async ({ data }: any) => { assert.equal(data.deploymentStatus, "Deployment Error"); } },
+    epic: { update: async () => {} },
+    comment: { create: async () => { commentCount += 1; } },
+    activityLog: { create: async () => ({}) },
+  };
+  await pollDeploymentPullRequests({ db: mockDb as never, fetchState: async () => ({ state: "merged", mergeSha: "m" }), runOnMerge: async () => ({ exitCode: 42, stdout: "", stderr: "boom" }) });
+  await pollDeploymentPullRequests({ db: mockDb as never, fetchState: async () => ({ state: "merged", mergeSha: "m" }), runOnMerge: async () => ({ exitCode: 0, stdout: "", stderr: "" }) });
+  assert.equal(rows[0].status, "deployment_error");
+  assert.equal(commentCount, 1);
+}
+
+async function declinedAndPipelineFailureFailDeployment() {
+  for (const providerState of [{ state: "declined" as const, mergeSha: null }, { state: "open" as const, mergeSha: null, pipelineFailed: true }]) {
+    const rows: any[] = [{ id: Math.random().toString(), projectId: "p1", taskId: "task1", epicId: null, provider: "bitbucket", providerPrId: "12", url: "url", sourceBranch: "feature", targetBranch: "main", latestCommitSha: "abc", reporterUserId: "u1", reporterName: "Zeh", reporterEmail: "e@zeh.me", status: "open", project: { repositoryPath: "/repo", deploymentMode: "pr-only", deploymentOnMerge: null } }];
+    let status = "";
+    const mockDb = {
+      deploymentPullRequest: { findMany: async (q: any) => q.where?.status === "open" ? rows.filter((r) => r.status === "open") : rows, findUnique: async () => ({ status: rows[0].status }), update: async ({ data }: any) => { Object.assign(rows[0], data); } },
+      task: { update: async ({ data }: any) => { status = data.deploymentStatus; } },
+      epic: { update: async () => {} },
+      comment: { create: async () => ({}) },
+      activityLog: { create: async () => ({}) },
+    };
+    await pollDeploymentPullRequests({ db: mockDb as never, fetchState: async () => providerState });
+    assert.equal(status, "Deployment Error");
+  }
+}
+
+async function epicChildRollupWaitsForAllChildren() {
+  const rows: any[] = [
+    { id: "pr1", projectId: "p1", taskId: "t1", epicId: "e1", provider: "bitbucket", providerPrId: "1", url: "url1", sourceBranch: "b1", targetBranch: "main", latestCommitSha: "a", reporterUserId: "u1", reporterName: "Zeh", reporterEmail: "e@zeh.me", status: "open", project: { repositoryPath: "/repo", deploymentMode: "pr-only", deploymentOnMerge: null } },
+    { id: "pr2", projectId: "p1", taskId: "t2", epicId: "e1", provider: "bitbucket", providerPrId: "2", url: "url2", sourceBranch: "b2", targetBranch: "main", latestCommitSha: "b", reporterUserId: "u1", reporterName: "Zeh", reporterEmail: "e@zeh.me", status: "open", project: { repositoryPath: "/repo", deploymentMode: "pr-only", deploymentOnMerge: null } },
+  ];
+  const epicUpdates: string[] = [];
+  const mockDb = {
+    deploymentPullRequest: { findMany: async (q: any) => q.where?.status === "open" ? rows.filter((r) => r.status === "open") : rows, findUnique: async ({ where }: any) => ({ status: rows.find((r) => r.id === where.id).status }), update: async ({ where, data }: any) => { Object.assign(rows.find((r) => r.id === where.id), data); } },
+    task: { update: async () => {} },
+    epic: { update: async ({ data }: any) => { epicUpdates.push(data.deploymentStatus); } },
+    comment: { create: async () => ({}) },
+    activityLog: { create: async () => ({}) },
+  };
+  await pollDeploymentPullRequests({ db: mockDb as never, fetchState: async (row: any) => row.id === "pr1" ? { state: "merged", mergeSha: "m1" } : { state: "open", mergeSha: null } });
+  assert.equal(epicUpdates.length, 0);
+  await pollDeploymentPullRequests({ db: mockDb as never, fetchState: async () => ({ state: "merged", mergeSha: "m2" }) });
+  assert.deepEqual(epicUpdates, ["Successfully Deployed"]);
+}
+
 async function main() {
   await branchVerificationPushesReporterAuthoredCommit();
   await missingReporterEmailReturnsPrompt();
+  await mergedScriptSuccessWritesReporterReport();
+  await nonZeroScriptIsDeploymentErrorAndIdempotent();
+  await declinedAndPipelineFailureFailDeployment();
+  await epicChildRollupWaitsForAllChildren();
   console.log("deployment-monitor tests passed");
 }
 
