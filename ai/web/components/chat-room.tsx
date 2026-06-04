@@ -16,6 +16,7 @@ import {
 import ProposalReview from "@/app/(app)/agents/[agent]/chat/proposal-review";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
+import { findPmOptionResolution, parsePmOptions } from "@/lib/pm-options";
 
 interface Message {
   id: string;
@@ -24,6 +25,8 @@ interface Message {
   allowDescriptionEdit: boolean;
   editGrantUsedAt: Date | null;
   targetLabel?: string | null;
+  targetType?: string | null;
+  targetValue?: string | null;
   sender: MessageActor;
   // Soft-delete metadata (HOMELAB-41 / item 2). When deletedAt is set,
   // the bubble is replaced by a DeletedMessageDivider that humans can
@@ -336,6 +339,18 @@ export default function ChatRoom({
     () => messages.filter((message) => !isInternalWorkflowNotification(message)),
     [messages],
   );
+  const pmOptionResolutions = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof findPmOptionResolution>>();
+    visibleMessages.forEach((message, index) => {
+      const parsed = parsePmOptions(message.body);
+      if (parsed.options.length === 0) return;
+      map.set(
+        message.id,
+        findPmOptionResolution(parsed.options, visibleMessages.slice(index + 1).map((later) => later.body)),
+      );
+    });
+    return map;
+  }, [visibleMessages]);
   const canSend = messageText.trim().length > 0 || selectedFilesCount > 0;
   const activeCount = activeMessageCount ?? visibleMessages.length;
   const canContinueArchive = viewingArchive && !selectedArchiveDeleted && activeCount === 0;
@@ -702,6 +717,9 @@ export default function ChatRoom({
                 key={m.id}
                 message={m}
                 currentUserId={currentUserId}
+                projectSlug={projectSlug}
+                surface={taskId ? "task-chat" : "epic-chat"}
+                resolvedOption={pmOptionResolutions.get(m.id) ?? null}
                 preferShortAgentSections
                 participantIndex={participantIndexes.get(participantKey(m.sender)) ?? 0}
                 actions={!viewingArchive ? (

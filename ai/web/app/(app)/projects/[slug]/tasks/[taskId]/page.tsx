@@ -73,6 +73,8 @@ import {
 } from "@/components/message-avatar";
 import DescriptionField from "@/components/description-field";
 import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
+import PmOptions from "@/components/pm-options";
+import { findPmOptionResolution, parsePmOptions, isPmOptionsTargetedAtCurrentUser } from "@/lib/pm-options";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import TaskEpicPicker from "./task-epic-picker";
 
@@ -2039,7 +2041,12 @@ export default async function TaskDetailPage({
             </p>
           ) : (
             <ul className="space-y-3">
-              {task.comments.map((c) => {
+              {task.comments.map((c, index) => {
+                const parsedPmOptions = parsePmOptions(c.body);
+                const resolvedPmOption = findPmOptionResolution(
+                  parsedPmOptions.options,
+                  task.comments.slice(index + 1).filter((later) => !later.deletedAt).map((later) => later.body),
+                );
                 if (c.deletedAt) {
                   // Soft-deleted (HOMELAB-41 / item 2): render as a
                   // collapsed dotted divider with the original body
@@ -2087,7 +2094,17 @@ export default async function TaskDetailPage({
                           />
                         ) : null}
                       </div>
-                      <div>{renderCommentBody(c.body, mentionables)}</div>
+                      <div>{renderCommentBody(parsedPmOptions.body, mentionables)}</div>
+                      {parsedPmOptions.options.length > 0 ? (
+                        <PmOptions
+                          projectSlug={slug}
+                          sourceMessageId={c.id}
+                          surface="task-comment"
+                          options={parsedPmOptions.options}
+                          resolvedOption={resolvedPmOption}
+                          interactive={isPmOptionsTargetedAtCurrentUser({ currentUserId: viewer.id })}
+                        />
+                      ) : null}
                     </div>
                   </li>
                 );
