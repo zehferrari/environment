@@ -14,6 +14,7 @@ import { redirect } from "next/navigation";
 import { Prisma } from "@prisma/client";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { randomUUID } from "crypto";
 import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
 import { sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
 import {
@@ -23,6 +24,9 @@ import {
 } from "@/lib/workflow";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
+import { buildDeploymentApproved } from "@/lib/pm-events";
+import { notifyDispatch } from "@/lib/pm-dispatch";
+import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 
 const EPIC_STATUSES = ["Backlog", "Open", "Done"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
@@ -304,6 +308,7 @@ export async function setEpicAssignee(formData: FormData) {
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}/epics`);
+
 }
 
 export async function setEpicActingManager(formData: FormData) {
@@ -402,8 +407,10 @@ export async function updateEpic(formData: FormData) {
   const newBranchName = branchRaw === "" ? null : branchRaw;
   const commitRaw = String(formData.get("commitPrefix") ?? "").trim();
   const newCommitPrefix = commitRaw === "" ? null : commitRaw;
+  const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
 
   if (status !== "" && !isEpicStatus(status)) return;
+  if (deploymentRaw !== "" && !isDeploymentStatus(deploymentRaw)) return;
   if (newBranchName !== null && newBranchName.length > 200) return;
   if (newCommitPrefix !== null && newCommitPrefix.length > 200) return;
 
@@ -532,6 +539,25 @@ export async function updateEpic(formData: FormData) {
     });
   }
 
+  // Deployment status
+  if (deploymentRaw !== "" && deploymentRaw !== epic.deploymentStatus) {
+    const actorAgent = actor.kind === "agent"
+      ? await db.user.findUnique({ where: { id: actor.id }, select: { agent: { select: { role: true } } } })
+      : null;
+    const check = checkDeploymentStatusWrite({
+      actor,
+      actorAgentRole: actorAgent?.agent?.role ?? null,
+      from: epic.deploymentStatus,
+      to: deploymentRaw,
+    });
+    if (!check.ok) throw new Error(check.message);
+    data.deploymentStatus = deploymentRaw;
+    activity.push({
+      kind: "epic.deployment_status",
+      payload: JSON.stringify({ epicId, from: epic.deploymentStatus, to: deploymentRaw }),
+    });
+  }
+
   // Reporter (active User/Agent row; defaults to creator on new epics)
   if (newReporterId !== epic.reporterId) {
     let toUsername: string | null = null;
@@ -618,6 +644,20 @@ export async function updateEpic(formData: FormData) {
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}/epics`);
   revalidatePath(`/projects/${slug}`);
+
+  if (deploymentRaw === "Deployment Approved" && epic.deploymentStatus !== "Deployment Approved") {
+    await notifyDispatch(
+      buildDeploymentApproved(
+        {
+          id: randomUUID(),
+          occurredAt: new Date().toISOString(),
+          actor,
+          task: { id: epic.id, key: epic.workItemKey ?? epic.id, projectKey: slug, title },
+        },
+        { scope: "epic", scopeId: epic.id, deploymentStatus: "Deployment Approved" },
+      ),
+    );
+  }
 }
 
 export async function createTaskInEpic(formData: FormData) {

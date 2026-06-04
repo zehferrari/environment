@@ -44,7 +44,7 @@ import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
 import EpicTasksClient from "./epic-tasks-client";
 import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
-import DeploymentTab, { canShowDeploymentAction, type DeploymentPrRow } from "@/components/deployment-tab";
+import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, type DeploymentPrRow } from "@/components/deployment-tab";
 
 type ActorRow = {
   id: string;
@@ -1042,6 +1042,10 @@ export default async function EpicDetailPage({
                           ariaLabel="Acting manager"
                         />
                       </label>
+                    </div>
+
+                    <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
+                      <DeploymentStatusSelect formId="epicMain" defaultValue={epic.deploymentStatus} />
                     </div>
 
                     <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">

@@ -2,10 +2,22 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import DeploymentTab, { canShowDeploymentAction, canShowDeploymentTab } from "../components/deployment-tab";
+import { checkDeploymentStatusWrite, deploymentStatusIcon } from "../lib/deploy/deployment-status";
 
 assert.equal(canShowDeploymentTab("epic"), true, "Epic shows Deployment tab");
-assert.equal(canShowDeploymentTab({ parentTaskId: null }), true, "top-level Task shows Deployment tab");
-assert.equal(canShowDeploymentTab({ parentTaskId: "child-of-task" }), false, "child Task hides Deployment tab");
+assert.equal(canShowDeploymentTab({ epicId: null, parentTaskId: null }), true, "top-level Task shows Deployment tab");
+assert.equal(canShowDeploymentTab({ epicId: "epic-1", parentTaskId: null }), false, "Epic child Task hides Deployment tab");
+assert.equal(canShowDeploymentTab({ epicId: null, parentTaskId: "child-of-task" }), false, "sub-task hides Deployment tab");
+
+
+assert.equal(deploymentStatusIcon("Not Required"), "—", "not-required deployment icon");
+assert.equal(deploymentStatusIcon("Deployment Approved"), "🟠", "approved deployment icon");
+assert.equal(deploymentStatusIcon("Successfully Deployed"), "🟢", "deployed deployment icon");
+assert.equal(deploymentStatusIcon("Deployment Error"), "🔴", "deployment error icon");
+assert.equal(checkDeploymentStatusWrite({ actor: { kind: "agent" }, from: "Not Required", to: "Deployment Approved" }).ok, false, "agents cannot approve deployment");
+assert.equal(checkDeploymentStatusWrite({ actor: { kind: "human" }, from: "Not Required", to: "Deployment Approved" }).ok, true, "humans can approve deployment");
+assert.equal(checkDeploymentStatusWrite({ actor: { kind: "agent" }, actorAgentRole: "coding", from: "Deployment Approved", to: "Successfully Deployed" }).ok, false, "coding agents cannot set deployed");
+assert.equal(checkDeploymentStatusWrite({ actor: { kind: "agent" }, actorAgentRole: "monitor", from: "Deployment Approved", to: "Successfully Deployed" }).ok, true, "monitor agent can set deployed");
 
 assert.equal(canShowDeploymentAction({
   provider: "bitbucket",

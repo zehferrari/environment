@@ -19,6 +19,7 @@ import {
 } from "@/lib/workflow";
 import { COLUMN_IDS } from "../../columns";
 import {
+  buildDeploymentApproved,
   buildTaskAssigned,
 } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
@@ -77,7 +78,8 @@ import PmOptions from "@/components/pm-options";
 import { findPmOptionResolution, parsePmOptions, isPmOptionsTargetedAtCurrentUser } from "@/lib/pm-options";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import TaskEpicPicker from "./task-epic-picker";
-import DeploymentTab, { canShowDeploymentAction, canShowDeploymentTab, type DeploymentPrRow } from "@/components/deployment-tab";
+import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, canShowDeploymentTab, type DeploymentPrRow } from "@/components/deployment-tab";
+import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 
 type ActorRow = {
   id: string;
@@ -145,8 +147,10 @@ async function updateTask(formData: FormData) {
   const newActingManagerId = reviewerRaw === "" ? null : reviewerRaw;
   const reporterRaw = String(formData.get("reporterId") ?? "");
   const newReporterId = reporterRaw === "" ? null : reporterRaw;
+  const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
 
   if (newStatus !== "" && !COLUMN_IDS.includes(newStatus)) return;
+  if (deploymentRaw !== "" && !isDeploymentStatus(deploymentRaw)) return;
   if (newBranch !== null && newBranch.length > 200) return;
   if (newCommitPrefix !== null && newCommitPrefix.length > 200) return;
 
@@ -164,6 +168,8 @@ async function updateTask(formData: FormData) {
       assigneeId: true,
       actingManagerId: true,
       reporterId: true,
+      deploymentStatus: true,
+      parentTaskId: true,
       approvedOn: true,
       workItemKey: true,
       project: {
@@ -364,6 +370,26 @@ async function updateTask(formData: FormData) {
     });
   }
 
+  // Deployment status: only top-level Tasks (no Epic / sub-task parent) expose it.
+  const deploymentAllowed = task.epicId == null && task.parentTaskId == null;
+  if (deploymentAllowed && deploymentRaw !== "" && deploymentRaw !== task.deploymentStatus) {
+    const actorAgent = actor.kind === "agent"
+      ? await db.user.findUnique({ where: { id: actor.id }, select: { agent: { select: { role: true } } } })
+      : null;
+    const check = checkDeploymentStatusWrite({
+      actor,
+      actorAgentRole: actorAgent?.agent?.role ?? null,
+      from: task.deploymentStatus,
+      to: deploymentRaw,
+    });
+    if (!check.ok) throw new Error(check.message);
+    data.deploymentStatus = deploymentRaw;
+    activity.push({
+      kind: "task.deployment_status",
+      payload: JSON.stringify({ from: task.deploymentStatus, to: deploymentRaw }),
+    });
+  }
+
   // Reporter (active User/Agent row; defaults to creator on new tasks)
   if (newReporterId !== task.reporterId) {
     let toUsername: string | null = null;
@@ -420,6 +446,20 @@ async function updateTask(formData: FormData) {
 
   revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   revalidatePath(`/projects/${slug}`);
+
+  if (deploymentAllowed && deploymentRaw === "Deployment Approved" && task.deploymentStatus !== "Deployment Approved") {
+    await notifyDispatch(
+      buildDeploymentApproved(
+        {
+          id: randomUUID(),
+          occurredAt: new Date().toISOString(),
+          actor,
+          task: { id: task.id, key: task.workItemKey ?? task.id, projectKey: slug, title: titleRaw },
+        },
+        { scope: "task", scopeId: task.id, deploymentStatus: "Deployment Approved" },
+      ),
+    );
+  }
 
   // Assignment wake fires after the commit, non-throwing (mirrors the old
   // standalone assignTask path).
@@ -1827,6 +1867,12 @@ export default async function TaskDetailPage({
                         />
                       </label>
                     </div>
+
+                    {showDeploymentTab ? (
+                      <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
+                        <DeploymentStatusSelect formId="taskMain" defaultValue={task.deploymentStatus} />
+                      </div>
+                    ) : null}
 
                     {/* Branch + Commit prefix — persisted by the card's single Save. */}
                     <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">

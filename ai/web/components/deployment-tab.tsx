@@ -1,5 +1,6 @@
 import React from "react";
 import Link from "next/link";
+import { canShowDeploymentForTask, DEPLOYMENT_STATUSES } from "@/lib/deploy/deployment-status";
 
 export type DeploymentPrRow = {
   id: string;
@@ -14,11 +15,36 @@ export type DeploymentPrRow = {
   task?: { workItemKey?: string | null; title?: string | null } | null;
 };
 
-type DeploymentStatus = "Not Required" | "Deployment Approved" | "Successfully Deployed" | "Deployment Error" | string;
-
-export function canShowDeploymentTab(item: { parentTaskId?: string | null } | "epic") {
+export function canShowDeploymentTab(item: { epicId?: string | null; parentTaskId?: string | null } | "epic") {
   if (item === "epic") return true;
-  return item.parentTaskId == null;
+  return canShowDeploymentForTask(item);
+}
+
+export function DeploymentStatusSelect({
+  formId,
+  defaultValue,
+}: {
+  formId: string;
+  defaultValue: string;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+        Deployment status
+      </span>
+      <select
+        form={formId}
+        name="deploymentStatus"
+        defaultValue={defaultValue}
+        className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
+        aria-label="Deployment status"
+      >
+        {DEPLOYMENT_STATUSES.map((status) => (
+          <option key={status} value={status}>{status}</option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 export function canShowDeploymentAction(args: {
@@ -34,7 +60,7 @@ export function canShowDeploymentAction(args: {
   );
 }
 
-function statusLabel(status: DeploymentStatus) {
+function statusLabel(status: string) {
   switch (status) {
     case "Deployment Approved": return "Approved";
     case "Successfully Deployed": return "Succeeded";
@@ -55,11 +81,11 @@ function mergeState(row: DeploymentPrRow) {
   return "Waiting for merge";
 }
 
-function approvalState(deploymentStatus: DeploymentStatus) {
+function approvalState(deploymentStatus: string) {
   return deploymentStatus === "Not Required" ? "Not required" : "Approved";
 }
 
-function deployResult(row: DeploymentPrRow, deploymentStatus: DeploymentStatus) {
+function deployResult(row: DeploymentPrRow, deploymentStatus: string) {
   const status = row.status.toLowerCase();
   if (deploymentStatus === "Successfully Deployed") return "Deploy script succeeded";
   if (deploymentStatus === "Deployment Error") return "Deploy script failed";
@@ -68,7 +94,7 @@ function deployResult(row: DeploymentPrRow, deploymentStatus: DeploymentStatus) 
   return "Pipeline pending";
 }
 
-function errorExcerpt(row: DeploymentPrRow, deploymentStatus: DeploymentStatus) {
+function errorExcerpt(row: DeploymentPrRow, deploymentStatus: string) {
   if (deploymentStatus === "Deployment Error") {
     return "Deployment failed; monitor will attach the captured log excerpt when available.";
   }
@@ -114,7 +140,7 @@ export default function DeploymentTab({
 }: {
   mode: "task" | "epic";
   title: string;
-  deploymentStatus: DeploymentStatus;
+  deploymentStatus: string;
   rows: DeploymentPrRow[];
   canAct: (row: DeploymentPrRow) => boolean;
 }) {

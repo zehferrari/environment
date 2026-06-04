@@ -31,6 +31,7 @@ import {
 import { formatGridDate } from "@/lib/date-format";
 import { bulkBinTasks } from "@/lib/bin/actions";
 import ConfirmPopup from "@/components/confirm-popup";
+import { deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 
 type BoardActor = MessageActor & { id: string };
 
@@ -44,6 +45,7 @@ type Task = {
   updatedAt: string;
   statusChangedAt: string | null;
   approvedOn: string | null;
+  deploymentStatus: string;
   reporter: BoardActor | null;
   assignee: BoardActor | null;
   reviewer: BoardActor | null;
@@ -902,7 +904,8 @@ function BacklogRow({
         >
           ⠿
         </button>
-        {task.reporter ? <MessageAvatar actor={task.reporter} size="sm" /> : null}
+        <BoardReporterMarker task={task} />
+        <DeploymentIndicator status={task.deploymentStatus} />
         <span className="min-w-0 truncate">
           {task.workItemKey ? (
             <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
@@ -939,6 +942,29 @@ function BacklogRow({
       </form>
     </div>
   );
+}
+
+function DeploymentIndicator({ status }: { status: string }) {
+  const icon = deploymentStatusIcon(status);
+  if (icon === "—") {
+    return (
+      <span className="rounded border border-[var(--color-line)] px-1 text-[10px] text-[var(--color-text-muted)]" title="Deployment: Not Required">
+        —
+      </span>
+    );
+  }
+  return (
+    <span className="text-sm" title={`Deployment: ${status}`} aria-label={`Deployment: ${status}`}>
+      {icon}
+    </span>
+  );
+}
+
+function BoardReporterMarker({ task }: { task: Task }) {
+  if (task.status === "Done" && task.deploymentStatus !== "Not Required") {
+    return <span className="text-sm" title="Deployment automation">🤖</span>;
+  }
+  return task.reporter ? <MessageAvatar actor={task.reporter} size="sm" /> : null;
 }
 
 function TrashIcon() {
