@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState } from "react";
+import React, { useActionState, useEffect, useRef, useState } from "react";
 
 export type AddEpicTaskState = {
   ok: boolean;
@@ -8,6 +8,12 @@ export type AddEpicTaskState = {
 };
 
 const initialState: AddEpicTaskState = { ok: false, error: null };
+
+export function addEpicTaskDisabledReason(actingManagerName: string | null): string {
+  return actingManagerName
+    ? `Only ${actingManagerName} can create the initial Epic task breakdown.`
+    : "Only the Epic acting manager can create the initial Epic task breakdown.";
+}
 
 export default function AddEpicTaskFab({
   projectSlug,
@@ -32,9 +38,7 @@ export default function AddEpicTaskFab({
     formRef.current?.reset();
   }, [state.ok]);
 
-  const disabledReason = actingManagerName
-    ? `Only ${actingManagerName} can create the initial Epic task breakdown.`
-    : "Only the Epic acting manager can create the initial Epic task breakdown.";
+  const disabledReason = addEpicTaskDisabledReason(actingManagerName);
 
   return (
     <>
