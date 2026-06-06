@@ -31,7 +31,7 @@ import {
 import { formatGridDate } from "@/lib/date-format";
 import { bulkBinTasks } from "@/lib/bin/actions";
 import ConfirmPopup from "@/components/confirm-popup";
-import { deploymentStatusIcon } from "@/lib/deploy/deployment-status";
+import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 import { statusPillClass } from "@/lib/board-status";
 
 type BoardActor = MessageActor & { id: string };
@@ -47,6 +47,7 @@ type Task = {
   statusChangedAt: string | null;
   approvedOn: string | null;
   deploymentStatus: string;
+  epicId: string | null;
   reporter: BoardActor | null;
   assignee: BoardActor | null;
   reviewer: BoardActor | null;
@@ -830,8 +831,8 @@ function TaskCard({
             aria-label={`Select ${task.title}`}
             className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
           />
-          {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
-          {task.status === "Done" ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
+          {task.status === "Done" ? <BoardReporterMarker task={task} /> : actor ? <MessageAvatar actor={actor} size="sm" /> : null}
+          {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
           <div className="min-w-0 flex-1">
             <div className="truncate text-[10px] font-mono uppercase tracking-wider text-[var(--color-text-muted)]">
               {task.workItemKey ?? "—"}
@@ -970,7 +971,7 @@ function BacklogRow({
           ⠿
         </button>
         <BoardReporterMarker task={task} />
-        {task.status === "Done" ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
+        {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
         <span className="min-w-0 truncate">
           {task.workItemKey ? (
             <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
@@ -1025,8 +1026,12 @@ function DeploymentIndicator({ status }: { status: string }) {
   );
 }
 
+function canShowTaskDeploymentIndicator(task: Task) {
+  return task.status === "Done" && canShowDeploymentForTask(task);
+}
+
 function BoardReporterMarker({ task }: { task: Task }) {
-  if (task.status === "Done" && task.deploymentStatus !== "Not Required") {
+  if (canShowTaskDeploymentIndicator(task) && task.deploymentStatus !== "Not Required") {
     return <span className="text-sm" title="Deployment automation">🤖</span>;
   }
   return task.reporter ? <MessageAvatar actor={task.reporter} size="sm" /> : null;

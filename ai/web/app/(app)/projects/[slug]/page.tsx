@@ -396,6 +396,7 @@ export default async function ProjectBoardPage({
           statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
           approvedOn: t.approvedOn?.toISOString() ?? null,
           deploymentStatus: t.deploymentStatus,
+          epicId: t.epicId,
           reporter: serializeActor(t.reporter),
           assignee: serializeActor(t.assignee),
           reviewer: serializeActor(t.actingManager),

@@ -5,7 +5,7 @@ import { listAssignablePrincipals } from "@/lib/principals";
 import { COLUMN_IDS } from "../columns";
 import { actorDisplayName, MessageAvatar, type MessageActor } from "@/components/message-avatar";
 import { formatGridDate } from "@/lib/date-format";
-import { deploymentStatusIcon } from "@/lib/deploy/deployment-status";
+import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 
 export const dynamic = "force-dynamic";
 
@@ -282,7 +282,7 @@ export default async function ProjectTasksPage({
                   ) : null}
                 </Link>
                 <StatusPill status={task.status} />
-                <DeploymentIndicator status={task.deploymentStatus} />
+                {canShowDeploymentForTask(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : <span aria-hidden="true" />}
                 <PersonCell actor={serializeActor(task.reporter)} emptyLabel="none" />
                 <PersonCell actor={serializeActor(task.assignee)} emptyLabel="unassigned" />
                 <PersonCell actor={serializeActor(task.actingManager)} emptyLabel="none" />
