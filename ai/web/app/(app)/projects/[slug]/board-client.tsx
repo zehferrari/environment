@@ -597,9 +597,11 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                 <div className="truncate text-sm font-medium text-[var(--color-text)]">
                   {task.title}
                 </div>
-                <div className="mt-1 truncate text-xs text-[var(--color-text-muted)]">
-                  {workflowOwnerLabel(task)}
-                </div>
+                {workflowOwnerLabel(task) ? (
+                  <div className="mt-1 truncate text-xs text-[var(--color-text-muted)]">
+                    {workflowOwnerLabel(task)}
+                  </div>
+                ) : null}
               </button>
             ))}
           </div>
@@ -1084,12 +1086,12 @@ function workflowOwnerLabel(task: Task) {
     return task.assignee ? `${actorDisplayName(task.assignee)} starts` : "Manager must assign before work starts";
   }
   if (task.status === "In Progress") {
-    return task.assignee ? `${actorDisplayName(task.assignee)} owns implementation` : "In progress without assignee";
+    return task.assignee ? `${actorDisplayName(task.assignee)} owns implementation` : "Needs assignee";
   }
   if (task.status === "Backlog" && task.assignee) {
     return `${actorDisplayName(task.assignee)} should post a plan/opinion`;
   }
-  return task.status;
+  return "";
 }
 
 function isPlanningAssigned(task: Task) {
