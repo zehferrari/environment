@@ -18,6 +18,7 @@ import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { binTask, deleteEpic } from "@/lib/bin/actions";
 import { archiveEpic, unarchiveEpic } from "@/lib/archive/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
+import { publishBoardTouch } from "@/lib/pm/board-events";
 import SortableTaskList from "@/components/sortable-task-list";
 import AttachmentList from "@/components/attachment-list";
 import AttachmentUploadFab from "@/components/attachment-upload-fab";
@@ -827,9 +828,11 @@ export default async function EpicDetailPage({
     tasksByStatus.set(t.status, list);
   }
 
+  const reorderProjectId = epic.projectId;
   async function reorderEpicTasks(orderedIds: string[]): Promise<void> {
     "use server";
     await reorderTasks(orderedIds);
+    publishBoardTouch(reorderProjectId);
     revalidatePath(`/projects/${slug}/epics/${epicId}`);
     revalidatePath(`/projects/${slug}`);
   }
