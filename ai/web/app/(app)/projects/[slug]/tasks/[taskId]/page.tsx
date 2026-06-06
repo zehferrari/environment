@@ -35,6 +35,7 @@ import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteTask } from "@/lib/bin/actions";
 import { archiveTask, unarchiveTask } from "@/lib/archive/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
+import { publishBoardTouch } from "@/lib/pm/board-events";
 import {
   canApproveActionPlanForActor,
   resolveDoneOwnerId,
@@ -446,6 +447,7 @@ async function updateTask(formData: FormData) {
 
   revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   revalidatePath(`/projects/${slug}`);
+  publishBoardTouch(task.projectId);
 
   if (deploymentAllowed && deploymentRaw === "Deployment Approved" && task.deploymentStatus !== "Deployment Approved") {
     await notifyDispatch(

@@ -27,6 +27,7 @@ import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { buildDeploymentApproved } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
+import { publishBoardTouch } from "@/lib/pm/board-events";
 
 const EPIC_STATUSES = ["Backlog", "Open", "Done"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
@@ -760,6 +761,7 @@ export async function createTaskInEpic(
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}`);
+  publishBoardTouch(epic.projectId);
   return { ok: true, error: null };
 }
 

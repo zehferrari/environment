@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
+import { publishBoardTouch } from "@/lib/pm/board-events";
 
 async function requireActor() {
   const session = await auth();
@@ -52,6 +53,7 @@ export async function archiveTask(formData: FormData) {
   revalidatePath(`/projects/${projectSlug}`);
   revalidatePath(`/projects/${projectSlug}/tasks`);
   revalidatePath(`/projects/${projectSlug}/tasks/${task.id}`);
+  publishBoardTouch(task.projectId);
 }
 
 export async function unarchiveTask(formData: FormData) {
@@ -93,6 +95,7 @@ export async function unarchiveTask(formData: FormData) {
   revalidatePath(`/projects/${projectSlug}`);
   revalidatePath(`/projects/${projectSlug}/tasks`);
   revalidatePath(`/projects/${projectSlug}/tasks/${task.id}`);
+  publishBoardTouch(task.projectId);
 }
 
 export async function archiveEpic(formData: FormData) {
