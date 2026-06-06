@@ -1,17 +1,40 @@
 "use client";
 
-import { useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
+
+export type AddEpicTaskState = {
+  ok: boolean;
+  error: string | null;
+};
+
+const initialState: AddEpicTaskState = { ok: false, error: null };
 
 export default function AddEpicTaskFab({
   projectSlug,
   epicId,
   createTaskAction,
+  canCreateTask,
+  actingManagerName,
 }: {
   projectSlug: string;
   epicId: string;
-  createTaskAction: (formData: FormData) => Promise<void>;
+  createTaskAction: (state: AddEpicTaskState, formData: FormData) => Promise<AddEpicTaskState>;
+  canCreateTask: boolean;
+  actingManagerName: string | null;
 }) {
   const [open, setOpen] = useState(false);
+  const [state, formAction, isPending] = useActionState(createTaskAction, initialState);
+  const formRef = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    if (!state.ok) return;
+    setOpen(false);
+    formRef.current?.reset();
+  }, [state.ok]);
+
+  const disabledReason = actingManagerName
+    ? `Only ${actingManagerName} can create the initial Epic task breakdown.`
+    : "Only the Epic acting manager can create the initial Epic task breakdown.";
 
   return (
     <>
@@ -21,8 +44,8 @@ export default function AddEpicTaskFab({
           onClick={() => setOpen(false)}
         >
           <form
-            action={createTaskAction}
-            onSubmit={() => setOpen(false)}
+            ref={formRef}
+            action={formAction}
             onClick={(event) => event.stopPropagation()}
             className="w-full max-w-lg space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-2xl"
           >
@@ -41,19 +64,26 @@ export default function AddEpicTaskFab({
                 ×
               </button>
             </div>
+            {state.error ? (
+              <p role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+                {state.error}
+              </p>
+            ) : null}
             <input
               name="title"
               required
               autoFocus
               maxLength={200}
               placeholder="Task title"
-              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
+              disabled={isPending}
+              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)] disabled:cursor-wait disabled:opacity-70"
             />
             <textarea
               name="description"
               rows={6}
               placeholder="Description (optional) — markdown supported"
-              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm leading-relaxed outline-none focus:border-[var(--color-accent)]"
+              disabled={isPending}
+              className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm leading-relaxed outline-none focus:border-[var(--color-accent)] disabled:cursor-wait disabled:opacity-70"
             />
             <p className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-xs text-[var(--color-text-muted)]">
               This task will be linked to the current Epic and inherit the Epic branch / commit prefix defaults.
@@ -62,15 +92,17 @@ export default function AddEpicTaskFab({
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-sm font-medium hover:border-[var(--color-accent)]"
+                disabled={isPending}
+                className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-sm font-medium hover:border-[var(--color-accent)] disabled:cursor-wait disabled:opacity-70"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
+                disabled={isPending}
+                className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90 disabled:cursor-wait disabled:opacity-70"
               >
-                Add task
+                {isPending ? "Adding…" : "Add task"}
               </button>
             </div>
           </form>
@@ -79,9 +111,11 @@ export default function AddEpicTaskFab({
 
       <button
         type="button"
-        onClick={() => setOpen(true)}
-        aria-label="Add task to epic"
-        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-accent)] text-3xl leading-none text-[var(--color-bg)] shadow-lg transition hover:opacity-90"
+        onClick={() => canCreateTask && setOpen(true)}
+        disabled={!canCreateTask}
+        title={canCreateTask ? "Add task to epic" : disabledReason}
+        aria-label={canCreateTask ? "Add task to epic" : disabledReason}
+        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-accent)] text-3xl leading-none text-[var(--color-bg)] shadow-lg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
       >
         <span className="-mt-0.5">+</span>
       </button>

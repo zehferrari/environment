@@ -660,14 +660,17 @@ export async function updateEpic(formData: FormData) {
   }
 }
 
-export async function createTaskInEpic(formData: FormData) {
+export async function createTaskInEpic(
+  _previousState: { ok: boolean; error: string | null },
+  formData: FormData,
+): Promise<{ ok: boolean; error: string | null }> {
   const actor = await requireActor();
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
   const title = String(formData.get("title") ?? "").trim();
   const description = String(formData.get("description") ?? "").trim() || null;
-  if (!slug || !epicId || !title) return;
-  if (title.length > 200) return;
+  if (!slug || !epicId || !title) return { ok: false, error: "Task title is required." };
+  if (title.length > 200) return { ok: false, error: "Task title must be 200 characters or fewer." };
 
   const epic = await db.epic.findUnique({
     where: { id: epicId },
@@ -693,15 +696,17 @@ export async function createTaskInEpic(formData: FormData) {
       },
     },
   });
-  if (!epic || epic.project.slug !== slug || epic.deletedAt) return;
+  if (!epic || epic.project.slug !== slug || epic.deletedAt) {
+    return { ok: false, error: "Epic is no longer available." };
+  }
   if (actor.id !== epic.actingManagerId) {
-    throw new Error("Only the Epic acting manager can create the initial Epic task breakdown.");
+    return { ok: false, error: "Only the Epic acting manager can create the initial Epic task breakdown." };
   }
   if (!epic.approvedOn) {
-    throw new Error("Epic Action Plan must be approved before tasks can be created.");
+    return { ok: false, error: "Epic Action Plan must be approved before tasks can be created." };
   }
   if (epic._count.tasks > 0) {
-    throw new Error("Epic tasks can only be created when the Epic has no top-level child tasks yet.");
+    return { ok: false, error: "Epic tasks can only be created when the Epic has no top-level child tasks yet." };
   }
 
   const maxRank = await db.task.aggregate({
@@ -755,6 +760,7 @@ export async function createTaskInEpic(formData: FormData) {
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}`);
+  return { ok: true, error: null };
 }
 
 export async function setEpicStatus(formData: FormData) {

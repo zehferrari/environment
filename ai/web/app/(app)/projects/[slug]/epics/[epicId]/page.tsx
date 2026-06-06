@@ -1237,6 +1237,8 @@ export default async function EpicDetailPage({
             projectSlug={slug}
             epicId={epic.id}
             createTaskAction={createTaskInEpic}
+            canCreateTask={session?.user?.id === epic.actingManagerId}
+            actingManagerName={epic.actingManager?.username ? `@${epic.actingManager.username}` : null}
           />
                 </div>
               </TabPanel>
