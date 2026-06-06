@@ -760,7 +760,7 @@ function ColumnDroppable({
               aria-label={`Select all in ${label}`}
             />
           )}
-          <span className={`w-fit rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusPillClass(label)}`}>
+          <span className={`w-fit rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusPillClass(label)}`}>
             {label}
           </span>
           {description ? (
