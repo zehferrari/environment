@@ -580,7 +580,6 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                 }`}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <WorkflowPill task={task} />
                   <ElapsedClock task={task} now={now} />
                   <time
                     dateTime={task.updatedAt}
@@ -860,7 +859,6 @@ function TaskCard({
       <div className="relative z-10 mt-1 flex items-center justify-between gap-2 text-[10px] text-[var(--color-text-muted)]">
         {actor ? <span /> : <span className="truncate">unassigned</span>}
         <ElapsedClock task={task} now={now} />
-        <WorkflowPill task={task} />
         <time
           dateTime={task.updatedAt}
           title={task.updatedAt}
@@ -1077,14 +1075,6 @@ function completedAtMs(task: Task) {
   return parseTime(task.statusChangedAt ?? task.updatedAt) ?? 0;
 }
 
-function workflowPillText(task: Task) {
-  if (task.status === "Review") return "Review now";
-  if (task.status === "To Do") return task.assignee ? "Start now" : "Assign first";
-  if (task.status === "In Progress") return "Complete or update";
-  if (task.status === "Backlog" && task.assignee) return "Plan due";
-  return task.status;
-}
-
 function workflowOwnerLabel(task: Task) {
   if (task.status === "Review") {
     const reviewer = task.reviewer ?? task.manager ?? task.reporter;
@@ -1202,21 +1192,6 @@ function formatElapsed(ms: number) {
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
-}
-
-function WorkflowPill({ task }: { task: Task }) {
-  const tone =
-    task.status === "Review" ? "border-amber-500/80 bg-amber-100 text-amber-950 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.22)]"
-      : task.status === "To Do" && !task.assignee ? "border-red-500/80 bg-red-100 text-red-950 shadow-[inset_0_0_0_1px_rgba(220,38,38,0.2)]"
-        : task.status === "To Do" ? "border-sky-500/70 bg-sky-100 text-sky-950 shadow-[inset_0_0_0_1px_rgba(2,132,199,0.18)]"
-          : task.status === "In Progress" ? "border-emerald-500/70 bg-emerald-100 text-emerald-950 shadow-[inset_0_0_0_1px_rgba(5,150,105,0.18)]"
-            : task.status === "Done" ? "border-lime-600/70 bg-lime-100 text-lime-950 shadow-[inset_0_0_0_1px_rgba(101,163,13,0.18)]"
-              : "border-slate-500/60 bg-slate-100 text-slate-950 shadow-[inset_0_0_0_1px_rgba(71,85,105,0.16)]";
-  return (
-    <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${tone}`}>
-      {workflowPillText(task)}
-    </span>
-  );
 }
 
 function statusRowClass(status: string) {
