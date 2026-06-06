@@ -6,6 +6,7 @@ import { actorDisplayName, MessageAvatar } from "@/components/message-avatar";
 import { binEpic } from "@/lib/bin/actions";
 import { createEpic } from "@/lib/epics/actions";
 import { formatGridDate } from "@/lib/date-format";
+import { deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 import NewEpicFab from "./new-epic-fab";
 import EpicStatusFilter from "./epic-status-filter";
 
@@ -133,9 +134,10 @@ export default async function EpicsListPage({
         </p>
       ) : (
         <div className="overflow-hidden rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] shadow-sm">
-          <div className="grid grid-cols-[minmax(0,1fr)_6rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+          <div className="grid grid-cols-[minmax(0,1fr)_6rem_4rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
             <span>Epic</span>
             <span>Status</span>
+            <span>Deploy</span>
             <span>Report by</span>
             <span>Acting mgr</span>
             <span className="text-right">Tasks</span>
@@ -150,7 +152,7 @@ export default async function EpicsListPage({
                   className="absolute inset-0 z-0"
                   aria-label={`Open ${e.title}`}
                 />
-                <div className="grid grid-cols-[minmax(0,1fr)_6rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3 px-4 py-2.5 text-sm">
+                <div className="grid grid-cols-[minmax(0,1fr)_6rem_4rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3 px-4 py-2.5 text-sm">
                   <span className="min-w-0">
                     {e.workItemKey ? (
                       <span className="mb-0.5 inline-flex rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
@@ -169,6 +171,7 @@ export default async function EpicsListPage({
                       {e.status}
                     </span>
                   </span>
+                  <DeploymentIndicator status={e.deploymentStatus} />
                   <span className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-muted)]">
                     {e.reporter ? <MessageAvatar actor={e.reporter} size="sm" /> : null}
                     <span className="truncate">{e.reporter ? actorDisplayName(e.reporter) : "—"}</span>
@@ -220,5 +223,21 @@ function TrashIcon() {
       <path d="M10 11v6" />
       <path d="M14 11v6" />
     </svg>
+  );
+}
+
+function DeploymentIndicator({ status }: { status: string }) {
+  const icon = deploymentStatusIcon(status);
+  if (icon === "—") {
+    return (
+      <span className="w-fit rounded border border-[var(--color-line)] px-1 text-[10px] text-[var(--color-text-muted)]" title="Deployment: Not Required">
+        —
+      </span>
+    );
+  }
+  return (
+    <span className="text-sm" title={`Deployment: ${status}`} aria-label={`Deployment: ${status}`}>
+      {icon}
+    </span>
   );
 }
