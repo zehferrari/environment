@@ -21,6 +21,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { deleteAttachmentFile } from "@/lib/attachments/storage";
+import { publishBoardTouch } from "@/lib/pm/board-events";
 
 async function requireActorId(): Promise<string> {
   const session = await auth();
@@ -71,6 +72,7 @@ export async function binTask(formData: FormData): Promise<void> {
   revalidatePath(`/projects/${slug}`);
   revalidatePath(`/projects/${slug}/bin`);
   if (task.epicId) revalidatePath(`/projects/${slug}/epics/${task.epicId}`);
+  publishBoardTouch(task.projectId);
 }
 
 export async function deleteTask(formData: FormData) {
@@ -399,4 +401,5 @@ export async function bulkBinTasks(taskIds: string[], slug: string): Promise<voi
   for (const epicId of epicIds) {
     revalidatePath(`/projects/${slug}/epics/${epicId}`);
   }
+  publishBoardTouch(tasks[0].projectId);
 }

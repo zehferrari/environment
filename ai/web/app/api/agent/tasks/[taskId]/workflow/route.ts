@@ -17,6 +17,7 @@ import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
 import { resolveGitIdentity } from "@/lib/settings/system";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
+import { publishBoardTouch } from "@/lib/pm/board-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,6 +74,7 @@ async function moveTaskStatus(args: {
       },
     }),
   ]);
+  publishBoardTouch(args.projectId);
 }
 
 export async function POST(

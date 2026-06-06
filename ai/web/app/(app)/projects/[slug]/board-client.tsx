@@ -32,6 +32,7 @@ import { formatGridDate } from "@/lib/date-format";
 import { bulkBinTasks } from "@/lib/bin/actions";
 import ConfirmPopup from "@/components/confirm-popup";
 import { deploymentStatusIcon } from "@/lib/deploy/deployment-status";
+import { statusPillClass } from "@/lib/board-status";
 
 type BoardActor = MessageActor & { id: string };
 
@@ -117,6 +118,69 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       return new Set([...current].filter((id) => liveIds.has(id)));
     });
   }, [tasks]);
+
+  // Live board updates: an SSE stream emits `board.touch` whenever a task
+  // in this project is moved/reordered/binned/etc. We debounce and call
+  // router.refresh(), letting Next's revalidatePath path repaint the
+  // board without a manual reload. Reconnects on network errors with
+  // exponential backoff; pauses while the tab is hidden.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let source: EventSource | null = null;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryMs = 1000;
+    let closed = false;
+
+    const scheduleRefresh = () => {
+      if (refreshTimer) return;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        if (!document.hidden) router.refresh();
+      }, 300);
+    };
+
+    const connect = () => {
+      if (closed || document.hidden) return;
+      try {
+        source = new EventSource(`/api/projects/${projectSlug}/board/stream`);
+      } catch {
+        return;
+      }
+      source.addEventListener("open", () => {
+        retryMs = 1000;
+      });
+      source.addEventListener("board.touch", () => {
+        scheduleRefresh();
+      });
+      source.addEventListener("error", () => {
+        source?.close();
+        source = null;
+        if (closed) return;
+        retryTimer = setTimeout(connect, retryMs);
+        retryMs = Math.min(retryMs * 2, 30_000);
+      });
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        source?.close();
+        source = null;
+      } else if (!source) {
+        connect();
+      }
+    };
+
+    connect();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      closed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (refreshTimer) clearTimeout(refreshTimer);
+      if (retryTimer) clearTimeout(retryTimer);
+      source?.close();
+    };
+  }, [projectSlug, router]);
 
   useEffect(() => {
     try {
@@ -527,12 +591,11 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                     {relativeUpdated(task.updatedAt)}
                   </time>
                 </div>
-                <div className="mt-1 truncate text-sm font-medium text-[var(--color-text)]">
-                  {task.workItemKey ? (
-                    <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
-                      {task.workItemKey}
-                    </span>
-                  ) : null}
+                <div className="mt-1 truncate text-[10px] font-mono uppercase tracking-wider text-[var(--color-text-muted)]">
+                  {task.workItemKey ?? "—"}
+                  {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
+                </div>
+                <div className="truncate text-sm font-medium text-[var(--color-text)]">
                   {task.title}
                 </div>
                 <div className="mt-1 truncate text-xs text-[var(--color-text-muted)]">
@@ -698,7 +761,9 @@ function ColumnDroppable({
               aria-label={`Select all in ${label}`}
             />
           )}
-          <span className="truncate">{label}</span>
+          <span className={`w-fit rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusPillClass(label)}`}>
+            {label}
+          </span>
           {description ? (
             <span className="hidden truncate normal-case tracking-normal text-[var(--color-text-muted)] xl:inline">
               · {description}
@@ -765,14 +830,13 @@ function TaskCard({
             className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
           />
           {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
-          <span className="min-w-0 truncate">
-            {task.workItemKey ? (
-              <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
-                {task.workItemKey}
-              </span>
-            ) : null}
-            {task.title}
-          </span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[10px] font-mono uppercase tracking-wider text-[var(--color-text-muted)]">
+              {task.workItemKey ?? "—"}
+              {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
+            </div>
+            <div className="truncate">{task.title}</div>
+          </div>
         </div>
         <form
           action={deleteTaskAction}
@@ -794,7 +858,7 @@ function TaskCard({
         </form>
       </div>
       <div className="relative z-10 mt-1 flex items-center justify-between gap-2 text-[10px] text-[var(--color-text-muted)]">
-        <span className="truncate">{actor ? actorDisplayName(actor) : "unassigned"}</span>
+        {actor ? <span /> : <span className="truncate">unassigned</span>}
         <ElapsedClock task={task} now={now} />
         <WorkflowPill task={task} />
         <time
@@ -988,8 +1052,11 @@ function PersonCell({
 }) {
   return (
     <span className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-muted)]">
-      {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
-      <span className="truncate">{actor ? actorDisplayName(actor) : emptyLabel}</span>
+      {actor ? (
+        <MessageAvatar actor={actor} size="sm" />
+      ) : (
+        <span className="truncate">{emptyLabel}</span>
+      )}
     </span>
   );
 }
