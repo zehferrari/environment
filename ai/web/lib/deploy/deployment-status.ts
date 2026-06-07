@@ -25,7 +25,7 @@ export function deploymentStatusIcon(status: string | null | undefined) {
 }
 
 export function canShowDeploymentForTask(task: { epicId?: string | null; parentTaskId?: string | null }) {
-  return task.epicId == null && task.parentTaskId == null;
+  return task.parentTaskId == null;
 }
 
 export function checkDeploymentStatusWrite(args: {

@@ -178,6 +178,7 @@ async function updateTask(formData: FormData) {
           slug: true,
           onlyReportersCanApproveActionPlans: true,
           onlyReportersCanSetTasksDone: true,
+          onlyReportersCanApprovePullRequests: true,
         },
       },
       epic: { select: { title: true, status: true, actingManagerId: true, branchName: true, commitPrefix: true } },
@@ -1984,6 +1985,8 @@ export default async function TaskDetailPage({
                       viewerKind: viewer.kind,
                       viewerId: viewer.id,
                       reporterId: task.reporterId,
+                      reviewerId: task.actingManagerId,
+                      onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
                     })}
                   />
                 </TabPanel>

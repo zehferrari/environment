@@ -245,15 +245,22 @@ identified by filename and `/api/attachments/<id>` path.
 
 ## Work-Item Proposals (propose → approve)
 
-Implemented for direct PM chats attached to a project and for Task/Epic
-Action Plan messages. Every human-authored project-scoped message carries
-the project environment (repo path, git identity, picker defaults,
-existing epics + open tasks) plus a single-use proposal grant. In
-Task/Epic Action Plan, the grant is consumed per addressed agent so an
-`All Coders` message can let each coder submit one proposal. The agent
-must use that grant only when the current human message directly asks for
-project work-item changes. The agent does NOT mutate the board — it
-submits a typed change-set:
+Implemented for direct PM chats attached to a project, Task/Epic Action
+Plan messages, and human-authored task comments that wake an agent.
+Every human-authored project-scoped turn in those surfaces carries the
+project environment (repo path, git identity, picker defaults, existing
+epics + open tasks) plus a single-use proposal grant. Direct chats also
+mint short-lived context-read grants for the project and for any
+same-project Task/Epic links pasted in the human message, so the agent
+can fetch authoritative PM JSON from loopback instead of trying to open a
+public browser URL. In Task/Epic Action Plan and task-comment turns, the
+grant is consumed per addressed
+agent so an `All Coders` message or a multi-agent task comment can let
+each coder submit one proposal. Agent-authored comments and PM workflow
+notifications do not grant work-item management. The agent must use that
+grant only when the current human message directly asks for project
+work-item changes. The agent does NOT mutate the board — it submits a
+typed change-set:
 
 ```text
 POST http://127.0.0.1:3000/api/agent/projects/<projectId>/proposals
@@ -278,10 +285,11 @@ then dry-run-validates every op under human-triggered grant semantics:
 active principals, project scoping, hierarchy, known statuses, and valid
 task-status transitions are checked; new tasks land in Backlog, new
 epics open. The **requesting human** (the `senderUserId` of the grant
-message — direct-chat or Task/Epic Discussion) is recorded as the
-`reporterId` of every newly-created epic and task in the change-set, so
-the board attributes the request back to the human who asked the agent
-to plan it. If the grant message has been deleted by the time the human
+message — direct-chat, Task/Epic Action Plan, or mirrored task-comment
+message) is recorded as the `reporterId` of every newly-created epic and
+task in the change-set, so the board attributes the request back to the
+human who asked the agent to plan it. If the grant message has been
+deleted by the time the human
 applies the proposal, PM falls back to the agent as reporter. The proposal
 endpoint is token-scoped and intentionally does not require a browser
 session; middleware lets the request reach the route handler, where the

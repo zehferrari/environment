@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import {
@@ -16,6 +17,13 @@ import WorktreeSwitcher from "@/components/worktree-switcher";
 export const dynamic = "force-dynamic";
 
 const ACTIVITY_FEED_LIMIT = 30;
+const SETTINGS_TABS = [
+  { key: "general", label: "General" },
+  { key: "deployment", label: "Deployment" },
+  { key: "worktrees", label: "Worktree live preview" },
+  { key: "danger", label: "Danger zone" },
+] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number]["key"];
 const actorSelect = {
   id: true,
   username: true,
@@ -25,12 +33,27 @@ const actorSelect = {
   agent: { select: { slug: true, name: true, avatar: true } },
 };
 
+function single(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function parseSettingsTab(value: string | string[] | undefined): SettingsTab {
+  const tab = single(value);
+  return SETTINGS_TABS.some((item) => item.key === tab) ? (tab as SettingsTab) : "general";
+}
+
 export default async function ProjectSettingsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  searchParams?: Promise<{ tab?: string | string[] }>;
 }) {
-  const { slug } = await params;
+  const [{ slug }, sp] = await Promise.all([
+    params,
+    searchParams ?? Promise.resolve({} as { tab?: string | string[] }),
+  ]);
+  const activeTab = parseSettingsTab(sp.tab);
   const session = await auth();
   const project = await db.project.findUnique({
     where: { slug, deletedAt: null },
@@ -94,11 +117,15 @@ export default async function ProjectSettingsPage({
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div className="space-y-6">
-        <form
-          action={setProjectSettings}
-          className="space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm"
-        >
-          <input type="hidden" name="projectSlug" value={slug} />
+        <SettingsTabNav slug={slug} activeTab={activeTab} />
+
+        {activeTab === "general" ? (
+          <form
+            action={setProjectSettings}
+            className="space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm"
+          >
+            <input type="hidden" name="projectSlug" value={slug} />
+            <input type="hidden" name="settingsScope" value="general" />
 
           <SettingsRow
             label="Project name"
@@ -245,13 +272,77 @@ export default async function ProjectSettingsPage({
             />
           </SettingsRow>
 
-
           <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              Only Reporters:
+            </div>
+            <div className="grid gap-3 lg:grid-cols-3">
+              <label className="flex items-start gap-3 text-sm">
+                <input
+                  type="checkbox"
+                  name="onlyReportersCanApproveActionPlans"
+                  defaultChecked={project.onlyReportersCanApproveActionPlans}
+                  className="mt-1 h-4 w-4 rounded border-[var(--color-line)] accent-[var(--color-accent)]"
+                />
+                <span>
+                  <span className="block font-medium">Can Approve Plan of Actions</span>
+                  <span className="block text-xs text-[var(--color-text-muted)]">
+                    Reviewers and acting managers can comment on plans but cannot approve them.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 text-sm">
+                <input
+                  type="checkbox"
+                  name="onlyReportersCanSetTasksDone"
+                  defaultChecked={project.onlyReportersCanSetTasksDone}
+                  className="mt-1 h-4 w-4 rounded border-[var(--color-line)] accent-[var(--color-accent)]"
+                />
+                <span>
+                  <span className="block font-medium">Can Set Tasks to Done</span>
+                  <span className="block text-xs text-[var(--color-text-muted)]">
+                    Review can still happen normally; the final Done transition is reserved for the reporter.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 text-sm">
+                <input
+                  type="checkbox"
+                  name="onlyReportersCanApprovePullRequests"
+                  defaultChecked={project.onlyReportersCanApprovePullRequests}
+                  className="mt-1 h-4 w-4 rounded border-[var(--color-line)] accent-[var(--color-accent)]"
+                />
+                <span>
+                  <span className="block font-medium">Can Approve Pull Requests</span>
+                  <span className="block text-xs text-[var(--color-text-muted)]">
+                    Deployment PR approval is reserved for the reporter when this policy is enabled.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          <div className="flex justify-end pt-1">
+            <button
+              type="submit"
+              className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
+            >
+              Save settings
+            </button>
+          </div>
+          </form>
+        ) : null}
+
+        {activeTab === "deployment" ? (
+          <form
+            action={setProjectSettings}
+            className="space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm"
+          >
+            <input type="hidden" name="projectSlug" value={slug} />
+            <input type="hidden" name="settingsScope" value="deployment" />
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                  Deployment
-                </div>
+                <h2 className="text-sm font-semibold tracking-tight">Deployment</h2>
                 <p className="mt-1 text-xs text-[var(--color-text-muted)]">
                   Project deployment config is visible to everyone; only project owners can edit it.
                 </p>
@@ -303,75 +394,19 @@ export default async function ProjectSettingsPage({
                 <input type="text" name="deploymentBitbucketRepoSlug" defaultValue={project.deploymentBitbucketRepoSlug ?? ""} disabled={!canEditDeployment} className={deploymentInputClass} />
               </SettingsRow>
             </div>
-          </div>
-
-          <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-              Only Reporters:
+            <div className="flex justify-end pt-1">
+              <button
+                type="submit"
+                disabled={!canEditDeployment}
+                className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Save deployment settings
+              </button>
             </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="flex items-start gap-3 text-sm">
-                <input
-                  type="checkbox"
-                  name="onlyReportersCanApproveActionPlans"
-                  defaultChecked={project.onlyReportersCanApproveActionPlans}
-                  className="mt-1 h-4 w-4 rounded border-[var(--color-line)] accent-[var(--color-accent)]"
-                />
-                <span>
-                  <span className="block font-medium">Can Approve Plan of Actions</span>
-                  <span className="block text-xs text-[var(--color-text-muted)]">
-                    Reviewers and acting managers can comment on plans but cannot approve them.
-                  </span>
-                </span>
-              </label>
-              <label className="flex items-start gap-3 text-sm">
-                <input
-                  type="checkbox"
-                  name="onlyReportersCanSetTasksDone"
-                  defaultChecked={project.onlyReportersCanSetTasksDone}
-                  className="mt-1 h-4 w-4 rounded border-[var(--color-line)] accent-[var(--color-accent)]"
-                />
-                <span>
-                  <span className="block font-medium">Can Set Tasks to Done</span>
-                  <span className="block text-xs text-[var(--color-text-muted)]">
-                    Review can still happen normally; the final Done transition is reserved for the reporter.
-                  </span>
-                </span>
-              </label>
-            </div>
-          </div>
+          </form>
+        ) : null}
 
-          <div className="flex justify-end pt-1">
-            <button
-              type="submit"
-              className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
-            >
-              Save settings
-            </button>
-          </div>
-        </form>
-
-        <form
-          action={deleteProject}
-          className="w-1/2 space-y-2 rounded-2xl border border-[var(--color-crit)] bg-[var(--color-panel)] p-4 shadow-sm"
-        >
-          <input type="hidden" name="projectSlug" value={slug} />
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-crit)]">
-            Danger zone
-          </div>
-          <p className="text-xs text-[var(--color-text-muted)]">
-            Move this project to the bin. All its epics, tasks, and
-            attachments go with it. Auto-purged after 30 days.
-          </p>
-          <button
-            type="submit"
-            className="w-full rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--color-crit)] hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
-          >
-            Delete project
-          </button>
-        </form>
-
-        {showSwitcher && switchState ? (
+        {activeTab === "worktrees" ? (
           <section className="space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm">
             <div>
               <h2 className="text-sm font-semibold tracking-tight">Worktree live preview</h2>
@@ -391,8 +426,36 @@ export default async function ProjectSettingsPage({
               service per project repo). For now switching routes through the
               single shared PM app service.
             </div>
-            <WorktreeSwitcher initial={switchState} repoKey={repoKey ?? ""} />
+            {showSwitcher && switchState ? (
+              <WorktreeSwitcher initial={switchState} repoKey={repoKey ?? ""} />
+            ) : (
+              <p className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm text-[var(--color-text-muted)]">
+                No live-preview worktrees are available for this project repository on this host.
+              </p>
+            )}
           </section>
+        ) : null}
+
+        {activeTab === "danger" ? (
+          <form
+            action={deleteProject}
+            className="w-1/2 space-y-2 rounded-2xl border border-[var(--color-crit)] bg-[var(--color-panel)] p-4 shadow-sm"
+          >
+            <input type="hidden" name="projectSlug" value={slug} />
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-crit)]">
+              Danger zone
+            </div>
+            <p className="text-xs text-[var(--color-text-muted)]">
+              Move this project to the bin. All its epics, tasks, and
+              attachments go with it. Auto-purged after 30 days.
+            </p>
+            <button
+              type="submit"
+              className="w-full rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--color-crit)] hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+            >
+              Delete project
+            </button>
+          </form>
         ) : null}
       </div>
 
@@ -403,6 +466,29 @@ export default async function ProjectSettingsPage({
         <ActivityAgenda feed={feed} />
       </aside>
     </div>
+  );
+}
+
+function SettingsTabNav({ slug, activeTab }: { slug: string; activeTab: SettingsTab }) {
+  return (
+    <nav className="flex flex-wrap gap-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-2 shadow-sm" aria-label="Project settings tabs">
+      {SETTINGS_TABS.map((tab) => {
+        const active = tab.key === activeTab;
+        return (
+          <Link
+            key={tab.key}
+            href={`/projects/${slug}/settings?tab=${tab.key}`}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+              active
+                ? "bg-[var(--color-accent)] text-[var(--color-bg)]"
+                : "text-[var(--color-text-muted)] hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+            }`}
+          >
+            {tab.label}
+          </Link>
+        );
+      })}
+    </nav>
   );
 }
 

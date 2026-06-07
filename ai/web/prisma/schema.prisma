@@ -145,6 +145,7 @@ model Project {
   nextWorkItemNumber  Int     @default(1) @map("next_work_item_number")
   onlyReportersCanApproveActionPlans Boolean @default(false) @map("only_reporters_can_approve_action_plans")
   onlyReportersCanSetTasksDone       Boolean @default(false) @map("only_reporters_can_set_tasks_done")
+  onlyReportersCanApprovePullRequests Boolean @default(false) @map("only_reporters_can_approve_pull_requests")
   defaultAssigneeId   String?
   defaultAssignee     User?     @relation("ProjectDefaultAssignee", fields: [defaultAssigneeId], references: [id])
   defaultReviewerId   String?

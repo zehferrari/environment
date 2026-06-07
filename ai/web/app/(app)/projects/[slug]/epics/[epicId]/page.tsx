@@ -129,6 +129,13 @@ function payloadValue(payload: string | null | undefined, key: string) {
   }
 }
 
+function uniqueStrings(values: Array<string | null | undefined>) {
+  return [...new Set(values.flatMap((value) => {
+    const trimmed = value?.trim();
+    return trimmed ? [trimmed] : [];
+  }))];
+}
+
 async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> {
   const session = await auth();
   const id = session?.user?.id;
@@ -322,6 +329,7 @@ export default async function EpicDetailPage({
           name: true,
           repositoryPath: true,
           onlyReportersCanApproveActionPlans: true,
+          onlyReportersCanApprovePullRequests: true,
         },
       },
       actingManager: {
@@ -390,6 +398,8 @@ export default async function EpicDetailPage({
           statusChangedAt: true,
           approvedOn: true,
           archivedAt: true,
+          branchName: true,
+          commitPrefix: true,
           reporter: {
             select: {
               id: true,
@@ -637,11 +647,22 @@ export default async function EpicDetailPage({
     commitPrefix: epic.commitPrefix,
     workItemKey: epic.workItemKey,
   });
+  const childTaskCommitPrefixes = epic.tasks.map((task) =>
+    effectiveCommitPrefix({
+      commitPrefix: task.commitPrefix ?? epic.commitPrefix,
+      workItemKey: task.workItemKey ?? null,
+    }),
+  );
+  const epicChangeCommitPrefixes = uniqueStrings([
+    epicCommitPrefix,
+    ...childTaskCommitPrefixes,
+  ]);
+  const epicChangeBranchName = epic.branchName ?? epic.tasks.find((task) => task.branchName)?.branchName ?? null;
   const epicChanges = selectedTab === "Changes"
     ? await getTaskGitChanges({
         repositoryPath: epic.project.repositoryPath,
-        branchName: epic.branchName,
-        commitPrefix: epicCommitPrefix,
+        branchName: epicChangeBranchName,
+        commitPrefix: epicChangeCommitPrefixes,
       })
     : { commits: [], ref: null, error: null };
   const selectedDiff = selectedTab === "Changes"
@@ -1144,6 +1165,8 @@ export default async function EpicDetailPage({
                     viewerKind: session?.user?.kind === "agent" ? "agent" : "human",
                     viewerId: session?.user?.id ?? null,
                     reporterId: epic.reporterId,
+                    reviewerId: epic.actingManagerId,
+                    onlyReportersCanApprovePullRequests: epic.project.onlyReportersCanApprovePullRequests,
                   })}
                 />
               </TabPanel>
@@ -1367,8 +1390,10 @@ export default async function EpicDetailPage({
               <TabPanel name="Changes">
                 <TaskChangesPanel
                   changes={epicChanges}
-                  branchName={epic.branchName}
+                  branchName={epicChangeBranchName}
                   commitPrefix={epicCommitPrefix}
+                  commitPrefixes={epicChangeCommitPrefixes}
+                  scopeLabel="epic"
                   baseHref={`/projects/${slug}/epics/${epic.id}`}
                   selectedDiff={selectedDiff}
                 />

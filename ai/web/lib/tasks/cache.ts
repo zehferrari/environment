@@ -64,6 +64,7 @@ export function getCachedTaskDetailShell(taskId: string) {
             repositoryPath: true,
             onlyReportersCanApproveActionPlans: true,
             onlyReportersCanSetTasksDone: true,
+            onlyReportersCanApprovePullRequests: true,
           },
         },
         assignee: {

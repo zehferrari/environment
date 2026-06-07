@@ -316,7 +316,9 @@ function escapeRegExp(value: string) {
 function bitbucketAuth() {
   const username = process.env.BITBUCKET_USERNAME ?? process.env.BITBUCKET_USER;
   const password = process.env.BITBUCKET_APP_PASSWORD ?? process.env.BITBUCKET_TOKEN;
-  if (!username || !password) throw new Error("BITBUCKET_USERNAME and BITBUCKET_APP_PASSWORD are required");
+  if (!username || !password) {
+    throw new Error("Bitbucket API credentials are required: set BITBUCKET_USERNAME (or BITBUCKET_USER) and BITBUCKET_APP_PASSWORD (or BITBUCKET_TOKEN) in the PM service environment.");
+  }
   return Buffer.from(`${username}:${password}`).toString("base64");
 }
 
@@ -385,6 +387,9 @@ export async function handleDeploymentApproved(args: {
       },
     };
   }
+  // PR creation/polling uses Bitbucket's REST API. Check this before any git
+  // push so deployment approval fails on the actionable host credential issue.
+  bitbucketAuth();
   const prs: OpenedDeploymentPr[] = [];
   for (const target of plan.targets) {
     const verification = await verifyDeploymentBranch({

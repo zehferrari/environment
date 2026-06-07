@@ -15,6 +15,12 @@
 # Installed to /usr/local/sbin/pm-apply-worktree by ai/web/deploy/install-pm-switch.sh.
 set -euo pipefail
 
+MODE="apply"
+if [[ "${1:-}" == "--stop-live" || "${1:-}" == "--prepare-build" ]]; then
+  MODE="${1#--}"
+  shift
+fi
+
 STANDALONE="${1:-}"
 DB_URL="${2:-}"
 WT_ROOT="${PM_WORKTREES_ROOT:-/srv/Code/environment.worktrees}"
@@ -38,6 +44,24 @@ set_acl(){ setfacl "$@" 2>/dev/null || true; }
 
 service_user() {
   systemctl show -p User --value "$1" 2>/dev/null || true
+}
+
+served_worktree() {
+  local wd
+  wd="$(systemctl show -p WorkingDirectory --value pm.service 2>/dev/null || true)"
+  [[ "$wd" == */ai/web/.next/standalone ]] && printf '%s\n' "${wd%/ai/web/.next/standalone}"
+}
+
+active_database_path() {
+  local raw db_path
+  [[ -r "$ACTIVE_ENV_FILE" ]] || return 0
+  raw="$(sed -n 's/^DATABASE_URL=//p' "$ACTIVE_ENV_FILE" | tail -1)"
+  case "$raw" in
+    file://*) db_path="${raw#file://}" ;;
+    file:*)   db_path="${raw#file:}" ;;
+    *)        return 0 ;;
+  esac
+  readlink -f "$db_path" 2>/dev/null || true
 }
 
 grant_service_access() {
@@ -70,13 +94,27 @@ grant_service_access() {
 }
 
 [[ $EUID -eq 0 ]] || die "must run as root (via sudo)"
-[[ -n "$STANDALONE" && -n "$DB_URL" ]] || die "usage: pm-apply-worktree <…/ai/web/.next/standalone> <file:/srv/Data/pm/wt-branch.db>"
+[[ -n "$STANDALONE" && -n "$DB_URL" ]] || die "usage: pm-apply-worktree [--stop-live <…/standalone> | --prepare-build <…/ai/web> | <…/standalone>] <file:/srv/Data/pm/wt-branch.db>"
 
 real="$(readlink -f "$STANDALONE" 2>/dev/null || true)"
-[[ -n "$real" ]]                                    || die "path does not resolve: $STANDALONE"
-[[ "$real" == "$WT_ROOT"/*/ai/web/.next/standalone ]] || die "refused: $real is not <$WT_ROOT>/*/ai/web/.next/standalone"
-[[ -f "$real/server.js" ]]                          || die "no server.js in $real (build the worktree first)"
-app_root="${real%/.next/standalone}"
+if [[ "$MODE" == "stop-live" && -z "$real" && "$STANDALONE" == */ai/web/.next/standalone ]]; then
+  app_root="$(readlink -f "${STANDALONE%/.next/standalone}" 2>/dev/null || true)"
+  [[ -n "$app_root" && "$app_root" == "$WT_ROOT"/*/ai/web ]] || die "refused: ${STANDALONE%/.next/standalone} is not <$WT_ROOT>/*/ai/web"
+  real="$app_root/.next/standalone"
+elif [[ -z "$real" ]]; then
+  die "path does not resolve: $STANDALONE"
+fi
+if [[ "$MODE" == "prepare-build" ]]; then
+  [[ "$real" == "$WT_ROOT"/*/ai/web ]] || die "refused: $real is not <$WT_ROOT>/*/ai/web"
+  app_root="$real"
+elif [[ "$MODE" != "stop-live" ]]; then
+  [[ "$real" == "$WT_ROOT"/*/ai/web/.next/standalone ]] || die "refused: $real is not <$WT_ROOT>/*/ai/web/.next/standalone"
+  [[ -f "$real/server.js" ]]                          || die "no server.js in $real (build the worktree first)"
+  app_root="${real%/.next/standalone}"
+else
+  [[ "$real" == "$WT_ROOT"/*/ai/web/.next/standalone ]] || die "refused: $real is not <$WT_ROOT>/*/ai/web/.next/standalone"
+  app_root="${real%/.next/standalone}"
+fi
 
 case "$DB_URL" in
   file://*) db_path="${DB_URL#file://}" ;;
@@ -88,6 +126,48 @@ db_real="$(readlink -f "$db_path" 2>/dev/null || true)"
 [[ -n "$db_root" && -n "$db_real" ]] || die "DB path does not resolve: $db_path"
 [[ "$db_real" == "$db_root"/wt-*.db ]] || die "refused: $db_real is not a per-worktree DB under $db_root"
 [[ -f "$db_real" ]] || die "DB file does not exist: $db_real"
+
+if [[ "$MODE" == "prepare-build" ]]; then
+  # Cross-user worktree builds commonly leave generated files owned by the
+  # previous builder. The monitor-run switcher must be able to regenerate them
+  # without broader sudo permissions.
+  builder_user="${SUDO_USER:-}"
+  builder_group=""
+  if [[ -n "$builder_user" && "$builder_user" != "root" ]] && id "$builder_user" >/dev/null 2>&1; then
+    builder_group="$(id -gn "$builder_user")"
+  fi
+  rm -rf "$app_root/.next" \
+    "$app_root"/node_modules/.pnpm/@prisma+client*/node_modules/.prisma \
+    2>/dev/null || true
+  if [[ -n "$builder_user" && -n "$builder_group" ]]; then
+    install -d -o "$builder_user" -g "$builder_group" -m 0775 "$app_root/.next"
+    set_acl -m "u:$builder_user:rwx" "$app_root" "$app_root/.next"
+    for prisma_parent in "$app_root"/node_modules/.pnpm/@prisma+client*/node_modules; do
+      [[ -d "$prisma_parent" ]] || continue
+      set_acl -m "u:$builder_user:rwx" "$prisma_parent"
+      install -d -o "$builder_user" -g "$builder_group" -m 0755 "$prisma_parent/.prisma"
+    done
+  fi
+  printf 'pm-apply-worktree: prepared build artifacts under %s\n' "$app_root"
+  exit 0
+fi
+
+if [[ "$MODE" == "stop-live" ]]; then
+  worktree_root="${app_root%/ai/web}"
+  current_worktree="$(served_worktree || true)"
+  current_db="$(active_database_path || true)"
+  if [[ "$current_worktree" == "$worktree_root" || "$current_db" == "$db_real" ]]; then
+    if systemctl list-unit-files 'pm-consumer.service' --no-legend 2>/dev/null | grep -q '^pm-consumer\.service'; then
+      systemctl stop pm-consumer.service
+    fi
+    systemctl stop pm.service
+    printf 'pm-apply-worktree: stopped live PM services for %s with DATABASE_URL=file:%s\n' "$real" "$db_real"
+  else
+    printf 'pm-apply-worktree: target is not currently live; no pre-build stop needed\n'
+  fi
+  exit 0
+fi
+
 [[ -f "$BASE_ENV_FILE" ]] || die "base PM env file does not exist: $BASE_ENV_FILE"
 env_group="$(stat -c '%G' "$BASE_ENV_FILE")"
 pm_user="$(service_user pm.service)"

@@ -121,15 +121,33 @@ function normalizeWindows(windows: TaskGitChangesWindow[] | null | undefined) {
   });
 }
 
+function normalizePrefixes(commitPrefix: string | string[] | null | undefined) {
+  const values = Array.isArray(commitPrefix) ? commitPrefix : [commitPrefix];
+  return [...new Set(values.flatMap((value) => {
+    const prefix = value?.trim().toLowerCase();
+    return prefix ? [prefix] : [];
+  }))];
+}
+
+function subjectStartsWithPrefix(subject: string, prefix: string) {
+  if (!subject.startsWith(prefix)) return false;
+  const next = subject.charAt(prefix.length);
+  return !next || /[^a-z0-9]/i.test(next);
+}
+
 function filterCommits(
   commits: TaskGitCommit[],
-  commitPrefix: string | null,
+  commitPrefix: string | string[] | null,
   windows: TaskGitChangesWindow[] | null | undefined,
 ) {
-  const normalizedPrefix = commitPrefix?.trim().toLowerCase() || null;
+  const normalizedPrefixes = normalizePrefixes(commitPrefix);
   const normalizedWindows = normalizeWindows(windows);
   const filtered = commits.filter((commit) => {
-    if (normalizedPrefix && !commit.subject.toLowerCase().startsWith(normalizedPrefix)) {
+    const subject = commit.subject.toLowerCase();
+    if (
+      normalizedPrefixes.length > 0 &&
+      !normalizedPrefixes.some((prefix) => subjectStartsWithPrefix(subject, prefix))
+    ) {
       return false;
     }
     if (normalizedWindows.length === 0) return true;
@@ -227,7 +245,7 @@ function parseUnifiedDiff(stdout: string, commitHash: string, filePath: string):
 export async function getTaskGitChanges(args: {
   repositoryPath: string | null | undefined;
   branchName: string | null | undefined;
-  commitPrefix: string | null | undefined;
+  commitPrefix: string | string[] | null | undefined;
   windows?: TaskGitChangesWindow[] | null | undefined;
 }): Promise<TaskGitChangesResult> {
   if (!args.repositoryPath) {

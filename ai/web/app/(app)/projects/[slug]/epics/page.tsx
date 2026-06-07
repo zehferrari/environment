@@ -230,13 +230,21 @@ function DeploymentIndicator({ status }: { status: string }) {
   const icon = deploymentStatusIcon(status);
   if (icon === "—") {
     return (
-      <span className="w-fit rounded border border-[var(--color-line)] px-1 text-[10px] text-[var(--color-text-muted)]" title="Deployment: Not Required">
+      <span
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-[var(--color-line)] text-[9px] text-[var(--color-text-muted)] transition hover:scale-110 hover:border-[var(--color-accent)]"
+        title="Deployment: Not Required"
+        aria-label="Deployment: Not Required"
+      >
         —
       </span>
     );
   }
   return (
-    <span className="text-sm" title={`Deployment: ${status}`} aria-label={`Deployment: ${status}`}>
+    <span
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-[10px] leading-none transition hover:scale-110"
+      title={`Deployment: ${status}`}
+      aria-label={`Deployment: ${status}`}
+    >
       {icon}
     </span>
   );

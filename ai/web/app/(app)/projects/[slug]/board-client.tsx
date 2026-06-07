@@ -832,13 +832,18 @@ function TaskCard({
             className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
           />
           {task.status === "Done" ? <BoardReporterMarker task={task} /> : actor ? <MessageAvatar actor={actor} size="sm" /> : null}
-          {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[10px] font-mono uppercase tracking-wider text-[var(--color-text-muted)]">
-              {task.workItemKey ?? "—"}
+            <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
+              {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
+              <span className="truncate font-mono uppercase tracking-wider">
+                {task.workItemKey ?? "—"}
+              </span>
               {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
             </div>
             <div className="truncate">{task.title}</div>
+            <div className="mt-1 flex justify-start">
+              <ElapsedClock task={task} now={now} />
+            </div>
           </div>
         </div>
         <form
@@ -861,8 +866,11 @@ function TaskCard({
         </form>
       </div>
       <div className="relative z-10 mt-1 flex items-center justify-between gap-2 text-[10px] text-[var(--color-text-muted)]">
-        {actor ? <span /> : <span className="truncate">unassigned</span>}
-        <ElapsedClock task={task} now={now} />
+        {actor ? (
+          <span className="truncate">{actorDisplayName(actor)}</span>
+        ) : (
+          <span className="truncate">unassigned</span>
+        )}
         <time
           dateTime={task.updatedAt}
           title={task.updatedAt}
@@ -1014,13 +1022,21 @@ function DeploymentIndicator({ status }: { status: string }) {
   const icon = deploymentStatusIcon(status);
   if (icon === "—") {
     return (
-      <span className="rounded border border-[var(--color-line)] px-1 text-[10px] text-[var(--color-text-muted)]" title="Deployment: Not Required">
+      <span
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-[var(--color-line)] text-[9px] text-[var(--color-text-muted)] transition hover:scale-110 hover:border-[var(--color-accent)]"
+        title="Deployment: Not Required"
+        aria-label="Deployment: Not Required"
+      >
         —
       </span>
     );
   }
   return (
-    <span className="text-sm" title={`Deployment: ${status}`} aria-label={`Deployment: ${status}`}>
+    <span
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-[10px] leading-none transition hover:scale-110"
+      title={`Deployment: ${status}`}
+      aria-label={`Deployment: ${status}`}
+    >
       {icon}
     </span>
   );
@@ -1032,7 +1048,15 @@ function canShowTaskDeploymentIndicator(task: Task) {
 
 function BoardReporterMarker({ task }: { task: Task }) {
   if (canShowTaskDeploymentIndicator(task) && task.deploymentStatus !== "Not Required") {
-    return <span className="text-sm" title="Deployment automation">🤖</span>;
+    return (
+      <span
+        className="text-sm"
+        title={`Deployment: ${task.deploymentStatus}`}
+        aria-label={`Deployment: ${task.deploymentStatus}`}
+      >
+        🤖
+      </span>
+    );
   }
   return task.reporter ? <MessageAvatar actor={task.reporter} size="sm" /> : null;
 }

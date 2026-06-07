@@ -26,12 +26,15 @@ ExecStart=/usr/local/bin/pnpm pm-consumer
 Restart=on-failure
 RestartSec=3s
 
-# Karen fallback uses a tightly-scoped passwordless sudo helper when a
+# Monitor fallback uses a tightly-scoped passwordless sudo helper when a
 # target gateway hook is unavailable, so this service cannot set
 # NoNewPrivileges=true.
 NoNewPrivileges=false
 ProtectSystem=strict
-ProtectHome=true
+# Deployment approval runs git as the monitor user. SSH reads that user's
+# known_hosts/key from its login home even though pnpm HOME is redirected
+# below, so keep home directories read-only rather than fully hidden.
+ProtectHome=read-only
 PrivateTmp=true
 ReadWritePaths=/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma /var/lib/pm/drop /var/lib/pm/pnpm-home /var/lib/pm/pnpm-config /var/lib/pm/pnpm-cache
 ReadOnlyPaths=/srv/agents /etc/openclaw/pm-consumer-tokens.json

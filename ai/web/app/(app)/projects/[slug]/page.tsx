@@ -339,6 +339,7 @@ export default async function ProjectBoardPage({
           epic: {
             select: {
               title: true,
+              deploymentStatus: true,
               actingManager: { select: actorSelect },
             },
           },
@@ -395,7 +396,7 @@ export default async function ProjectBoardPage({
           updatedAt: t.updatedAt.toISOString(),
           statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
           approvedOn: t.approvedOn?.toISOString() ?? null,
-          deploymentStatus: t.deploymentStatus,
+          deploymentStatus: t.epic?.deploymentStatus ?? t.deploymentStatus,
           epicId: t.epicId,
           reporter: serializeActor(t.reporter),
           assignee: serializeActor(t.assignee),

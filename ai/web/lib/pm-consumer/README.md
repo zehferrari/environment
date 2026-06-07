@@ -6,7 +6,7 @@ Long-running OpenClaw-side service that reads PmEvents from the
 dispatch boundary (`lib/pm-dispatch`), validates them, resolves the
 target agent, and wakes that agent's local OpenClaw gateway via
 `POST /hooks/wake`. On same-host installs without the hook, or during a
-hook outage, it can fall back to Karen's `openclaw-control wake-agent`
+hook outage, it can fall back to the monitor agent's `openclaw-control wake-agent`
 bridge. Slices 1-3 produced the envelope and emitter side; this slice
 closes the loop on the consumer end.
 
@@ -52,16 +52,22 @@ For each received envelope:
    hooks with `hooks.enabled=true`, `hooks.path="/hooks"`, and
    `hooks.token`.
    If the token is missing, the endpoint is unavailable, or the request
-   fails, the consumer tries Karen's same-host helper unless
-   `PM_CONSUMER_KAREN_WAKE_FALLBACK=off`.
+   fails, the consumer tries the monitor same-host helper unless
+   `PM_CONSUMER_MONITOR_WAKE_FALLBACK=off`.
    Exhausting both paths ⇒ "failed".
 6. Audit — exactly one `ActivityLog{ kind: "agent.wake.<outcome>" }`
    row per envelope, with `targetAgent` set so HOMELAB-51's
    agent-action audit trail can be queried per-slug.
+   Deployment-approved Epic envelopes are project-scoped for audit
+   purposes because their `task.id` field carries the Epic ID for the
+   legacy envelope shape.
 
 `PmEventDelivery` can be truncated for retention without losing the
 audit trail — that's the HOMELAB-51 "audit-survives-pm_events-
 truncation" property.
+Duplicate file-drop envelopes are checked before insert as well as by
+the unique index. Stale duplicate files should be archived after one
+`skipped-duplicate` outcome instead of being retried forever.
 
 ## HOMELAB-46 acceptance
 
@@ -92,9 +98,9 @@ group:
 
 ```json
 {
-  "asdrubal": "<same secret as asdrubal hooks.token>",
-  "barekbaal": "<same secret as barekbaal hooks.token>",
-  "karen": "<same secret as karen hooks.token>"
+  "coding-agent": "<same secret as coding-agent hooks.token>",
+  "review-agent": "<same secret as review-agent hooks.token>",
+  "monitor-agent": "<same secret as monitor-agent hooks.token>"
 }
 ```
 
@@ -122,19 +128,21 @@ authenticated `POST /hooks/wake` returns 200. The gateway listener
 should show `127.0.0.1:<gateway_port>` in `ss -ltnp`, not
 `0.0.0.0:<gateway_port>`.
 
-## Karen wake fallback
+## Monitor Wake Fallback
 
-Set `PM_CONSUMER_KAREN_WAKE_FALLBACK=off` to disable the fallback. The
-helper path defaults to `/usr/local/sbin/pm-karen-wake-agent` and can be
-overridden with `PM_KAREN_WAKE_HELPER`.
+Set `PM_CONSUMER_MONITOR_WAKE_FALLBACK=off` to disable the fallback. The
+legacy `PM_CONSUMER_KAREN_WAKE_FALLBACK=off` name is still honored on
+older hosts. The helper path defaults to the existing host helper path
+and can be overridden with `PM_MONITOR_WAKE_HELPER` or the legacy helper
+environment name.
 
 The helper should be narrowly scoped: the PM consumer user runs it with
-passwordless sudo, and the helper delegates to Karen's existing
+passwordless sudo, and the helper delegates to the monitor agent's existing
 `openclaw-control wake-agent` permission. This is a degraded same-host
 fallback; normal task-chat and mention delivery should hit each target
 agent's `/hooks/wake` endpoint directly. When the fallback is used for a
 PM chat wake, the consumer passes `--session-key <pm:...>` through
-Karen's helper so `openclaw system event` still lands in the PM-bound
+the monitor helper so `openclaw system event` still lands in the PM-bound
 session.
 
 ## Running
@@ -149,7 +157,7 @@ pnpm tsx scripts/pm-consumer.ts
 pnpm tsx scripts/pm-consumer-replay-test.ts
 ```
 
-## Rebuild / restart guidance (Asdrubal request, HOMELAB-44 cmt 12317)
+## Rebuild / Restart Guidance
 
 - Schema change: `pnpm prisma migrate deploy` (or `db push` for the
   dev DB) applies the Slice 4 migration that adds `PmEventDelivery`.

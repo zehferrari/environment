@@ -8,10 +8,10 @@ These files stay separate for each registered coding agent. Each lives under `/h
 
 | File | Source of truth | Purpose |
 |---|---|---|
-| `AGENTS.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/AGENTS.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/AGENTS.md`) | **Shared baseline for every agent.** Both `~/workspace/AGENTS.md` and `~/.openclaw/workspace/AGENTS.md` symlink to the repo file. |
-| `ROLES.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/ROLES.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/ROLES.md`) | Role-specific behaviour (`## Manager`, `## Developer`, `## Monitor`). Agent identifies its role from `agents.json` and reads the matching section. Same symlink pattern as `AGENTS.md`. |
-| `TEAM_WORKFLOW.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/TEAM_WORKFLOW.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/TEAM_WORKFLOW.md`) | Action-indexed workflow playbook. Same symlink pattern. |
-| `CODE_REPOS.md` | host checkout (x1: `/srv/Code/environment/ai/openclaw/CODE_REPOS.md`; yoga510: `/home/rachael/Code/environment/ai/openclaw/CODE_REPOS.md`) | Shared-code workflow for `/srv/Code`, `claim-branch`, git identity, and the human-only PR boundary. Same symlink pattern. |
+| `AGENTS.md` | active OpenClaw checkout that ran `ai/openclaw/install.sh` (`<openclaw-root>/AGENTS.md`) | **Shared baseline for every agent.** Both `~/workspace/AGENTS.md` and `~/.openclaw/workspace/AGENTS.md` symlink to the repo file. |
+| `ROLES.md` | active OpenClaw checkout that ran `ai/openclaw/install.sh` (`<openclaw-root>/ROLES.md`) | Role-specific behaviour (`## Manager`, `## Developer`, `## Monitor`). Agent identifies its role from `agents.json` and reads the matching section. Same symlink pattern as `AGENTS.md`. |
+| `TEAM_WORKFLOW.md` | active OpenClaw checkout that ran `ai/openclaw/install.sh` (`<openclaw-root>/TEAM_WORKFLOW.md`) | Action-indexed workflow playbook. Same symlink pattern. |
+| `CODE_REPOS.md` | active OpenClaw checkout that ran `ai/openclaw/install.sh` (`<openclaw-root>/CODE_REPOS.md`) | Shared-code workflow for `/srv/Code`, `claim-branch`, git identity, and the human-only PR boundary. Same symlink pattern. |
 | `SOUL.md` | `~/workspace/SOUL.md` (per-agent, not in this repo) | Personality, tone, decision-making heuristics. Free-form, agent-specific. |
 | `IDENTITY.md` | `~/workspace/IDENTITY.md` (per-agent) | Core "who am I" preamble loaded on every session start. |
 | `USER.md` | `~/workspace/USER.md` (per-agent) | What the agent knows about zeh from the agent's own perspective. |
@@ -19,7 +19,8 @@ These files stay separate for each registered coding agent. Each lives under `/h
 | `MEMORY.md` | `~/workspace/MEMORY.md` (per-agent) | Long-running per-agent memory (project history, recurring topics, pending follow-ups). |
 | `HEARTBEAT.md` | `~/workspace/HEARTBEAT.md` (per-agent) | Liveness marker / last-tick state. |
 
-The monitoring agent (`karen`) only has `~/.openclaw/workspace/`, no user-facing `~/workspace/`, so its per-agent files live there directly (no symlink needed).
+The monitor agent only has `~/.openclaw/workspace/`, no user-facing
+`~/workspace/`, so its per-agent files live there directly.
 
 ## Authentication & secrets — `~/.ssh/`, `~/.config/`
 

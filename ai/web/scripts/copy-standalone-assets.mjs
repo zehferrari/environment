@@ -22,3 +22,10 @@ async function copyDir(source, target) {
 
 await copyDir(path.join(root, ".next", "static"), path.join(standaloneRoot, ".next", "static"));
 await copyDir(path.join(root, "public"), path.join(standaloneRoot, "public"));
+
+// pm.service grants this exact path via systemd ReadWritePaths. `next build`
+// recreates `.next/standalone`, so make sure the path exists before systemd
+// starts; otherwise the service fails sandbox setup with status=226/NAMESPACE
+// and nginx returns 502 because port 3000 never binds.
+await mkdir(path.join(standaloneRoot, ".next", "cache", "fetch-cache"), { recursive: true });
+console.log("[postbuild] ensured .next/standalone/.next/cache/fetch-cache exists");

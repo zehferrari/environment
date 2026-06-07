@@ -36,6 +36,12 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 export async function appendDelivery(args: AppendArgs): Promise<AppendResult> {
+  const existing = await db.pmEventDelivery.findUnique({
+    where: { dedupeKey: args.dedupeKey },
+    select: { id: true },
+  });
+  if (existing) return { status: "duplicate" };
+
   try {
     const row = await db.pmEventDelivery.create({
       data: {

@@ -240,18 +240,24 @@ task using this priority order:
 ## Work-item proposals
 
 Zero Latency supports grant-scoped **propose -> approve** work-item
-planning from direct PM chat and Task/Epic Action Plan turns.
+planning from direct PM chat, Task/Epic Action Plan turns, and
+human-authored task comments that wake an agent.
 
 Use this only when all of these are true:
 
 - The turn is project-scoped: either a direct chat attached to a target
-  project, or a Task/Epic Action Plan message.
+  project, a Task/Epic Action Plan message, or a human-authored task
+  comment mirrored into your PM channel.
+- Direct project chats include short-lived context-read grants for the
+  project and for same-project Task/Epic links in the human message. Use
+  those loopback URLs as the source of truth; do not try to open public
+  PM URLs from your browser-less agent environment.
 - The current message was authored by a human, which grants proposal
   capability for explicit project-change requests by default.
 - The PM turn supplied a single-use grant token and proposal endpoint.
-  In Task/Epic Action Plan, that grant is single-use per addressed agent,
-  so `All Coders` can submit independent proposals from the same human
-  message.
+  In Task/Epic Action Plan and task-comment turns, that grant is
+  single-use per addressed agent, so `All Coders` or multi-agent task
+  comments can submit independent proposals from the same human message.
 
 The agent submits a typed change-set to:
 
@@ -283,7 +289,8 @@ Rules:
 
 Do not create tasks, epics, comments, or status changes by writing the
 database directly. Use the grant-scoped endpoint only when PM supplied a
-grant for that message.
+grant for that message. Agent-authored comments and PM workflow
+notifications do not grant work-item management.
 
 ---
 

@@ -1,12 +1,13 @@
 // Work-item proposal validator smoke (agent planning, Slice 1).
 //
-// Exercises lib/work-items/proposal.ts::validateProposal and
-// lib/agents/work-item-token.ts against a hermetic throwaway sqlite DB,
-// mirroring scripts/pm-dispatch-integration.ts. The full Next request /
-// grant / auth path on POST /api/agent/projects/[id]/proposals is not in
-// scope here (it lands with the apply loop + UI in Slice 3); this script
-// pins the change-set rules + temp-ref resolution + token round-trip +
-// planId uniqueness so they fail loudly if they drift.
+// Exercises lib/work-items/proposal.ts::validateProposal,
+// lib/agents/work-item-token.ts, and task-comment proposal grant
+// injection against a hermetic throwaway sqlite DB, mirroring
+// scripts/pm-dispatch-integration.ts. The full Next request / auth path
+// on POST /api/agent/projects/[id]/proposals is not in scope here; this
+// script pins the change-set rules + temp-ref resolution + token
+// round-trip + grant prompt wiring + planId uniqueness so they fail
+// loudly if they drift.
 //
 // Run with:
 //   pnpm tsx scripts/work-item-proposal-smoke.ts
@@ -88,6 +89,9 @@ async function main(): Promise<void> {
   // works. The token module reads AUTH_SECRET lazily at call time, so this
   // does not change production behaviour. Real envs already set it.
   process.env.AUTH_SECRET ??= "smoke-test-secret";
+  process.env.PM_ASYNC_DISPATCH = "1";
+  process.env.PM_ASYNC_DISPATCH_INLINE_NUDGE = "0";
+  process.env.PM_AGENT_CALLBACK_URL = "http://127.0.0.1:3000";
 
   const sandbox = await mkdtemp(path.join(tmpdir(), "wip-proposal-"));
   const dbUrl = `file:${path.join(sandbox, "test.db")}`;
@@ -101,6 +105,7 @@ async function main(): Promise<void> {
     process.env.DATABASE_URL = dbUrl;
     const dbMod = await import("../lib/db");
     const { validateProposal } = await import("../lib/work-items/proposal");
+    const { sendTaskCommentNotifications } = await import("../lib/agents/task-workflow-notifications");
     db = dbMod.db as unknown as { $disconnect: () => Promise<void> };
     const prisma = dbMod.db;
 
@@ -174,6 +179,73 @@ async function main(): Promise<void> {
     check("token verifies", verifyWorkItemGrantToken(P, agent.slug, "msg_1", tok));
     check("token rejects tamper", !verifyWorkItemGrantToken(P, agent.slug, "msg_1", `${tok}x`));
     check("token rejects wrong message", !verifyWorkItemGrantToken(P, agent.slug, "msg_2", tok));
+
+    // --- human task comments grant one-shot work-item proposal capability ---
+    const commentGrantTask = await prisma.task.create({
+      data: {
+        projectId: project.id,
+        title: "Comment grant task",
+        status: "To Do",
+        rank: 5,
+        statusChangedAt: new Date(),
+        assigneeId: agentUser.id,
+        actingManagerId: human.id,
+      },
+    });
+    const grantComment = await prisma.comment.create({
+      data: {
+        taskId: commentGrantTask.id,
+        userId: human.id,
+        body: "@smokecoder please create a follow-up task for this project",
+      },
+    });
+    const notifications = await sendTaskCommentNotifications({
+      taskId: commentGrantTask.id,
+      commentId: grantComment.id,
+      body: grantComment.body,
+      actor: { id: human.id, kind: "human", username: human.username },
+    });
+    const agentNotification = notifications.find((n) => n.agentSlug === agent.slug);
+    check("task comment woke target agent", !!agentNotification, notifications);
+    const mirroredGrant = agentNotification
+      ? await prisma.agentChatMessage.findUnique({
+          where: { id: agentNotification.id },
+          select: {
+            id: true,
+            allowWorkItemManagement: true,
+            workItemGrantUsedAt: true,
+          },
+        })
+      : null;
+    check(
+      "human task comment mirror grants work-item management",
+      mirroredGrant?.allowWorkItemManagement === true && mirroredGrant.workItemGrantUsedAt === null,
+      mirroredGrant,
+    );
+    const grantRun = mirroredGrant
+      ? await prisma.pmChannelRun.findFirst({
+          where: { messageId: mirroredGrant.id, agentSlug: agent.slug },
+          select: { id: true },
+        })
+      : null;
+    const grantJob = grantRun
+      ? await prisma.pmChannelJob.findUnique({
+          where: { runId: grantRun.id },
+          select: { payload: true },
+        })
+      : null;
+    const grantPayload = grantJob ? JSON.parse(grantJob.payload) as { systemPrompt?: string } : null;
+    const expectedCommentToken = mirroredGrant
+      ? createWorkItemGrantToken(P, agent.slug, mirroredGrant.id)
+      : "";
+    check(
+      "task comment system prompt includes proposal grant",
+      !!grantPayload?.systemPrompt?.includes("WORK-ITEM PLANNING GRANT") &&
+        !!mirroredGrant &&
+        grantPayload.systemPrompt.includes(mirroredGrant.id) &&
+        grantPayload.systemPrompt.includes(expectedCommentToken),
+      grantPayload?.systemPrompt?.slice(-1600),
+    );
 
     // --- root-level shape errors ---
     expectRootError("not an array", await validateProposal(P, {} as unknown, actor), "array");

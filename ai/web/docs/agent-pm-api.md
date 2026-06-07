@@ -1,11 +1,10 @@
 # Agent ↔ PM Read API
 
-Loopback-only HTTP endpoints OpenClaw agents (asdrubal, barekbaal, karen, and
-any future agents on a replicated box) use to **read** the live state of
-tasks, epics, and projects on demand. Replaces the legacy practice of PM
-inlining a ~58 KB context packet into every PM-channel turn — that pattern
-hit OpenClaw's pm-channel plugin in a way that silently dropped most of the
-content, leaving agents to answer from a fraction of what PM had built.
+Loopback-only HTTP endpoints that active OpenClaw agents use to **read**
+the live state of tasks, epics, and projects on demand. This applies to
+both coding agents and the monitor agent. It replaces the legacy practice
+of PM inlining a large context packet into every PM-channel turn, which
+could leave agents answering from only a fraction of the PM state.
 
 This page is the contract between **PM** and **agents** on this host. It is
 required reading for anyone bringing up a new box: the agents will follow
@@ -41,17 +40,17 @@ soft-deleted rows server-side, so deleted content stays invisible.
 ## Loopback constraint
 
 The endpoints reject any request that arrived via a reverse proxy. The
-gate is:
+gate is based on client-IP headers:
 
-- `X-Forwarded-For`, `X-Forwarded-Host`, or `X-Forwarded-Proto` headers
-  present → **403 Forbidden** (nginx is in the path).
-- `Host` header doesn't match `127.0.0.1[:port]`, `localhost[:port]`, or
-  `[::1][:port]` → **403 Forbidden**.
+- no `X-Forwarded-For` or `X-Real-IP` header -> accepted as direct
+  loopback traffic;
+- `X-Forwarded-For` or `X-Real-IP` present with any non-loopback address
+  -> **403 Forbidden**.
 
-On x1, PM listens on `127.0.0.1:3000`. nginx terminates TLS for
-`agents.vixi.au` and proxies to that loopback bind for browser traffic —
-but those nginx-stamped headers cause the agent endpoints to refuse. The
-agents call PM **directly** at `http://127.0.0.1:3000`, not through nginx.
+In the standard deployment, PM listens on `127.0.0.1:<pm-port>`. The
+public reverse proxy handles browser traffic, but those proxy-stamped
+headers cause the agent endpoints to refuse. Agents call PM **directly**
+at `http://127.0.0.1:<pm-port>`, not through the public site.
 
 Implementation: [`lib/agents/context-api/auth.ts:isLoopbackRequest`](../lib/agents/context-api/auth.ts).
 
@@ -65,7 +64,11 @@ bounded use count.
 
 The per-turn system prompt includes ready-to-curl URLs with the grant
 already attached. Agents should call those URLs directly and should not
-need to read or repeat their long-lived PM-channel bearer token.
+need to read or repeat their long-lived PM-channel bearer token. Direct
+project-scoped chats also receive a project context grant; when the user
+pastes same-project Task or Epic links, PM additionally mints grants for
+those linked items so the agent can fetch the authoritative item context
+instead of trying to open the public browser URL.
 
 Legacy bearer auth is still available only as a compatibility and
 operator-smoke fallback while `PM_CONTEXT_GRANTS_REQUIRED=0`:
@@ -82,6 +85,21 @@ requests. Validation lives in
 [`lib/agents/context-grants.ts`](../lib/agents/context-grants.ts).
 
 Unauthorised request → **401 Unauthorized**.
+
+## Role permissions
+
+Active coding agents and the monitor agent can receive PM-channel turns,
+fetch grant-scoped PM context, read attachment metadata/text exposed by
+that context, and submit grant-scoped work-item proposals. The proposal
+endpoint stores a pending change-set only; it does not mutate the board
+until a human applies it.
+
+Only active humans and active coding agents are assignable principals for
+Task assignee, Task reviewer/acting manager, and Epic acting manager
+fields. Monitor agents are intentionally excluded from those picker and
+validator pools. They can observe, triage, wake/restart agents, submit
+proposals when a human grants that capability, and operate monitor-owned
+deployment/verifier flows, but they are not normal implementation owners.
 
 ## The endpoints
 
@@ -109,9 +127,9 @@ Shape:
     "commitPrefix": "HOMELAB-41:",
     "createdAt": "2026-05-27T11:12:46.974Z",
     "updatedAt": "2026-05-28T00:34:44.180Z",
-    "assignee":  { "username": "asdrubal",  "kind": "agent" },
-    "reviewer":  { "username": "barekbaal", "kind": "agent" },
-    "reporter":  { "username": "zeh",       "kind": "human" }
+    "assignee":  { "username": "coding-agent", "kind": "agent" },
+    "reviewer":  { "username": "review-agent", "kind": "agent" },
+    "reporter":  { "username": "requester",    "kind": "human" }
   },
   "project": {
     "id": "cmpmnv…",
@@ -127,13 +145,13 @@ Shape:
     { "id": "…", "title": "…", "status": "To Do", "assignee": { … } }
   ],
   "comments": [
-    { "id": "…", "createdAt": "…", "author": { "username": "asdrubal", "kind": "agent" }, "body": "…" }
+    { "id": "…", "createdAt": "…", "author": { "username": "coding-agent", "kind": "agent" }, "body": "…" }
   ],
   "discussion": [              // ordered oldest-first
     {
       "id": "…",
       "createdAt": "…",
-      "sender":    { "username": "zeh", "kind": "human" },
+      "sender":    { "username": "requester", "kind": "human" },
       "body":      "…",
       "targetType":"agent",
       "targetLabel":"Barekbaal Irwin",
@@ -146,8 +164,8 @@ Shape:
       "id": "…",
       "createdAt": "…",
       "kind": "task.chat.reply",
-      "actor":       { "username": "barekbaal", "kind": "agent" },
-      "targetAgent": "barekbaal",
+      "actor":       { "username": "review-agent", "kind": "agent" },
+      "targetAgent": "review-agent",
       "payload":     { … parsed JSON … }
     }
   ],
@@ -157,7 +175,7 @@ Shape:
       "filename": "spec.pdf",
       "mimeType": "application/pdf",
       "sizeBytes": 12345,
-      "uploader":   { "username": "zeh", "kind": "human" },
+      "uploader":   { "username": "requester", "kind": "human" },
       "createdAt":  "…",
       "downloadPath": "/api/attachments/<id>"  // call from loopback
     }
@@ -166,10 +184,10 @@ Shape:
     {
       "id": "…",
       "createdAt": "…",
-      "sender":    { "username": "barekbaal", "kind": "agent" },
+      "sender":    { "username": "review-agent", "kind": "agent" },
       "body":      "Want me to draft this as a small spec / proposal…",
       "targetType":"user",
-      "targetLabel":"zeh"
+      "targetLabel":"requester"
     }
   ],
   "recentComments": [            // last 3 comments, oldest-first — PRIMARY context
@@ -293,8 +311,8 @@ When this repo lands on a new host:
    URLs that return JSON from loopback. While `PM_CONTEXT_GRANTS_REQUIRED=0`,
    operators can also run a legacy bearer smoke from any agent's home:
    ```bash
-   sudo -n -u barekbaal curl -s \
-     -H "Authorization: Bearer $(jq -r .channels.pm.token /home/barekbaal/.openclaw/openclaw.json)" \
+   sudo -n -u coding-agent curl -s \
+     -H "Authorization: Bearer $(jq -r .channels.pm.token /home/coding-agent/.openclaw/openclaw.json)" \
      'http://127.0.0.1:3000/api/agents/context/project/<some-project-id>' | jq .meta
    ```
    A 200 with a populated body means the chain is healthy end-to-end.

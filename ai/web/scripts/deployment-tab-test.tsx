@@ -43,6 +43,21 @@ assert.equal(canShowDeploymentAction({
   viewerId: "other-user",
   reporterId: "reporter-1",
 }), false, "non-reporters do not get actions");
+assert.equal(canShowDeploymentAction({
+  provider: "bitbucket",
+  viewerKind: "human",
+  viewerId: "reviewer-1",
+  reporterId: "reporter-1",
+  reviewerId: "reviewer-1",
+}), true, "reviewer gets actions when reporter-only policy is disabled");
+assert.equal(canShowDeploymentAction({
+  provider: "bitbucket",
+  viewerKind: "human",
+  viewerId: "reviewer-1",
+  reporterId: "reporter-1",
+  reviewerId: "reviewer-1",
+  onlyReportersCanApprovePullRequests: true,
+}), false, "reviewer actions hide when reporter-only PR policy is enabled");
 
 const html = renderToStaticMarkup(
   <DeploymentTab

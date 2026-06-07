@@ -17,7 +17,7 @@ export type DeploymentPrRow = {
 
 export function canShowDeploymentTab(item: { epicId?: string | null; parentTaskId?: string | null } | "epic") {
   if (item === "epic") return true;
-  return canShowDeploymentForTask(item);
+  return item.epicId == null && canShowDeploymentForTask(item);
 }
 
 export function DeploymentStatusSelect({
@@ -52,11 +52,15 @@ export function canShowDeploymentAction(args: {
   viewerKind: string;
   viewerId: string | null;
   reporterId: string | null;
+  reviewerId?: string | null;
+  onlyReportersCanApprovePullRequests?: boolean;
 }) {
+  const isReporter = Boolean(args.viewerId && args.reporterId && args.viewerId === args.reporterId);
+  const isReviewer = Boolean(args.viewerId && args.reviewerId && args.viewerId === args.reviewerId);
   return (
     args.provider.toLowerCase() === "bitbucket" &&
     args.viewerKind === "human" &&
-    Boolean(args.viewerId && args.reporterId && args.viewerId === args.reporterId)
+    (args.onlyReportersCanApprovePullRequests ? isReporter : isReporter || isReviewer)
   );
 }
 
