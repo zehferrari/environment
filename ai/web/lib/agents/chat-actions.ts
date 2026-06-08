@@ -213,6 +213,8 @@ export async function sendAgentChatMessage(formData: FormData) {
   const requestedBaseArchiveId = String(formData.get("baseArchiveId") ?? "").trim() || null;
   const requestedOriginChannel = String(formData.get("originChannel") ?? "").trim();
   const originChannel = requestedOriginChannel === "description" ? "description" : "chat";
+  const decisionForMessageId = String(formData.get("decisionForMessageId") ?? "").trim() || null;
+  const decisionOption = String(formData.get("decisionOption") ?? "").trim() || null;
   const allowDescriptionEdit = actor.kind === "human";
   const allowWorkItemManagement = actor.kind === "human";
 
@@ -461,6 +463,9 @@ export async function sendAgentChatMessage(formData: FormData) {
         targetType,
         targetValue,
         targetLabel,
+        decision: decisionOption,
+        decisionForMessageId,
+        source: decisionOption ? "pm-options" : undefined,
         attachmentIds: createdAttachments.map((file) => file.id),
       }),
     },

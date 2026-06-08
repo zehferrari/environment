@@ -7,14 +7,15 @@
 // routers already use (see docs/automation/cron-jobs.md POST
 // /hooks/wake).
 // Newer local OpenClaw installs may omit that HTTP hook; in that case
-// the consumer falls back to Karen's host-local openclaw-control bridge.
+// the consumer falls back to the monitor agent's host-local
+// openclaw-control bridge.
 //
 // Bearer tokens are per-agent and must not be reused across agents.
 // We resolve them from a JSON map at PM_CONSUMER_HOOK_TOKEN_FILE
 // (default /etc/openclaw/pm-consumer-tokens.json), with a per-agent
 // env override PM_CONSUMER_HOOK_TOKEN_<UPPERCASE_SLUG> for local-dev
 // and test setups. An unresolved token never produces an empty
-// Authorization header; it goes straight to the Karen fallback.
+// Authorization header; it goes straight to the monitor fallback.
 
 import { execFile } from "child_process";
 import { readFile } from "fs/promises";
@@ -115,11 +116,15 @@ export async function wakeAgent(args: WakeArgs): Promise<WakeResult> {
 }
 
 function karenFallbackEnabled() {
-  return process.env.PM_CONSUMER_KAREN_WAKE_FALLBACK !== "off";
+  return (
+    process.env.PM_CONSUMER_MONITOR_WAKE_FALLBACK
+      ?? process.env.PM_CONSUMER_KAREN_WAKE_FALLBACK
+  ) !== "off";
 }
 
 function karenWakeHelperPath() {
-  return process.env.PM_KAREN_WAKE_HELPER
+  return process.env.PM_MONITOR_WAKE_HELPER
+    ?? process.env.PM_KAREN_WAKE_HELPER
     ?? "/usr/local/sbin/pm-karen-wake-agent";
 }
 
@@ -153,7 +158,7 @@ async function wakeViaKarenControl(
       ok: false,
       status,
       driver: "karen-control",
-      error: `${reason}; Karen wake fallback failed: ${fallbackError}`,
+      error: `${reason}; monitor wake fallback failed: ${fallbackError}`,
     };
   }
 }

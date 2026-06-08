@@ -31,6 +31,8 @@ import {
 import { formatGridDate } from "@/lib/date-format";
 import { bulkBinTasks } from "@/lib/bin/actions";
 import ConfirmPopup from "@/components/confirm-popup";
+import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
+import { statusPillClass } from "@/lib/board-status";
 
 type BoardActor = MessageActor & { id: string };
 
@@ -44,6 +46,8 @@ type Task = {
   updatedAt: string;
   statusChangedAt: string | null;
   approvedOn: string | null;
+  deploymentStatus: string;
+  epicId: string | null;
   reporter: BoardActor | null;
   assignee: BoardActor | null;
   reviewer: BoardActor | null;
@@ -115,6 +119,69 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       return new Set([...current].filter((id) => liveIds.has(id)));
     });
   }, [tasks]);
+
+  // Live board updates: an SSE stream emits `board.touch` whenever a task
+  // in this project is moved/reordered/binned/etc. We debounce and call
+  // router.refresh(), letting Next's revalidatePath path repaint the
+  // board without a manual reload. Reconnects on network errors with
+  // exponential backoff; pauses while the tab is hidden.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let source: EventSource | null = null;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryMs = 1000;
+    let closed = false;
+
+    const scheduleRefresh = () => {
+      if (refreshTimer) return;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        if (!document.hidden) router.refresh();
+      }, 300);
+    };
+
+    const connect = () => {
+      if (closed || document.hidden) return;
+      try {
+        source = new EventSource(`/api/projects/${projectSlug}/board/stream`);
+      } catch {
+        return;
+      }
+      source.addEventListener("open", () => {
+        retryMs = 1000;
+      });
+      source.addEventListener("board.touch", () => {
+        scheduleRefresh();
+      });
+      source.addEventListener("error", () => {
+        source?.close();
+        source = null;
+        if (closed) return;
+        retryTimer = setTimeout(connect, retryMs);
+        retryMs = Math.min(retryMs * 2, 30_000);
+      });
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        source?.close();
+        source = null;
+      } else if (!source) {
+        connect();
+      }
+    };
+
+    connect();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      closed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (refreshTimer) clearTimeout(refreshTimer);
+      if (retryTimer) clearTimeout(retryTimer);
+      source?.close();
+    };
+  }, [projectSlug, router]);
 
   useEffect(() => {
     try {
@@ -513,29 +580,31 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                     : "border-[var(--color-line)] bg-[var(--color-panel-soft)]"
                 }`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <WorkflowPill task={task} />
-                  <ElapsedClock task={task} now={now} />
-                  <time
-                    dateTime={task.updatedAt}
-                    title={task.updatedAt}
-                    className="shrink-0 text-[10px] tabular-nums text-[var(--color-text-muted)]"
-                    suppressHydrationWarning
-                  >
-                    {relativeUpdated(task.updatedAt)}
-                  </time>
+                <div className="truncate text-[10px] font-mono uppercase tracking-wider text-[var(--color-text-muted)]">
+                  {task.workItemKey ?? "—"}
+                  {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
                 </div>
-                <div className="mt-1 truncate text-sm font-medium text-[var(--color-text)]">
-                  {task.workItemKey ? (
-                    <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
-                      {task.workItemKey}
-                    </span>
-                  ) : null}
-                  {task.title}
+                <div className="mt-1 flex items-start justify-between gap-2">
+                  <div className="line-clamp-2 min-w-0 text-sm font-medium text-[var(--color-text)]">
+                    {task.title}
+                  </div>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <ElapsedClock task={task} now={now} />
+                    <time
+                      dateTime={task.updatedAt}
+                      title={task.updatedAt}
+                      className="text-[10px] tabular-nums text-[var(--color-text-muted)]"
+                      suppressHydrationWarning
+                    >
+                      {relativeUpdated(task.updatedAt)}
+                    </time>
+                  </div>
                 </div>
-                <div className="mt-1 truncate text-xs text-[var(--color-text-muted)]">
-                  {workflowOwnerLabel(task)}
-                </div>
+                {workflowOwnerLabel(task) ? (
+                  <div className="mt-1 truncate text-xs text-[var(--color-text-muted)]">
+                    {workflowOwnerLabel(task)}
+                  </div>
+                ) : null}
               </button>
             ))}
           </div>
@@ -696,7 +765,9 @@ function ColumnDroppable({
               aria-label={`Select all in ${label}`}
             />
           )}
-          <span className="truncate">{label}</span>
+          <span className={`w-fit rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusPillClass(label)}`}>
+            {label}
+          </span>
           {description ? (
             <span className="hidden truncate normal-case tracking-normal text-[var(--color-text-muted)] xl:inline">
               · {description}
@@ -762,15 +833,39 @@ function TaskCard({
             aria-label={`Select ${task.title}`}
             className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
           />
-          {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
-          <span className="min-w-0 truncate">
-            {task.workItemKey ? (
-              <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
-                {task.workItemKey}
+          <div className="shrink-0">
+            {task.status === "Done" ? (
+              <BoardReporterMarker task={task} />
+            ) : actor ? (
+              <MessageAvatar actor={actor} size="sm" />
+            ) : (
+              <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
+              {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
+              <span className="truncate font-mono uppercase tracking-wider">
+                {task.workItemKey ?? "—"}
               </span>
-            ) : null}
-            {task.title}
-          </span>
+              {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
+            </div>
+            <div className="truncate">{task.title}</div>
+            <div className="mt-1 flex items-center gap-2 text-[10px] text-[var(--color-text-muted)]">
+              <ElapsedClock task={task} now={now} />
+              <time
+                dateTime={task.updatedAt}
+                title={task.updatedAt}
+                className="shrink-0 tabular-nums"
+                // relativeUpdated() reads Date.now() at render, so server/client
+                // can land in different buckets and throw a recoverable React
+                // #418 hydration warning; suppress it (text is expected to differ).
+                suppressHydrationWarning
+              >
+                {relativeUpdated(task.updatedAt)}
+              </time>
+            </div>
+          </div>
         </div>
         <form
           action={deleteTaskAction}
@@ -790,26 +885,6 @@ function TaskCard({
             <TrashIcon />
           </button>
         </form>
-      </div>
-      <div className="relative z-10 mt-1 flex items-center justify-between gap-2 text-[10px] text-[var(--color-text-muted)]">
-        <span className="truncate">{actor ? actorDisplayName(actor) : "unassigned"}</span>
-        <ElapsedClock task={task} now={now} />
-        <WorkflowPill task={task} />
-        <time
-          dateTime={task.updatedAt}
-          title={task.updatedAt}
-          className="shrink-0 tabular-nums"
-          // relativeUpdated() reads Date.now() at render, so the server and
-          // client can land in different buckets ("now" vs "1m") and throw a
-          // (recoverable) React #418 text-hydration error on an aged board.
-          // React recovers by re-rendering, so this is console noise rather
-          // than a hard break — suppressing tells React the timestamp text is
-          // expected to differ. (The hard break was the DndContext aria-id
-          // mismatch, fixed by the stable id above.)
-          suppressHydrationWarning
-        >
-          {relativeUpdated(task.updatedAt)}
-        </time>
       </div>
     </div>
   );
@@ -902,7 +977,8 @@ function BacklogRow({
         >
           ⠿
         </button>
-        {task.reporter ? <MessageAvatar actor={task.reporter} size="sm" /> : null}
+        <BoardReporterMarker task={task} />
+        {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
         <span className="min-w-0 truncate">
           {task.workItemKey ? (
             <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
@@ -941,6 +1017,38 @@ function BacklogRow({
   );
 }
 
+function DeploymentIndicator({ status }: { status: string }) {
+  const icon = deploymentStatusIcon(status);
+  if (icon === "—") {
+    return (
+      <span
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-[var(--color-line)] text-[9px] text-[var(--color-text-muted)] transition hover:scale-110 hover:border-[var(--color-accent)]"
+        title="Deployment: Not Required"
+        aria-label="Deployment: Not Required"
+      >
+        —
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-[10px] leading-none transition hover:scale-110"
+      title={`Deployment: ${status}`}
+      aria-label={`Deployment: ${status}`}
+    >
+      {icon}
+    </span>
+  );
+}
+
+function canShowTaskDeploymentIndicator(task: Task) {
+  return task.status === "Done" && canShowDeploymentForTask(task);
+}
+
+function BoardReporterMarker({ task }: { task: Task }) {
+  return task.reporter ? <MessageAvatar actor={task.reporter} size="sm" /> : null;
+}
+
 function TrashIcon() {
   return (
     <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -962,8 +1070,11 @@ function PersonCell({
 }) {
   return (
     <span className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-muted)]">
-      {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
-      <span className="truncate">{actor ? actorDisplayName(actor) : emptyLabel}</span>
+      {actor ? (
+        <MessageAvatar actor={actor} size="sm" />
+      ) : (
+        <span className="truncate">{emptyLabel}</span>
+      )}
     </span>
   );
 }
@@ -984,14 +1095,6 @@ function completedAtMs(task: Task) {
   return parseTime(task.statusChangedAt ?? task.updatedAt) ?? 0;
 }
 
-function workflowPillText(task: Task) {
-  if (task.status === "Review") return "Review now";
-  if (task.status === "To Do") return task.assignee ? "Start now" : "Assign first";
-  if (task.status === "In Progress") return "Complete or update";
-  if (task.status === "Backlog" && task.assignee) return "Plan due";
-  return task.status;
-}
-
 function workflowOwnerLabel(task: Task) {
   if (task.status === "Review") {
     const reviewer = task.reviewer ?? task.manager ?? task.reporter;
@@ -1001,12 +1104,12 @@ function workflowOwnerLabel(task: Task) {
     return task.assignee ? `${actorDisplayName(task.assignee)} starts` : "Manager must assign before work starts";
   }
   if (task.status === "In Progress") {
-    return task.assignee ? `${actorDisplayName(task.assignee)} owns implementation` : "In progress without assignee";
+    return task.assignee ? `${actorDisplayName(task.assignee)} owns implementation` : "Needs assignee";
   }
   if (task.status === "Backlog" && task.assignee) {
     return `${actorDisplayName(task.assignee)} should post a plan/opinion`;
   }
-  return task.status;
+  return "";
 }
 
 function isPlanningAssigned(task: Task) {
@@ -1054,11 +1157,9 @@ function elapsedMsForTask(task: Task, now: number | null) {
   if (end === null) return null;
 
   const start =
-    task.status === "Done"
-      ? parseTime(task.approvedOn ?? task.createdAt)
-      : task.status === "Backlog"
-        ? parseTime(task.createdAt)
-        : parseTime(task.statusChangedAt ?? task.updatedAt ?? task.createdAt);
+    task.status === "Backlog"
+      ? parseTime(task.createdAt)
+      : parseTime(task.approvedOn ?? task.createdAt);
   if (start === null) return null;
   return Math.max(0, end - start);
 }
@@ -1068,7 +1169,7 @@ function elapsedTitle(task: Task) {
     return `Approved ${task.approvedOn ?? task.createdAt}; completed ${task.statusChangedAt ?? task.updatedAt}`;
   }
   if (task.status === "Backlog") return `Since creation: ${task.createdAt}`;
-  return `Since status change: ${task.statusChangedAt ?? task.updatedAt}`;
+  return `Total since ${task.approvedOn ? `approval: ${task.approvedOn}` : `creation: ${task.createdAt}`}`;
 }
 
 function parseTime(iso: string | null | undefined) {
@@ -1109,21 +1210,6 @@ function formatElapsed(ms: number) {
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
-}
-
-function WorkflowPill({ task }: { task: Task }) {
-  const tone =
-    task.status === "Review" ? "border-amber-500/80 bg-amber-100 text-amber-950 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.22)]"
-      : task.status === "To Do" && !task.assignee ? "border-red-500/80 bg-red-100 text-red-950 shadow-[inset_0_0_0_1px_rgba(220,38,38,0.2)]"
-        : task.status === "To Do" ? "border-sky-500/70 bg-sky-100 text-sky-950 shadow-[inset_0_0_0_1px_rgba(2,132,199,0.18)]"
-          : task.status === "In Progress" ? "border-emerald-500/70 bg-emerald-100 text-emerald-950 shadow-[inset_0_0_0_1px_rgba(5,150,105,0.18)]"
-            : task.status === "Done" ? "border-lime-600/70 bg-lime-100 text-lime-950 shadow-[inset_0_0_0_1px_rgba(101,163,13,0.18)]"
-              : "border-slate-500/60 bg-slate-100 text-slate-950 shadow-[inset_0_0_0_1px_rgba(71,85,105,0.16)]";
-  return (
-    <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${tone}`}>
-      {workflowPillText(task)}
-    </span>
-  );
 }
 
 function statusRowClass(status: string) {

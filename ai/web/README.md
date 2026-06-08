@@ -385,16 +385,22 @@ The UI supports several key enhancements:
 OpenClaw exposes the selected thinking budget and run metadata inside a collapsible `<details>` panel, not private chain-of-thought text. To keep reply latency down, the PM channel context includes a bounded recent transcript and bounded parent-archive excerpt (`PM_DIRECT_CHAT_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT`). Because PM and OpenClaw run on the same host, channel callbacks default to `http://127.0.0.1:3000`; set `PM_AGENT_CALLBACK_URL` or `PM_INTERNAL_APP_URL` to override that.
 
 **Agent work-item proposals.** A direct chat (`/agents/<slug>/chat`) can
-be attached to a project, and Task/Epic Discussion messages are already
-project-scoped. Every human-authored project-scoped message becomes a
+be attached to a project, and Task/Epic Action Plan messages plus
+human-authored task comments are already project-scoped. Every
+human-authored project-scoped turn in those surfaces becomes a
 planning-capable turn by default: PM hands the agent the project
-environment (repo path, git identity, picker defaults, existing
-epics/open tasks and their descriptions via `lib/agents/context/project.ts`)
-plus a single-use HMAC grant + the propose endpoint. In Task/Epic
-Discussion, that single-use stamp is tracked per addressed agent, so an
-`All Coders` message can let each coder submit one proposal. The prompt
-tells the agent to submit a proposal only when the current human message
-directly asks for project work-item changes. The agent POSTs a typed change-set to
+environment (repo path, git identity, picker defaults, existing epics/open
+tasks and their descriptions via `lib/agents/context/project.ts`) plus a
+single-use HMAC grant + the propose endpoint. Direct project chats also
+receive short-lived context-read grant URLs, and PM detects same-project
+Task/Epic links in the human message so agents can fetch those item
+contexts over loopback instead of opening the public browser URL. In
+Task/Epic Action Plan and task-comment turns, that single-use stamp is tracked per addressed
+agent, so an `All Coders` message or multi-agent task comment can let
+each coder submit one proposal. Agent-authored comments and PM workflow
+notifications do not grant work-item management. The prompt tells the
+agent to submit a proposal only when the current human message directly
+asks for project work-item changes. The agent POSTs a typed change-set to
 `POST /api/agent/projects/<id>/proposals` — it never writes the board
 directly. That route is token-scoped and intentionally bypasses browser
 session middleware; the route handler validates the grant, token, active
@@ -686,8 +692,9 @@ Migrations under `prisma/migrations/`:
 - `20260525081816_agent_work_item_proposals` — `WorkItemProposal` table +
   `DirectAgentChatMessage.projectId` / `allowWorkItemManagement` /
   `workItemGrantUsedAt` for project-attached agent planning.
-- `20260526172000_discussion_work_item_grants` — Task/Epic Discussion
-  messages can carry human-triggered work-item proposal grants.
+- `20260526172000_discussion_work_item_grants` — Task/Epic Action Plan
+  messages and human-authored task-comment wakes can carry
+  human-triggered work-item proposal grants.
 - `20260526173500_pm_channel_run_work_item_grants` —
   `PmChannelRun.workItemGrantUsedAt` tracks Discussion proposal grant
   consumption per addressed agent.

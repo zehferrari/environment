@@ -5,6 +5,7 @@ import { listAssignablePrincipals } from "@/lib/principals";
 import { COLUMN_IDS } from "../columns";
 import { actorDisplayName, MessageAvatar, type MessageActor } from "@/components/message-avatar";
 import { formatGridDate } from "@/lib/date-format";
+import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 
 export const dynamic = "force-dynamic";
 
@@ -127,7 +128,7 @@ export default async function ProjectTasksPage({
       orderBy: { updatedAt: "desc" },
       take,
       include: {
-        epic: { select: { id: true, title: true } },
+        epic: { select: { id: true, title: true, deploymentStatus: true } },
         reporter: { select: actorSelect },
         assignee: { select: actorSelect },
         actingManager: { select: actorSelect },
@@ -245,9 +246,10 @@ export default async function ProjectTasksPage({
         </p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]">
-          <div className="grid min-w-[64rem] grid-cols-[minmax(14rem,1.6fr)_6rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] xl:min-w-0">
+          <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] xl:min-w-0">
             <span>Task</span>
             <span>Status</span>
+            <span>Deploy</span>
             <span>Reporter</span>
             <span>Assignee</span>
             <span>Reviewer</span>
@@ -256,10 +258,12 @@ export default async function ProjectTasksPage({
             <span className="text-right">Updated</span>
           </div>
           <ul className="divide-y divide-[var(--color-line)]">
-            {tasks.map((task) => (
+            {tasks.map((task) => {
+              const deploymentStatus = task.epic?.deploymentStatus ?? task.deploymentStatus;
+              return (
               <li
                 key={task.id}
-                className={`grid min-w-[64rem] grid-cols-[minmax(14rem,1.6fr)_6rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-[var(--color-panel)] xl:min-w-0 ${statusRowClass(task.status)}`}
+                className={`grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-[var(--color-panel)] xl:min-w-0 ${statusRowClass(task.status)}`}
               >
                 <Link href={`/projects/${slug}/tasks/${task.id}`} className="min-w-0 hover:underline">
                   <span className="mb-0.5 flex min-w-0 items-center gap-2">
@@ -280,6 +284,7 @@ export default async function ProjectTasksPage({
                   ) : null}
                 </Link>
                 <StatusPill status={task.status} />
+                {canShowDeploymentForTask(task) ? <DeploymentIndicator status={deploymentStatus} /> : <span aria-hidden="true" />}
                 <PersonCell actor={serializeActor(task.reporter)} emptyLabel="none" />
                 <PersonCell actor={serializeActor(task.assignee)} emptyLabel="unassigned" />
                 <PersonCell actor={serializeActor(task.actingManager)} emptyLabel="none" />
@@ -300,11 +305,36 @@ export default async function ProjectTasksPage({
                   actor={activityActors.updatedBy.get(task.id) ?? activityActors.createdBy.get(task.id) ?? serializeActor(task.reporter)}
                 />
               </li>
-            ))}
+              );
+            })}
           </ul>
         </div>
       )}
     </div>
+  );
+}
+
+function DeploymentIndicator({ status }: { status: string }) {
+  const icon = deploymentStatusIcon(status);
+  if (icon === "—") {
+    return (
+      <span
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-[var(--color-line)] text-[9px] text-[var(--color-text-muted)] transition hover:scale-110 hover:border-[var(--color-accent)]"
+        title="Deployment: Not Required"
+        aria-label="Deployment: Not Required"
+      >
+        —
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-[10px] leading-none transition hover:scale-110"
+      title={`Deployment: ${status}`}
+      aria-label={`Deployment: ${status}`}
+    >
+      {icon}
+    </span>
   );
 }
 

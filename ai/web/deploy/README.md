@@ -2,7 +2,7 @@
 
 This directory carries the deploy-side artefacts for the PM walking skeleton.
 It does not auto-apply — the bootstrap is intentionally manual for Stage 1 so
-zeh sees exactly what changes on the host.
+the operator sees exactly what changes on the host.
 
 > **Agent read-API (loopback only)**: PM exposes
 > `GET /api/agents/context/{task,epic,project}/<id>` for OpenClaw agents to
@@ -20,8 +20,8 @@ zeh sees exactly what changes on the host.
 | `pm.env.example` | copy -> `/etc/default/pm` | `root:<pm-user-group>`, `0640` | secrets file; not committed. |
 | `/etc/openclaw/pm-consumer-tokens.json` | host-created | `root:<pm-consumer-group>`, `0640` | per-agent `/hooks/wake` Bearer map; never commit. |
 | `/etc/openclaw/pm-channel-tokens.json` | host-created | `root:<pm-user-group>`, `0640` | per-agent native PM channel Bearer map; never commit. |
-| `nginx-agents.vixi.au.conf` | `/etc/nginx/sites-available/agents.vixi.au` (+ symlink in `sites-enabled/`) | root | TLS via Let's Encrypt. |
-| `rebuild-and-restart.sh` | run in place | — | coupled build + restart of the *currently-served* worktree. |
+| nginx site config | `/etc/nginx/sites-available/<pm-hostname>` (+ symlink in `sites-enabled/`) | root | TLS via Let's Encrypt. |
+| `rebuild-and-restart.sh` | run in place | — | legacy single-checkout rebuild path; delegates to `pm-switch` when pointed at a managed worktree. |
 | `move-sqlite-db.sh` | run in place | root | controlled SQLite relocation to `/srv/Data/pm/pm.db`: stop services, backup, `VACUUM INTO`, enable WAL, update `/etc/default/pm`, restart. |
 | `pm-switch.sh` | `-> /usr/local/sbin/pm-switch` | root | build a chosen worktree + flip `pm.service` and `pm-consumer.service` to it (`pm-switch <wt>` / `pm-switch status`). |
 | `pm-apply-worktree` | `-> /usr/local/sbin/pm-apply-worktree` | root | the one privileged step (web + consumer drop-ins, daemon-reload + restarts), path-validated. |
@@ -38,10 +38,38 @@ zeh sees exactly what changes on the host.
 Lets the monitor agent build any git worktree and flip which one `pm.service`
 serves and which source tree `pm-consumer.service` uses — from the CLI
 (`pm-switch <wt>`) or, in the PM webapp, a git/worktree-exposed project's
-**Settings → Worktree live preview** panel (admin only). Install with
+**Settings → Worktree live preview** panel (admin only). The currently served
+worktree exposes **Rebuild live**, which runs the same monitor-driven switch
+pipeline against the active branch without changing worktrees. Install with
 `sudo PM_MONITOR_USER=<monitor-user> ai/web/deploy/install-pm-switch.sh` (after
 `code-tree-perms` has made `/srv/Code` group-collaborative). Full design,
 mechanism, and caveats: [`MULTI_AGENT_WORKTREES.md`](./MULTI_AGENT_WORKTREES.md).
+
+### Live rebuild troubleshooting
+
+For worktree deployments, `pm-switch` is the live-site deployment boundary.
+Do not use the legacy direct rebuild path against a managed worktree. If
+`rebuild-and-restart.sh` is pointed at `/srv/Code/environment.worktrees/...`,
+it delegates to `pm-switch` so Prisma generated-client ownership, per-branch
+SQLite forks, `pm.service`, and `pm-consumer.service` are handled together.
+
+Browser-triggered rebuilds run as the monitor service user, not as the human
+who last built the worktree. The switch pipeline therefore calls the privileged,
+path-validated helper twice before building:
+
+- `pm-apply-worktree --stop-live <standalone> <db-url>` stops `pm.service` and
+  `pm-consumer.service` when the target worktree or DB is already live, avoiding
+  SQLite locks and `.next/standalone` rebuild races.
+- `pm-apply-worktree --prepare-build <ai/web> <db-url>` removes generated
+  `.next` and Prisma client artifacts and recreates the Prisma output directory
+  for the actual builder user. This avoids `EACCES` failures when a previous
+  build was made by a different local account.
+
+If the browser shows a 502 after **Rebuild live**, check
+`journalctl -u pm-switch-runner.service -n 160 --no-pager` and
+`/var/lib/pm/switch/state.json`. After fixing the cause, recover with
+`pm-switch <worktree-name>` from a local operator shell, then verify
+`pm-switch status` and `curl -I http://127.0.0.1:<pm-port>/login`.
 
 ## Branch-push verifier (Review verification)
 
@@ -57,8 +85,17 @@ reading `pm.service`'s `WorkingDirectory`), and runs the TS verifier
   clone — the remote IS Bitbucket, but the runner reuses the SSH credentials
   configured for `PM_VERIFY_RUN_USER` on the local clone (no Bitbucket REST in
   this pass);
+- resolves the local branch worktree when available and fails fast if it still
+  has uncommitted changes;
+- pushes clean local branch commits to `origin/<branchName>` when the local
+  branch is ahead and the runner has write credentials;
 - looks for a commit on `origin/<branchName>` whose subject starts with the
   resolved COMMIT_PREFIX (`task.commitPrefix` → fallback `epic.commitPrefix`);
+- checks the matching commit author and committer against the effective git
+  identity (`Project.defaultGitUserName/defaultGitUserEmail`, falling back to
+  system settings) when one is configured;
+- if the verified branch is the currently served PM worktree, rebuilds and
+  restarts the live PM service before releasing the task for review;
 - writes a monitor-authored task Comment plus a `pm.repo.verify.ok` or
   `pm.repo.verify.fail` `ActivityLog` row.
 
@@ -70,16 +107,49 @@ Bitbucket repo/workspace key, or configure an equivalent read-only deploy key,
 then re-trigger `ready_for_review`. `PM_MONITOR_USER` is only the PM identity
 used for verifier comments and activity rows.
 
-The reviewer's task page shows a Review verification panel reading the
-latest `pm.repo.verify.*` row, so they can see at a glance whether
-`origin/<branch>` reflects the work BEFORE approving. The transition
-itself is not blocked — async verification means a flaky `git fetch`
-doesn't kill legitimate Reviews. Install with
+The reviewer is only woken after `pm.repo.verify.ok`. If verification fails,
+the assignee is woken to commit/push/fix the branch unless the failure is a
+monitor repository-access problem. The task page also shows a Review
+verification panel reading the latest `pm.repo.verify.*` row, so humans can see
+why the review is waiting. Install with
 `sudo PM_MONITOR_USER=<monitor-user> PM_VERIFY_RUN_USER=<repo-fetch-user> ai/web/deploy/install-pm-verify.sh`.
+
+## Deployment Approval Credentials
+
+Deployment approval is a write path, separate from the read-only Review
+verifier above. The PM consumer runs the deployment monitor under the
+configured monitor service account. It uses that account's Git/SSH
+configuration to verify and push the source branch, then uses Bitbucket's
+REST API to open and monitor provider PRs.
+
+Required host checks for every replicated server:
+
+- The PM consumer unit must keep the monitor account home readable to
+  OpenSSH (`ProtectHome=read-only`, not fully hidden), even when pnpm
+  `HOME` is redirected to `/var/lib/pm/pnpm-home`.
+- The monitor account's SSH public key must have write access to the
+  project repository or workspace. A key that authenticates to the Git
+  provider but is not authorized for the specific repository will fail
+  deployment approval with `Unauthorized` / `Could not read from remote
+  repository`.
+- The PM service environment must include Bitbucket API credentials:
+  `BITBUCKET_USERNAME` (or `BITBUCKET_USER`) plus
+  `BITBUCKET_APP_PASSWORD` (or `BITBUCKET_TOKEN`). These are used only for
+  provider REST calls such as creating and polling pull requests; they do
+  not replace the monitor account's SSH key for git fetch/push.
+  Put them in the base PM env file (`/etc/default/pm` by default). The
+  worktree switch helper copies that file into the generated active env file
+  (`/etc/default/pm-active-worktree` by default) during `pm-switch`; rerun
+  `pm-switch <worktree>` after changing deployment credentials so both
+  `pm.service` and `pm-consumer.service` inherit the new values.
+- The project repository path in PM must point at a clone whose `origin`
+  remote resolves to the expected provider repository. If project-specific
+  provider workspace/repo settings are blank, PM falls back to parsing
+  that remote URL.
 
 ## Service Model
 
-`pm.service` is one host-wide web service for `agents.vixi.au`. It is
+`pm.service` is one host-wide web service for the configured PM hostname. It is
 not started once per agent. The single PM process owns the UI, DB,
 task/comment persistence, and native `pm` channel callbacks, then
 routes work to each agent through that agent's loopback OpenClaw
@@ -98,15 +168,27 @@ the configured PM service account. Do not install or enable
 `/home/<agent>/.config/systemd/user`; `openclaw/install.sh` removes
 those stale per-agent user units during PM reconciliation.
 
-`pm-consumer.service` keeps `ProtectHome=true`. To avoid `pnpm`
-probing hidden service-user config files, the unit points `HOME`,
+`pm-consumer.service` keeps `ProtectHome=read-only`. Deployment approval
+runs Git as the monitor user, and OpenSSH reads that user's
+`~/.ssh/known_hosts` and private key from the login home even though
+`HOME` is redirected for pnpm. Fully hiding home directories causes
+deployment pushes to fail with host-key/SSH permission errors. To avoid
+`pnpm` probing service-user config files, the unit points `HOME`,
 `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `PNPM_HOME`, and
-`NPM_CONFIG_USERCONFIG` at service-private directories under
-`/var/lib/pm`.
+`NPM_CONFIG_USERCONFIG` at service-private directories under `/var/lib/pm`.
+Existing installs can apply the committed drop-in
+`deploy/systemd/pm-consumer-monitor-home.conf` as
+`/etc/systemd/system/pm-consumer.service.d/30-monitor-home.conf`.
 
-## First-time install (x1)
+## First-time install
 
 ```bash
+# 0. Install host packages required by the deploy helpers.
+# openSUSE:
+sudo zypper --non-interactive install sqlite3
+# Debian/Ubuntu:
+# sudo apt-get install sqlite3
+
 # 1. Build the standalone bundle (uses pnpm; runs prisma generate + next build).
 cd /srv/Code/environment/ai/web
 pnpm install
@@ -178,9 +260,9 @@ sudo PM_WEB_ROOT=/srv/Code/environment/ai/web /srv/Code/environment/ai/openclaw/
 #     removes stale worktree plugin paths from plugins.load.paths.
 sudo node deploy/install-openclaw-pm-channel.mjs --registry /etc/openclaw/agents.json --restart
 
-# 5. Bring up the nginx vhost (cert assumed already issued; certbot --nginx -d agents.vixi.au if not).
-sudo install -o root -g root -m 0644 deploy/nginx-agents.vixi.au.conf /etc/nginx/sites-available/agents.vixi.au
-sudo ln -sf /etc/nginx/sites-available/agents.vixi.au /etc/nginx/sites-enabled/agents.vixi.au
+# 5. Bring up the nginx vhost (cert assumed already issued; certbot --nginx -d <pm-hostname> if not).
+sudo install -o root -g root -m 0644 deploy/nginx-<pm-hostname>.conf /etc/nginx/sites-available/<pm-hostname>
+sudo ln -sf /etc/nginx/sites-available/<pm-hostname> /etc/nginx/sites-enabled/<pm-hostname>
 sudo nginx -t && sudo systemctl reload nginx
 
 # 7. Start.
@@ -308,7 +390,7 @@ or temporary hook failures.
 
 ## Seeded credentials
 
-- **zeh (human)** — password `password1`, `must_rotate_password=1`. First login forces rotation.
+- **Bootstrap human user** — password `password1`, `must_rotate_password=1`. First login forces rotation.
 - **Each co-located agent** — random password written to
   `/etc/openclaw/pm-agent-credentials/<agent>.json` (mode `0600`, owner
   `<pm-app-user>`). The credential is host-private, never
@@ -322,8 +404,8 @@ same path also runs on a 5-minute interval — see `AGENT_SYNC_INTERVAL_MIN`.
 
 After install:
 
-1. `curl -I https://agents.vixi.au/login` → `200 OK`.
-2. Sign in as `zeh` / `password1` → forced to `/rotate-password`.
+1. `curl -I https://<pm-hostname>/login` -> `200 OK`.
+2. Sign in as the bootstrap admin user -> forced to `/rotate-password`.
 3. `/agents` lists each configured local agent, including the monitor agent.
 4. Create a project → /projects/<slug> board loads with 5 columns.
 5. Add a task → drag across columns → reload, position persisted.

@@ -321,14 +321,17 @@ when operating or debugging the local PM workflow.
 8. When implementation is complete, or when the assignee is waiting for
    reviewer/manager/reporter feedback or response, the assignee moves the
    task to `Review` through the PM workflow endpoint with one concise
-   note explaining the result, blocker, or question.
+   note explaining the result, blocker, or question. For code-touching
+   tasks this immediately wakes the monitor agent to verify the repository
+   before any reviewer is woken.
 9. If the task was in `Review` only because the assignee was waiting for
    feedback or an external response, and that response arrives, the
    assignee resumes with workflow action `start`, completes the follow-up,
    then calls `ready_for_review` again with one concise note.
-10. The resolved reviewer reviews the task. If satisfied, the reviewer
-   moves it to `Done`; otherwise they leave concrete feedback while the
-   task stays in `Review`.
+10. The resolved reviewer reviews the task only after monitor validation
+   (`pm.repo.verify.ok`) has passed. If satisfied, the reviewer moves it
+   to `Done`; otherwise they leave concrete feedback while the task stays
+   in `Review`.
 11. After `review_done`, PM assigns the next unassigned top-level `To Do`
    task in the same Open Epic to the completed task's assignee. Task-local
    subtasks are checklist/progress rows and must not be used as the next
@@ -349,6 +352,19 @@ thinking. Keep visible comments direct and consolidated: one comment per
 turn should contain the current issues, blockers, findings, and required
 questions whenever possible. Do not repeat a known blocker unless the
 state changed or the current turn asks for an update.
+
+When a human task comment explicitly asks an agent to create, update, or
+reorganize PM work items, PM supplies the same single-use work-item
+proposal grant used by Action Plan turns. Use the proposal endpoint from
+the turn; do not write work-item rows directly. Agent comments and PM
+workflow notifications do not grant that capability.
+Direct project-scoped chats carry the same project proposal grant and
+short-lived PM context-read grants. If the human message includes a
+same-project Task or Epic URL, use the loopback grant URL in the turn to
+fetch that PM context; do not try to open the public browser URL.
+Monitor-role agents may use grant-scoped PM reads and proposals, but they
+are not valid assignee/reviewer/acting-manager principals for normal
+implementation ownership.
 Straightforward implementation tasks should not generate implementation
 debate in comments: start the task, do the work, and leave one concise
 ready-for-review note when there is evidence for the reviewer.
@@ -367,7 +383,12 @@ text.
 - Assigned `To Do` work asks the assignee to post an Action Plan if
   `approved_on` is empty. Only approved `To Do` work can move to
   `In Progress`.
-- Moving work to `Review` wakes the resolved reviewer.
+- Moving code-touching work to `Review` wakes the monitor agent first. The
+  monitor rejects dirty worktrees, pushes clean local branch commits when it
+  can, verifies the remote branch/prefix/git author and committer against the
+  project git identity or global git identity fallback, rebuilds the live PM
+  worktree if that branch is serving the website, and only then wakes the
+  resolved reviewer. Non-code Review work can wake the reviewer directly.
 - Waiting for reviewer/manager/reporter feedback is a `Review` state,
   not a stale `In Progress` state. The assignee should include one
   concise blocker/question/comment in the `ready_for_review` workflow
@@ -392,10 +413,10 @@ text.
 
 `ai-monitor` is the fallback when normal PM wake paths do not produce
 action. It must read the same PM SQLite database as the active worktree.
-On this host that database is:
+On each host that database is the active PM worktree `DATABASE_URL`, for example:
 
 ```text
-file:/srv/Data/pm/wt-asdrubal-vision.db
+file:/srv/Data/pm/wt-<branch>.db
 ```
 
 The PM workflow probe detects:

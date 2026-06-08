@@ -48,6 +48,13 @@ active_database_url() {
   fi
 }
 
+file_url_path() {
+  case "${1:-}" in
+    file://*) printf '%s\n' "${1#file://}" ;;
+    file:*)   printf '%s\n' "${1#file:}" ;;
+  esac
+}
+
 [[ -n "${1:-}" ]] || die "usage: pm-switch.sh <worktree-name | path>   (or: status)"
 
 if [[ "$1" == "status" || "$1" == "--status" ]]; then
@@ -90,6 +97,18 @@ if [[ ! -f "$BRANCH_DB" ]]; then
   [[ -f "$PM_CANONICAL_DB" ]] || die "canonical DB not found at $PM_CANONICAL_DB"
   sqlite3 "$PM_CANONICAL_DB" ".backup '$BRANCH_DB'"
 fi
+branch_db_real="$(readlink -f "$BRANCH_DB")"
+served_wt="$(served_worktree || true)"
+active_db_url="$(active_database_url || true)"
+active_db_path="$(file_url_path "$active_db_url" || true)"
+active_db_real=""
+if [[ -n "$active_db_path" ]]; then
+  active_db_real="$(readlink -f "$active_db_path" 2>/dev/null || true)"
+fi
+if [[ "$served_wt" == "$WT_ROOT" || "$active_db_real" == "$branch_db_real" ]]; then
+  log "Target worktree or DB is already live; stopping PM services before migrate/build to avoid SQLite and build-tree locks…"
+  sudo -n "$APPLY" --stop-live "$STANDALONE" "$BRANCH_DB_URL"
+fi
 sqlite3 "$BRANCH_DB" 'PRAGMA journal_mode=WAL;' >/dev/null
 chmod g+rw "$BRANCH_DB" "$BRANCH_DB"-wal "$BRANCH_DB"-shm 2>/dev/null || true
 DATABASE_URL="$BRANCH_DB_URL" "$PNPM" --dir "$APP_DIR" exec prisma migrate deploy
@@ -99,6 +118,7 @@ DATABASE_URL="$BRANCH_DB_URL" "$PNPM" --dir "$APP_DIR" exec prisma migrate deplo
 #    owner may chmod — so overwriting a prior (different) builder's .prisma
 #    fails with EPERM. .prisma is regenerated, so removing it is always safe.
 log "Cleaning generated Prisma client…"
+sudo -n "$APPLY" --prepare-build "$APP_DIR" "$BRANCH_DB_URL"
 rm -rf "$APP_DIR"/node_modules/.pnpm/@prisma+client*/node_modules/.prisma 2>/dev/null || true
 
 # 2. Build. Group-collaborative /srv/Code perms let any code-agent build; the

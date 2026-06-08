@@ -1,7 +1,7 @@
 # Multi-agent worktrees + monitor-driven live preview
 
-Several actors edit this repo on one host at once — the coding agents, the human
-(zeh / Claude Code), and the monitor agent (karen). This documents how they
+Several actors edit this repo on one host at once — coding agents, the human
+operator, and the monitor agent. This documents how they
 share the tree safely and how the **monitor** can build any worktree and flip
 which one the live PM site serves, including from the browser.
 
@@ -26,7 +26,7 @@ Enforced/repaired by the reusable, idempotent tool
 (installed to `/usr/local/sbin`):
 
 ```bash
-sudo code-tree-perms --tree /srv/Code --group code-agents --monitor karen \
+sudo code-tree-perms --tree /srv/Code --group code-agents --monitor <monitor-user> \
   --secret     /srv/Code/environment.worktrees/<wt>/ai/web/.env.local \
   --secret-dir /srv/Code/environment.worktrees/<wt>/ai/web/prisma/prisma
 ```
@@ -34,7 +34,7 @@ sudo code-tree-perms --tree /srv/Code --group code-agents --monitor karen \
 - Grants group access (never revokes `other`, so co-hosted apps don't break).
 - Removes any leftover `user:<monitor>` named-ACL **cap** — a named-user ACL
   overrides the group and is what once limited the monitor to read-only
-  (the "only zeh can build" symptom).
+  (the "only one local account can build" symptom).
 - Locks each `--secret` file to the monitor (`chmod 600`) and each
   `--secret-dir` to the monitor (`0700`) — so the PM runtime secrets
   (`.env.local`) and the SQLite DB dir (`prisma/prisma/`, incl. its `-wal`/`-shm`)
@@ -49,15 +49,19 @@ sudo code-tree-perms --tree /srv/Code --group code-agents --monitor karen \
 
 ## 3. Switchable single site
 
-`pm.service` serves exactly **one** worktree at a time. All worktrees share the
-same DB + env (`/etc/default/pm`, absolute `DATABASE_URL`), so switching changes
-only the served **code**.
+`pm.service` serves exactly **one** worktree at a time. Each branch uses an
+isolated SQLite fork under `/srv/Data/pm/wt-<branch>.db`, while `/etc/default/pm`
+remains the base environment. Switching changes both the served code and the
+active `DATABASE_URL`, so Prisma schema changes are kept with the branch that
+introduced them.
 
 ### From the browser (monitor-driven)
 
 A git/worktree-exposed project's **Settings → Worktree live preview** (admin
 only). Lists that project's **own** repo worktrees, marks the live one, and a
-**Serve live** button builds + switches. It is shown only when the project's
+**Serve live** button builds + switches. The live row exposes **Rebuild live**,
+which rebuilds and restarts the same worktree without changing the served
+branch. It is shown only when the project's
 `repositoryPath` is a git checkout exposed to the worktree approach
 (`lib/projects/worktree.ts`) **and** that repo has worktrees to choose from —
 otherwise the block is hidden. Options are scoped by repo identity
@@ -92,6 +96,12 @@ pm-switch <worktree-name | path>    # build + flip PM web + PM consumer + verify
 pm-switch status                    # which worktree/branch is live for both services
 ```
 
+Do not run the legacy direct rebuild path against a managed worktree. In this
+model `pm-switch` is the deployment boundary because it prepares generated
+Prisma artifacts, migrates the worktree database fork, flips both services, and
+verifies hashed assets. `rebuild-and-restart.sh` delegates to `pm-switch` when
+pointed at `/srv/Code/environment.worktrees/.../ai/web`.
+
 ### Mechanism
 
 - Drop-ins under `/etc/systemd/system/pm.service.d/` and
@@ -107,6 +117,20 @@ pm-switch status                    # which worktree/branch is live for both ser
   stale code from an older worktree.
 - `30-switch-spool.conf` adds the spool to pm.service's `ReadWritePaths` so the
   web app can drop a request.
+- `pm-switch.sh` creates `/srv/Data/pm/wt-<branch>.db` from the canonical DB
+  when the branch DB does not exist, enables WAL, runs `prisma migrate deploy`
+  against that branch DB only, then builds and delegates the service flip to
+  `pm-apply-worktree`.
+- If the target worktree or DB is already live, `pm-switch.sh` first asks
+  `pm-apply-worktree --stop-live` to stop `pm-consumer.service` and
+  `pm.service`. This prevents `prisma migrate deploy` from failing with
+  `database is locked`, and avoids rebuilding `.next/standalone` while the
+  running Next process still has that tree as its working directory.
+- Before building, `pm-switch.sh` asks `pm-apply-worktree --prepare-build` to
+  remove generated `.next` and Prisma client artifacts and recreate the
+  `.prisma` output directory for the actual builder user. This keeps
+  browser-triggered rebuilds working when the previous build was made by a
+  different local account.
 
 ## 4. Files & install
 
@@ -126,7 +150,13 @@ Versioned under `ai/web/deploy/` (PM-specific) and `ai/openclaw/` (generic):
 Install on a host (after `code-tree-perms` has run):
 
 ```bash
-sudo PM_MONITOR_USER=karen ai/web/deploy/install-pm-switch.sh
+# Required by pm-switch.sh and move-sqlite-db.sh for safe SQLite backups/forks.
+# openSUSE:
+sudo zypper --non-interactive install sqlite3
+# Debian/Ubuntu:
+# sudo apt-get install sqlite3
+
+sudo PM_MONITOR_USER=<monitor-user> ai/web/deploy/install-pm-switch.sh
 ```
 
 Everything is parameterized (`PM_MONITOR_USER`, `PM_WORKTREES_ROOT`,
@@ -134,14 +164,15 @@ Everything is parameterized (`PM_MONITOR_USER`, `PM_WORKTREES_ROOT`,
 
 ## 5. Caveats
 
-- **Shared DB across branches.** Switching to a branch with *unapplied*
-  migrations can throw `P2022`. `pm-switch.sh` **warns** but never auto-migrates
-  (it could break other worktrees on an older schema). Apply deliberately:
-  `cd <ai/web> && set -a && . /etc/default/pm && set +a && pnpm exec prisma migrate deploy`.
-- **Shared DB outside worktrees.** Production SQLite should live at a neutral
-  path such as `/srv/Data/pm/pm.db`, not under any branch checkout. Use
-  `ai/web/deploy/move-sqlite-db.sh` for the controlled backup + `VACUUM INTO`
-  move, then keep `/etc/default/pm` pointed at the neutral `DATABASE_URL`.
+- **Branch DB freshness.** If a branch DB already exists, `pm-switch.sh` keeps
+  using it. When production data has changed in another live DB and you need
+  that latest state in the branch preview, refresh the branch DB deliberately
+  first, for example with `sqlite3 /srv/Data/pm/<source>.db ".backup
+  '/srv/Data/pm/wt-<branch>.db'"`, then run `pm-switch <branch>`.
+- **Canonical DB outside worktrees.** The canonical SQLite source should live at
+  a neutral path such as `/srv/Data/pm/pm.db`, not under any branch checkout.
+  Use `ai/web/deploy/move-sqlite-db.sh` for the controlled backup + `VACUUM
+  INTO` move before enabling worktree forks.
 - **The switcher rides in the app it switches.** Switching to a worktree whose
   branch predates this feature lands you on a build without the UI — switch back
   with the CLI `pm-switch`. Resolved once this is merged to `main`.

@@ -19,6 +19,7 @@ import {
   buildProjectEnvContext,
   buildWorkItemPlanningPrompt,
 } from "@/lib/agents/context/project";
+import { createContextGrantUrl } from "@/lib/agents/context-grants";
 import { createWorkItemGrantToken } from "@/lib/agents/work-item-token";
 
 const execFileAsync = promisify(execFile);
@@ -416,6 +417,178 @@ function appendDirectAttachmentNames(body: string, files: File[]) {
   ].filter(Boolean).join("\n");
 }
 
+type DirectPmWorkItemRef = {
+  kind: "task" | "epic";
+  projectSlug: string;
+  id: string;
+};
+
+function safeDecodeURIComponent(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function extractPmWorkItemRefs(text: string): DirectPmWorkItemRef[] {
+  const refs: DirectPmWorkItemRef[] = [];
+  const seen = new Set<string>();
+  const re = /\/projects\/([^/\s?#]+)\/(tasks|epics)\/([A-Za-z0-9_-]+)/g;
+  for (const match of text.matchAll(re)) {
+    const projectSlug = safeDecodeURIComponent(match[1] ?? "").trim();
+    const routeKind = match[2] ?? "";
+    const id = (match[3] ?? "").trim();
+    if (!projectSlug || !id) continue;
+    const kind = routeKind === "tasks" ? "task" : "epic";
+    const key = `${projectSlug}:${kind}:${id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push({ kind, projectSlug, id });
+  }
+  return refs;
+}
+
+function unique(values: string[]) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+async function inferProjectIdFromPmWorkItemLinks(body: string) {
+  const slugs = unique(extractPmWorkItemRefs(body).map((ref) => ref.projectSlug));
+  if (slugs.length !== 1) return null;
+  const project = await db.project.findFirst({
+    where: { slug: slugs[0], deletedAt: null },
+    select: { id: true },
+  });
+  return project?.id ?? null;
+}
+
+function buildDirectLiveContextBlock(args: {
+  projectUrl: string;
+  tasks: Array<{ id: string; title: string; url: string }>;
+  epics: Array<{ id: string; title: string; url: string }>;
+}) {
+  const lines = [
+    "LIVE PM CONTEXT - FETCH WHEN YOU NEED DEEPER HISTORY:",
+    "PM exposes loopback-only JSON endpoints through the short-lived grant URLs below. Use these URLs instead of opening a public browser URL from the user's message.",
+    "",
+    "  # Project overview, active epics/open tasks, repository path, git identity, and valid assignee / actingManager principals:",
+    `  curl -s '${args.projectUrl}'`,
+  ];
+
+  if (args.epics.length > 0) {
+    lines.push("", "  # Same-project epics explicitly linked in this turn, plus parent epics for linked tasks:");
+    for (const epic of args.epics) {
+      lines.push(`  # ${epic.title} (${epic.id})`);
+      lines.push(`  curl -s '${epic.url}'`);
+    }
+  } else {
+    lines.push(
+      "",
+      "  # No same-project epic grant was issued. Use the project overview or ask for a scoped Task/Epic turn if deep item history is required.",
+    );
+  }
+
+  if (args.tasks.length > 0) {
+    lines.push("", "  # Same-project tasks explicitly linked in this turn:");
+    for (const task of args.tasks) {
+      lines.push(`  # ${task.title} (${task.id})`);
+      lines.push(`  curl -s '${task.url}'`);
+    }
+  }
+
+  lines.push(
+    "",
+    "Soft-deleted comments / chats are filtered server-side. Attachment download URLs inside fetched JSON require the same grant token and should be called from loopback. Full contract: ai/web/docs/agent-pm-api.md.",
+  );
+  return lines.join("\n");
+}
+
+async function buildDirectLiveContextAccess(args: {
+  agentSlug: string;
+  messageId: string;
+  projectId: string;
+  body: string;
+}) {
+  const baseUrl = agentCallbackBaseUrl();
+  const projectUrl = await createContextGrantUrl({
+    baseUrl,
+    agentSlug: args.agentSlug,
+    scopeType: "project",
+    scopeId: args.projectId,
+    turnId: args.messageId,
+  });
+
+  const refs = extractPmWorkItemRefs(args.body);
+  const taskIds = unique(
+    refs.filter((ref) => ref.kind === "task").map((ref) => ref.id),
+  ).slice(0, 5);
+  const explicitEpicIds = unique(
+    refs.filter((ref) => ref.kind === "epic").map((ref) => ref.id),
+  ).slice(0, 5);
+
+  const tasks = taskIds.length
+    ? await db.task.findMany({
+        where: {
+          id: { in: taskIds },
+          projectId: args.projectId,
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          title: true,
+          epicId: true,
+        },
+      })
+    : [];
+
+  const epicIds = unique([
+    ...explicitEpicIds,
+    ...tasks.map((task) => task.epicId ?? ""),
+  ]).slice(0, 8);
+  const epics = epicIds.length
+    ? await db.epic.findMany({
+        where: {
+          id: { in: epicIds },
+          projectId: args.projectId,
+          deletedAt: null,
+        },
+        select: { id: true, title: true },
+      })
+    : [];
+
+  const [taskGrantRows, epicGrantRows] = await Promise.all([
+    Promise.all(tasks.map(async (task) => ({
+      id: task.id,
+      title: task.title,
+      url: await createContextGrantUrl({
+        baseUrl,
+        agentSlug: args.agentSlug,
+        scopeType: "task",
+        scopeId: task.id,
+        turnId: args.messageId,
+      }),
+    }))),
+    Promise.all(epics.map(async (epic) => ({
+      id: epic.id,
+      title: epic.title,
+      url: await createContextGrantUrl({
+        baseUrl,
+        agentSlug: args.agentSlug,
+        scopeType: "epic",
+        scopeId: epic.id,
+        turnId: args.messageId,
+      }),
+    }))),
+  ]);
+
+  return buildDirectLiveContextBlock({
+    projectUrl,
+    tasks: taskGrantRows,
+    epics: epicGrantRows,
+  });
+}
+
 function extractOpenClawReply(stdout: string) {
   const parsed = JSON.parse(stdout) as {
     runId?: unknown;
@@ -580,6 +753,13 @@ async function handleDirectAgentMessage(args: {
     const env = await buildProjectEnvContext(args.projectId);
     if (env) {
       projectContextText = env.text;
+      const liveContextBlock = await buildDirectLiveContextAccess({
+        agentSlug: args.agentSlug,
+        messageId: args.messageId,
+        projectId: args.projectId,
+        body: args.body,
+      });
+      systemPromptParts.push("", liveContextBlock);
       if (args.allowWorkItemManagement) {
         const token = createWorkItemGrantToken(args.projectId, args.agentSlug, args.messageId);
         const proposeUrl = new URL(
@@ -689,6 +869,9 @@ export async function sendDirectAgentMessage(formData: FormData) {
   // Optional project attachment for planning. A human-authored direct chat
   // scoped to a project carries the one-shot proposal capability by default.
   let projectId: string | null = requestedProjectId;
+  if (!projectId) {
+    projectId = await inferProjectIdFromPmWorkItemLinks(bodyRaw);
+  }
   if (projectId) {
     const proj = await db.project.findFirst({
       where: { id: projectId, deletedAt: null },

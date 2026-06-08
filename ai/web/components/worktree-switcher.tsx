@@ -44,11 +44,11 @@ export default function WorktreeSwitcher({
     };
   }, [inProgress]);
 
-  function serve(target: string) {
+  function serve(target: string, rebuild = false) {
     setError(null);
     startTransition(async () => {
       try {
-        await requestWorktreeSwitch(target);
+        await requestWorktreeSwitch(target, { rebuild });
         // Optimistic: show "queued" until the next poll picks up the runner's state.
         setState((s) => ({
           ...s,
@@ -56,7 +56,7 @@ export default function WorktreeSwitcher({
             id: "pending",
             state: "queued",
             target,
-            message: `Queued switch to ${target}…`,
+            message: rebuild ? `Queued rebuild of ${target}…` : `Queued switch to ${target}…`,
             startedAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             log: "",
@@ -131,19 +131,20 @@ export default function WorktreeSwitcher({
             </div>
             <button
               type="button"
-              onClick={() => serve(w.name)}
-              disabled={w.served || inProgress || pending || !w.ready}
+              onClick={() => serve(w.name, w.served)}
+              disabled={inProgress || pending || !w.ready}
               className="shrink-0 rounded-lg border border-[var(--color-line)] px-3 py-1.5 text-sm font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[var(--color-line)] disabled:hover:text-[var(--color-text)]"
             >
-              {w.served ? "Live" : "Serve live"}
+              {w.served ? "Rebuild live" : "Serve live"}
             </button>
           </li>
         ))}
       </ul>
       <p className="text-xs text-[var(--color-text-muted)]">
-        Builds the chosen worktree and points the live site at it (≈1–2 min; the
-        site restarts, so it briefly blips). All worktrees share the same
-        database and secrets — only the served code changes.
+        Builds the chosen worktree and points the live site at it, or rebuilds
+        the current live worktree (≈1–2 min; the site restarts, so it briefly
+        blips). All worktrees share the same database and secrets — only the
+        served code changes.
       </p>
     </div>
   );

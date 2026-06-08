@@ -67,6 +67,12 @@ export default function CommentComposerFab({
               rows={4}
               value={body}
               onValueChange={setBody}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  if (canSubmit) event.currentTarget.form?.requestSubmit();
+                }
+              }}
               placeholder={placeholder}
               expandedTitle={title}
               className="w-full resize-none rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"

@@ -17,6 +17,7 @@ import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
 import { resolveGitIdentity } from "@/lib/settings/system";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
+import { publishBoardTouch } from "@/lib/pm/board-events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -73,6 +74,7 @@ async function moveTaskStatus(args: {
       },
     }),
   ]);
+  publishBoardTouch(args.projectId);
 }
 
 export async function POST(
@@ -438,13 +440,15 @@ export async function POST(
           },
         });
       } catch (err) {
-        // Enqueue failure is non-fatal — the Review transition still
-        // succeeds; the reviewer just won't see a verification comment.
+        // Enqueue failure is non-fatal to the Review transition, but it must
+        // not wake the reviewer for code work. The reviewer gate is the
+        // monitor's pm.repo.verify.ok result.
         console.warn(`[workflow] failed to enqueue branch verify for ${task.id}`, err);
       }
     }
 
-    if (reviewerId) {
+    const reviewerShouldWaitForMonitor = repoTouched && Boolean(verifyJobId);
+    if (reviewerId && !reviewerShouldWaitForMonitor) {
       await sendTaskWorkflowNotification({
         taskId: task.id,
         targetUserId: reviewerId,
@@ -455,8 +459,8 @@ export async function POST(
           comment
             ? `Assignee note:\n${comment}`
             : null,
-          repoTouched && verifyJobId
-            ? `The monitor verifier has been asked to verify origin/${task.branchName} reflects the work; a pm.repo.verify.* task comment will follow. Check it before reviewing.`
+          repoTouched
+            ? "No monitor branch verification could be queued, so treat this as a workflow/setup issue before approving code work."
             : "The assignee indicated this task did not change the repository (or no branch is set). Verify the non-code work directly.",
           "Review the completed work or respond to the assignee's blocker/question using the full task context. If satisfied, move the task to Done through the workflow endpoint without posting an approval-only comment. If changes or blockers remain, leave concise feedback while keeping it in Review.",
         ].filter(Boolean).join("\n"),

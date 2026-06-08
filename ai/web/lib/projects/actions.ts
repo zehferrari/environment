@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import type { ActorKind } from "@/lib/workflow";
+import type { Prisma } from "@prisma/client";
 import { normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
 
 async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
@@ -21,102 +22,162 @@ function trimOrNull(v: unknown): string | null {
   return t === "" ? null : t;
 }
 
+const DEPLOYMENT_PROVIDERS = new Set(["bitbucket"]);
+const DEPLOYMENT_MODES = new Set(["pr-only", "script", "pipeline", "manual"]);
+
+function deploymentChoice(value: unknown, allowed: Set<string>, fallback: string): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  return allowed.has(raw) ? raw : fallback;
+}
+
+function branchOrNull(value: unknown): string | null {
+  const branch = trimOrNull(value);
+  if (!branch) return null;
+  if (!/^[A-Za-z0-9._\/-]+$/.test(branch) || branch.includes("..") || branch.startsWith("/") || branch.endsWith("/")) {
+    throw new Error("Deployment branches may only contain letters, numbers, dot, underscore, slash, and hyphen.");
+  }
+  return branch;
+}
+
 export async function setProjectSettings(formData: FormData) {
   const actor = await requireActor();
   const slug = String(formData.get("projectSlug") ?? "");
   if (!slug) return;
+  const rawScope = String(formData.get("settingsScope") ?? "all");
+  const scope = rawScope === "general" || rawScope === "deployment" ? rawScope : "all";
 
   const project = await db.project.findUnique({
     where: { slug },
-    select: { id: true, deletedAt: true, workItemKeyPrefix: true },
+    select: {
+      id: true,
+      deletedAt: true,
+      workItemKeyPrefix: true,
+      deploymentProvider: true,
+      deploymentProductionBranch: true,
+      deploymentPrTargetBranch: true,
+      deploymentMode: true,
+      deploymentOnMerge: true,
+      deploymentPipelineName: true,
+      deploymentHost: true,
+      deploymentEnvironment: true,
+      deploymentBitbucketWorkspace: true,
+      deploymentBitbucketRepoSlug: true,
+      members: { where: { userId: actor.id }, select: { role: true } },
+    },
   });
   if (!project || project.deletedAt) return;
 
-  const name = trimOrNull(formData.get("name"));
-  if (!name) throw new Error("Project name is required");
+  const actorUser = await db.user.findUnique({ where: { id: actor.id }, select: { username: true } });
+  const canEditDeployment =
+    actorUser?.username === "zeh" ||
+    project.members.some((member) => member.role === "owner");
+  const data: Prisma.ProjectUpdateInput = {};
+  const payload: Record<string, unknown> = { scope };
+  let slugChanged = false;
+  let newSlug = slug;
 
-  const newSlug = trimOrNull(formData.get("slug"));
-  if (!newSlug) throw new Error("Project slug is required");
-  if (!/^[a-zA-Z0-9\-_]+$/.test(newSlug)) {
-    throw new Error("Slug must only contain letters, numbers, hyphens, and underscores");
-  }
+  if (scope === "general" || scope === "all") {
+    const name = trimOrNull(formData.get("name"));
+    if (!name) throw new Error("Project name is required");
 
-  const slugChanged = newSlug !== slug;
-  if (slugChanged) {
-    const existing = await db.project.findUnique({
-      where: { slug: newSlug },
-      select: { id: true },
-    });
-    if (existing) {
-      throw new Error("Slug is already in use by another project");
+    const parsedSlug = trimOrNull(formData.get("slug"));
+    if (!parsedSlug) throw new Error("Project slug is required");
+    if (!/^[a-zA-Z0-9\-_]+$/.test(parsedSlug)) {
+      throw new Error("Slug must only contain letters, numbers, hyphens, and underscores");
     }
+
+    newSlug = parsedSlug;
+    slugChanged = newSlug !== slug;
+    if (slugChanged) {
+      const existing = await db.project.findUnique({
+        where: { slug: newSlug },
+        select: { id: true },
+      });
+      if (existing) {
+        throw new Error("Slug is already in use by another project");
+      }
+    }
+
+    const repositoryPath = trimOrNull(formData.get("repositoryPath"));
+    if (!repositoryPath) throw new Error("Repository folder is required");
+    const defaultGitUserName = trimOrNull(formData.get("defaultGitUserName"));
+    const defaultGitUserEmail = trimOrNull(formData.get("defaultGitUserEmail"));
+    const rawWorkItemKeyPrefix = trimOrNull(formData.get("workItemKeyPrefix"));
+    if (!rawWorkItemKeyPrefix) {
+      throw new Error("Project key is required");
+    }
+    const workItemKeyPrefix = normalizeWorkItemKeyPrefix(rawWorkItemKeyPrefix);
+    if (!workItemKeyPrefix) {
+      throw new Error("Project key must start with a letter and contain only 2-10 letters or numbers.");
+    }
+    if (workItemKeyPrefix && workItemKeyPrefix !== project.workItemKeyPrefix) {
+      const existing = await db.project.findUnique({
+        where: { workItemKeyPrefix },
+        select: { id: true },
+      });
+      if (existing && existing.id !== project.id) {
+        throw new Error("Project key is already in use by another project.");
+      }
+    }
+    const onlyReportersCanApproveActionPlans = formData.get("onlyReportersCanApproveActionPlans") === "on";
+    const onlyReportersCanSetTasksDone = formData.get("onlyReportersCanSetTasksDone") === "on";
+    const onlyReportersCanApprovePullRequests = formData.get("onlyReportersCanApprovePullRequests") === "on";
+    const defaultAssigneeId = trimOrNull(formData.get("defaultAssigneeId"));
+    const defaultReviewerId = trimOrNull(formData.get("defaultReviewerId"));
+    // Blank automatic archive age inherits the system default (resolved on read).
+    const doneTtlDaysRaw = String(formData.get("doneTtlDays") ?? "").trim();
+    const doneTtlDays =
+      doneTtlDaysRaw === "" ? null : Math.max(1, Math.min(365, Number(doneTtlDaysRaw) || 5));
+
+    Object.assign(data, {
+      name,
+      slug: newSlug,
+      repositoryPath,
+      defaultGitUserName,
+      defaultGitUserEmail,
+      workItemKeyPrefix,
+      onlyReportersCanApproveActionPlans,
+      onlyReportersCanSetTasksDone,
+      onlyReportersCanApprovePullRequests,
+      defaultAssigneeId,
+      defaultReviewerId,
+      doneTtlDays,
+    });
+    Object.assign(payload, data);
   }
 
-  const repositoryPath = trimOrNull(formData.get("repositoryPath"));
-  if (!repositoryPath) throw new Error("Repository folder is required");
-  const defaultGitUserName = trimOrNull(formData.get("defaultGitUserName"));
-  const defaultGitUserEmail = trimOrNull(formData.get("defaultGitUserEmail"));
-  const rawWorkItemKeyPrefix = trimOrNull(formData.get("workItemKeyPrefix"));
-  if (!rawWorkItemKeyPrefix) {
-    throw new Error("Project key is required");
-  }
-  const workItemKeyPrefix = normalizeWorkItemKeyPrefix(rawWorkItemKeyPrefix);
-  if (!workItemKeyPrefix) {
-    throw new Error("Project key must start with a letter and contain only 2-10 letters or numbers.");
-  }
-  if (workItemKeyPrefix && workItemKeyPrefix !== project.workItemKeyPrefix) {
-    const existing = await db.project.findUnique({
-      where: { workItemKeyPrefix },
-      select: { id: true },
-    });
-    if (existing && existing.id !== project.id) {
-      throw new Error("Project key is already in use by another project.");
+  if (scope === "deployment" || scope === "all") {
+    if (!canEditDeployment) {
+      throw new Error("Only project owners can edit deployment settings.");
     }
+    const deploymentMode = deploymentChoice(formData.get("deploymentMode"), DEPLOYMENT_MODES, project.deploymentMode);
+    const deploymentData = {
+      deploymentProvider: deploymentChoice(formData.get("deploymentProvider"), DEPLOYMENT_PROVIDERS, project.deploymentProvider),
+      deploymentProductionBranch: branchOrNull(formData.get("deploymentProductionBranch")) ?? "main",
+      deploymentPrTargetBranch: branchOrNull(formData.get("deploymentPrTargetBranch")) ?? branchOrNull(formData.get("deploymentProductionBranch")) ?? "main",
+      deploymentMode,
+      deploymentOnMerge: deploymentMode === "script" ? trimOrNull(formData.get("deploymentOnMerge")) : null,
+      deploymentPipelineName: deploymentMode === "pipeline" ? trimOrNull(formData.get("deploymentPipelineName")) : null,
+      deploymentHost: trimOrNull(formData.get("deploymentHost")),
+      deploymentEnvironment: trimOrNull(formData.get("deploymentEnvironment")),
+      deploymentBitbucketWorkspace: trimOrNull(formData.get("deploymentBitbucketWorkspace")),
+      deploymentBitbucketRepoSlug: trimOrNull(formData.get("deploymentBitbucketRepoSlug")),
+    };
+    Object.assign(data, deploymentData);
+    payload.deployment = deploymentData;
   }
-  const onlyReportersCanApproveActionPlans = formData.get("onlyReportersCanApproveActionPlans") === "on";
-  const onlyReportersCanSetTasksDone = formData.get("onlyReportersCanSetTasksDone") === "on";
-  const defaultAssigneeId = trimOrNull(formData.get("defaultAssigneeId"));
-  const defaultReviewerId = trimOrNull(formData.get("defaultReviewerId"));
-  // Blank automatic archive age inherits the system default (resolved on read).
-  const doneTtlDaysRaw = String(formData.get("doneTtlDays") ?? "").trim();
-  const doneTtlDays =
-    doneTtlDaysRaw === "" ? null : Math.max(1, Math.min(365, Number(doneTtlDaysRaw) || 5));
 
   await db.$transaction([
     db.project.update({
       where: { id: project.id },
-      data: {
-        name,
-        slug: newSlug,
-        repositoryPath,
-        defaultGitUserName,
-        defaultGitUserEmail,
-        workItemKeyPrefix,
-        onlyReportersCanApproveActionPlans,
-        onlyReportersCanSetTasksDone,
-        defaultAssigneeId,
-        defaultReviewerId,
-        doneTtlDays,
-      },
+      data,
     }),
     db.activityLog.create({
       data: {
         projectId: project.id,
         userId: actor.id,
         kind: "project.settings",
-        payload: JSON.stringify({
-          name,
-          slug: newSlug,
-          repositoryPath,
-          defaultGitUserName,
-          defaultGitUserEmail,
-          workItemKeyPrefix,
-          onlyReportersCanApproveActionPlans,
-          onlyReportersCanSetTasksDone,
-          defaultAssigneeId,
-          defaultReviewerId,
-          doneTtlDays,
-        }),
+        payload: JSON.stringify(payload),
       },
     }),
   ]);
@@ -127,7 +188,7 @@ export async function setProjectSettings(formData: FormData) {
   if (slugChanged) {
     revalidatePath(`/projects/${newSlug}`);
     revalidatePath(`/projects/${newSlug}/settings`);
-    redirect(`/projects/${newSlug}/settings`);
+    redirect(`/projects/${newSlug}/settings?tab=general`);
   }
 }
 

@@ -34,10 +34,13 @@ x1 uses systemd timers for active automation. Cron references in old migration n
 - `pm-consumer.service`: PM event consumer for non-chat automation. Reads
   `/var/lib/pm/drop` and wakes local agent gateways through `/hooks/wake`
   for assignment/ack-style events. It is also a system unit running as
-  Karen on x1. It keeps `ProtectHome=true`; `pnpm` config/cache/home are
-  redirected to `/var/lib/pm/pnpm-{home,config,cache}` to avoid probing
-  hidden `/home/karen` paths. Stale per-agent user units named
-  `pm.service` or `pm-consumer.service` should be removed.
+  the configured monitor user. It keeps `ProtectHome=read-only` so the
+  deployment handler can read the monitor user's SSH key/known_hosts for
+  Bitbucket pushes while still blocking writes to home directories.
+  `pnpm` config/cache/home are redirected to
+  `/var/lib/pm/pnpm-{home,config,cache}` to avoid probing login-home
+  package-manager files. Stale per-agent user units named `pm.service` or
+  `pm-consumer.service` should be removed.
 - `pm-switch-runner.service`: monitor-driven worktree switch runner (system
   unit, `User=karen` on x1). Watches `/var/lib/pm/switch/request.json`, builds
   the requested worktree with `pm-switch`, and flips `pm.service` to serve it via

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import {
@@ -16,6 +17,13 @@ import WorktreeSwitcher from "@/components/worktree-switcher";
 export const dynamic = "force-dynamic";
 
 const ACTIVITY_FEED_LIMIT = 30;
+const SETTINGS_TABS = [
+  { key: "general", label: "General" },
+  { key: "deployment", label: "Deployment" },
+  { key: "worktrees", label: "Worktree live preview" },
+  { key: "danger", label: "Danger zone" },
+] as const;
+type SettingsTab = (typeof SETTINGS_TABS)[number]["key"];
 const actorSelect = {
   id: true,
   username: true,
@@ -25,17 +33,34 @@ const actorSelect = {
   agent: { select: { slug: true, name: true, avatar: true } },
 };
 
+function single(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function parseSettingsTab(value: string | string[] | undefined): SettingsTab {
+  const tab = single(value);
+  return SETTINGS_TABS.some((item) => item.key === tab) ? (tab as SettingsTab) : "general";
+}
+
 export default async function ProjectSettingsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  searchParams?: Promise<{ tab?: string | string[] }>;
 }) {
-  const { slug } = await params;
+  const [{ slug }, sp] = await Promise.all([
+    params,
+    searchParams ?? Promise.resolve({} as { tab?: string | string[] }),
+  ]);
+  const activeTab = parseSettingsTab(sp.tab);
+  const session = await auth();
   const project = await db.project.findUnique({
     where: { slug, deletedAt: null },
     include: {
       defaultAssignee: { select: { username: true } },
       defaultReviewer: { select: { username: true } },
+      members: { where: { userId: session?.user?.id ?? "__anonymous__" }, select: { role: true } },
     },
   });
   if (!project) notFound();
@@ -44,8 +69,9 @@ export default async function ProjectSettingsPage({
   // whose repo is a git checkout exposed to the shared worktree approach.
   // Scope the worktree options to THIS project's repo, and hide the block
   // entirely when that repo has no worktrees to choose from.
-  const session = await auth();
   const isAdmin = session?.user?.name === "zeh";
+  const canEditDeployment = isAdmin || project.members.some((member) => member.role === "owner");
+  const deploymentInputClass = "w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-70";
   const repoKey = worktreeRepoKey(project.repositoryPath);
   const eligible = isAdmin && isWorktreeExposedRepo(project.repositoryPath) && !!repoKey;
   const switchState = eligible ? await readSwitchState() : null;
@@ -91,11 +117,15 @@ export default async function ProjectSettingsPage({
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div className="space-y-6">
-        <form
-          action={setProjectSettings}
-          className="space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm"
-        >
-          <input type="hidden" name="projectSlug" value={slug} />
+        <SettingsTabNav slug={slug} activeTab={activeTab} />
+
+        {activeTab === "general" ? (
+          <form
+            action={setProjectSettings}
+            className="space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm"
+          >
+            <input type="hidden" name="projectSlug" value={slug} />
+            <input type="hidden" name="settingsScope" value="general" />
 
           <SettingsRow
             label="Project name"
@@ -246,7 +276,7 @@ export default async function ProjectSettingsPage({
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
               Only Reporters:
             </div>
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid gap-3 lg:grid-cols-3">
               <label className="flex items-start gap-3 text-sm">
                 <input
                   type="checkbox"
@@ -275,6 +305,20 @@ export default async function ProjectSettingsPage({
                   </span>
                 </span>
               </label>
+              <label className="flex items-start gap-3 text-sm">
+                <input
+                  type="checkbox"
+                  name="onlyReportersCanApprovePullRequests"
+                  defaultChecked={project.onlyReportersCanApprovePullRequests}
+                  className="mt-1 h-4 w-4 rounded border-[var(--color-line)] accent-[var(--color-accent)]"
+                />
+                <span>
+                  <span className="block font-medium">Can Approve Pull Requests</span>
+                  <span className="block text-xs text-[var(--color-text-muted)]">
+                    Deployment PR approval is reserved for the reporter when this policy is enabled.
+                  </span>
+                </span>
+              </label>
             </div>
           </div>
 
@@ -286,29 +330,83 @@ export default async function ProjectSettingsPage({
               Save settings
             </button>
           </div>
-        </form>
+          </form>
+        ) : null}
 
-        <form
-          action={deleteProject}
-          className="w-1/2 space-y-2 rounded-2xl border border-[var(--color-crit)] bg-[var(--color-panel)] p-4 shadow-sm"
-        >
-          <input type="hidden" name="projectSlug" value={slug} />
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-crit)]">
-            Danger zone
-          </div>
-          <p className="text-xs text-[var(--color-text-muted)]">
-            Move this project to the bin. All its epics, tasks, and
-            attachments go with it. Auto-purged after 30 days.
-          </p>
-          <button
-            type="submit"
-            className="w-full rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--color-crit)] hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+        {activeTab === "deployment" ? (
+          <form
+            action={setProjectSettings}
+            className="space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm"
           >
-            Delete project
-          </button>
-        </form>
+            <input type="hidden" name="projectSlug" value={slug} />
+            <input type="hidden" name="settingsScope" value="deployment" />
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold tracking-tight">Deployment</h2>
+                <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+                  Project deployment config is visible to everyone; only project owners can edit it.
+                </p>
+              </div>
+              {!canEditDeployment ? (
+                <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5 text-[11px] text-[var(--color-text-muted)]">Read-only</span>
+              ) : null}
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <SettingsRow label="Provider" hint="Repository provider for deployment PRs.">
+                <select name="deploymentProvider" defaultValue={project.deploymentProvider} disabled={!canEditDeployment} className={deploymentInputClass}>
+                  <option value="bitbucket">Bitbucket</option>
+                </select>
+              </SettingsRow>
+              <SettingsRow label="Production branch" hint="Canonical production branch.">
+                <input type="text" name="deploymentProductionBranch" defaultValue={project.deploymentProductionBranch ?? "main"} disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+              <SettingsRow label="PR target branch" hint="Destination branch for deployment PRs.">
+                <input type="text" name="deploymentPrTargetBranch" defaultValue={project.deploymentPrTargetBranch ?? project.deploymentProductionBranch ?? "main"} disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <SettingsRow label="Mode" hint="How Monitor deploys after merge.">
+                <select name="deploymentMode" defaultValue={project.deploymentMode} disabled={!canEditDeployment} className={deploymentInputClass}>
+                  <option value="pr-only">PR only</option>
+                  <option value="script">Script</option>
+                  <option value="pipeline">Pipeline</option>
+                  <option value="manual">Manual</option>
+                </select>
+              </SettingsRow>
+              <SettingsRow label="Host" hint="Deployment host label.">
+                <input type="text" name="deploymentHost" defaultValue={project.deploymentHost ?? ""} placeholder="x1" disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+              <SettingsRow label="Environment" hint="Environment name.">
+                <input type="text" name="deploymentEnvironment" defaultValue={project.deploymentEnvironment ?? ""} placeholder="production" disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+            </div>
+            <SettingsRow label="On-merge script" hint="Shell command/path run from repository root when mode is script.">
+              <input type="text" name="deploymentOnMerge" defaultValue={project.deploymentOnMerge ?? ""} placeholder="./ai/openclaw/bin/deploy-on-merge" disabled={!canEditDeployment} className={`${deploymentInputClass} font-mono`} />
+            </SettingsRow>
+            <div className="grid gap-3 md:grid-cols-3">
+              <SettingsRow label="Pipeline name" hint="Provider pipeline selector when mode is pipeline.">
+                <input type="text" name="deploymentPipelineName" defaultValue={project.deploymentPipelineName ?? ""} disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+              <SettingsRow label="Bitbucket workspace" hint="Optional override; otherwise inferred from origin.">
+                <input type="text" name="deploymentBitbucketWorkspace" defaultValue={project.deploymentBitbucketWorkspace ?? ""} disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+              <SettingsRow label="Bitbucket repo slug" hint="Optional override; otherwise inferred from origin.">
+                <input type="text" name="deploymentBitbucketRepoSlug" defaultValue={project.deploymentBitbucketRepoSlug ?? ""} disabled={!canEditDeployment} className={deploymentInputClass} />
+              </SettingsRow>
+            </div>
+            <div className="flex justify-end pt-1">
+              <button
+                type="submit"
+                disabled={!canEditDeployment}
+                className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Save deployment settings
+              </button>
+            </div>
+          </form>
+        ) : null}
 
-        {showSwitcher && switchState ? (
+        {activeTab === "worktrees" ? (
           <section className="space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm">
             <div>
               <h2 className="text-sm font-semibold tracking-tight">Worktree live preview</h2>
@@ -328,8 +426,36 @@ export default async function ProjectSettingsPage({
               service per project repo). For now switching routes through the
               single shared PM app service.
             </div>
-            <WorktreeSwitcher initial={switchState} repoKey={repoKey ?? ""} />
+            {showSwitcher && switchState ? (
+              <WorktreeSwitcher initial={switchState} repoKey={repoKey ?? ""} />
+            ) : (
+              <p className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm text-[var(--color-text-muted)]">
+                No live-preview worktrees are available for this project repository on this host.
+              </p>
+            )}
           </section>
+        ) : null}
+
+        {activeTab === "danger" ? (
+          <form
+            action={deleteProject}
+            className="w-1/2 space-y-2 rounded-2xl border border-[var(--color-crit)] bg-[var(--color-panel)] p-4 shadow-sm"
+          >
+            <input type="hidden" name="projectSlug" value={slug} />
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-crit)]">
+              Danger zone
+            </div>
+            <p className="text-xs text-[var(--color-text-muted)]">
+              Move this project to the bin. All its epics, tasks, and
+              attachments go with it. Auto-purged after 30 days.
+            </p>
+            <button
+              type="submit"
+              className="w-full rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--color-crit)] hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+            >
+              Delete project
+            </button>
+          </form>
         ) : null}
       </div>
 
@@ -340,6 +466,29 @@ export default async function ProjectSettingsPage({
         <ActivityAgenda feed={feed} />
       </aside>
     </div>
+  );
+}
+
+function SettingsTabNav({ slug, activeTab }: { slug: string; activeTab: SettingsTab }) {
+  return (
+    <nav className="flex flex-wrap gap-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-2 shadow-sm" aria-label="Project settings tabs">
+      {SETTINGS_TABS.map((tab) => {
+        const active = tab.key === activeTab;
+        return (
+          <Link
+            key={tab.key}
+            href={`/projects/${slug}/settings?tab=${tab.key}`}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+              active
+                ? "bg-[var(--color-accent)] text-[var(--color-bg)]"
+                : "text-[var(--color-text-muted)] hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+            }`}
+          >
+            {tab.label}
+          </Link>
+        );
+      })}
+    </nav>
   );
 }
 

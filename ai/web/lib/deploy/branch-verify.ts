@@ -3,10 +3,11 @@
 // When an assignee moves a code-touching task to Review (workflow action
 // ready_for_review with repoTouched=true), PM drops a JSON job here. The
 // monitor-side runner (ai/web/scripts/pm-verify-branch-pushed.ts) consumes the
-// file, runs `git -C <repositoryPath> fetch origin <branchName>` against the
-// already-cloned local repo, looks for commits whose subject starts with the
-// task/epic commit prefix on origin/<branchName>, and posts a verification
-// task comment + pm.repo.verify.* ActivityLog row.
+// file before any reviewer is woken. It resolves the branch worktree, rejects
+// dirty local changes, pushes clean local branch commits when needed, verifies
+// origin/<branchName> has the task/epic commit prefix and expected git
+// identity, rebuilds the active PM worktree when this branch is live, then
+// posts a verification task comment + pm.repo.verify.* ActivityLog row.
 //
 // The spool dir is shared by the PM web service user and the verify runner
 // user (2770, usually group code-agents) so the runner can use a dedicated

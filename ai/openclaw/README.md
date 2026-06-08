@@ -40,7 +40,9 @@ behaviour (`ROLES.md`), task workflow (`TEAM_WORKFLOW.md`).
 
 ## How agents see this repo
 
-Per-agent symlinks point into the host-specific OpenClaw checkout. Use `/srv/Code/environment/ai/openclaw` on x1 and `/home/rachael/Code/environment/ai/openclaw` on yoga510.
+Per-agent symlinks point into the active OpenClaw checkout that ran
+`ai/openclaw/install.sh`. On worktree-based deployments, that means the active
+worktree checkout, not a stale main checkout.
 
 | Agent path | → target |
 |---|---|
@@ -60,10 +62,9 @@ Per-agent symlinks point into the host-specific OpenClaw checkout. Use `/srv/Cod
 | `/home/<user>/.openclaw/workspace/{SOUL,USER,MEMORY,IDENTITY,TOOLS,HEARTBEAT}.md` | same |
 | `/home/<user>/.openclaw/openclaw.json` | `<agentFilesRoot>/<user>/openclaw.json` per-agent runtime config, agent-owned and writable by the configured `codeGroup` |
 
-Note: the `monitoring` agent (Linux user `karen`) has only the
-`~/.openclaw/workspace/` paths — the user-facing `~/workspace/` doesn't exist
-for the monitor user, so AGENTS/ROLES/TEAM_WORKFLOW are symlinked once each
-there.
+Note: the monitor agent has only the `~/.openclaw/workspace/` paths. The
+user-facing `~/workspace/` may not exist for monitor users, so
+AGENTS/ROLES/TEAM_WORKFLOW are symlinked once each there.
 
 Per-agent **identity**, **memory**, and **OpenClaw runtime config** are
 symlinked to the host's private agent-files root, defaulting to

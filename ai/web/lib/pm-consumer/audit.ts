@@ -19,6 +19,43 @@ export interface AuditArgs {
   dedupeKey: string;
 }
 
+function auditTaskId(event: PmEvent) {
+  if (event.kind === "deployment.approved" && event.payload.scope === "epic") {
+    return null;
+  }
+  return event.task.id;
+}
+
+async function resolveAuditRefs(event: PmEvent) {
+  const taskId = auditTaskId(event);
+  const [task, project, actor] = await Promise.all([
+    taskId
+      ? db.task.findUnique({
+          where: { id: taskId },
+          select: { id: true, projectId: true },
+        })
+      : null,
+    db.project
+      .findUnique({
+        where: { slug: event.task.projectKey },
+        select: { id: true },
+      })
+      .catch(() => null),
+    db.user
+      .findUnique({
+        where: { id: event.actor.id },
+        select: { id: true },
+      })
+      .catch(() => null),
+  ]);
+
+  return {
+    projectId: task?.projectId ?? project?.id ?? null,
+    taskId: task?.id ?? null,
+    userId: actor?.id ?? null,
+  };
+}
+
 export async function writeAuditRow(args: AuditArgs): Promise<void> {
   const payload = {
     eventId: args.event.id,
@@ -30,13 +67,19 @@ export async function writeAuditRow(args: AuditArgs): Promise<void> {
     error: args.error,
     actorId: args.event.actor.id,
   };
-  await db.activityLog.create({
-    data: {
-      taskId: args.event.task.id,
-      userId: args.event.actor.id,
-      kind: `agent.wake.${args.outcome}`,
-      payload: JSON.stringify(payload),
-      targetAgent: args.targetSlug,
-    },
-  });
+  const refs = await resolveAuditRefs(args.event);
+  try {
+    await db.activityLog.create({
+      data: {
+        projectId: refs.projectId,
+        taskId: refs.taskId,
+        userId: refs.userId,
+        kind: `agent.wake.${args.outcome}`,
+        payload: JSON.stringify(payload),
+        targetAgent: args.targetSlug,
+      },
+    });
+  } catch (err) {
+    console.error("[pm-consumer] audit write failed:", err);
+  }
 }

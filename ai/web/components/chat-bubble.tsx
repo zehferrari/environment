@@ -2,7 +2,9 @@
 
 import { useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { renderFullMarkdown } from "@/lib/markdown";
+import { parsePmOptions, isPmOptionsTargetedAtCurrentUser, type PmOption } from "@/lib/pm-options";
 import { parseDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
+import PmOptions from "@/components/pm-options";
 import {
   actorDisplayName,
   MessageAvatar,
@@ -15,12 +17,17 @@ export interface ChatBubbleMessage {
   body: string;
   createdAt: Date | string;
   targetLabel?: string | null;
+  targetType?: string | null;
+  targetValue?: string | null;
   sender: MessageActor;
 }
 
 interface ChatBubbleProps {
   message: ChatBubbleMessage;
   currentUserId?: string | null;
+  projectSlug?: string;
+  surface?: "task-chat" | "epic-chat";
+  resolvedOption?: PmOption | null;
   actions?: ReactNode;
   containerRef?: Ref<HTMLDivElement>;
   className?: string;
@@ -50,6 +57,9 @@ function hashString(value: string) {
 export default function ChatBubble({
   message,
   currentUserId = null,
+  projectSlug,
+  surface,
+  resolvedOption = null,
   actions,
   containerRef,
   className = "",
@@ -63,11 +73,13 @@ export default function ChatBubble({
   const sections = preferShortAgentSections && fromAgent
     ? parseDiscussionReplySections(message.body)
     : null;
-  const displayBody = sections
+  const rawDisplayBody = sections
     ? showFullSection
       ? sections.sectionA
       : sections.sectionB
     : message.body;
+  const parsedOptions = parsePmOptions(rawDisplayBody);
+  const displayBody = parsedOptions.body;
   const senderKey = message.sender.id ?? message.sender.agent?.slug ?? message.sender.username;
   const hash = hashString(senderKey);
   const paletteIndex = participantIndex ?? (hash % senderPalette.length);
@@ -149,6 +161,20 @@ export default function ChatBubble({
           className="md md-compact break-words text-sm leading-relaxed text-[var(--color-text)] [overflow-wrap:anywhere]"
           dangerouslySetInnerHTML={renderFullMarkdown(displayBody)}
         />
+        {projectSlug && surface && parsedOptions.options.length > 0 ? (
+          <PmOptions
+            projectSlug={projectSlug}
+            sourceMessageId={message.id}
+            surface={surface}
+            options={parsedOptions.options}
+            resolvedOption={resolvedOption}
+            interactive={isPmOptionsTargetedAtCurrentUser({
+              currentUserId,
+              targetType: message.targetType,
+              targetValue: message.targetValue,
+            })}
+          />
+        ) : null}
       </article>
       {fromCurrentUser ? <MessageAvatar actor={message.sender} /> : null}
     </div>

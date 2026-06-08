@@ -11,6 +11,7 @@
 //     truncation because the two tables are separate.
 
 import { parsePmEvent, type PmEvent } from "@/lib/pm-events";
+import { handleDeploymentApproved } from "@/lib/deploy/monitor";
 import { dedupeKeyFor } from "./dedupe-key";
 import { createTargetResolver, type TargetResolver } from "./target";
 import {
@@ -49,6 +50,54 @@ export function createHandler(opts: HandlerOptions = {}) {
     }
 
     const dedupeKey = dedupeKeyFor(event);
+
+    if (event.kind === "deployment.approved") {
+      const append = await appendDelivery({
+        event,
+        dedupeKey,
+        targetSlug: "monitor",
+        targetGatewayPort: null,
+      });
+      if (append.status === "duplicate") {
+        await writeAuditRow({
+          event,
+          outcome: "skipped-duplicate",
+          targetSlug: "monitor",
+          targetGatewayPort: null,
+          dedupeKey,
+        });
+        return { kind: "skipped-duplicate", dedupeKey };
+      }
+      const deliveryId = append.deliveryId!;
+      try {
+        await handleDeploymentApproved({
+          scope: event.payload.scope,
+          scopeId: event.payload.scopeId,
+        });
+        await markDelivered({ deliveryId, status: "delivered" });
+        await writeAuditRow({
+          event,
+          outcome: "delivered",
+          targetSlug: "monitor",
+          targetGatewayPort: null,
+          dedupeKey,
+        });
+        return { kind: "delivered", dedupeKey, targetSlug: "monitor" };
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        await markDelivered({ deliveryId, status: "failed", error });
+        await writeAuditRow({
+          event,
+          outcome: "failed",
+          targetSlug: "monitor",
+          targetGatewayPort: null,
+          error,
+          dedupeKey,
+        });
+        return { kind: "failed", dedupeKey, error };
+      }
+    }
+
     const target = await resolver.resolve(event);
 
     const append = await appendDelivery({
@@ -139,6 +188,8 @@ function wakeText(event: PmEvent): string {
       return `PM: new comment on ${taskKey} (${event.task.title})`;
     case "task.ack_ready":
       return `PM: ${taskKey} ready for ack (${event.task.title})`;
+    case "deployment.approved":
+      return `PM: deployment approved for ${taskKey} (${event.task.title})`;
     case "task.agent_chat": {
       const grant = event.payload.allowDescriptionEdit
         ? " [edit_grant]"

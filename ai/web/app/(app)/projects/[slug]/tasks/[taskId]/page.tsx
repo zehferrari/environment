@@ -19,6 +19,7 @@ import {
 } from "@/lib/workflow";
 import { COLUMN_IDS } from "../../columns";
 import {
+  buildDeploymentApproved,
   buildTaskAssigned,
 } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
@@ -34,6 +35,7 @@ import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteTask } from "@/lib/bin/actions";
 import { archiveTask, unarchiveTask } from "@/lib/archive/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
+import { publishBoardTouch } from "@/lib/pm/board-events";
 import {
   canApproveActionPlanForActor,
   resolveDoneOwnerId,
@@ -73,8 +75,12 @@ import {
 } from "@/components/message-avatar";
 import DescriptionField from "@/components/description-field";
 import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
+import PmOptions from "@/components/pm-options";
+import { findPmOptionResolution, parsePmOptions, isPmOptionsTargetedAtCurrentUser } from "@/lib/pm-options";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import TaskEpicPicker from "./task-epic-picker";
+import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, canShowDeploymentTab, type DeploymentPrRow } from "@/components/deployment-tab";
+import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 
 type ActorRow = {
   id: string;
@@ -142,8 +148,10 @@ async function updateTask(formData: FormData) {
   const newActingManagerId = reviewerRaw === "" ? null : reviewerRaw;
   const reporterRaw = String(formData.get("reporterId") ?? "");
   const newReporterId = reporterRaw === "" ? null : reporterRaw;
+  const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
 
   if (newStatus !== "" && !COLUMN_IDS.includes(newStatus)) return;
+  if (deploymentRaw !== "" && !isDeploymentStatus(deploymentRaw)) return;
   if (newBranch !== null && newBranch.length > 200) return;
   if (newCommitPrefix !== null && newCommitPrefix.length > 200) return;
 
@@ -161,6 +169,8 @@ async function updateTask(formData: FormData) {
       assigneeId: true,
       actingManagerId: true,
       reporterId: true,
+      deploymentStatus: true,
+      parentTaskId: true,
       approvedOn: true,
       workItemKey: true,
       project: {
@@ -168,6 +178,7 @@ async function updateTask(formData: FormData) {
           slug: true,
           onlyReportersCanApproveActionPlans: true,
           onlyReportersCanSetTasksDone: true,
+          onlyReportersCanApprovePullRequests: true,
         },
       },
       epic: { select: { title: true, status: true, actingManagerId: true, branchName: true, commitPrefix: true } },
@@ -361,6 +372,26 @@ async function updateTask(formData: FormData) {
     });
   }
 
+  // Deployment status: only top-level Tasks (no Epic / sub-task parent) expose it.
+  const deploymentAllowed = task.epicId == null && task.parentTaskId == null;
+  if (deploymentAllowed && deploymentRaw !== "" && deploymentRaw !== task.deploymentStatus) {
+    const actorAgent = actor.kind === "agent"
+      ? await db.user.findUnique({ where: { id: actor.id }, select: { agent: { select: { role: true } } } })
+      : null;
+    const check = checkDeploymentStatusWrite({
+      actor,
+      actorAgentRole: actorAgent?.agent?.role ?? null,
+      from: task.deploymentStatus,
+      to: deploymentRaw,
+    });
+    if (!check.ok) throw new Error(check.message);
+    data.deploymentStatus = deploymentRaw;
+    activity.push({
+      kind: "task.deployment_status",
+      payload: JSON.stringify({ from: task.deploymentStatus, to: deploymentRaw }),
+    });
+  }
+
   // Reporter (active User/Agent row; defaults to creator on new tasks)
   if (newReporterId !== task.reporterId) {
     let toUsername: string | null = null;
@@ -417,6 +448,21 @@ async function updateTask(formData: FormData) {
 
   revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   revalidatePath(`/projects/${slug}`);
+  publishBoardTouch(task.projectId);
+
+  if (deploymentAllowed && deploymentRaw === "Deployment Approved" && task.deploymentStatus !== "Deployment Approved") {
+    await notifyDispatch(
+      buildDeploymentApproved(
+        {
+          id: randomUUID(),
+          occurredAt: new Date().toISOString(),
+          actor,
+          task: { id: task.id, key: task.workItemKey ?? task.id, projectKey: slug, title: titleRaw },
+        },
+        { scope: "task", scopeId: task.id, deploymentStatus: "Deployment Approved" },
+      ),
+    );
+  }
 
   // Assignment wake fires after the commit, non-throwing (mirrors the old
   // standalone assignTask path).
@@ -1132,7 +1178,7 @@ function discussionTargetValue(
   return `user:${principal.id}`;
 }
 
-const TASK_TABS = ["Description", "Action Plan", "Sub-Tasks", "Attachments", "Comments", "Activities", "Changes"] as const;
+const TASK_TABS = ["Description", "Action Plan", "Deployment", "Sub-Tasks", "Attachments", "Comments", "Activities", "Changes"] as const;
 
 function tabParam(tab: string) {
   return tab
@@ -1164,7 +1210,7 @@ export default async function TaskDetailPage({
     params,
     searchParams,
   ]);
-  const selectedTab = chatArchive || chatRoom === "current"
+  let selectedTab = chatArchive || chatRoom === "current"
     ? "Action Plan"
     : tabFromSearchParam(tab, TASK_TABS) ?? "Description";
 
@@ -1175,6 +1221,9 @@ export default async function TaskDetailPage({
   ]);
   const task = taskShell ? { ...taskShell, comments, attachments } : null;
   if (!task || task.project.slug !== slug || task.deletedAt) notFound();
+  const showDeploymentTab = canShowDeploymentTab(task);
+  const taskTabs = showDeploymentTab ? TASK_TABS : TASK_TABS.filter((name) => name !== "Deployment");
+  if (!showDeploymentTab && selectedTab === "Deployment") selectedTab = "Description";
 
   // Only human viewers get comment-delete controls (see deleteComment).
   const viewer = await requireActor();
@@ -1234,6 +1283,13 @@ export default async function TaskDetailPage({
     }))
     .filter((message, index, all) => all.findIndex((item) => item.agentSlug === message.agentSlug) === index)
     .slice(0, 4);
+  const deploymentPullRequests: DeploymentPrRow[] = showDeploymentTab
+    ? await db.deploymentPullRequest.findMany({
+        where: { taskId: task.id },
+        orderBy: { updatedAt: "desc" },
+        include: { task: { select: { workItemKey: true, title: true } } },
+      })
+    : [];
   const chatMessages = await getCachedTaskRoomMessages(task.id);
   const pendingProposals = await getCachedPendingTaskProposals(
     task.id,
@@ -1661,7 +1717,7 @@ export default async function TaskDetailPage({
           {/* Tabbed content */}
           <TabsProvider defaultTab={selectedTab}>
             <TabsNav
-              tabs={TASK_TABS}
+              tabs={taskTabs}
               sticky
             />
             <div className="pt-4">
@@ -1815,6 +1871,12 @@ export default async function TaskDetailPage({
                       </label>
                     </div>
 
+                    {showDeploymentTab ? (
+                      <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
+                        <DeploymentStatusSelect formId="taskMain" defaultValue={task.deploymentStatus} />
+                      </div>
+                    ) : null}
+
                     {/* Branch + Commit prefix — persisted by the card's single Save. */}
                     <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
                       <label className="block">
@@ -1909,6 +1971,26 @@ export default async function TaskDetailPage({
                   </aside>
                 </div>
               </TabPanel>
+
+
+              {showDeploymentTab ? (
+                <TabPanel name="Deployment">
+                  <DeploymentTab
+                    mode="task"
+                    title={task.title}
+                    deploymentStatus={task.deploymentStatus}
+                    rows={deploymentPullRequests}
+                    canAct={(row) => canShowDeploymentAction({
+                      provider: row.provider,
+                      viewerKind: viewer.kind,
+                      viewerId: viewer.id,
+                      reporterId: task.reporterId,
+                      reviewerId: task.actingManagerId,
+                      onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
+                    })}
+                  />
+                </TabPanel>
+              ) : null}
 
               <TabPanel name="Action Plan">
                 <div className="space-y-3 pt-2">
@@ -2039,7 +2121,12 @@ export default async function TaskDetailPage({
             </p>
           ) : (
             <ul className="space-y-3">
-              {task.comments.map((c) => {
+              {task.comments.map((c, index) => {
+                const parsedPmOptions = parsePmOptions(c.body);
+                const resolvedPmOption = findPmOptionResolution(
+                  parsedPmOptions.options,
+                  task.comments.slice(index + 1).filter((later) => !later.deletedAt).map((later) => later.body),
+                );
                 if (c.deletedAt) {
                   // Soft-deleted (HOMELAB-41 / item 2): render as a
                   // collapsed dotted divider with the original body
@@ -2087,7 +2174,17 @@ export default async function TaskDetailPage({
                           />
                         ) : null}
                       </div>
-                      <div>{renderCommentBody(c.body, mentionables)}</div>
+                      <div>{renderCommentBody(parsedPmOptions.body, mentionables)}</div>
+                      {parsedPmOptions.options.length > 0 ? (
+                        <PmOptions
+                          projectSlug={slug}
+                          sourceMessageId={c.id}
+                          surface="task-comment"
+                          options={parsedPmOptions.options}
+                          resolvedOption={resolvedPmOption}
+                          interactive={isPmOptionsTargetedAtCurrentUser({ currentUserId: viewer.id })}
+                        />
+                      ) : null}
                     </div>
                   </li>
                 );
@@ -2105,6 +2202,7 @@ export default async function TaskDetailPage({
                   taskId={task.id}
                   messageId={message.id}
                   label={`@${message.agentSlug}`}
+                  anonymizeTyping
                 />
               ))}
             </div>

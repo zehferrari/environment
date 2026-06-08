@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState, useEffect, useTransition } from "react";
 import SortableTaskList from "@/components/sortable-task-list";
 import { bulkBinTasks } from "@/lib/bin/actions";
@@ -16,6 +17,7 @@ export default function EpicTasksClient({
   reorderEpicTasks: (orderedIds: string[]) => Promise<void>;
   epicId: string;
 }) {
+  const router = useRouter();
   const [tasks, setTasks] = useState(initialTasks);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [lastCheckedId, setLastCheckedId] = useState<string | null>(null);
@@ -30,6 +32,64 @@ export default function EpicTasksClient({
       return new Set([...current].filter((id) => liveIds.has(id)));
     });
   }, [initialTasks]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let source: EventSource | null = null;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryMs = 1000;
+    let closed = false;
+
+    const scheduleRefresh = () => {
+      if (refreshTimer) return;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        if (!document.hidden) router.refresh();
+      }, 300);
+    };
+
+    const connect = () => {
+      if (closed || document.hidden) return;
+      try {
+        source = new EventSource(`/api/projects/${projectSlug}/board/stream`);
+      } catch {
+        return;
+      }
+      source.addEventListener("open", () => {
+        retryMs = 1000;
+      });
+      source.addEventListener("board.touch", () => {
+        scheduleRefresh();
+      });
+      source.addEventListener("error", () => {
+        source?.close();
+        source = null;
+        if (closed) return;
+        retryTimer = setTimeout(connect, retryMs);
+        retryMs = Math.min(retryMs * 2, 30_000);
+      });
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        source?.close();
+        source = null;
+      } else if (!source) {
+        connect();
+      }
+    };
+
+    connect();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      closed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (refreshTimer) clearTimeout(refreshTimer);
+      if (retryTimer) clearTimeout(retryTimer);
+      source?.close();
+    };
+  }, [projectSlug, router]);
 
   function toggleTaskSelection(taskId: string, selected: boolean, shiftKey?: boolean) {
     const task = tasks.find((t) => t.id === taskId);

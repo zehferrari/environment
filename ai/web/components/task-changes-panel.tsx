@@ -15,12 +15,16 @@ export default function TaskChangesPanel({
   changes,
   branchName,
   commitPrefix,
+  commitPrefixes,
+  scopeLabel = "task",
   baseHref,
   selectedDiff,
 }: {
   changes: TaskGitChangesResult;
   branchName: string | null;
   commitPrefix: string | null;
+  commitPrefixes?: string[];
+  scopeLabel?: string;
   baseHref: string;
   selectedDiff: TaskGitFileDiffResult | null;
 }) {
@@ -37,7 +41,7 @@ export default function TaskChangesPanel({
           <div>
             <h3 className="text-sm font-semibold text-[var(--color-text)]">Repository Changes</h3>
             <p className="mt-1 text-xs text-[var(--color-text-muted)]">
-              Local Git commits from the branch, filtered by commit prefix and this item&apos;s work window when available.
+              Local Git commits from the branch, filtered by commit prefix and this {scopeLabel}&apos;s work window when available.
             </p>
           </div>
           <div className="flex flex-wrap gap-2 text-[11px] text-[var(--color-text-muted)]">
@@ -46,9 +50,14 @@ export default function TaskChangesPanel({
                 {changes.ref ?? branchName}
               </span>
             ) : null}
-            {commitPrefix ? (
-              <span className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1 font-mono">
-                {commitPrefix}
+            {(commitPrefixes && commitPrefixes.length > 0 ? commitPrefixes : commitPrefix ? [commitPrefix] : []).slice(0, 12).map((prefix) => (
+              <span key={prefix} className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1 font-mono">
+                {prefix}
+              </span>
+            ))}
+            {commitPrefixes && commitPrefixes.length > 12 ? (
+              <span className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1">
+                +{commitPrefixes.length - 12}
               </span>
             ) : null}
           </div>
@@ -63,7 +72,7 @@ export default function TaskChangesPanel({
 
       {!changes.error && changes.commits.length === 0 ? (
         <p className="rounded-xl border border-dashed border-[var(--color-line)] bg-[var(--color-panel-soft)]/30 px-4 py-6 text-center text-sm text-[var(--color-text-muted)]">
-          No matching commits found for this task yet.
+          No matching commits found for this {scopeLabel} yet.
         </p>
       ) : null}
 

@@ -92,6 +92,8 @@ export function createTargetResolver(opts: TargetResolverOptions = {}) {
         // Per-mention task.mentioned events handle the wake fanout;
         // the commented envelope itself is a no-op for wake routing.
         return null;
+      case "deployment.approved":
+        return null;
       case "task.agent_chat": {
         // HOMELAB-48 — chat wakes the addressed agent regardless of
         // task assignee. The slug is authoritative; we re-resolve the

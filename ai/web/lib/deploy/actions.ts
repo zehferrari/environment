@@ -10,7 +10,10 @@ import crypto from "node:crypto";
 import { auth } from "@/lib/auth";
 import { readSwitchState, SWITCH_DIR } from "@/lib/deploy/worktrees";
 
-export async function requestWorktreeSwitch(target: string): Promise<{ id: string }> {
+export async function requestWorktreeSwitch(
+  target: string,
+  opts: { rebuild?: boolean } = {},
+): Promise<{ id: string }> {
   const session = await auth();
   if (session?.user?.name !== "zeh") throw new Error("Forbidden");
 
@@ -20,14 +23,15 @@ export async function requestWorktreeSwitch(target: string): Promise<{ id: strin
   }
   const wt = state.worktrees.find((w) => w.name === target || w.path === target);
   if (!wt) throw new Error(`Unknown worktree: ${target}`);
-  if (wt.served) throw new Error(`${wt.name} is already live.`);
+  const rebuild = Boolean(opts.rebuild && wt.served);
+  if (wt.served && !rebuild) throw new Error(`${wt.name} is already live.`);
   if (!wt.ready) {
     throw new Error(`${wt.name} has no node_modules — run 'pnpm install' in its ai/web first.`);
   }
 
   const id = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
   const body = JSON.stringify(
-    { id, target: wt.name, requestedBy: session.user.name, requestedAt: new Date().toISOString() },
+    { id, target: wt.name, rebuild, requestedBy: session.user.name, requestedAt: new Date().toISOString() },
     null,
     2
   );

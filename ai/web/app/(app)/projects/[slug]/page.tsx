@@ -10,6 +10,7 @@ import {
 import { reorderTasks } from "@/lib/tasks/reorder";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { binTask } from "@/lib/bin/actions";
+import { publishBoardTouch } from "@/lib/pm/board-events";
 import { sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
@@ -252,6 +253,7 @@ async function moveTask(
     if (completion.nextTask) {
       revalidatePath(`/projects/${slug}/tasks/${completion.nextTask.id}`);
     }
+    publishBoardTouch(current.projectId);
     return { ok: true };
   }
 
@@ -314,6 +316,7 @@ async function moveTask(
     }
   }
   revalidatePath(`/projects/${slug}`);
+  publishBoardTouch(current.projectId);
   return { ok: true };
 }
 
@@ -336,6 +339,7 @@ export default async function ProjectBoardPage({
           epic: {
             select: {
               title: true,
+              deploymentStatus: true,
               actingManager: { select: actorSelect },
             },
           },
@@ -369,10 +373,12 @@ export default async function ProjectBoardPage({
   ]);
   const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows);
 
+  const projectId = project.id;
   async function reorderBoardTasks(orderedIds: string[]): Promise<void> {
     "use server";
     await reorderTasks(orderedIds);
     revalidatePath(`/projects/${slug}`);
+    publishBoardTouch(projectId);
   }
 
   return (
@@ -390,6 +396,8 @@ export default async function ProjectBoardPage({
           updatedAt: t.updatedAt.toISOString(),
           statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
           approvedOn: t.approvedOn?.toISOString() ?? null,
+          deploymentStatus: t.epic?.deploymentStatus ?? t.deploymentStatus,
+          epicId: t.epicId,
           reporter: serializeActor(t.reporter),
           assignee: serializeActor(t.assignee),
           reviewer: serializeActor(t.actingManager),

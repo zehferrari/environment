@@ -18,6 +18,7 @@ import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { binTask, deleteEpic } from "@/lib/bin/actions";
 import { archiveEpic, unarchiveEpic } from "@/lib/archive/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
+import { publishBoardTouch } from "@/lib/pm/board-events";
 import SortableTaskList from "@/components/sortable-task-list";
 import AttachmentList from "@/components/attachment-list";
 import AttachmentUploadFab from "@/components/attachment-upload-fab";
@@ -44,6 +45,7 @@ import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
 import EpicTasksClient from "./epic-tasks-client";
 import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
+import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, type DeploymentPrRow } from "@/components/deployment-tab";
 
 type ActorRow = {
   id: string;
@@ -125,6 +127,13 @@ function payloadValue(payload: string | null | undefined, key: string) {
   } catch {
     return null;
   }
+}
+
+function uniqueStrings(values: Array<string | null | undefined>) {
+  return [...new Set(values.flatMap((value) => {
+    const trimmed = value?.trim();
+    return trimmed ? [trimmed] : [];
+  }))];
 }
 
 async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> {
@@ -268,7 +277,7 @@ function settledAgentSlugsForMessage(
   return slugs;
 }
 
-const EPIC_TABS = ["Description", "Action Plan", "Tasks", "Attachments", "Comments", "Activities", "Changes"] as const;
+const EPIC_TABS = ["Description", "Action Plan", "Deployment", "Tasks", "Attachments", "Comments", "Activities", "Changes"] as const;
 
 function tabParam(tab: string) {
   return tab
@@ -320,6 +329,7 @@ export default async function EpicDetailPage({
           name: true,
           repositoryPath: true,
           onlyReportersCanApproveActionPlans: true,
+          onlyReportersCanApprovePullRequests: true,
         },
       },
       actingManager: {
@@ -388,6 +398,8 @@ export default async function EpicDetailPage({
           statusChangedAt: true,
           approvedOn: true,
           archivedAt: true,
+          branchName: true,
+          commitPrefix: true,
           reporter: {
             select: {
               id: true,
@@ -453,7 +465,7 @@ export default async function EpicDetailPage({
   const session = await auth();
   const canDeleteComments = session?.user?.kind !== "agent";
   const taskIds = epic.tasks.map((task) => task.id);
-  const [principals, recentReplyActivity, allActivity, taskActivityRows] = await Promise.all([
+  const [principals, recentReplyActivity, allActivity, taskActivityRows, deploymentPullRequests] = await Promise.all([
     listAssignablePrincipals(),
     db.activityLog.findMany({
       where: {
@@ -499,6 +511,11 @@ export default async function EpicDetailPage({
           },
         })
       : Promise.resolve([]),
+    db.deploymentPullRequest.findMany({
+      where: { OR: [{ epicId: epic.id }, ...(taskIds.length ? [{ taskId: { in: taskIds } }] : [])] },
+      orderBy: [{ taskId: "asc" }, { updatedAt: "desc" }],
+      include: { task: { select: { workItemKey: true, title: true } } },
+    }) as Promise<DeploymentPrRow[]>,
   ]);
   const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows);
   const selectedAgentSlug = chat || epic.actingManager?.agent?.slug || null;
@@ -630,11 +647,22 @@ export default async function EpicDetailPage({
     commitPrefix: epic.commitPrefix,
     workItemKey: epic.workItemKey,
   });
+  const childTaskCommitPrefixes = epic.tasks.map((task) =>
+    effectiveCommitPrefix({
+      commitPrefix: task.commitPrefix ?? epic.commitPrefix,
+      workItemKey: task.workItemKey ?? null,
+    }),
+  );
+  const epicChangeCommitPrefixes = uniqueStrings([
+    epicCommitPrefix,
+    ...childTaskCommitPrefixes,
+  ]);
+  const epicChangeBranchName = epic.branchName ?? epic.tasks.find((task) => task.branchName)?.branchName ?? null;
   const epicChanges = selectedTab === "Changes"
     ? await getTaskGitChanges({
         repositoryPath: epic.project.repositoryPath,
-        branchName: epic.branchName,
-        commitPrefix: epicCommitPrefix,
+        branchName: epicChangeBranchName,
+        commitPrefix: epicChangeCommitPrefixes,
       })
     : { commits: [], ref: null, error: null };
   const selectedDiff = selectedTab === "Changes"
@@ -821,9 +849,11 @@ export default async function EpicDetailPage({
     tasksByStatus.set(t.status, list);
   }
 
+  const reorderProjectId = epic.projectId;
   async function reorderEpicTasks(orderedIds: string[]): Promise<void> {
     "use server";
     await reorderTasks(orderedIds);
+    publishBoardTouch(reorderProjectId);
     revalidatePath(`/projects/${slug}/epics/${epicId}`);
     revalidatePath(`/projects/${slug}`);
   }
@@ -1039,6 +1069,10 @@ export default async function EpicDetailPage({
                     </div>
 
                     <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
+                      <DeploymentStatusSelect formId="epicMain" defaultValue={epic.deploymentStatus} />
+                    </div>
+
+                    <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
                       <label className="block">
                         <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
                           Branch
@@ -1117,6 +1151,24 @@ export default async function EpicDetailPage({
                     </form>
                   </aside>
                 </div>
+              </TabPanel>
+
+
+              <TabPanel name="Deployment">
+                <DeploymentTab
+                  mode="epic"
+                  title={epic.title}
+                  deploymentStatus={epic.deploymentStatus}
+                  rows={deploymentPullRequests}
+                  canAct={(row) => canShowDeploymentAction({
+                    provider: row.provider,
+                    viewerKind: session?.user?.kind === "agent" ? "agent" : "human",
+                    viewerId: session?.user?.id ?? null,
+                    reporterId: epic.reporterId,
+                    reviewerId: epic.actingManagerId,
+                    onlyReportersCanApprovePullRequests: epic.project.onlyReportersCanApprovePullRequests,
+                  })}
+                />
               </TabPanel>
 
               <TabPanel name="Action Plan">
@@ -1211,6 +1263,8 @@ export default async function EpicDetailPage({
             projectSlug={slug}
             epicId={epic.id}
             createTaskAction={createTaskInEpic}
+            canCreateTask={session?.user?.id === epic.actingManagerId}
+            actingManagerName={epic.actingManager?.username ? `@${epic.actingManager.username}` : null}
           />
                 </div>
               </TabPanel>
@@ -1336,8 +1390,10 @@ export default async function EpicDetailPage({
               <TabPanel name="Changes">
                 <TaskChangesPanel
                   changes={epicChanges}
-                  branchName={epic.branchName}
+                  branchName={epicChangeBranchName}
                   commitPrefix={epicCommitPrefix}
+                  commitPrefixes={epicChangeCommitPrefixes}
+                  scopeLabel="epic"
                   baseHref={`/projects/${slug}/epics/${epic.id}`}
                   selectedDiff={selectedDiff}
                 />

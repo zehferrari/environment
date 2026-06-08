@@ -13,18 +13,22 @@
 # (its working directory was deleted), producing ChunkLoadError and
 # "CSS MIME type" errors in the browser until someone restarts it.
 #
-# On agents.vixi.au nginx proxies EVERYTHING — including /_next/static/ — to
-# 127.0.0.1:3000, because the `nginx` user is not in `code-agents` and cannot
-# read the locked-down build tree. So the Node process is the only thing that
-# serves assets, and restarting it is the entire deploy. (A filesystem alias
-# in nginx is not viable here for that permission reason.)
+# On the production PM host, nginx proxies EVERYTHING — including
+# /_next/static/ — to 127.0.0.1:3000, because the `nginx` user is not in the
+# code collaboration group and cannot read the locked-down build tree. So the
+# Node process is the only thing that serves assets, and restarting it is the
+# entire deploy. (A filesystem alias in nginx is not viable here for that
+# permission reason.)
 #
-# User model on this host: "zeh builds, PM runtime user runs."
-#   - zeh      owns the checkout + node_modules, is in `code-agents`, can
-#              build, has passwordless sudo — but cannot read .env.local.
-#   - APP_USER owns the running server secrets.
-# So this script BUILDS as the caller (must own node_modules) and uses
-# `sudo -u karen` only for the env-seed + restart fallback.
+# User model on this host: a build user owns the checkout + node_modules, and
+# APP_USER owns the running server secrets. So this script BUILDS as the
+# caller (must own node_modules) and uses `sudo -u APP_USER` only for the
+# env-seed + restart fallback.
+#
+# Managed worktrees use a stronger path: `pm-switch <worktree>` prepares the
+# per-worktree DB, cleans generated Prisma artifacts, builds, flips both
+# pm.service and pm-consumer.service, and verifies assets. When this script is
+# pointed at /srv/Code/environment.worktrees/.../ai/web, it delegates there.
 #
 # Usage
 # -----
@@ -40,6 +44,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DEFAULT_APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 APP_USER="${PM_APP_USER:-karen}"      # account that owns the server + secrets
 APP_DIR="${PM_APP_DIR:-${PM_APP_ROOT:-$DEFAULT_APP_DIR}}"
+APP_DIR="$(readlink -f "$APP_DIR" 2>/dev/null || printf '%s' "$APP_DIR")"
 PNPM="${PM_PNPM:-/usr/local/bin/pnpm}"
 NODE_BIN="${PM_NODE_BIN:-/usr/bin/node24}"
 PORT="${PORT:-3000}"
@@ -47,6 +52,8 @@ HOST="${PM_HOST:-127.0.0.1}"          # bind loopback only; nginx fronts it
 ENV_FILE="${PM_ENV_FILE:-$APP_DIR/.env.local}"
 LOG_FILE="${PM_LOG_FILE:-$APP_DIR/.next/pm-server.log}"
 ATTACHMENT_ROOT="${PM_ATTACHMENT_ROOT:-/srv/Data/projects}"
+PM_WORKTREES_ROOT="${PM_WORKTREES_ROOT:-/srv/Code/environment.worktrees}"
+PM_SWITCH="${PM_SWITCH_SCRIPT:-/usr/local/sbin/pm-switch}"
 
 STANDALONE="$APP_DIR/.next/standalone"
 
@@ -93,6 +100,20 @@ grant_runtime_access() {
 [[ -x "$PNPM" ]]     || die "pnpm not found/executable at $PNPM (set PM_PNPM)."
 [[ -x "$NODE_BIN" ]] || die "node not found/executable at $NODE_BIN (set PM_NODE_BIN)."
 [[ -d "$APP_DIR" ]]  || die "app dir not found: $APP_DIR (set PM_APP_DIR)."
+
+WORKTREES_ROOT_REAL="$(readlink -f "$PM_WORKTREES_ROOT" 2>/dev/null || true)"
+if [[ "${PM_DIRECT_REBUILD_ALLOW:-0}" != "1" && -n "$WORKTREES_ROOT_REAL" ]]; then
+  case "$APP_DIR" in
+    "$WORKTREES_ROOT_REAL"/*/ai/web)
+      WT_ROOT="${APP_DIR%/ai/web}"
+      [[ -x "$PM_SWITCH" ]] \
+        || die "managed worktree detected at $WT_ROOT; use pm-switch, but $PM_SWITCH is missing"
+      log "Managed worktree detected; delegating live rebuild to $PM_SWITCH $WT_ROOT…"
+      exec "$PM_SWITCH" "$WT_ROOT"
+      ;;
+  esac
+fi
+
 sudo -n -u "$APP_USER" true 2>/dev/null \
   || die "need passwordless sudo to '$APP_USER' (env-seed + restart run as that user)."
 

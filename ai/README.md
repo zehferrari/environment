@@ -564,7 +564,7 @@ Current approach since 2026-05-07:
 - Secret env drop-in: `/home/<user>/.config/systemd/user/openclaw-gmail-listener.service.d/10-secrets.conf` is still loaded by the service for Google/OpenClaw secrets, but Gmail intake now wakes the agent through `sudo -n /usr/local/sbin/openclaw-control wake-agent <self>` instead of calling `openclaw system event` directly.
 - Mail intake users have a narrow sudoers grant in `/etc/sudoers.d/openclaw-mail-self-wake` for their own `wake-agent` command only. Do not give coding agents the broader monitor sudoers rule.
 - Gmail watches still publish to the shared topic, but each agent now has its own subscription, so messages are broadcast once to each agent instead of load-balanced between them.
-- The legacy shared subscription `gmail-inbox-watch-sub` should not be used by either agent service.
+- The legacy shared subscription `gmail-inbox-watch-sub` does **not** exist and must not be referenced by any agent service or monitoring tool.
 - The Gmail push worker was patched to ignore Pub/Sub notifications where `emailAddress` belongs to the other mailbox, so each agent only processes its own mailbox events.
 - The Gmail push worker marks every in-scope email as read immediately after fetching it, even when no action is required.
 - Manual Gmail body/reply helpers also mark the source message read. Agents must not fetch/read Gmail content and leave that message unread.
@@ -574,6 +574,32 @@ Current approach since 2026-05-07:
 - Email requests from whitelisted senders and local agents with email access that ask for a response or action are actionable immediately. The listener must wake the owner agent at intake time; `ai-monitor` is only the fallback when a queued email remains unprocessed.
 - Gmail and Jira wake prompts explicitly remind the agent to sign outbound email/Jira comments with the actual current runtime model.
 - Gmail and Jira wake prompts explicitly remind the agent to keep task communication in the source channel after the one allowed Telegram start notice.
+
+#### Gmail Watch Renewal
+
+Gmail watches expire after ~7 days and must be renewed regularly. As of 2026-06-07:
+
+- **Automated renewal**: A daily cron job (`gmail-watch-renewal`) runs at midnight Brisbane time under the monitoring agent's OpenClaw cron system. It checks each agent's `watch-state.json` expiration and renews if expired or expiring within 24 hours.
+  - Asdrubal renewal: `cd /home/asdrubal/workspace/google && node gmail-watch.js projects/asdrubal-projects/topics/gmail-inbox-watch INBOX`
+  - Barekbaal renewal: `cd /home/barekbaal/workspace/google && node gmail-watch.js projects/asdrubal-projects/topics/gmail-inbox-watch INBOX Label_2 Label_1 Label_3 Label_1164642172958135904`
+  - Results are announced to zeh on Telegram after each run.
+- **Watch state files**: `/home/<user>/.openclaw/workspace/google/watch-state.json` tracks `topicName`, `labelIds`, `historyId`, `expiration` (ms epoch), and `createdAt`.
+- **Push state files**: `/home/<user>/.openclaw/workspace/google/push-state.json` tracks `lastHistoryId` for the push worker's Gmail History cursor. If this falls too far behind (e.g. after a long watch expiry), the push worker resets to the current profile `historyId` automatically on restart.
+- **OAuth tokens**: `/home/<user>/.openclaw/workspace/google/secrets/token.json` stores the OAuth access/refresh tokens. Access tokens expire after ~1 hour but are auto-refreshed by the googleapis library using the refresh token. The saved file may appear stale but refresh works transparently.
+
+#### GCP Service Account and IAM
+
+The service account `gmail-watch@asdrubal-projects.iam.gserviceaccount.com` (key at `/home/<user>/.openclaw/workspace/google/secrets/gcp-sa.json`) authenticates Pub/Sub operations.
+
+- **Project**: `asdrubal-projects`
+- **Pub/Sub topic**: `gmail-inbox-watch`
+- **Subscriptions**: `gmail-inbox-watch-asdrubal-sub`, `gmail-inbox-watch-barekbaal-sub`
+- **Required IAM roles** (as of 2026-06-07):
+  - `roles/pubsub.subscriber` — read/consume subscriptions (ack, pull, get)
+  - `roles/pubsub.editor` — create and delete subscriptions (recovery if subs are accidentally removed). Granted 2026-06-07.
+  - `roles/pubsub.publisher` — needed by Gmail API to publish to the topic (configured at topic level, not SA level)
+
+**Important**: The base `openclaw-gmail-listener.service` unit must reference the agent-specific subscription name (`gmail-inbox-watch-<user>-sub`), **not** the legacy `gmail-inbox-watch-sub`. The `openclaw-integrity-check` probe reads the subscription name from the base service file via regex and will false-fail if it finds the wrong name. This was the root cause of repeated false `gmail-watch-expired` alerts on 2026-06-07 — the base file still had the old `gmail-inbox-watch-sub` while the drop-in override corrected it, but the integrity check read the base file first.
 
 Why this matters:
 
@@ -842,7 +868,7 @@ Known follow-ups:
 - If BotFather tokens are ever rotated, update each user's `telegram-token` and OpenClaw secrets env.
 - The Ollama service on `x1` uses conservative default backend settings, not ThinkPad-specific GPU tuning.
 - x1 is still a single point of failure for its OpenClaw agents, monitoring, and remediation. Local backup reduces accidental-loss risk; disk-loss protection depends on keeping `moonlight:/srv/backups/openclaw/x1` current.
-- Gmail watch renewal remains operationally critical because Gmail watches expire. Keep `/usr/local/bin/openclaw-integrity-check` and dashboard status green.
+- Gmail watch renewal is automated (daily cron via OpenClaw cron system, see § Gmail Automation). IAM: the SA `gmail-watch@asdrubal-projects.iam.gserviceaccount.com` now has `roles/pubsub.editor` (granted 2026-06-07) so subscriptions can be recreated if lost. Keep `/usr/local/bin/openclaw-integrity-check` and dashboard status green; verify that base `openclaw-gmail-listener.service` units reference agent-specific subscription names (not the legacy `gmail-inbox-watch-sub`).
 - The monitoring agent runs on the host it monitors. Self-incidents must continue to bypass the monitoring agent and go directly to Telegram fallback.
 - Secrets are split by Linux user for least privilege, which is correct, but audits should use `/usr/local/bin/openclaw-backup --inventory` plus `/usr/local/bin/openclaw-registry-check`.
 - Future changes should go through `/etc/openclaw/agents.json` and `/srv/Code/environment/ai/openclaw`; hand-editing dependent configs without running the validator can reintroduce drift.

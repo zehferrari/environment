@@ -13,6 +13,8 @@ import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
 import { createTaskWorkflowToken } from "@/lib/agents/task-workflow-token";
 import { resolveDirectedFromComment } from "@/lib/agents/directed-targets";
 import { createContextGrantUrl } from "@/lib/agents/context-grants";
+import { createWorkItemGrantToken } from "@/lib/agents/work-item-token";
+import { buildWorkItemPlanningPrompt } from "@/lib/agents/context/project";
 import {
   formatRecentBlock,
   recentComments,
@@ -113,6 +115,7 @@ function workflowPrompt(args: {
   expectedGitUserEmail: string | null;
   onlyReportersCanApproveActionPlans: boolean;
   onlyReportersCanSetTasksDone: boolean;
+  onlyReportersCanApprovePullRequests: boolean;
 }) {
   const token = createTaskWorkflowToken(args.messageId, args.taskId, args.agentSlug);
   const workflowUrl = new URL(
@@ -142,7 +145,7 @@ function workflowPrompt(args: {
       `- Branch: ${args.branchName}`,
       identityConfigured
         ? `- Required Git identity: ${args.expectedGitUserName} <${args.expectedGitUserEmail}>. Set it in the task worktree before editing or committing:`
-        : "- Required Git identity is not configured on the project/system settings. Ask zeh to configure defaultGitUserName/defaultGitUserEmail before committing.",
+        : "- Required Git identity is not configured on the project/system settings. Ask an admin to configure defaultGitUserName/defaultGitUserEmail before committing.",
       ...(identityConfigured
         ? [
             `  git -C ${shellQuote(args.repositoryPath!)} config extensions.worktreeConfig true`,
@@ -154,7 +157,7 @@ function workflowPrompt(args: {
         : []),
       args.commitPrefix
         ? `- COMMIT_PREFIX: ${args.commitPrefix} — every commit message on this task MUST start with this exact prefix (e.g. "${args.commitPrefix} short imperative summary").`
-        : "- COMMIT_PREFIX is not set. Ask zeh to set a project key or task/epic commit prefix before committing.",
+        : "- COMMIT_PREFIX is not set. Ask an admin to set a project key or task/epic commit prefix before committing.",
       `- All local changes must be committed (each with the prefix) and pushed to origin/${args.branchName} BEFORE you call action=ready_for_review.`,
       "- On ready_for_review: include `repoTouched: true` in the body. PM will dispatch the monitor verifier to verify origin reflects your work and post a pm.repo.verify.* comment.",
       "- If this task changed nothing in the repository (docs-only, decision-only, etc.), set `repoTouched: false` on ready_for_review and the monitor verifier will skip the check.",
@@ -195,6 +198,9 @@ function workflowPrompt(args: {
     args.onlyReportersCanSetTasksDone
       ? "- Project policy: only the reporter can set Tasks to Done. Reviewers should leave concise review feedback or agreement, then wait for the reporter to complete it."
       : "- Project policy: the resolved reviewer can set Tasks to Done.",
+    args.onlyReportersCanApprovePullRequests
+      ? "- Project policy: only the reporter can approve deployment Pull Requests."
+      : "- Project policy: the reporter or resolved reviewer may approve deployment Pull Requests.",
     "- If you are an assignee with review feedback or an unblocking response waiting, address that work before starting newly assigned To Do work.",
     "- If you are the reviewer or Open Epic acting manager and accept a Backlog or To Do Action Plan, call action=approve_plan with a concise approval comment. If the plan needs adjustment, reply in Action Plan with one consolidated feedback comment instead of approving.",
     "- For tasks under an Epic, do not start or advance work unless the Epic status in the context is Open.",
@@ -242,6 +248,7 @@ export async function sendTaskWorkflowNotification(args: {
             defaultGitUserEmail: true,
             onlyReportersCanApproveActionPlans: true,
             onlyReportersCanSetTasksDone: true,
+            onlyReportersCanApprovePullRequests: true,
           },
         },
         epic: { select: { id: true, commitPrefix: true } },
@@ -410,6 +417,7 @@ export async function sendTaskWorkflowNotification(args: {
         expectedGitUserEmail: gitIdentity.email,
         onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
         onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
+        onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
       }),
     ].join("\n\n"),
     projectId: task.projectId,
@@ -477,6 +485,7 @@ export async function sendTaskCommentNotifications(args: {
           defaultGitUserEmail: true,
           onlyReportersCanApproveActionPlans: true,
           onlyReportersCanSetTasksDone: true,
+          onlyReportersCanApprovePullRequests: true,
         },
       },
       assignee: {
@@ -604,6 +613,7 @@ export async function sendTaskCommentNotifications(args: {
     "",
     args.body,
   ].join("\n");
+  const allowWorkItemManagement = args.actor.kind === "human";
 
   const mirroredMessages = await db.$transaction(async (tx) => {
     const mirrored: Array<{
@@ -622,6 +632,7 @@ export async function sendTaskCommentNotifications(args: {
           senderUserId: args.actor.id,
           body: mirroredBody,
           allowDescriptionEdit: false,
+          allowWorkItemManagement,
           originChannel: "comment",
           originCommentId: args.commentId,
         },
@@ -730,6 +741,18 @@ export async function sendTaskCommentNotifications(args: {
         turnId: msg.id,
       }),
     ]);
+    const workItemPrompt = allowWorkItemManagement
+      ? buildWorkItemPlanningPrompt({
+          agentSlug: msg.agentSlug,
+          projectSlug: task.project.slug,
+          proposeUrl: new URL(
+            `/api/agent/projects/${task.projectId}/proposals`,
+            agentCallbackBaseUrl(),
+          ).toString(),
+          grantMessageId: msg.id,
+          token: createWorkItemGrantToken(task.projectId, msg.agentSlug, msg.id),
+        })
+      : "";
     const delivery = await sendOrQueueOpenClawPmChannelTurn({
       gatewayPort: target?.gatewayPort ?? null,
       agentSlug: msg.agentSlug,
@@ -763,7 +786,9 @@ export async function sendTaskCommentNotifications(args: {
           expectedGitUserEmail: gitIdentity.email,
           onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
           onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
+          onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
         }),
+        workItemPrompt,
       ].join("\n\n"),
       projectId: task.projectId,
       actor: {
