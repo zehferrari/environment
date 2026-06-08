@@ -7,6 +7,14 @@
 node_modules/
 dist/
 
+# OpenClaw Google Workspace local credentials / runtime state
+ai/openclaw/skills/google-workspace/secrets/
+ai/openclaw/skills/google-workspace/state.json
+ai/openclaw/skills/google-workspace/*-state.json
+ai/openclaw/skills/google-workspace/_comments.json
+ai/openclaw/skills/google-workspace/_docs.json
+ai/openclaw/skills/google-workspace/auto-reply-policy.json
+
 # Compiled Java class files
 *.class
 

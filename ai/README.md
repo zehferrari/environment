@@ -594,6 +594,7 @@ The service account `gmail-watch@asdrubal-projects.iam.gserviceaccount.com` (key
 - **Project**: `asdrubal-projects`
 - **Pub/Sub topic**: `gmail-inbox-watch`
 - **Subscriptions**: `gmail-inbox-watch-asdrubal-sub`, `gmail-inbox-watch-barekbaal-sub`
+- **Subscription recovery helper**: from `ai/openclaw/skills/google-workspace/`, run `GOOGLE_APPLICATION_CREDENTIALS=secrets/gcp-sa.json node create-gmail-subs.js projects/asdrubal-projects/topics/gmail-inbox-watch gmail-inbox-watch-asdrubal-sub gmail-inbox-watch-barekbaal-sub` to recreate missing subscriptions.
 - **Required IAM roles** (as of 2026-06-07):
   - `roles/pubsub.subscriber` — read/consume subscriptions (ack, pull, get)
   - `roles/pubsub.editor` — create and delete subscriptions (recovery if subs are accidentally removed). Granted 2026-06-07.
