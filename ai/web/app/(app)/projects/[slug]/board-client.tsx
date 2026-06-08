@@ -849,8 +849,19 @@ function TaskCard({
               {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
             </div>
             <div className="truncate">{task.title}</div>
-            <div className="mt-1 flex justify-start">
+            <div className="mt-1 flex items-center gap-2 text-[10px] text-[var(--color-text-muted)]">
               <ElapsedClock task={task} now={now} />
+              <time
+                dateTime={task.updatedAt}
+                title={task.updatedAt}
+                className="shrink-0 tabular-nums"
+                // relativeUpdated() reads Date.now() at render, so server/client
+                // can land in different buckets and throw a recoverable React
+                // #418 hydration warning; suppress it (text is expected to differ).
+                suppressHydrationWarning
+              >
+                {relativeUpdated(task.updatedAt)}
+              </time>
             </div>
           </div>
         </div>
@@ -872,23 +883,6 @@ function TaskCard({
             <TrashIcon />
           </button>
         </form>
-      </div>
-      <div className="relative z-10 mt-1 flex items-center justify-end gap-2 text-[10px] text-[var(--color-text-muted)]">
-        <time
-          dateTime={task.updatedAt}
-          title={task.updatedAt}
-          className="shrink-0 tabular-nums"
-          // relativeUpdated() reads Date.now() at render, so the server and
-          // client can land in different buckets ("now" vs "1m") and throw a
-          // (recoverable) React #418 text-hydration error on an aged board.
-          // React recovers by re-rendering, so this is console noise rather
-          // than a hard break — suppressing tells React the timestamp text is
-          // expected to differ. (The hard break was the DndContext aria-id
-          // mismatch, fixed by the stable id above.)
-          suppressHydrationWarning
-        >
-          {relativeUpdated(task.updatedAt)}
-        </time>
       </div>
     </div>
   );
