@@ -580,23 +580,25 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                     : "border-[var(--color-line)] bg-[var(--color-panel-soft)]"
                 }`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <ElapsedClock task={task} now={now} />
-                  <time
-                    dateTime={task.updatedAt}
-                    title={task.updatedAt}
-                    className="shrink-0 text-[10px] tabular-nums text-[var(--color-text-muted)]"
-                    suppressHydrationWarning
-                  >
-                    {relativeUpdated(task.updatedAt)}
-                  </time>
-                </div>
-                <div className="mt-1 truncate text-[10px] font-mono uppercase tracking-wider text-[var(--color-text-muted)]">
+                <div className="truncate text-[10px] font-mono uppercase tracking-wider text-[var(--color-text-muted)]">
                   {task.workItemKey ?? "—"}
                   {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
                 </div>
-                <div className="truncate text-sm font-medium text-[var(--color-text)]">
-                  {task.title}
+                <div className="mt-1 flex items-start justify-between gap-2">
+                  <div className="line-clamp-2 min-w-0 text-sm font-medium text-[var(--color-text)]">
+                    {task.title}
+                  </div>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <ElapsedClock task={task} now={now} />
+                    <time
+                      dateTime={task.updatedAt}
+                      title={task.updatedAt}
+                      className="text-[10px] tabular-nums text-[var(--color-text-muted)]"
+                      suppressHydrationWarning
+                    >
+                      {relativeUpdated(task.updatedAt)}
+                    </time>
+                  </div>
                 </div>
                 {workflowOwnerLabel(task) ? (
                   <div className="mt-1 truncate text-xs text-[var(--color-text-muted)]">
@@ -1155,11 +1157,9 @@ function elapsedMsForTask(task: Task, now: number | null) {
   if (end === null) return null;
 
   const start =
-    task.status === "Done"
-      ? parseTime(task.approvedOn ?? task.createdAt)
-      : task.status === "Backlog"
-        ? parseTime(task.createdAt)
-        : parseTime(task.statusChangedAt ?? task.updatedAt ?? task.createdAt);
+    task.status === "Backlog"
+      ? parseTime(task.createdAt)
+      : parseTime(task.approvedOn ?? task.createdAt);
   if (start === null) return null;
   return Math.max(0, end - start);
 }
@@ -1169,7 +1169,7 @@ function elapsedTitle(task: Task) {
     return `Approved ${task.approvedOn ?? task.createdAt}; completed ${task.statusChangedAt ?? task.updatedAt}`;
   }
   if (task.status === "Backlog") return `Since creation: ${task.createdAt}`;
-  return `Since status change: ${task.statusChangedAt ?? task.updatedAt}`;
+  return `Total since ${task.approvedOn ? `approval: ${task.approvedOn}` : `creation: ${task.createdAt}`}`;
 }
 
 function parseTime(iso: string | null | undefined) {
