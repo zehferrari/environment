@@ -831,6 +831,15 @@ function TaskCard({
             aria-label={`Select ${task.title}`}
             className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
           />
+          <div className="shrink-0">
+            {task.status === "Done" ? (
+              <BoardReporterMarker task={task} />
+            ) : actor ? (
+              <MessageAvatar actor={actor} size="sm" />
+            ) : (
+              <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
+            )}
+          </div>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
               {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
@@ -864,14 +873,7 @@ function TaskCard({
           </button>
         </form>
       </div>
-      <div className="relative z-10 mt-1 flex items-center justify-between gap-2 text-[10px] text-[var(--color-text-muted)]">
-        {task.status === "Done" ? (
-          <BoardReporterMarker task={task} />
-        ) : actor ? (
-          <MessageAvatar actor={actor} size="sm" />
-        ) : (
-          <span className="truncate">unassigned</span>
-        )}
+      <div className="relative z-10 mt-1 flex items-center justify-end gap-2 text-[10px] text-[var(--color-text-muted)]">
         <time
           dateTime={task.updatedAt}
           title={task.updatedAt}
