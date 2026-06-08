@@ -1048,17 +1048,6 @@ function canShowTaskDeploymentIndicator(task: Task) {
 }
 
 function BoardReporterMarker({ task }: { task: Task }) {
-  if (canShowTaskDeploymentIndicator(task) && task.deploymentStatus !== "Not Required") {
-    return (
-      <span
-        className="text-sm"
-        title={`Deployment: ${task.deploymentStatus}`}
-        aria-label={`Deployment: ${task.deploymentStatus}`}
-      >
-        🤖
-      </span>
-    );
-  }
   return task.reporter ? <MessageAvatar actor={task.reporter} size="sm" /> : null;
 }
 
