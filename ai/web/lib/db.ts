@@ -43,7 +43,11 @@ export async function ensureSqlitePragmas(): Promise<void> {
   global.__prismaPragmasApplied = true;
   try {
     for (const statement of pragmaStatements()) {
-      await db.$executeRawUnsafe(statement);
+      // Several set-form PRAGMAs (journal_mode, busy_timeout, wal_autocheckpoint)
+      // return a row in SQLite, which Prisma's $executeRawUnsafe rejects with
+      // P2010 "Execute returned results, which is not allowed in SQLite". Use
+      // $queryRawUnsafe so the set still applies whether or not a row comes back.
+      await db.$queryRawUnsafe(statement);
     }
   } catch (err) {
     global.__prismaPragmasApplied = false;

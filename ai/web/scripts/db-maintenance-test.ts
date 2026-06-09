@@ -76,4 +76,42 @@ assert.equal(summary.maxMs, 300, "max span surfaced");
 const empty = summarizePmLatency([]);
 assert.deepEqual(empty, { count: 0, p50Ms: null, p95Ms: null, maxMs: null }, "empty summary is null-safe");
 
-console.log("db-maintenance-test: all assertions passed");
+// --- Live pragma enforcement against a real temp SQLite DB --------------------
+// Guards the ENV-27 regression: the pure statement list above can look correct
+// while runtime enforcement silently fails (e.g. journal_mode=WAL returns a row
+// and aborts the loop under $executeRawUnsafe). This asserts the pragmas are
+// actually observed on a fresh connection.
+async function assertLivePragmas(): Promise<void> {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const dbPath = path.join(os.tmpdir(), `env-pragma-test-${process.pid}-${Date.now()}.db`);
+  process.env.DATABASE_URL = `file:${dbPath}`;
+  const { db, ensureSqlitePragmas } = await import("../lib/db");
+  try {
+    await ensureSqlitePragmas();
+    const journal = (await db.$queryRawUnsafe<{ journal_mode: string }[]>("PRAGMA journal_mode"))[0]?.journal_mode;
+    const busy = (await db.$queryRawUnsafe<{ timeout: number | bigint }[]>("PRAGMA busy_timeout"))[0]?.timeout;
+    assert.equal(String(journal).toLowerCase(), "wal", "live journal_mode is WAL after init");
+    assert.equal(Number(busy), 5000, "live busy_timeout is 5000 after init");
+  } finally {
+    await db.$disconnect();
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        fs.unlinkSync(`${dbPath}${suffix}`);
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+  }
+}
+
+assertLivePragmas()
+  .then(() => {
+    console.log("db-maintenance-test: all assertions passed");
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
