@@ -115,3 +115,65 @@ export async function authenticateContextGrant(args: {
     agentSlug: grant.agentSlug,
   };
 }
+
+export interface ContextGrantSummary {
+  total: number;
+  active: number;
+  expired: number;
+  revoked: number;
+  exhausted: number;
+  oldestActiveAgeMs: number | null;
+  maxUsedCount: number;
+}
+
+/**
+ * Read-only inventory of context grants for token age/rotation visibility.
+ * A grant is "active" when it is not revoked, not past expiry, and still has
+ * uses remaining. Buckets are mutually exclusive in priority order
+ * revoked > expired > exhausted > active so each grant counts once.
+ */
+export async function summarizeContextGrants(now: Date = new Date()): Promise<ContextGrantSummary> {
+  const grants = await db.contextGrant.findMany({
+    select: {
+      createdAt: true,
+      expiresAt: true,
+      revokedAt: true,
+      maxUses: true,
+      usedCount: true,
+    },
+  });
+
+  const summary: ContextGrantSummary = {
+    total: grants.length,
+    active: 0,
+    expired: 0,
+    revoked: 0,
+    exhausted: 0,
+    oldestActiveAgeMs: null,
+    maxUsedCount: 0,
+  };
+
+  for (const grant of grants) {
+    if (grant.usedCount > summary.maxUsedCount) summary.maxUsedCount = grant.usedCount;
+
+    if (grant.revokedAt) {
+      summary.revoked += 1;
+      continue;
+    }
+    if (grant.expiresAt <= now) {
+      summary.expired += 1;
+      continue;
+    }
+    if (grant.usedCount >= grant.maxUses) {
+      summary.exhausted += 1;
+      continue;
+    }
+    summary.active += 1;
+    const ageMs = now.getTime() - grant.createdAt.getTime();
+    if (summary.oldestActiveAgeMs === null || ageMs > summary.oldestActiveAgeMs) {
+      summary.oldestActiveAgeMs = ageMs;
+    }
+  }
+
+  return summary;
+}
