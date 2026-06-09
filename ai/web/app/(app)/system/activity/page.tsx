@@ -1,6 +1,7 @@
-import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel-latency";
+import { formatLatency, pmChannelLatencySpans, summarizePmLatency } from "@/lib/agents/pm-channel-latency";
 import { pmChannelQueueStats } from "@/lib/agents/pm-channel-jobs";
 import { compactDbPath, formatFreelistRatio, getSqliteDbHealth } from "@/lib/db-health";
+import { getDbBusyStats } from "@/lib/db-busy-counter";
 import { db } from "@/lib/db";
 import {
   actorDisplayName,
@@ -99,6 +100,8 @@ export default async function SystemActivityPage() {
     pmChannelQueueStats(),
   ]);
 
+  const latencySummary = summarizePmLatency(recentPmRuns);
+  const busyStats = getDbBusyStats();
   const system = snapshot?.system ?? {};
   const agents = snapshot?.agents ?? {};
   const activeServices = Object.values(system).filter((s) => s.is_active === "active").length;
@@ -149,11 +152,29 @@ export default async function SystemActivityPage() {
           <p className="mt-3 text-xs text-[var(--color-text-muted)]">
             busy_timeout {dbHealth.busyTimeoutMs ?? "—"}ms · WAL {dbHealth.walExists ? "present" : "absent"} · SHM {dbHealth.shmExists ? "present" : "absent"}
           </p>
+          <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+            lock/busy errors {busyStats.lockErrors}
+            {busyStats.lastLockAt ? ` · last ${busyStats.lastLockAt.slice(0, 19).replace("T", " ")}` : ""}
+          </p>
+          {dbHealth.warnings.length > 0 ? (
+            <ul className="mt-3 space-y-1">
+              {dbHealth.warnings.map((w) => (
+                <li key={w.code} className="text-xs font-medium text-[var(--color-crit)]">⚠ {w.message}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-3 text-xs text-[var(--color-ok)]">No health warnings.</p>
+          )}
           {dbHealth.error ? <p className="mt-2 text-xs text-[var(--color-crit)]">{dbHealth.error}</p> : null}
         </div>
 
         <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-          <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">PM latency spans</h2>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">PM latency spans</h2>
+            <p className="font-mono text-[11px] text-[var(--color-text-muted)]">
+              send→final p50 {formatLatency(latencySummary.p50Ms)} · p95 {formatLatency(latencySummary.p95Ms)} · max {formatLatency(latencySummary.maxMs)} · n={latencySummary.count}
+            </p>
+          </div>
           {recentPmRuns.length === 0 ? (
             <p className="mt-3 text-sm text-[var(--color-text-muted)]">No PM channel runs recorded yet.</p>
           ) : (

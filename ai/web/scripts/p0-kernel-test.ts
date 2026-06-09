@@ -154,6 +154,44 @@ async function main() {
   });
   assert.equal(secondUse, null);
 
+  // An expired grant must not authenticate even with unused capacity remaining.
+  const expiring = await createContextGrant({
+    agentSlug: "asdrubal",
+    scopeType: "task",
+    scopeId: `task-${nonce}`,
+    turnId: nonce,
+    maxUses: 5,
+  });
+  await db.contextGrant.update({
+    where: { id: expiring.grant.id },
+    data: { expiresAt: new Date(Date.now() - 1000) },
+  });
+  const expiredUse = await authenticateContextGrant({
+    scopeType: "task",
+    scopeId: `task-${nonce}`,
+    token: expiring.token,
+  });
+  assert.equal(expiredUse, null, "expired grant must not authenticate");
+
+  // A revoked grant must not authenticate even before its TTL elapses.
+  const revoking = await createContextGrant({
+    agentSlug: "asdrubal",
+    scopeType: "task",
+    scopeId: `task-${nonce}`,
+    turnId: nonce,
+    maxUses: 5,
+  });
+  await db.contextGrant.update({
+    where: { id: revoking.grant.id },
+    data: { revokedAt: new Date() },
+  });
+  const revokedUse = await authenticateContextGrant({
+    scopeType: "task",
+    scopeId: `task-${nonce}`,
+    token: revoking.token,
+  });
+  assert.equal(revokedUse, null, "revoked grant must not authenticate");
+
   await db.pmChannelRun.deleteMany({ where: { targetKey } });
   await db.contextGrant.deleteMany({ where: { turnId: nonce } });
 }

@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "crypto";
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
@@ -7,6 +6,7 @@ import {
   resolvePmChannelToken,
   type PmChannelReplyTarget,
 } from "@/lib/agents/openclaw-pm-channel";
+import { authorizePmChannelCallback } from "@/lib/agents/pm-channel-callback-auth";
 import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel-stream";
 import {
   pmChannelRunTargetKey,
@@ -40,13 +40,6 @@ function bearerToken(req: NextRequest) {
   const header = req.headers.get("authorization") ?? "";
   const prefix = "Bearer ";
   return header.startsWith(prefix) ? header.slice(prefix.length).trim() : "";
-}
-
-function tokenMatches(actual: string, expected: string) {
-  if (!actual || !expected) return false;
-  const a = Buffer.from(actual);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 function replyBody(payload: Record<string, unknown>) {
@@ -539,10 +532,11 @@ export async function POST(req: NextRequest) {
   const actualToken = bearerToken(req);
   const expectedShared = configuredToken();
   const expectedAgent = await resolvePmChannelToken(target.agentSlug);
-  if (
-    !tokenMatches(actualToken, expectedShared) &&
-    !tokenMatches(actualToken, expectedAgent ?? "")
-  ) {
+  if (!authorizePmChannelCallback({
+    presented: actualToken,
+    expectedShared,
+    expectedAgent,
+  })) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   tagsForTaskReplyScope,
   revalidateTaskReplyScope,
+  revalidateTaskAttachments,
   taskCacheTag,
 } from "../lib/tasks/cache";
 import {
@@ -35,6 +36,34 @@ assert(!commentTags.includes(taskCacheTag.attachments(taskId)), "comment reply m
 const revalidated: string[] = [];
 revalidateTaskReplyScope(taskId, "chat", (tag) => revalidated.push(tag));
 assert.deepEqual(revalidated, chatTags, "chat reply revalidates only the chat resource tags");
+
+const commentRevalidated: string[] = [];
+revalidateTaskReplyScope(taskId, "comment", (tag) => commentRevalidated.push(tag));
+assert.deepEqual(commentRevalidated, commentTags, "comment reply revalidates only comments + activity");
+for (const off of [
+  taskCacheTag.shell(taskId),
+  taskCacheTag.description(taskId),
+  taskCacheTag.chat(taskId),
+  taskCacheTag.attachments(taskId),
+]) {
+  assert(!commentRevalidated.includes(off), `comment reply must not revalidate ${off}`);
+}
+
+const attachmentRevalidated: string[] = [];
+revalidateTaskAttachments(taskId, (tag) => attachmentRevalidated.push(tag));
+assert.deepEqual(
+  attachmentRevalidated,
+  [taskCacheTag.attachments(taskId), taskCacheTag.activity(taskId)],
+  "attachment change revalidates only attachments + activity",
+);
+for (const off of [
+  taskCacheTag.shell(taskId),
+  taskCacheTag.description(taskId),
+  taskCacheTag.comments(taskId),
+  taskCacheTag.chat(taskId),
+]) {
+  assert(!attachmentRevalidated.includes(off), `attachment change must not revalidate ${off}`);
+}
 
 const epicChatTags = tagsForEpicReplyScope(epicId, "chat");
 assert.deepEqual(epicChatTags, [

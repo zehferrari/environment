@@ -359,6 +359,43 @@ absent.
   `pm_submit_workflow`, `pm_post_comment`. Once OpenClaw exposes them
   as tools the agent doesn't need to remember curl URLs at all.
 
+## Acceptance baseline (V0.5)
+
+PM-channel runtime invariants are covered by
+[`scripts/pm-acceptance-baseline-test.ts`](../scripts/pm-acceptance-baseline-test.ts)
+(`pnpm test:pm-acceptance-baseline`). Like the other `test:*` scripts it is
+hermetic — it pushes the schema into a throwaway sqlite and never touches the
+live `prisma/pm.db`. It asserts:
+
+- **Context-grant auth** — wrong scope id/type, expired, use-exhausted, and
+  revoked grants are all rejected; a valid grant authenticates once and the
+  result exposes only `grantId`+`agentSlug` (never the bearer).
+- **Stream replay** — persisted stream events rebuild full state on a cold
+  restart, and a reconnect window (`afterSeq > 0`) still yields the
+  fully-accumulated final frame.
+- **Agent-down dispatch** — a job whose gateway is unreachable is retried up to
+  `PM_CHANNEL_JOB_MAX_ATTEMPTS` then lands in `failed` (job + run), never
+  silently dropped.
+- **Duplicate final callback** — once a durable reply exists for a target the
+  idempotency guard reports it, so the second callback short-circuits with
+  `{ duplicate: true }` instead of double-posting.
+- **No bearer leakage** — a grant token never appears in any persisted
+  streaming surface (run row, stream events, activity payloads).
+
+Two operational notes surfaced during this pass:
+
+- `pnpm typecheck` / `pnpm build` depend on a **freshly generated Prisma
+  client**. A stale client makes `tsc` report phantom errors (e.g. missing
+  `onlyReportersCanApprovePullRequests` on `ProjectSelect`, missing relations
+  on `Task`) even though `prisma/schema.prisma` is correct. `prisma generate`
+  (run automatically by `build`) clears them — run it before trusting a red
+  typecheck.
+- On the live `prisma/pm.db`, migration `20260606102000_project_reporter_pr_policy`
+  was not yet applied at the time of this pass (`prisma migrate status`). The
+  three PM-critical migrations (`asdrubal_p0_kernel`, `action_plan_approvals`,
+  `project_workflow_keys`) are applied. Apply the pending migration on the live
+  box before relying on the reporter-PR-policy field at runtime.
+
 ## Files
 
 | Concern                       | File                                                     |
@@ -372,3 +409,4 @@ absent.
 | Per-turn system prompt block  | [`lib/agents/context/task.ts:buildTaskNativeChannelPrompt`](../lib/agents/context/task.ts) and [`lib/agents/context/epic.ts:buildEpicNativeChannelPrompt`](../lib/agents/context/epic.ts) |
 | Recent-exchange helpers       | [`lib/agents/context-api/recent.ts`](../lib/agents/context-api/recent.ts) |
 | Dispatcher (thin envelope)    | [`lib/agents/chat-actions.ts`](../lib/agents/chat-actions.ts) |
+| Acceptance baseline suite     | [`scripts/pm-acceptance-baseline-test.ts`](../scripts/pm-acceptance-baseline-test.ts) |

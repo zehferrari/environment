@@ -15,8 +15,49 @@ export type SqliteDbHealth = {
   busyTimeoutMs: number | null;
   walExists: boolean | null;
   shmExists: boolean | null;
+  warnings: DbHealthWarning[];
   error: string | null;
 };
+
+export type DbHealthWarning = {
+  code: "journal-not-wal" | "busy-timeout-zero" | "freelist-high";
+  message: string;
+};
+
+// Mirror lib/db-maintenance VACUUM threshold so the warning fires at the same
+// point we'd want a VACUUM to run.
+export const FREELIST_WARNING_RATIO = 0.25;
+
+type DbHealthSignals = Pick<
+  SqliteDbHealth,
+  "journalMode" | "busyTimeoutMs" | "freelistRatio"
+>;
+
+export function deriveDbHealthWarnings(
+  health: DbHealthSignals,
+  freelistThreshold: number = FREELIST_WARNING_RATIO,
+): DbHealthWarning[] {
+  const warnings: DbHealthWarning[] = [];
+  if (health.journalMode != null && health.journalMode.toLowerCase() !== "wal") {
+    warnings.push({
+      code: "journal-not-wal",
+      message: `journal_mode is ${health.journalMode}, expected wal`,
+    });
+  }
+  if (health.busyTimeoutMs === 0) {
+    warnings.push({
+      code: "busy-timeout-zero",
+      message: "busy_timeout is 0 — writers fail immediately under contention",
+    });
+  }
+  if (health.freelistRatio != null && health.freelistRatio > freelistThreshold) {
+    warnings.push({
+      code: "freelist-high",
+      message: `freelist ratio ${formatFreelistRatio(health.freelistRatio)} exceeds ${formatFreelistRatio(freelistThreshold)} — VACUUM recommended`,
+    });
+  }
+  return warnings;
+}
 
 function normalizeSqliteUrl(raw: string | undefined) {
   if (!raw || !raw.startsWith("file:")) return { url: raw ?? null, path: null };
@@ -91,6 +132,7 @@ export async function getSqliteDbHealth(): Promise<SqliteDbHealth> {
       busyTimeoutMs,
       walExists: path ? existsSync(`${path}-wal`) : null,
       shmExists: path ? existsSync(`${path}-shm`) : null,
+      warnings: deriveDbHealthWarnings({ journalMode, busyTimeoutMs, freelistRatio: ratio }),
       error: null,
     };
   } catch (err) {
@@ -106,6 +148,7 @@ export async function getSqliteDbHealth(): Promise<SqliteDbHealth> {
       busyTimeoutMs: null,
       walExists: path ? existsSync(`${path}-wal`) : null,
       shmExists: path ? existsSync(`${path}-shm`) : null,
+      warnings: [],
       error: err instanceof Error ? err.message : String(err),
     };
   }

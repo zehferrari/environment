@@ -119,12 +119,10 @@ export async function uploadAttachment(formData: FormData) {
 
   if (taskId) {
     revalidateTaskAttachments(taskId);
-    revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   }
   if (epicId) {
     revalidatePath(`/projects/${slug}/epics/${epicId}`);
   }
-  revalidatePath(`/projects/${slug}`);
 }
 
 export async function deleteAttachment(formData: FormData) {
@@ -166,10 +164,8 @@ export async function deleteAttachment(formData: FormData) {
 
   if (row.taskId) {
     revalidateTaskAttachments(row.taskId);
-    revalidatePath(`/projects/${slug}/tasks/${row.taskId}`);
   }
   if (row.epicId) {
     revalidatePath(`/projects/${slug}/epics/${row.epicId}`);
   }
-  revalidatePath(`/projects/${slug}`);
 }

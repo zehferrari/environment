@@ -20,12 +20,17 @@ type DispatchJobPayload = Omit<SendPmChannelTurnArgs, "fetchImpl">;
 
 const MAX_ATTEMPTS = Number.parseInt(process.env.PM_CHANNEL_JOB_MAX_ATTEMPTS ?? "3", 10);
 
-function flagEnabled(value: string | undefined) {
-  return value === "1" || value === "true" || value === "yes" || value === "on";
+function flagDisabled(value: string | undefined) {
+  return value === "0" || value === "false" || value === "no" || value === "off";
 }
 
+// ZL-002: async dispatch is the default send path. The send action persists
+// the message + enqueues a job and returns immediately after DB commit;
+// gateway dispatch happens off the request via the worker. Set
+// PM_ASYNC_DISPATCH to a falsy value (0/false/no/off) to opt back into the
+// legacy synchronous dispatch path (used by some tests).
 export function pmAsyncDispatchEnabled() {
-  return flagEnabled(process.env.PM_ASYNC_DISPATCH);
+  return !flagDisabled(process.env.PM_ASYNC_DISPATCH);
 }
 
 function inlineWorkerNudgeEnabled() {
