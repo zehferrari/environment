@@ -464,9 +464,6 @@ export async function commitProposal(
             }
           }
           if (typeof op.status === "string" && op.status !== task.status) {
-            if (op.status === "In Progress" && !task.approvedOn) {
-              throw new Error(`Task ${id} cannot move to In Progress before Action Plan approval`);
-            }
             const rankAgg = await tx.task.aggregate({
               where: { projectId, status: op.status, archivedAt: null, deletedAt: null },
               _max: { rank: true },

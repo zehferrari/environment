@@ -69,6 +69,7 @@ export async function setProjectSettings(formData: FormData) {
 
   const actorUser = await db.user.findUnique({ where: { id: actor.id }, select: { username: true } });
   const canEditDeployment =
+    actor.kind === "human" ||
     actorUser?.username === "zeh" ||
     project.members.some((member) => member.role === "owner");
   const data: Prisma.ProjectUpdateInput = {};
@@ -272,6 +273,69 @@ export async function restoreProject(formData: FormData) {
 
   revalidatePath(`/projects`);
   revalidatePath(`/projects/bin`);
+  revalidatePath(`/projects/${slug}`);
+}
+
+export async function archiveProject(formData: FormData) {
+  const actor = await requireActor();
+  const slug = String(formData.get("projectSlug") ?? "");
+  if (!slug) return;
+
+  const project = await db.project.findUnique({
+    where: { slug },
+    select: { id: true, name: true, archivedAt: true, deletedAt: true },
+  });
+  if (!project || project.deletedAt || project.archivedAt) return;
+
+  // Archive is project-level only: the board/epics/tasks stay intact, the
+  // project just drops out of the active lists until it is unarchived. This
+  // is distinct from the 30-day delete bin (which cascades + auto-purges).
+  await db.$transaction([
+    db.project.update({
+      where: { id: project.id },
+      data: { archivedAt: new Date() },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: project.id,
+        userId: actor.id,
+        kind: "project.archive",
+        payload: JSON.stringify({ name: project.name }),
+      },
+    }),
+  ]);
+
+  redirect(`/projects/archive`);
+}
+
+export async function unarchiveProject(formData: FormData) {
+  const actor = await requireActor();
+  const slug = String(formData.get("projectSlug") ?? "");
+  if (!slug) return;
+
+  const project = await db.project.findUnique({
+    where: { slug },
+    select: { id: true, name: true, archivedAt: true },
+  });
+  if (!project || !project.archivedAt) return;
+
+  await db.$transaction([
+    db.project.update({
+      where: { id: project.id },
+      data: { archivedAt: null },
+    }),
+    db.activityLog.create({
+      data: {
+        projectId: project.id,
+        userId: actor.id,
+        kind: "project.unarchive",
+        payload: JSON.stringify({ name: project.name }),
+      },
+    }),
+  ]);
+
+  revalidatePath(`/projects`);
+  revalidatePath(`/projects/archive`);
   revalidatePath(`/projects/${slug}`);
 }
 

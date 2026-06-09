@@ -10,12 +10,23 @@ export type SidebarAgent = {
   role: string;
   avatarSrc: string | null;
   status: string;
-  statusColor: string;
+  // Visual treatment derived from status: grayscale for stale/offline,
+  // a glowing pulse ring for busy. live/idle render plain colour.
+  grayscale: boolean;
+  pulse: boolean;
+  // Whether this agent has unread direct-chat messages for the viewer.
+  unread: boolean;
+};
+
+export type SidebarProject = {
+  slug: string;
+  name: string;
 };
 
 type SidebarNavProps = {
   isAdmin: boolean;
   agents: SidebarAgent[];
+  projects: SidebarProject[];
   meName: string;
   meKind: string | null;
   userId: string | null;
@@ -157,6 +168,7 @@ function NavItem({
 export default function SidebarNav({
   isAdmin,
   agents,
+  projects,
   meName,
   meKind,
   userId,
@@ -165,8 +177,6 @@ export default function SidebarNav({
 }: SidebarNavProps) {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
-  // Agent chat rows are only relevant on the agents surface.
-  const showAgents = pathname?.startsWith("/agents") ?? false;
 
   // Read persisted state after mount to avoid an SSR/hydration mismatch.
   useEffect(() => {
@@ -264,6 +274,37 @@ export default function SidebarNav({
             color={NAV_COLORS.projects}
             collapsed={collapsed}
           />
+          {projects.map((project) => {
+            const href = `/projects/${project.slug}`;
+            const active = pathname === href || pathname?.startsWith(`${href}/`);
+            return (
+              <Link
+                key={project.slug}
+                href={href}
+                title={collapsed ? project.name : undefined}
+                className={`flex items-center gap-3 rounded-lg py-1.5 hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)] ${
+                  active
+                    ? "text-[var(--color-accent)]"
+                    : "text-[var(--color-text-muted)]"
+                } ${collapsed ? "justify-center px-0" : "px-3"}`}
+              >
+                <span
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[11px] font-semibold uppercase text-[var(--color-text)]"
+                  aria-hidden="true"
+                >
+                  {project.name.slice(0, 1)}
+                </span>
+                {!collapsed ? (
+                  <span className="truncate text-xs font-medium">{project.name}</span>
+                ) : null}
+              </Link>
+            );
+          })}
+        </div>
+
+        <div className="my-4 border-t border-[var(--color-line)]" />
+
+        <div className="space-y-1">
           <NavItem
             href="/agents"
             icon={icons.agents}
@@ -271,59 +312,68 @@ export default function SidebarNav({
             color={NAV_COLORS.agents}
             collapsed={collapsed}
           />
-        </div>
-
-        {showAgents ? (
-          <>
-            <div className="my-4 border-t border-[var(--color-line)]" />
-            <div className="space-y-1">
-              {agents.map((agent) => (
-            <Link
-              key={agent.slug}
-              href={`/agents/${agent.slug}/chat`}
-              title={collapsed ? `${agent.name} · ${agent.status}` : undefined}
-              className={`flex items-center gap-3 rounded-lg py-1.5 text-[var(--color-text-muted)] hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)] ${
-                collapsed ? "justify-center px-0" : "px-3"
-              }`}
-            >
-              {/* Avatar with Status Dot */}
-              <div className="relative h-8 w-8 shrink-0">
-                <div className="grid h-8 w-8 place-items-center overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-xs font-semibold text-[var(--color-text)]">
-                  {agent.avatarSrc ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={agent.avatarSrc}
-                      alt={`${agent.name} avatar`}
-                      decoding="async"
-                      className="h-full w-full object-cover"
+          {agents.map((agent) => {
+            const href = `/agents/${agent.slug}/chat`;
+            const active = pathname?.startsWith(`/agents/${agent.slug}`);
+            return (
+              <Link
+                key={agent.slug}
+                href={href}
+                title={collapsed ? `${agent.name} · ${agent.status}` : undefined}
+                className={`flex items-center gap-3 rounded-lg py-1.5 hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)] ${
+                  active ? "text-[var(--color-accent)]" : "text-[var(--color-text-muted)]"
+                } ${collapsed ? "justify-center px-0" : "px-3"}`}
+              >
+                {/* Avatar: busy → glowing pulse ring; stale/offline → grayscale;
+                    unread → red dot. No status dot/label. */}
+                <div className="relative h-8 w-8 shrink-0">
+                  {agent.pulse ? (
+                    <span
+                      className="absolute -inset-0.5 animate-ping rounded-xl bg-[var(--color-accent)] opacity-30"
+                      aria-hidden="true"
                     />
-                  ) : (
-                    agent.name.slice(0, 1)
-                  )}
+                  ) : null}
+                  <div className="relative grid h-8 w-8 place-items-center overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-xs font-semibold text-[var(--color-text)]">
+                    {agent.avatarSrc ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={agent.avatarSrc}
+                        alt={`${agent.name} avatar`}
+                        decoding="async"
+                        className={`h-full w-full object-cover ${
+                          agent.grayscale ? "grayscale" : ""
+                        }`}
+                      />
+                    ) : (
+                      agent.name.slice(0, 1)
+                    )}
+                  </div>
+                  {agent.unread ? (
+                    <span
+                      className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-[var(--color-panel)] bg-red-500"
+                      title="Unread messages"
+                      aria-label="Unread messages"
+                    />
+                  ) : null}
                 </div>
-                {/* Status Dot */}
-                <span
-                  className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border border-[var(--color-panel)]"
-                  style={{ backgroundColor: agent.statusColor }}
-                  title={agent.status}
-                />
-              </div>
 
-              {!collapsed ? (
-                <div className="min-w-0 flex-1">
-                  <span className="block truncate text-xs font-semibold text-[var(--color-text)]">
-                    {agent.name}
-                  </span>
-                  <span className="block truncate text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-                    {agent.role} · {agent.status}
-                  </span>
-                </div>
-              ) : null}
-            </Link>
-          ))}
-            </div>
-          </>
-        ) : null}
+                {!collapsed ? (
+                  <div className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5 truncate text-xs font-semibold text-[var(--color-text)]">
+                      {agent.name}
+                      {agent.unread ? (
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" aria-hidden="true" />
+                      ) : null}
+                    </span>
+                    <span className="block truncate text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+                      {agent.role}
+                    </span>
+                  </div>
+                ) : null}
+              </Link>
+            );
+          })}
+        </div>
       </nav>
 
       <div className="space-y-1 border-t border-[var(--color-line)] px-3 py-3 text-sm">

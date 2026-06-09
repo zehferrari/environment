@@ -26,6 +26,7 @@ export default async function ProjectLayout({
 
   // Show the Summary tab only when the configured repo folder has a README.
   const hasSummary = repoHasReadme(project.repositoryPath);
+  const hasCode = Boolean(project.repositoryPath);
 
   return (
     <div>
@@ -46,7 +47,7 @@ export default async function ProjectLayout({
           <span>{project.slug}</span>
         </div>
       </header>
-      <ProjectTabs slug={project.slug} hasSummary={hasSummary} />
+      <ProjectTabs slug={project.slug} hasSummary={hasSummary} hasCode={hasCode} />
       {children}
     </div>
   );

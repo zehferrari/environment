@@ -3,7 +3,7 @@
 import { useEffect, useState, useTransition } from "react";
 import { requestWorktreeSwitch } from "@/lib/deploy/actions";
 import type { SwitchState } from "@/lib/deploy/worktrees";
-import { worktreeRepoKey } from "@/lib/deploy/repo-key";
+import { displayWorktreesForRepo } from "@/lib/deploy/repo-key";
 
 const POLL_BUSY_MS = 2000;
 const POLL_IDLE_MS = 5000;
@@ -22,7 +22,7 @@ export default function WorktreeSwitcher({
 
   const job = state.job;
   const inProgress = job.state === "queued" || job.state === "building";
-  const worktrees = state.worktrees.filter((w) => worktreeRepoKey(w.path) === repoKey);
+  const worktrees = displayWorktreesForRepo(state.worktrees, repoKey);
 
   // Poll the runner-maintained state. Tolerant of network errors — the
   // pm.service restart at the end of a switch will drop a few polls, then the

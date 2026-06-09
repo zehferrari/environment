@@ -38,6 +38,28 @@ const actorSelect = {
   agent: { select: { slug: true, name: true, avatar: true } },
 };
 
+// Live agent snapshot (same source the sidebar reads) — used to flag tasks an
+// agent is actively working on so the board can show a pulse ring on them.
+async function readBusyAgentSlugs(): Promise<Set<string>> {
+  try {
+    const res = await fetch("http://127.0.0.1:3013/agents/snapshot", {
+      cache: "no-store",
+      next: { revalidate: 0 },
+    });
+    if (!res.ok) return new Set();
+    const snapshot = (await res.json()) as {
+      agents?: Record<string, { busy_state?: { is_busy?: boolean } | null }>;
+    };
+    const busy = new Set<string>();
+    for (const [slug, agent] of Object.entries(snapshot.agents ?? {})) {
+      if (agent?.busy_state?.is_busy) busy.add(slug);
+    }
+    return busy;
+  } catch {
+    return new Set();
+  }
+}
+
 function serializeActor(actor: ActorRow | null) {
   if (!actor) return null;
   return {
@@ -200,7 +222,6 @@ async function moveTask(
       reporterId: true,
       approvedOn: true,
       deletedAt: true,
-      project: { select: { onlyReportersCanSetTasksDone: true } },
       epic: { select: { status: true, actingManagerId: true } },
     },
   });
@@ -209,15 +230,20 @@ async function moveTask(
   }
   if (current.status === status) return { ok: true };
 
-  const check = checkStatusTransition({
-    from: current.status,
-    to: status,
-    actor,
-  });
-  if (!check.ok) {
-    return { ok: false, code: check.code, message: check.message };
+  // Browser-session human moves are authoritative. Workflow policy still
+  // constrains agent/generic automation paths, but a human board action must
+  // persist once the target column is a known PM status.
+  if (actor.kind !== "human") {
+    const check = checkStatusTransition({
+      from: current.status,
+      to: status,
+      actor,
+    });
+    if (!check.ok) {
+      return { ok: false, code: check.code, message: check.message };
+    }
   }
-  if (status === "In Progress" && !current.approvedOn) {
+  if (actor.kind !== "human" && status === "In Progress" && !current.approvedOn) {
     return {
       ok: false,
       code: "EXPLICIT_USER_ACTION_REQUIRED",
@@ -238,15 +264,12 @@ async function moveTask(
         kind: actor.kind,
       },
       via: "board-move",
-      requireReviewerUserId: actor.id,
     });
     if (!completion.completed) {
       return {
         ok: false,
         code: "EXPLICIT_USER_ACTION_REQUIRED",
-        message: current.project.onlyReportersCanSetTasksDone
-          ? "Only the task reporter can move Review to Done for this project."
-          : "Only the resolved reviewer, Open Epic manager, or reporter fallback can move Review to Done.",
+        message: "Could not complete this reviewed task.",
       };
     }
     revalidatePath(`/projects/${slug}`);
@@ -352,7 +375,7 @@ export default async function ProjectBoardPage({
   // Data for the New Task modal: principals for assignee/reviewer pickers,
   // live epics for the Epic combobox.
   const filteredTaskIds = project.tasks.map((task) => task.id);
-  const [principals, epicOptions, taskActivityRows] = await Promise.all([
+  const [principals, epicOptions, taskActivityRows, busyAgentSlugs] = await Promise.all([
     listAssignablePrincipals(),
     db.epic.findMany({
       where: { projectId: project.id, archivedAt: null, deletedAt: null },
@@ -370,6 +393,7 @@ export default async function ProjectBoardPage({
           },
         })
       : Promise.resolve([]),
+    readBusyAgentSlugs(),
   ]);
   const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows);
 
@@ -405,6 +429,11 @@ export default async function ProjectBoardPage({
           createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter),
           updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter),
           epicTitle: t.epic?.title ?? null,
+          // An agent is actively working on this task when it is In Progress
+          // and its assignee is a currently-busy agent (live snapshot).
+          activeWorking:
+            t.status === "In Progress" &&
+            Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug)),
         }))}
         moveTaskAction={moveTask}
         reorderTasksAction={reorderBoardTasks}

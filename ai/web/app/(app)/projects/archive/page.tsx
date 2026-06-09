@@ -1,0 +1,82 @@
+import Link from "next/link";
+import { db } from "@/lib/db";
+import { unarchiveProject } from "@/lib/projects/actions";
+
+export const dynamic = "force-dynamic";
+
+function timeAgo(d: Date): string {
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+export default async function ProjectArchivePage() {
+  const projects = await db.project.findMany({
+    where: { archivedAt: { not: null }, deletedAt: null },
+    orderBy: { archivedAt: "desc" },
+    include: {
+      _count: {
+        select: {
+          epics: true,
+          tasks: true,
+          attachments: true,
+        },
+      },
+    },
+  });
+
+  return (
+    <div className="max-w-4xl">
+      <nav className="mb-3 text-sm">
+        <Link
+          href="/projects"
+          className="text-[var(--color-text-muted)] hover:underline"
+        >
+          ← Projects
+        </Link>
+      </nav>
+      <h1 className="mb-1 text-2xl font-semibold tracking-tight">
+        Archived projects
+      </h1>
+      <p className="mb-6 text-xs text-[var(--color-text-muted)]">
+        Archived projects are hidden from the active project lists and the
+        sidebar. Nothing is deleted or purged — unarchive to bring a project
+        back at any time.
+      </p>
+
+      {projects.length === 0 ? (
+        <p className="rounded-xl border border-dashed border-[var(--color-line)] p-6 text-center text-sm text-[var(--color-text-muted)]">
+          No archived projects.
+        </p>
+      ) : (
+        <ul className="divide-y divide-[var(--color-line)] rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)]">
+          {projects.map((p) => (
+            <li key={p.id} className="flex items-center justify-between gap-4 px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">{p.name}</div>
+                <div className="text-xs text-[var(--color-text-muted)]">
+                  /{p.slug} · {p._count.epics} epic
+                  {p._count.epics === 1 ? "" : "s"} · {p._count.tasks} task
+                  {p._count.tasks === 1 ? "" : "s"} · {p._count.attachments} file
+                  {p._count.attachments === 1 ? "" : "s"} · archived{" "}
+                  {p.archivedAt ? timeAgo(p.archivedAt) : "?"}
+                </div>
+              </div>
+              <form action={unarchiveProject}>
+                <input type="hidden" name="projectSlug" value={p.slug} />
+                <button
+                  type="submit"
+                  className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium hover:border-[var(--color-accent)]"
+                >
+                  Unarchive
+                </button>
+              </form>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}

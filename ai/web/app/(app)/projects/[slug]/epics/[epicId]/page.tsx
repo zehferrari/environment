@@ -183,7 +183,7 @@ async function approveEpicActionPlan(formData: FormData) {
   const canApprove = epic.project.onlyReportersCanApproveActionPlans
     ? actor.id === epic.reporterId
     : actor.id === epic.reporterId || actor.id === epic.actingManagerId;
-  if (!canApprove) {
+  if (actor.kind !== "human" && !canApprove) {
     throw new Error(epic.project.onlyReportersCanApproveActionPlans
       ? "Only the Epic reporter can approve the Action Plan for this project."
       : "Only the Epic reporter or acting manager can approve the Action Plan.");
@@ -827,9 +827,10 @@ export default async function EpicDetailPage({
   const canApproveActionPlan =
     !epic.approvedOn &&
     Boolean(session?.user?.id && (
-      epic.project.onlyReportersCanApproveActionPlans
+      session.user.kind !== "agent" ||
+      (epic.project.onlyReportersCanApproveActionPlans
         ? session.user.id === epic.reporterId
-        : session.user.id === epic.reporterId || session.user.id === epic.actingManagerId
+        : session.user.id === epic.reporterId || session.user.id === epic.actingManagerId)
     ));
   const doneActivity = allActivity.find((row) =>
     row.kind === "epic.status" && payloadValue(row.payload, "to") === "Done"
@@ -1263,7 +1264,10 @@ export default async function EpicDetailPage({
             projectSlug={slug}
             epicId={epic.id}
             createTaskAction={createTaskInEpic}
-            canCreateTask={session?.user?.id === epic.actingManagerId}
+            canCreateTask={Boolean(session?.user?.id && (
+              session.user.kind !== "agent" ||
+              session.user.id === epic.actingManagerId
+            ))}
             actingManagerName={epic.actingManager?.username ? `@${epic.actingManager.username}` : null}
           />
                 </div>

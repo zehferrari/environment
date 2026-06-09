@@ -24,6 +24,20 @@ export default async function SystemSettingsPage() {
         action={setSystemSettings}
         className="max-w-2xl space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm"
       >
+        <SettingsRow
+          label="Theme"
+          hint="Choose the UI theme explicitly. Light is the default."
+        >
+          <select
+            name="theme"
+            defaultValue={settings.theme}
+            className="w-48 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+          >
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </SettingsRow>
+
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <SettingsRow
             label="Default git user (name)"

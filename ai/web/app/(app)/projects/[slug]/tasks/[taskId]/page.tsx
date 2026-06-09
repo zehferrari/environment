@@ -38,7 +38,6 @@ import { reorderTasks } from "@/lib/tasks/reorder";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import {
   canApproveActionPlanForActor,
-  resolveDoneOwnerId,
   resolveReviewOwnerId,
 } from "@/lib/tasks/workflow-actors";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
@@ -178,7 +177,6 @@ async function updateTask(formData: FormData) {
         select: {
           slug: true,
           onlyReportersCanApproveActionPlans: true,
-          onlyReportersCanSetTasksDone: true,
           onlyReportersCanApprovePullRequests: true,
         },
       },
@@ -217,22 +215,21 @@ async function updateTask(formData: FormData) {
 
   // Status (workflow-validated, recomputes rank like the board move)
   if (newStatus !== "" && newStatus !== task.status) {
-    const check = checkStatusTransition({
-      from: task.status,
-      to: newStatus,
-      actor,
-    });
-    if (!check.ok) throw new Error(check.message);
-    if (newStatus === "In Progress" && !task.approvedOn) {
+    // Browser-session human saves are authoritative. Workflow policy still
+    // constrains agent/generic automation paths, but a human task-form action
+    // must persist once the target column is a known PM status.
+    if (actor.kind !== "human") {
+      const check = checkStatusTransition({
+        from: task.status,
+        to: newStatus,
+        actor,
+      });
+      if (!check.ok) throw new Error(check.message);
+    }
+    if (actor.kind !== "human" && newStatus === "In Progress" && !task.approvedOn) {
       throw new Error("Action Plan must be approved before this task can move to In Progress.");
     }
     if (task.status === "Review" && newStatus === "Done") {
-      const doneOwnerId = resolveDoneOwnerId(task);
-      if (doneOwnerId !== actor.id) {
-        throw new Error(task.project.onlyReportersCanSetTasksDone
-          ? "Only the task reporter can move Review to Done for this project."
-          : "Only the resolved reviewer, Open Epic manager, or reporter fallback can move Review to Done.");
-      }
       completeReviewAfterSave = true;
     } else {
       const maxRank = await db.task.aggregate({
@@ -535,7 +532,6 @@ async function updateTask(formData: FormData) {
         kind: actor.kind,
       },
       via: "task-edit",
-      requireReviewerUserId: actor.id,
     });
   }
 
@@ -589,7 +585,7 @@ async function approveTaskActionPlan(formData: FormData) {
   });
   if (!task || task.deletedAt || task.project.slug !== slug) return;
 
-  if (!canApproveActionPlanForActor(task, actor.id)) {
+  if (actor.kind !== "human" && !canApproveActionPlanForActor(task, actor.id)) {
     throw new Error(task.project.onlyReportersCanApproveActionPlans
       ? "Only the task reporter can approve the Action Plan for this project."
       : "Only the task reviewer or reporter can approve the Action Plan.");
@@ -881,13 +877,13 @@ async function createSubtask(formData: FormData) {
   if (parent.parentTaskId !== null) {
     throw new Error("Cannot create sub-task under another sub-task");
   }
-  if (actor.id !== parent.assigneeId) {
+  if (actor.kind !== "human" && actor.id !== parent.assigneeId) {
     throw new Error("Only the task assignee can create task-local subtasks.");
   }
-  if (!parent.approvedOn) {
+  if (actor.kind !== "human" && !parent.approvedOn) {
     throw new Error("Task Action Plan must be approved before subtasks can be created.");
   }
-  if (parent.subtasks.length > 0) {
+  if (actor.kind !== "human" && parent.subtasks.length > 0) {
     throw new Error("Task-local subtasks can only be created when the task has no child subtasks yet.");
   }
 
@@ -1524,7 +1520,7 @@ export default async function TaskDetailPage({
     ?? "";
   const canApproveActionPlan =
     !task.approvedOn &&
-    canApproveActionPlanForActor(task, viewer.id);
+    (viewer.kind === "human" || canApproveActionPlanForActor(task, viewer.id));
   const doneActivity = allActivity.find((row) =>
     row.kind === "task.move" && payloadValue(row.payload, "to") === "Done"
   );

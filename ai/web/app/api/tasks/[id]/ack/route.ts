@@ -15,6 +15,7 @@ import {
 } from "@/lib/workflow";
 import { buildTaskAckReady } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
+import { publishBoardTouch } from "@/lib/pm/board-events";
 
 export async function POST(
   _req: Request,
@@ -90,6 +91,9 @@ export async function POST(
       },
     }),
   ]);
+
+  // Surface the auto-transition to any open board (live SSE refresh).
+  publishBoardTouch(task.projectId);
 
   // Dispatch is downstream of persistence (HOMELAB-44 contract). The
   // notifier swallows transport / config errors and surfaces them via

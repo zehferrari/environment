@@ -64,7 +64,7 @@ async function createProject(formData: FormData) {
 }
 
 export default async function ProjectsPage() {
-  const [projects, deletedCount, principals] = await Promise.all([
+  const [projects, deletedCount, archivedCount, principals] = await Promise.all([
     db.project.findMany({
       where: { archivedAt: null, deletedAt: null },
       orderBy: { createdAt: "desc" },
@@ -80,6 +80,7 @@ export default async function ProjectsPage() {
       },
     }),
     db.project.count({ where: { deletedAt: { not: null } } }),
+    db.project.count({ where: { archivedAt: { not: null }, deletedAt: null } }),
     listAssignablePrincipals(),
   ]);
 
@@ -87,12 +88,20 @@ export default async function ProjectsPage() {
     <div>
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Projects</h1>
-        <Link
-          href="/projects/bin"
-          className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-        >
-          Bin{deletedCount > 0 ? ` (${deletedCount})` : ""}
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/projects/archive"
+            className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+          >
+            Archive{archivedCount > 0 ? ` (${archivedCount})` : ""}
+          </Link>
+          <Link
+            href="/projects/bin"
+            className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+          >
+            Bin{deletedCount > 0 ? ` (${deletedCount})` : ""}
+          </Link>
+        </div>
       </div>
 
       {projects.length === 0 ? (

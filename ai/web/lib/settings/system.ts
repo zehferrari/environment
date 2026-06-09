@@ -5,6 +5,7 @@
 //   - git identity (name/email) for agent commits;
 //   - doneTtlDays for automatic archiving of Done tasks;
 //   - binTtlDays for how long ANY soft-delete bin is kept before purge.
+//   - theme for the system UI.
 //
 // This module is read-only (no "use server") so server components and the
 // purge jobs can import it directly. Writes go through lib/settings/actions.ts.
@@ -18,13 +19,17 @@ export interface SystemSettingsValues {
   defaultGitUserEmail: string | null;
   doneTtlDays: number | null;
   binTtlDays: number | null;
+  theme: SystemTheme;
 }
+
+export type SystemTheme = "light" | "dark";
 
 const EMPTY: SystemSettingsValues = {
   defaultGitUserName: null,
   defaultGitUserEmail: null,
   doneTtlDays: null,
   binTtlDays: null,
+  theme: "light",
 };
 
 export async function getSystemSettings(): Promise<SystemSettingsValues> {
@@ -35,9 +40,18 @@ export async function getSystemSettings(): Promise<SystemSettingsValues> {
       defaultGitUserEmail: true,
       doneTtlDays: true,
       binTtlDays: true,
+      theme: true,
     },
   });
-  return row ?? EMPTY;
+  if (!row) return EMPTY;
+  return {
+    ...row,
+    theme: normalizeTheme(row.theme),
+  };
+}
+
+export function normalizeTheme(value: unknown): SystemTheme {
+  return value === "dark" ? "dark" : "light";
 }
 
 // Automatic archive age (days): project value → system value → hardcoded fallback.

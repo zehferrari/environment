@@ -19,6 +19,28 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+:root {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-bg: #111217;
+  --color-bg-elev: #171920;
+  --color-panel: #1b1d24;
+  --color-panel-soft: #22242c;
+  --color-line: #303442;
+  --color-line-strong: #4b5163;
+  --color-text: #eef1f7;
+  --color-text-muted: #a7adbb;
+  --color-text-dim: #777f91;
+  --color-accent: #8b7cff;
+  --color-accent-soft: #262344;
+  --color-ok: #34d36f;
+  --color-warn: #f6b34d;
+  --color-crit: #ff6b6b;
+}
+
 html, body {
   background: var(--color-bg);
   color: var(--color-text);

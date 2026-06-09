@@ -250,6 +250,17 @@ export default async function DirectAgentChatPage({
   });
   if (!agent || agent.deactivatedAt || agent.user?.status !== "active") notFound();
 
+  // Opening the chat marks it read for the sidebar unread dot. Best-effort:
+  // a write here is a side-effect of a force-dynamic render, which is fine for
+  // this page (it is never statically cached).
+  if (currentUserId) {
+    await db.chatReadCursor.upsert({
+      where: { userId_agentSlug: { userId: currentUserId, agentSlug: slug } },
+      create: { userId: currentUserId, agentSlug: slug },
+      update: { lastReadAt: new Date() },
+    });
+  }
+
   const [activeMessages, archives, binArchives, selectedArchive] = await Promise.all([
     db.directAgentChatMessage.findMany({
       where: { agentSlug: slug, archiveId: null },

@@ -1,6 +1,9 @@
 import { auth, signOut } from "@/lib/auth";
 import { db } from "@/lib/db";
-import SidebarNav, { type SidebarAgent } from "@/components/sidebar-nav";
+import SidebarNav, {
+  type SidebarAgent,
+  type SidebarProject,
+} from "@/components/sidebar-nav";
 
 type SnapshotAgent = {
   session_idle_s?: number | null;
@@ -44,17 +47,18 @@ function statusFor(
   return agent.user ? "live" : "registered";
 }
 
-function ringFor(status: string) {
-  if (status === "busy") return "#22c55e"; // Green
-  if (status === "live") return "#2dd4bf"; // Teal
-  if (status === "idle") return "#f59e0b"; // Orange
-  if (status === "stale") return "#64748b"; // Slate
-  if (status === "offline") return "#ef4444"; // Red
-  return "#94a3b8"; // Gray
+// Avatar treatment per status (HOMELAB sidebar rework): busy agents get a
+// discrete glowing pulse ring; stale/offline render black & white; live and
+// idle stay in full colour. The old coloured status dot + label are gone.
+function avatarTone(status: string): { grayscale: boolean; pulse: boolean } {
+  return {
+    grayscale: status === "stale" || status === "offline",
+    pulse: status === "busy",
+  };
 }
 
 export default async function Sidebar() {
-  const [session, agents, snapshot] = await Promise.all([
+  const [session, agents, snapshot, projects, latestAgentMsgs] = await Promise.all([
     auth(),
     db.agent.findMany({
       where: {
@@ -72,10 +76,32 @@ export default async function Sidebar() {
       },
     }),
     readSnapshot(),
+    db.project.findMany({
+      where: { archivedAt: null, deletedAt: null },
+      orderBy: { name: "asc" },
+      select: { slug: true, name: true },
+    }),
+    // Newest agent-authored direct-chat message per agent — paired with the
+    // viewer's read cursor below to decide the unread red dot.
+    db.directAgentChatMessage.groupBy({
+      by: ["agentSlug"],
+      where: { deletedAt: null, sender: { is: { kind: "agent" } } },
+      _max: { createdAt: true },
+    }),
   ]);
   const user = session?.user as
     | { id?: string; name?: string; kind?: string }
     | undefined;
+  const readCursors = user?.id
+    ? await db.chatReadCursor.findMany({
+        where: { userId: user.id },
+        select: { agentSlug: true, lastReadAt: true },
+      })
+    : [];
+  const cursorBySlug = new Map(readCursors.map((c) => [c.agentSlug, c.lastReadAt]));
+  const latestBySlug = new Map(
+    latestAgentMsgs.map((m) => [m.agentSlug, m._max.createdAt]),
+  );
   // Human display name + avatar for the chip below (session.user.name is the
   // username; the editable display name lives on the User row).
   const me = user?.id
@@ -90,15 +116,26 @@ export default async function Sidebar() {
   const navAgents: SidebarAgent[] = agents.map((agent) => {
     const live = liveAgents[agent.slug];
     const status = statusFor(agent, live);
+    const tone = avatarTone(status);
+    const latest = latestBySlug.get(agent.slug) ?? null;
+    const lastRead = cursorBySlug.get(agent.slug) ?? null;
+    const unread = Boolean(latest && (!lastRead || latest > lastRead));
     return {
       slug: agent.slug,
       name: agent.name,
       role: agent.role,
       avatarSrc: agent.avatar ? avatarUrl(agent.name) : null,
       status,
-      statusColor: ringFor(status),
+      grayscale: tone.grayscale,
+      pulse: tone.pulse,
+      unread,
     };
   });
+
+  const navProjects: SidebarProject[] = projects.map((p) => ({
+    slug: p.slug,
+    name: p.name,
+  }));
 
   async function signOutAction() {
     "use server";
@@ -109,6 +146,7 @@ export default async function Sidebar() {
     <SidebarNav
       isAdmin={isAdmin}
       agents={navAgents}
+      projects={navProjects}
       meName={me?.name ?? me?.username ?? user?.name ?? "?"}
       meKind={user?.kind ?? null}
       userId={user?.id ?? null}

@@ -1,0 +1,126 @@
+import { notFound } from "next/navigation";
+import VisualCode from "@/components/visual-code";
+import { auth } from "@/lib/auth";
+import { db } from "@/lib/db";
+import {
+  canReadRepository,
+  chooseCodeSource,
+  getCodeGitState,
+  listCodeSources,
+  listRepositoryDirectory,
+  normalizeRepoRelativePath,
+  pathKind,
+  readRepositoryFile,
+} from "@/lib/projects/repo-code";
+
+export const dynamic = "force-dynamic";
+
+type CodeSearchParams = {
+  source?: string | string[];
+  path?: string | string[];
+  blame?: string | string[];
+};
+
+function single(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+export default async function ProjectCodePage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ slug: string }>;
+  searchParams?: Promise<CodeSearchParams>;
+}) {
+  const [{ slug }, sp] = await Promise.all([
+    params,
+    searchParams ?? Promise.resolve({} as CodeSearchParams),
+  ]);
+  const project = await db.project.findUnique({
+    where: { slug },
+    select: {
+      slug: true,
+      repositoryPath: true,
+      deletedAt: true,
+      deploymentProductionBranch: true,
+      deploymentPrTargetBranch: true,
+    },
+  });
+  if (!project || project.deletedAt || !project.repositoryPath) notFound();
+
+  const session = await auth();
+  const canWrite = Boolean(session?.user?.id && session.user.kind !== "agent");
+  const sources = await listCodeSources(project.repositoryPath);
+  const source = chooseCodeSource(sources, sp.source);
+  if (!source) notFound();
+
+  const canRead = await canReadRepository(source.path);
+  const relPath = normalizeRepoRelativePath(sp.path);
+  const showBlame = single(sp.blame) === "1";
+  const kind = canRead ? await pathKind(source, relPath) : "missing";
+  const browserPath =
+    kind === "file"
+      ? parentPath(relPath)
+      : kind === "dir"
+        ? relPath
+        : "";
+  const [entries, fileView] = await Promise.all([
+    canRead ? listRepositoryDirectory(source, browserPath) : Promise.resolve([]),
+    canRead && kind === "file"
+      ? readRepositoryFile(source, relPath, showBlame)
+      : Promise.resolve(null),
+  ]);
+  const targetBranch = project.deploymentPrTargetBranch ?? project.deploymentProductionBranch ?? "main";
+  const git = await getCodeGitState(source, sources, targetBranch).catch((error) => ({
+    targetBranch,
+    targetSourceId: null,
+    sourceBranch: source.branch,
+    sourceHead: source.head,
+    sourceDirty: false,
+    sourceStatusCount: 0,
+    targetDirty: false,
+    targetStatusCount: 0,
+    compareUrl: null,
+    originLabel: null,
+    canOpenPullRequest: false,
+    canMerge: false,
+    mergeBlockedReason: null,
+    error: error instanceof Error ? error.message : "Git status unavailable.",
+  }));
+
+  return (
+    <div className="space-y-4">
+      {!canRead ? (
+        <p className="rounded-lg border border-[var(--color-crit)]/40 bg-[var(--color-crit)]/10 px-3 py-2 text-sm text-[var(--color-crit)]">
+          This service cannot read the selected repository folder.
+        </p>
+      ) : null}
+
+      {kind === "missing" && relPath ? (
+        <p className="rounded-lg border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-sm text-[var(--color-warn)]">
+          The selected path no longer exists in this source.
+        </p>
+      ) : null}
+
+      <VisualCode
+        activePath={kind === "file" ? relPath : ""}
+        browserPath={browserPath}
+        entries={entries}
+        file={fileView}
+        git={git}
+        kind={kind}
+        relPath={relPath}
+        showBlame={showBlame}
+        slug={project.slug}
+        source={source}
+        sources={sources}
+        canWrite={canWrite}
+      />
+    </div>
+  );
+}
+
+function parentPath(relPath: string) {
+  const parent = relPath ? relPath.split("/").slice(0, -1).join("/") : "";
+  return parent === "." ? "" : parent;
+}

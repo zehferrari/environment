@@ -700,13 +700,13 @@ export async function createTaskInEpic(
   if (!epic || epic.project.slug !== slug || epic.deletedAt) {
     return { ok: false, error: "Epic is no longer available." };
   }
-  if (actor.id !== epic.actingManagerId) {
+  if (actor.kind !== "human" && actor.id !== epic.actingManagerId) {
     return { ok: false, error: "Only the Epic acting manager can create the initial Epic task breakdown." };
   }
-  if (!epic.approvedOn) {
+  if (actor.kind !== "human" && !epic.approvedOn) {
     return { ok: false, error: "Epic Action Plan must be approved before tasks can be created." };
   }
-  if (epic._count.tasks > 0) {
+  if (actor.kind !== "human" && epic._count.tasks > 0) {
     return { ok: false, error: "Epic tasks can only be created when the Epic has no top-level child tasks yet." };
   }
 

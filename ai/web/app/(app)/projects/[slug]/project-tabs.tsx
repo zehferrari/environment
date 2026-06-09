@@ -9,23 +9,28 @@ const BASE_TABS = [
   { href: "/tasks", label: "Tasks" },
   { href: "/library", label: "Library" },
   { href: "/settings", label: "Settings" },
+  { href: "/activity", label: "Activity" },
   { href: "/bin", label: "Bin" },
 ] as const;
 
 export default function ProjectTabs({
   slug,
   hasSummary = false,
+  hasCode = false,
 }: {
   slug: string;
   hasSummary?: boolean;
+  hasCode?: boolean;
 }) {
   const pathname = usePathname() ?? "";
   const base = `/projects/${slug}`;
   const sub = pathname.startsWith(base) ? pathname.slice(base.length) : "";
   // Summary (the repo README) leads, before Board, when present.
-  const tabs = hasSummary
-    ? [{ href: "/summary", label: "Summary" }, ...BASE_TABS]
-    : BASE_TABS;
+  const tabs = [
+    ...(hasSummary ? [{ href: "/summary", label: "Summary" }] : []),
+    ...(hasCode ? [{ href: "/code", label: "Code" }] : []),
+    ...BASE_TABS,
+  ];
   // The board is the only tab whose href is the bare base.
   function isActive(href: string): boolean {
     if (href === "") {

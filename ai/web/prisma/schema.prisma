@@ -860,6 +860,7 @@ model WorkItemProposal {
 //   - binTtlDays → days before ANY soft-delete bin (Task/Epic, Project,
 //     direct-chat) is auto-emptied; overrides the PM_*_BIN_TTL_DAYS env
 //     defaults when set.
+//   - theme → system UI theme ("light" | "dark").
 // Edited at /system/settings. Singleton enforced by the fixed id default.
 // ------------------------------------------------------------------
 
@@ -869,6 +870,7 @@ model SystemSettings {
   defaultGitUserEmail String?
   doneTtlDays         Int?
   binTtlDays          Int?
+  theme               String   @default("light")
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
@@ -899,4 +901,23 @@ model DescriptionDraft {
   @@unique([scope, targetId, requesterUserId])
   @@index([expiresAt])
   @@index([lastSeenAt])
+}
+
+// ------------------------------------------------------------------
+// ChatReadCursor — per-user, per-agent "last time I looked at this
+// direct chat" marker. Drives the sidebar unread red dot: a direct
+// chat shows unread when the agent has authored a DirectAgentChatMessage
+// newer than the viewer's lastReadAt for that agent. userId is a plain
+// string (no FK) so the cursor survives independently of user lifecycle;
+// the chat page upserts lastReadAt = now() on open.
+// ------------------------------------------------------------------
+
+model ChatReadCursor {
+  id         String   @id @default(cuid())
+  userId     String
+  agentSlug  String
+  lastReadAt DateTime @default(now())
+
+  @@unique([userId, agentSlug])
+  @@index([agentSlug])
 }

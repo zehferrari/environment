@@ -79,6 +79,8 @@ export type ActivityKind =
   | "workitem.proposal.reject"
   | "system.settings"
   | "project.create"
+  | "project.archive"
+  | "project.unarchive"
   | "agent.sync"
   | string;
 
@@ -326,6 +328,10 @@ export function describeActivity(row: ActivityRow): string {
       return `${actor(row.actorName)} archived an epic`;
     case "epic.unarchive":
       return `${actor(row.actorName)} restored an epic from archive`;
+    case "project.archive":
+      return `${actor(row.actorName)} archived this project`;
+    case "project.unarchive":
+      return `${actor(row.actorName)} restored this project from archive`;
     case "bin.purge": {
       const p = parsePayload<{
         purgedEpics?: number;

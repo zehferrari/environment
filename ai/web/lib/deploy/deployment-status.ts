@@ -38,6 +38,11 @@ export function checkDeploymentStatusWrite(args: {
     return { ok: false as const, message: `Unknown deployment status: ${String(args.to)}` };
   }
   if (args.to === args.from) return { ok: true as const };
+  // Browser-session human edits are authoritative: if the UI exposes the
+  // deployment status select, the server persists the chosen value. Agent
+  // automation remains constrained below so only the monitor agent can write
+  // deployment result statuses.
+  if (args.actor.kind === "human") return { ok: true as const };
   if (args.to === "Deployment Approved" && args.actor.kind === "agent") {
     return { ok: false as const, message: "Agents cannot set Deployment Approved." };
   }

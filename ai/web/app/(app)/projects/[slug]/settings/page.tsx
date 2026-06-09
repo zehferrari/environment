@@ -4,34 +4,25 @@ import { db } from "@/lib/db";
 import {
   setProjectSettings,
   deleteProject,
+  archiveProject,
+  unarchiveProject,
 } from "@/lib/projects/actions";
 import { listAssignablePrincipals } from "@/lib/principals";
-import { describeActivity } from "@/lib/activity";
-import ActivityAgenda from "@/components/activity-agenda";
 import { auth } from "@/lib/auth";
 import { isWorktreeExposedRepo } from "@/lib/projects/worktree";
 import { readSwitchState } from "@/lib/deploy/worktrees";
-import { worktreeRepoKey } from "@/lib/deploy/repo-key";
+import { displayWorktreesForRepo, worktreeRepoKey } from "@/lib/deploy/repo-key";
 import WorktreeSwitcher from "@/components/worktree-switcher";
 
 export const dynamic = "force-dynamic";
 
-const ACTIVITY_FEED_LIMIT = 30;
 const SETTINGS_TABS = [
   { key: "general", label: "General" },
   { key: "deployment", label: "Deployment" },
   { key: "worktrees", label: "Worktree live preview" },
-  { key: "danger", label: "Danger zone" },
+  { key: "availability", label: "Availability" },
 ] as const;
 type SettingsTab = (typeof SETTINGS_TABS)[number]["key"];
-const actorSelect = {
-  id: true,
-  username: true,
-  kind: true,
-  name: true,
-  avatarUpdatedAt: true,
-  agent: { select: { slug: true, name: true, avatar: true } },
-};
 
 function single(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
@@ -65,59 +56,27 @@ export default async function ProjectSettingsPage({
   });
   if (!project) notFound();
 
-  // Per-project "live preview" switcher: admin only, and only for projects
+  // Per-project "live preview" switcher: human users only, and only for projects
   // whose repo is a git checkout exposed to the shared worktree approach.
   // Scope the worktree options to THIS project's repo, and hide the block
   // entirely when that repo has no worktrees to choose from.
   const isAdmin = session?.user?.name === "zeh";
-  const canEditDeployment = isAdmin || project.members.some((member) => member.role === "owner");
+  const isHuman = Boolean(session?.user?.id && session.user.kind !== "agent");
+  const canEditDeployment = isHuman || isAdmin || project.members.some((member) => member.role === "owner");
   const deploymentInputClass = "w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-70";
   const repoKey = worktreeRepoKey(project.repositoryPath);
-  const eligible = isAdmin && isWorktreeExposedRepo(project.repositoryPath) && !!repoKey;
+  const eligible = isHuman && isWorktreeExposedRepo(project.repositoryPath) && !!repoKey;
   const switchState = eligible ? await readSwitchState() : null;
   const relatedWorktrees = switchState
-    ? switchState.worktrees.filter((w) => worktreeRepoKey(w.path) === repoKey)
+    ? displayWorktreesForRepo(switchState.worktrees, repoKey ?? "")
     : [];
   const showSwitcher = eligible && switchState !== null && relatedWorktrees.length > 0;
 
-  const [principals, activity] = await Promise.all([
-    listAssignablePrincipals(),
-    db.activityLog.findMany({
-      where: { projectId: project.id },
-      orderBy: { createdAt: "desc" },
-      take: ACTIVITY_FEED_LIMIT,
-      include: {
-        user: { select: actorSelect },
-        task: { select: { title: true } },
-      },
-    }),
-  ]);
-
-  const feed = activity.map((row) => ({
-    id: row.id,
-    createdAt: row.createdAt.toISOString(),
-    label: describeActivity({
-      kind: row.kind,
-      payload: row.payload,
-      actorName: row.user?.username ?? null,
-      taskTitle: row.task?.title ?? null,
-    }),
-    actor: row.user
-      ? {
-          id: row.user.id,
-          username: row.user.username,
-          kind: row.user.kind,
-          name: row.user.name,
-          avatarUpdatedAt: row.user.avatarUpdatedAt?.toISOString() ?? null,
-          agent: row.user.agent,
-        }
-      : null,
-  }));
+  const principals = await listAssignablePrincipals();
 
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      <div className="space-y-6">
-        <SettingsTabNav slug={slug} activeTab={activeTab} />
+    <div className="mx-auto max-w-4xl space-y-6">
+      <SettingsTabNav slug={slug} activeTab={activeTab} />
 
         {activeTab === "general" ? (
           <form
@@ -126,6 +85,10 @@ export default async function ProjectSettingsPage({
           >
             <input type="hidden" name="projectSlug" value={slug} />
             <input type="hidden" name="settingsScope" value="general" />
+
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+            Identity &amp; repository
+          </div>
 
           <SettingsRow
             label="Project name"
@@ -189,6 +152,10 @@ export default async function ProjectSettingsPage({
             </SettingsRow>
           </div>
 
+          <div className="mt-2 border-t border-[var(--color-line)] pt-4 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+            Git defaults
+          </div>
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <SettingsRow
               label="Default git user (name)"
@@ -215,6 +182,10 @@ export default async function ProjectSettingsPage({
                 className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
               />
             </SettingsRow>
+          </div>
+
+          <div className="mt-2 border-t border-[var(--color-line)] pt-4 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+            Task defaults
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -274,7 +245,7 @@ export default async function ProjectSettingsPage({
 
           <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-              Only Reporters:
+              Agent Workflow:
             </div>
             <div className="grid gap-3 lg:grid-cols-3">
               <label className="flex items-start gap-3 text-sm">
@@ -287,7 +258,7 @@ export default async function ProjectSettingsPage({
                 <span>
                   <span className="block font-medium">Can Approve Plan of Actions</span>
                   <span className="block text-xs text-[var(--color-text-muted)]">
-                    Reviewers and acting managers can comment on plans but cannot approve them.
+                    Agent reviewers and acting managers can comment on plans but cannot approve them.
                   </span>
                 </span>
               </label>
@@ -301,7 +272,7 @@ export default async function ProjectSettingsPage({
                 <span>
                   <span className="block font-medium">Can Set Tasks to Done</span>
                   <span className="block text-xs text-[var(--color-text-muted)]">
-                    Review can still happen normally; the final Done transition is reserved for the reporter.
+                    Agent review can still happen normally; the final Done transition is reserved for the reporter.
                   </span>
                 </span>
               </label>
@@ -315,7 +286,7 @@ export default async function ProjectSettingsPage({
                 <span>
                   <span className="block font-medium">Can Approve Pull Requests</span>
                   <span className="block text-xs text-[var(--color-text-muted)]">
-                    Deployment PR approval is reserved for the reporter when this policy is enabled.
+                    Agent deployment PR approval is reserved for the reporter when this policy is enabled.
                   </span>
                 </span>
               </label>
@@ -344,7 +315,7 @@ export default async function ProjectSettingsPage({
               <div>
                 <h2 className="text-sm font-semibold tracking-tight">Deployment</h2>
                 <p className="mt-1 text-xs text-[var(--color-text-muted)]">
-                  Project deployment config is visible to everyone; only project owners can edit it.
+                  Project deployment config is visible to everyone.
                 </p>
               </div>
               {!canEditDeployment ? (
@@ -413,7 +384,7 @@ export default async function ProjectSettingsPage({
               <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
                 Build a git worktree and point the live site at it. One worktree
                 is served at a time; all share the same database and secrets, so
-                only the served code changes. Admin only.
+                only the served code changes.
               </p>
             </div>
             {/* TODO (later): implement the full per-project pm.service serving
@@ -436,35 +407,73 @@ export default async function ProjectSettingsPage({
           </section>
         ) : null}
 
-        {activeTab === "danger" ? (
-          <form
-            action={deleteProject}
-            className="w-1/2 space-y-2 rounded-2xl border border-[var(--color-crit)] bg-[var(--color-panel)] p-4 shadow-sm"
-          >
-            <input type="hidden" name="projectSlug" value={slug} />
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-crit)]">
-              Danger zone
-            </div>
-            <p className="text-xs text-[var(--color-text-muted)]">
-              Move this project to the bin. All its epics, tasks, and
-              attachments go with it. Auto-purged after 30 days.
-            </p>
-            <button
-              type="submit"
-              className="w-full rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--color-crit)] hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
-            >
-              Delete project
-            </button>
-          </form>
-        ) : null}
-      </div>
+        {activeTab === "availability" ? (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {/* Archive — reversible, indefinite. Hides the project from the
+                active lists/sidebar but keeps the board fully intact. */}
+            <section className="space-y-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                Archive
+              </div>
+              {project.archivedAt ? (
+                <>
+                  <p className="text-xs text-[var(--color-text-muted)]">
+                    This project is archived (hidden from the active project
+                    lists and the sidebar). Its board, epics, and tasks are
+                    untouched. Unarchive to bring it back.
+                  </p>
+                  <form action={unarchiveProject}>
+                    <input type="hidden" name="projectSlug" value={slug} />
+                    <button
+                      type="submit"
+                      className="w-full rounded-lg border border-[var(--color-accent)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-[var(--color-bg)]"
+                    >
+                      Unarchive project
+                    </button>
+                  </form>
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-[var(--color-text-muted)]">
+                    Hide this project from the active project lists and the
+                    sidebar without deleting anything. Nothing is purged; you
+                    can unarchive it any time from the Archive page.
+                  </p>
+                  <form action={archiveProject}>
+                    <input type="hidden" name="projectSlug" value={slug} />
+                    <button
+                      type="submit"
+                      className="w-full rounded-lg border border-[var(--color-line)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--color-text)] hover:bg-[var(--color-panel-soft)]"
+                    >
+                      Archive project
+                    </button>
+                  </form>
+                </>
+              )}
+            </section>
 
-      <aside>
-        <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
-          Recent activity
-        </h2>
-        <ActivityAgenda feed={feed} />
-      </aside>
+            {/* Delete — soft-delete to the 30-day bin, cascades to children. */}
+            <form
+              action={deleteProject}
+              className="space-y-2 rounded-2xl border border-[var(--color-crit)] bg-[var(--color-panel)] p-4 shadow-sm"
+            >
+              <input type="hidden" name="projectSlug" value={slug} />
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-crit)]">
+                Delete
+              </div>
+              <p className="text-xs text-[var(--color-text-muted)]">
+                Move this project to the bin. All its epics, tasks, and
+                attachments go with it. Auto-purged after 30 days.
+              </p>
+              <button
+                type="submit"
+                className="w-full rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--color-crit)] hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+              >
+                Delete project
+              </button>
+            </form>
+          </div>
+        ) : null}
     </div>
   );
 }

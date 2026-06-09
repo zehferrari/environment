@@ -1,8 +1,9 @@
 "use server";
 
-// Write side of the switchable-single-site feature. Admin-only. Writes a
-// request file into the spool dir; the privileged pm-switch-runner (as zeh)
-// picks it up. The web app never builds or restarts anything itself.
+// Write side of the switchable-single-site feature. Human-triggered browser
+// actions write a request file into the spool dir; the privileged
+// pm-switch-runner (as zeh) picks it up. The web app never builds or restarts
+// anything itself.
 
 import { writeFile, rename } from "node:fs/promises";
 import path from "node:path";
@@ -15,7 +16,7 @@ export async function requestWorktreeSwitch(
   opts: { rebuild?: boolean } = {},
 ): Promise<{ id: string }> {
   const session = await auth();
-  if (session?.user?.name !== "zeh") throw new Error("Forbidden");
+  if (!session?.user?.id || session.user.kind === "agent") throw new Error("Forbidden");
 
   const state = await readSwitchState();
   if (!state.available) {
@@ -31,7 +32,7 @@ export async function requestWorktreeSwitch(
 
   const id = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
   const body = JSON.stringify(
-    { id, target: wt.name, rebuild, requestedBy: session.user.name, requestedAt: new Date().toISOString() },
+    { id, target: wt.name, rebuild, requestedBy: session.user.name ?? session.user.id, requestedAt: new Date().toISOString() },
     null,
     2
   );

@@ -24,7 +24,6 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import type { MoveTaskResult } from "./page";
 import {
-  actorDisplayName,
   MessageAvatar,
   type MessageActor,
 } from "@/components/message-avatar";
@@ -32,7 +31,6 @@ import { formatGridDate } from "@/lib/date-format";
 import { bulkBinTasks } from "@/lib/bin/actions";
 import ConfirmPopup from "@/components/confirm-popup";
 import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
-import { statusPillClass } from "@/lib/board-status";
 
 type BoardActor = MessageActor & { id: string };
 
@@ -55,6 +53,7 @@ type Task = {
   createdBy: BoardActor | null;
   updatedBy: BoardActor | null;
   epicTitle: string | null;
+  activeWorking: boolean;
 };
 type Column = { id: string; label: string; description?: string };
 
@@ -182,6 +181,20 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       source?.close();
     };
   }, [projectSlug, router]);
+
+  // Polling safety net for live board updates. The SSE stream above gives
+  // near-instant refreshes when the in-process board emitter delivers, but
+  // status changes coming from a different process/path (e.g. an agent moving
+  // a task to Review via the API) can miss that channel. A gentle poll while
+  // the tab is visible guarantees the board catches up without a manual
+  // reload; it piggybacks on Next's revalidation so it's cheap.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const interval = window.setInterval(() => {
+      if (!document.hidden) router.refresh();
+    }, 12_000);
+    return () => window.clearInterval(interval);
+  }, [router]);
 
   useEffect(() => {
     try {
@@ -570,42 +583,12 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
           </div>
           <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
             {workflowFocus.map((task) => (
-              <button
+              <WorkflowFocusCard
                 key={task.id}
-                type="button"
-                onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
-                className={`min-w-0 rounded-lg border px-3 py-2 text-left transition hover:border-[var(--color-accent)] ${
-                  isPlanningAssigned(task)
-                    ? "border-yellow-300/30 bg-yellow-300/[0.08]"
-                    : "border-[var(--color-line)] bg-[var(--color-panel-soft)]"
-                }`}
-              >
-                <div className="truncate text-[10px] font-mono uppercase tracking-wider text-[var(--color-text-muted)]">
-                  {task.workItemKey ?? "—"}
-                  {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
-                </div>
-                <div className="mt-1 flex items-start justify-between gap-2">
-                  <div className="line-clamp-2 min-w-0 text-sm font-medium text-[var(--color-text)]">
-                    {task.title}
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end gap-1">
-                    <ElapsedClock task={task} now={now} />
-                    <time
-                      dateTime={task.updatedAt}
-                      title={task.updatedAt}
-                      className="text-[10px] tabular-nums text-[var(--color-text-muted)]"
-                      suppressHydrationWarning
-                    >
-                      {relativeUpdated(task.updatedAt)}
-                    </time>
-                  </div>
-                </div>
-                {workflowOwnerLabel(task) ? (
-                  <div className="mt-1 truncate text-xs text-[var(--color-text-muted)]">
-                    {workflowOwnerLabel(task)}
-                  </div>
-                ) : null}
-              </button>
+                task={task}
+                projectSlug={projectSlug}
+                now={now}
+              />
             ))}
           </div>
         </section>
@@ -614,7 +597,8 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       <section className="mb-6">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
-            Backlog{backlogCount ? ` (${backlogCount})` : ""} · planning/opinions
+            Backlog{backlogCount ? ` (${backlogCount})` : ""}
+            {backlogVisible ? " · planning/opinions" : ""}
           </h2>
           <button
             type="button"
@@ -765,7 +749,7 @@ function ColumnDroppable({
               aria-label={`Select all in ${label}`}
             />
           )}
-          <span className={`w-fit rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusPillClass(label)}`}>
+          <span className={`w-fit rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${columnHeaderPillClass(id)}`}>
             {label}
           </span>
           {description ? (
@@ -813,11 +797,7 @@ function TaskCard({
       {...attributes}
       {...listeners}
       onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
-      className={`group/card relative overflow-hidden rounded-lg border px-3 py-2 text-sm cursor-pointer select-none shadow-[0_14px_34px_rgba(15,23,42,0.12)] ring-1 ring-white/10 backdrop-blur-xl transition-all before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/80 before:to-transparent after:pointer-events-none after:absolute after:inset-0 after:-translate-x-full after:bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.16),transparent)] after:opacity-0 after:transition-all after:duration-700 hover:-translate-y-0.5 hover:border-white/55 hover:shadow-[0_18px_46px_rgba(15,23,42,0.18)] hover:after:translate-x-full hover:after:opacity-100 ${
-        isPlanningAssigned(task)
-          ? "border-yellow-200/70 bg-[linear-gradient(135deg,rgba(254,240,138,0.22),rgba(255,255,255,0.08))]"
-          : "border-white/25 bg-[linear-gradient(135deg,rgba(255,255,255,0.18),rgba(255,255,255,0.06))]"
-      } ${isDragging ? "opacity-30" : ""}`}
+      className={taskCardClass(task, isDragging)}
     >
       <div className="relative z-10 flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
@@ -833,14 +813,25 @@ function TaskCard({
             aria-label={`Select ${task.title}`}
             className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
           />
-          <div className="shrink-0">
-            {task.status === "Done" ? (
-              <BoardReporterMarker task={task} />
-            ) : actor ? (
-              <MessageAvatar actor={actor} size="sm" />
-            ) : (
-              <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
-            )}
+          <div className="relative shrink-0">
+            {/* Discrete glowing pulse ring while an agent is actively working
+                on this task (In Progress + busy assignee) — mirrors the
+                sidebar busy-agent treatment. */}
+            {task.activeWorking ? (
+              <span
+                className="absolute -inset-1 animate-ping rounded-full bg-[var(--color-accent)] opacity-30"
+                aria-hidden="true"
+              />
+            ) : null}
+            <div className="relative">
+              {task.status === "Done" ? (
+                <BoardReporterMarker task={task} />
+              ) : actor ? (
+                <MessageAvatar actor={actor} size="sm" />
+              ) : (
+                <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
+              )}
+            </div>
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
@@ -887,6 +878,76 @@ function TaskCard({
         </form>
       </div>
     </div>
+  );
+}
+
+function WorkflowFocusCard({
+  task,
+  projectSlug,
+  now,
+}: {
+  task: Task;
+  projectSlug: string;
+  now: number | null;
+}) {
+  const router = useRouter();
+  const actor = boardActorForTask(task);
+
+  return (
+    <button
+      type="button"
+      onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
+      className={`${taskCardClass(task)} min-w-0 text-left`}
+    >
+      <div className="relative z-10 flex items-start justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="relative shrink-0">
+            {/* Discrete glowing pulse ring while an agent is actively working
+                on this task (In Progress + busy assignee) — mirrors the
+                sidebar busy-agent treatment. */}
+            {task.activeWorking ? (
+              <span
+                className="absolute -inset-1 animate-ping rounded-full bg-[var(--color-accent)] opacity-30"
+                aria-hidden="true"
+              />
+            ) : null}
+            <div className="relative">
+              {task.status === "Done" ? (
+                <BoardReporterMarker task={task} />
+              ) : actor ? (
+                <MessageAvatar actor={actor} size="sm" />
+              ) : (
+                <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
+              )}
+            </div>
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
+              <span className={`shrink-0 rounded border px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${columnHeaderPillClass(task.status)}`}>
+                {task.status}
+              </span>
+              {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
+              <span className="truncate font-mono uppercase tracking-wider">
+                {task.workItemKey ?? "—"}
+              </span>
+              {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
+            </div>
+            <div className="mt-0.5 truncate text-sm">{task.title}</div>
+            <div className="mt-1 flex items-center gap-2 text-[10px] text-[var(--color-text-muted)]">
+              <ElapsedClock task={task} now={now} />
+              <time
+                dateTime={task.updatedAt}
+                title={task.updatedAt}
+                className="shrink-0 tabular-nums"
+                suppressHydrationWarning
+              >
+                {relativeUpdated(task.updatedAt)}
+              </time>
+            </div>
+          </div>
+        </div>
+      </div>
+    </button>
   );
 }
 
@@ -1095,23 +1156,6 @@ function completedAtMs(task: Task) {
   return parseTime(task.statusChangedAt ?? task.updatedAt) ?? 0;
 }
 
-function workflowOwnerLabel(task: Task) {
-  if (task.status === "Review") {
-    const reviewer = task.reviewer ?? task.manager ?? task.reporter;
-    return reviewer ? `${actorDisplayName(reviewer)} reviews` : "Needs reviewer";
-  }
-  if (task.status === "To Do") {
-    return task.assignee ? `${actorDisplayName(task.assignee)} starts` : "Manager must assign before work starts";
-  }
-  if (task.status === "In Progress") {
-    return task.assignee ? `${actorDisplayName(task.assignee)} owns implementation` : "Needs assignee";
-  }
-  if (task.status === "Backlog" && task.assignee) {
-    return `${actorDisplayName(task.assignee)} should post a plan/opinion`;
-  }
-  return "";
-}
-
 function isPlanningAssigned(task: Task) {
   return Boolean(
     task.assignee &&
@@ -1221,12 +1265,28 @@ function statusRowClass(status: string) {
   return "";
 }
 
+function taskCardClass(task: Task, isDragging = false) {
+  return `group/card relative block w-full overflow-hidden rounded-lg border px-3 py-2 text-sm cursor-pointer select-none shadow-[0_14px_34px_rgba(15,23,42,0.12)] ring-1 ring-white/10 backdrop-blur-xl transition-all before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/80 before:to-transparent after:pointer-events-none after:absolute after:inset-0 after:-translate-x-full after:bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.16),transparent)] after:opacity-0 after:transition-all after:duration-700 hover:-translate-y-0.5 hover:border-white/55 hover:shadow-[0_18px_46px_rgba(15,23,42,0.18)] hover:after:translate-x-full hover:after:opacity-100 ${
+    isPlanningAssigned(task)
+      ? "border-yellow-200/70 bg-[linear-gradient(135deg,rgba(254,240,138,0.22),rgba(255,255,255,0.08))]"
+      : "border-white/25 bg-[linear-gradient(135deg,rgba(255,255,255,0.18),rgba(255,255,255,0.06))]"
+  } ${isDragging ? "opacity-30" : ""}`;
+}
+
 function columnSurfaceClass(status: string) {
   if (status === "To Do") return "border-violet-200/35 bg-violet-300/[0.40]";
   if (status === "In Progress") return "border-sky-300/35 bg-sky-500/[0.11]";
   if (status === "Review") return "border-amber-300/40 bg-amber-500/[0.14]";
   if (status === "Done") return "border-lime-300/35 bg-lime-500/[0.10]";
   return "border-[var(--color-line)] bg-[var(--color-panel)]";
+}
+
+function columnHeaderPillClass(status: string) {
+  if (status === "To Do") return "border-violet-500/70 bg-violet-100 text-violet-950 shadow-[inset_0_0_0_1px_rgba(124,58,237,0.2)]";
+  if (status === "In Progress") return "border-sky-500/70 bg-sky-100 text-sky-950 shadow-[inset_0_0_0_1px_rgba(2,132,199,0.18)]";
+  if (status === "Review") return "border-amber-500/80 bg-amber-100 text-amber-950 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.22)]";
+  if (status === "Done") return "border-lime-600/70 bg-lime-100 text-lime-950 shadow-[inset_0_0_0_1px_rgba(101,163,13,0.18)]";
+  return "border-slate-500/60 bg-slate-100 text-slate-950 shadow-[inset_0_0_0_1px_rgba(71,85,105,0.16)]";
 }
 
 function TimerIcon() {

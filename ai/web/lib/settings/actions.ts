@@ -7,6 +7,7 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { normalizeTheme } from "@/lib/settings/system";
 
 function trimOrNull(v: unknown): string | null {
   if (typeof v !== "string") return null;
@@ -31,8 +32,9 @@ export async function setSystemSettings(formData: FormData) {
   const defaultGitUserEmail = trimOrNull(formData.get("defaultGitUserEmail"));
   const doneTtlDays = intOrNull(formData.get("doneTtlDays"), 1, 365);
   const binTtlDays = intOrNull(formData.get("binTtlDays"), 1, 3650);
+  const theme = normalizeTheme(formData.get("theme"));
 
-  const data = { defaultGitUserName, defaultGitUserEmail, doneTtlDays, binTtlDays };
+  const data = { defaultGitUserName, defaultGitUserEmail, doneTtlDays, binTtlDays, theme };
 
   await db.$transaction([
     db.systemSettings.upsert({
@@ -50,4 +52,5 @@ export async function setSystemSettings(formData: FormData) {
   ]);
 
   revalidatePath("/system/settings");
+  revalidatePath("/");
 }
