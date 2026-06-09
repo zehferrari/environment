@@ -21,6 +21,7 @@
     "test:cache-scope": "tsx scripts/cache-scope-test.ts",
     "test:pm-channel-rate-limit": "tsx scripts/pm-channel-rate-limit-test.ts",
     "test:p0-kernel": "tsx scripts/p0-kernel-test.ts",
+    "test:pm-async-default": "tsx scripts/pm-async-default-test.ts",
     "test:pm-acceptance-baseline": "tsx scripts/pm-acceptance-baseline-test.ts",
     "test:deployment-monitor": "tsx scripts/deployment-monitor-test.ts",
     "test:deployment-tab": "tsx scripts/deployment-tab-test.tsx",
