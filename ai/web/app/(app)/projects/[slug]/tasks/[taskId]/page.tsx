@@ -56,6 +56,7 @@ import {
   getCachedTaskComments,
   getCachedTaskDetailShell,
   getCachedTaskRoomMessages,
+  revalidateTaskReplyScope,
 } from "@/lib/tasks/cache";
 import SortableTaskList from "@/components/sortable-task-list";
 import AttachmentList from "@/components/attachment-list";
@@ -718,8 +719,7 @@ async function createComment(formData: FormData) {
     return comment;
   });
 
-  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-  revalidatePath(`/projects/${slug}`);
+  revalidateTaskReplyScope(taskId, "comment");
 
   const actor = {
     id: actorId,
@@ -795,8 +795,7 @@ async function deleteComment(formData: FormData) {
     }),
   ]);
 
-  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-  revalidatePath(`/projects/${slug}`);
+  revalidateTaskReplyScope(taskId, "comment");
 }
 
 // Restore a soft-deleted task comment (HOMELAB-41 / item 2 follow-up).
@@ -844,8 +843,7 @@ async function restoreComment(formData: FormData) {
     }),
   ]);
 
-  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-  revalidatePath(`/projects/${slug}`);
+  revalidateTaskReplyScope(taskId, "comment");
 }
 
 async function createSubtask(formData: FormData) {

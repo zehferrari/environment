@@ -1,11 +1,11 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { parsePmOptions } from "@/lib/pm-options";
 import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
 import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
+import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
 
 async function requireHumanActor() {
   const session = await auth();
@@ -101,8 +101,7 @@ export async function submitPmOptionDecision(formData: FormData) {
       return created;
     });
 
-    revalidatePath(`/projects/${projectSlug}/tasks/${source.taskId}`);
-    revalidatePath(`/projects/${projectSlug}`);
+    revalidateTaskReplyScope(source.taskId, "comment");
     const actorUser = users.find((u) => u.id === actor.id);
     await sendTaskCommentNotifications({
       taskId: source.task.id,
