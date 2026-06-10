@@ -4,7 +4,7 @@ These files stay separate for each registered coding agent. Each lives under `/h
 
 ## Identity & persona — `~/workspace/*.md`
 
-`AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`, and `CODE_REPOS.md` are **shared by every agent** and live in this repo. The remaining files (`SOUL`, `IDENTITY`, `USER`, `TOOLS`, `MEMORY`, `HEARTBEAT`) are **per-agent in content** but **single-canonical in location**: each lives once at `~/workspace/<file>` and `~/.openclaw/workspace/<file>` is a symlink to it, so no matter which workspace path the runtime reads, it sees the same file.
+`AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`, `CODE_REPOS.md`, and `USER.md` are **shared by every agent** and live in this repo. The remaining files (`SOUL`, `IDENTITY`, `TOOLS`, `MEMORY`, `HEARTBEAT`) are **per-agent in content** but **single-canonical in location**: each lives once at `~/workspace/<file>` and `~/.openclaw/workspace/<file>` is a symlink to it, so no matter which workspace path the runtime reads, it sees the same file.
 
 | File | Source of truth | Purpose |
 |---|---|---|
@@ -12,9 +12,9 @@ These files stay separate for each registered coding agent. Each lives under `/h
 | `ROLES.md` | active OpenClaw checkout that ran `ai/openclaw/install.sh` (`<openclaw-root>/ROLES.md`) | Role-specific behaviour (`## Manager`, `## Developer`, `## Monitor`). Agent identifies its role from `agents.json` and reads the matching section. Same symlink pattern as `AGENTS.md`. |
 | `TEAM_WORKFLOW.md` | active OpenClaw checkout that ran `ai/openclaw/install.sh` (`<openclaw-root>/TEAM_WORKFLOW.md`) | Action-indexed workflow playbook. Same symlink pattern. |
 | `CODE_REPOS.md` | active OpenClaw checkout that ran `ai/openclaw/install.sh` (`<openclaw-root>/CODE_REPOS.md`) | Shared-code workflow for `/srv/Code`, `claim-branch`, git identity, and the human-only PR boundary. Same symlink pattern. |
+| `USER.md` | active OpenClaw checkout that ran `ai/openclaw/install.sh` (`<openclaw-root>/USER.md`) | **Shared by every agent.** Information about the user (Zeh), their timezone, and preferences. Same symlink pattern as `AGENTS.md`. |
 | `SOUL.md` | `~/workspace/SOUL.md` (per-agent, not in this repo) | Personality, tone, decision-making heuristics. Free-form, agent-specific. |
 | `IDENTITY.md` | `~/workspace/IDENTITY.md` (per-agent) | Core "who am I" preamble loaded on every session start. |
-| `USER.md` | `~/workspace/USER.md` (per-agent) | What the agent knows about zeh from the agent's own perspective. |
 | `TOOLS.md` | `~/workspace/TOOLS.md` (per-agent) | Notes on the agent's own tool usage habits. |
 | `MEMORY.md` | `~/workspace/MEMORY.md` (per-agent) | Long-running per-agent memory (project history, recurring topics, pending follow-ups). |
 | `HEARTBEAT.md` | `~/workspace/HEARTBEAT.md` (per-agent) | Liveness marker / last-tick state. |
