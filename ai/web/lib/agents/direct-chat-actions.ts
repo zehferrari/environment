@@ -73,6 +73,17 @@ function archiveChainLimit() {
   return intEnv("PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT", DEFAULT_ARCHIVE_CHAIN_LIMIT, 1, 6);
 }
 
+function shouldIncludeDirectFilesContext(args: {
+  body: string;
+  attachmentCount: number;
+  projectId: string | null;
+}) {
+  if (args.attachmentCount > 0) return true;
+  if (process.env.PM_DIRECT_CHAT_ALWAYS_INCLUDE_FILES_CONTEXT === "1") return true;
+  if (args.projectId) return false;
+  return /\b(attach(?:ed|ment|ments)?|file|files|document|context|folder|upload|readme|logs?)\b/i.test(args.body);
+}
+
 export async function getAgentChatUploadDir(agentSlug: string, chatId: string): Promise<string> {
   const basePattern = process.env.PM_AGENT_SAMBA_ROOT ?? "/srv/samba/shared/[agent]";
   const baseDir = basePattern.replace("[agent]", agentSlug);
@@ -736,8 +747,21 @@ async function handleDirectAgentMessage(args: {
   sessionBinding: AgentSessionBinding;
   projectId: string | null;
   allowWorkItemManagement: boolean;
+  attachmentCount: number;
 }) {
+  const timingStartedAt = Date.now();
+  const timings: Record<string, number> = {};
+  const sizes: Record<string, number> = {};
+  const mark = (name: string, startedAt: number) => {
+    timings[name] = Date.now() - startedAt;
+  };
+
+  let stepStartedAt = Date.now();
   const sessionContext = await buildDirectSessionContext(args);
+  mark("sessionContextMs", stepStartedAt);
+  sizes.sessionContextChars = sessionContext.length;
+
+  stepStartedAt = Date.now();
   const original = await db.directAgentChatMessage.findUnique({
     where: { id: args.messageId },
     select: { baseArchiveId: true, archiveId: true },
@@ -745,7 +769,16 @@ async function handleDirectAgentMessage(args: {
   const baseArchiveId = original?.baseArchiveId ?? null;
   const parentFolders = await getConversationFolderIds(args.agentSlug, baseArchiveId);
   const folderIds = [args.sessionBinding.scopeId, ...parentFolders];
-  const filesContext = await appendFilesContext(args.agentSlug, folderIds);
+  const includeFilesContext = shouldIncludeDirectFilesContext({
+    body: args.body,
+    attachmentCount: args.attachmentCount,
+    projectId: args.projectId,
+  });
+  const filesContext = includeFilesContext
+    ? await appendFilesContext(args.agentSlug, folderIds)
+    : "";
+  mark("filesContextMs", stepStartedAt);
+  sizes.filesContextChars = filesContext.length;
 
   // Project-scoped planning: when a project is attached, include its
   // environment packet; when the user also granted work-item management,
@@ -759,6 +792,7 @@ async function handleDirectAgentMessage(args: {
     "Keep the answer useful and concise unless the user asked for detail.",
   ];
   let projectContextText = "";
+  stepStartedAt = Date.now();
   if (args.projectId) {
     const env = await buildProjectEnvContext(args.projectId);
     if (env) {
@@ -789,11 +823,15 @@ async function handleDirectAgentMessage(args: {
       }
     }
   }
+  mark("projectContextMs", stepStartedAt);
+  sizes.projectContextChars = projectContextText.length;
 
   const contextText = [sessionContext, filesContext, projectContextText]
     .filter(Boolean)
     .join("\n\n");
+  sizes.contextTextChars = contextText.length;
 
+  stepStartedAt = Date.now();
   const delivery = await sendOrQueueOpenClawPmChannelTurn({
     gatewayPort: args.gatewayPort,
     agentSlug: args.agentSlug,
@@ -814,6 +852,8 @@ async function handleDirectAgentMessage(args: {
       messageId: args.messageId,
     },
   });
+  mark("queueOrDispatchMs", stepStartedAt);
+  timings.totalBeforeActivityLogMs = Date.now() - timingStartedAt;
 
   await db.activityLog.create({
     data: {
@@ -829,6 +869,10 @@ async function handleDirectAgentMessage(args: {
         status: delivery.status ?? null,
         openclawSessionKey: args.sessionBinding.openclawSessionKey,
         error: delivery.error ?? null,
+        timings,
+        sizes,
+        includeFilesContext,
+        parentFolderCount: parentFolders.length,
       }),
     },
   });
@@ -992,17 +1036,36 @@ export async function sendDirectAgentMessage(formData: FormData) {
     }
   }
 
-  await handleDirectAgentMessage({
-    agentSlug,
-    actorName: userName,
-    messageId: msg.id,
-    body,
-    userId,
-    gatewayPort: agent.gatewayPort,
-    sessionBinding,
-    projectId,
-    allowWorkItemManagement: grantWorkItems,
-  });
+  setTimeout(() => {
+    handleDirectAgentMessage({
+      agentSlug,
+      actorName: userName,
+      messageId: msg.id,
+      body,
+      userId,
+      gatewayPort: agent.gatewayPort,
+      sessionBinding,
+      projectId,
+      allowWorkItemManagement: grantWorkItems,
+      attachmentCount: attachments.length,
+    }).catch(async (err) => {
+      const error = err instanceof Error ? err.message : String(err);
+      console.warn(`[direct-chat] failed to queue ${agentSlug} PM-channel turn`, err);
+      await db.activityLog.create({
+        data: {
+          userId,
+          kind: "agent.direct_chat.dispatch_failed",
+          targetAgent: agentSlug,
+          payload: JSON.stringify({
+            agentSlug,
+            messageId: msg.id,
+            openclawSessionKey: sessionBinding.openclawSessionKey,
+            error,
+          }),
+        },
+      }).catch(() => undefined);
+    });
+  }, 0);
 
   revalidatePath(`/agents/${agentSlug}/chat`);
   if (continueFromArchive) redirect(`/agents/${agentSlug}/chat`);

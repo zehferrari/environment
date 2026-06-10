@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
 import { deleteDirectAgentMessage, restoreDirectAgentMessage } from "@/lib/agents/direct-chat-actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
@@ -50,8 +49,12 @@ export default function ChatMessagesContainer({
   slug,
   currentUserId = null,
 }: ChatMessagesContainerProps) {
-  const router = useRouter();
   const [visibleParentsCount, setVisibleParentsCount] = useState(0);
+  const [liveMessages, setLiveMessages] = useState(messages);
+
+  useEffect(() => {
+    setLiveMessages(messages);
+  }, [messages]);
 
   const prependedMessages = useMemo(() => {
     const result: Message[] = [];
@@ -67,20 +70,20 @@ export default function ChatMessagesContainer({
   }, [parentArchives, visibleParentsCount]);
 
   const allMessages = useMemo(() => {
-    return [...prependedMessages, ...messages];
-  }, [prependedMessages, messages]);
+    return [...prependedMessages, ...liveMessages];
+  }, [prependedMessages, liveMessages]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const lastMessageRef = useRef<HTMLDivElement>(null);
-  const prevMessagesCount = useRef(messages.length);
+  const prevMessagesCount = useRef(liveMessages.length);
 
   // Smart scrolling logic when messages are added
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    const isNewMessage = messages.length > prevMessagesCount.current;
-    prevMessagesCount.current = messages.length;
+    const isNewMessage = liveMessages.length > prevMessagesCount.current;
+    prevMessagesCount.current = liveMessages.length;
 
     if (isNewMessage && lastMessageRef.current) {
       const lastMsg = lastMessageRef.current;
@@ -100,11 +103,11 @@ export default function ChatMessagesContainer({
           behavior: "smooth",
         });
       }
-    } else if (messages.length > 0 && !isNewMessage) {
+    } else if (liveMessages.length > 0 && !isNewMessage) {
       // Default mount/first load scroll to bottom
       container.scrollTop = container.scrollHeight;
     }
-  }, [messages]);
+  }, [liveMessages]);
 
   // Keep scrolled to bottom during streaming when new tokens arrive
   useEffect(() => {
@@ -139,8 +142,11 @@ export default function ChatMessagesContainer({
     };
   }, [showAgentProcessing]);
 
-  const latest = messages.at(-1) ?? null;
+  const latest = liveMessages.at(-1) ?? null;
   const latestMessageId = latest?.id ?? null;
+  const liveShowAgentProcessing = showAgentProcessing
+    && !viewingArchive
+    && Boolean(latest && latest.sender.kind !== "agent");
   const participantIndexes = useMemo(() => {
     const map = new Map<string, number>();
     for (const message of allMessages) {
@@ -151,21 +157,39 @@ export default function ChatMessagesContainer({
     return map;
   }, [allMessages, currentUserId]);
 
+  const reconcileMessages = React.useCallback(async () => {
+    if (viewingArchive) return;
+    try {
+      const res = await fetch(`/api/agents/${encodeURIComponent(slug)}/chat/messages`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const payload = (await res.json()) as { messages?: Message[] };
+      if (Array.isArray(payload.messages)) {
+        setLiveMessages(payload.messages);
+      }
+    } catch {
+      // Best-effort UI reconciliation; the server-rendered page remains source of truth.
+    }
+  }, [slug, viewingArchive]);
+
   useEffect(() => {
-    if (!showAgentProcessing || viewingArchive || !latestMessageId) return;
+    if (!liveShowAgentProcessing || !latestMessageId) return;
 
     const initialRefresh = setTimeout(() => {
-      router.refresh();
+      void reconcileMessages();
     }, 1_500);
     const interval = setInterval(() => {
-      router.refresh();
+      void reconcileMessages();
     }, 4_000);
 
     return () => {
       clearTimeout(initialRefresh);
       clearInterval(interval);
     };
-  }, [latestMessageId, router, showAgentProcessing, viewingArchive]);
+  }, [latestMessageId, liveShowAgentProcessing, reconcileMessages]);
 
   return (
     <div
@@ -244,7 +268,7 @@ export default function ChatMessagesContainer({
           );
         })
       )}
-      {showAgentProcessing && latest && (
+      {liveShowAgentProcessing && latest && (
         <div ref={lastMessageRef}>
           <StreamingAgentReply
             targetKind="direct"
@@ -252,7 +276,7 @@ export default function ChatMessagesContainer({
             messageId={latest.id}
             label={agentUsername}
             onFinal={() => {
-              router.refresh();
+              void reconcileMessages();
             }}
           />
         </div>

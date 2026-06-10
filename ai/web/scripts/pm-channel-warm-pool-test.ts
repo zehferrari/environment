@@ -86,6 +86,48 @@ const failed = acquirePmChannelWarmAgent({ ...baseArgs, env, now: 5_000 });
 failed.release(false);
 assert(!pmChannelWarmPoolSnapshot(5_000).some((entry) => entry.key === failed.hint.key), "failed handoff evicts the warm entry");
 
+const directTargetA: PmChannelReplyTarget = {
+  kind: "direct",
+  agentSlug: "asdrubal",
+  messageId: "direct-msg-1",
+};
+const directTargetB: PmChannelReplyTarget = {
+  kind: "direct",
+  agentSlug: "asdrubal",
+  messageId: "direct-msg-2",
+};
+__resetPmChannelWarmPoolForTests();
+const directFirst = acquirePmChannelWarmAgent({
+  ...baseArgs,
+  kind: "direct",
+  sessionKey: "pm:direct:first-active-chat:agent:asdrubal",
+  replyTarget: directTargetA,
+  env,
+  now: 7_000,
+});
+assert.equal(directFirst.hit, false, "first direct acquire is a miss");
+assert.equal(
+  directFirst.hint.key,
+  "pm-warm:asdrubal:direct:direct:asdrubal:direct-agent",
+  "direct warm key is stable per agent, not per active chat anchor",
+);
+directFirst.release(true);
+const directSecond = acquirePmChannelWarmAgent({
+  ...baseArgs,
+  kind: "direct",
+  sessionKey: "pm:direct:second-active-chat:agent:asdrubal",
+  replyTarget: directTargetB,
+  env,
+  now: 8_000,
+});
+assert.equal(directSecond.hit, true, "direct chat reuses warm entry across new chats");
+assert.equal(
+  directSecond.hint.sessionKey,
+  directFirst.hint.sessionKey,
+  "direct warm session key remains stable across new active chat anchors",
+);
+directSecond.release(true);
+
 const disabled = acquirePmChannelWarmAgent({
   ...baseArgs,
   env: { ...env, PM_CHANNEL_WARM_POOL_ENABLED: "0" } as NodeJS.ProcessEnv,

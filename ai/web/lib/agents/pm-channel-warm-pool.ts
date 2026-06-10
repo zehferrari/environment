@@ -83,21 +83,26 @@ export function pmChannelWarmPoolKey(args: {
 }) {
   const target = args.replyTarget;
   const scope = target.kind === "direct"
-    ? "direct"
+    ? `direct:${args.agentSlug}`
     : target.kind === "epic-chat"
       ? `epic:${target.epicId}`
       : `task:${target.taskId}`;
+  const sessionPart = target.kind === "direct"
+    ? "direct-agent"
+    : stripTurnSuffix(args.sessionKey);
   return [
     "pm-warm",
     safeKeyPart(args.agentSlug),
     safeKeyPart(args.kind),
     safeKeyPart(scope),
-    safeKeyPart(stripTurnSuffix(args.sessionKey)),
+    safeKeyPart(sessionPart),
   ].join(":");
 }
 
-function warmSessionKey(baseSessionKey: string, key: string) {
-  const base = stripTurnSuffix(baseSessionKey);
+function warmSessionKey(baseSessionKey: string, key: string, target: PmChannelReplyTarget) {
+  const base = target.kind === "direct"
+    ? `pm:direct:${target.agentSlug}`
+    : stripTurnSuffix(baseSessionKey);
   const suffix = Buffer.from(key).toString("base64url").slice(0, 32);
   return `${base}:warm:${suffix}`;
 }
@@ -151,7 +156,7 @@ export function acquirePmChannelWarmAgent(args: {
   if (!pmChannelWarmPoolEnabled(env)) {
     const disabled: WarmPoolEntry = {
       key,
-      sessionKey: warmSessionKey(args.sessionKey, key),
+      sessionKey: warmSessionKey(args.sessionKey, key, args.replyTarget),
       lastUsedAt: now,
       expiresAt: Number.NaN,
       activeLeases: 0,
@@ -166,7 +171,7 @@ export function acquirePmChannelWarmAgent(args: {
   const hit = Boolean(existing && existing.expiresAt > now);
   const entry = existing ?? {
     key,
-    sessionKey: warmSessionKey(args.sessionKey, key),
+    sessionKey: warmSessionKey(args.sessionKey, key, args.replyTarget),
     lastUsedAt: now,
     expiresAt: now + ttlMs,
     activeLeases: 0,
