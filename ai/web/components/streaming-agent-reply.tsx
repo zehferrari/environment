@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { MessageAvatar, type MessageActor } from "@/components/message-avatar";
 import { extractDiscussionSectionA } from "@/lib/agents/discussion-reply-format";
 
@@ -58,7 +57,6 @@ function applyStreamState(
   else setStatus("streaming");
 }
 
-const REFRESH_FALLBACK_MS = 8_000;
 const ANONYMOUS_TYPING_IDLE_MS = 8_000;
 
 function formatElapsed(ms: number) {
@@ -105,7 +103,6 @@ export default function StreamingAgentReply({
   className = "",
   anonymizeTyping = false,
 }: StreamingAgentReplyProps) {
-  const router = useRouter();
   const [text, setText] = useState("");
   const [reasoning, setReasoning] = useState("");
   const [status, setStatus] = useState<"connecting" | "streaming" | "done" | "error">("connecting");
@@ -114,7 +111,6 @@ export default function StreamingAgentReply({
   const [startedAt] = useState(() => Date.now());
   const [lastUpdateAt, setLastUpdateAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
-  const [finalized, setFinalized] = useState(false);
 
   const url = useMemo(() => {
     const params = new URLSearchParams({
@@ -128,15 +124,7 @@ export default function StreamingAgentReply({
   }, [agentSlug, messageId, targetKind, taskId, epicId]);
 
   useEffect(() => {
-    let refreshTimer: number | undefined;
-    let refreshInterval: number | undefined;
     const source = new EventSource(url);
-
-    const refreshSoon = () => {
-      window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => router.refresh(), 25);
-    };
-    refreshInterval = window.setInterval(refreshSoon, REFRESH_FALLBACK_MS);
 
     const parse = (event: MessageEvent<string>) => {
       try {
@@ -153,13 +141,7 @@ export default function StreamingAgentReply({
       setLastUpdateAt(payload.updatedAt ?? Date.now());
       applyStreamState(payload, setText, setReasoning, setStatus, setRunStatus);
       if (payload.status === "done") {
-        setFinalized(true);
-        window.clearInterval(refreshInterval);
         source.close();
-        refreshSoon();
-      } else if (payload.status === "error") {
-        window.clearInterval(refreshInterval);
-        refreshSoon();
       }
     };
 
@@ -169,8 +151,6 @@ export default function StreamingAgentReply({
       setRunStatus("failed");
       setStatus("error");
       setLastUpdateAt(payload?.updatedAt ?? Date.now());
-      window.clearInterval(refreshInterval);
-      refreshSoon();
     };
 
     const onHeartbeat = () => {
@@ -186,22 +166,16 @@ export default function StreamingAgentReply({
     source.addEventListener("stream-error", onErrorEvent);
     source.addEventListener("heartbeat", onHeartbeat);
     source.onerror = () => {
-      refreshSoon();
       setStatus((current) => {
-        if (current === "done" || current === "error") {
-          window.clearInterval(refreshInterval);
-          return current;
-        }
+        if (current === "done" || current === "error") return current;
         return "connecting";
       });
     };
 
     return () => {
-      window.clearTimeout(refreshTimer);
-      window.clearInterval(refreshInterval);
       source.close();
     };
-  }, [router, url]);
+  }, [url]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -217,8 +191,6 @@ export default function StreamingAgentReply({
     name: label,
     agent: { slug: agentSlug, name: label, avatar: "placeholder" },
   };
-
-  if (finalized) return null;
 
   const waitLabel = waitingCopy({
     status,
