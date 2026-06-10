@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePersistentPmStream } from "@/components/persistent-pm-stream-provider";
 import { MessageAvatar, type MessageActor } from "@/components/message-avatar";
 import { extractDiscussionSectionA } from "@/lib/agents/discussion-reply-format";
+import { sendNativePmReplyNotification } from "@/lib/agents/native-pm-notifications";
 import {
   reconnectingCopy,
   waitingCopy,
@@ -107,13 +108,23 @@ export default function StreamingAgentReply({
   const notifyFinal = useCallback((payload: StreamState | null, finalStatus: "done" | "error") => {
     if (finalNotifiedRef.current) return;
     finalNotifiedRef.current = true;
+    const finalText = payload?.text ?? latestTextRef.current;
+    const finalReasoning = payload?.reasoning ?? latestReasoningRef.current;
+    if (finalStatus === "done") {
+      sendNativePmReplyNotification({
+        targetKind,
+        agentLabel: label,
+        text: finalText,
+        tag: `pm-reply:${targetKind}:${messageId}:${agentSlug}`,
+      });
+    }
     onFinalRef.current?.({
       agentSlug,
-      text: payload?.text ?? latestTextRef.current,
-      reasoning: payload?.reasoning ?? latestReasoningRef.current,
+      text: finalText,
+      reasoning: finalReasoning,
       status: finalStatus,
     });
-  }, [agentSlug]);
+  }, [agentSlug, label, messageId, targetKind]);
 
   useEffect(() => {
     if (status === "done" || status === "error") {

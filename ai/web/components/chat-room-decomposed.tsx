@@ -7,6 +7,7 @@ import { archiveChatRoom, getAgentChatRoomMessages, sendAgentChatMessage, delete
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import MaximizableTextarea from "@/components/maximizable-textarea";
+import NativePmNotificationToggle from "@/components/native-pm-notification-toggle";
 import { useActiveTab } from "@/components/task-tabs";
 import {
   actorDisplayName,
@@ -1015,6 +1016,7 @@ export default function DecomposedChatRoom({
           </span>
         </div>
         <div className="flex items-center gap-2">
+          {!viewingArchive ? <NativePmNotificationToggle compact /> : null}
           <button
             type="button"
             onClick={() => setArchiveSidebarOpen((open) => !open)}

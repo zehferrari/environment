@@ -17,6 +17,7 @@ import ProposalReview from "./proposal-review";
 import ChatMessagesContainer from "./chat-messages-container";
 import ArchiveSidebarClient from "./archive-sidebar-client";
 import NewChatButton from "@/components/new-chat-button";
+import NativePmNotificationToggle from "@/components/native-pm-notification-toggle";
 import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
@@ -576,7 +577,8 @@ export default async function DirectAgentChatPage({
           </div>
         </Link>
         
-        <div className="shrink-0">
+        <div className="flex shrink-0 items-center gap-2">
+          {!viewingArchive ? <NativePmNotificationToggle /> : null}
           {viewingArchive ? (
             <Link
               href={`/agents/${slug}/chat`}
