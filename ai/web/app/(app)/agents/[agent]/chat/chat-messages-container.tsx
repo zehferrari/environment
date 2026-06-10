@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { deleteDirectAgentMessage, restoreDirectAgentMessage } from "@/lib/agents/direct-chat-actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
@@ -49,6 +50,7 @@ export default function ChatMessagesContainer({
   slug,
   currentUserId = null,
 }: ChatMessagesContainerProps) {
+  const router = useRouter();
   const [visibleParentsCount, setVisibleParentsCount] = useState(0);
 
   const prependedMessages = useMemo(() => {
@@ -232,6 +234,9 @@ export default function ChatMessagesContainer({
             agentSlug={agentSlug}
             messageId={latest.id}
             label={agentUsername}
+            onFinal={() => {
+              router.refresh();
+            }}
           />
         </div>
       )}
