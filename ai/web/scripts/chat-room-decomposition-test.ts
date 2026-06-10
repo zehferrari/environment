@@ -44,4 +44,31 @@ assert(
   "StreamController render-count probe must be available for stream tick verification",
 );
 
+assert(
+  decomposed.includes('const VIRTUAL_MESSAGE_ESTIMATED_HEIGHT')
+    && decomposed.includes('const VIRTUAL_MESSAGE_OVERSCAN')
+    && decomposed.includes('function useVirtualizedMessageRows'),
+  "MessageList must use a dependency-free virtualized row window",
+);
+assert(
+  decomposed.includes('data-virtualized-message-list="true"')
+    && decomposed.includes('virtualMessages.map')
+    && decomposed.includes('topSpacer')
+    && decomposed.includes('bottomSpacer'),
+  "MessageList must render only the visible slice plus spacer padding",
+);
+assert(
+  decomposed.includes('getMessageGroupState(displayedMessages, index)')
+    && decomposed.includes('<DeletedMessageDivider')
+    && decomposed.includes('<ProposalReview')
+    && decomposed.includes('<StreamController'),
+  "virtualization must preserve grouping, soft deletes, proposals, and streaming rows",
+);
+assert(
+  decomposed.includes('new ResizeObserver(updateHeight)')
+    && decomposed.includes('container.scrollTop += delta')
+    && decomposed.includes('container.scrollTop = container.scrollHeight'),
+  "measured row heights must handle dynamic resizes without visible scroll jumps",
+);
+
 console.log("chat-room decomposition contract ok");

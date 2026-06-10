@@ -121,6 +121,140 @@ function optimisticLocalEchoEnabled() {
   return process.env.NEXT_PUBLIC_PM_OPTIMISTIC_LOCAL_ECHO === "1";
 }
 
+const VIRTUAL_MESSAGE_ESTIMATED_HEIGHT = 116;
+const VIRTUAL_MESSAGE_OVERSCAN = 8;
+
+function useVirtualizedMessageRows({
+  messages,
+  scrollRef,
+}: {
+  messages: OptimisticMessage[];
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const rowHeightsRef = useRef<Map<string, number>>(new Map());
+  const pinnedToBottomBeforeMeasureRef = useRef(true);
+  const [viewport, setViewport] = useState({ scrollTop: 0, height: 0 });
+  const [measurementVersion, forceMeasurementVersion] = useState(0);
+
+  useLayoutEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    const updateViewport = () => {
+      const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+      pinnedToBottomBeforeMeasureRef.current = distanceFromBottom < 120;
+      setViewport({ scrollTop: container.scrollTop, height: container.clientHeight });
+    };
+
+    updateViewport();
+    container.addEventListener("scroll", updateViewport, { passive: true });
+
+    const resizeObserver = new ResizeObserver(updateViewport);
+    resizeObserver.observe(container);
+
+    return () => {
+      container.removeEventListener("scroll", updateViewport);
+      resizeObserver.disconnect();
+    };
+  }, [scrollRef]);
+
+  useEffect(() => {
+    const messageIds = new Set(messages.map((message) => message.id));
+    let pruned = false;
+    rowHeightsRef.current.forEach((_, id) => {
+      if (!messageIds.has(id)) {
+        rowHeightsRef.current.delete(id);
+        pruned = true;
+      }
+    });
+    if (pruned) forceMeasurementVersion((version) => version + 1);
+  }, [messages]);
+
+  const offsets = useMemo(() => {
+    void measurementVersion;
+    const starts: number[] = [];
+    let total = 0;
+    for (const message of messages) {
+      starts.push(total);
+      total += rowHeightsRef.current.get(message.id) ?? VIRTUAL_MESSAGE_ESTIMATED_HEIGHT;
+    }
+    return { starts, total };
+  }, [messages, measurementVersion]);
+
+  const range = useMemo(() => {
+    if (messages.length === 0) return { start: 0, end: 0 };
+    const overscanPixels = VIRTUAL_MESSAGE_ESTIMATED_HEIGHT * VIRTUAL_MESSAGE_OVERSCAN;
+    const viewportTop = Math.max(0, viewport.scrollTop - overscanPixels);
+    const viewportBottom = viewport.scrollTop + Math.max(viewport.height, 1) + overscanPixels;
+
+    let start = 0;
+    while (
+      start < messages.length - 1
+      && offsets.starts[start] + (rowHeightsRef.current.get(messages[start].id) ?? VIRTUAL_MESSAGE_ESTIMATED_HEIGHT) < viewportTop
+    ) {
+      start += 1;
+    }
+
+    let end = start;
+    while (end < messages.length && offsets.starts[end] <= viewportBottom) {
+      end += 1;
+    }
+
+    return {
+      start: Math.max(0, start - VIRTUAL_MESSAGE_OVERSCAN),
+      end: Math.min(messages.length, end + VIRTUAL_MESSAGE_OVERSCAN),
+    };
+  }, [messages, offsets, viewport]);
+
+  const measureRow = useCallback((id: string, index: number, element: HTMLDivElement | null) => {
+    if (!element) return undefined;
+
+    const updateHeight = () => {
+      const nextHeight = element.getBoundingClientRect().height;
+      if (nextHeight <= 0) return;
+
+      const previousHeight = rowHeightsRef.current.get(id) ?? VIRTUAL_MESSAGE_ESTIMATED_HEIGHT;
+      const delta = nextHeight - previousHeight;
+      if (Math.abs(delta) < 0.5) return;
+
+      rowHeightsRef.current.set(id, nextHeight);
+      const container = scrollRef.current;
+      if (container) {
+        const rowTop = offsets.starts[index] ?? 0;
+        if (pinnedToBottomBeforeMeasureRef.current) {
+          container.scrollTop = container.scrollHeight;
+        } else if (rowTop < container.scrollTop) {
+          container.scrollTop += delta;
+        }
+      }
+      forceMeasurementVersion((version) => version + 1);
+    };
+
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [offsets.starts, scrollRef]);
+
+  const virtualMessages = messages.slice(range.start, range.end).map((message, offset) => ({
+    message,
+    index: range.start + offset,
+  }));
+  const topSpacer = offsets.starts[range.start] ?? 0;
+  const renderedBottom = range.end > 0
+    ? (offsets.starts[range.end - 1] ?? 0) + (rowHeightsRef.current.get(messages[range.end - 1]?.id) ?? VIRTUAL_MESSAGE_ESTIMATED_HEIGHT)
+    : 0;
+  const bottomSpacer = Math.max(0, offsets.total - renderedBottom);
+
+  return {
+    virtualMessages,
+    topSpacer,
+    bottomSpacer,
+    totalMessageHeight: offsets.total,
+    measureRow,
+  };
+}
+
 function composerDraftStorageKey(parts: {
   projectSlug: string;
   taskId?: string;
@@ -1138,6 +1272,17 @@ const MessageList = React.memo(function MessageList(props: any) {
     performance.mark(`pm-chat-render:message-list:${displayedMessages.length}`);
   }
 
+  const {
+    virtualMessages,
+    topSpacer,
+    bottomSpacer,
+    totalMessageHeight,
+    measureRow,
+  } = useVirtualizedMessageRows({
+    messages: displayedMessages,
+    scrollRef,
+  });
+
   return (
     <>
       {/* Messages List */}
@@ -1157,66 +1302,85 @@ const MessageList = React.memo(function MessageList(props: any) {
             </p>
           </div>
         ) : (
-          displayedMessages.map((m: OptimisticMessage, index: number) => {
-            const groupState = getMessageGroupState(displayedMessages, index);
-            if (m.deletedAt) {
-              // Soft-deleted action-plan bubble (HOMELAB-41 / item 2).
-              // Restore (↺) only offered when viewing the live room —
-              // archived views stay read-only. Agents never see these
-              // in their context until restored.
-              return (
-                <DeletedMessageDivider
-                  key={m.id}
-                  deletedAt={m.deletedAt}
-                  deletedBy={m.deletedBy ?? null}
-                  restore={!viewingArchive ? {
-                    action: restoreChatMessage,
-                    fields: { projectSlug, messageId: m.id },
-                  } : undefined}
-                >
-                  <span>{m.body}</span>
-                </DeletedMessageDivider>
-              );
-            }
-            return (
-              <ChatBubble
-                key={m.id}
-                message={m}
-                currentUserId={currentUserId}
-                projectSlug={projectSlug}
-                surface={taskId ? "task-chat" : "epic-chat"}
-                resolvedOption={pmOptionResolutions.get(m.id) ?? null}
-                preferShortAgentSections
-                participantIndex={participantIndexes.get(messageParticipantKey(m.sender)) ?? 0}
-                isGroupStart={groupState.isGroupStart}
-                isGroupEnd={groupState.isGroupEnd}
-                isGroupedContinuation={groupState.isGroupedContinuation}
-                className={groupState.isGroupedContinuation ? "mt-1" : "mt-6 first:mt-0"}
-                deliveryStatus={(m as OptimisticMessage).optimisticStatus}
-                actions={(m as OptimisticMessage).optimisticStatus === "failed" ? (
-                  <button
-                    type="button"
-                    onClick={() => retryOptimisticMessage(m as OptimisticMessage)}
-                    className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+          <div
+            data-virtualized-message-list="true"
+            style={{ minHeight: totalMessageHeight }}
+          >
+            <div aria-hidden="true" style={{ height: topSpacer }} />
+            {virtualMessages.map(({ message: m, index }: { message: OptimisticMessage; index: number }) => {
+              const groupState = getMessageGroupState(displayedMessages, index);
+              const rowClassName = groupState.isGroupedContinuation ? "mt-1" : "mt-6 first:mt-0";
+              if (m.deletedAt) {
+                // Soft-deleted action-plan bubble (HOMELAB-41 / item 2).
+                // Restore (↺) only offered when viewing the live room —
+                // archived views stay read-only. Agents never see these
+                // in their context until restored.
+                return (
+                  <div
+                    key={m.id}
+                    ref={(element) => measureRow(m.id, index, element)}
+                    data-virtualized-message-row={m.id}
+                    className={rowClassName}
                   >
-                    Retry
-                  </button>
-                ) : !viewingArchive && !(m as OptimisticMessage).optimisticStatus ? (
-                  <ConfirmedDeleteButton
-                    action={deleteChatMessage}
-                    fields={{ projectSlug, messageId: m.id }}
-                    label="×"
-                    title="Delete message"
-                    description="The action plan bubble will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
-                    confirmLabel="Delete message"
-                    buttonTitle="Delete message"
-                    ariaLabel="Delete message"
-                    className="text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)] cursor-pointer"
+                    <DeletedMessageDivider
+                      deletedAt={m.deletedAt}
+                      deletedBy={m.deletedBy ?? null}
+                      restore={!viewingArchive ? {
+                        action: restoreChatMessage,
+                        fields: { projectSlug, messageId: m.id },
+                      } : undefined}
+                    >
+                      <span>{m.body}</span>
+                    </DeletedMessageDivider>
+                  </div>
+                );
+              }
+              return (
+                <div
+                  key={m.id}
+                  ref={(element) => measureRow(m.id, index, element)}
+                  data-virtualized-message-row={m.id}
+                  className={rowClassName}
+                >
+                  <ChatBubble
+                    message={m}
+                    currentUserId={currentUserId}
+                    projectSlug={projectSlug}
+                    surface={taskId ? "task-chat" : "epic-chat"}
+                    resolvedOption={pmOptionResolutions.get(m.id) ?? null}
+                    preferShortAgentSections
+                    participantIndex={participantIndexes.get(messageParticipantKey(m.sender)) ?? 0}
+                    isGroupStart={groupState.isGroupStart}
+                    isGroupEnd={groupState.isGroupEnd}
+                    isGroupedContinuation={groupState.isGroupedContinuation}
+                    deliveryStatus={(m as OptimisticMessage).optimisticStatus}
+                    actions={(m as OptimisticMessage).optimisticStatus === "failed" ? (
+                      <button
+                        type="button"
+                        onClick={() => retryOptimisticMessage(m as OptimisticMessage)}
+                        className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                      >
+                        Retry
+                      </button>
+                    ) : !viewingArchive && !(m as OptimisticMessage).optimisticStatus ? (
+                      <ConfirmedDeleteButton
+                        action={deleteChatMessage}
+                        fields={{ projectSlug, messageId: m.id }}
+                        label="×"
+                        title="Delete message"
+                        description="The action plan bubble will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
+                        confirmLabel="Delete message"
+                        buttonTitle="Delete message"
+                        ariaLabel="Delete message"
+                        className="text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)] cursor-pointer"
+                      />
+                    ) : null}
                   />
-                ) : null}
-              />
-            );
-          })
+                </div>
+              );
+            })}
+            <div aria-hidden="true" style={{ height: bottomSpacer }} />
+          </div>
         )}
 
         <StreamController
