@@ -153,6 +153,7 @@ function accentFor(slug: string) {
   if (slug === "barekbaal") return "#0a7c66";
   if (slug === "asdrubal") return "#4f63ff";
   if (slug === "karen") return "#b34dd2";
+  if (slug === "carmen") return "#ea580c";
   return "#6b7280";
 }
 

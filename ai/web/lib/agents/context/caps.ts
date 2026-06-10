@@ -1,6 +1,6 @@
 // Context-packet caps, driven by the recipient agent's role.
 //
-// Coding agents (asdrubal, barekbaal — role=="coding", capability
+// Coding agents (asdrubal, barekbaal, carmen — role=="coding", capability
 // can_modify_code=true) receive the FULL packet — sized for 1M-token
 // model windows (Claude Opus 4.7, OpenAI gpt-5.5). They need every
 // comment, every discussion bubble, full descriptions and attachment

@@ -1,0 +1,277 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.5.22",
+    "lastTouchedAt": "2026-06-10T12:30:00.000Z"
+  },
+  "wizard": {
+    "lastRunAt": "2026-06-10T12:30:00.000Z",
+    "lastRunVersion": "2026.5.22",
+    "lastRunCommand": "configure",
+    "lastRunMode": "local"
+  },
+  "auth": {
+    "profiles": {
+      "google-gravity:default": {
+        "provider": "google-gravity",
+        "mode": "oauth",
+        "email": "carmen@zeh.me"
+      }
+    }
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "google-gravity": {
+        "baseUrl": "https://gravity.googleapis.com",
+        "apiKey": "google-gravity-oauth",
+        "auth": "oauth",
+        "api": "google-gravity-responses",
+        "models": [
+          {
+            "id": "gemini-3.5-flash",
+            "name": "Gemini 3.5 Flash",
+            "api": "google-gravity-responses",
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 1048576,
+            "maxTokens": 8192
+          }
+        ]
+      },
+      "openai-codex": {
+        "baseUrl": "https://chatgpt.com/backend-api/v1",
+        "apiKey": "codex-app-server",
+        "auth": "token",
+        "api": "openai-codex-responses",
+        "models": [
+          {
+            "id": "gpt-5.5",
+            "name": "gpt-5.5",
+            "api": "openai-codex-responses",
+            "reasoning": true,
+            "input": [
+              "text",
+              "image"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 272000,
+            "maxTokens": 128000
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "google-gravity/gemini-3.5-flash",
+        "fallbacks": [
+          "openai-codex/gpt-5.5"
+        ]
+      },
+      "models": {
+        "google-gravity/gemini-3.5-flash": {
+          "alias": "Gemini 3.5 Flash"
+        },
+        "openai-codex/gpt-5.5": {
+          "alias": "GPT-5.5"
+        }
+      },
+      "workspace": "/home/carmen/workspace",
+      "compaction": {
+        "mode": "safeguard"
+      },
+      "typingIntervalSeconds": 2,
+      "typingMode": "message",
+      "maxConcurrent": 1,
+      "subagents": {
+        "maxConcurrent": 1
+      },
+      "imageMaxDimensionPx": 1200
+    },
+    "list": [
+      {
+        "id": "main",
+        "default": true,
+        "subagents": {
+          "allowAgents": [
+            "google-workspace"
+          ]
+        },
+        "model": {
+          "primary": "google-gravity/gemini-3.5-flash",
+          "fallbacks": [
+            "openai-codex/gpt-5.5"
+          ]
+        }
+      }
+    ]
+  },
+  "messages": {
+    "ackReactionScope": "group-mentions"
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "session": {
+    "dmScope": "per-channel-peer",
+    "threadBindings": {
+      "enabled": true,
+      "idleHours": 24
+    }
+  },
+  "hooks": {
+    "internal": {
+      "enabled": true,
+      "entries": {
+        "boot-md": {
+          "enabled": true
+        },
+        "bootstrap-extra-files": {
+          "enabled": true
+        },
+        "command-logger": {
+          "enabled": true
+        },
+        "session-memory": {
+          "enabled": true
+        }
+      }
+    },
+    "enabled": true,
+    "token": "647df33c06e65358e1191d033f4221297c48f357e01fb5ec957d022c0429b0d5",
+    "path": "/hooks",
+    "allowRequestSessionKey": true,
+    "allowedSessionKeyPrefixes": [
+      "hook:",
+      "pm:"
+    ]
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "dmPolicy": "pairing",
+      "groupPolicy": "allowlist",
+      "streaming": {
+        "mode": "partial"
+      },
+      "tokenFile": "/home/carmen/.config/openclaw/telegram-token"
+    },
+    "pm": {
+      "enabled": true,
+      "token": "4f086788cac8213c5e75dbcce6120c55a786c00489c84ea21ee8f2afc5893b81",
+      "callbackToken": "4f086788cac8213c5e75dbcce6120c55a786c00489c84ea21ee8f2afc5893b81",
+      "callbackUrl": "http://127.0.0.1:3000/api/openclaw/pm-channel/reply",
+      "agentId": "main"
+    }
+  },
+  "gateway": {
+    "port": 18794,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "mode": "trusted-proxy",
+      "trustedProxy": {
+        "userHeader": "x-forwarded-user",
+        "requiredHeaders": [
+          "x-forwarded-proto",
+          "x-forwarded-host"
+        ],
+        "allowUsers": [
+          "admin"
+        ],
+        "allowLoopback": true
+      },
+      "password": "22c809b5b69871c7af544937a4c61acf2ea004a53255f42a"
+    },
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "calendar.add",
+        "contacts.add",
+        "reminders.add"
+      ]
+    },
+    "controlUi": {
+      "enabled": true,
+      "allowedOrigins": [
+        "http://127.0.0.1:18794",
+        "http://localhost:18794",
+        "https://dev.vixi.au",
+        "http://dev.vixi.au"
+      ],
+      "dangerouslyDisableDeviceAuth": true
+    },
+    "reload": {
+      "mode": "hybrid",
+      "debounceMs": 300
+    },
+    "channelHealthCheckMinutes": 5,
+    "channelStaleEventThresholdMinutes": 10,
+    "channelMaxRestartsPerHour": 6,
+    "trustedProxies": [
+      "127.0.0.1",
+      "::1"
+    ]
+  },
+  "skills": {
+    "entries": {
+      "google-workspace": {
+        "enabled": true
+      }
+    }
+  },
+  "secrets": {
+    "providers": {
+      "default": {
+        "source": "env"
+      }
+    }
+  },
+  "plugins": {
+    "entries": {
+      "telegram": {
+        "enabled": true
+      },
+      "openai": {
+        "enabled": true
+      },
+      "device-pair": {
+        "config": {
+          "publicUrl": "ws://127.0.0.1:18794"
+        },
+        "enabled": true
+      },
+      "pm": {
+        "enabled": true
+      }
+    },
+    "load": {
+      "paths": [
+        "/usr/local/share/openclaw/plugins/pm-channel"
+      ]
+    }
+  }
+}
