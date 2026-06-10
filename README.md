@@ -58,3 +58,56 @@ Host inventory below covers the networked roles (where they live, what they do);
 - Role: previous OpenClaw agent host; current portable Hyprland/Wayland laptop.
 - Current status: migrated user services and linger are disabled; source homes remain intact for reference only.
 - Desktop config: [`p16s/`](./p16s).
+
+## Working in this repo (humans & AI assistants)
+
+> `CLAUDE.md` and `AGENTS.md` in this directory are symlinks to this file, so
+> Claude Code and other agentic CLIs load the same single source of truth. Edit
+> `README.md` — never the symlinks — and keep facts here reconciled with the live
+> host, not from memory.
+
+This repo is **documentation + config that is applied to live hosts**, not a
+buildable product — with one exception, the `ai/web` PM webapp. Read the
+deeper docs before acting:
+
+- **x1 host + agent runtime:** [`ai/README.md`](./ai), [`ai/X1.md`](./ai/X1.md)
+- **Agent operating rules (the OpenClaw fleet reads these):**
+  [`ai/openclaw/`](./ai/openclaw) — `AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`,
+  `CODE_REPOS.md`, `SERVICES.md`, `MONITORING.md`, `JIRA.md`, `BITBUCKET.md`,
+  `INCIDENT_HANDLING.md`
+- **PM webapp deploy:** [`ai/web/deploy/README.md`](./ai/web/deploy/README.md)
+
+### Deployment model
+
+- **`x1` is production.** There is no separate dev tier yet; changes go live on
+  `x1`.
+- The **PM webapp** (`ai/web`) is served at **`agents.vixi.au`**: nginx → one
+  host-wide `pm.service` running the standalone Next.js server as the **monitor
+  agent (`karen`)**, bound to `127.0.0.1:3000`. The Node process serves all
+  assets (nginx can't read the `code-agents` build tree), so a restart is the
+  whole deploy.
+- **Worktree deployments use `pm-switch`** (the live-site deployment boundary):
+  build a chosen worktree and flip `pm.service`/`pm-consumer.service` to it, via
+  the CLI (`pm-switch <wt>`) or the PM webapp's Settings → live-preview panel.
+  `rebuild-and-restart.sh` is the legacy single-checkout path and now delegates
+  to `pm-switch` when pointed at a managed worktree.
+- **Build and restart are one step.** `next build` wipes `.next/standalone`; a
+  still-running process then serves stale HTML and 404s its own hashed assets.
+  Never build without an immediate restart.
+- **Prisma migrations are separate** and easy to forget — a `P2022: column does
+  not exist` at runtime means the live DB is missing `prisma migrate deploy`.
+
+### Multi-agent / branch workflow
+
+- Several agents share `/srv/Code` on `x1` (group `code-agents`, setgid + ACLs).
+  All commits are attributed to `Zeh Ferrari` by design — `git log` can't tell
+  which agent committed.
+- The **primary checkout (`/srv/Code/<repo>/`) never carries feature commits.**
+  All ticket work happens in per-branch worktrees created with
+  **`claim-branch <repo> <branch>`** (one implementer per branch; a pre-commit
+  hook enforces this).
+- **Agents never create or merge pull requests — humans (zeh) only.** An agent's
+  job ends at "branch pushed, ready for review."
+- **Agent-facing docs propagate from `main`:** each agent's workspace docs are
+  symlinks to `ai/openclaw/*.md` in the **main** checkout, so a doc change only
+  reaches agents once it lands on `main`.

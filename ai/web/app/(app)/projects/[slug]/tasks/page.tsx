@@ -121,20 +121,34 @@ export default async function ProjectTasksPage({
     ...(status ? { status } : {}),
   };
 
-  const [principals, tasks, totalCount] = await Promise.all([
+  const [principals, tasks, totalCount, archivedCount] = await Promise.all([
     listAssignablePrincipals(),
     db.task.findMany({
       where,
       orderBy: { updatedAt: "desc" },
       take,
       include: {
-        epic: { select: { id: true, title: true, deploymentStatus: true } },
+        epic: {
+          select: {
+            id: true,
+            title: true,
+            status: true,
+            deploymentStatus: true,
+            createdAt: true,
+            updatedAt: true,
+            reporter: { select: actorSelect },
+            actingManager: { select: actorSelect },
+          },
+        },
         reporter: { select: actorSelect },
         assignee: { select: actorSelect },
         actingManager: { select: actorSelect },
       },
     }),
     db.task.count({ where }),
+    db.task.count({
+      where: { projectId: project.id, deletedAt: null, parentTaskId: null, archivedAt: { not: null } },
+    }),
   ]);
   const taskIds = tasks.map((task) => task.id);
   const activityRows = taskIds.length > 0
@@ -149,6 +163,104 @@ export default async function ProjectTasksPage({
       })
     : [];
   const activityActors = buildTaskActivityActorMaps(activityRows);
+
+  const renderTaskRow = (task: (typeof tasks)[number]) => {
+    const deploymentStatus = task.epic?.deploymentStatus ?? task.deploymentStatus;
+    return (
+      <li
+        key={task.id}
+        className={`grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-[var(--color-panel)] xl:min-w-0 ${statusRowClass(task.status)}`}
+      >
+        <Link href={`/projects/${slug}/tasks/${task.id}`} className="min-w-0 hover:underline">
+          <span className="mb-0.5 flex min-w-0 items-center gap-2">
+            <span className="inline-flex shrink-0 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
+              {task.workItemKey ?? task.id.slice(0, 8)}
+            </span>
+            {task.epic ? (
+              <span className="truncate text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                {task.epic.title}
+              </span>
+            ) : null}
+          </span>
+          <span className="block truncate font-medium">{task.title}</span>
+          {task.archivedAt ? (
+            <span className="mt-0.5 inline-flex rounded-full border border-zinc-500/60 bg-zinc-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-900">
+              Archived
+            </span>
+          ) : null}
+        </Link>
+        <StatusPill status={task.status} />
+        {canShowDeploymentForTask(task) ? <DeploymentIndicator status={deploymentStatus} /> : <span aria-hidden="true" />}
+        <PersonCell actor={serializeActor(task.reporter)} emptyLabel="none" />
+        <PersonCell actor={serializeActor(task.assignee)} emptyLabel="unassigned" />
+        <PersonCell actor={serializeActor(task.actingManager)} emptyLabel="none" />
+        <ElapsedCell
+          status={task.status}
+          createdAt={task.createdAt}
+          updatedAt={task.updatedAt}
+          statusChangedAt={task.statusChangedAt}
+          approvedOn={task.approvedOn}
+        />
+        <DateActorCell
+          iso={task.createdAt.toISOString()}
+          actor={activityActors.createdBy.get(task.id) ?? serializeActor(task.reporter)}
+          dateOnly
+        />
+        <DateActorCell
+          iso={task.updatedAt.toISOString()}
+          actor={activityActors.updatedBy.get(task.id) ?? activityActors.createdBy.get(task.id) ?? serializeActor(task.reporter)}
+        />
+      </li>
+    );
+  };
+
+  // Archive view groups tasks under their Epic in collapsible blocks. Tasks with
+  // no epic are the "Direct Request" group, which sorts first and stays expanded.
+  const DIRECT_REQUEST_KEY = "__direct__";
+  type EpicGroup = {
+    id: string;
+    title: string;
+    epic: (typeof tasks)[number]["epic"];
+    tasks: typeof tasks;
+  };
+  const epicGroups: EpicGroup[] = [];
+  if (view === "archive") {
+    const byEpic = new Map<string, EpicGroup>();
+    for (const task of tasks) {
+      const key = task.epic?.id ?? DIRECT_REQUEST_KEY;
+      let group = byEpic.get(key);
+      if (!group) {
+        group = {
+          id: key,
+          title: task.epic?.title ?? "Direct Request",
+          epic: task.epic,
+          tasks: [],
+        };
+        byEpic.set(key, group);
+        epicGroups.push(group);
+      }
+      group.tasks.push(task);
+    }
+    epicGroups.sort((a, b) => {
+      if (a.id === DIRECT_REQUEST_KEY) return -1;
+      if (b.id === DIRECT_REQUEST_KEY) return 1;
+      return 0;
+    });
+  }
+
+  const TASK_HEADER_GRID = (
+    <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] xl:min-w-0">
+      <span>Task</span>
+      <span>Status</span>
+      <span>Deploy</span>
+      <span>Reporter</span>
+      <span>Assignee</span>
+      <span>Reviewer</span>
+      <span className="text-right">Elapsed</span>
+      <span className="text-right">Created At</span>
+      <span className="text-right">Updated</span>
+    </div>
+  );
 
   return (
     <div className="space-y-4">
@@ -170,16 +282,18 @@ export default async function ProjectTasksPage({
           >
             Board
           </Link>
-          <Link
-            href={`/projects/${slug}/tasks?view=archive`}
-            className={
-              view === "archive"
-                ? "rounded-lg bg-[var(--color-accent)] px-3 py-1 font-medium text-[var(--color-bg)]"
-                : "rounded-lg px-3 py-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-            }
-          >
-            Archive
-          </Link>
+          {view === "archive" || archivedCount > 0 ? (
+            <Link
+              href={`/projects/${slug}/tasks?view=archive`}
+              className={
+                view === "archive"
+                  ? "rounded-lg bg-[var(--color-accent)] px-3 py-1 font-medium text-[var(--color-bg)]"
+                  : "rounded-lg px-3 py-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              }
+            >
+              Archive
+            </Link>
+          ) : null}
         </div>
       </header>
 
@@ -244,73 +358,100 @@ export default async function ProjectTasksPage({
         <p className="rounded-xl border border-dashed border-[var(--color-line)] p-6 text-center text-sm text-[var(--color-text-muted)]">
           No tasks match these filters.
         </p>
+      ) : view === "archive" ? (
+        <div className="space-y-3">
+          {epicGroups.map((group) => {
+            // Elapsed sums every child task; created/updated come from the epic
+            // itself (or, for Direct Request, the span of its children).
+            const elapsedMs = group.tasks.reduce((sum, t) => sum + computeElapsedMs(t), 0);
+            const createdIso = (
+              group.epic?.createdAt
+              ?? group.tasks.reduce((min, t) => (t.createdAt < min ? t.createdAt : min), group.tasks[0].createdAt)
+            ).toISOString();
+            const updatedIso = (
+              group.epic?.updatedAt
+              ?? group.tasks.reduce((max, t) => (t.updatedAt > max ? t.updatedAt : max), group.tasks[0].updatedAt)
+            ).toISOString();
+            return (
+            <details
+              key={group.id}
+              open={group.id === DIRECT_REQUEST_KEY}
+              className="group overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]"
+            >
+              <summary className="cursor-pointer list-none border-b border-[var(--color-line)] bg-[var(--color-panel)] [&::-webkit-details-marker]:hidden">
+                <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2.5 text-sm xl:min-w-0">
+                  <span className="flex min-w-0 items-center gap-2 font-semibold">
+                    <ChevronIcon />
+                    <span className="truncate">{group.title}</span>
+                    <span className="shrink-0 text-xs font-normal tabular-nums text-[var(--color-text-muted)]">
+                      ({group.tasks.length})
+                    </span>
+                  </span>
+                  {group.epic ? (
+                    <span className="w-fit rounded-full border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider">
+                      {group.epic.status}
+                    </span>
+                  ) : (
+                    <span aria-hidden="true" />
+                  )}
+                  {group.epic ? (
+                    <DeploymentIndicator status={group.epic.deploymentStatus} />
+                  ) : (
+                    <span aria-hidden="true" />
+                  )}
+                  <PersonCell actor={serializeActor(group.epic?.reporter ?? null)} emptyLabel="—" />
+                  {/* Assignee column intentionally blank at the epic level. */}
+                  <span aria-hidden="true" />
+                  <PersonCell
+                    actor={serializeActor(group.epic?.actingManager ?? group.epic?.reporter ?? null)}
+                    emptyLabel="—"
+                  />
+                  <span className="flex items-center justify-end gap-1.5 text-xs tabular-nums text-[var(--color-text-muted)]">
+                    <TimerIcon />
+                    <span>{formatElapsed(elapsedMs)}</span>
+                  </span>
+                  <DateActorCell iso={createdIso} actor={null} dateOnly />
+                  <DateActorCell iso={updatedIso} actor={null} />
+                </div>
+              </summary>
+              <div className="overflow-x-auto">
+                {TASK_HEADER_GRID}
+                <ul className="divide-y divide-[var(--color-line)]">
+                  {group.tasks.map(renderTaskRow)}
+                </ul>
+              </div>
+            </details>
+            );
+          })}
+        </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]">
-          <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] xl:min-w-0">
-            <span>Task</span>
-            <span>Status</span>
-            <span>Deploy</span>
-            <span>Reporter</span>
-            <span>Assignee</span>
-            <span>Reviewer</span>
-            <span className="text-right">Elapsed</span>
-            <span className="text-right">Created At</span>
-            <span className="text-right">Updated</span>
-          </div>
+          {TASK_HEADER_GRID}
           <ul className="divide-y divide-[var(--color-line)]">
-            {tasks.map((task) => {
-              const deploymentStatus = task.epic?.deploymentStatus ?? task.deploymentStatus;
-              return (
-              <li
-                key={task.id}
-                className={`grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-[var(--color-panel)] xl:min-w-0 ${statusRowClass(task.status)}`}
-              >
-                <Link href={`/projects/${slug}/tasks/${task.id}`} className="min-w-0 hover:underline">
-                  <span className="mb-0.5 flex min-w-0 items-center gap-2">
-                    <span className="inline-flex shrink-0 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
-                      {task.workItemKey ?? task.id.slice(0, 8)}
-                    </span>
-                    {task.epic ? (
-                      <span className="truncate text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                        {task.epic.title}
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className="block truncate font-medium">{task.title}</span>
-                  {task.archivedAt ? (
-                    <span className="mt-0.5 inline-flex rounded-full border border-zinc-500/60 bg-zinc-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-900">
-                      Archived
-                    </span>
-                  ) : null}
-                </Link>
-                <StatusPill status={task.status} />
-                {canShowDeploymentForTask(task) ? <DeploymentIndicator status={deploymentStatus} /> : <span aria-hidden="true" />}
-                <PersonCell actor={serializeActor(task.reporter)} emptyLabel="none" />
-                <PersonCell actor={serializeActor(task.assignee)} emptyLabel="unassigned" />
-                <PersonCell actor={serializeActor(task.actingManager)} emptyLabel="none" />
-                <ElapsedCell
-                  status={task.status}
-                  createdAt={task.createdAt}
-                  updatedAt={task.updatedAt}
-                  statusChangedAt={task.statusChangedAt}
-                  approvedOn={task.approvedOn}
-                />
-                <DateActorCell
-                  iso={task.createdAt.toISOString()}
-                  actor={activityActors.createdBy.get(task.id) ?? serializeActor(task.reporter)}
-                  dateOnly
-                />
-                <DateActorCell
-                  iso={task.updatedAt.toISOString()}
-                  actor={activityActors.updatedBy.get(task.id) ?? activityActors.createdBy.get(task.id) ?? serializeActor(task.reporter)}
-                />
-              </li>
-              );
-            })}
+            {tasks.map(renderTaskRow)}
           </ul>
         </div>
       )}
     </div>
+  );
+}
+
+function ChevronIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="shrink-0 text-[var(--color-text-muted)] transition-transform group-open:rotate-90"
+    >
+      <path d="m9 18 6-6-6-6" />
+    </svg>
   );
 }
 
@@ -401,6 +542,23 @@ function DateActorCell({
   );
 }
 
+function computeElapsedMs(task: {
+  status: string;
+  createdAt: Date;
+  updatedAt: Date;
+  statusChangedAt: Date | null;
+  approvedOn: Date | null;
+}) {
+  const end = task.status === "Done" ? (task.statusChangedAt ?? task.updatedAt).getTime() : Date.now();
+  const start =
+    task.status === "Done"
+      ? (task.approvedOn ?? task.createdAt).getTime()
+      : task.status === "Backlog"
+        ? task.createdAt.getTime()
+        : (task.statusChangedAt ?? task.updatedAt ?? task.createdAt).getTime();
+  return Math.max(0, end - start);
+}
+
 function ElapsedCell({
   status,
   createdAt,
@@ -414,17 +572,10 @@ function ElapsedCell({
   statusChangedAt: Date | null;
   approvedOn: Date | null;
 }) {
-  const end = status === "Done" ? (statusChangedAt ?? updatedAt).getTime() : Date.now();
-  const start =
-    status === "Done"
-      ? (approvedOn ?? createdAt).getTime()
-      : status === "Backlog"
-        ? createdAt.getTime()
-        : (statusChangedAt ?? updatedAt ?? createdAt).getTime();
   return (
     <span className="flex items-center justify-end gap-1.5 text-xs tabular-nums text-[var(--color-text-muted)]">
       <TimerIcon />
-      <span>{formatElapsed(Math.max(0, end - start))}</span>
+      <span>{formatElapsed(computeElapsedMs({ status, createdAt, updatedAt, statusChangedAt, approvedOn }))}</span>
     </span>
   );
 }

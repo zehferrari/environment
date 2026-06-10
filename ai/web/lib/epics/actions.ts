@@ -607,12 +607,21 @@ export async function updateEpic(formData: FormData) {
 
   if (activity.length === 0) return;
 
+  // When an epic moves to Done, archive all of its live child tasks.
+  const archiveChildrenOnDone = statusChanged && status === "Done";
+
   await db.$transaction([
     db.epic.update({ where: { id: epicId }, data }),
     ...(taskCascade
       ? [db.task.updateMany({
           where: { epicId, archivedAt: null, deletedAt: null, status: { not: "Done" } },
           data: { status: taskCascade, statusChangedAt },
+        })]
+      : []),
+    ...(archiveChildrenOnDone
+      ? [db.task.updateMany({
+          where: { epicId, archivedAt: null, deletedAt: null },
+          data: { archivedAt: statusChangedAt, archivedById: actor.id },
         })]
       : []),
     ...activity.map((a) =>
@@ -793,6 +802,13 @@ export async function setEpicStatus(formData: FormData) {
       ? [db.task.updateMany({
           where: { epicId, archivedAt: null, deletedAt: null, status: { not: "Done" } },
           data: { status: taskCascade, statusChangedAt },
+        })]
+      : []),
+    // Moving an epic to Done archives all of its live child tasks.
+    ...(status === "Done"
+      ? [db.task.updateMany({
+          where: { epicId, archivedAt: null, deletedAt: null },
+          data: { archivedAt: statusChangedAt, archivedById: actor.id },
         })]
       : []),
     db.activityLog.create({

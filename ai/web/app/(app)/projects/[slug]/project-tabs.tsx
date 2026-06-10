@@ -3,33 +3,34 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-const BASE_TABS = [
-  { href: "", label: "Board" },
-  { href: "/epics", label: "Epics" },
-  { href: "/tasks", label: "Tasks" },
-  { href: "/library", label: "Library" },
-  { href: "/settings", label: "Settings" },
-  { href: "/activity", label: "Activity" },
-  { href: "/bin", label: "Bin" },
-] as const;
-
 export default function ProjectTabs({
   slug,
   hasSummary = false,
   hasCode = false,
+  hasBin = false,
 }: {
   slug: string;
   hasSummary?: boolean;
   hasCode?: boolean;
+  hasBin?: boolean;
 }) {
   const pathname = usePathname() ?? "";
   const base = `/projects/${slug}`;
   const sub = pathname.startsWith(base) ? pathname.slice(base.length) : "";
-  // Summary (the repo README) leads, before Board, when present.
+  // Tab order: Summary (repo README) leads when present; Code/Changes sit after
+  // Library; Activity is only its own tab when there is no Summary to host it;
+  // the Bin tab only appears when the bin holds something.
   const tabs = [
     ...(hasSummary ? [{ href: "/summary", label: "Summary" }] : []),
+    { href: "", label: "Board" },
+    { href: "/epics", label: "Epics" },
+    { href: "/tasks", label: "Tasks" },
+    { href: "/library", label: "Library" },
     ...(hasCode ? [{ href: "/code", label: "Code" }] : []),
-    ...BASE_TABS,
+    ...(hasCode ? [{ href: "/changes", label: "Changes" }] : []),
+    { href: "/settings", label: "Settings" },
+    ...(hasSummary ? [] : [{ href: "/activity", label: "Activity" }]),
+    ...(hasBin ? [{ href: "/bin", label: "Bin" }] : []),
   ];
   // The board is the only tab whose href is the bare base.
   function isActive(href: string): boolean {

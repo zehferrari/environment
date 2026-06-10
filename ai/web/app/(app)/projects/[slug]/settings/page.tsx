@@ -75,21 +75,19 @@ export default async function ProjectSettingsPage({
   const principals = await listAssignablePrincipals();
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <div className="mx-auto max-w-6xl space-y-6">
       <SettingsTabNav slug={slug} activeTab={activeTab} />
 
         {activeTab === "general" ? (
-          <form
-            action={setProjectSettings}
-            className="space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm"
-          >
+          <form action={setProjectSettings} className="space-y-5">
             <input type="hidden" name="projectSlug" value={slug} />
             <input type="hidden" name="settingsScope" value="general" />
 
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-            Identity &amp; repository
-          </div>
-
+          <SettingsCard
+            title="Identity & repository"
+            hint="What this project is called and where its code lives."
+            tone="accent"
+          >
           <SettingsRow
             label="Project name"
             hint="The display name of this project."
@@ -151,11 +149,13 @@ export default async function ProjectSettingsPage({
               />
             </SettingsRow>
           </div>
+          </SettingsCard>
 
-          <div className="mt-2 border-t border-[var(--color-line)] pt-4 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-            Git defaults
-          </div>
-
+          <SettingsCard
+            title="Git defaults"
+            hint="Authorship used for commits agents make in this project."
+            tone="neutral"
+          >
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <SettingsRow
               label="Default git user (name)"
@@ -183,12 +183,14 @@ export default async function ProjectSettingsPage({
               />
             </SettingsRow>
           </div>
+          </SettingsCard>
 
-          <div className="mt-2 border-t border-[var(--color-line)] pt-4 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-            Task defaults
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <SettingsCard
+            title="Task defaults"
+            hint="Pre-filled values and lifecycle for new tasks."
+            tone="ok"
+          >
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             <SettingsRow
               label="Default assignee"
               hint="Pre-fills new tasks. Pulls from the active principal pool."
@@ -226,27 +228,29 @@ export default async function ProjectSettingsPage({
                 ))}
               </select>
             </SettingsRow>
+
+            <SettingsRow
+              label="Automatic Archive (days)"
+              hint="Done tasks auto-archive after this many days. Blank uses the system default."
+            >
+              <input
+                type="number"
+                name="doneTtlDays"
+                min={1}
+                max={365}
+                defaultValue={project.doneTtlDays ?? ""}
+                placeholder="System default"
+                className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+              />
+            </SettingsRow>
           </div>
+          </SettingsCard>
 
-          <SettingsRow
-            label="Automatic Archive (days)"
-            hint="Done tasks are automatically archived after this many days. Leave blank to use the system default."
+          <SettingsCard
+            title="Agent workflow"
+            hint="Reserve sensitive transitions for the reporter."
+            tone="warn"
           >
-            <input
-              type="number"
-              name="doneTtlDays"
-              min={1}
-              max={365}
-              defaultValue={project.doneTtlDays ?? ""}
-              placeholder="System default"
-              className="w-40 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
-            />
-          </SettingsRow>
-
-          <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-              Agent Workflow:
-            </div>
             <div className="grid gap-3 lg:grid-cols-3">
               <label className="flex items-start gap-3 text-sm">
                 <input
@@ -291,12 +295,12 @@ export default async function ProjectSettingsPage({
                 </span>
               </label>
             </div>
-          </div>
+          </SettingsCard>
 
           <div className="flex justify-end pt-1">
             <button
               type="submit"
-              className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
+              className="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-[var(--color-bg)] shadow-sm hover:opacity-90"
             >
               Save settings
             </button>
@@ -307,7 +311,7 @@ export default async function ProjectSettingsPage({
         {activeTab === "deployment" ? (
           <form
             action={setProjectSettings}
-            className="space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm"
+            className="space-y-4 rounded-2xl border border-l-4 border-[var(--color-warn)]/40 border-l-[var(--color-warn)] bg-[var(--color-warn)]/[0.04] p-5 shadow-sm"
           >
             <input type="hidden" name="projectSlug" value={slug} />
             <input type="hidden" name="settingsScope" value="deployment" />
@@ -498,6 +502,39 @@ function SettingsTabNav({ slug, activeTab }: { slug: string; activeTab: Settings
         );
       })}
     </nav>
+  );
+}
+
+const CARD_TONES = {
+  neutral: "border-[var(--color-line)] border-l-[var(--color-line)] bg-[var(--color-panel-soft)]",
+  accent: "border-[var(--color-accent)]/30 border-l-[var(--color-accent)] bg-[var(--color-accent)]/[0.04]",
+  ok: "border-[var(--color-ok)]/30 border-l-[var(--color-ok)] bg-[var(--color-ok)]/[0.04]",
+  warn: "border-[var(--color-warn)]/40 border-l-[var(--color-warn)] bg-[var(--color-warn)]/[0.04]",
+} as const;
+
+function SettingsCard({
+  title,
+  hint,
+  tone = "neutral",
+  children,
+}: {
+  title: string;
+  hint?: string;
+  tone?: keyof typeof CARD_TONES;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className={`space-y-4 rounded-2xl border border-l-4 p-5 shadow-sm ${CARD_TONES[tone]}`}>
+      <div>
+        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text)]">
+          {title}
+        </h2>
+        {hint ? (
+          <p className="mt-0.5 text-xs text-[var(--color-text-muted)]">{hint}</p>
+        ) : null}
+      </div>
+      {children}
+    </section>
   );
 }
 

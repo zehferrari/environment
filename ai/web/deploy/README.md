@@ -20,7 +20,8 @@ the operator sees exactly what changes on the host.
 | `pm.env.example` | copy -> `/etc/default/pm` | `root:<pm-user-group>`, `0640` | secrets file; not committed. |
 | `/etc/openclaw/pm-consumer-tokens.json` | host-created | `root:<pm-consumer-group>`, `0640` | per-agent `/hooks/wake` Bearer map; never commit. |
 | `/etc/openclaw/pm-channel-tokens.json` | host-created | `root:<pm-user-group>`, `0640` | per-agent native PM channel Bearer map; never commit. |
-| nginx site config | `/etc/nginx/sites-available/<pm-hostname>` (+ symlink in `sites-enabled/`) | root | TLS via Let's Encrypt. |
+| nginx site config | `/etc/nginx/sites-available/<pm-hostname>` (+ symlink in `sites-enabled/`) | root | TLS via Let's Encrypt; `error_page 502/503/504 -> /rebuilding.html`. |
+| `rebuilding.html` | `/var/www/pm-maintenance/rebuilding.html` | `root`, `0644` | static "site is rebuilding" page nginx serves while `pm.service` is down mid-switch; self-reloads. Installed by `install-pm-switch.sh`. |
 | `rebuild-and-restart.sh` | run in place | — | legacy single-checkout rebuild path; delegates to `pm-switch` when pointed at a managed worktree. |
 | `move-sqlite-db.sh` | run in place | root | controlled SQLite relocation to `/srv/Data/pm/pm.db`: stop services, backup, `VACUUM INTO`, enable WAL, update `/etc/default/pm`, restart. |
 | `pm-switch.sh` | `-> /usr/local/sbin/pm-switch` | root | build a chosen worktree + flip `pm.service` and `pm-consumer.service` to it (`pm-switch <wt>` / `pm-switch status`). |
@@ -70,6 +71,36 @@ If the browser shows a 502 after **Rebuild live**, check
 `/var/lib/pm/switch/state.json`. After fixing the cause, recover with
 `pm-switch <worktree-name>` from a local operator shell, then verify
 `pm-switch status` and `curl -I http://127.0.0.1:<pm-port>/login`.
+
+### "Site is rebuilding" page (graceful 502)
+
+During the ~2-5s flip when `pm.service` restarts, the upstream is unreachable
+and nginx would return a raw 502. Instead it serves
+`/var/www/pm-maintenance/rebuilding.html` — a self-contained, animated page that
+polls `/login` and reloads itself the instant the new build answers `200`.
+Because it triggers on upstream availability (not on a branch), it covers every
+worktree/branch automatically and also softens genuine crashes.
+
+Two pieces, both in this directory:
+
+- `rebuilding.html` — the static page. `install-pm-switch.sh` copies it to
+  `/var/www/pm-maintenance/rebuilding.html` (root-owned, world-readable).
+- `nginx-agents.vixi.au.conf` — the `error_page 502 503 504 /rebuilding.html;`
+  block plus the `internal` `location = /rebuilding.html` and
+  `proxy_intercept_errors on;` in `location /`.
+
+Apply on the host:
+
+```sh
+sudo PM_MONITOR_USER=<monitor-user> ai/web/deploy/install-pm-switch.sh   # stages the page
+sudo cp ai/web/deploy/nginx-agents.vixi.au.conf /etc/nginx/sites-available/agents.vixi.au
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Verify without a real deploy by stopping the app briefly:
+`sudo systemctl stop pm.service` → load the site (you should see the rebuilding
+page) → `sudo systemctl start pm.service` (the page reloads into the app on its
+own within a few seconds).
 
 ## Branch-push verifier (Review verification)
 

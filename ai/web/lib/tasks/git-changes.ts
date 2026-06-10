@@ -288,6 +288,101 @@ export async function getTaskGitChanges(args: {
   }
 }
 
+export type RepoBranch = {
+  name: string;
+  isCurrent: boolean;
+};
+
+export type RepoChangesResult = {
+  commits: TaskGitCommit[];
+  branches: RepoBranch[];
+  selectedBranch: string | null;
+  error: string | null;
+};
+
+const REPO_COMMITS_LIMIT = 100;
+
+// List the repository's branches (local heads + origin remotes, deduped), with
+// the currently checked-out branch flagged. Never fetches.
+export async function listRepoBranches(
+  repositoryPath: string | null | undefined,
+): Promise<RepoBranch[]> {
+  if (!repositoryPath) return [];
+  let current = "";
+  try {
+    const { stdout } = await git(["symbolic-ref", "--quiet", "--short", "HEAD"], repositoryPath);
+    current = stdout.trim();
+  } catch {
+    // Detached HEAD or unborn branch — no current branch to flag.
+  }
+  try {
+    const { stdout } = await git(
+      ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes/origin"],
+      repositoryPath,
+    );
+    const names = new Set<string>();
+    for (const raw of stdout.split("\n")) {
+      const ref = raw.trim();
+      if (!ref) continue;
+      if (ref === "origin/HEAD" || ref.endsWith("/HEAD")) continue;
+      const name = ref.startsWith("origin/") ? ref.slice("origin/".length) : ref;
+      if (name) names.add(name);
+    }
+    return [...names]
+      .sort((a, b) => a.localeCompare(b))
+      .map((name) => ({ name, isCurrent: name === current }));
+  } catch {
+    return current ? [{ name: current, isCurrent: true }] : [];
+  }
+}
+
+// Recent commits for the Changes tab. With a branch, logs that ref; otherwise
+// logs every ref (--all) deduped by hash. Capped, no prefix/window filtering.
+export async function getRepoBranchCommits(args: {
+  repositoryPath: string | null | undefined;
+  branchName?: string | null | undefined;
+}): Promise<{ commits: TaskGitCommit[]; ref: string | null; error: string | null }> {
+  if (!args.repositoryPath) {
+    return { commits: [], ref: null, error: "Project repository path is not set." };
+  }
+
+  const logArgs = [
+    "log",
+    `--max-count=${REPO_COMMITS_LIMIT}`,
+    "--date=iso-strict",
+    "--format=%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s",
+    "--name-status",
+  ];
+
+  let ref: string | null = null;
+  if (args.branchName) {
+    ref = await resolveRef(args.repositoryPath, args.branchName);
+    if (!ref) {
+      return { commits: [], ref: null, error: `No local ref found for ${args.branchName}.` };
+    }
+    logArgs.push(ref, "--");
+  } else {
+    logArgs.push("--all", "--");
+  }
+
+  try {
+    const { stdout } = await git(logArgs, args.repositoryPath);
+    const seen = new Set<string>();
+    const commits = parseLog(stdout).filter((commit) => {
+      if (seen.has(commit.hash)) return false;
+      seen.add(commit.hash);
+      return true;
+    });
+    return { commits: commits.slice(0, REPO_COMMITS_LIMIT), ref, error: null };
+  } catch (error) {
+    return {
+      commits: [],
+      ref,
+      error: error instanceof Error ? error.message : "Unable to read Git changes.",
+    };
+  }
+}
+
 export async function getTaskGitFileDiff(args: {
   repositoryPath: string | null | undefined;
   commitHash: string | null | undefined;

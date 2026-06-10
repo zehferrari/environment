@@ -596,10 +596,13 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
 
       <section className="mb-6">
         <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
-            Backlog{backlogCount ? ` (${backlogCount})` : ""}
-            {backlogVisible ? " · planning/opinions" : ""}
-          </h2>
+          {backlogVisible ? (
+            <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
+              Backlog{backlogCount ? ` (${backlogCount})` : ""} · planning/opinions
+            </h2>
+          ) : (
+            <span aria-hidden="true" />
+          )}
           <button
             type="button"
             onClick={() => setBacklogVisible((v) => !v)}

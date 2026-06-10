@@ -32,6 +32,14 @@ install -o root -g root -m 0755 "$HERE/pm-apply-worktree" /usr/local/sbin/pm-app
 install -o root -g root -m 0755 "$HERE/pm-switch.sh"      /usr/local/sbin/pm-switch
 install -o root -g root -m 0755 "$HERE/pm-switch-runner"  /usr/local/sbin/pm-switch-runner
 
+say "Install rebuilding page → /var/www/pm-maintenance/rebuilding.html"
+# Static maintenance page nginx serves (error_page 502/503/504) while pm.service
+# is down mid-switch. Lives outside the build tree so a `next build` can't wipe
+# it and nginx can always read it. Pair with the error_page block in
+# nginx-agents.vixi.au.conf, then `nginx -t && systemctl reload nginx`.
+install -d -o root -g root -m 0755 /var/www/pm-maintenance
+install -o root -g root -m 0644 "$HERE/rebuilding.html" /var/www/pm-maintenance/rebuilding.html
+
 say "Render runner unit (User=$MON) → /etc/systemd/system/pm-switch-runner.service"
 sed "s/__PM_MONITOR_USER__/$MON/g; s#/srv/Code/environment.worktrees#$WT_ROOT#g; s#/var/lib/pm/switch#$SWITCH_DIR#g" \
   "$HERE/systemd/pm-switch-runner.service" > /etc/systemd/system/pm-switch-runner.service

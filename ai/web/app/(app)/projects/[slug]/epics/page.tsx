@@ -57,6 +57,10 @@ export default async function EpicsListPage({
 
   const principals = await listAssignablePrincipals();
 
+  const archivedCount = await db.epic.count({
+    where: { projectId: project.id, archivedAt: { not: null }, deletedAt: null },
+  });
+
   const epics = await db.epic.findMany({
     where: {
       projectId: project.id,
@@ -102,16 +106,18 @@ export default async function EpicsListPage({
           >
             Board
           </Link>
-          <Link
-            href={`/projects/${slug}/epics?view=archive`}
-            className={
-              view === "archive"
-                ? "rounded-lg bg-[var(--color-accent)] px-3 py-1 font-medium text-[var(--color-bg)]"
-                : "rounded-lg px-3 py-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-            }
-          >
-            Archive
-          </Link>
+          {view === "archive" || archivedCount > 0 ? (
+            <Link
+              href={`/projects/${slug}/epics?view=archive`}
+              className={
+                view === "archive"
+                  ? "rounded-lg bg-[var(--color-accent)] px-3 py-1 font-medium text-[var(--color-bg)]"
+                  : "rounded-lg px-3 py-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              }
+            >
+              Archive
+            </Link>
+          ) : null}
         </div>
       </header>
 

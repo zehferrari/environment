@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Updating workspace…</title>
+  <!-- No-JS fallback: reload the whole page every 8s until the app is back. -->
+  <noscript><meta http-equiv="refresh" content="8" /></noscript>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --panel: #121826;
+      --line: #243049;
+      --text: #e6edf6;
+      --muted: #8b97ad;
+      --accent: #5b8cff;
+      --accent-2: #36d6c3;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1200px 600px at 50% -10%, rgba(91,140,255,0.18), transparent 60%),
+        radial-gradient(900px 500px at 90% 110%, rgba(54,214,195,0.12), transparent 55%),
+        var(--bg);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(440px, 92vw);
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0)) , var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 32px 28px;
+      box-shadow: 0 24px 60px rgba(0,0,0,0.45);
+      text-align: center;
+    }
+    .badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 999px; padding: 6px 12px; margin-bottom: 22px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 0 rgba(54,214,195,0.6); animation: pulse 1.6s infinite; }
+    @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(54,214,195,0.55);} 70% { box-shadow: 0 0 0 9px rgba(54,214,195,0);} 100% { box-shadow: 0 0 0 0 rgba(54,214,195,0);} }
+    .spinner { width: 56px; height: 56px; margin: 4px auto 22px; position: relative; }
+    .spinner::before, .spinner::after {
+      content: ""; position: absolute; inset: 0; border-radius: 50%;
+      border: 3px solid transparent;
+    }
+    .spinner::before { border-top-color: var(--accent); border-right-color: var(--accent); animation: spin 0.9s linear infinite; }
+    .spinner::after { inset: 9px; border-bottom-color: var(--accent-2); border-left-color: var(--accent-2); animation: spin 1.4s linear infinite reverse; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h1 { font-size: 20px; margin: 0 0 8px; letter-spacing: -0.01em; }
+    p { margin: 0 auto; color: var(--muted); font-size: 14px; line-height: 1.55; max-width: 32ch; }
+    .bar { margin: 24px 0 6px; height: 6px; border-radius: 999px; background: rgba(255,255,255,0.06); overflow: hidden; }
+    .bar > i {
+      display: block; height: 100%; width: 40%; border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      animation: slide 1.4s ease-in-out infinite;
+    }
+    @keyframes slide { 0% { margin-left: -42%; } 100% { margin-left: 102%; } }
+    .meta { margin-top: 14px; font-size: 12px; color: var(--muted); }
+    .meta b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <main class="card" role="status" aria-live="polite">
+    <span class="badge"><span class="dot"></span>Deploying</span>
+    <div class="spinner" aria-hidden="true"></div>
+    <h1>The workspace is rebuilding</h1>
+    <p>A new build is going live. This page reloads automatically the moment it's ready — no need to refresh.</p>
+    <div class="bar" aria-hidden="true"><i></i></div>
+    <div class="meta">Waiting <b id="elapsed">0s</b> · retrying…</div>
+  </main>
+
+  <script>
+    (function () {
+      var start = Date.now();
+      var elapsed = document.getElementById("elapsed");
+      setInterval(function () {
+        if (elapsed) elapsed.textContent = Math.round((Date.now() - start) / 1000) + "s";
+      }, 1000);
+
+      // Poll a lightweight, always-public route. While pm.service is down nginx
+      // serves this page (5xx); once the new build answers 200 we reload into it.
+      function check() {
+        fetch("/login?_probe=" + Date.now(), { method: "GET", cache: "no-store", redirect: "follow" })
+          .then(function (res) {
+            if (res.status >= 200 && res.status < 400) {
+              window.location.reload();
+            } else {
+              schedule();
+            }
+          })
+          .catch(schedule);
+      }
+      function schedule() { window.setTimeout(check, 3000); }
+      window.setTimeout(check, 3000);
+    })();
+  </script>
+</body>
+</html>

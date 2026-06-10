@@ -28,6 +28,13 @@ export default async function ProjectLayout({
   const hasSummary = repoHasReadme(project.repositoryPath);
   const hasCode = Boolean(project.repositoryPath);
 
+  // The Bin tab only appears when something is actually in the bin.
+  const [binnedEpics, binnedTasks] = await Promise.all([
+    db.epic.count({ where: { projectId: project.id, deletedAt: { not: null } } }),
+    db.task.count({ where: { projectId: project.id, deletedAt: { not: null } } }),
+  ]);
+  const hasBin = binnedEpics + binnedTasks > 0;
+
   return (
     <div>
       <header className="mb-2">
@@ -47,7 +54,7 @@ export default async function ProjectLayout({
           <span>{project.slug}</span>
         </div>
       </header>
-      <ProjectTabs slug={project.slug} hasSummary={hasSummary} hasCode={hasCode} />
+      <ProjectTabs slug={project.slug} hasSummary={hasSummary} hasCode={hasCode} hasBin={hasBin} />
       {children}
     </div>
   );

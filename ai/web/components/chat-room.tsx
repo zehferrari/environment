@@ -334,7 +334,15 @@ export default function ChatRoom({
   );
   const [targetPickerOpen, setTargetPickerOpen] = useState(false);
   const [archiveSidebarOpen, setArchiveSidebarOpen] = useState(false);
-  const [archiveViewMode, setArchiveViewMode] = useState<"archives" | "bin">("archives");
+  // Only surface the archive affordances when there is something to show: hide
+  // the sidebar toggle entirely when both lists are empty, and within the
+  // sidebar show each sub-tab only when it has items.
+  const hasArchives = archives.length > 0;
+  const hasBinArchives = binArchives.length > 0;
+  const hasAnyArchive = hasArchives || hasBinArchives;
+  const [archiveViewMode, setArchiveViewMode] = useState<"archives" | "bin">(
+    !hasArchives && hasBinArchives ? "bin" : "archives",
+  );
   const visibleMessages = useMemo(
     () => messages.filter((message) => !isInternalWorkflowNotification(message)),
     [messages],
@@ -482,6 +490,7 @@ export default function ChatRoom({
           </span>
         </div>
         <div className="flex items-center gap-2">
+          {hasAnyArchive ? (
           <button
             type="button"
             onClick={() => setArchiveSidebarOpen((open) => !open)}
@@ -503,6 +512,7 @@ export default function ChatRoom({
               </svg>
             )}
           </button>
+          ) : null}
           {viewingArchive ? (
             <span className="hidden text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider font-semibold sm:inline">
               Archived Room
@@ -563,29 +573,35 @@ export default function ChatRoom({
               </button>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-1 border-b border-[var(--color-line)] bg-[var(--color-panel-soft)] p-1.5 text-xs font-semibold">
-            <button
-              type="button"
-              onClick={() => setArchiveViewMode("archives")}
-              className={`rounded-lg px-2 py-1.5 transition ${
-                archiveViewMode === "archives"
-                  ? "bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm"
-                  : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-              }`}
-            >
-              Archive <span className="text-[10px] text-[var(--color-text-muted)]">({archives.length})</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setArchiveViewMode("bin")}
-              className={`rounded-lg px-2 py-1.5 transition ${
-                archiveViewMode === "bin"
-                  ? "bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm"
-                  : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-              }`}
-            >
-              Bin <span className="text-[10px] text-[var(--color-text-muted)]">({binArchives.length})</span>
-            </button>
+          <div className={`grid gap-1 border-b border-[var(--color-line)] bg-[var(--color-panel-soft)] p-1.5 text-xs font-semibold ${
+            hasArchives && hasBinArchives ? "grid-cols-2" : "grid-cols-1"
+          }`}>
+            {hasArchives ? (
+              <button
+                type="button"
+                onClick={() => setArchiveViewMode("archives")}
+                className={`rounded-lg px-2 py-1.5 transition ${
+                  archiveViewMode === "archives"
+                    ? "bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm"
+                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                }`}
+              >
+                Archive <span className="text-[10px] text-[var(--color-text-muted)]">({archives.length})</span>
+              </button>
+            ) : null}
+            {hasBinArchives ? (
+              <button
+                type="button"
+                onClick={() => setArchiveViewMode("bin")}
+                className={`rounded-lg px-2 py-1.5 transition ${
+                  archiveViewMode === "bin"
+                    ? "bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm"
+                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                }`}
+              >
+                Bin <span className="text-[10px] text-[var(--color-text-muted)]">({binArchives.length})</span>
+              </button>
+            ) : null}
           </div>
           <div className="flex-1 space-y-4 overflow-y-auto p-3">
             <Link
