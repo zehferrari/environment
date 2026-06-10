@@ -3,7 +3,7 @@
 import React, { useRef, useCallback, useEffect, useLayoutEffect, useMemo, useOptimistic, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { archiveChatRoom, getAgentChatRoomMessages, sendAgentChatMessage, deleteChatMessage, restoreChatMessage } from "@/lib/agents/chat-actions";
+import { archiveChatRoom, getAgentChatRoomMessages, sendAgentChatMessage, deleteChatMessage, restoreChatMessage, prebuildAgentChatContext } from "@/lib/agents/chat-actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import MaximizableTextarea from "@/components/maximizable-textarea";
@@ -519,6 +519,7 @@ export default function DecomposedChatRoom({
   const activeTab = useActiveTab();
   const [, startOptimisticTransition] = useTransition();
   const [messageText, setMessageText] = useState("");
+  const [draftMessageId, setDraftMessageId] = useState(() => generateClientMessageId());
   const [composerOpen, setComposerOpen] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [bottomReservation, setBottomReservation] = useState(88);
@@ -805,6 +806,26 @@ export default function DecomposedChatRoom({
     ? "Default recipient"
     : selectedTargetOptions.map((target) => target.label).join(", ");
 
+  useEffect(() => {
+    if (!composerOpen || viewingArchive || selectedArchiveDeleted) return;
+    if (!messageText.trim() && selectedFilesCount === 0) return;
+    const timeout = window.setTimeout(() => {
+      const formData = new FormData();
+      formData.append("projectSlug", projectSlug);
+      if (taskId) formData.append("taskId", taskId);
+      if (epicId) formData.append("epicId", epicId);
+      formData.append("messageId", draftMessageId);
+      formData.append("body", messageText);
+      for (const target of selectedTargets) {
+        formData.append("discussionTarget", target);
+      }
+      prebuildAgentChatContext(formData).catch(() => {
+        // Speculative context is best-effort; send falls back to synchronous build.
+      });
+    }, 350);
+    return () => window.clearTimeout(timeout);
+  }, [composerOpen, draftMessageId, epicId, messageText, projectSlug, selectedArchiveDeleted, selectedFilesCount, selectedTargets, taskId, viewingArchive]);
+
   function toggleTarget(target: DiscussionTarget) {
     setSelectedTargets((current) => {
       if (target.group === "Groups") {
@@ -834,6 +855,7 @@ export default function DecomposedChatRoom({
     composerDraftSnapshotsRef.current.delete(composerDraftKeyRef.current);
     writeStoredComposerDraft(composerDraftKeyRef.current, "");
     setTargetPickerOpen(false);
+    setDraftMessageId(generateClientMessageId());
     if (textareaRef.current) textareaRef.current.value = "";
     if (fileInputRef.current) fileInputRef.current.value = "";
     window.requestAnimationFrame(() => textareaRef.current?.focus());
@@ -1221,6 +1243,7 @@ export default function DecomposedChatRoom({
         epicId={epicId}
         selectedTargets={selectedTargets}
         selectedArchiveId={selectedArchiveId}
+        draftMessageId={draftMessageId}
         messageText={messageText}
         setMessageText={setMessageText}
         handleKeyDown={handleKeyDown}
@@ -1493,6 +1516,7 @@ const Composer = React.memo(function Composer(props: any) {
     epicId,
     selectedTargets,
     selectedArchiveId,
+    draftMessageId,
     messageText,
     setMessageText,
     handleKeyDown,
@@ -1555,6 +1579,7 @@ const Composer = React.memo(function Composer(props: any) {
                   <input type="hidden" name="epicId" value={epicId} />
                 )}
                 <input type="hidden" name="agentSlug" value="room" />
+                <input type="hidden" name="messageId" value={draftMessageId} />
                 {selectedTargets.map((target: string) => (
                   <input key={target} type="hidden" name="discussionTarget" value={target} />
                 ))}

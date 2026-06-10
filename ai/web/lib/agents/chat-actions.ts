@@ -49,6 +49,10 @@ import {
   recentDiscussion,
 } from "@/lib/agents/context-api/recent";
 import { isValidClientMessageId } from "@/lib/agents/client-message-id";
+import {
+  consumeSpeculativeAgentChatContext,
+  scheduleSpeculativeAgentChatContext,
+} from "@/lib/agents/speculative-context";
 
 async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> {
   const session = await auth();
@@ -191,6 +195,39 @@ function appendAttachmentLinks(
     ...attachments.map((file) => `- [${file.filename}](/api/attachments/${file.id})`),
   ].filter(Boolean);
   return lines.join("\n");
+}
+
+
+export async function prebuildAgentChatContext(formData: FormData) {
+  await requireActor();
+  const projectSlug = String(formData.get("projectSlug") ?? "");
+  const taskIdRaw = String(formData.get("taskId") ?? "");
+  const epicIdRaw = String(formData.get("epicId") ?? "");
+  const messageId = String(formData.get("messageId") ?? "").trim();
+  const bodyRaw = String(formData.get("body") ?? "").trim();
+  const taskId = taskIdRaw === "" ? null : taskIdRaw;
+  const epicId = epicIdRaw === "" ? null : epicIdRaw;
+  const selectedTargets = Array.from(
+    new Set(
+      formData
+        .getAll("discussionTarget")
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  );
+
+  if (!projectSlug || !messageId || !isValidClientMessageId(messageId)) return { scheduled: false };
+  if ((taskId === null) === (epicId === null)) return { scheduled: false };
+  if (bodyRaw.length > 8000) return { scheduled: false };
+
+  return scheduleSpeculativeAgentChatContext({
+    projectSlug,
+    taskId,
+    epicId,
+    messageId,
+    bodyRaw,
+    selectedTargets,
+  });
 }
 
 export async function sendAgentChatMessage(formData: FormData) {
@@ -540,7 +577,14 @@ export async function sendAgentChatMessage(formData: FormData) {
       turnId: msg.id,
     });
 
-    const baseSystemPrompt = taskId
+    const prebuiltContext = await consumeSpeculativeAgentChatContext({
+      projectId: project.id,
+      taskId: taskId ? task.id : null,
+      epicId: taskId ? null : epic.id,
+      messageId: msg.id,
+      agentSlug,
+    });
+    const baseSystemPrompt = prebuiltContext?.baseSystemPrompt ?? (taskId
       ? buildTaskNativeChannelPrompt(task.title, agentSlug, directedDescriptor, {
           baseUrl: fetchBaseUrl,
           projectId: project.id,
@@ -582,7 +626,7 @@ export async function sendAgentChatMessage(formData: FormData) {
             }),
             project: projectGrantUrl,
           },
-        });
+        }));
 
     const descriptionPrompt = allowDescriptionEdit
       ? taskId
