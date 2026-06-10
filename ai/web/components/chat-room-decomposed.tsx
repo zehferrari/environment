@@ -42,6 +42,11 @@ type OptimisticMessage = Message & {
   optimisticTargets?: string[];
 };
 
+type ComposerDraftSnapshot = {
+  body: string;
+  files: File[];
+};
+
 interface DiscussionTarget {
   value: string;
   label: string;
@@ -114,6 +119,46 @@ function isInternalWorkflowNotification(message: Message) {
 
 function optimisticLocalEchoEnabled() {
   return process.env.NEXT_PUBLIC_PM_OPTIMISTIC_LOCAL_ECHO === "1";
+}
+
+function composerDraftStorageKey(parts: {
+  projectSlug: string;
+  taskId?: string;
+  epicId?: string;
+  archiveId?: string | null;
+  selectedTargets: string[];
+}) {
+  const threadId = parts.taskId ? `task:${parts.taskId}` : `epic:${parts.epicId ?? "unknown"}`;
+  const archiveId = parts.archiveId ? `archive:${parts.archiveId}` : "current";
+  const targetKey = parts.selectedTargets.length > 0 ? [...parts.selectedTargets].sort().join(",") : "default";
+  return `pm:chat-composer-draft:v1:${parts.projectSlug}:${threadId}:${archiveId}:${targetKey}`;
+}
+
+function readStoredComposerDraft(key: string) {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStoredComposerDraft(key: string, value: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const body = value.trim();
+    if (body.length === 0) {
+      window.localStorage.removeItem(key);
+      return;
+    }
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Local draft persistence is best-effort only.
+  }
+}
+
+function fileListFromInput(input: HTMLInputElement | null) {
+  return Array.from(input?.files ?? []);
 }
 
 function RoomArchiveButton({
@@ -343,7 +388,7 @@ export default function DecomposedChatRoom({
   const [composerOpen, setComposerOpen] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [bottomReservation, setBottomReservation] = useState(88);
-  const [selectedFilesCount, setSelectedFilesCount] = useState(0);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [selectedTargets, setSelectedTargets] = useState<string[]>(
     defaultDiscussionTarget ? [defaultDiscussionTarget] : [],
   );
@@ -414,6 +459,7 @@ export default function DecomposedChatRoom({
     });
     return map;
   }, [displayedMessages]);
+  const selectedFilesCount = selectedFiles.length;
   const canSend = messageText.trim().length > 0 || selectedFilesCount > 0;
   const activeCount = activeMessageCount ?? visibleMessages.length;
   const canContinueArchive = viewingArchive && !selectedArchiveDeleted && activeCount === 0;
@@ -566,6 +612,54 @@ export default function DecomposedChatRoom({
     setSelectedTargets(defaultDiscussionTarget ? [defaultDiscussionTarget] : []);
   }, [defaultDiscussionTarget]);
 
+  const composerDraftKey = useMemo(() => composerDraftStorageKey({
+    projectSlug,
+    taskId,
+    epicId,
+    archiveId: canContinueArchive ? selectedArchiveId : null,
+    selectedTargets,
+  }), [canContinueArchive, epicId, projectSlug, selectedArchiveId, selectedTargets, taskId]);
+  const composerDraftKeyRef = useRef(composerDraftKey);
+  const composerDraftSnapshotsRef = useRef<Map<string, ComposerDraftSnapshot>>(new Map());
+  const composerDraftHydratedRef = useRef(false);
+
+  useEffect(() => {
+    setMessageText(readStoredComposerDraft(composerDraftKey));
+    composerDraftKeyRef.current = composerDraftKey;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const previousKey = composerDraftKeyRef.current;
+    if (previousKey === composerDraftKey) return;
+
+    composerDraftSnapshotsRef.current.set(previousKey, {
+      body: messageText,
+      files: selectedFiles,
+    });
+    writeStoredComposerDraft(previousKey, messageText);
+
+    const snapshot = composerDraftSnapshotsRef.current.get(composerDraftKey);
+    setMessageText(snapshot?.body ?? readStoredComposerDraft(composerDraftKey));
+    setSelectedFiles(snapshot?.files ?? []);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    composerDraftKeyRef.current = composerDraftKey;
+  }, [composerDraftKey, fileInputRef, messageText, selectedFiles]);
+
+  useEffect(() => {
+    if (!composerDraftHydratedRef.current) {
+      composerDraftHydratedRef.current = true;
+      return;
+    }
+    composerDraftSnapshotsRef.current.set(composerDraftKey, { body: messageText, files: selectedFiles });
+    writeStoredComposerDraft(composerDraftKey, messageText);
+  }, [composerDraftKey, messageText, selectedFiles]);
+
+  useEffect(() => {
+    if (!composerOpen) return;
+    textareaRef.current?.focus();
+  }, [composerOpen]);
+
   const targetOptions: DiscussionTarget[] = [
     { value: "all-coders", label: "All Coders", group: "Groups" },
     ...discussionTargets,
@@ -602,11 +696,13 @@ export default function DecomposedChatRoom({
 
   const resetComposerAfterSend = () => {
     setMessageText("");
-    setSelectedFilesCount(0);
-    setComposerOpen(false);
+    setSelectedFiles([]);
+    composerDraftSnapshotsRef.current.delete(composerDraftKeyRef.current);
+    writeStoredComposerDraft(composerDraftKeyRef.current, "");
     setTargetPickerOpen(false);
     if (textareaRef.current) textareaRef.current.value = "";
     if (fileInputRef.current) fileInputRef.current.value = "";
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
   const ensureClientMessageId = (formData: FormData) => {
@@ -704,6 +800,11 @@ export default function DecomposedChatRoom({
   };
 
   const actionHandler = async (formData: FormData) => {
+    formData.delete("attachments");
+    for (const file of selectedFiles) {
+      formData.append("attachments", file);
+    }
+
     if (!optimisticEchoEnabled) {
       ensureClientMessageId(formData);
       await sendAgentChatMessage(formData);
@@ -712,9 +813,9 @@ export default function DecomposedChatRoom({
     }
 
     const optimisticMessage = optimisticMessageFromForm(formData);
-    resetComposerAfterSend();
     try {
       await submitOptimisticMessage(formData, optimisticMessage);
+      resetComposerAfterSend();
     } catch {
       // Failed state is rendered inline on the optimistic bubble.
     }
@@ -733,8 +834,6 @@ export default function DecomposedChatRoom({
   const closeComposer = () => {
     setComposerOpen(false);
     setTargetPickerOpen(false);
-    setSelectedFilesCount(0);
-    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   return (
@@ -991,8 +1090,9 @@ export default function DecomposedChatRoom({
         messageText={messageText}
         setMessageText={setMessageText}
         handleKeyDown={handleKeyDown}
+        selectedFiles={selectedFiles}
+        setSelectedFiles={setSelectedFiles}
         selectedFilesCount={selectedFilesCount}
-        setSelectedFilesCount={setSelectedFilesCount}
         fileInputRef={fileInputRef}
         textareaRef={textareaRef}
         canSend={canSend}
@@ -1232,8 +1332,9 @@ const Composer = React.memo(function Composer(props: any) {
     messageText,
     setMessageText,
     handleKeyDown,
+    selectedFiles,
+    setSelectedFiles,
     selectedFilesCount,
-    setSelectedFilesCount,
     fileInputRef,
     textareaRef,
     canSend,
@@ -1418,12 +1519,17 @@ const Composer = React.memo(function Composer(props: any) {
                     <input
                       ref={fileInputRef}
                       type="file"
-                      name="attachments"
                       multiple
-                      onChange={(event) => setSelectedFilesCount(event.target.files?.length ?? 0)}
+                      onChange={(event) => setSelectedFiles(fileListFromInput(event.currentTarget))}
                       className="hidden"
                     />
                   </label>
+                  {selectedFiles.length > 0 ? (
+                    <div className="min-w-0 flex-1 text-[11px] text-[var(--color-text-muted)]" aria-live="polite">
+                      <span className="font-semibold text-[var(--color-text)]">Ready to attach:</span>{" "}
+                      {selectedFiles.map((file: File) => file.name).join(", ")}
+                    </div>
+                  ) : null}
                   <button
                     type="submit"
                     disabled={!canSend}
