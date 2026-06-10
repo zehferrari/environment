@@ -34,6 +34,8 @@
     "test:add-epic-task-fab": "tsx scripts/add-epic-task-fab-test.tsx",
     "test:pm-channel-stream-protocol": "tsx scripts/pm-channel-stream-protocol-test.ts",
     "test:pm-channel-transport": "tsx scripts/pm-channel-transport-test.ts",
+    "test:pm-channel-warm-pool": "tsx scripts/pm-channel-warm-pool-test.ts",
+    "test:pm-channel-warm-acceptance": "tsx scripts/pm-channel-warm-acceptance-test.ts",
     "test:chat-room-decomposition": "tsx scripts/chat-room-decomposition-test.ts",
     "test:chat-composer-keyboard": "tsx scripts/chat-composer-keyboard-test.ts"
   },
