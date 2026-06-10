@@ -600,16 +600,21 @@ export default function ChatRoom({
   };
 
   const submitOptimisticMessage = async (formData: FormData, optimisticMessage: OptimisticMessage) => {
+    const pendingAgentsForMessage = pendingAgentsFromForm(formData);
     optimisticRenderStartsRef.current.set(optimisticMessage.id, performance.now());
     startOptimisticTransition(() => addOptimisticMessage(optimisticMessage));
+    setLocalLatestMessageId(optimisticMessage.id);
+    setLocalPendingAgents(pendingAgentsForMessage);
     setFailedOptimisticMessages((current) => current.filter((message) => message.id !== optimisticMessage.id));
     try {
       const result = await sendAgentChatMessage(formData);
       if (result?.messageId) {
         setLocalLatestMessageId(result.messageId);
-        setLocalPendingAgents(pendingAgentsFromForm(formData));
+        setLocalPendingAgents(pendingAgentsForMessage);
       }
     } catch (error) {
+      setLocalLatestMessageId((current) => current === optimisticMessage.id ? null : current);
+      setLocalPendingAgents([]);
       setFailedOptimisticMessages((current) => [
         ...current.filter((message) => message.id !== optimisticMessage.id),
         { ...optimisticMessage, optimisticStatus: "failed" },

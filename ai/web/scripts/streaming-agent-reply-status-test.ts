@@ -4,6 +4,7 @@ import {
   RECONNECTING_STUCK_MS,
   reconnectingCopy,
   waitingCopy,
+  shouldShowTypingDots,
 } from "../lib/agents/streaming-agent-reply-status";
 
 assert.equal(reconnectingCopy(null), null, "normal streaming should not show a reconnect chip");
@@ -26,6 +27,31 @@ assert.equal(
   reconnectingCopy(RECONNECTING_STUCK_MS),
   "connection is still recovering...",
   "after roughly 10s, escalate from the quiet reconnect chip",
+);
+assert.equal(
+  waitingCopy({ status: "pending", runStatus: "queued", error: null }),
+  "queued...",
+  "pending replies use the queued degraded-mode copy before any SSE event",
+);
+assert.equal(
+  shouldShowTypingDots({ status: "pending", text: "" }),
+  true,
+  "pending replies show typing dots before the first SSE event",
+);
+assert.equal(
+  shouldShowTypingDots({ status: "thinking", text: "" }),
+  true,
+  "thinking replies show typing dots before the first token",
+);
+assert.equal(
+  shouldShowTypingDots({ status: "streaming", lifecycleStatus: "thinking", text: "" }),
+  true,
+  "status:thinking lifecycle events keep typing dots visible",
+);
+assert.equal(
+  shouldShowTypingDots({ status: "pending", text: "hello" }),
+  false,
+  "first text token replaces pending dots",
 );
 assert.equal(
   waitingCopy({ status: "streaming", runStatus: "queued", error: null }),

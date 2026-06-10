@@ -1,5 +1,5 @@
 export type StreamingReplyRunStatus = "queued" | "accepted" | "streaming" | "retryable" | "complete" | "failed";
-export type StreamingReplyStatus = "connecting" | "streaming" | "done" | "error";
+export type StreamingReplyStatus = "pending" | "connecting" | "thinking" | "streaming" | "done" | "error";
 
 export const RECONNECTING_DEBOUNCE_MS = 1_200;
 export const RECONNECTING_STUCK_MS = 10_000;
@@ -33,6 +33,18 @@ export function waitingCopy(args: {
   if (args.lifecycleStatus === "working") return "Working...";
 
   return "working...";
+}
+
+export function shouldShowTypingDots(args: {
+  status: StreamingReplyStatus;
+  text?: string | null;
+  lifecycleStatus?: "thinking" | "reading" | "working" | null;
+}) {
+  if (args.text?.trim()) return false;
+  return args.status === "pending"
+    || args.status === "thinking"
+    || args.status === "streaming"
+    || args.lifecycleStatus === "thinking";
 }
 
 export function reconnectingCopy(reconnectingMs: number | null) {

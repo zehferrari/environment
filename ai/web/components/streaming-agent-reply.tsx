@@ -7,6 +7,7 @@ import { extractDiscussionSectionA } from "@/lib/agents/discussion-reply-format"
 import {
   reconnectingCopy,
   waitingCopy,
+  shouldShowTypingDots,
   type StreamingReplyRunStatus,
   type StreamingReplyStatus,
 } from "@/lib/agents/streaming-agent-reply-status";
@@ -34,6 +35,7 @@ interface StreamingAgentReplyProps {
   label: string;
   className?: string;
   anonymizeTyping?: boolean;
+  initialStatus?: StreamingReplyStatus;
   onFinal?: (payload: { agentSlug: string; text: string; reasoning: string; status: "done" | "error" }) => void;
 }
 
@@ -65,6 +67,7 @@ function applyStreamState(
   if (incoming.runStatus) setRunStatus(incoming.runStatus);
   if (incoming.status === "done") setStatus("done");
   else if (incoming.status === "error") setStatus("error");
+  else if (incoming.lifecycleStatus === "thinking") setStatus("thinking");
   else setStatus("streaming");
 }
 
@@ -79,11 +82,12 @@ export default function StreamingAgentReply({
   label,
   className = "",
   anonymizeTyping = false,
+  initialStatus = "pending",
   onFinal,
 }: StreamingAgentReplyProps) {
   const [text, setText] = useState("");
   const [reasoning, setReasoning] = useState("");
-  const [status, setStatus] = useState<StreamingReplyStatus>("connecting");
+  const [status, setStatus] = useState<StreamingReplyStatus>(initialStatus);
   const [runStatus, setRunStatus] = useState<StreamState["runStatus"]>("queued");
   const [lifecycleStatus, setLifecycleStatus] = useState<StreamState["lifecycleStatus"]>(null);
   const [toolStatus, setToolStatus] = useState<StreamState["toolStatus"]>(null);
@@ -137,6 +141,16 @@ export default function StreamingAgentReply({
   useEffect(() => {
     finalNotifiedRef.current = false;
     setFinalized(false);
+    setStatus(initialStatus);
+    setText("");
+    setReasoning("");
+    setRunStatus("queued");
+    setLifecycleStatus(null);
+    setToolStatus(null);
+    setToolName(null);
+    setError(null);
+    setConnectionIssueAt(null);
+    setLastUpdateAt(null);
     setLastEventId("");
 
     const stateEventTypes = new Set([
@@ -227,7 +241,7 @@ export default function StreamingAgentReply({
     return () => {
       disconnect();
     };
-  }, [agentSlug, url, connect, disconnect, notifyFinal, setLastEventId]);
+  }, [agentSlug, url, connect, disconnect, notifyFinal, setLastEventId, initialStatus]);
 
   const [showReasoning, setShowReasoning] = useState(true);
   const actor: MessageActor = {
@@ -309,7 +323,7 @@ export default function StreamingAgentReply({
             <summary className="flex items-center justify-between gap-1.5 font-semibold text-[10px] uppercase tracking-wider mb-2 border-b border-[var(--color-line)] pb-1 cursor-pointer outline-none list-none [&::-webkit-details-marker]:hidden select-none">
               <span className="flex items-center gap-1.5">
                 <span>Thought Process</span>
-                {status === "streaming" && !text && <TypingDots />}
+                {shouldShowTypingDots({ status, text, lifecycleStatus }) && <TypingDots />}
               </span>
               <span className="text-[9px] font-normal normal-case text-[var(--color-text-muted)] opacity-60">
                 {showReasoning ? "click to hide" : "click to show"}
