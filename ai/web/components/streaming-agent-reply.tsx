@@ -93,6 +93,7 @@ export default function StreamingAgentReply({
   const [lastUpdateAt, setLastUpdateAt] = useState<number | null>(null);
   const [connectionIssueAt, setConnectionIssueAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [finalized, setFinalized] = useState(false);
   const finalNotifiedRef = useRef(false);
   const latestTextRef = useRef("");
   const latestReasoningRef = useRef("");
@@ -123,6 +124,7 @@ export default function StreamingAgentReply({
 
   useEffect(() => {
     finalNotifiedRef.current = false;
+    setFinalized(false);
     const source = new EventSource(url);
 
     const parse = (event: MessageEvent<string>) => {
@@ -131,6 +133,17 @@ export default function StreamingAgentReply({
       } catch {
         return null;
       }
+    };
+
+    const notifyFinal = (payload: StreamState | null, finalStatus: "done" | "error") => {
+      if (finalNotifiedRef.current) return;
+      finalNotifiedRef.current = true;
+      onFinalRef.current?.({
+        agentSlug,
+        text: payload?.text ?? latestTextRef.current,
+        reasoning: payload?.reasoning ?? latestReasoningRef.current,
+        status: finalStatus,
+      });
     };
 
     const onState = (event: MessageEvent<string>) => {
@@ -144,16 +157,11 @@ export default function StreamingAgentReply({
       setLastUpdateAt(payload.updatedAt ?? Date.now());
       applyStreamState(payload, setText, setReasoning, setStatus, setRunStatus);
       if (payload.status === "done") {
-        if (!finalNotifiedRef.current) {
-          finalNotifiedRef.current = true;
-          onFinalRef.current?.({ agentSlug, text: payload.text ?? latestTextRef.current, reasoning: payload.reasoning ?? latestReasoningRef.current, status: "done" });
-        }
+        setFinalized(true);
+        notifyFinal(payload, "done");
         source.close();
       } else if (payload.status === "error") {
-        if (!finalNotifiedRef.current) {
-          finalNotifiedRef.current = true;
-          onFinalRef.current?.({ agentSlug, text: payload.text ?? latestTextRef.current, reasoning: payload.reasoning ?? latestReasoningRef.current, status: "error" });
-        }
+        notifyFinal(payload, "error");
         source.close();
       }
     };
@@ -165,10 +173,8 @@ export default function StreamingAgentReply({
       setRunStatus("failed");
       setStatus("error");
       setLastUpdateAt(payload?.updatedAt ?? Date.now());
-      if (!finalNotifiedRef.current) {
-        finalNotifiedRef.current = true;
-        onFinalRef.current?.({ agentSlug, text: payload?.text ?? latestTextRef.current, reasoning: payload?.reasoning ?? latestReasoningRef.current, status: "error" });
-      }
+      notifyFinal(payload, "error");
+      source.close();
     };
 
     const onHeartbeat = () => {
@@ -193,7 +199,9 @@ export default function StreamingAgentReply({
     source.addEventListener("heartbeat", onHeartbeat);
     source.onerror = () => {
       setStatus((current) => {
-        if (current === "done" || current === "error") return current;
+        if (current === "done" || current === "error") {
+          return current;
+        }
         setConnectionIssueAt((existing) => existing ?? Date.now());
         return "connecting";
       });
@@ -219,13 +227,14 @@ export default function StreamingAgentReply({
     agent: { slug: agentSlug, name: label, avatar: "placeholder" },
   };
 
+  if (finalized) return null;
+
   const waitLabel = waitingCopy({
     status,
     runStatus,
     lifecycleStatus,
     toolStatus,
     toolName,
-    elapsedMs,
     error,
   });
   const reconnectingMs = status !== "done" && status !== "error" && connectionIssueAt !== null
@@ -307,7 +316,7 @@ export default function StreamingAgentReply({
           </div>
         ) : status !== "error" && !reasoning.trim() ? (
           <div className="text-xs text-[var(--color-text-muted)] flex items-center gap-1">
-            Writing response <TypingDots />
+            working... <TypingDots />
           </div>
         ) : null}
       </div>

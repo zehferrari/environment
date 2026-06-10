@@ -177,6 +177,9 @@ export async function recordPmChannelRunDispatch(args: {
       where: { targetKey: pmChannelRunTargetKey(args.target) },
       data: {
         httpStatus: args.result.status ?? null,
+        driver: args.result.transportMode
+          ? `openclaw-pm-channel:${args.result.transportMode}`
+          : "openclaw-pm-channel",
         status: ok ? "accepted" : "failed",
         error: ok ? null : clippedError(args.result.error),
         acceptedAt: ok ? now : null,

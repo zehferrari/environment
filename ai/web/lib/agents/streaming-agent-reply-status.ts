@@ -16,17 +16,16 @@ export function waitingCopy(args: {
   lifecycleStatus?: "thinking" | "reading" | "working" | null;
   toolStatus?: "call" | "result" | null;
   toolName?: string | null;
-  elapsedMs: number;
   error: string | null;
 }) {
-  if (args.status === "error") {
+  if (args.status === "error" || args.runStatus === "failed") {
     return args.error ?? "Agent stream failed";
   }
   if (args.runStatus === "queued") {
-    return "Queued...";
+    return "queued...";
   }
   if (args.runStatus === "retryable") {
-    return "Retrying...";
+    return "retrying...";
   }
 
   if (args.toolStatus === "call") {
@@ -39,16 +38,7 @@ export function waitingCopy(args: {
   if (args.lifecycleStatus === "reading") return "Reading...";
   if (args.lifecycleStatus === "working") return "Working...";
 
-  const phases = [
-    { until: 4_000, label: "Waking..." },
-    { until: 12_000, label: "Thinking..." },
-    { until: 24_000, label: "Reading..." },
-    { until: 40_000, label: "Planning..." },
-    { until: 64_000, label: "Writing..." },
-    { until: 92_000, label: "Checking..." },
-    { until: Number.POSITIVE_INFINITY, label: "Sending..." },
-  ];
-  return phases.find((phase) => args.elapsedMs < phase.until)?.label ?? "Sending...";
+  return "working...";
 }
 
 export function reconnectingCopy(reconnectingMs: number | null) {

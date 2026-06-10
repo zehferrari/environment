@@ -191,6 +191,7 @@ function createPmStreamPublisher({ account, target, logger }) {
     version: 1,
     channel: CHANNEL_ID,
     target,
+    transportMode: typeof target.streamTransport === "string" ? target.streamTransport : "http",
     ...body,
   });
 
@@ -449,6 +450,7 @@ async function runPmTurn({ cfg, payload, accountId, logger }) {
     ...payload.replyTarget,
     callbackUrl: typeof payload.callbackUrl === "string" ? payload.callbackUrl : account.callbackUrl,
     streamUrl: typeof payload.streamUrl === "string" ? payload.streamUrl : undefined,
+    streamTransport: typeof payload.streamTransport === "string" ? payload.streamTransport : "http",
   };
   const encodedTarget = encodeTarget(target);
   const agentId = account.agentId;

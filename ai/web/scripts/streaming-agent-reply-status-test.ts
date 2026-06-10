@@ -28,17 +28,26 @@ assert.equal(
   "after roughly 10s, escalate from the quiet reconnect chip",
 );
 assert.equal(
-  waitingCopy({ status: "streaming", runStatus: "streaming", elapsedMs: 124_999, error: null }),
-  "Sending...",
+  waitingCopy({ status: "streaming", runStatus: "queued", error: null }),
+  "queued...",
 );
 assert.equal(
-  waitingCopy({ status: "streaming", runStatus: "streaming", elapsedMs: 125_000, error: null }),
-  "Sending...",
-  "the old 125s recovery copy must not reappear",
+  waitingCopy({ status: "streaming", runStatus: "retryable", error: null }),
+  "retrying...",
 );
-assert.notEqual(
-  waitingCopy({ status: "streaming", runStatus: "streaming", elapsedMs: 180_000, error: null }),
-  ["Recovering", " reply..."].join(""),
+assert.equal(
+  waitingCopy({ status: "streaming", runStatus: "streaming", error: null }),
+  "working...",
+  "streaming copy must not use elapsed-time phase labels",
+);
+assert.equal(
+  waitingCopy({ status: "streaming", runStatus: "accepted", error: null }),
+  "working...",
+  "accepted copy falls back to generic work until a real event-specific state arrives",
+);
+assert.equal(
+  waitingCopy({ status: "error", runStatus: "failed", error: "boom" }),
+  "boom",
 );
 
 console.log("streaming-agent-reply-status tests passed");
