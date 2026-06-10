@@ -7,7 +7,6 @@ export type SyncResult = {
   codeOwner: string;
   hostMatchedAgents: number;
   syncedAgents: number;
-  changedAgents: number;
   deactivatedAgents: number;
   seededUsers: number;
   rotatedUsers: number;
@@ -28,7 +27,6 @@ export async function syncAgents(): Promise<SyncResult> {
     codeOwner,
     hostMatchedAgents: 0,
     syncedAgents: 0,
-    changedAgents: 0,
     deactivatedAgents: 0,
     seededUsers: 0,
     rotatedUsers: 0,
@@ -46,9 +44,8 @@ export async function syncAgents(): Promise<SyncResult> {
     const isColocated = agent.enabled !== false;
 
     try {
-      const agentChange = await upsertAgentRow(agent, codeOwner);
+      await upsertAgentRow(agent, codeOwner);
       result.syncedAgents += 1;
-      if (agentChange.changed) result.changedAgents += 1;
 
       if (isColocated) {
         result.hostMatchedAgents += 1;
@@ -78,73 +75,41 @@ export async function syncAgents(): Promise<SyncResult> {
     }
   }
 
-  if (shouldStoreSyncActivity(result)) {
-    await db.activityLog.create({
-      data: {
-        kind: "agent.sync",
-        payload: JSON.stringify(result),
-      },
-    });
-  }
+  await db.activityLog.create({
+    data: {
+      kind: "agent.sync",
+      payload: JSON.stringify(result),
+    },
+  });
 
   return result;
 }
 
-function shouldStoreSyncActivity(result: SyncResult) {
-  return (
-    result.changedAgents > 0 ||
-    result.deactivatedAgents > 0 ||
-    result.seededUsers > 0 ||
-    result.rotatedUsers > 0 ||
-    result.errors.length > 0
-  );
-}
-
-async function upsertAgentRow(agent: IndexAgent, codeOwner: string): Promise<{ changed: boolean }> {
+async function upsertAgentRow(agent: IndexAgent, codeOwner: string) {
   const port = gatewayPortFor(agent);
-  const rawJson = JSON.stringify(agent);
-  const data = {
-    name: agent.name,
-    email: agent.email ?? null,
-    role: agent.role,
-    codeOwner,
-    gatewayPort: port ?? null,
-    avatar: agent.avatar ?? null,
-    rawJson,
-    deactivatedAt: null,
-  };
-  const existing = await db.agent.findUnique({
-    where: { slug: agent.user },
-    select: {
-      name: true,
-      email: true,
-      role: true,
-      codeOwner: true,
-      gatewayPort: true,
-      avatar: true,
-      rawJson: true,
-      deactivatedAt: true,
-    },
-  });
-  const changed = !existing ||
-    existing.deactivatedAt !== null ||
-    existing.name !== data.name ||
-    existing.email !== data.email ||
-    existing.role !== data.role ||
-    existing.codeOwner !== data.codeOwner ||
-    existing.gatewayPort !== data.gatewayPort ||
-    existing.avatar !== data.avatar ||
-    existing.rawJson !== data.rawJson;
-
   await db.agent.upsert({
     where: { slug: agent.user },
-    update: data,
+    update: {
+      name: agent.name,
+      email: agent.email ?? null,
+      role: agent.role,
+      codeOwner,
+      gatewayPort: port ?? null,
+      avatar: agent.avatar ?? null,
+      rawJson: JSON.stringify(agent),
+      deactivatedAt: null,
+    },
     create: {
       slug: agent.user,
-      ...data,
+      name: agent.name,
+      email: agent.email ?? null,
+      role: agent.role,
+      codeOwner,
+      gatewayPort: port ?? null,
+      avatar: agent.avatar ?? null,
+      rawJson: JSON.stringify(agent),
     },
   });
-  return { changed };
 }
 
 async function ensureAgentUser(

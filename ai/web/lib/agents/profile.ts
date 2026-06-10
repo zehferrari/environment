@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "crypto";
 import { constants } from "fs";
-import { access, copyFile, lstat, mkdir, open, readdir, readFile, realpath, rename, stat, unlink } from "fs/promises";
+import { access, copyFile, lstat, mkdir, open, readdir, readFile, rename, stat, unlink } from "fs/promises";
 import path from "path";
 import { db } from "@/lib/db";
 import { readAgentIndex } from "@/lib/agents/index-loader";
@@ -26,7 +26,6 @@ export type ProfileFilePayload = {
   sha: string;
   bytes: number;
   modifiedAt: string | null;
-  symlinkTarget?: string | null;
 };
 
 export class ProfileError extends Error {
@@ -52,33 +51,18 @@ export async function agentProfileDir(agent: string): Promise<string> {
   return path.resolve("/srv/agents/openclaw", agent);
 }
 
-function isAllowedSharedProfileTarget(file: ProfileFileName, target: string) {
-  if (file !== "USER.md") return false;
-  const normalized = path.normalize(target);
-  return normalized === "/srv/agents/openclaw/_shared/USER.md"
-    || /^\/srv\/Code\/(?:environment|environment\.worktrees\/[^/]+)\/ai\/openclaw\/USER\.md$/.test(normalized);
-}
-
-async function safeProfilePath(agent: string, file: ProfileFileName): Promise<{ profileDir: string; filePath: string; linkPath: string; symlinkTarget: string | null }> {
+async function safeProfilePath(agent: string, file: ProfileFileName): Promise<{ profileDir: string; filePath: string }> {
   const profileDir = await agentProfileDir(agent);
-  const linkPath = path.resolve(profileDir, file);
-  if (!linkPath.startsWith(profileDir + path.sep)) {
+  const filePath = path.resolve(profileDir, file);
+  if (!filePath.startsWith(profileDir + path.sep)) {
     throw new ProfileError(400, "Profile path escapes profile directory");
   }
-  const st = await lstat(linkPath).catch((err: NodeJS.ErrnoException) => {
+  const st = await lstat(filePath).catch((err: NodeJS.ErrnoException) => {
     if (err.code === "ENOENT") return null;
     throw err;
   });
-  if (!st?.isSymbolicLink()) return { profileDir, filePath: linkPath, linkPath, symlinkTarget: null };
-
-  const target = await realpath(linkPath).catch((err: NodeJS.ErrnoException) => {
-    if (err.code === "ENOENT") throw new ProfileError(400, "Profile symlink target does not exist");
-    throw err;
-  });
-  if (!isAllowedSharedProfileTarget(file, target)) {
-    throw new ProfileError(400, "Refusing to read or write symlinked profile file");
-  }
-  return { profileDir, filePath: target, linkPath, symlinkTarget: target };
+  if (st?.isSymbolicLink()) throw new ProfileError(400, "Refusing to read or write symlinked profile file");
+  return { profileDir, filePath };
 }
 
 export function sha256(content: string | Buffer): string {
@@ -86,7 +70,7 @@ export function sha256(content: string | Buffer): string {
 }
 
 export async function readProfileFile(agent: string, file: ProfileFileName): Promise<ProfileFilePayload> {
-  const { filePath, symlinkTarget } = await safeProfilePath(agent, file);
+  const { filePath } = await safeProfilePath(agent, file);
   const buf = await readFile(filePath).catch((err: NodeJS.ErrnoException) => {
     if (err.code === "ENOENT") return Buffer.from("");
     throw err;
@@ -102,7 +86,6 @@ export async function readProfileFile(agent: string, file: ProfileFileName): Pro
     sha: sha256(buf),
     bytes: buf.byteLength,
     modifiedAt: st?.mtime ? st.mtime.toISOString() : null,
-    symlinkTarget,
   };
 }
 
@@ -174,9 +157,6 @@ export async function writeProfileFile(input: {
   const { profileDir, filePath } = await safeProfilePath(input.agent, input.file);
   await access(profileDir, constants.W_OK).catch(() => {
     throw new ProfileError(403, "Profile directory is not writable by PM process");
-  });
-  await access(path.dirname(filePath), constants.W_OK).catch(() => {
-    throw new ProfileError(403, "Profile file target directory is not writable by PM process");
   });
 
   const before = await readProfileFile(input.agent, input.file);

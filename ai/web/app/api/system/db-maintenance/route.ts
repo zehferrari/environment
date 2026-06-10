@@ -6,20 +6,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { isLoopbackRequest } from "@/lib/agents/context-api/auth";
-import { runDbMaintenance, type DbMaintenanceResult } from "@/lib/db-maintenance";
+import { runDbMaintenance } from "@/lib/db-maintenance";
 import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-function shouldStoreMaintenanceActivity(result: DbMaintenanceResult) {
-  return Boolean(
-    result.error ||
-    result.vacuumed ||
-    (result.pagesReclaimed != null && result.pagesReclaimed > 0) ||
-    (result.checkpoint?.busy ?? 0) > 0,
-  );
-}
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -30,18 +21,18 @@ export async function POST(req: NextRequest) {
 
   const result = await runDbMaintenance();
 
-  if (shouldStoreMaintenanceActivity(result)) {
-    try {
-      await db.activityLog.create({
-        data: {
-          kind: "db.maintenance",
-          payload: JSON.stringify(result),
-          userId: session?.user?.id ?? null,
-        },
-      });
-    } catch (err) {
-      console.error("[db-maintenance] failed to persist audit row:", err);
-    }
+  // Persist last-run result as an audit row (reuses ActivityLog — no schema
+  // change). The Activity page already renders these.
+  try {
+    await db.activityLog.create({
+      data: {
+        kind: "db.maintenance",
+        payload: JSON.stringify(result),
+        userId: session?.user?.id ?? null,
+      },
+    });
+  } catch (err) {
+    console.error("[db-maintenance] failed to persist audit row:", err);
   }
 
   return NextResponse.json(result, {

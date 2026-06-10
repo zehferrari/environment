@@ -35,7 +35,6 @@ from pathlib import Path
 CONFIG_PATH = "/etc/ai-monitor/config.json"
 STATE_PATH = "/var/lib/ai-monitor/state.json"
 RUN_LOCK_PATH = "/var/lib/ai-monitor/run.lock"
-RUNUSER_BIN = "/usr/sbin/runuser"
 
 
 def acquire_run_lock():
@@ -1373,18 +1372,6 @@ def probe_pm_workflow(cfg, registry):
               AND t.parentTaskId IS NULL
               AND t.status != 'Done'
               AND (r.status IS NULL OR r.status IN ('queued', 'accepted', 'streaming'))
-              AND NOT EXISTS (
-                SELECT 1
-                FROM PmChannelRun rr
-                WHERE rr.taskId = t.id
-                  AND rr.agentSlug = CASE
-                    WHEN m.agentSlug = 'room' AND m.targetValue LIKE 'agent:%'
-                      THEN substr(m.targetValue, 7)
-                    ELSE m.agentSlug
-                  END
-                  AND rr.status IN ('streaming', 'complete')
-                  AND COALESCE(rr.lastEventAt, rr.updatedAt, rr.createdAt) >= m.createdAt
-              )
             ORDER BY m.createdAt DESC
             LIMIT 200
             """
@@ -1414,16 +1401,11 @@ def probe_pm_workflow(cfg, registry):
             or "monitor-agent"
         )
 
-        seen_orphan_rows = set()
         for row in orphan_rows:
             if len(out["items"]) >= max_items:
                 break
             if row["status"] == "Done":
                 continue
-            dedupe_key = (row["id"], row["messageAgentSlug"], row["status"])
-            if dedupe_key in seen_orphan_rows:
-                continue
-            seen_orphan_rows.add(dedupe_key)
             is_current = _pm_workflow_notification_is_current(row)
             age_s = (
                 _pm_age_s(row["runLastEventAt"])
@@ -2241,7 +2223,7 @@ def _pm_required_action_from_reason(reason):
     return reason.split(marker, 1)[1].strip()[:500]
 
 
-def _run_pm_workflow_nudges(user, bucket, cfg=None):
+def _run_pm_workflow_nudges(user, bucket):
     """Send PM workflow recovery through the native PM channel.
 
     Generic openclaw-control wakes land in the heartbeat/system-event lane
@@ -2279,82 +2261,6 @@ def _run_pm_workflow_nudges(user, bucket, cfg=None):
     return results
 
 
-def _pm_recovery_confirm_delay_s(cfg, default_s):
-    pc = (cfg or {}).get("pm_workflow") or {}
-    try:
-        return int(pc.get("recovery_confirm_seconds", default_s))
-    except Exception:
-        return default_s
-
-
-def _pm_channel_run_snapshot(cfg, agent, message_id):
-    if not message_id:
-        return {"ok": False, "error": "missing messageId"}
-    db_path = _sqlite_pm_db_path(cfg or {})
-    if not os.path.exists(db_path):
-        return {"ok": False, "error": f"PM database not found: {db_path}"}
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-        try:
-            row = conn.execute(
-                """
-                SELECT
-                  id, status, error, acceptedAt, streamingAt, completedAt,
-                  failedAt, lastEventAt, streamSeq, updatedAt
-                FROM PmChannelRun
-                WHERE agentSlug = ? AND messageId = ?
-                ORDER BY updatedAt DESC
-                LIMIT 1
-                """,
-                (agent, message_id),
-            ).fetchone()
-        finally:
-            conn.close()
-    except Exception as e:
-        return {"ok": False, "error": f"PM channel run lookup failed: {e}"}
-    if not row:
-        return {"ok": False, "error": "PmChannelRun row not found"}
-    return {
-        "ok": True,
-        "id": row["id"],
-        "status": row["status"],
-        "error": row["error"],
-        "acceptedAt": row["acceptedAt"],
-        "streamingAt": row["streamingAt"],
-        "completedAt": row["completedAt"],
-        "failedAt": row["failedAt"],
-        "lastEventAt": row["lastEventAt"],
-        "streamSeq": row["streamSeq"],
-        "updatedAt": row["updatedAt"],
-    }
-
-
-def _pm_channel_run_confirmed(snapshot):
-    if not snapshot or not snapshot.get("ok"):
-        return False
-    if snapshot.get("status") in ("streaming", "complete"):
-        return True
-    try:
-        return int(snapshot.get("streamSeq") or 0) > 0
-    except Exception:
-        return False
-
-
-def _confirm_pm_nudge_results(cfg, user, nudge_results):
-    confirmed_any = False
-    for result in nudge_results:
-        parsed = result.get("parsed") or {}
-        message_id = parsed.get("messageId")
-        snapshot = _pm_channel_run_snapshot(cfg or {}, user, message_id)
-        confirmed = _pm_channel_run_confirmed(snapshot)
-        result["confirmation"] = snapshot
-        result["confirmed"] = bool(confirmed)
-        if confirmed:
-            confirmed_any = True
-    return confirmed_any
-
-
 def _bucket_only_pm(bucket):
     return bool(bucket.get("pm_tasks")) and not (
         bucket.get("tickets") or bucket.get("queue_keys") or bucket.get("emails")
@@ -2368,7 +2274,7 @@ def _bucket_needs_pm_restart(bucket):
     )
 
 
-def restart_and_wake_stalled_agents(no_agent_issues, cfg=None):
+def restart_and_wake_stalled_agents(no_agent_issues):
     """Tier-2 escalation for bypass-monitor kinds: instead of `wake-agent`,
     run `openclaw-control restart-and-wake <user> <reminder>`. Same shape
     as auto_wake_stalled_agents — same grouping by user, same idle re-probe
@@ -2424,11 +2330,10 @@ def restart_and_wake_stalled_agents(no_agent_issues, cfg=None):
                 "restart-services", user, "ai-monitor PM workflow retry",
             ]
             restart_rc, _, restart_err = run_cmd(restart_cmd, timeout=120)
-            nudge_results = _run_pm_workflow_nudges(user, b, cfg)
-            time.sleep(_pm_recovery_confirm_delay_s(cfg, 20))
-            confirmed = _confirm_pm_nudge_results(cfg, user, nudge_results)
+            nudge_results = _run_pm_workflow_nudges(user, b)
+            time.sleep(20)
             post_idle_s, _ = probe_session_idle_for_user(user, f"/home/{user}")
-            recovered = confirmed
+            recovered = any(r.get("ok") for r in nudge_results)
             results[user] = {
                 "tickets": b["tickets"],
                 "queue_keys": b["queue_keys"],
@@ -2515,7 +2420,7 @@ def restart_and_wake_stalled_agents(no_agent_issues, cfg=None):
     return results
 
 
-def auto_wake_stalled_agents(no_agent_issues, cfg=None):
+def auto_wake_stalled_agents(no_agent_issues):
     """Deterministic fallback when the monitor suppresses an issue that REQUIRED
     a wake without performing one. Handles two kinds:
       - task-stalled-no-agent (ticket-attached) — reminder names the ticket(s)
@@ -2584,11 +2489,10 @@ def auto_wake_stalled_agents(no_agent_issues, cfg=None):
                     "restart-services", user, "ai-monitor PM channel no-start",
                 ]
                 restart_rc, _, restart_err = run_cmd(restart_cmd, timeout=120)
-            nudge_results = _run_pm_workflow_nudges(user, b, cfg)
-            time.sleep(_pm_recovery_confirm_delay_s(cfg, 15))
-            confirmed = _confirm_pm_nudge_results(cfg, user, nudge_results)
+            nudge_results = _run_pm_workflow_nudges(user, b)
+            time.sleep(15)
             post_idle_s, _ = probe_session_idle_for_user(user, f"/home/{user}")
-            recovered = confirmed
+            recovered = any(r.get("ok") for r in nudge_results)
             results[user] = {
                 "tickets": b["tickets"],
                 "queue_keys": b["queue_keys"],
@@ -2786,7 +2690,7 @@ def hand_off_to_monitor(cfg, registry, incident_id, incident_payload):
         f"decision to /var/lib/ai-monitor/decisions/{incident_id}.json when done."
     )
     cmd = [
-        RUNUSER_BIN, "-u", monitor_user, "--",
+        "runuser", "-u", monitor_user, "--",
         "env", f"HOME={monitor_home}",
         f"XDG_RUNTIME_DIR=/run/user/{monitor_uid}",
         "bash", "-lc",
@@ -3189,7 +3093,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
             tier_actions = []
 
             if tier1_issues:
-                wake_results = auto_wake_stalled_agents(tier1_issues, cfg)
+                wake_results = auto_wake_stalled_agents(tier1_issues)
                 for i in tier1_issues:
                     k = event_key(i)
                     ev = state["events"].get(k, {})
@@ -3210,7 +3114,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                 })
 
             if tier2_issues:
-                rw_results = restart_and_wake_stalled_agents(tier2_issues, cfg)
+                rw_results = restart_and_wake_stalled_agents(tier2_issues)
                 for i in tier2_issues:
                     k = event_key(i)
                     ev = state["events"].get(k, {})
@@ -3231,7 +3135,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                 })
 
             if tier3_issues:
-                final_results = restart_and_wake_stalled_agents(tier3_issues, cfg)
+                final_results = restart_and_wake_stalled_agents(tier3_issues)
                 for i in tier3_issues:
                     k = event_key(i)
                     ev = state["events"].get(k, {})
@@ -3456,7 +3360,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                             )
                         ]
                         wake_results = (
-                            auto_wake_stalled_agents(no_agent_issues, cfg)
+                            auto_wake_stalled_agents(no_agent_issues)
                             if no_agent_issues else {}
                         )
                         all_recovered = bool(wake_results) and all(

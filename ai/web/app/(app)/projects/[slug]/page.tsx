@@ -2,11 +2,8 @@ import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { Prisma } from "@prisma/client";
 import {
   checkStatusTransition,
-  checkAssignment,
-  checkActingManager,
   type ActorKind,
   type WorkflowErrorCode,
 } from "@/lib/workflow";
@@ -346,142 +343,6 @@ async function moveTask(
   return { ok: true };
 }
 
-// Bulk reporter/assignee/reviewer assignment from the board's multi-select
-// toolbar. Mirrors the single-task form semantics: same agent self-assign /
-// self-review guards, same activity kinds, and an assignee change resets the
-// Action Plan approval (approvedOn/approvedBy) exactly like the task form.
-export type BulkAssignRole = "reporter" | "assignee" | "reviewer";
-export type BulkAssignResult =
-  | { ok: true; updated: number }
-  | { ok: false; message: string };
-
-async function bulkAssignTasks(
-  taskIds: string[],
-  role: BulkAssignRole,
-  principalId: string | null,
-  slug: string,
-): Promise<BulkAssignResult> {
-  "use server";
-  const actor = await requireActor();
-  if (taskIds.length === 0) return { ok: true, updated: 0 };
-
-  const project = await db.project.findUnique({
-    where: { slug, deletedAt: null },
-    select: { id: true },
-  });
-  if (!project) return { ok: false, message: "Project not found" };
-
-  // Guard agent self-assign / self-review the same way the task form does.
-  if (role === "assignee") {
-    const check = checkAssignment({ actor, newAssigneeId: principalId });
-    if (!check.ok) return { ok: false, message: check.message };
-  } else if (role === "reviewer") {
-    const check = checkActingManager({ actor, newActingManagerId: principalId });
-    if (!check.ok) return { ok: false, message: check.message };
-  }
-
-  // Resolve + validate the target principal once (null clears the field).
-  let targetUsername: string | null = null;
-  if (principalId) {
-    const target = await db.user.findUnique({
-      where: { id: principalId },
-      select: { username: true, status: true },
-    });
-    if (!target || target.status !== "active") {
-      return { ok: false, message: "Selected person is not an active principal." };
-    }
-    targetUsername = target.username;
-  }
-
-  const tasks = await db.task.findMany({
-    where: { id: { in: taskIds }, projectId: project.id, deletedAt: null },
-    select: {
-      id: true,
-      reporterId: true,
-      assigneeId: true,
-      actingManagerId: true,
-      reporter: { select: { username: true } },
-      assignee: { select: { username: true } },
-      actingManager: { select: { username: true } },
-    },
-  });
-
-  const ops: Prisma.PrismaPromise<unknown>[] = [];
-  for (const task of tasks) {
-    const currentId =
-      role === "reporter"
-        ? task.reporterId
-        : role === "assignee"
-          ? task.assigneeId
-          : task.actingManagerId;
-    if (currentId === principalId) continue;
-
-    const relation = principalId === null
-      ? { disconnect: true as const }
-      : { connect: { id: principalId } };
-    const data: Prisma.TaskUpdateInput =
-      role === "reporter"
-        ? { reporter: relation }
-        : role === "assignee"
-          ? { assignee: relation, approvedOn: null, approvedBy: { disconnect: true } }
-          : { actingManager: relation };
-    ops.push(db.task.update({ where: { id: task.id }, data }));
-
-    const fromUsername =
-      role === "reporter"
-        ? task.reporter?.username ?? null
-        : role === "assignee"
-          ? task.assignee?.username ?? null
-          : task.actingManager?.username ?? null;
-    const kind =
-      role === "reporter"
-        ? "task.reporter"
-        : role === "assignee"
-          ? "task.assign"
-          : "task.acting_manager";
-    ops.push(
-      db.activityLog.create({
-        data: {
-          projectId: project.id,
-          taskId: task.id,
-          userId: actor.id,
-          kind,
-          payload: JSON.stringify({ from: fromUsername, to: targetUsername, bulk: true }),
-        },
-      }),
-    );
-    if (role === "assignee") {
-      ops.push(
-        db.activityLog.create({
-          data: {
-            projectId: project.id,
-            taskId: task.id,
-            userId: actor.id,
-            kind: "task.action_plan.reset",
-            payload: JSON.stringify({ reason: "assignee_changed", from: fromUsername, to: targetUsername, bulk: true }),
-          },
-        }),
-      );
-    }
-  }
-
-  if (ops.length === 0) return { ok: true, updated: 0 };
-  await db.$transaction(ops);
-  revalidatePath(`/projects/${slug}`);
-  publishBoardTouch(project.id);
-  // updated = tasks actually changed (two+ ops per task).
-  const updated = tasks.filter((task) => {
-    const currentId =
-      role === "reporter"
-        ? task.reporterId
-        : role === "assignee"
-          ? task.assigneeId
-          : task.actingManagerId;
-    return currentId !== principalId;
-  }).length;
-  return { ok: true, updated };
-}
-
 export default async function ProjectBoardPage({
   params,
 }: {
@@ -577,16 +438,6 @@ export default async function ProjectBoardPage({
         moveTaskAction={moveTask}
         reorderTasksAction={reorderBoardTasks}
         deleteTaskAction={binTask}
-        bulkAssignAction={bulkAssignTasks}
-        principals={principals.map((p) => ({
-          id: p.id,
-          username: p.username,
-          name: p.name,
-          kind: p.kind,
-          avatarUpdatedAt: p.avatarUpdatedAt?.toISOString() ?? null,
-          agentSlug: p.agentSlug,
-          agentAvatar: p.agentAvatar,
-        }))}
       />
 
       <AddTaskFab

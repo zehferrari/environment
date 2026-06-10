@@ -4,7 +4,6 @@ import { db } from "@/lib/db";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { COLUMN_IDS } from "../columns";
 import { actorDisplayName, MessageAvatar, type MessageActor } from "@/components/message-avatar";
-import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import { formatGridDate } from "@/lib/date-format";
 import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 
@@ -77,15 +76,6 @@ function single(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
 }
 
-// Multi-value query params arrive as string | string[] | undefined depending
-// on how many of the same key the GET form submitted. Normalize to a deduped
-// non-empty list for `in` filtering.
-function multi(value: string | string[] | undefined): string[] {
-  if (value === undefined) return [];
-  const list = Array.isArray(value) ? value : [value];
-  return [...new Set(list.filter(Boolean))];
-}
-
 function parsePageSize(raw: string | string[] | undefined) {
   const value = single(raw);
   return PAGE_SIZES.includes(value as (typeof PAGE_SIZES)[number]) ? value! : "25";
@@ -113,9 +103,9 @@ export default async function ProjectTasksPage({
   if (!project) notFound();
 
   const view = single(sp.view) === "archive" ? "archive" : "board";
-  const reporterIds = multi(sp.reporterId);
-  const assigneeIds = multi(sp.assigneeId);
-  const reviewerIds = multi(sp.reviewerId);
+  const reporterId = single(sp.reporterId) ?? "";
+  const assigneeId = single(sp.assigneeId) ?? "";
+  const reviewerId = single(sp.reviewerId) ?? "";
   const status = single(sp.status) ?? "";
   const pageSize = parsePageSize(sp.pageSize);
   const take = pageSize === "all" ? undefined : Number(pageSize);
@@ -125,9 +115,9 @@ export default async function ProjectTasksPage({
     deletedAt: null,
     parentTaskId: null,
     archivedAt: view === "archive" ? { not: null } : null,
-    ...(reporterIds.length ? { reporterId: { in: reporterIds } } : {}),
-    ...(assigneeIds.length ? { assigneeId: { in: assigneeIds } } : {}),
-    ...(reviewerIds.length ? { actingManagerId: { in: reviewerIds } } : {}),
+    ...(reporterId ? { reporterId } : {}),
+    ...(assigneeId ? { assigneeId } : {}),
+    ...(reviewerId ? { actingManagerId: reviewerId } : {}),
     ...(status ? { status } : {}),
   };
 
@@ -174,22 +164,6 @@ export default async function ProjectTasksPage({
     : [];
   const activityActors = buildTaskActivityActorMaps(activityRows);
 
-  // People filters carry avatars and allow multiple selection.
-  const principalFilterOptions: AvatarComboboxOption[] = principals.map((p) => ({
-    value: p.id,
-    label: p.name,
-    actor: {
-      id: p.id,
-      username: p.username,
-      kind: p.kind,
-      name: p.name,
-      avatarUpdatedAt: p.avatarUpdatedAt ? p.avatarUpdatedAt.toISOString() : null,
-      agent:
-        p.kind === "agent"
-          ? { slug: p.agentSlug, name: p.name, avatar: p.agentAvatar }
-          : null,
-    },
-  }));
   const renderTaskRow = (task: (typeof tasks)[number]) => {
     const deploymentStatus = task.epic?.deploymentStatus ?? task.deploymentStatus;
     return (
@@ -240,11 +214,8 @@ export default async function ProjectTasksPage({
     );
   };
 
-  // Both the board and archive views group tasks under their Epic in
-  // collapsible blocks. Tasks with no epic are the "Direct Request" group,
-  // which sorts first and stays expanded. On the board view every group is
-  // expanded by default (it replaces the old flat list); on the archive view
-  // only Direct Request opens by default.
+  // Archive view groups tasks under their Epic in collapsible blocks. Tasks with
+  // no epic are the "Direct Request" group, which sorts first and stays expanded.
   const DIRECT_REQUEST_KEY = "__direct__";
   type EpicGroup = {
     id: string;
@@ -253,7 +224,7 @@ export default async function ProjectTasksPage({
     tasks: typeof tasks;
   };
   const epicGroups: EpicGroup[] = [];
-  {
+  if (view === "archive") {
     const byEpic = new Map<string, EpicGroup>();
     for (const task of tasks) {
       const key = task.epic?.id ?? DIRECT_REQUEST_KEY;
@@ -326,44 +297,32 @@ export default async function ProjectTasksPage({
         </div>
       </header>
 
-      <form
-        id="taskFilters"
-        className="grid gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-3 text-sm md:grid-cols-3 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto]"
-      >
+      <form className="grid gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-3 text-sm md:grid-cols-3 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto]">
         <input type="hidden" name="view" value={view} />
-        <FilterField label="Reporter">
-          <AvatarCombobox
-            formId="taskFilters"
-            name="reporterId"
-            multiple
-            defaultValues={reporterIds}
-            options={principalFilterOptions}
-            emptyLabel="All reporters"
-            ariaLabel="Reporter filter"
-          />
-        </FilterField>
-        <FilterField label="Assignee">
-          <AvatarCombobox
-            formId="taskFilters"
-            name="assigneeId"
-            multiple
-            defaultValues={assigneeIds}
-            options={principalFilterOptions}
-            emptyLabel="All assignees"
-            ariaLabel="Assignee filter"
-          />
-        </FilterField>
-        <FilterField label="Reviewer">
-          <AvatarCombobox
-            formId="taskFilters"
-            name="reviewerId"
-            multiple
-            defaultValues={reviewerIds}
-            options={principalFilterOptions}
-            emptyLabel="All reviewers"
-            ariaLabel="Reviewer filter"
-          />
-        </FilterField>
+        <FilterSelect label="Reporter" name="reporterId" value={reporterId}>
+          <option value="">All reporters</option>
+          {principals.map((principal) => (
+            <option key={principal.id} value={principal.id}>
+              {principal.name}
+            </option>
+          ))}
+        </FilterSelect>
+        <FilterSelect label="Assignee" name="assigneeId" value={assigneeId}>
+          <option value="">All assignees</option>
+          {principals.map((principal) => (
+            <option key={principal.id} value={principal.id}>
+              {principal.name}
+            </option>
+          ))}
+        </FilterSelect>
+        <FilterSelect label="Reviewer" name="reviewerId" value={reviewerId}>
+          <option value="">All reviewers</option>
+          {principals.map((principal) => (
+            <option key={principal.id} value={principal.id}>
+              {principal.name}
+            </option>
+          ))}
+        </FilterSelect>
         <FilterSelect label="Status" name="status" value={status}>
           <option value="">All statuses</option>
           {COLUMN_IDS.map((column) => (
@@ -399,7 +358,7 @@ export default async function ProjectTasksPage({
         <p className="rounded-xl border border-dashed border-[var(--color-line)] p-6 text-center text-sm text-[var(--color-text-muted)]">
           No tasks match these filters.
         </p>
-      ) : (
+      ) : view === "archive" ? (
         <div className="space-y-3">
           {epicGroups.map((group) => {
             // Elapsed sums every child task; created/updated come from the epic
@@ -416,7 +375,7 @@ export default async function ProjectTasksPage({
             return (
             <details
               key={group.id}
-              open={view === "board" || group.id === DIRECT_REQUEST_KEY}
+              open={group.id === DIRECT_REQUEST_KEY}
               className="group overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]"
             >
               <summary className="cursor-pointer list-none border-b border-[var(--color-line)] bg-[var(--color-panel)] [&::-webkit-details-marker]:hidden">
@@ -464,6 +423,13 @@ export default async function ProjectTasksPage({
             </details>
             );
           })}
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]">
+          {TASK_HEADER_GRID}
+          <ul className="divide-y divide-[var(--color-line)]">
+            {tasks.map(renderTaskRow)}
+          </ul>
         </div>
       )}
     </div>
@@ -537,17 +503,6 @@ function FilterSelect({
         {children}
       </select>
     </label>
-  );
-}
-
-function FilterField({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="block">
-      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-        {label}
-      </span>
-      {children}
-    </div>
   );
 }
 

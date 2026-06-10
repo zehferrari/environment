@@ -8,7 +8,6 @@ type ProfileFile = {
   sha: string;
   bytes: number;
   modifiedAt: string | null;
-  symlinkTarget?: string | null;
 };
 
 type SaveState = { kind: "idle" } | { kind: "saving" } | { kind: "ok"; message: string } | { kind: "error"; message: string };
@@ -109,11 +108,6 @@ export default function ProfileEditor({ agent, files, canEdit }: { agent: string
           <span><strong className="text-[var(--color-text)]">{current.file}</strong> · {current.bytes} bytes · sha {current.sha.slice(0, 12)}</span>
           <span>{current.modifiedAt ? new Date(current.modifiedAt).toLocaleString() : "not on disk yet"}</span>
         </div>
-        {current.symlinkTarget ? (
-          <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-xs text-[var(--color-text-muted)]">
-            Shared file: <code>{current.symlinkTarget}</code>
-          </div>
-        ) : null}
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}

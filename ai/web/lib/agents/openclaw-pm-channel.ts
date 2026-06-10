@@ -46,14 +46,11 @@ export interface SendPmChannelTurnArgs {
   fetchImpl?: typeof fetch;
 }
 
-export type PmChannelTransportMode = "http" | "inproc" | "uds";
-
 export interface SendPmChannelTurnResult {
   ok: boolean;
   status?: number;
   error?: string;
   driver: "openclaw-pm-channel";
-  transportMode?: PmChannelTransportMode;
 }
 
 export function buildPmTurnSessionKey(baseSessionKey: string, messageId: string): string {
@@ -162,44 +159,6 @@ function defaultTimeoutMs() {
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 5000;
 }
 
-export function resolvePmChannelTransportMode(): PmChannelTransportMode {
-  const raw = (process.env.PM_PM_CHANNEL_TRANSPORT ?? process.env.PM_OPENCLAW_CHANNEL_TRANSPORT ?? "http")
-    .trim()
-    .toLowerCase();
-  return raw === "inproc" || raw === "uds" ? raw : "http";
-}
-
-function pmChannelStreamUrl(transportMode: PmChannelTransportMode) {
-  if (transportMode !== "http") return undefined;
-  return new URL(
-    "/api/openclaw/pm-channel/stream",
-    callbackBaseUrl(),
-  ).toString();
-}
-
-export function buildPmChannelIngressPayload(
-  args: SendPmChannelTurnArgs,
-  transportMode: PmChannelTransportMode = resolvePmChannelTransportMode(),
-) {
-  return {
-    version: 1,
-    kind: args.kind,
-    agentSlug: args.agentSlug,
-    sessionKey: args.sessionKey,
-    text: args.text,
-    contextText: args.contextText ?? null,
-    systemPrompt: args.systemPrompt ?? null,
-    actor: args.actor,
-    replyTarget: args.replyTarget,
-    callbackUrl: new URL(
-      "/api/openclaw/pm-channel/reply",
-      callbackBaseUrl(),
-    ).toString(),
-    streamTransport: transportMode,
-    streamUrl: pmChannelStreamUrl(transportMode),
-  };
-}
-
 export async function sendOpenClawPmChannelTurn(
   args: SendPmChannelTurnArgs,
 ): Promise<SendPmChannelTurnResult> {
@@ -238,7 +197,6 @@ export async function dispatchOpenClawPmChannelTurn(
   }
 
   const url = new URL(channelPath(), `http://127.0.0.1:${args.gatewayPort}`);
-  const transportMode = resolvePmChannelTransportMode();
   const timeoutMs = args.timeoutMs ?? defaultTimeoutMs();
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
@@ -251,7 +209,25 @@ export async function dispatchOpenClawPmChannelTurn(
         "content-type": "application/json",
         authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify(buildPmChannelIngressPayload(args, transportMode)),
+      body: JSON.stringify({
+        version: 1,
+        kind: args.kind,
+        agentSlug: args.agentSlug,
+        sessionKey: args.sessionKey,
+        text: args.text,
+        contextText: args.contextText ?? null,
+        systemPrompt: args.systemPrompt ?? null,
+        actor: args.actor,
+        replyTarget: args.replyTarget,
+        callbackUrl: new URL(
+          "/api/openclaw/pm-channel/reply",
+          callbackBaseUrl(),
+        ).toString(),
+        streamUrl: new URL(
+          "/api/openclaw/pm-channel/stream",
+          callbackBaseUrl(),
+        ).toString(),
+      }),
       signal: ac.signal,
     });
 
@@ -261,7 +237,6 @@ export async function dispatchOpenClawPmChannelTurn(
         ok: false,
         status: res.status,
         driver: "openclaw-pm-channel",
-        transportMode: resolvePmChannelTransportMode(),
         error: body.trim() || `HTTP ${res.status}`,
       };
       await recordPmChannelRunDispatch({ target: args.replyTarget, result });
@@ -272,7 +247,6 @@ export async function dispatchOpenClawPmChannelTurn(
       ok: true,
       status: res.status,
       driver: "openclaw-pm-channel",
-      transportMode,
     };
     await recordPmChannelRunDispatch({ target: args.replyTarget, result });
     return result;
@@ -280,7 +254,6 @@ export async function dispatchOpenClawPmChannelTurn(
     const result: SendPmChannelTurnResult = {
       ok: false,
       driver: "openclaw-pm-channel",
-      transportMode,
       error: err instanceof Error ? err.message : String(err),
     };
     await recordPmChannelRunDispatch({ target: args.replyTarget, result });

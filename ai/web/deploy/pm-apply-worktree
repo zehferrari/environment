@@ -228,8 +228,5 @@ systemctl restart pm.service
 if systemctl list-unit-files 'pm-consumer.service' --no-legend 2>/dev/null | grep -q '^pm-consumer\.service'; then
   systemctl restart pm-consumer.service
 fi
-if systemctl list-unit-files 'pm-verify-runner.service' --no-legend 2>/dev/null | grep -q '^pm-verify-runner\.service'; then
-  systemctl restart pm-verify-runner.service
-fi
 printf 'pm-apply-worktree: pm.service now serving %s with DATABASE_URL=file:%s\n' "$real" "$db_real"
 printf 'pm-apply-worktree: pm-consumer.service now running from %s\n' "$app_root"

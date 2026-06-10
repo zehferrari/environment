@@ -44,6 +44,7 @@ export type ProposalOp =
       ref: string;
       title: string;
       description?: string | null;
+      assignee?: PrincipalRef;
       actingManager?: PrincipalRef;
     }
   | {
@@ -69,6 +70,7 @@ export type ProposalOp =
       target: string;
       title?: string;
       description?: string | null;
+      assignee?: PrincipalRef;
       actingManager?: PrincipalRef;
       status?: string;
     }
@@ -340,6 +342,7 @@ export async function validateProposal(
       case "create_epic": {
         validateTitle(raw.title, errors, true);
         validateDescription(raw.description, errors);
+        validatePrincipal(raw.assignee, errors, "assignee");
         validatePrincipal(raw.actingManager, errors, "actingManager");
         break;
       }
@@ -377,6 +380,7 @@ export async function validateProposal(
         requireExistingEpic(raw.target, errors);
         validateTitle(raw.title, errors, false);
         validateDescription(raw.description, errors);
+        validatePrincipal(raw.assignee, errors, "assignee");
         validatePrincipal(raw.actingManager, errors, "actingManager");
         if (raw.status !== undefined && !EPIC_STATUSES.includes(raw.status as EpicStatus)) {
           errors.push(`unknown epic status: ${String(raw.status)}`);

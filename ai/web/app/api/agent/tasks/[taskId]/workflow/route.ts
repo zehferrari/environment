@@ -167,7 +167,7 @@ export async function POST(
             onlyReportersCanSetTasksDone: true,
           },
         },
-        epic: { select: { status: true, actingManagerId: true, commitPrefix: true, workItemKey: true } },
+        epic: { select: { status: true, actingManagerId: true, commitPrefix: true } },
       },
     }),
   ]);
@@ -350,14 +350,10 @@ export async function POST(
     const repoTouched = typeof payload.repoTouched === "boolean"
       ? payload.repoTouched
       : codeTouching;
-    const fallbackCommitPrefix = effectiveCommitPrefix({
+    const resolvedCommitPrefix = effectiveCommitPrefix({
       commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
       workItemKey: task.workItemKey,
     });
-    const taskKey = task.workItemKey ?? task.id;
-    const resolvedCommitPrefix = task.epic?.workItemKey
-      ? `${task.epic.workItemKey} ${taskKey}`
-      : fallbackCommitPrefix;
 
     if (task.status !== "Review") {
       await moveTaskStatus({
@@ -482,22 +478,10 @@ export async function POST(
       return NextResponse.json({ error: "comment is required and must be <= 8000 chars" }, { status: 400 });
     }
 
-    const maxRank = await db.task.aggregate({
-      where: { status: "To Do", deletedAt: null },
-      _max: { rank: true },
-    });
     const created = await db.$transaction(async (tx) => {
       const row = await tx.comment.create({
         data: { taskId: task.id, userId: agent.user!.id, body: comment },
         select: { id: true },
-      });
-      await tx.task.update({
-        where: { id: task.id },
-        data: {
-          status: "To Do",
-          rank: (maxRank._max.rank ?? 0) + 1,
-          statusChangedAt: new Date(),
-        },
       });
       await tx.activityLog.create({
         data: {
@@ -510,22 +494,6 @@ export async function POST(
             commentId: row.id,
             workflowAction: action,
             agentSlug: agent.slug,
-          }),
-        },
-      });
-      await tx.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId: task.id,
-          userId: agent.user!.id,
-          kind: "task.move",
-          targetAgent: agent.slug,
-          payload: JSON.stringify({
-            from: "Review",
-            to: "To Do",
-            via: "agent-workflow",
-            action,
-            commentId: row.id,
           }),
         },
       });
@@ -544,23 +512,9 @@ export async function POST(
       actor,
       excludeAgentSlugs: [agent.slug],
     });
-    if (task.assigneeId) {
-      await sendTaskWorkflowNotification({
-        taskId: task.id,
-        targetUserId: task.assigneeId,
-        actor,
-        reason: "review_feedback",
-        body: [
-          `Review feedback for "${task.title}" moved the task back to To Do.`,
-          "Read the reviewer comment, keep the approved Action Plan unless a material plan change is required, then start/resume work through the workflow endpoint.",
-          "Do not post an acknowledgement-only response.",
-        ].join("\n"),
-      });
-    }
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
-    publishBoardTouch(task.projectId);
-    return NextResponse.json({ ok: true, taskId: task.id, status: "To Do", commentId: created.id });
+    return NextResponse.json({ ok: true, taskId: task.id, status: task.status, commentId: created.id });
   }
 
   if (action === "review_done") {

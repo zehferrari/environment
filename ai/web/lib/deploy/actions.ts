@@ -50,36 +50,6 @@ export async function requestWorktreeSwitch(
   return { id };
 }
 
-export async function requestWorktreeInstall(target: string): Promise<{ id: string }> {
-  const session = await auth();
-  if (!session?.user?.id || session.user.kind === "agent") throw new Error("Forbidden");
-
-  const state = await readSwitchState();
-  if (!state.available) {
-    throw new Error("Worktree switcher is not installed on this host.");
-  }
-  const wt = state.worktrees.find((w) => w.name === target || w.path === target);
-  if (!wt) throw new Error(`Unknown worktree: ${target}`);
-  if (wt.ready) throw new Error(`${wt.name} already has dependencies installed.`);
-
-  const id = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-  const body = JSON.stringify(
-    {
-      id,
-      action: "install",
-      target: wt.name,
-      requestedBy: session.user.name ?? session.user.id,
-      requestedAt: new Date().toISOString(),
-    },
-    null,
-    2,
-  );
-  const tmp = path.join(SWITCH_DIR, `request.json.tmp-${id}`);
-  await writeFile(tmp, body, { mode: 0o664 });
-  await rename(tmp, path.join(SWITCH_DIR, "request.json"));
-  return { id };
-}
-
 async function requireHumanActor() {
   const session = await auth();
   if (!session?.user?.id || session.user.kind === "agent") throw new Error("Forbidden");

@@ -1,15 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { MessageAvatar, type MessageActor } from "@/components/message-avatar";
 import { extractDiscussionSectionA } from "@/lib/agents/discussion-reply-format";
-import {
-  formatStreamingReplyElapsed,
-  reconnectingCopy,
-  waitingCopy,
-  type StreamingReplyRunStatus,
-  type StreamingReplyStatus,
-} from "@/lib/agents/streaming-agent-reply-status";
 
 type TargetKind = "direct" | "task-chat" | "task-comment" | "epic-chat";
 
@@ -17,10 +10,7 @@ type StreamState = {
   text?: string;
   reasoning?: string;
   status?: "streaming" | "done" | "error";
-  lifecycleStatus?: "thinking" | "reading" | "working" | null;
-  toolStatus?: "call" | "result" | null;
-  toolName?: string | null;
-  runStatus?: StreamingReplyRunStatus;
+  runStatus?: "queued" | "accepted" | "streaming" | "retryable" | "complete" | "failed";
   error?: string | null;
   updatedAt?: number;
 };
@@ -34,7 +24,6 @@ interface StreamingAgentReplyProps {
   label: string;
   className?: string;
   anonymizeTyping?: boolean;
-  onFinal?: (payload: { agentSlug: string; text: string; reasoning: string; status: "done" | "error" }) => void;
 }
 
 function TypingDots() {
@@ -57,7 +46,7 @@ function applyStreamState(
   incoming: StreamState,
   setText: (value: string | ((prev: string) => string)) => void,
   setReasoning: (value: string | ((prev: string) => string)) => void,
-  setStatus: (value: StreamingReplyStatus) => void,
+  setStatus: (value: "connecting" | "streaming" | "done" | "error") => void,
   setRunStatus: (value: StreamState["runStatus"]) => void,
 ) {
   if (typeof incoming.text === "string") setText(incoming.text);
@@ -70,6 +59,40 @@ function applyStreamState(
 
 const ANONYMOUS_TYPING_IDLE_MS = 8_000;
 
+function formatElapsed(ms: number) {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function waitingCopy(args: {
+  status: "connecting" | "streaming" | "done" | "error";
+  runStatus?: StreamState["runStatus"];
+  elapsedMs: number;
+  error: string | null;
+}) {
+  if (args.status === "error") {
+    return args.error ?? "Agent stream failed";
+  }
+  if (args.runStatus === "queued") {
+    return "Queued...";
+  }
+  if (args.runStatus === "retryable") {
+    return "Retrying...";
+  }
+
+  const phases = [
+    { until: 4_000, label: "Waking..." },
+    { until: 12_000, label: "Thinking..." },
+    { until: 24_000, label: "Reading..." },
+    { until: 40_000, label: "Planning..." },
+    { until: 64_000, label: "Writing..." },
+    { until: 92_000, label: "Checking..." },
+    { until: 125_000, label: "Sending..." },
+  ];
+  return phases.find((phase) => args.elapsedMs < phase.until)?.label ?? "Recovering reply...";
+}
+
 export default function StreamingAgentReply({
   targetKind,
   agentSlug,
@@ -79,37 +102,15 @@ export default function StreamingAgentReply({
   label,
   className = "",
   anonymizeTyping = false,
-  onFinal,
 }: StreamingAgentReplyProps) {
   const [text, setText] = useState("");
   const [reasoning, setReasoning] = useState("");
-  const [status, setStatus] = useState<StreamingReplyStatus>("connecting");
+  const [status, setStatus] = useState<"connecting" | "streaming" | "done" | "error">("connecting");
   const [runStatus, setRunStatus] = useState<StreamState["runStatus"]>("queued");
-  const [lifecycleStatus, setLifecycleStatus] = useState<StreamState["lifecycleStatus"]>(null);
-  const [toolStatus, setToolStatus] = useState<StreamState["toolStatus"]>(null);
-  const [toolName, setToolName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [startedAt] = useState(() => Date.now());
   const [lastUpdateAt, setLastUpdateAt] = useState<number | null>(null);
-  const [connectionIssueAt, setConnectionIssueAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
-  const [finalized, setFinalized] = useState(false);
-  const finalNotifiedRef = useRef(false);
-  const latestTextRef = useRef("");
-  const latestReasoningRef = useRef("");
-  const onFinalRef = useRef(onFinal);
-
-  useEffect(() => {
-    latestTextRef.current = text;
-  }, [text]);
-
-  useEffect(() => {
-    latestReasoningRef.current = reasoning;
-  }, [reasoning]);
-
-  useEffect(() => {
-    onFinalRef.current = onFinal;
-  }, [onFinal]);
 
   const url = useMemo(() => {
     const params = new URLSearchParams({
@@ -123,8 +124,6 @@ export default function StreamingAgentReply({
   }, [agentSlug, messageId, targetKind, taskId, epicId]);
 
   useEffect(() => {
-    finalNotifiedRef.current = false;
-    setFinalized(false);
     const source = new EventSource(url);
 
     const parse = (event: MessageEvent<string>) => {
@@ -135,33 +134,13 @@ export default function StreamingAgentReply({
       }
     };
 
-    const notifyFinal = (payload: StreamState | null, finalStatus: "done" | "error") => {
-      if (finalNotifiedRef.current) return;
-      finalNotifiedRef.current = true;
-      onFinalRef.current?.({
-        agentSlug,
-        text: payload?.text ?? latestTextRef.current,
-        reasoning: payload?.reasoning ?? latestReasoningRef.current,
-        status: finalStatus,
-      });
-    };
-
     const onState = (event: MessageEvent<string>) => {
       const payload = parse(event);
       if (!payload) return;
       setError(payload.error ?? null);
-      setConnectionIssueAt(null);
-      setLifecycleStatus(payload.lifecycleStatus ?? null);
-      setToolStatus(payload.toolStatus ?? null);
-      setToolName(payload.toolName ?? null);
       setLastUpdateAt(payload.updatedAt ?? Date.now());
       applyStreamState(payload, setText, setReasoning, setStatus, setRunStatus);
       if (payload.status === "done") {
-        setFinalized(true);
-        notifyFinal(payload, "done");
-        source.close();
-      } else if (payload.status === "error") {
-        notifyFinal(payload, "error");
         source.close();
       }
     };
@@ -169,28 +148,17 @@ export default function StreamingAgentReply({
     const onErrorEvent = (event: MessageEvent<string>) => {
       const payload = parse(event);
       setError(payload?.error ?? "Agent stream failed");
-      setConnectionIssueAt(null);
       setRunStatus("failed");
       setStatus("error");
       setLastUpdateAt(payload?.updatedAt ?? Date.now());
-      notifyFinal(payload, "error");
-      source.close();
     };
 
     const onHeartbeat = () => {
       setLastUpdateAt((current) => current ?? Date.now());
-      setConnectionIssueAt(null);
       setStatus((current) => current === "connecting" ? "streaming" : current);
     };
 
     source.addEventListener("snapshot", onState);
-    source.addEventListener("status", onState);
-    source.addEventListener("status:thinking", onState);
-    source.addEventListener("status:reading", onState);
-    source.addEventListener("status:working", onState);
-    source.addEventListener("tool:call", onState);
-    source.addEventListener("tool:result", onState);
-    source.addEventListener("token", onState);
     source.addEventListener("partial", onState);
     source.addEventListener("reasoning", onState);
     source.addEventListener("final", onState);
@@ -199,10 +167,7 @@ export default function StreamingAgentReply({
     source.addEventListener("heartbeat", onHeartbeat);
     source.onerror = () => {
       setStatus((current) => {
-        if (current === "done" || current === "error") {
-          return current;
-        }
-        setConnectionIssueAt((existing) => existing ?? Date.now());
+        if (current === "done" || current === "error") return current;
         return "connecting";
       });
     };
@@ -210,7 +175,7 @@ export default function StreamingAgentReply({
     return () => {
       source.close();
     };
-  }, [agentSlug, url]);
+  }, [url]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -227,49 +192,40 @@ export default function StreamingAgentReply({
     agent: { slug: agentSlug, name: label, avatar: "placeholder" },
   };
 
-  if (finalized) return null;
-
   const waitLabel = waitingCopy({
     status,
     runStatus,
-    lifecycleStatus,
-    toolStatus,
-    toolName,
+    elapsedMs,
     error,
   });
-  const reconnectingMs = status !== "done" && status !== "error" && connectionIssueAt !== null
-    ? Date.now() - connectionIssueAt
-    : null;
-  const reconnectLabel = reconnectingCopy(reconnectingMs);
   const displayText = targetKind === "task-chat" || targetKind === "epic-chat"
     ? extractDiscussionSectionA(text)
     : text;
-  const elapsedLabel = formatStreamingReplyElapsed(lastUpdateAt ? Date.now() - lastUpdateAt : elapsedMs);
+  const elapsedLabel = formatElapsed(lastUpdateAt ? Date.now() - lastUpdateAt : elapsedMs);
   const liveTone = status === "error"
     ? "border-[var(--color-crit)]/30 bg-[var(--color-crit)]/[0.06] text-[var(--color-crit)]"
     : "border-[var(--color-accent)]/20 bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]";
 
   if (!text.trim() && !reasoning.trim()) {
-    if (connectionIssueAt !== null && reconnectLabel === null) return null;
     const typingLastSeenAt = lastUpdateAt ?? startedAt;
     if (anonymizeTyping && status !== "error" && Date.now() - typingLastSeenAt > ANONYMOUS_TYPING_IDLE_MS) return null;
     const typingText = anonymizeTyping && status !== "error"
       ? `${label} typing`
-      : reconnectLabel ?? waitLabel;
+      : waitLabel;
     return (
       <div className={`flex items-start gap-2.5 ${className}`}>
         <MessageAvatar actor={actor} />
         <div className={`w-fit max-w-[min(34rem,82%)] rounded-[1.15rem] rounded-bl-md border px-3.5 py-2.5 text-sm shadow-[0_8px_22px_rgba(15,23,42,0.05)] ring-1 ring-black/[0.02] ${liveTone}`}>
           <div className="flex min-w-0 items-center gap-2">
             <span className="shrink-0 rounded-full border border-current/20 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider">
-              {status === "error" ? "failed" : reconnectLabel ? "sync" : anonymizeTyping ? "typing" : runStatus === "accepted" ? "accepted" : "live"}
+              {status === "error" ? "failed" : anonymizeTyping ? "typing" : runStatus === "accepted" ? "accepted" : "live"}
             </span>
             <span className="min-w-0 break-words">{typingText}</span>
-            {status === "error" || reconnectLabel ? null : <TypingDots />}
+            {status === "error" ? null : <TypingDots />}
           </div>
-          {status === "error" || reconnectLabel ? null : (
+          {status === "error" ? null : (
             <div className="mt-2 flex items-center gap-2 text-[11px] text-[var(--color-text-muted)]">
-              <span>active {formatStreamingReplyElapsed(elapsedMs)}</span>
+              <span>active {formatElapsed(elapsedMs)}</span>
               <span className="h-1 flex-1 overflow-hidden rounded-full bg-[var(--color-line)]">
                 <span className="block h-full w-1/2 animate-pulse rounded-full bg-[var(--color-accent)]/60" />
               </span>
@@ -316,7 +272,7 @@ export default function StreamingAgentReply({
           </div>
         ) : status !== "error" && !reasoning.trim() ? (
           <div className="text-xs text-[var(--color-text-muted)] flex items-center gap-1">
-            working... <TypingDots />
+            Writing response <TypingDots />
           </div>
         ) : null}
       </div>

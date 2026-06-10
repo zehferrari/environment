@@ -265,7 +265,7 @@ export default function SidebarNav({
         </div>
       </div>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 text-sm">
+      <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4 text-sm">
         <div className="space-y-1">
           <NavItem
             href="/projects"
@@ -324,10 +324,15 @@ export default function SidebarNav({
                   active ? "text-[var(--color-accent)]" : "text-[var(--color-text-muted)]"
                 } ${collapsed ? "justify-center px-0" : "px-3"}`}
               >
-                {/* Avatar: busy → discreet pulsing ring (opacity only, kept
-                    within bounds so the collapsed rail never scrolls);
-                    stale/offline → grayscale; unread → red dot. */}
+                {/* Avatar: busy → glowing pulse ring; stale/offline → grayscale;
+                    unread → red dot. No status dot/label. */}
                 <div className="relative h-8 w-8 shrink-0">
+                  {agent.pulse ? (
+                    <span
+                      className="absolute -inset-0.5 animate-ping rounded-xl bg-[var(--color-accent)] opacity-30"
+                      aria-hidden="true"
+                    />
+                  ) : null}
                   <div className="relative grid h-8 w-8 place-items-center overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-xs font-semibold text-[var(--color-text)]">
                     {agent.avatarSrc ? (
                       // eslint-disable-next-line @next/next/no-img-element
@@ -343,12 +348,6 @@ export default function SidebarNav({
                       agent.name.slice(0, 1)
                     )}
                   </div>
-                  {agent.pulse ? (
-                    <span
-                      className="pointer-events-none absolute inset-0 animate-pulse rounded-lg ring-2 ring-[var(--color-accent)]/60"
-                      aria-hidden="true"
-                    />
-                  ) : null}
                   {agent.unread ? (
                     <span
                       className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-[var(--color-panel)] bg-red-500"

@@ -2,21 +2,11 @@ import type { PmChannelReplyTarget } from "@/lib/agents/openclaw-pm-channel";
 
 export type PmChannelStreamEventKind =
   | "status"
-  | "status:thinking"
-  | "status:reading"
-  | "status:working"
-  | "tool:call"
-  | "tool:result"
-  | "token"
   | "partial"
   | "reasoning"
   | "final"
   | "done"
   | "error";
-
-export type PmChannelLifecycleStatus = "thinking" | "reading" | "working";
-
-export type PmChannelToolStatus = "call" | "result";
 
 export interface PmChannelStreamInput {
   target: PmChannelReplyTarget;
@@ -25,9 +15,6 @@ export interface PmChannelStreamInput {
   delta?: string;
   replace?: boolean;
   error?: string;
-  statusKind?: PmChannelLifecycleStatus;
-  toolStatus?: PmChannelToolStatus;
-  toolName?: string;
   seq?: number;
   runStatus?: PmChannelStreamState["runStatus"];
 }
@@ -38,9 +25,6 @@ export interface PmChannelStreamState {
   text: string;
   reasoning: string;
   status: "streaming" | "done" | "error";
-  lifecycleStatus: PmChannelLifecycleStatus | null;
-  toolStatus: PmChannelToolStatus | null;
-  toolName: string | null;
   runStatus?: "queued" | "accepted" | "streaming" | "retryable" | "complete" | "failed";
   error: string | null;
   seq?: number;
@@ -92,9 +76,6 @@ export function emptyPmChannelStreamState(target: PmChannelReplyTarget): PmChann
     text: "",
     reasoning: "",
     status: "streaming",
-    lifecycleStatus: null,
-    toolStatus: null,
-    toolName: null,
     runStatus: "streaming",
     error: null,
     updatedAt: Date.now(),
@@ -128,23 +109,6 @@ function notify(key: string, event: string, state: PmChannelStreamState) {
   for (const subscriber of [...subscribers]) subscriber(event, state);
 }
 
-function eventName(input: PmChannelStreamInput) {
-  return input.event === "error" ? "stream-error" : input.event;
-}
-
-function statusFromEvent(input: PmChannelStreamInput): PmChannelLifecycleStatus | null {
-  if (input.event === "status:thinking") return "thinking";
-  if (input.event === "status:reading") return "reading";
-  if (input.event === "status:working") return "working";
-  return input.statusKind ?? null;
-}
-
-function toolStatusFromEvent(input: PmChannelStreamInput): PmChannelToolStatus | null {
-  if (input.event === "tool:call") return "call";
-  if (input.event === "tool:result") return "result";
-  return input.toolStatus ?? null;
-}
-
 export function publishPmChannelStreamEvent(input: PmChannelStreamInput): PmChannelStreamState {
   sweepExpired();
   const s = store();
@@ -152,23 +116,7 @@ export function publishPmChannelStreamEvent(input: PmChannelStreamInput): PmChan
   const state = applyPmChannelStreamInput(s.states.get(key) ?? emptyPmChannelStreamState(input.target), input);
 
   s.states.set(key, state);
-  notify(key, eventName(input), state);
-  return state;
-}
-
-export function acknowledgePmChannelStreamSeq(
-  target: PmChannelReplyTarget,
-  seq: number,
-): PmChannelStreamState | null {
-  const s = store();
-  const key = pmChannelStreamKey(target);
-  const state = s.states.get(key);
-  if (!state) return null;
-  if (state.seq == null || seq > state.seq) {
-    state.seq = seq;
-    state.updatedAt = Date.now();
-    s.states.set(key, state);
-  }
+  notify(key, input.event === "error" ? "stream-error" : input.event, state);
   return state;
 }
 
@@ -183,13 +131,7 @@ export function applyPmChannelStreamInput(
   };
   if (input.seq != null) state.seq = input.seq;
 
-  const lifecycleStatus = statusFromEvent(input);
-  const toolStatus = toolStatusFromEvent(input);
-
-  if (input.event === "status" || lifecycleStatus) {
-    state.lifecycleStatus = lifecycleStatus ?? state.lifecycleStatus;
-    state.toolStatus = null;
-    state.toolName = null;
+  if (input.event === "status") {
     if (input.runStatus) {
       state.runStatus = input.runStatus;
       state.status = input.runStatus === "failed" || input.runStatus === "retryable"
@@ -199,14 +141,7 @@ export function applyPmChannelStreamInput(
           : "streaming";
     }
     if (input.error) state.error = input.error;
-  } else if (toolStatus) {
-    state.toolStatus = toolStatus;
-    state.toolName = input.toolName ?? input.text ?? null;
-    state.lifecycleStatus = "working";
-    state.status = "streaming";
-    state.runStatus = "streaming";
-    state.error = null;
-  } else if (input.event === "partial" || input.event === "token" || input.event === "final") {
+  } else if (input.event === "partial" || input.event === "final") {
     if (input.replace) {
       state.text = clip(input.text ?? "");
     } else if (input.delta) {

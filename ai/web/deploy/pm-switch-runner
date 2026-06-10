@@ -12,8 +12,7 @@ Spool (PM_SWITCH_DIR, default /var/lib/pm/switch):
   state.json    — written here: {served, servedBranch, worktrees[], job{}, updatedAt}
 
 Config via env (set in the systemd unit):
-  PM_SWITCH_DIR, PM_SWITCH_SCRIPT, PM_PNPM, ENV_REPO, PM_WORKTREES_ROOT,
-  PM_SWITCH_POLL_SECONDS
+  PM_SWITCH_DIR, PM_SWITCH_SCRIPT, ENV_REPO, PM_WORKTREES_ROOT, PM_SWITCH_POLL_SECONDS
 """
 import datetime
 import json
@@ -24,7 +23,6 @@ import time
 
 SWITCH_DIR = os.environ.get("PM_SWITCH_DIR", "/var/lib/pm/switch")
 SWITCH_SCRIPT = os.environ.get("PM_SWITCH_SCRIPT", "/usr/local/sbin/pm-switch")
-PNPM = os.environ.get("PM_PNPM", "/usr/local/bin/pnpm")
 REPO = os.environ.get("ENV_REPO", "/srv/Code/environment")
 POLL = float(os.environ.get("PM_SWITCH_POLL_SECONDS", "2"))
 REQUEST = os.path.join(SWITCH_DIR, "request.json")
@@ -101,14 +99,6 @@ def worktrees(served_root):
     return res
 
 
-def find_worktree(target):
-    target = str(target or "").strip()
-    for w in worktrees(None):
-        if target in {w.get("name"), w.get("path")}:
-            return w
-    return None
-
-
 def write_state(job):
     root, br = served()
     if (
@@ -146,7 +136,8 @@ def write_state(job):
 
 def run_switch(req):
     target = str(req.get("target", "")).strip()
-    if not find_worktree(target):
+    valid = {w["name"] for w in worktrees(None)} | {w["path"] for w in worktrees(None)}
+    if target not in valid:
         return {"id": req["id"], "state": "error", "target": target,
                 "message": f"Unknown worktree: {target}", "startedAt": now(),
                 "updatedAt": now(), "log": ""}
@@ -167,45 +158,6 @@ def run_switch(req):
             "updatedAt": now(), "log": tail}
 
 
-def run_install(req):
-    target = str(req.get("target", "")).strip()
-    wt = find_worktree(target)
-    if not wt:
-        return {"id": req["id"], "state": "error", "target": target,
-                "message": f"Unknown worktree: {target}", "startedAt": now(),
-                "updatedAt": now(), "log": ""}
-
-    app_dir = os.path.join(wt["path"], "ai/web")
-    package_json = os.path.join(app_dir, "package.json")
-    if not os.path.isfile(package_json):
-        return {"id": req["id"], "state": "error", "target": target,
-                "message": f"No ai/web package.json for {target}.", "startedAt": now(),
-                "updatedAt": now(), "log": ""}
-
-    started = now()
-    write_state({"id": req["id"], "state": "installing", "target": target,
-                 "message": f"Installing dependencies for {target}…",
-                 "startedAt": started, "updatedAt": now(), "log": ""})
-    env = os.environ.copy()
-    env.setdefault("CI", "1")
-    proc = subprocess.run(
-        [PNPM, "install", "--frozen-lockfile"],
-        cwd=app_dir,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    log = ANSI.sub("", (proc.stdout or "") + (proc.stderr or ""))
-    tail = "\n".join(log.splitlines()[-80:])
-    if proc.returncode == 0:
-        return {"id": req["id"], "state": "done", "target": target,
-                "message": f"Installed dependencies for {target}.",
-                "startedAt": started, "updatedAt": now(), "log": tail}
-    return {"id": req["id"], "state": "error", "target": target,
-            "message": f"Install failed (exit {proc.returncode}).",
-            "startedAt": started, "updatedAt": now(), "log": tail}
-
-
 def main():
     st = read_json(STATE)
     job = (st or {}).get("job") or {
@@ -218,16 +170,7 @@ def main():
         req = read_json(REQUEST)
         if req and req.get("id") and req["id"] != last_id:
             last_id = req["id"]
-            action = str(req.get("action", "switch")).strip() or "switch"
-            if action == "install":
-                job = run_install(req)
-            elif action == "switch":
-                job = run_switch(req)
-            else:
-                job = {"id": req["id"], "state": "error",
-                       "target": str(req.get("target", "")).strip(),
-                       "message": f"Unknown request action: {action}",
-                       "startedAt": now(), "updatedAt": now(), "log": ""}
+            job = run_switch(req)
             write_state(job)
         else:
             write_state(job)  # refresh inventory/served (catches CLI switches, new worktrees)

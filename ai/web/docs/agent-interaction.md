@@ -243,13 +243,6 @@ should say which attachment needs inspection instead of inventing
 details. Binary, unsupported, failed, or too-large attachments are
 identified by filename and `/api/attachments/<id>` path.
 
-For Action Plan work, agents must not fetch or summarize the whole
-project library. Task attachments are the primary scoped source for Task
-planning. Epic attachments may be inspected only when the Task or Epic
-title, description, Action Plan, or comments explicitly reference them,
-or when the scoped text is insufficient to plan safely. Epic planning
-uses the Epic attachment section under the same rule.
-
 ## Work-Item Proposals (propose → approve)
 
 Implemented for direct PM chats attached to a project, Task/Epic Action
@@ -331,11 +324,6 @@ agent, and single-use stamp, then stores the proposed description as a
 **draft** in the `DescriptionDraft` table tagged with the human
 `requesterUserId` taken from the grant message's `senderUserId`. The
 agent's POST does NOT replace the task/epic description directly.
-
-Task description drafts should prefer concise operational markdown:
-`Goal`, `Scope`, `Acceptance Criteria`, `Implementation Notes`,
-`Test Notes`, and `Relevant Attachments` when those sections add value.
-Empty or irrelevant sections should be omitted.
 
 The draft is requester-bound and ephemeral:
 

@@ -94,7 +94,7 @@ export interface TaskContextResponse {
     description: string | null;
     branchName: string | null;
     commitPrefix: string | null;
-    workers: Array<ReturnType<typeof actor>>;
+    assignee: ReturnType<typeof actor>;
     actingManager: ReturnType<typeof actor>;
   };
   parentTask: null | { id: string; title: string; status: string };
@@ -186,10 +186,7 @@ export async function buildTaskContextJson(
         select: {
           id: true, workItemKey: true, title: true, status: true, description: true,
           branchName: true, commitPrefix: true,
-          workers: {
-            orderBy: { createdAt: "asc" },
-            select: { user: { select: { username: true, kind: true } } },
-          },
+          assignee: { select: { username: true, kind: true } },
           actingManager: { select: { username: true, kind: true } },
         },
       },
@@ -351,7 +348,7 @@ export async function buildTaskContextJson(
             commitPrefix: task.epic.commitPrefix,
             workItemKey: task.epic.workItemKey,
           }),
-          workers: task.epic.workers.map((worker) => actor(worker.user)),
+          assignee: actor(task.epic.assignee),
           actingManager: actor(task.epic.actingManager),
         }
       : null,
@@ -463,7 +460,7 @@ export interface EpicContextResponse {
     commitPrefix: string | null;
     createdAt: string;
     updatedAt: string;
-    workers: Array<ReturnType<typeof actor>>;
+    assignee: ReturnType<typeof actor>;
     actingManager: ReturnType<typeof actor>;
     reporter: ReturnType<typeof actor>;
   };
@@ -498,10 +495,7 @@ export async function buildEpicContextJson(
           readmePath: true, repositoryPath: true,
         },
       },
-      workers: {
-        orderBy: { createdAt: "asc" },
-        select: { user: { select: { username: true, kind: true } } },
-      },
+      assignee: { select: { username: true, kind: true } },
       actingManager: { select: { username: true, kind: true } },
       reporter: { select: { username: true, kind: true } },
       tasks: {
@@ -562,7 +556,7 @@ export async function buildEpicContextJson(
       }),
       createdAt: epic.createdAt.toISOString(),
       updatedAt: epic.updatedAt.toISOString(),
-      workers: epic.workers.map((worker) => actor(worker.user)),
+      assignee: actor(epic.assignee),
       actingManager: actor(epic.actingManager),
       reporter: actor(epic.reporter),
     },
@@ -648,7 +642,7 @@ export interface ProjectContextResponse {
     description: string | null;
     branchName: string | null;
     commitPrefix: string | null;
-    workers: Array<ReturnType<typeof actor>>;
+    assignee: ReturnType<typeof actor>;
     actingManager: ReturnType<typeof actor>;
   }>;
   openTasks: Array<{
@@ -685,10 +679,7 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
       select: {
         id: true, workItemKey: true, title: true, status: true, description: true,
         branchName: true, commitPrefix: true,
-        workers: {
-          orderBy: { createdAt: "asc" },
-          select: { user: { select: { username: true, kind: true } } },
-        },
+        assignee: { select: { username: true, kind: true } },
         actingManager: { select: { username: true, kind: true } },
       },
     }),
@@ -731,7 +722,7 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
       description: e.description,
       branchName: e.branchName,
       commitPrefix: effectiveCommitPrefix({ commitPrefix: e.commitPrefix, workItemKey: e.workItemKey }),
-      workers: e.workers.map((worker) => actor(worker.user)),
+      assignee: actor(e.assignee),
       actingManager: actor(e.actingManager),
     })),
     openTasks: openTasks.map((t) => ({

@@ -88,7 +88,7 @@ export default function DescriptionField({
     improveFormatting ? "improve the markdown structure and formatting" : null,
   ].filter(Boolean);
   const aiInstruction = aiInstructionParts.length > 0
-    ? `Please propose a new ${descriptionLabel.toLowerCase()} description as a draft: ${aiInstructionParts.join(" and ")}. Preserve useful existing details. ${descriptionLabel.toLowerCase() === "task" ? "For task descriptions, use a concise operational markdown format with clear sections when useful: Goal, Scope, Acceptance Criteria, Implementation Notes, Test Notes, and Relevant Attachments. Keep empty or irrelevant sections out." : ""} Do NOT submit this as a work-item proposal. Use your description write-back token/endpoint to publish the draft for the requester to review; the requester will explicitly Save it (or Rollback) on the task/epic page.`
+    ? `Please propose a new ${descriptionLabel.toLowerCase()} description as a draft: ${aiInstructionParts.join(" and ")}. Preserve useful existing details. Do NOT submit this as a work-item proposal. Use your description write-back token/endpoint to publish the draft for the requester to review; the requester will explicitly Save it (or Rollback) on the task/epic page.`
     : "";
 
   useEffect(() => {

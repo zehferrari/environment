@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
 import { resolveDoneOwnerId, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
-import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
+import type { Prisma } from "@prisma/client";
 
 type Actor = {
   id: string;
@@ -40,6 +40,26 @@ export function isReviewerApprovalComment(body: string) {
   if (HARD_REVIEW_REJECT.some((pattern) => pattern.test(text))) return false;
   if (NO_ISSUES_APPROVAL.test(text)) return true;
   return POSITIVE_REVIEW.some((pattern) => pattern.test(text));
+}
+
+async function findNextEpicTask(tx: Prisma.TransactionClient, epicId: string) {
+  return tx.task.findFirst({
+    where: {
+      epicId,
+      parentTaskId: null,
+      archivedAt: null,
+      deletedAt: null,
+      status: "To Do",
+    },
+    orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
+    select: {
+      id: true,
+      title: true,
+      assigneeId: true,
+      actingManagerId: true,
+      project: { select: { slug: true } },
+    },
+  });
 }
 
 export async function completeReviewedTaskAndAssignNext(args: {
@@ -103,23 +123,82 @@ export async function completeReviewedTaskAndAssignNext(args: {
       },
     });
 
-    let nextAssignment: Awaited<ReturnType<typeof assignFirstOpenEpicTask>> | null = null;
+    let nextTask: Awaited<ReturnType<typeof findNextEpicTask>> | null = null;
+    let targetAssigneeId: string | null = null;
     let skipReason: string | null = null;
 
     if (!task.epicId) {
       skipReason = "no_epic";
     } else {
-      nextAssignment = await assignFirstOpenEpicTask(tx, {
-        epicId: task.epicId,
-        projectId: task.projectId,
-        actorUserId: args.actor.id,
-        excludeUserIds: [reviewerId, task.reporterId, task.epic?.actingManagerId],
-        via: args.via,
-      });
-      skipReason = nextAssignment.skipped;
+      nextTask = await findNextEpicTask(tx, task.epicId);
+      if (!nextTask) {
+        skipReason = "no_todo_task";
+      } else {
+        targetAssigneeId = nextTask.assigneeId ?? task.assigneeId;
+        if (!targetAssigneeId) {
+          skipReason = "no_assignee_to_carry_forward";
+        }
+      }
     }
 
-    if (!nextAssignment?.task || !nextAssignment.worker) {
+    if (nextTask && targetAssigneeId) {
+      if (!nextTask.assigneeId) {
+        await tx.task.update({
+          where: { id: nextTask.id },
+          data: { assigneeId: targetAssigneeId, approvedOn: null, approvedById: null },
+        });
+        await tx.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: nextTask.id,
+            userId: args.actor.id,
+            kind: "task.assign",
+            payload: JSON.stringify({
+              from: null,
+              to: "previous-assignee",
+              via: args.via,
+              action: "review_done",
+              afterTaskId: task.id,
+            }),
+          },
+        });
+        await tx.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: nextTask.id,
+            userId: args.actor.id,
+            kind: "task.action_plan.reset",
+            payload: JSON.stringify({
+              reason: "assignee_changed",
+              via: args.via,
+              action: "review_done",
+              afterTaskId: task.id,
+            }),
+          },
+        });
+      }
+      if (!nextTask.actingManagerId && reviewerId) {
+        await tx.task.update({
+          where: { id: nextTask.id },
+          data: { actingManagerId: reviewerId },
+        });
+        await tx.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: nextTask.id,
+            userId: args.actor.id,
+            kind: "task.acting_manager",
+            payload: JSON.stringify({
+              from: null,
+              to: args.actor.username,
+              via: args.via,
+              action: "review_done",
+              afterTaskId: task.id,
+            }),
+          },
+        });
+      }
+    } else {
       await tx.activityLog.create({
         data: {
           projectId: task.projectId,
@@ -129,6 +208,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
           payload: JSON.stringify({
             reason: skipReason,
             epicId: task.epicId,
+            carriedAssigneeId: task.assigneeId,
             via: args.via,
             action: "review_done",
           }),
@@ -136,26 +216,28 @@ export async function completeReviewedTaskAndAssignNext(args: {
       });
     }
 
-    return { nextAssignment };
+    return { nextTask, targetAssigneeId };
   });
 
-  const nextTask = completion.nextAssignment?.task && completion.nextAssignment.worker
+  const nextTask = completion.nextTask && completion.targetAssigneeId
     ? {
-        id: completion.nextAssignment.task.id,
-        title: completion.nextAssignment.task.title,
-        projectSlug: completion.nextAssignment.task.project.slug,
+        id: completion.nextTask.id,
+        title: completion.nextTask.title,
+        projectSlug: completion.nextTask.project.slug,
       }
     : null;
 
-  if (completion.nextAssignment?.task && completion.nextAssignment.worker) {
+  if (completion.nextTask && completion.targetAssigneeId) {
     await sendTaskWorkflowNotification({
-      taskId: completion.nextAssignment.task.id,
-      targetUserId: completion.nextAssignment.worker.id,
+      taskId: completion.nextTask.id,
+      targetUserId: completion.targetAssigneeId,
       actor: args.actor,
       reason: "todo_start_required",
       body: [
         `Previous epic task "${task.title}" was accepted by @${args.actor.username}.`,
-        `Next task "${completion.nextAssignment.task.title}" is now assigned to you in To Do.`,
+        completion.nextTask.assigneeId
+          ? `Next task "${completion.nextTask.title}" is already assigned to you in To Do.`
+          : `Next task "${completion.nextTask.title}" is now assigned to you in To Do.`,
         "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
         "If you have unresolved review feedback on another Review-stage task, address that feedback first; otherwise prepare the Action Plan for this task now.",
       ].join("\n"),
