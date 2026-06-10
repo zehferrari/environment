@@ -25,12 +25,12 @@
         "baseUrl": "https://gravity.googleapis.com",
         "apiKey": "google-gravity-oauth",
         "auth": "oauth",
-        "api": "google-gravity-responses",
+        "api": "google-generative-ai",
         "models": [
           {
             "id": "gemini-3.5-flash",
             "name": "Gemini 3.5 Flash",
-            "api": "google-gravity-responses",
+            "api": "google-generative-ai",
             "input": [
               "text",
               "image"
