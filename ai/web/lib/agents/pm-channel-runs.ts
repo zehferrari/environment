@@ -72,15 +72,21 @@ function silentActivityKind(target: PmChannelReplyTarget) {
 }
 
 export async function pmChannelTargetHasDurableReply(target: PmChannelReplyTarget) {
-  const row = await db.activityLog.findFirst({
-    where: {
-      kind: { in: [replyActivityKind(target), silentActivityKind(target)] },
-      targetAgent: target.agentSlug,
-      payload: { contains: `"inReplyToMessageId":"${target.messageId}"` },
-    },
-    select: { id: true },
-  });
-  return Boolean(row);
+  const [row, run] = await Promise.all([
+    db.activityLog.findFirst({
+      where: {
+        kind: { in: [replyActivityKind(target), silentActivityKind(target)] },
+        targetAgent: target.agentSlug,
+        payload: { contains: `"inReplyToMessageId":"${target.messageId}"` },
+      },
+      select: { id: true },
+    }),
+    db.pmChannelRun.findUnique({
+      where: { targetKey: pmChannelRunTargetKey(target) },
+      select: { status: true },
+    }),
+  ]);
+  return Boolean(row || run?.status === "complete");
 }
 
 async function failRun(target: PmChannelReplyTarget, error: string) {
@@ -177,6 +183,9 @@ export async function recordPmChannelRunDispatch(args: {
       where: { targetKey: pmChannelRunTargetKey(args.target) },
       data: {
         httpStatus: args.result.status ?? null,
+        driver: args.result.transportMode
+          ? `openclaw-pm-channel:${args.result.transportMode}`
+          : "openclaw-pm-channel",
         status: ok ? "accepted" : "failed",
         error: ok ? null : clippedError(args.result.error),
         acceptedAt: ok ? now : null,

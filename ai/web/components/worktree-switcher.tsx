@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { requestWorktreeSwitch } from "@/lib/deploy/actions";
+import { requestWorktreeInstall, requestWorktreeSwitch } from "@/lib/deploy/actions";
 import type { SwitchState } from "@/lib/deploy/worktrees";
 import { displayWorktreesForRepo } from "@/lib/deploy/repo-key";
 
@@ -21,7 +21,7 @@ export default function WorktreeSwitcher({
   const [pending, startTransition] = useTransition();
 
   const job = state.job;
-  const inProgress = job.state === "queued" || job.state === "building";
+  const inProgress = job.state === "queued" || job.state === "installing" || job.state === "building";
   const worktrees = displayWorktreesForRepo(state.worktrees, repoKey);
 
   // Poll the runner-maintained state. Tolerant of network errors — the
@@ -64,6 +64,29 @@ export default function WorktreeSwitcher({
         }));
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to request switch");
+      }
+    });
+  }
+
+  function install(target: string) {
+    setError(null);
+    startTransition(async () => {
+      try {
+        await requestWorktreeInstall(target);
+        setState((s) => ({
+          ...s,
+          job: {
+            id: "pending",
+            state: "queued",
+            target,
+            message: `Queued dependency install for ${target}…`,
+            startedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            log: "",
+          },
+        }));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to request install");
       }
     });
   }
@@ -129,22 +152,32 @@ export default function WorktreeSwitcher({
                 {w.branch} · {w.head}
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => serve(w.name, w.served)}
-              disabled={inProgress || pending || !w.ready}
-              className="shrink-0 rounded-lg border border-[var(--color-line)] px-3 py-1.5 text-sm font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[var(--color-line)] disabled:hover:text-[var(--color-text)]"
-            >
-              {w.served ? "Rebuild live" : "Serve live"}
-            </button>
+            {w.ready ? (
+              <button
+                type="button"
+                onClick={() => serve(w.name, w.served)}
+                disabled={inProgress || pending}
+                className="shrink-0 rounded-lg border border-[var(--color-line)] px-3 py-1.5 text-sm font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[var(--color-line)] disabled:hover:text-[var(--color-text)]"
+              >
+                {w.served ? "Rebuild live" : "Serve live"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => install(w.name)}
+                disabled={inProgress || pending}
+                className="shrink-0 rounded-lg border border-[var(--color-warn)]/50 px-3 py-1.5 text-sm font-medium text-[var(--color-warn)] hover:border-[var(--color-warn)] hover:bg-[var(--color-warn)]/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+              >
+                Install deps
+              </button>
+            )}
           </li>
         ))}
       </ul>
       <p className="text-xs text-[var(--color-text-muted)]">
-        Builds the chosen worktree and points the live site at it, or rebuilds
-        the current live worktree (≈1–2 min; the site restarts, so it briefly
-        blips). All worktrees share the same database and secrets — only the
-        served code changes.
+        Install deps runs <code>pnpm install --frozen-lockfile</code> in the
+        branch worktree. Serve live builds the chosen worktree and points the
+        live site at it, or rebuilds the current live worktree.
       </p>
     </div>
   );

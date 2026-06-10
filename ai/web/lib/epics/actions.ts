@@ -18,7 +18,6 @@ import { randomUUID } from "crypto";
 import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
 import { sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
 import {
-  checkAssignment,
   checkActingManager,
   type ActorKind,
 } from "@/lib/workflow";
@@ -28,6 +27,7 @@ import { buildDeploymentApproved } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 import { publishBoardTouch } from "@/lib/pm/board-events";
+import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
 
 const EPIC_STATUSES = ["Backlog", "Open", "Done"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
@@ -52,11 +52,42 @@ async function loadEpicScoped(epicId: string, slug: string) {
     where: { id: epicId },
     include: {
       project: { select: { id: true, slug: true } },
-      assignee: { select: { username: true } },
+      workers: { select: { userId: true, user: { select: { username: true } } } },
       actingManager: { select: { username: true } },
       reporter: { select: { username: true } },
     },
   });
+}
+
+function getWorkerIds(formData: FormData) {
+  return [...new Set(formData.getAll("assigneeId")
+    .map((value) => String(value).trim())
+    .filter(Boolean))];
+}
+
+async function validateEpicWorkerIds(actor: { id: string; kind: ActorKind }, workerIds: string[]) {
+  if (workerIds.length === 0) return [];
+  if (actor.kind === "agent" && workerIds.includes(actor.id)) {
+    throw new Error("Agents cannot add themselves to an Epic worker pool.");
+  }
+  const rows = await db.user.findMany({
+    where: {
+      id: { in: workerIds },
+      status: "active",
+      kind: "agent",
+      agent: { is: { role: "coding", deactivatedAt: null } },
+    },
+    select: { id: true, username: true },
+  });
+  if (rows.length !== workerIds.length) {
+    throw new Error("Epic workers must be active coding agents.");
+  }
+  const byId = new Map(rows.map((row) => [row.id, row.username]));
+  return workerIds.map((id) => ({ id, username: byId.get(id)! }));
+}
+
+function sameIds(a: string[], b: string[]) {
+  return a.length === b.length && a.every((value) => b.includes(value));
 }
 
 async function notifyEpicActingManagerAssigned(args: {
@@ -91,9 +122,11 @@ async function notifyEpicActingManagerAssigned(args: {
     `PM workflow notification for @${managerSlug}:`,
     "",
     `You have been assigned as Acting Manager for Epic "${args.epicTitle}".`,
-    "Read the Epic description, Action Plan thread, attachments, current tasks, and related project context before replying.",
-    "If the Action Plan still needs work, post one concise technical manager response in Action Plan with the plan, concerns, blocker, or necessary question.",
-    "After the Action Plan is approved, if the Epic has no top-level child tasks, prepare the ordered implementation task breakdown through the work-item proposal flow.",
+    "Read the Epic description, Action Plan thread, comments, current tasks, and Epic attachment section before replying.",
+    "Do not fetch or summarize the whole project library. Use attachments only when the Epic text/comments/action plan explicitly reference them or the plan cannot be made safely without them; say which attachment you used.",
+    "If the Epic has no description, synthesize a concise description from the available Epic context.",
+    "If the Epic needs implementation tasks, prepare an ordered task breakdown with task-local subtasks/topics so board progress is visible.",
+    "When the Epic is opened, assign work only from the Epic worker pool, one task per project per agent, and never assign yourself as task assignee/reporter/acting manager.",
     "Do not post an acknowledgement-only response.",
   ].join("\n"));
 
@@ -111,8 +144,7 @@ export async function createEpic(formData: FormData) {
   const description = String(formData.get("description") ?? "").trim();
   const actingManagerRaw = String(formData.get("actingManagerId") ?? "");
   const actingManagerId = actingManagerRaw === "" ? null : actingManagerRaw;
-  const assigneeRaw = String(formData.get("assigneeId") ?? "");
-  const assigneeId = assigneeRaw === "" ? null : assigneeRaw;
+  const workerIds = getWorkerIds(formData);
   const branchRaw = String(formData.get("branchName") ?? "").trim();
   const branchName = branchRaw === "" ? null : branchRaw;
   const commitRaw = String(formData.get("commitPrefix") ?? "").trim();
@@ -145,19 +177,7 @@ export async function createEpic(formData: FormData) {
     }
   }
 
-  // Assignee picker follows the same rule as the edit picker —
-  // agents can't self-assign.
-  if (assigneeId !== null) {
-    const check = checkAssignment({ actor, newAssigneeId: assigneeId });
-    if (!check.ok) throw new Error(check.message);
-    const target = await db.user.findUnique({
-      where: { id: assigneeId },
-      select: { status: true },
-    });
-    if (!target || target.status !== "active") {
-      throw new Error("Assignee not found or inactive");
-    }
-  }
+  const workers = await validateEpicWorkerIds(actor, workerIds);
 
   const epic = await db.epic.create({
     data: {
@@ -166,7 +186,9 @@ export async function createEpic(formData: FormData) {
       title,
       description: description || null,
       actingManagerId,
-      assigneeId,
+      workers: {
+        create: workerIds.map((userId) => ({ userId })),
+      },
       reporterId: actor.id,
       branchName,
       commitPrefix,
@@ -184,7 +206,7 @@ export async function createEpic(formData: FormData) {
         epicId: epic.id,
         title: epic.title,
         actingManagerId,
-        assigneeId,
+        workerUsernames: workers.map((worker) => worker.username),
         reporterId: actor.id,
         branchName,
         commitPrefix,
@@ -246,70 +268,6 @@ export async function renameEpic(formData: FormData) {
 
   revalidatePath(`/projects/${slug}/epics`);
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
-}
-
-export async function setEpicAssignee(formData: FormData) {
-  const actor = await requireActor();
-  const slug = String(formData.get("projectSlug") ?? "");
-  const epicId = String(formData.get("epicId") ?? "");
-  const raw = String(formData.get("assigneeId") ?? "");
-  const newAssigneeId = raw === "" ? null : raw;
-  if (!slug || !epicId) return;
-
-  const epic = await loadEpicScoped(epicId, slug);
-  if (!epic || epic.project.slug !== slug) return;
-  if (epic.assigneeId === newAssigneeId) return;
-
-  const check = checkAssignment({ actor, newAssigneeId });
-  if (!check.ok) throw new Error(check.message);
-
-  let toUsername: string | null = null;
-  if (newAssigneeId !== null) {
-    const row = await db.user.findUnique({
-      where: { id: newAssigneeId },
-      select: { username: true, status: true },
-    });
-    if (!row || row.status !== "active") {
-      throw new Error("Assignee not found or inactive");
-    }
-    toUsername = row.username;
-  }
-
-  await db.$transaction([
-    db.epic.update({
-      where: { id: epicId },
-      data: { assigneeId: newAssigneeId, approvedOn: null, approvedById: null },
-    }),
-    db.activityLog.create({
-      data: {
-        projectId: epic.project.id,
-        userId: actor.id,
-        kind: "epic.assign",
-        payload: JSON.stringify({
-          epicId,
-          from: epic.assignee?.username ?? null,
-          to: toUsername,
-        }),
-      },
-    }),
-    db.activityLog.create({
-      data: {
-        projectId: epic.project.id,
-        userId: actor.id,
-        kind: "epic.action_plan.reset",
-        payload: JSON.stringify({
-          epicId,
-          reason: "assignee_changed",
-          from: epic.assignee?.username ?? null,
-          to: toUsername,
-        }),
-      },
-    }),
-  ]);
-
-  revalidatePath(`/projects/${slug}/epics/${epicId}`);
-  revalidatePath(`/projects/${slug}/epics`);
-
 }
 
 export async function setEpicActingManager(formData: FormData) {
@@ -399,7 +357,7 @@ export async function updateEpic(formData: FormData) {
   const newDescription = descriptionRaw.trim() === "" ? null : descriptionRaw;
   const status = String(formData.get("status") ?? "");
   const hasAssigneeField = formData.has("assigneeId");
-  const assigneeRaw = String(formData.get("assigneeId") ?? "");
+  const workerIds = getWorkerIds(formData);
   const acmRaw = String(formData.get("actingManagerId") ?? "");
   const newActingManagerId = acmRaw === "" ? null : acmRaw;
   const reporterRaw = String(formData.get("reporterId") ?? "");
@@ -417,9 +375,10 @@ export async function updateEpic(formData: FormData) {
 
   const epic = await loadEpicScoped(epicId, slug);
   if (!epic || epic.project.slug !== slug) return;
-  const newAssigneeId = hasAssigneeField
-    ? assigneeRaw === "" ? null : assigneeRaw
-    : epic.assigneeId;
+  const existingWorkerIds = epic.workers.map((worker) => worker.userId);
+  const newWorkerIds = hasAssigneeField
+    ? workerIds
+    : existingWorkerIds;
 
   const data: Prisma.EpicUpdateInput = {};
   const activity: { kind: string; payload: string }[] = [];
@@ -460,42 +419,29 @@ export async function updateEpic(formData: FormData) {
     });
   }
 
-  // Assignee (no agent self-assign; target must be active)
-  if (newAssigneeId !== epic.assigneeId) {
-    const check = checkAssignment({ actor, newAssigneeId });
-    if (!check.ok) throw new Error(check.message);
-    let toUsername: string | null = null;
-    if (newAssigneeId !== null) {
-      const row = await db.user.findUnique({
-        where: { id: newAssigneeId },
-        select: { username: true, status: true },
-      });
-      if (!row || row.status !== "active") {
-        throw new Error("Assignee not found or inactive");
-      }
-      toUsername = row.username;
-    }
-    data.assignee =
-      newAssigneeId === null
-        ? { disconnect: true }
-        : { connect: { id: newAssigneeId } };
+  // Worker pool. Epics can list multiple workers; Task assignee remains single.
+  const workerPoolChanged = hasAssigneeField && !sameIds(existingWorkerIds, newWorkerIds);
+  let newWorkers: Array<{ id: string; username: string }> = [];
+  if (workerPoolChanged) {
+    newWorkers = await validateEpicWorkerIds(actor, newWorkerIds);
     data.approvedOn = null;
     data.approvedBy = { disconnect: true };
     activity.push({
       kind: "epic.assign",
       payload: JSON.stringify({
         epicId,
-        from: epic.assignee?.username ?? null,
-        to: toUsername,
+        from: epic.workers.map((worker) => worker.user.username),
+        to: newWorkers.map((worker) => worker.username),
+        mode: "worker_pool",
       }),
     });
     activity.push({
       kind: "epic.action_plan.reset",
       payload: JSON.stringify({
         epicId,
-        reason: "assignee_changed",
-        from: epic.assignee?.username ?? null,
-        to: toUsername,
+        reason: "worker_pool_changed",
+        from: epic.workers.map((worker) => worker.user.username),
+        to: newWorkers.map((worker) => worker.username),
       }),
     });
   }
@@ -610,31 +556,71 @@ export async function updateEpic(formData: FormData) {
   // When an epic moves to Done, archive all of its live child tasks.
   const archiveChildrenOnDone = statusChanged && status === "Done";
 
-  await db.$transaction([
-    db.epic.update({ where: { id: epicId }, data }),
-    ...(taskCascade
-      ? [db.task.updateMany({
-          where: { epicId, archivedAt: null, deletedAt: null, status: { not: "Done" } },
-          data: { status: taskCascade, statusChangedAt },
-        })]
-      : []),
-    ...(archiveChildrenOnDone
-      ? [db.task.updateMany({
-          where: { epicId, archivedAt: null, deletedAt: null },
-          data: { archivedAt: statusChangedAt, archivedById: actor.id },
-        })]
-      : []),
-    ...activity.map((a) =>
-      db.activityLog.create({
+  let openAssignment: any = null;
+  await db.$transaction(async (tx) => {
+    await tx.epic.update({ where: { id: epicId }, data });
+    if (workerPoolChanged) {
+      await tx.epicWorker.deleteMany({
+        where: { epicId, userId: { notIn: newWorkerIds } },
+      });
+      for (const userId of newWorkerIds) {
+        await tx.epicWorker.upsert({
+          where: { epicId_userId: { epicId, userId } },
+          update: {},
+          create: { epicId, userId },
+        });
+      }
+    }
+    if (taskCascade) {
+      await tx.task.updateMany({
+        where: { epicId, archivedAt: null, deletedAt: null, status: { not: "Done" } },
+        data: {
+          status: taskCascade,
+          statusChangedAt,
+          ...(status === "Open" ? { assigneeId: null } : {}),
+        },
+      });
+      if (status === "Open") {
+        openAssignment = await assignFirstOpenEpicTask(tx, {
+          epicId,
+          projectId: epic.project.id,
+          actorUserId: actor.id,
+          excludeUserIds: [newActingManagerId ?? epic.actingManagerId, newReporterId],
+          via: "epic_open",
+        });
+      }
+    }
+    if (archiveChildrenOnDone) {
+      await tx.task.updateMany({
+        where: { epicId, archivedAt: null, deletedAt: null },
+        data: { archivedAt: statusChangedAt, archivedById: actor.id },
+      });
+    }
+    for (const a of activity) {
+      await tx.activityLog.create({
         data: {
           projectId: epic.project.id,
           userId: actor.id,
           kind: a.kind,
           payload: a.payload,
         },
-      }),
-    ),
-  ]);
+      });
+    }
+  });
+
+  if (openAssignment?.task && openAssignment.worker) {
+    await sendTaskWorkflowNotification({
+      taskId: openAssignment.task.id,
+      targetUserId: openAssignment.worker.id,
+      actor,
+      reason: "todo_start_required",
+      body: [
+        `Epic "${title}" was opened and task "${openAssignment.task.title}" is assigned to you.`,
+        "Read the task context and attachments first. Post one concise technical Action Plan and wait for reviewer/manager/reporter approval before starting implementation.",
+        "Use task attachments first; only inspect Epic attachments when the task context explicitly references them or is insufficient.",
+      ].join("\n"),
+    });
+  }
 
   await notifyEpicActingManagerAssigned({
     projectSlug: slug,
@@ -700,7 +686,6 @@ export async function createTaskInEpic(
       project: {
         select: {
           slug: true,
-          defaultAssigneeId: true,
           defaultReviewerId: true,
         },
       },
@@ -735,7 +720,7 @@ export async function createTaskInEpic(
       status: "Backlog",
       rank: (maxRank._max.rank ?? 0) + 1,
       statusChangedAt: new Date(),
-      assigneeId: epic.project.defaultAssigneeId ?? null,
+      assigneeId: null,
       actingManagerId: epic.project.defaultReviewerId ?? null,
       reporterId: actor.id,
       branchName: epic.branchName ?? null,
@@ -753,20 +738,6 @@ export async function createTaskInEpic(
       payload: JSON.stringify({ title: task.title, epicId: epic.id }),
     },
   });
-
-  if (epic.project.defaultAssigneeId) {
-    await sendTaskWorkflowNotification({
-      taskId: task.id,
-      targetUserId: epic.project.defaultAssigneeId,
-      actor,
-      reason: "backlog_plan_requested",
-      body: [
-        `You have been assigned to "${task.title}" while it is in Backlog.`,
-        "Read the full task context and existing comments. Post one concise technical implementation plan in Action Plan.",
-        "Do not change task status and do not start work until the task is moved to To Do.",
-      ].join("\n"),
-    });
-  }
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}`);
@@ -793,25 +764,39 @@ export async function setEpicStatus(formData: FormData) {
         ? "To Do"
         : null;
 
-  await db.$transaction([
-    db.epic.update({
+  let openAssignment: any = null;
+  await db.$transaction(async (tx) => {
+    await tx.epic.update({
       where: { id: epicId },
       data: { status, statusChangedAt },
-    }),
-    ...(taskCascade
-      ? [db.task.updateMany({
-          where: { epicId, archivedAt: null, deletedAt: null, status: { not: "Done" } },
-          data: { status: taskCascade, statusChangedAt },
-        })]
-      : []),
+    });
+    if (taskCascade) {
+      await tx.task.updateMany({
+        where: { epicId, archivedAt: null, deletedAt: null, status: { not: "Done" } },
+        data: {
+          status: taskCascade,
+          statusChangedAt,
+          ...(status === "Open" ? { assigneeId: null } : {}),
+        },
+      });
+      if (status === "Open") {
+        openAssignment = await assignFirstOpenEpicTask(tx, {
+          epicId,
+          projectId: epic.project.id,
+          actorUserId: actor.id,
+          excludeUserIds: [epic.actingManagerId, epic.reporterId],
+          via: "epic_status",
+        });
+      }
+    }
     // Moving an epic to Done archives all of its live child tasks.
-    ...(status === "Done"
-      ? [db.task.updateMany({
-          where: { epicId, archivedAt: null, deletedAt: null },
-          data: { archivedAt: statusChangedAt, archivedById: actor.id },
-        })]
-      : []),
-    db.activityLog.create({
+    if (status === "Done") {
+      await tx.task.updateMany({
+        where: { epicId, archivedAt: null, deletedAt: null },
+        data: { archivedAt: statusChangedAt, archivedById: actor.id },
+      });
+    }
+    await tx.activityLog.create({
       data: {
         projectId: epic.project.id,
         userId: actor.id,
@@ -822,8 +807,22 @@ export async function setEpicStatus(formData: FormData) {
           to: status,
         }),
       },
-    }),
-  ]);
+    });
+  });
+
+  if (openAssignment?.task && openAssignment.worker) {
+    await sendTaskWorkflowNotification({
+      taskId: openAssignment.task.id,
+      targetUserId: openAssignment.worker.id,
+      actor,
+      reason: "todo_start_required",
+      body: [
+        `Epic "${epic.title}" was opened and task "${openAssignment.task.title}" is assigned to you.`,
+        "Read the task context and attachments first. Post one concise technical Action Plan and wait for reviewer/manager/reporter approval before starting implementation.",
+        "Use task attachments first; only inspect Epic attachments when the task context explicitly references them or is insufficient.",
+      ].join("\n"),
+    });
+  }
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}/epics`);

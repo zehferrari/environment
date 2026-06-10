@@ -96,9 +96,17 @@ until a human applies it.
 
 Only active humans and active coding agents are assignable principals for
 Task assignee, Task reviewer/acting manager, and Epic acting manager
-fields. Monitor agents are intentionally excluded from those picker and
-validator pools. They can observe, triage, wake/restart agents, submit
-proposals when a human grants that capability, and operate monitor-owned
+fields. Epic worker pools are coding-agent-only and may contain multiple
+agents; they define which agents an Acting Manager may choose from when
+assigning child Tasks. Task assignee remains a single user.
+
+An agent may have only one active Task per project. Active means `To Do`,
+`In Progress`, or `Review`. The same agent may hold active Tasks in
+different projects.
+
+Monitor agents are intentionally excluded from those picker and validator
+pools. They can observe, triage, wake/restart agents, submit proposals
+when a human grants that capability, and operate monitor-owned
 deployment/verifier flows, but they are not normal implementation owners.
 
 ## The endpoints
@@ -109,6 +117,9 @@ Returns the live JSON for a task: descriptions, the assignee / reviewer /
 reporter triple, the full subtask list, every comment (oldest-first),
 every discussion message live + the chained archived rooms (oldest-first),
 the activity log (newest-first, last 500 events), and attachment metadata.
+Task attachments are the primary attachment scope; parent Epic
+attachments are for cases where task text/comments explicitly reference
+them or task-local context is insufficient.
 
 **Use it:** when a turn lands on a task and you need any historical detail
 that isn't already in OpenClaw session memory. Call it FIRST, before
@@ -216,10 +227,10 @@ task is missing or soft-deleted.
 
 ### `GET /api/agents/context/epic/<epicId>`
 
-Same shape minus `parentTask`, plus `epic.actingManager`, plus a `tasks`
-array of every live task under the epic. Use when the agent's turn is on
-an epic discussion, or when you need to enumerate the epic's tasks
-without per-task detail.
+Same shape minus `parentTask`, plus `epic.actingManager`,
+`epic.workers`, and a `tasks` array of every live task under the epic.
+Use when the agent's turn is on an epic discussion, or when you need to
+enumerate the epic's tasks without per-task detail.
 
 ### `GET /api/agents/context/project/<projectId>`
 
@@ -235,7 +246,7 @@ task / epic endpoint instead.
   "project":            { "id", "slug", "name", "description", "readmePath", "repositoryPath" },
   "defaultGitIdentity": { "name", "email" },
   "principals": [ { "id", "username", "kind" }, … ],
-  "epics":      [ { "id", "title", "status", "description", "branchName", "commitPrefix", "assignee", "actingManager" }, … ],
+  "epics":      [ { "id", "title", "status", "description", "branchName", "commitPrefix", "workers", "actingManager" }, … ],
   "openTasks":  [ { "id", "title", "status", "epicId", "parentTaskId", "assignee", "actingManager", "branchName", "commitPrefix" }, … ],
   "meta":       { "fetchedAt", "note" }
 }

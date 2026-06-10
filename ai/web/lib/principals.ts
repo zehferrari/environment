@@ -1,8 +1,8 @@
 // Assignable-principal resolver (HOMELAB-47).
 //
 // Returns the User pool that can be set as Task assignee / Task reviewer
-// (column actingManagerId in schema) / Epic assignee / Epic acting
-// manager. Pool composition:
+// (column actingManagerId in schema) / Epic worker / Epic acting manager.
+// Pool composition:
 //
 //   - active humans (User.kind = "human", status = "active")
 //   - active coding agents (User.kind = "agent", status = "active",

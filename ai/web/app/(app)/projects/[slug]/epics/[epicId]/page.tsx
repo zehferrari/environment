@@ -348,15 +348,20 @@ export default async function EpicDetailPage({
           agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
         },
       },
-      assignee: {
-        select: {
-          id: true,
-          username: true,
-          name: true,
-          kind: true,
-          status: true,
-          avatarUpdatedAt: true,
-          agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
+      workers: {
+        orderBy: { createdAt: "asc" },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              name: true,
+              kind: true,
+              status: true,
+              avatarUpdatedAt: true,
+              agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
+            },
+          },
         },
       },
       reporter: {
@@ -801,6 +806,8 @@ export default async function EpicDetailPage({
         : null,
     },
   }));
+  const workerOptions = principalOptions.filter((option) => option.actor?.kind === "agent");
+  const workerIds = epic.workers.map((worker) => worker.userId);
   const reporterOptions = epic.reporter && !principals.some((p) => p.id === epic.reporterId)
     ? [
         ...principalOptions,
@@ -1057,6 +1064,20 @@ export default async function EpicDetailPage({
                           options={reporterOptions}
                           emptyLabel="No reporter"
                           ariaLabel="Report by"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                          Worker pool
+                        </span>
+                        <AvatarCombobox
+                          formId="epicMain"
+                          name="assigneeId"
+                          defaultValues={workerIds}
+                          options={workerOptions}
+                          emptyLabel="No workers"
+                          ariaLabel="Worker pool"
+                          multiple
                         />
                       </label>
                       <label className="block">

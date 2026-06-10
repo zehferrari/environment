@@ -317,6 +317,19 @@ async function updateTask(formData: FormData) {
       if (!row || row.status !== "active") {
         throw new Error("Assignee not found or inactive");
       }
+      const activeInProject = await db.task.count({
+        where: {
+          projectId: task.projectId,
+          id: { not: task.id },
+          assigneeId: row.id,
+          archivedAt: null,
+          deletedAt: null,
+          status: { in: ["To Do", "In Progress", "Review"] },
+        },
+      });
+      if (activeInProject > 0) {
+        throw new Error("This assignee already has an active task in this project.");
+      }
       assignmentTarget = { id: row.id, username: row.username, kind: row.kind };
     }
     data.assignee =

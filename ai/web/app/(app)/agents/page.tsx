@@ -315,7 +315,7 @@ export default async function AgentsPage() {
           No agents have been synced yet. Trigger {`/api/debug/sync`} or wait for the next cycle.
         </p>
       ) : (
-        <section className="grid gap-4 xl:grid-cols-3">
+        <section className="grid gap-4 xl:grid-cols-2">
           {agents.map((a) => {
             const live = liveAgents[a.slug];
             const recentAgentPmRuns = pmRunsByAgent.get(a.slug) ?? [];
@@ -348,7 +348,13 @@ export default async function AgentsPage() {
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_0%_0%,color-mix(in_srgb,var(--agent-hue)_18%,transparent),transparent_45%)]" />
                 <div className="relative grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-4">
                   <div className="relative shrink-0">
-                    <div className="absolute -inset-1.5 rounded-[24px]" style={{ border: `3px solid ${ring.ring}`, background: ring.bg, boxShadow: `0 0 0 4px ${ring.bg}` }} aria-hidden="true" />
+                    {/* Discreet status ring; busy agents pulse gently (opacity
+                        only) to mirror the sidebar busy treatment. */}
+                    <div
+                      className={`absolute -inset-1 rounded-[22px] ${status === "busy" ? "animate-pulse" : ""}`}
+                      style={{ border: `2px solid ${ring.ring}`, background: ring.bg, boxShadow: `0 0 0 2px ${ring.bg}` }}
+                      aria-hidden="true"
+                    />
                     <div className="relative grid h-16 w-16 place-items-center overflow-hidden rounded-2xl border bg-[var(--color-panel-soft)] text-2xl font-semibold" style={{ borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))" }}>
                       {avatarSrc ? (
                         <img src={avatarSrc} alt={`${a.name} avatar`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
@@ -382,7 +388,19 @@ export default async function AgentsPage() {
                   </div>
                 </div>
 
-                <div className="relative mt-5 grid gap-3 text-sm lg:grid-cols-[minmax(0,1fr)_minmax(220px,0.8fr)]">
+                <div className="relative mt-5 space-y-3 text-sm">
+                  <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Services</div>
+                      <Link
+                        href={`/agents/${a.slug}`}
+                        className="text-[11px] font-medium text-[var(--color-accent)] hover:underline"
+                      >
+                        Deck
+                      </Link>
+                    </div>
+                    <AgentServiceControls agent={a.slug} services={agentServices} />
+                  </div>
                   <div className="space-y-3">
                     <div className="grid grid-cols-3 gap-2">
                       <CockpitStat label="Signals" value={signalLabel(live)} tone={live?.busy_state?.is_busy ? "warn" : "ok"} />
@@ -406,18 +424,6 @@ export default async function AgentsPage() {
                     />
                     <Metric label="Last action" value={lastActivityLabel(live)} />
                     <Metric label="PM user" value={a.user ? `${a.user.username} · ${a.user.status}` : "not seeded"} />
-                  </div>
-                  <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Services</div>
-                      <Link
-                        href={`/agents/${a.slug}`}
-                        className="text-[11px] font-medium text-[var(--color-accent)] hover:underline"
-                      >
-                        Deck
-                      </Link>
-                    </div>
-                    <AgentServiceControls agent={a.slug} services={agentServices} />
                   </div>
                 </div>
 

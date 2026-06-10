@@ -72,7 +72,7 @@ export type AgentContextPacket = {
       title: string;
       status: string;
       description: string | null;
-      assignee: string;
+      workers: string[];
       actingManager: string;
     } | null;
     parentTask: {
@@ -232,6 +232,9 @@ export function buildTaskEditGrantPrompt(taskTitle: string): string {
     "5. Markdown content INSIDE the description is encouraged when it",
     "   helps - headings, bullet lists, fenced code blocks for example",
     "   snippets, tables, links. README.md / runbook style is common.",
+    "   Prefer concise task sections when useful: Goal, Scope, Acceptance",
+    "   Criteria, Implementation Notes, Test Notes, Relevant Attachments.",
+    "   Omit sections that would be empty or noise.",
     "6. Your full description POST will be persisted verbatim as the new",
     "   description, replacing the current one in full.",
     "7. The grant is single-use. Do not call the description endpoint twice.",
@@ -303,7 +306,7 @@ function liveContextFetchBlock(args: LiveContextAccess) {
       : missingGrant,
     "",
     args.epicId
-      ? "  # Parent epic (this task lives under one):"
+      ? "  # Parent epic (this task lives under one; fetch only when task context is insufficient or explicitly references Epic context/attachments):"
       : "  # Optional — only if you reference a different epic:",
     args.epicId && args.grantUrls?.epic
       ? `  curl -s '${args.grantUrls.epic}'`
@@ -416,7 +419,10 @@ export async function buildTaskAgentContextPacket(args: {
           status: true,
           description: true,
           commitPrefix: true,
-          assignee: { select: { username: true, kind: true } },
+          workers: {
+            orderBy: { createdAt: "asc" },
+            select: { user: { select: { username: true, kind: true } } },
+          },
           actingManager: { select: { username: true, kind: true } },
           attachments: {
             orderBy: { createdAt: "asc" },
@@ -555,7 +561,7 @@ export async function buildTaskAgentContextPacket(args: {
             title: task.epic.title,
             status: task.epic.status,
             description: task.epic.description,
-            assignee: actorLabel(task.epic.assignee),
+            workers: task.epic.workers.map((worker) => actorLabel(worker.user)),
             actingManager: actorLabel(task.epic.actingManager),
           }
         : null,
@@ -804,7 +810,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
   if (epic) {
     lines.push(
       `Epic: ${epic.title} (${epic.status}, ${epic.id})`,
-      `Assignee: ${epic.assignee}`,
+      `Worker pool: ${epic.workers.length ? epic.workers.join(", ") : "(none)"}`,
       `Acting manager: ${epic.actingManager}`,
     );
     pushDescription(lines, "EPIC DESCRIPTION", epic.description, packet.caps.epicDescriptionMax);
@@ -872,7 +878,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
   lines.push(
     "",
     "RESPONSE GUIDANCE:",
-    "Use the current turn together with the live PM task, Epic, timeline, and attachment context above. If an attachment is important but only metadata is available, say exactly which attachment needs inspection. Do not invent attachment contents.",
+    "Use the current turn together with the live PM task, timeline, and only the relevant attachment context above. Task attachments are primary. Inspect Epic attachments only when the task description/action plan/comments explicitly reference them or task-local context is insufficient; mention why you used them. If an attachment is important but only metadata is available, say exactly which attachment needs inspection. Do not invent attachment contents.",
     "You can see EVERY comment and EVERY discussion message above, including messages between other people/agents that were not directed at you. Read them as background and use them in your reasoning.",
     "Visible PM comments must be direct and consolidated: put all current issues, blockers, findings, and required questions in one comment whenever possible.",
     "Do not repeat a blocker or decision already present in the recent hot path unless the current turn adds new information or asks for a status update.",

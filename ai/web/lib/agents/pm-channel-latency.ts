@@ -4,6 +4,7 @@ export type PmChannelLatencySource = {
   streamingAt: Date | null;
   completedAt: Date | null;
   failedAt?: Date | null;
+  driver?: string | null;
 };
 
 function spanMs(start: Date | null | undefined, end: Date | null | undefined) {
@@ -46,6 +47,14 @@ export type PmLatencySummary = {
   maxMs: number | null;
 };
 
+export function pmChannelLatencyTransport(run: PmChannelLatencySource): string {
+  const driver = run.driver ?? "";
+  const suffix = driver.startsWith("openclaw-pm-channel:")
+    ? driver.slice("openclaw-pm-channel:".length)
+    : "";
+  return suffix || "http";
+}
+
 // Aggregate send→final latency (p50/p95/max) over recent completed runs. Runs
 // without a usable send→final span (still in-flight, failed before completion)
 // are skipped so the percentiles reflect real end-to-end delivery.
@@ -61,4 +70,16 @@ export function summarizePmLatency(runs: PmChannelLatencySource[]): PmLatencySum
     p95Ms: percentile(values, 0.95),
     maxMs: values.length ? values[values.length - 1] : null,
   };
+}
+
+export function summarizePmLatencyByTransport(runs: PmChannelLatencySource[]): Record<string, PmLatencySummary> {
+  const groups = new Map<string, PmChannelLatencySource[]>();
+  for (const run of runs) {
+    const transport = pmChannelLatencyTransport(run);
+    groups.set(transport, [...(groups.get(transport) ?? []), run]);
+  }
+  return Object.fromEntries([...groups].map(([transport, grouped]) => [
+    transport,
+    summarizePmLatency(grouped),
+  ]));
 }

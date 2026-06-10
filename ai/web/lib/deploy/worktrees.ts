@@ -21,7 +21,7 @@ export type SwitchWorktree = {
   served: boolean;
 };
 
-export type SwitchJobState = "idle" | "queued" | "building" | "done" | "error";
+export type SwitchJobState = "idle" | "queued" | "installing" | "building" | "done" | "error";
 
 export type SwitchJob = {
   id: string | null;

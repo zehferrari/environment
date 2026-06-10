@@ -7,14 +7,14 @@ import {
   type PmChannelReplyTarget,
 } from "@/lib/agents/openclaw-pm-channel";
 import { authorizePmChannelCallback } from "@/lib/agents/pm-channel-callback-auth";
-import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel-stream";
+
 import {
   pmChannelRunTargetKey,
   pmChannelTargetHasDurableReply,
   recordPmChannelRunEvent,
 } from "@/lib/agents/pm-channel-runs";
 import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel-jobs";
-import { appendPmChannelStreamEventForTarget } from "@/lib/agents/pm-channel-stream-log";
+import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel-stream-log";
 import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel-rate-limit";
 import { normalizeDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
 import {
@@ -422,19 +422,6 @@ async function persistSilentReply(target: PmChannelReplyTarget) {
     if (!original || original.agentSlug !== target.agentSlug) {
       return { status: 404, body: { error: "Message not found" } };
     }
-    await db.activityLog.create({
-      data: {
-        userId: agentUser.id,
-        kind: "agent.direct_chat.silent",
-        targetAgent: target.agentSlug,
-        payload: JSON.stringify({
-          driver: "openclaw-pm-channel",
-          inReplyToMessageId: target.messageId,
-          agentSlug: target.agentSlug,
-          reason: "no_new_information",
-        }),
-      },
-    });
     revalidatePath(`/agents/${target.agentSlug}/chat`);
     return { status: 200, body: { ok: true, silent: true, channel: "direct" } };
   }
@@ -456,21 +443,6 @@ async function persistSilentReply(target: PmChannelReplyTarget) {
     if (original.agentSlug !== "room" && original.agentSlug !== target.agentSlug) {
       return { status: 403, body: { error: "Agent mismatch" } };
     }
-    await db.activityLog.create({
-      data: {
-        projectId: original.projectId,
-        userId: agentUser.id,
-        kind: "epic.chat.silent",
-        targetAgent: target.agentSlug,
-        payload: JSON.stringify({
-          driver: "openclaw-pm-channel",
-          epicId: target.epicId,
-          inReplyToMessageId: target.messageId,
-          agentSlug: target.agentSlug,
-          reason: "no_new_information",
-        }),
-      },
-    });
     revalidateEpicReplyScope(target.epicId, "chat");
     return { status: 200, body: { ok: true, silent: true, channel: "epic-chat" } };
   }
@@ -493,21 +465,6 @@ async function persistSilentReply(target: PmChannelReplyTarget) {
     return { status: 403, body: { error: "Agent mismatch" } };
   }
 
-  await db.activityLog.create({
-    data: {
-      projectId: original.projectId,
-      taskId: target.taskId,
-      userId: agentUser.id,
-      kind: target.kind === "task-comment" ? "task.comment.silent" : "task.chat.silent",
-      targetAgent: target.agentSlug,
-      payload: JSON.stringify({
-        driver: "openclaw-pm-channel",
-        inReplyToMessageId: target.messageId,
-        agentSlug: target.agentSlug,
-        reason: "no_new_information",
-      }),
-    },
-  });
   revalidatePath(`/projects/${original.project.slug}/tasks/${target.taskId}`);
   return { status: 200, body: { ok: true, silent: true, channel: target.kind } };
 }
@@ -556,10 +513,10 @@ export async function POST(req: NextRequest) {
   }
 
   if (await pmChannelTargetHasDurableReply(target)) {
-    const persisted = await appendPmChannelStreamEventForTarget({ target, event: "done" });
-    publishPmChannelStreamEvent({ target, event: "done", seq: persisted.seq });
-    await recordPmChannelRunEvent({ target, event: "done" });
-    await markPmChannelJobCompleteForTarget(target);
+    publishPmChannelStreamEventDurably({ target, event: "done" }, async () => {
+      await recordPmChannelRunEvent({ target, event: "done" });
+      await markPmChannelJobCompleteForTarget(target);
+    });
     return NextResponse.json({ ok: true, duplicate: true });
   }
 
@@ -578,24 +535,24 @@ export async function POST(req: NextRequest) {
       text: (result as { streamText?: string }).streamText ?? "",
       replace: true,
     } as const;
-    const persisted = await appendPmChannelStreamEventForTarget(eventInput);
-    publishPmChannelStreamEvent({ ...eventInput, seq: persisted.seq });
-    await recordPmChannelRunEvent({ target, event: "final" });
-    await markPmChannelJobCompleteForTarget(target);
+    publishPmChannelStreamEventDurably(eventInput, async () => {
+      await recordPmChannelRunEvent({ target, event: "final" });
+      await markPmChannelJobCompleteForTarget(target);
+    });
   } else {
     const error = "error" in result.body && typeof result.body.error === "string"
       ? result.body.error
       : `Reply callback failed with HTTP ${result.status}`;
-    const persisted = await appendPmChannelStreamEventForTarget({
+    publishPmChannelStreamEventDurably({
       target,
       event: "error",
       error,
-    });
-    publishPmChannelStreamEvent({ target, event: "error", error, seq: persisted.seq });
-    await recordPmChannelRunEvent({
-      target,
-      event: "error",
-      error,
+    }, async () => {
+      await recordPmChannelRunEvent({
+        target,
+        event: "error",
+        error,
+      });
     });
   }
 

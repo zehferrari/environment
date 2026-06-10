@@ -30,6 +30,7 @@ import {
 import { formatGridDate } from "@/lib/date-format";
 import { bulkBinTasks } from "@/lib/bin/actions";
 import ConfirmPopup from "@/components/confirm-popup";
+import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 
 type BoardActor = MessageActor & { id: string };
@@ -57,6 +58,21 @@ type Task = {
 };
 type Column = { id: string; label: string; description?: string };
 
+type BoardPrincipal = {
+  id: string;
+  username: string;
+  name: string;
+  kind: string;
+  avatarUpdatedAt: string | null;
+  agentSlug: string | null;
+  agentAvatar: string | null;
+};
+
+type BulkAssignRole = "reporter" | "assignee" | "reviewer";
+type BulkAssignResult =
+  | { ok: true; updated: number }
+  | { ok: false; message: string };
+
 type BoardProps = {
   projectSlug: string;
   columns: ReadonlyArray<Column>;
@@ -68,12 +84,23 @@ type BoardProps = {
   ) => Promise<MoveTaskResult>;
   reorderTasksAction: (orderedIds: string[]) => Promise<void>;
   deleteTaskAction: (formData: FormData) => Promise<void>;
+  bulkAssignAction: (
+    taskIds: string[],
+    role: BulkAssignRole,
+    principalId: string | null,
+    slug: string,
+  ) => Promise<BulkAssignResult>;
+  principals: BoardPrincipal[];
 };
 
 // Per Stage 0 sign-off (HOMELAB-44 description): the Backlog column has a
 // show/hide toggle, defaults to hidden. Preference persists per project in
 // localStorage so each board remembers its own state across reloads.
 const BACKLOG_VISIBLE_KEY_PREFIX = "pm.board.backlogVisible.";
+
+// Workflow Focus mirrors the Backlog toggle: hidden by default, with the
+// preference persisted per project so each board remembers its own state.
+const FOCUS_VISIBLE_KEY_PREFIX = "pm.board.focusVisible.";
 
 // Backlog rows are full-width while the four workflow columns are
 // quarter-width. closestCorners can't disambiguate here: a full-width drag
@@ -90,13 +117,15 @@ const boardCollisionDetection: CollisionDetection = (args) => {
   return pointer.length > 0 ? pointer : rectIntersection(args);
 };
 
-export default function Board({ projectSlug, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
+export default function Board({ projectSlug, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction, bulkAssignAction, principals }: BoardProps) {
   const router = useRouter();
   const [items, setItems] = useState<Task[]>(tasks);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkTarget, setBulkTarget] = useState("To Do");
+  const [bulkRole, setBulkRole] = useState<BulkAssignRole>("assignee");
+  const [bulkPrincipalId, setBulkPrincipalId] = useState("");
   const [isPending, startTransition] = useTransition();
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [now, setNow] = useState<number | null>(null);
@@ -105,6 +134,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
   // post-mount effect, which is a normal state update and not a
   // hydration mismatch.
   const [backlogVisible, setBacklogVisible] = useState(false);
+  const [focusVisible, setFocusVisible] = useState(false);
   const [prefsHydrated, setPrefsHydrated] = useState(false);
 
   // Server is the source of truth: when revalidatePath re-renders this
@@ -203,6 +233,11 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       );
       if (stored === "true") setBacklogVisible(true);
       else if (stored === "false") setBacklogVisible(false);
+      const storedFocus = window.localStorage.getItem(
+        FOCUS_VISIBLE_KEY_PREFIX + projectSlug,
+      );
+      if (storedFocus === "true") setFocusVisible(true);
+      else if (storedFocus === "false") setFocusVisible(false);
     } catch {
       // localStorage can throw in private modes or sandboxed iframes —
       // fall back to the default (hidden) silently.
@@ -221,6 +256,18 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       // Same fallback as the read: ignore storage failures.
     }
   }, [backlogVisible, projectSlug, prefsHydrated]);
+
+  useEffect(() => {
+    if (!prefsHydrated) return;
+    try {
+      window.localStorage.setItem(
+        FOCUS_VISIBLE_KEY_PREFIX + projectSlug,
+        focusVisible ? "true" : "false",
+      );
+    } catch {
+      // Same fallback as the read: ignore storage failures.
+    }
+  }, [focusVisible, projectSlug, prefsHydrated]);
 
   useEffect(() => {
     setNow(Date.now());
@@ -358,6 +405,24 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
     });
   }
 
+  function bulkAssignSelected() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    const principalId = bulkPrincipalId === "" ? null : bulkPrincipalId;
+    setMoveError(null);
+    startTransition(async () => {
+      const result = await bulkAssignAction(ids, bulkRole, principalId, projectSlug);
+      if (!result.ok) {
+        setMoveError(result.message);
+        return;
+      }
+      setSelectedIds(new Set());
+      // Server revalidation repaints the board with the new actors; the SSE
+      // touch + polling safety net already cover cross-process refreshes.
+      router.refresh();
+    });
+  }
+
   function bulkDeleteSelected() {
     if (selectedIds.size === 0) return;
     setConfirmDeleteOpen(true);
@@ -465,6 +530,25 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
         })),
     [workflowColumns, items],
   );
+  const principalOptions = useMemo<AvatarComboboxOption[]>(
+    () =>
+      principals.map((p) => ({
+        value: p.id,
+        label: p.name,
+        actor: {
+          id: p.id,
+          username: p.username,
+          kind: p.kind,
+          name: p.name,
+          avatarUpdatedAt: p.avatarUpdatedAt,
+          agent:
+            p.kind === "agent"
+              ? { slug: p.agentSlug, name: p.name, avatar: p.agentAvatar }
+              : null,
+        },
+      })),
+    [principals],
+  );
   const workflowFocus = useMemo(() => {
     const priority: Record<string, number> = {
       Review: 0,
@@ -527,56 +611,100 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       ) : null}
 
       {selectedCount > 0 ? (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.08] px-4 py-3 text-sm shadow-sm">
-          <span className="font-semibold text-[var(--color-text)]">
-            {selectedCount} selected
-          </span>
-          <div className="flex flex-wrap items-center gap-2">
+        <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.08] px-4 py-3 text-sm shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="font-semibold text-[var(--color-text)]">
+              {selectedCount} selected
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                <span>Move to</span>
+                <select
+                  value={bulkTarget}
+                  onChange={(event) => setBulkTarget(event.currentTarget.value)}
+                  className="rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+                >
+                  {columns.map((column) => (
+                    <option key={column.id} value={column.id}>
+                      {column.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                onClick={bulkMoveSelected}
+                className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-bg)] transition hover:opacity-90"
+              >
+                Move selected
+              </button>
+              <button
+                type="button"
+                onClick={bulkDeleteSelected}
+                className="rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--color-crit)] transition hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+              >
+                Delete selected
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedIds(new Set())}
+                className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 border-t border-[var(--color-accent)]/20 pt-3">
             <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-              <span>Move to</span>
+              <span>Set</span>
               <select
-                value={bulkTarget}
-                onChange={(event) => setBulkTarget(event.currentTarget.value)}
+                value={bulkRole}
+                onChange={(event) => setBulkRole(event.currentTarget.value as BulkAssignRole)}
                 className="rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
               >
-                {columns.map((column) => (
-                  <option key={column.id} value={column.id}>
-                    {column.label}
-                  </option>
-                ))}
+                <option value="reporter">Reporter</option>
+                <option value="assignee">Assignee</option>
+                <option value="reviewer">Reviewer</option>
               </select>
             </label>
+            <div className="w-56">
+              <AvatarCombobox
+                formId="board-bulk-assign"
+                name="bulkPrincipalId"
+                defaultValue={bulkPrincipalId}
+                options={principalOptions}
+                emptyLabel="Unassigned (clear)"
+                ariaLabel="Bulk assignee"
+                onChange={setBulkPrincipalId}
+              />
+            </div>
             <button
               type="button"
-              onClick={bulkMoveSelected}
-              className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-bg)] transition hover:opacity-90"
+              onClick={bulkAssignSelected}
+              disabled={isPending}
+              className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-bg)] transition hover:opacity-90 disabled:opacity-50"
             >
-              Move selected
-            </button>
-            <button
-              type="button"
-              onClick={bulkDeleteSelected}
-              className="rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--color-crit)] transition hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
-            >
-              Delete selected
-            </button>
-            <button
-              type="button"
-              onClick={() => setSelectedIds(new Set())}
-              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-            >
-              Clear
+              Apply to selected
             </button>
           </div>
         </div>
       ) : null}
 
-      {workflowFocus.length > 0 ? (
+      {focusVisible && workflowFocus.length > 0 ? (
         <section className="mb-5 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] p-3">
           <div className="mb-2 flex items-center justify-between gap-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-              Workflow focus
-            </h2>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setFocusVisible(false)}
+                className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              >
+                Hide Focus
+              </button>
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                Workflow focus
+              </h2>
+            </div>
             <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
               feedback → review → start
             </span>
@@ -595,14 +723,41 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       ) : null}
 
       <section className="mb-6">
+        {/* When the Backlog is expanded, the Show Workflow Focus button gets
+            its own row on top of the backlog banner rather than sharing the
+            row with the Backlog heading / Hide Backlog control. */}
+        {backlogVisible && !focusVisible && workflowFocus.length > 0 ? (
+          <div className="mb-3 flex">
+            <button
+              type="button"
+              onClick={() => setFocusVisible(true)}
+              aria-pressed={focusVisible}
+              className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            >
+              Show Workflow Focus
+            </button>
+          </div>
+        ) : null}
         <div className="mb-3 flex items-center justify-between gap-3">
-          {backlogVisible ? (
-            <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
-              Backlog{backlogCount ? ` (${backlogCount})` : ""} · planning/opinions
-            </h2>
-          ) : (
-            <span aria-hidden="true" />
-          )}
+          {/* When the Backlog is hidden, the Show Workflow Focus button sits
+              inline at the left, level with the Show Backlog button. */}
+          <div className="flex items-center gap-3">
+            {!backlogVisible && !focusVisible && workflowFocus.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setFocusVisible(true)}
+                aria-pressed={focusVisible}
+                className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              >
+                Show Workflow Focus
+              </button>
+            ) : null}
+            {backlogVisible ? (
+              <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
+                Backlog{backlogCount ? ` (${backlogCount})` : ""} · planning/opinions
+              </h2>
+            ) : null}
+          </div>
           <button
             type="button"
             onClick={() => setBacklogVisible((v) => !v)}

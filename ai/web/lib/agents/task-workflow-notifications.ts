@@ -102,6 +102,21 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function requiredCommitPrefix(args: {
+  taskId: string;
+  taskWorkItemKey: string | null;
+  taskCommitPrefix: string | null;
+  epicWorkItemKey?: string | null;
+  epicCommitPrefix?: string | null;
+}) {
+  const taskKey = args.taskWorkItemKey ?? args.taskId;
+  if (args.epicWorkItemKey) return `${args.epicWorkItemKey} ${taskKey}`;
+  return effectiveCommitPrefix({
+    commitPrefix: args.taskCommitPrefix ?? args.epicCommitPrefix ?? null,
+    workItemKey: args.taskWorkItemKey,
+  });
+}
+
 function workflowPrompt(args: {
   taskTitle: string;
   taskId: string;
@@ -251,7 +266,7 @@ export async function sendTaskWorkflowNotification(args: {
             onlyReportersCanApprovePullRequests: true,
           },
         },
-        epic: { select: { id: true, commitPrefix: true } },
+        epic: { select: { id: true, workItemKey: true, commitPrefix: true } },
       },
     }),
     db.user.findUnique({
@@ -380,9 +395,12 @@ export async function sendTaskWorkflowNotification(args: {
     agentSlug: targetUser.agent.slug,
   });
   const gitIdentity = await resolveGitIdentity(task.project);
-  const commitPrefix = effectiveCommitPrefix({
-    commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
-    workItemKey: task.workItemKey,
+  const commitPrefix = requiredCommitPrefix({
+    taskId: task.id,
+    taskWorkItemKey: task.workItemKey,
+    taskCommitPrefix: task.commitPrefix,
+    epicWorkItemKey: task.epic?.workItemKey ?? null,
+    epicCommitPrefix: task.epic?.commitPrefix ?? null,
   });
   const delivery = await sendOrQueueOpenClawPmChannelTurn({
     gatewayPort: targetUser.agent.gatewayPort,
@@ -677,9 +695,12 @@ export async function sendTaskCommentNotifications(args: {
   });
   const fetchBaseUrl = agentCallbackBaseUrl();
   const gitIdentity = await resolveGitIdentity(task.project);
-  const commitPrefix = effectiveCommitPrefix({
-    commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
-    workItemKey: task.workItemKey,
+  const commitPrefix = requiredCommitPrefix({
+    taskId: task.id,
+    taskWorkItemKey: task.workItemKey,
+    taskCommitPrefix: task.commitPrefix,
+    epicWorkItemKey: task.epic?.workItemKey ?? null,
+    epicCommitPrefix: task.epic?.commitPrefix ?? null,
   });
 
   await Promise.all(mirroredMessages.map(async (msg) => {
