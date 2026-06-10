@@ -18,6 +18,7 @@ import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
 import { findPmOptionResolution, parsePmOptions } from "@/lib/pm-options";
 import { generateClientMessageId } from "@/lib/agents/client-message-id";
+import { getMessageGroupState, messageParticipantKey } from "@/lib/agents/message-grouping";
 
 interface Message {
   id: string;
@@ -105,10 +106,6 @@ function daysUntilPurge(value?: Date | string | null) {
   if (diffDays <= 0) return "purging soon";
   if (diffDays === 1) return "purge in 1d";
   return `purge in ${diffDays}d`;
-}
-
-function participantKey(actor: MessageActor) {
-  return actor.id ?? actor.agent?.slug ?? actor.username;
 }
 
 function isInternalWorkflowNotification(message: Message) {
@@ -441,7 +438,7 @@ export default function ChatRoom({
     const map = new Map<string, number>();
     for (const message of displayedMessages) {
       if (currentUserId && message.sender.id === currentUserId) continue;
-      const key = participantKey(message.sender);
+      const key = messageParticipantKey(message.sender);
       if (!map.has(key)) map.set(key, map.size);
     }
     return map;
@@ -966,7 +963,7 @@ export default function ChatRoom({
         ref={scrollRef}
         className="flex-1 overflow-y-auto p-4 min-h-0 scrollbar-thin"
       >
-        <div ref={scrollContentRef} className="space-y-6">
+        <div ref={scrollContentRef}>
         {displayedMessages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-6 border border-dashed border-[var(--color-line)] rounded-xl bg-[var(--color-panel-soft)]/20">
             <span className="text-xl">💬</span>
@@ -978,7 +975,8 @@ export default function ChatRoom({
             </p>
           </div>
         ) : (
-          displayedMessages.map((m) => {
+          displayedMessages.map((m, index) => {
+            const groupState = getMessageGroupState(displayedMessages, index);
             if (m.deletedAt) {
               // Soft-deleted action-plan bubble (HOMELAB-41 / item 2).
               // Restore (↺) only offered when viewing the live room —
@@ -1007,7 +1005,11 @@ export default function ChatRoom({
                 surface={taskId ? "task-chat" : "epic-chat"}
                 resolvedOption={pmOptionResolutions.get(m.id) ?? null}
                 preferShortAgentSections
-                participantIndex={participantIndexes.get(participantKey(m.sender)) ?? 0}
+                participantIndex={participantIndexes.get(messageParticipantKey(m.sender)) ?? 0}
+                isGroupStart={groupState.isGroupStart}
+                isGroupEnd={groupState.isGroupEnd}
+                isGroupedContinuation={groupState.isGroupedContinuation}
+                className={groupState.isGroupedContinuation ? "mt-1" : "mt-6 first:mt-0"}
                 deliveryStatus={(m as OptimisticMessage).optimisticStatus}
                 actions={(m as OptimisticMessage).optimisticStatus === "failed" ? (
                   <button

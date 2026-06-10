@@ -9,10 +9,7 @@ import DeletedMessageDivider from "@/components/deleted-message-divider";
 import {
   type MessageActor,
 } from "@/components/message-avatar";
-
-function participantKey(actor: MessageActor) {
-  return actor.id ?? actor.agent?.slug ?? actor.username;
-}
+import { getMessageGroupState, messageParticipantKey } from "@/lib/agents/message-grouping";
 
 interface Message {
   id: string;
@@ -145,7 +142,7 @@ export default function ChatMessagesContainer({
     const map = new Map<string, number>();
     for (const message of allMessages) {
       if (currentUserId && message.sender.id === currentUserId) continue;
-      const key = participantKey(message.sender);
+      const key = messageParticipantKey(message.sender);
       if (!map.has(key)) map.set(key, map.size);
     }
     return map;
@@ -154,7 +151,7 @@ export default function ChatMessagesContainer({
   return (
     <div
       ref={containerRef}
-      className="flex-1 space-y-6 overflow-y-auto p-4 min-h-0 scrollbar-thin scroll-smooth"
+      className="flex-1 overflow-y-auto p-4 min-h-0 scrollbar-thin scroll-smooth"
     >
       {/* Parent lineage expanding button */}
       {parentArchives.length > 0 && (
@@ -182,6 +179,7 @@ export default function ChatMessagesContainer({
       ) : (
         allMessages.map((m, index) => {
           const isLast = index === allMessages.length - 1;
+          const groupState = getMessageGroupState(allMessages, index);
           if (m.deletedAt) {
             // Soft-deleted direct-chat bubble (HOMELAB-41 / item 2).
             // Restore (↺) only on live view, never in an archived read-only.
@@ -205,7 +203,11 @@ export default function ChatMessagesContainer({
               containerRef={isLast ? lastMessageRef : null}
               message={m}
               currentUserId={currentUserId}
-              participantIndex={participantIndexes.get(participantKey(m.sender)) ?? 0}
+              participantIndex={participantIndexes.get(messageParticipantKey(m.sender)) ?? 0}
+              isGroupStart={groupState.isGroupStart}
+              isGroupEnd={groupState.isGroupEnd}
+              isGroupedContinuation={groupState.isGroupedContinuation}
+              className={groupState.isGroupedContinuation ? "mt-1" : "mt-6 first:mt-0"}
               actions={!viewingArchive ? (
                 <ConfirmedDeleteButton
                   action={deleteDirectAgentMessage}

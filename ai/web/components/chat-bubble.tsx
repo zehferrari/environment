@@ -34,6 +34,9 @@ interface ChatBubbleProps {
   preferShortAgentSections?: boolean;
   participantIndex?: number;
   deliveryStatus?: "sending" | "failed";
+  isGroupStart?: boolean;
+  isGroupEnd?: boolean;
+  isGroupedContinuation?: boolean;
 }
 
 const senderPalette = [
@@ -67,6 +70,9 @@ export default function ChatBubble({
   preferShortAgentSections = false,
   participantIndex,
   deliveryStatus,
+  isGroupStart = true,
+  isGroupEnd = true,
+  isGroupedContinuation = false,
 }: ChatBubbleProps) {
   const [showFullSection, setShowFullSection] = useState(false);
   const fromAgent = message.sender.kind === "agent";
@@ -99,7 +105,11 @@ export default function ChatBubble({
       : `color-mix(in srgb, ${senderAccent} ${fromAgent ? "16%" : "14%"}, var(--color-panel))`,
     boxShadow: `0 10px 28px color-mix(in srgb, ${senderAccent} 14%, transparent)`,
   } satisfies CSSProperties;
-  const cornerClass = fromCurrentUser ? "rounded-br-md" : "rounded-bl-md";
+  const connectedCornerClass = fromCurrentUser
+    ? `${isGroupStart ? "" : "rounded-tr-md"} ${isGroupEnd ? "rounded-br-md" : "rounded-br-md"}`
+    : `${isGroupStart ? "" : "rounded-tl-md"} ${isGroupEnd ? "rounded-bl-md" : "rounded-bl-md"}`;
+  const showGroupHeader = !isGroupedContinuation;
+  const compactMetaClass = fromCurrentUser ? "justify-end" : "justify-start";
 
   return (
     <div
@@ -107,58 +117,66 @@ export default function ChatBubble({
       style={rootStyle}
       className={`group flex items-start gap-2.5 transition-all duration-200 ${fromCurrentUser ? "justify-end" : "justify-start"} ${className}`}
     >
-      {!fromCurrentUser ? <MessageAvatar actor={message.sender} /> : null}
+      {!fromCurrentUser && showGroupHeader ? <MessageAvatar actor={message.sender} /> : null}
+      {!fromCurrentUser && !showGroupHeader ? <div className="w-9 shrink-0" aria-hidden="true" /> : null}
       <article
         style={articleStyle}
-        className={`w-fit min-w-0 max-w-[min(44rem,82%)] rounded-[1.15rem] ${cornerClass} border px-3.5 py-2.5 ring-1 ring-black/[0.02]`}
+        className={`w-fit min-w-0 max-w-[min(44rem,82%)] rounded-[1.15rem] ${connectedCornerClass} border px-3.5 ${showGroupHeader ? "py-2.5" : "py-2"} ring-1 ring-black/[0.02]`}
       >
-        <div className={`mb-2 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[var(--color-text-muted)] ${fromCurrentUser ? "justify-end" : "justify-between"}`}>
-          <span className="flex min-w-0 flex-wrap items-center gap-2">
-            <strong className="truncate font-semibold" style={{ color: senderAccent }}>
-              {displayName}
-            </strong>
-            {fromAgent ? (
-              <span
-                className="rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider"
-                style={{ borderColor: `color-mix(in srgb, ${senderAccent} 28%, transparent)`, color: senderAccent }}
-              >
-                agent
-              </span>
-            ) : null}
-            {!fromAgent && message.targetLabel ? (
-              <span className="rounded-full border border-[var(--color-line)] bg-[var(--color-bg)]/70 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                to {message.targetLabel}
-              </span>
-            ) : null}
-          </span>
-          <span className="flex shrink-0 items-center gap-2">
+        {showGroupHeader ? (
+          <div className={`mb-2 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[var(--color-text-muted)] ${fromCurrentUser ? "justify-end" : "justify-between"}`}>
+            <span className="flex min-w-0 flex-wrap items-center gap-2">
+              <strong className="truncate font-semibold" style={{ color: senderAccent }}>
+                {displayName}
+              </strong>
+              {fromAgent ? (
+                <span
+                  className="rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider"
+                  style={{ borderColor: `color-mix(in srgb, ${senderAccent} 28%, transparent)`, color: senderAccent }}
+                >
+                  agent
+                </span>
+              ) : null}
+              {!fromAgent && message.targetLabel ? (
+                <span className="rounded-full border border-[var(--color-line)] bg-[var(--color-bg)]/70 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                  to {message.targetLabel}
+                </span>
+              ) : null}
+            </span>
+            <span className="flex shrink-0 items-center gap-2">
+              <MessageTimestamp value={message.createdAt} />
+              {sections ? (
+                <button
+                  type="button"
+                  onClick={() => setShowFullSection((current) => !current)}
+                  aria-label={showFullSection ? "Show short reply" : "Show full reply"}
+                  title={showFullSection ? "Show short reply" : "Show full reply"}
+                  className="grid h-6 w-6 place-items-center rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                >
+                  {showFullSection ? (
+                    <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M4 7h16" />
+                      <path d="M4 12h10" />
+                      <path d="M4 17h7" />
+                    </svg>
+                  ) : (
+                    <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M4 6h16" />
+                      <path d="M4 12h16" />
+                      <path d="M4 18h16" />
+                    </svg>
+                  )}
+                </button>
+              ) : null}
+              {actions}
+            </span>
+          </div>
+        ) : (
+          <div className={`mb-1 flex min-w-0 items-center gap-2 text-[10px] text-[var(--color-text-muted)]/80 ${compactMetaClass}`}>
             <MessageTimestamp value={message.createdAt} />
-            {sections ? (
-              <button
-                type="button"
-                onClick={() => setShowFullSection((current) => !current)}
-                aria-label={showFullSection ? "Show short reply" : "Show full reply"}
-                title={showFullSection ? "Show short reply" : "Show full reply"}
-                className="grid h-6 w-6 place-items-center rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-              >
-                {showFullSection ? (
-                  <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M4 7h16" />
-                    <path d="M4 12h10" />
-                    <path d="M4 17h7" />
-                  </svg>
-                ) : (
-                  <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M4 6h16" />
-                    <path d="M4 12h16" />
-                    <path d="M4 18h16" />
-                  </svg>
-                )}
-              </button>
-            ) : null}
             {actions}
-          </span>
-        </div>
+          </div>
+        )}
         <div
           className="md md-compact break-words text-sm leading-relaxed text-[var(--color-text)] [overflow-wrap:anywhere]"
           dangerouslySetInnerHTML={renderFullMarkdown(displayBody)}
@@ -183,7 +201,8 @@ export default function ChatBubble({
           />
         ) : null}
       </article>
-      {fromCurrentUser ? <MessageAvatar actor={message.sender} /> : null}
+      {fromCurrentUser && showGroupHeader ? <MessageAvatar actor={message.sender} /> : null}
+      {fromCurrentUser && !showGroupHeader ? <div className="w-9 shrink-0" aria-hidden="true" /> : null}
     </div>
   );
 }
