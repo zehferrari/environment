@@ -83,6 +83,7 @@ interface ChatRoomProps {
   defaultDiscussionTarget?: string | null;
   pendingAgents: Array<{ slug: string; username: string }>;
   latestMessageId: string | null;
+  firstUnreadMessageId?: string | null;
   currentUserId?: string | null;
   pendingProposals?: any[];
 }
@@ -119,6 +120,16 @@ function isInternalWorkflowNotification(message: Message) {
 
 function optimisticLocalEchoEnabled() {
   return process.env.NEXT_PUBLIC_PM_OPTIMISTIC_LOCAL_ECHO === "1";
+}
+
+function NewMessagesMarker() {
+  return (
+    <div className="my-4 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--color-crit)]">
+      <span className="h-px flex-1 bg-[var(--color-crit)]/50" />
+      <span>New messages</span>
+      <span className="h-px flex-1 bg-[var(--color-crit)]/50" />
+    </div>
+  );
 }
 
 function composerDraftStorageKey(parts: {
@@ -369,6 +380,7 @@ export default function ChatRoom({
   defaultDiscussionTarget = null,
   pendingAgents,
   latestMessageId,
+  firstUnreadMessageId = null,
   currentUserId = null,
   pendingProposals = [],
 }: ChatRoomProps) {
@@ -1098,14 +1110,16 @@ export default function ChatRoom({
         ) : (
           displayedMessages.map((m, index) => {
             const groupState = getMessageGroupState(displayedMessages, index);
+            const unreadMarker = !viewingArchive && firstUnreadMessageId === m.id ? <NewMessagesMarker /> : null;
             if (m.deletedAt) {
               // Soft-deleted action-plan bubble (HOMELAB-41 / item 2).
               // Restore (↺) only offered when viewing the live room —
               // archived views stay read-only. Agents never see these
               // in their context until restored.
               return (
+                <React.Fragment key={m.id}>
+                  {unreadMarker}
                 <DeletedMessageDivider
-                  key={m.id}
                   deletedAt={m.deletedAt}
                   deletedBy={m.deletedBy ?? null}
                   restore={!viewingArchive ? {
@@ -1115,11 +1129,13 @@ export default function ChatRoom({
                 >
                   <span>{m.body}</span>
                 </DeletedMessageDivider>
+                </React.Fragment>
               );
             }
             return (
+              <React.Fragment key={m.id}>
+                {unreadMarker}
               <ChatBubble
-                key={m.id}
                 message={m}
                 currentUserId={currentUserId}
                 projectSlug={projectSlug}
@@ -1154,6 +1170,7 @@ export default function ChatRoom({
                   />
                 ) : null}
               />
+              </React.Fragment>
             );
           })
         )}

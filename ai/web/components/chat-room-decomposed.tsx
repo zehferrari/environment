@@ -83,6 +83,7 @@ interface ChatRoomProps {
   defaultDiscussionTarget?: string | null;
   pendingAgents: Array<{ slug: string; username: string }>;
   latestMessageId: string | null;
+  firstUnreadMessageId?: string | null;
   currentUserId?: string | null;
   pendingProposals?: any[];
 }
@@ -119,6 +120,16 @@ function isInternalWorkflowNotification(message: Message) {
 
 function optimisticLocalEchoEnabled() {
   return process.env.NEXT_PUBLIC_PM_OPTIMISTIC_LOCAL_ECHO === "1";
+}
+
+function NewMessagesMarker() {
+  return (
+    <div className="my-4 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--color-crit)]">
+      <span className="h-px flex-1 bg-[var(--color-crit)]/50" />
+      <span>New messages</span>
+      <span className="h-px flex-1 bg-[var(--color-crit)]/50" />
+    </div>
+  );
 }
 
 const VIRTUAL_MESSAGE_ESTIMATED_HEIGHT = 116;
@@ -503,6 +514,7 @@ export default function DecomposedChatRoom({
   defaultDiscussionTarget = null,
   pendingAgents,
   latestMessageId,
+  firstUnreadMessageId = null,
   currentUserId = null,
   pendingProposals = [],
 }: ChatRoomProps) {
@@ -1202,6 +1214,7 @@ export default function DecomposedChatRoom({
         scrollContentRef={scrollContentRef}
         displayedMessages={displayedMessages}
         viewingArchive={viewingArchive}
+        firstUnreadMessageId={firstUnreadMessageId}
         projectSlug={projectSlug}
         currentUserId={currentUserId}
         taskId={taskId}
@@ -1275,6 +1288,7 @@ const MessageList = React.memo(function MessageList(props: any) {
     scrollContentRef,
     displayedMessages,
     viewingArchive,
+    firstUnreadMessageId,
     projectSlug,
     currentUserId,
     taskId,
@@ -1333,6 +1347,7 @@ const MessageList = React.memo(function MessageList(props: any) {
             {virtualMessages.map(({ message: m, index }: { message: OptimisticMessage; index: number }) => {
               const groupState = getMessageGroupState(displayedMessages, index);
               const rowClassName = groupState.isGroupedContinuation ? "mt-1" : "mt-6 first:mt-0";
+              const unreadMarker = !viewingArchive && firstUnreadMessageId === m.id ? <NewMessagesMarker /> : null;
               if (m.deletedAt) {
                 // Soft-deleted action-plan bubble (HOMELAB-41 / item 2).
                 // Restore (↺) only offered when viewing the live room —
@@ -1345,6 +1360,7 @@ const MessageList = React.memo(function MessageList(props: any) {
                     data-virtualized-message-row={m.id}
                     className={rowClassName}
                   >
+                    {unreadMarker}
                     <DeletedMessageDivider
                       deletedAt={m.deletedAt}
                       deletedBy={m.deletedBy ?? null}
@@ -1365,6 +1381,7 @@ const MessageList = React.memo(function MessageList(props: any) {
                   data-virtualized-message-row={m.id}
                   className={rowClassName}
                 >
+                  {unreadMarker}
                   <ChatBubble
                     message={m}
                     currentUserId={currentUserId}

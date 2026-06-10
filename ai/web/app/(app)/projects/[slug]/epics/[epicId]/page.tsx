@@ -554,6 +554,30 @@ export default async function EpicDetailPage({
       deletedBy: { select: { username: true, name: true, kind: true } },
     },
   });
+  const currentUserId = session?.user?.id ?? null;
+  const epicChatCursorKey = `epic:${epic.id}`;
+  const epicChatReadCursor = currentUserId
+    ? await db.chatReadCursor.findUnique({
+        where: { userId_agentSlug: { userId: currentUserId, agentSlug: epicChatCursorKey } },
+        select: { lastReadAt: true },
+      })
+    : null;
+  const unreadActionPlanMessages = currentUserId
+    ? chatMessages.filter((message) => (
+        !message.deletedAt
+        && !message.body.startsWith("PM workflow notification for @")
+        && message.sender.id !== currentUserId
+        && (!epicChatReadCursor || message.createdAt > epicChatReadCursor.lastReadAt)
+      ))
+    : [];
+  const firstUnreadMessageId = unreadActionPlanMessages[0]?.id ?? null;
+  if (currentUserId && selectedTab === "Action Plan" && !chatArchive) {
+    await db.chatReadCursor.upsert({
+      where: { userId_agentSlug: { userId: currentUserId, agentSlug: epicChatCursorKey } },
+      create: { userId: currentUserId, agentSlug: epicChatCursorKey },
+      update: { lastReadAt: new Date() },
+    });
+  }
   const pendingProposals = await db.workItemProposal.findMany({
     where: {
       status: "pending",
@@ -945,6 +969,7 @@ export default async function EpicDetailPage({
             <TabsNav
               tabs={EPIC_TABS}
               sticky
+              badges={{ "Action Plan": unreadActionPlanMessages.length }}
             />
             <div className="pt-4">
               <TabPanel name="Description">
@@ -1208,7 +1233,8 @@ export default async function EpicDetailPage({
                     defaultDiscussionTarget={defaultDiscussionTarget}
                     pendingAgents={pendingAgents}
                     latestMessageId={viewingChatArchive ? null : pendingChatMessageId}
-                    currentUserId={session?.user?.id ?? null}
+                    firstUnreadMessageId={firstUnreadMessageId}
+                    currentUserId={currentUserId}
                     pendingProposals={pendingProposals}
                   />
                 </div>

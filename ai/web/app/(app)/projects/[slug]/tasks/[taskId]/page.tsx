@@ -1290,6 +1290,25 @@ export default async function TaskDetailPage({
       })
     : [];
   const chatMessages = await getCachedTaskRoomMessages(task.id);
+  const taskChatCursorKey = `task:${task.id}`;
+  const taskChatReadCursor = await db.chatReadCursor.findUnique({
+    where: { userId_agentSlug: { userId: viewer.id, agentSlug: taskChatCursorKey } },
+    select: { lastReadAt: true },
+  });
+  const unreadActionPlanMessages = chatMessages.filter((message) => (
+    !message.deletedAt
+    && !message.body.startsWith("PM workflow notification for @")
+    && message.sender.id !== viewer.id
+    && (!taskChatReadCursor || message.createdAt > taskChatReadCursor.lastReadAt)
+  ));
+  const firstUnreadMessageId = unreadActionPlanMessages[0]?.id ?? null;
+  if (selectedTab === "Action Plan" && !chatArchive) {
+    await db.chatReadCursor.upsert({
+      where: { userId_agentSlug: { userId: viewer.id, agentSlug: taskChatCursorKey } },
+      create: { userId: viewer.id, agentSlug: taskChatCursorKey },
+      update: { lastReadAt: new Date() },
+    });
+  }
   const pendingProposals = await getCachedPendingTaskProposals(
     task.id,
     task.projectId,
@@ -1718,6 +1737,7 @@ export default async function TaskDetailPage({
             <TabsNav
               tabs={taskTabs}
               sticky
+              badges={{ "Action Plan": unreadActionPlanMessages.length }}
             />
             <div className="pt-4">
               <TabPanel name="Description">
@@ -2000,6 +2020,7 @@ export default async function TaskDetailPage({
                     defaultDiscussionTarget={defaultDiscussionTarget}
                     pendingAgents={pendingAgents}
                     latestMessageId={viewingChatArchive ? null : pendingChatMessageId}
+                    firstUnreadMessageId={firstUnreadMessageId}
                     currentUserId={viewer.id}
                     pendingProposals={pendingProposals}
                   />

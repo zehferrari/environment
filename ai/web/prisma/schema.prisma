@@ -917,12 +917,13 @@ model DescriptionDraft {
 }
 
 // ------------------------------------------------------------------
-// ChatReadCursor — per-user, per-agent "last time I looked at this
-// direct chat" marker. Drives the sidebar unread red dot: a direct
-// chat shows unread when the agent has authored a DirectAgentChatMessage
-// newer than the viewer's lastReadAt for that agent. userId is a plain
-// string (no FK) so the cursor survives independently of user lifecycle;
-// the chat page upserts lastReadAt = now() on open.
+// ChatReadCursor — per-user, per-chat-scope "last time I looked at this"
+// marker. agentSlug stores either a direct agent slug or a scope-prefixed
+// work-item room key (task:<id>, epic:<id>). Direct chats drive sidebar
+// unread dots; task/epic action-plan rooms drive tab badges and the first
+// unread divider. userId is a plain string (no FK) so the cursor survives
+// independently of user lifecycle; active chat pages upsert lastReadAt on
+// open.
 // ------------------------------------------------------------------
 
 model ChatReadCursor {
