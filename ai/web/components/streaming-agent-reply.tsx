@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useReconnectableSSE } from "@/hooks/use-reconnectable-sse";
 import { MessageAvatar, type MessageActor } from "@/components/message-avatar";
 import { extractDiscussionSectionA } from "@/lib/agents/discussion-reply-format";
 import {
@@ -120,95 +121,113 @@ export default function StreamingAgentReply({
     return `/api/openclaw/pm-channel/events?${params.toString()}`;
   }, [agentSlug, messageId, targetKind, taskId, epicId]);
 
+  const notifyFinal = useCallback((payload: StreamState | null, finalStatus: "done" | "error") => {
+    if (finalNotifiedRef.current) return;
+    finalNotifiedRef.current = true;
+    onFinalRef.current?.({
+      agentSlug,
+      text: payload?.text ?? latestTextRef.current,
+      reasoning: payload?.reasoning ?? latestReasoningRef.current,
+      status: finalStatus,
+    });
+  }, [agentSlug]);
+
+  const { connect, disconnect, setLastEventId } = useReconnectableSSE();
+
   useEffect(() => {
     finalNotifiedRef.current = false;
     setFinalized(false);
-    const source = new EventSource(url);
+    setLastEventId("");
 
-    const parse = (event: MessageEvent<string>) => {
-      try {
-        return JSON.parse(event.data) as StreamState;
-      } catch {
-        return null;
-      }
-    };
+    const stateEventTypes = new Set([
+      "snapshot",
+      "status",
+      "status:thinking",
+      "status:reading",
+      "status:working",
+      "tool:call",
+      "tool:result",
+      "token",
+      "partial",
+      "reasoning",
+      "final",
+      "done",
+    ]);
 
-    const notifyFinal = (payload: StreamState | null, finalStatus: "done" | "error") => {
-      if (finalNotifiedRef.current) return;
-      finalNotifiedRef.current = true;
-      onFinalRef.current?.({
-        agentSlug,
-        text: payload?.text ?? latestTextRef.current,
-        reasoning: payload?.reasoning ?? latestReasoningRef.current,
-        status: finalStatus,
-      });
-    };
-
-    const onState = (event: MessageEvent<string>) => {
-      const payload = parse(event);
-      if (!payload) return;
-      setError(payload.error ?? null);
-      setConnectionIssueAt(null);
-      setLifecycleStatus(payload.lifecycleStatus ?? null);
-      setToolStatus(payload.toolStatus ?? null);
-      setToolName(payload.toolName ?? null);
-      setLastUpdateAt(payload.updatedAt ?? Date.now());
-      applyStreamState(payload, setText, setReasoning, setStatus, setRunStatus);
-      if (payload.status === "done") {
-        setFinalized(true);
-        notifyFinal(payload, "done");
-        source.close();
-      } else if (payload.status === "error") {
-        notifyFinal(payload, "error");
-        source.close();
-      }
-    };
-
-    const onErrorEvent = (event: MessageEvent<string>) => {
-      const payload = parse(event);
-      setError(payload?.error ?? "Agent stream failed");
-      setConnectionIssueAt(null);
-      setRunStatus("failed");
-      setStatus("error");
-      setLastUpdateAt(payload?.updatedAt ?? Date.now());
-      notifyFinal(payload, "error");
-      source.close();
-    };
-
-    const onHeartbeat = () => {
-      setLastUpdateAt((current) => current ?? Date.now());
-      setConnectionIssueAt(null);
-      setStatus((current) => current === "connecting" ? "streaming" : current);
-    };
-
-    source.addEventListener("snapshot", onState);
-    source.addEventListener("status", onState);
-    source.addEventListener("status:thinking", onState);
-    source.addEventListener("status:reading", onState);
-    source.addEventListener("status:working", onState);
-    source.addEventListener("tool:call", onState);
-    source.addEventListener("tool:result", onState);
-    source.addEventListener("token", onState);
-    source.addEventListener("partial", onState);
-    source.addEventListener("reasoning", onState);
-    source.addEventListener("final", onState);
-    source.addEventListener("done", onState);
-    source.addEventListener("stream-error", onErrorEvent);
-    source.addEventListener("heartbeat", onHeartbeat);
-    source.onerror = () => {
-      setStatus((current) => {
-        if (current === "done" || current === "error") {
-          return current;
+    connect({
+      url,
+      onEvent(event) {
+        if (event.event === "heartbeat") {
+          setLastUpdateAt((current) => current ?? Date.now());
+          setConnectionIssueAt(null);
+          setStatus((current) => current === "connecting" ? "streaming" : current);
+          return;
         }
-        setConnectionIssueAt((existing) => existing ?? Date.now());
-        return "connecting";
-      });
-    };
+
+        if (event.event === "stream-error") {
+          let payload: StreamState | null = null;
+          try { payload = JSON.parse(event.data) as StreamState; } catch { /* ignore */ }
+          setError(payload?.error ?? "Agent stream failed");
+          setConnectionIssueAt(null);
+          setRunStatus("failed");
+          setStatus("error");
+          setLastUpdateAt(payload?.updatedAt ?? Date.now());
+          notifyFinal(payload, "error");
+          // Terminal error — don't reconnect
+          disconnect();
+          return;
+        }
+
+        if (stateEventTypes.has(event.event)) {
+          let payload: StreamState | null = null;
+          try { payload = JSON.parse(event.data) as StreamState; } catch { return; }
+          if (!payload) return;
+          setError(payload.error ?? null);
+          setConnectionIssueAt(null);
+          setLifecycleStatus(payload.lifecycleStatus ?? null);
+          setToolStatus(payload.toolStatus ?? null);
+          setToolName(payload.toolName ?? null);
+          setLastUpdateAt(payload.updatedAt ?? Date.now());
+          applyStreamState(payload, setText, setReasoning, setStatus, setRunStatus);
+          if (payload.status === "done") {
+            setFinalized(true);
+            notifyFinal(payload, "done");
+            disconnect();
+          } else if (payload.status === "error") {
+            notifyFinal(payload, "error");
+            disconnect();
+          }
+          return;
+        }
+      },
+      onConnected() {
+        setConnectionIssueAt(null);
+      },
+      onError(attempt) {
+        setStatus((current) => {
+          if (current === "done" || current === "error") return current;
+          setConnectionIssueAt((existing) => existing ?? Date.now());
+          return "connecting";
+        });
+      },
+      onReconnect(attempt, delayMs) {
+        setStatus((current) => {
+          if (current === "done" || current === "error") return current;
+          setConnectionIssueAt((existing) => existing ?? Date.now());
+          return "connecting";
+        });
+      },
+      shouldReconnect() {
+        // Only reconnect if we haven't reached a terminal state
+        // Read the latest finalized value via ref to avoid stale closures
+        return !finalNotifiedRef.current;
+      },
+    });
 
     return () => {
-      source.close();
+      disconnect();
     };
-  }, [agentSlug, url]);
+  }, [agentSlug, url, connect, disconnect, notifyFinal, setLastEventId]);
 
   const [showReasoning, setShowReasoning] = useState(true);
   const actor: MessageActor = {
