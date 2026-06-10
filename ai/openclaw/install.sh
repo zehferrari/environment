@@ -721,7 +721,7 @@ else
                 -e "s|^EnvironmentFile=.*|EnvironmentFile=$PM_ENV_FILE|" \
                 -e "s|^Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=.*|Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=$PM_OPENCLAW_CHANNEL_TOKEN_FILE|" \
                 -e "s|^ExecStart=.*|ExecStart=$PM_NODE_BIN server.js|" \
-                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_WEB_ROOT/.data $PM_AGENT_CREDENTIALS_DIR $PM_DROP_DIR -$PM_ATTACHMENT_ROOT -$PM_SAMBA_SHARED_ROOT|" \
+                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_WEB_ROOT/.data $PM_AGENT_CREDENTIALS_DIR $PM_DROP_DIR /srv/agents/openclaw -$PM_ATTACHMENT_ROOT -$PM_SAMBA_SHARED_ROOT|" \
                 -e "s|^ReadOnlyPaths=.*|ReadOnlyPaths=/srv/agents $PM_OPENCLAW_CHANNEL_TOKEN_FILE|" \
                 "$pm_unit_src" > "$tmp_unit"
             install -o root -g root -m 0644 "$tmp_unit" /etc/systemd/system/pm.service
