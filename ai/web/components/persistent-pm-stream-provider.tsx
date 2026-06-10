@@ -2,6 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { StreamingReplyRunStatus } from "@/lib/agents/streaming-agent-reply-status";
+import { CrossTabStreamCoordinator } from "@/lib/agents/cross-tab-stream-coordinator";
 
 type TargetKind = "direct" | "task-chat" | "task-comment" | "epic-chat";
 
@@ -55,6 +56,10 @@ type StreamRecord = {
   reconnectAttempt: number;
   started: boolean;
   cleanupTimer: ReturnType<typeof setTimeout> | null;
+  coordinator: CrossTabStreamCoordinator<PersistentPmStreamState> | null;
+  coordinatorUnsubscribeRole: (() => void) | null;
+  coordinatorUnsubscribeState: (() => void) | null;
+  coordinatorUnsubscribePeerJoin: (() => void) | null;
 };
 
 type PersistentPmStreamStore = {
@@ -111,6 +116,10 @@ function streamUrl(parts: StreamKeyParts) {
 
 function isTerminalStatus(status: PersistentPmStreamState["status"]) {
   return status === "done" || status === "error";
+}
+
+function streamChannelName(key: string) {
+  return `pm-stream:v1:${key}`;
 }
 
 function initialStreamState(initialStatus: PersistentPmStreamState["status"] = "pending"): PersistentPmStreamState {
@@ -203,6 +212,7 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
 
   const updateRecord = useCallback((record: StreamRecord, updater: (state: PersistentPmStreamState) => PersistentPmStreamState) => {
     record.state = updater(record.state);
+    record.coordinator?.publishState(record.state, record.lastEventId);
     notify(record);
   }, [notify]);
 
@@ -216,6 +226,7 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
   }, []);
 
   const startConnection = useCallback((record: StreamRecord) => {
+    if (record.coordinator && !record.coordinator.isLeader()) return;
     if (record.started) return;
     record.started = true;
     record.controller = new AbortController();
@@ -311,6 +322,41 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
     void run();
   }, [scheduleCleanup, updateRecord]);
 
+  const stopConnection = useCallback((record: StreamRecord) => {
+    record.controller?.abort();
+    record.controller = null;
+    record.started = false;
+  }, []);
+
+  const attachCoordinator = useCallback((record: StreamRecord) => {
+    if (record.coordinator) return;
+    const coordinator = new CrossTabStreamCoordinator<PersistentPmStreamState>(streamChannelName(record.key));
+    if (!coordinator.enabled) {
+      coordinator.close();
+      return;
+    }
+
+    record.coordinator = coordinator;
+    record.coordinatorUnsubscribeState = coordinator.onState(({ state, lastEventId }) => {
+      if (coordinator.isLeader()) return;
+      record.lastEventId = lastEventId;
+      record.state = state;
+      notify(record);
+      if (isTerminalStatus(state.status)) scheduleCleanup(record);
+    });
+    record.coordinatorUnsubscribePeerJoin = coordinator.onPeerJoin(() => {
+      coordinator.publishState(record.state, record.lastEventId);
+    });
+    record.coordinatorUnsubscribeRole = coordinator.onRoleChange((isLeader) => {
+      if (isLeader) {
+        coordinator.publishState(record.state, record.lastEventId);
+        startConnection(record);
+      } else {
+        stopConnection(record);
+      }
+    });
+  }, [notify, scheduleCleanup, startConnection, stopConnection]);
+
   const store = useMemo<PersistentPmStreamStore>(() => ({
     ensureStream(parts, initialStatus = "pending") {
       const key = streamKey(parts);
@@ -326,12 +372,17 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
           reconnectAttempt: 0,
           started: false,
           cleanupTimer: null,
+          coordinator: null,
+          coordinatorUnsubscribeRole: null,
+          coordinatorUnsubscribeState: null,
+          coordinatorUnsubscribePeerJoin: null,
         };
         recordsRef.current.set(key, record);
       } else if (record.cleanupTimer) {
         clearTimeout(record.cleanupTimer);
         record.cleanupTimer = null;
       }
+      attachCoordinator(record);
       startConnection(record);
       return record;
     },
@@ -356,7 +407,17 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
         scheduleCleanup(record);
       }
     },
-  }), [scheduleCleanup, startConnection]);
+  }), [attachCoordinator, scheduleCleanup, startConnection]);
+
+  useEffect(() => () => {
+    recordsRef.current.forEach((record) => {
+      record.coordinatorUnsubscribeRole?.();
+      record.coordinatorUnsubscribeState?.();
+      record.coordinatorUnsubscribePeerJoin?.();
+      record.coordinator?.close();
+      record.controller?.abort();
+    });
+  }, []);
 
   return <PersistentPmStreamContext.Provider value={store}>{children}</PersistentPmStreamContext.Provider>;
 }
