@@ -1044,40 +1044,91 @@ function setRegistryFlag(user, kind, key, value) {
 
   let inAgent = false;
   let inSection = false;
+  let userLineIdx = -1;
+  let sectionStartIdx = -1;
+  let sectionEndIdx = -1;
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    // Each agent's object starts with a "user" field. Track whether we're
-    // currently inside the target's object.
     const userMatch = line.match(/"user":\s*"([^"]+)"/);
     if (userMatch) {
-      inAgent = (userMatch[1] === user);
-      inSection = false;
+      if (inAgent) {
+        break;
+      }
+      if (userMatch[1] === user) {
+        inAgent = true;
+        userLineIdx = i;
+      }
       continue;
     }
     if (!inAgent) continue;
 
     if (line.match(new RegExp(`"${kind}":\\s*\\{`))) {
       inSection = true;
-      continue;
-    }
-    if (!inSection) continue;
-
-    // Closing brace of the section
-    if (line.match(/^\s*\},?\s*$/)) {
-      inSection = false;
+      sectionStartIdx = i;
       continue;
     }
 
-    // Match the target key + boolean
-    const kvMatch = line.match(new RegExp(`^(\\s*"${key}":\\s*)(true|false)(.*)$`));
-    if (kvMatch) {
-      lines[i] = kvMatch[1] + value + kvMatch[3];
+    if (inSection) {
+      if (line.match(/^\s*\},?\s*$/)) {
+        inSection = false;
+        sectionEndIdx = i;
+        continue;
+      }
+
+      const kvMatch = line.match(new RegExp(`^(\\s*"${key}":\\s*)(true|false)(.*)$`));
+      if (kvMatch) {
+        lines[i] = kvMatch[1] + value + kvMatch[3];
+        fs.writeFileSync(regPath, lines.join('\n'));
+        log('registry edit (updated)', user, kind, key, '->', value);
+        return true;
+      }
+    }
+  }
+
+  if (inAgent) {
+    if (sectionStartIdx !== -1 && sectionEndIdx !== -1) {
+      const closeBraceLine = lines[sectionEndIdx];
+      const indentMatch = closeBraceLine.match(/^(\s*)\}/);
+      const baseIndent = indentMatch ? indentMatch[1] : '      ';
+      const keyIndent = baseIndent + '  ';
+
+      let prevLine = lines[sectionEndIdx - 1];
+      if (!prevLine.trim().endsWith(',')) {
+        const trailingMatch = prevLine.match(/^(.*?)(\s*)$/);
+        prevLine = (trailingMatch ? trailingMatch[1] : prevLine) + ',';
+        lines[sectionEndIdx - 1] = prevLine;
+      }
+
+      const newLine = `${keyIndent}"${key}": ${value}`;
+      lines.splice(sectionEndIdx, 0, newLine);
+
       fs.writeFileSync(regPath, lines.join('\n'));
-      log('registry edit', user, kind, key, '->', value);
+      log('registry edit (inserted key)', user, kind, key, '->', value);
+      return true;
+    }
+
+    if (userLineIdx !== -1) {
+      const userLine = lines[userLineIdx];
+      const indentMatch = userLine.match(/^(\s*)"user":/);
+      const baseIndent = indentMatch ? indentMatch[1] : '    ';
+      const sectionIndent = baseIndent + '  ';
+      const keyIndent = sectionIndent + '  ';
+
+      const sectionLines = [
+        `${baseIndent}"${kind}": {`,
+        `${keyIndent}"${key}": ${value}`,
+        `${baseIndent}},`
+      ];
+
+      lines.splice(userLineIdx + 1, 0, ...sectionLines);
+      fs.writeFileSync(regPath, lines.join('\n'));
+      log('registry edit (inserted section & key)', user, kind, key, '->', value);
       return true;
     }
   }
+
   return false;
 }
 
