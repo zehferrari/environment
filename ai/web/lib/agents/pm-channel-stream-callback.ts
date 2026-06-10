@@ -5,7 +5,9 @@ import {
 } from "@/lib/agents/openclaw-pm-channel";
 import {
   publishPmChannelStreamEvent,
+  type PmChannelLifecycleStatus,
   type PmChannelStreamEventKind,
+  type PmChannelToolStatus,
 } from "@/lib/agents/pm-channel-stream";
 import {
   pmChannelRunTargetKey,
@@ -26,6 +28,13 @@ export type ApplyPmChannelStreamCallbackResult = {
 };
 
 const EVENTS = new Set<PmChannelStreamEventKind>([
+  "status",
+  "status:thinking",
+  "status:reading",
+  "status:working",
+  "tool:call",
+  "tool:result",
+  "token",
   "partial",
   "reasoning",
   "final",
@@ -36,6 +45,14 @@ const EVENTS = new Set<PmChannelStreamEventKind>([
 function stringField(value: unknown, max: number) {
   if (typeof value !== "string") return undefined;
   return value.length > max ? value.slice(0, max) : value;
+}
+
+function lifecycleStatusField(value: unknown): PmChannelLifecycleStatus | undefined {
+  return value === "thinking" || value === "reading" || value === "working" ? value : undefined;
+}
+
+function toolStatusField(value: unknown): PmChannelToolStatus | undefined {
+  return value === "call" || value === "result" ? value : undefined;
 }
 
 function normalizeTransportMode(mode: string | null | undefined): PmChannelStreamTransportMode {
@@ -140,7 +157,7 @@ export async function applyPmChannelStreamCallback(args: {
   const text = stringField(args.payload.text, 40_000);
   const delta = stringField(args.payload.delta, 8_000);
   if (
-    (event === "partial" || event === "final") &&
+    (event === "partial" || event === "token" || event === "final") &&
     (isSilentPmReplyText(text) || isSilentPmReplyText(delta))
   ) {
     return { status: 200, body: { ok: true, silent: true } };
@@ -153,6 +170,9 @@ export async function applyPmChannelStreamCallback(args: {
     delta,
     replace: args.payload.replace === true,
     error: stringField(args.payload.error, 2_000),
+    statusKind: lifecycleStatusField(args.payload.statusKind ?? args.payload.status),
+    toolStatus: toolStatusField(args.payload.toolStatus),
+    toolName: stringField(args.payload.toolName, 200),
   };
   const persisted = await appendPmChannelStreamEventForTarget(eventInput);
   const state = publishPmChannelStreamEvent({ ...eventInput, seq: persisted.seq });
