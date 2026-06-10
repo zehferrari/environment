@@ -4,6 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { MessageAvatar, type MessageActor } from "@/components/message-avatar";
 import { extractDiscussionSectionA } from "@/lib/agents/discussion-reply-format";
+import {
+  formatStreamingReplyElapsed,
+  reconnectingCopy,
+  waitingCopy,
+  type StreamingReplyRunStatus,
+  type StreamingReplyStatus,
+} from "@/lib/agents/streaming-agent-reply-status";
 
 type TargetKind = "direct" | "task-chat" | "task-comment" | "epic-chat";
 
@@ -14,7 +21,7 @@ type StreamState = {
   lifecycleStatus?: "thinking" | "reading" | "working" | null;
   toolStatus?: "call" | "result" | null;
   toolName?: string | null;
-  runStatus?: "queued" | "accepted" | "streaming" | "retryable" | "complete" | "failed";
+  runStatus?: StreamingReplyRunStatus;
   error?: string | null;
   updatedAt?: number;
 };
@@ -50,7 +57,7 @@ function applyStreamState(
   incoming: StreamState,
   setText: (value: string | ((prev: string) => string)) => void,
   setReasoning: (value: string | ((prev: string) => string)) => void,
-  setStatus: (value: "connecting" | "streaming" | "done" | "error") => void,
+  setStatus: (value: StreamingReplyStatus) => void,
   setRunStatus: (value: StreamState["runStatus"]) => void,
 ) {
   if (typeof incoming.text === "string") setText(incoming.text);
@@ -63,41 +70,6 @@ function applyStreamState(
 
 const REFRESH_FALLBACK_MS = 8_000;
 const ANONYMOUS_TYPING_IDLE_MS = 8_000;
-
-function formatElapsed(ms: number) {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
-function waitingCopy(args: {
-  status: "connecting" | "streaming" | "done" | "error";
-  runStatus?: StreamState["runStatus"];
-  lifecycleStatus: StreamState["lifecycleStatus"];
-  toolStatus: StreamState["toolStatus"];
-  toolName: string | null;
-  error: string | null;
-}) {
-  if (args.status === "error") {
-    return args.error ?? "Agent stream failed";
-  }
-  if (args.runStatus === "queued") {
-    return "Queued...";
-  }
-  if (args.runStatus === "retryable") {
-    return "Retrying...";
-  }
-
-  if (args.toolStatus === "call") {
-    return args.toolName ? `Using ${args.toolName}...` : "Using tool...";
-  }
-  if (args.toolStatus === "result") {
-    return args.toolName ? `Read ${args.toolName} result...` : "Reading tool result...";
-  }
-  if (args.lifecycleStatus === "thinking") return "Thinking...";
-  if (args.lifecycleStatus === "reading") return "Reading...";
-  return "Working...";
-}
 
 export default function StreamingAgentReply({
   targetKind,
@@ -112,7 +84,7 @@ export default function StreamingAgentReply({
   const router = useRouter();
   const [text, setText] = useState("");
   const [reasoning, setReasoning] = useState("");
-  const [status, setStatus] = useState<"connecting" | "streaming" | "done" | "error">("connecting");
+  const [status, setStatus] = useState<StreamingReplyStatus>("connecting");
   const [runStatus, setRunStatus] = useState<StreamState["runStatus"]>("queued");
   const [lifecycleStatus, setLifecycleStatus] = useState<StreamState["lifecycleStatus"]>(null);
   const [toolStatus, setToolStatus] = useState<StreamState["toolStatus"]>(null);
@@ -120,6 +92,7 @@ export default function StreamingAgentReply({
   const [error, setError] = useState<string | null>(null);
   const [startedAt] = useState(() => Date.now());
   const [lastUpdateAt, setLastUpdateAt] = useState<number | null>(null);
+  const [connectionIssueAt, setConnectionIssueAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [finalized, setFinalized] = useState(false);
 
@@ -157,6 +130,7 @@ export default function StreamingAgentReply({
       const payload = parse(event);
       if (!payload) return;
       setError(payload.error ?? null);
+      setConnectionIssueAt(null);
       setLifecycleStatus(payload.lifecycleStatus ?? null);
       setToolStatus(payload.toolStatus ?? null);
       setToolName(payload.toolName ?? null);
@@ -176,6 +150,7 @@ export default function StreamingAgentReply({
     const onErrorEvent = (event: MessageEvent<string>) => {
       const payload = parse(event);
       setError(payload?.error ?? "Agent stream failed");
+      setConnectionIssueAt(null);
       setRunStatus("failed");
       setStatus("error");
       setLastUpdateAt(payload?.updatedAt ?? Date.now());
@@ -185,6 +160,7 @@ export default function StreamingAgentReply({
 
     const onHeartbeat = () => {
       setLastUpdateAt((current) => current ?? Date.now());
+      setConnectionIssueAt(null);
       setStatus((current) => current === "connecting" ? "streaming" : current);
     };
 
@@ -209,6 +185,7 @@ export default function StreamingAgentReply({
           window.clearInterval(refreshInterval);
           return current;
         }
+        setConnectionIssueAt((existing) => existing ?? Date.now());
         return "connecting";
       });
     };
@@ -243,36 +220,42 @@ export default function StreamingAgentReply({
     lifecycleStatus,
     toolStatus,
     toolName,
+    elapsedMs,
     error,
   });
+  const reconnectingMs = status !== "done" && status !== "error" && connectionIssueAt !== null
+    ? Date.now() - connectionIssueAt
+    : null;
+  const reconnectLabel = reconnectingCopy(reconnectingMs);
   const displayText = targetKind === "task-chat" || targetKind === "epic-chat"
     ? extractDiscussionSectionA(text)
     : text;
-  const elapsedLabel = formatElapsed(lastUpdateAt ? Date.now() - lastUpdateAt : elapsedMs);
+  const elapsedLabel = formatStreamingReplyElapsed(lastUpdateAt ? Date.now() - lastUpdateAt : elapsedMs);
   const liveTone = status === "error"
     ? "border-[var(--color-crit)]/30 bg-[var(--color-crit)]/[0.06] text-[var(--color-crit)]"
     : "border-[var(--color-accent)]/20 bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]";
 
   if (!text.trim() && !reasoning.trim()) {
+    if (connectionIssueAt !== null && reconnectLabel === null) return null;
     const typingLastSeenAt = lastUpdateAt ?? startedAt;
     if (anonymizeTyping && status !== "error" && Date.now() - typingLastSeenAt > ANONYMOUS_TYPING_IDLE_MS) return null;
     const typingText = anonymizeTyping && status !== "error"
       ? `${label} typing`
-      : waitLabel;
+      : reconnectLabel ?? waitLabel;
     return (
       <div className={`flex items-start gap-2.5 ${className}`}>
         <MessageAvatar actor={actor} />
         <div className={`w-fit max-w-[min(34rem,82%)] rounded-[1.15rem] rounded-bl-md border px-3.5 py-2.5 text-sm shadow-[0_8px_22px_rgba(15,23,42,0.05)] ring-1 ring-black/[0.02] ${liveTone}`}>
           <div className="flex min-w-0 items-center gap-2">
             <span className="shrink-0 rounded-full border border-current/20 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider">
-              {status === "error" ? "failed" : anonymizeTyping ? "typing" : runStatus === "accepted" ? "accepted" : "live"}
+              {status === "error" ? "failed" : reconnectLabel ? "sync" : anonymizeTyping ? "typing" : runStatus === "accepted" ? "accepted" : "live"}
             </span>
             <span className="min-w-0 break-words">{typingText}</span>
-            {status === "error" ? null : <TypingDots />}
+            {status === "error" || reconnectLabel ? null : <TypingDots />}
           </div>
-          {status === "error" ? null : (
+          {status === "error" || reconnectLabel ? null : (
             <div className="mt-2 flex items-center gap-2 text-[11px] text-[var(--color-text-muted)]">
-              <span>active {formatElapsed(elapsedMs)}</span>
+              <span>active {formatStreamingReplyElapsed(elapsedMs)}</span>
               <span className="h-1 flex-1 overflow-hidden rounded-full bg-[var(--color-line)]">
                 <span className="block h-full w-1/2 animate-pulse rounded-full bg-[var(--color-accent)]/60" />
               </span>
