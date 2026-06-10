@@ -140,6 +140,7 @@ export default function ChatMessagesContainer({
   }, [showAgentProcessing]);
 
   const latest = messages.at(-1) ?? null;
+  const latestMessageId = latest?.id ?? null;
   const participantIndexes = useMemo(() => {
     const map = new Map<string, number>();
     for (const message of allMessages) {
@@ -149,6 +150,22 @@ export default function ChatMessagesContainer({
     }
     return map;
   }, [allMessages, currentUserId]);
+
+  useEffect(() => {
+    if (!showAgentProcessing || viewingArchive || !latestMessageId) return;
+
+    const initialRefresh = setTimeout(() => {
+      router.refresh();
+    }, 1_500);
+    const interval = setInterval(() => {
+      router.refresh();
+    }, 4_000);
+
+    return () => {
+      clearTimeout(initialRefresh);
+      clearInterval(interval);
+    };
+  }, [latestMessageId, router, showAgentProcessing, viewingArchive]);
 
   return (
     <div
