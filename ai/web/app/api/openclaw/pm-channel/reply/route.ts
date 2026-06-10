@@ -422,19 +422,6 @@ async function persistSilentReply(target: PmChannelReplyTarget) {
     if (!original || original.agentSlug !== target.agentSlug) {
       return { status: 404, body: { error: "Message not found" } };
     }
-    await db.activityLog.create({
-      data: {
-        userId: agentUser.id,
-        kind: "agent.direct_chat.silent",
-        targetAgent: target.agentSlug,
-        payload: JSON.stringify({
-          driver: "openclaw-pm-channel",
-          inReplyToMessageId: target.messageId,
-          agentSlug: target.agentSlug,
-          reason: "no_new_information",
-        }),
-      },
-    });
     revalidatePath(`/agents/${target.agentSlug}/chat`);
     return { status: 200, body: { ok: true, silent: true, channel: "direct" } };
   }
@@ -456,21 +443,6 @@ async function persistSilentReply(target: PmChannelReplyTarget) {
     if (original.agentSlug !== "room" && original.agentSlug !== target.agentSlug) {
       return { status: 403, body: { error: "Agent mismatch" } };
     }
-    await db.activityLog.create({
-      data: {
-        projectId: original.projectId,
-        userId: agentUser.id,
-        kind: "epic.chat.silent",
-        targetAgent: target.agentSlug,
-        payload: JSON.stringify({
-          driver: "openclaw-pm-channel",
-          epicId: target.epicId,
-          inReplyToMessageId: target.messageId,
-          agentSlug: target.agentSlug,
-          reason: "no_new_information",
-        }),
-      },
-    });
     revalidateEpicReplyScope(target.epicId, "chat");
     return { status: 200, body: { ok: true, silent: true, channel: "epic-chat" } };
   }
@@ -493,21 +465,6 @@ async function persistSilentReply(target: PmChannelReplyTarget) {
     return { status: 403, body: { error: "Agent mismatch" } };
   }
 
-  await db.activityLog.create({
-    data: {
-      projectId: original.projectId,
-      taskId: target.taskId,
-      userId: agentUser.id,
-      kind: target.kind === "task-comment" ? "task.comment.silent" : "task.chat.silent",
-      targetAgent: target.agentSlug,
-      payload: JSON.stringify({
-        driver: "openclaw-pm-channel",
-        inReplyToMessageId: target.messageId,
-        agentSlug: target.agentSlug,
-        reason: "no_new_information",
-      }),
-    },
-  });
   revalidatePath(`/projects/${original.project.slug}/tasks/${target.taskId}`);
   return { status: 200, body: { ok: true, silent: true, channel: target.kind } };
 }

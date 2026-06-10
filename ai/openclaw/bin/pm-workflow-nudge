@@ -23,6 +23,7 @@ if [[ -z "$WEB_ROOT" && "${DATABASE_URL:-}" == file://* ]]; then
   esac
 fi
 WEB_ROOT=${WEB_ROOT:-/srv/Code/environment/ai/web}
+RUNUSER=${RUNUSER:-/usr/sbin/runuser}
 
 PM_USER=${PM_USER:-karen}
 export NODE_ENV=${NODE_ENV:-production}
@@ -44,7 +45,7 @@ if [[ "$(id -un)" == "$PM_USER" ]]; then
   exec pnpm tsx scripts/pm-workflow-nudge.ts "$@"
 fi
 
-exec runuser -u "$PM_USER" -- env \
+exec "$RUNUSER" -u "$PM_USER" -- env \
   DATABASE_URL="${DATABASE_URL:-}" \
   AUTH_SECRET="${AUTH_SECRET:-}" \
   AUTH_TRUST_HOST="${AUTH_TRUST_HOST:-}" \

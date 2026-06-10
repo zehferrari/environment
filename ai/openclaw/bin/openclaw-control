@@ -6,6 +6,7 @@
 # — it works in any OpenClaw deployment without code changes.
 
 REGISTRY="${OPENCLAW_AGENTS_JSON:-/etc/openclaw/agents.json}"
+RUNUSER="${RUNUSER:-/usr/sbin/runuser}"
 
 usage() {
   cat >&2 <<USAGE
@@ -63,14 +64,71 @@ list_managed_user_services() {
   # named `openclaw-*` — drop a config in ~/.config/openclaw/projects/
   # instead (see agent-defaults.json comments.per_project_extensions).
   local user="$1"
-  systemctl --user -M "${user}@" --no-pager --plain --no-legend \
+  local out=""
+  out=$(systemctl --user -M "${user}@" --no-pager --plain --no-legend \
     list-unit-files 'openclaw-*.service' \
-    --state=enabled,enabled-runtime 2>/dev/null \
-    | awk '{print $1}' | sort -u
+    --state=enabled,enabled-runtime 2>/dev/null || true)
+  if [ -z "$out" ]; then
+    out=$(_user_systemctl "$user" --no-pager --plain --no-legend \
+      list-unit-files 'openclaw-*.service' \
+      --state=enabled,enabled-runtime 2>/dev/null || true)
+  fi
+  printf '%s\n' "$out" | awk '{print $1}' | sort -u
+}
+
+_user_systemctl() {
+  local user="$1"
+  shift
+  local uid
+  uid=$(id -u "$user") || return 1
+  sudo -n -u "$user" env \
+    HOME="$(_user_home "$user")" \
+    XDG_RUNTIME_DIR="/run/user/$uid" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+    systemctl --user "$@"
+}
+
+daemon_reload_user() {
+  local user="$1"
+  systemctl --user -M "${user}@" --no-pager daemon-reload >/dev/null 2>&1 \
+    || _user_systemctl "$user" daemon-reload >/dev/null 2>&1
+}
+
+restart_user_service() {
+  local user="$1"
+  local svc="$2"
+  local err_file
+  err_file=$(mktemp /tmp/openclaw-control-restart.XXXXXX)
+
+  if systemctl --user -M "${user}@" --no-pager restart "$svc" 2>"$err_file"; then
+    rm -f "$err_file"
+    return 0
+  fi
+
+  {
+    echo "openclaw-control: restart $svc for $user failed; daemon-reload + retry"
+    cat "$err_file"
+  } >&2
+
+  daemon_reload_user "$user" || true
+
+  if systemctl --user -M "${user}@" --no-pager restart "$svc" 2>"$err_file"; then
+    rm -f "$err_file"
+    return 0
+  fi
+  if _user_systemctl "$user" restart "$svc" 2>>"$err_file"; then
+    rm -f "$err_file"
+    return 0
+  fi
+
+  cat "$err_file" >&2
+  rm -f "$err_file"
+  return 1
 }
 
 restart_services() {
   local user="$1"
+  daemon_reload_user "$user" || true
   mapfile -t services < <(list_managed_user_services "$user")
 
   if [ "${#services[@]}" -eq 0 ]; then
@@ -79,7 +137,7 @@ restart_services() {
 
   local rc=0
   for svc in "${services[@]}"; do
-    if ! systemctl --user -M "${user}@" --no-pager restart "$svc"; then
+    if ! restart_user_service "$user" "$svc"; then
       rc=1
     fi
   done
@@ -184,7 +242,7 @@ wake_agent() {
 
   for attempt in $(seq 1 "$max_attempts"); do
     session_hygiene "$user" "$home"
-    if runuser -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/$(id -u "$user")" bash -lc '
+    if "$RUNUSER" -u "$user" -- env HOME="$home" XDG_RUNTIME_DIR="/run/user/$(id -u "$user")" bash -lc '
       set -a
       if [ -r "$1" ]; then . "$1"; fi
       set +a

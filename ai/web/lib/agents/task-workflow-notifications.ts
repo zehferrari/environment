@@ -102,6 +102,21 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function requiredCommitPrefix(args: {
+  taskId: string;
+  taskWorkItemKey: string | null;
+  taskCommitPrefix: string | null;
+  epicWorkItemKey?: string | null;
+  epicCommitPrefix?: string | null;
+}) {
+  const taskKey = args.taskWorkItemKey ?? args.taskId;
+  if (args.epicWorkItemKey) return `${args.epicWorkItemKey} ${taskKey}`;
+  return effectiveCommitPrefix({
+    commitPrefix: args.taskCommitPrefix ?? args.epicCommitPrefix ?? null,
+    workItemKey: args.taskWorkItemKey,
+  });
+}
+
 function workflowPrompt(args: {
   taskTitle: string;
   taskId: string;
@@ -194,7 +209,7 @@ function workflowPrompt(args: {
     "- After Action Plan approval, do not keep discussing straightforward implementation. Start it, complete it, then use one concise ready_for_review note when the work is ready.",
     "- Task-local subtasks are progress/checklist rows for the parent Task. Do not treat them as top-level Epic implementation tasks or as independent next-task assignments unless a human explicitly promotes one.",
     "- If you are the assignee and you are waiting for reviewer, manager, or reporter feedback/response, call action=ready_for_review with one concise `comment` explaining the blocker/question. Do not leave waiting work in In Progress.",
-    "- Review means the completed work is waiting for reviewer feedback. If you are allowed by project policy to complete the task and are satisfied, call action=review_done; do not write an approval-only comment. PM will then assign the next unassigned To Do task in the same Open Epic to the same assignee and wake them. If changes or blockers remain, call action=review_feedback with a clear comment.",
+    "- Review means the completed work is waiting for reviewer feedback. If you are allowed by project policy to complete the task and are satisfied, call action=review_done; do not write an approval-only comment. PM will then assign the next unassigned To Do task in the same Open Epic to the next eligible Epic worker and wake them. If changes or blockers remain, call action=review_feedback with a clear comment.",
     args.onlyReportersCanSetTasksDone
       ? "- Project policy: only the reporter can set Tasks to Done. Reviewers should leave concise review feedback or agreement, then wait for the reporter to complete it."
       : "- Project policy: the resolved reviewer can set Tasks to Done.",
@@ -251,7 +266,7 @@ export async function sendTaskWorkflowNotification(args: {
             onlyReportersCanApprovePullRequests: true,
           },
         },
-        epic: { select: { id: true, commitPrefix: true } },
+        epic: { select: { id: true, workItemKey: true, commitPrefix: true } },
       },
     }),
     db.user.findUnique({
@@ -380,9 +395,12 @@ export async function sendTaskWorkflowNotification(args: {
     agentSlug: targetUser.agent.slug,
   });
   const gitIdentity = await resolveGitIdentity(task.project);
-  const commitPrefix = effectiveCommitPrefix({
-    commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
-    workItemKey: task.workItemKey,
+  const commitPrefix = requiredCommitPrefix({
+    taskId: task.id,
+    taskWorkItemKey: task.workItemKey,
+    taskCommitPrefix: task.commitPrefix,
+    epicWorkItemKey: task.epic?.workItemKey ?? null,
+    epicCommitPrefix: task.epic?.commitPrefix ?? null,
   });
   const delivery = await sendOrQueueOpenClawPmChannelTurn({
     gatewayPort: targetUser.agent.gatewayPort,
@@ -677,9 +695,12 @@ export async function sendTaskCommentNotifications(args: {
   });
   const fetchBaseUrl = agentCallbackBaseUrl();
   const gitIdentity = await resolveGitIdentity(task.project);
-  const commitPrefix = effectiveCommitPrefix({
-    commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
-    workItemKey: task.workItemKey,
+  const commitPrefix = requiredCommitPrefix({
+    taskId: task.id,
+    taskWorkItemKey: task.workItemKey,
+    taskCommitPrefix: task.commitPrefix,
+    epicWorkItemKey: task.epic?.workItemKey ?? null,
+    epicCommitPrefix: task.epic?.commitPrefix ?? null,
   });
 
   await Promise.all(mirroredMessages.map(async (msg) => {
