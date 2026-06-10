@@ -120,6 +120,22 @@ export function publishPmChannelStreamEvent(input: PmChannelStreamInput): PmChan
   return state;
 }
 
+export function acknowledgePmChannelStreamSeq(
+  target: PmChannelReplyTarget,
+  seq: number,
+): PmChannelStreamState | null {
+  const s = store();
+  const key = pmChannelStreamKey(target);
+  const state = s.states.get(key);
+  if (!state) return null;
+  if (state.seq == null || seq > state.seq) {
+    state.seq = seq;
+    state.updatedAt = Date.now();
+    s.states.set(key, state);
+  }
+  return state;
+}
+
 export function applyPmChannelStreamInput(
   baseState: PmChannelStreamState,
   input: PmChannelStreamInput,

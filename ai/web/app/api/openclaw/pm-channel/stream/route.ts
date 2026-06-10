@@ -6,17 +6,14 @@ import {
   type PmChannelReplyTarget,
   resolvePmChannelToken,
 } from "@/lib/agents/openclaw-pm-channel";
-import {
-  publishPmChannelStreamEvent,
-  type PmChannelStreamEventKind,
-} from "@/lib/agents/pm-channel-stream";
+import type { PmChannelStreamEventKind } from "@/lib/agents/pm-channel-stream";
 import {
   pmChannelRunTargetKey,
   pmChannelTargetHasDurableReply,
   recordPmChannelRunEvent,
 } from "@/lib/agents/pm-channel-runs";
 import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel-jobs";
-import { appendPmChannelStreamEventForTarget } from "@/lib/agents/pm-channel-stream-log";
+import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel-stream-log";
 import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel-rate-limit";
 import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
 
@@ -136,10 +133,10 @@ export async function POST(req: NextRequest) {
   }
 
   if (event === "error" && await pmChannelTargetHasDurableReply(target)) {
-    const persisted = await appendPmChannelStreamEventForTarget({ target, event: "done" });
-    const state = publishPmChannelStreamEvent({ target, event: "done", seq: persisted.seq });
-    await recordPmChannelRunEvent({ target, event: "done" });
-    await markPmChannelJobCompleteForTarget(target);
+    const state = publishPmChannelStreamEventDurably({ target, event: "done" }, async () => {
+      await recordPmChannelRunEvent({ target, event: "done" });
+      await markPmChannelJobCompleteForTarget(target);
+    });
     return NextResponse.json({ ok: true, key: state.key, status: state.status });
   }
 
@@ -160,16 +157,16 @@ export async function POST(req: NextRequest) {
     replace: payload.replace === true,
     error: stringField(payload.error, 2_000),
   };
-  const persisted = await appendPmChannelStreamEventForTarget(eventInput);
-  const state = publishPmChannelStreamEvent({ ...eventInput, seq: persisted.seq });
-  await recordPmChannelRunEvent({
-    target,
-    event,
-    error: stringField(payload.error, 2_000),
+  const state = publishPmChannelStreamEventDurably(eventInput, async () => {
+    await recordPmChannelRunEvent({
+      target,
+      event,
+      error: stringField(payload.error, 2_000),
+    });
+    if (event === "error") {
+      await recordStreamError(target, state.error ?? stringField(payload.error, 2_000));
+    }
   });
-  if (event === "error") {
-    await recordStreamError(target, state.error ?? stringField(payload.error, 2_000));
-  }
 
   return NextResponse.json({ ok: true, key: state.key, status: state.status });
 }

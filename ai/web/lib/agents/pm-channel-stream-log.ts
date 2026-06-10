@@ -1,8 +1,11 @@
 import { db } from "@/lib/db";
 import type { PmChannelReplyTarget } from "@/lib/agents/openclaw-pm-channel";
 import {
+  acknowledgePmChannelStreamSeq,
   applyPmChannelStreamInput,
   emptyPmChannelStreamState,
+  publishPmChannelStreamEvent,
+  pmChannelStreamKey,
   type PmChannelReplayFrame,
   type PmChannelStreamEventKind,
   type PmChannelStreamInput,
@@ -14,6 +17,91 @@ import {
 } from "@/lib/agents/pm-channel-runs";
 
 export type PersistedStreamInput = Omit<PmChannelStreamInput, "target">;
+
+const STREAM_DURABILITY_RETRY_BASE_MS = 250;
+const STREAM_DURABILITY_RETRY_MAX_MS = 5_000;
+
+type DurabilitySuccess = (
+  persisted: Awaited<ReturnType<typeof appendPmChannelStreamEventForTarget>>,
+) => void | Promise<void>;
+
+const durabilityChains = new Map<string, Promise<void>>();
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function durabilityInput(input: PmChannelStreamInput): PersistedStreamInput {
+  return {
+    event: input.event,
+    text: input.text,
+    delta: input.delta,
+    replace: input.replace,
+    error: input.error,
+    runStatus: input.runStatus,
+  };
+}
+
+async function persistWithRetry(input: PmChannelStreamInput, onPersisted?: DurabilitySuccess) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const persisted = await appendPmChannelStreamEventForTarget({
+        target: input.target,
+        ...durabilityInput(input),
+      });
+      acknowledgePmChannelStreamSeq(input.target, persisted.seq);
+      if (onPersisted) {
+        Promise.resolve(onPersisted(persisted)).catch((err) => {
+          console.warn("[pm-channel] failed to run stream durability callback", {
+            key: pmChannelStreamKey(input.target),
+            event: input.event,
+            error: err,
+          });
+        });
+      }
+      return;
+    } catch (err) {
+      console.warn("[pm-channel] failed to persist stream event; retrying", {
+        key: pmChannelStreamKey(input.target),
+        event: input.event,
+        attempt,
+        error: err,
+      });
+      await sleep(Math.min(
+        STREAM_DURABILITY_RETRY_MAX_MS,
+        STREAM_DURABILITY_RETRY_BASE_MS * 2 ** Math.min(8, attempt - 1),
+      ));
+    }
+  }
+}
+
+export function enqueuePmChannelStreamDurability(
+  input: PmChannelStreamInput,
+  onPersisted?: DurabilitySuccess,
+) {
+  const key = pmChannelStreamKey(input.target);
+  const previous = durabilityChains.get(key) ?? Promise.resolve();
+  const next = previous
+    .catch((err) => {
+      console.warn("[pm-channel] stream durability queue recovered after failure", { key, error: err });
+    })
+    .then(() => persistWithRetry(input, onPersisted));
+
+  durabilityChains.set(key, next);
+  next.finally(() => {
+    if (durabilityChains.get(key) === next) durabilityChains.delete(key);
+  });
+  return next;
+}
+
+export function publishPmChannelStreamEventDurably(
+  input: PmChannelStreamInput,
+  onPersisted?: DurabilitySuccess,
+) {
+  const state = publishPmChannelStreamEvent(input);
+  enqueuePmChannelStreamDurability(input, onPersisted);
+  return state;
+}
 
 function targetKind(target: PmChannelReplyTarget) {
   return target.kind;

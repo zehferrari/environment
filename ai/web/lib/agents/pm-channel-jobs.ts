@@ -10,11 +10,7 @@ import {
   pmChannelRunTargetKey,
   recordPmChannelRunQueued,
 } from "@/lib/agents/pm-channel-runs";
-import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel-stream";
-import {
-  appendPmChannelStreamEvent,
-  appendPmChannelStreamEventForTarget,
-} from "@/lib/agents/pm-channel-stream-log";
+import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel-stream-log";
 
 type DispatchJobPayload = Omit<SendPmChannelTurnArgs, "fetchImpl">;
 
@@ -61,26 +57,15 @@ function retryDelayMs(attemptCount: number) {
 }
 
 async function appendAndPublishStatus(args: {
-  runId: string;
   payload: DispatchJobPayload;
   runStatus: "queued" | "accepted" | "retryable" | "failed" | "complete";
   error?: string | null;
 }) {
-  const persisted = await appendPmChannelStreamEvent({
-    runId: args.runId,
-    event: "status",
-    input: {
-      event: "status",
-      runStatus: args.runStatus,
-      error: args.error ?? undefined,
-    },
-  });
-  publishPmChannelStreamEvent({
+  publishPmChannelStreamEventDurably({
     target: args.payload.replyTarget,
     event: "status",
     runStatus: args.runStatus,
     error: args.error ?? undefined,
-    seq: persisted.seq,
   });
 }
 
@@ -126,7 +111,7 @@ export async function enqueueOpenClawPmChannelTurn(
       lastError: null,
     },
   });
-  await appendAndPublishStatus({ runId: run.id, payload, runStatus: "queued" });
+  await appendAndPublishStatus({ payload, runStatus: "queued" });
   if (inlineWorkerNudgeEnabled()) {
     setTimeout(() => {
       runPmChannelWorkerOnce(`pm-inline:${process.pid}`).catch((err) => {
@@ -193,7 +178,7 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
         lastError: null,
       },
     });
-    await appendAndPublishStatus({ runId: job.runId, payload, runStatus: "accepted" });
+    await appendAndPublishStatus({ payload, runStatus: "accepted" });
     return result;
   }
 
@@ -223,7 +208,6 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
     }),
   ]);
   await appendAndPublishStatus({
-    runId: job.runId,
     payload,
     runStatus: status,
     error,
@@ -306,5 +290,5 @@ export async function pmChannelQueueStats() {
 export async function appendPmChannelCompletionEvent(target: unknown) {
   const parsed = parsePmChannelReplyTarget(target);
   if (!parsed) return;
-  await appendPmChannelStreamEventForTarget({ target: parsed, event: "done", runStatus: "complete" });
+  publishPmChannelStreamEventDurably({ target: parsed, event: "done", runStatus: "complete" });
 }
