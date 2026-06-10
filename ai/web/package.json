@@ -26,6 +26,7 @@
     "context-grant-status": "tsx scripts/context-grant-status.ts",
     "test:p0-kernel": "tsx scripts/p0-kernel-test.ts",
     "test:pm-async-default": "tsx scripts/pm-async-default-test.ts",
+    "test:pm-channel-bus": "tsx scripts/pm-channel-bus-test.ts",
     "test:pm-acceptance-baseline": "tsx scripts/pm-acceptance-baseline-test.ts",
     "test:db-maintenance": "tsx scripts/db-maintenance-test.ts",
     "test:deployment-monitor": "tsx scripts/deployment-monitor-test.ts",

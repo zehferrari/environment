@@ -3,6 +3,10 @@ import {
   recordPmChannelRunDispatch,
   recordPmChannelRunQueued,
 } from "@/lib/agents/pm-channel-runs";
+import {
+  pmChannelHttpFallbackEnabled,
+  publishPmChannelTurnToBus,
+} from "@/lib/agents/pm-channel-bus";
 
 export type PmChannelReplyTarget =
   | {
@@ -216,10 +220,42 @@ export async function sendOpenClawPmChannelTurn(
 export async function dispatchOpenClawPmChannelTurn(
   args: SendPmChannelTurnArgs,
 ): Promise<SendPmChannelTurnResult> {
+  const transportMode = resolvePmChannelTransportMode();
+  const bus = await publishPmChannelTurnToBus(args);
+  if (bus.ok) {
+    const result: SendPmChannelTurnResult = {
+      ok: true,
+      status: bus.status ?? 202,
+      driver: "openclaw-pm-channel",
+      transportMode,
+    };
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    return result;
+  }
+
+  if (!pmChannelHttpFallbackEnabled()) {
+    const result: SendPmChannelTurnResult = {
+      ok: false,
+      status: bus.status,
+      driver: "openclaw-pm-channel",
+      transportMode,
+      error: bus.error ?? "PM channel bus publish failed",
+    };
+    await recordPmChannelRunDispatch({ target: args.replyTarget, result });
+    return result;
+  }
+
+  return dispatchOpenClawPmChannelTurnViaHttp(args);
+}
+
+async function dispatchOpenClawPmChannelTurnViaHttp(
+  args: SendPmChannelTurnArgs,
+): Promise<SendPmChannelTurnResult> {
   if (!args.gatewayPort) {
     const result: SendPmChannelTurnResult = {
       ok: false,
       driver: "openclaw-pm-channel",
+      transportMode: resolvePmChannelTransportMode(),
       error: `agent "${args.agentSlug}" has no gateway port`,
     };
     await recordPmChannelRunDispatch({ target: args.replyTarget, result });
@@ -231,6 +267,7 @@ export async function dispatchOpenClawPmChannelTurn(
     const result: SendPmChannelTurnResult = {
       ok: false,
       driver: "openclaw-pm-channel",
+      transportMode: resolvePmChannelTransportMode(),
       error: `missing PM OpenClaw channel token for agent "${args.agentSlug}"`,
     };
     await recordPmChannelRunDispatch({ target: args.replyTarget, result });
@@ -261,7 +298,7 @@ export async function dispatchOpenClawPmChannelTurn(
         ok: false,
         status: res.status,
         driver: "openclaw-pm-channel",
-        transportMode: resolvePmChannelTransportMode(),
+        transportMode,
         error: body.trim() || `HTTP ${res.status}`,
       };
       await recordPmChannelRunDispatch({ target: args.replyTarget, result });
