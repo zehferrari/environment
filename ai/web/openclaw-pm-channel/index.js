@@ -1,5 +1,6 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import {
   buildChannelOutboundSessionRoute,
   createChatChannelPlugin,
@@ -170,9 +171,40 @@ function streamPayloadDelta(payload) {
     : "";
 }
 
+function sendJsonLineToUnixSocket(path, body) {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(path);
+    const line = `${JSON.stringify(body)}\n`;
+    let settled = false;
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      err ? reject(err) : resolve();
+    };
+    socket.setTimeout(5000);
+    socket.once("connect", () => socket.end(line));
+    socket.once("error", finish);
+    socket.once("timeout", () => finish(new Error("PM channel stream UDS timeout")));
+    socket.once("close", (hadError) => {
+      if (!hadError) finish();
+    });
+  });
+}
+
 function createPmStreamPublisher({ account, target, logger }) {
   const streamUrl = resolveStreamUrl(target);
-  if (!streamUrl) {
+  const streamTransport = typeof target.streamTransport === "string" ? target.streamTransport : "http";
+  const streamSocketPath = typeof target.streamSocketPath === "string" && target.streamSocketPath.trim()
+    ? target.streamSocketPath.trim()
+    : "";
+  const inprocCallback = typeof globalThis.__vixiPmChannelStreamCallback === "function"
+    ? globalThis.__vixiPmChannelStreamCallback
+    : null;
+  if (!streamUrl && !(streamTransport === "uds" && streamSocketPath) && !(streamTransport === "inproc" && inprocCallback)) {
+    if (streamTransport !== "http") {
+      logger.warn?.(`[pm-channel] ${streamTransport} stream transport unavailable; stream updates disabled`);
+    }
     return {
       partial: () => {},
       reasoning: () => {},
@@ -187,13 +219,22 @@ function createPmStreamPublisher({ account, target, logger }) {
   let chain = Promise.resolve();
   let lastReasoningText = "";
 
-  const post = (body) => postJson(streamUrl, account.callbackToken, {
-    version: 1,
-    channel: CHANNEL_ID,
-    target,
-    transportMode: typeof target.streamTransport === "string" ? target.streamTransport : "http",
-    ...body,
-  });
+  const post = (body) => {
+    const payload = {
+      version: 1,
+      channel: CHANNEL_ID,
+      target,
+      transportMode: streamTransport,
+      ...body,
+    };
+    if (streamTransport === "inproc" && inprocCallback) {
+      return inprocCallback(payload);
+    }
+    if (streamTransport === "uds" && streamSocketPath) {
+      return sendJsonLineToUnixSocket(streamSocketPath, payload);
+    }
+    return postJson(streamUrl, account.callbackToken, payload);
+  };
 
   const schedule = () => {
     if (timer) return;
@@ -451,6 +492,7 @@ async function runPmTurn({ cfg, payload, accountId, logger }) {
     callbackUrl: typeof payload.callbackUrl === "string" ? payload.callbackUrl : account.callbackUrl,
     streamUrl: typeof payload.streamUrl === "string" ? payload.streamUrl : undefined,
     streamTransport: typeof payload.streamTransport === "string" ? payload.streamTransport : "http",
+    streamSocketPath: typeof payload.streamSocketPath === "string" ? payload.streamSocketPath : undefined,
   };
   const encodedTarget = encodeTarget(target);
   const agentId = account.agentId;

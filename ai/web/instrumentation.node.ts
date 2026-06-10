@@ -9,6 +9,7 @@ import {
   pmAsyncDispatchEnabled,
   runPmChannelWorkerDrain,
 } from "@/lib/agents/pm-channel-jobs";
+import { startPmChannelLocalStreamTransports } from "@/lib/agents/pm-channel-stream-local";
 
 declare global {
   var __pmChannelWorkerPollStarted: boolean | undefined;
@@ -83,6 +84,13 @@ try {
   console.log("[pm] boot sync:", JSON.stringify({ zeh, result }));
 } catch (err) {
   console.error("[pm] boot sync failed:", err);
+}
+
+try {
+  const streamTransports = await startPmChannelLocalStreamTransports();
+  console.log("[pm] channel stream transports:", JSON.stringify(streamTransports));
+} catch (err) {
+  console.error("[pm] channel stream transport startup failed:", err);
 }
 
 startPmChannelWorkerPoll();

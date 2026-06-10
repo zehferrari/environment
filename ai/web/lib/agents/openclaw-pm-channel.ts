@@ -181,6 +181,14 @@ function pmChannelStreamUrl(transportMode: PmChannelTransportMode) {
   ).toString();
 }
 
+function pmChannelStreamSocketPath(transportMode: PmChannelTransportMode) {
+  if (transportMode !== "uds") return undefined;
+  return process.env.PM_PM_CHANNEL_STREAM_SOCKET
+    ?? process.env.PM_OPENCLAW_CHANNEL_STREAM_SOCKET
+    ?? process.env.PM_CHANNEL_STREAM_SOCKET
+    ?? undefined;
+}
+
 export function buildPmChannelIngressPayload(
   args: SendPmChannelTurnArgs,
   transportMode: PmChannelTransportMode = resolvePmChannelTransportMode(),
@@ -201,6 +209,7 @@ export function buildPmChannelIngressPayload(
     ).toString(),
     streamTransport: transportMode,
     streamUrl: pmChannelStreamUrl(transportMode),
+    streamSocketPath: pmChannelStreamSocketPath(transportMode),
   };
 }
 
@@ -221,6 +230,10 @@ export async function dispatchOpenClawPmChannelTurn(
   args: SendPmChannelTurnArgs,
 ): Promise<SendPmChannelTurnResult> {
   const transportMode = resolvePmChannelTransportMode();
+  if (transportMode === "http") {
+    return dispatchOpenClawPmChannelTurnViaHttp(args);
+  }
+
   const bus = await publishPmChannelTurnToBus(args);
   if (bus.ok) {
     const result: SendPmChannelTurnResult = {

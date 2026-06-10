@@ -26,6 +26,9 @@ const args = {
 };
 
 function payloadFor(mode: string | undefined): Record<string, unknown> {
+  delete process.env.PM_PM_CHANNEL_STREAM_SOCKET;
+  delete process.env.PM_OPENCLAW_CHANNEL_STREAM_SOCKET;
+  delete process.env.PM_CHANNEL_STREAM_SOCKET;
   if (mode == null) {
     delete process.env.PM_PM_CHANNEL_TRANSPORT;
     delete process.env.PM_OPENCLAW_CHANNEL_TRANSPORT;
@@ -46,9 +49,12 @@ assert.equal(inprocBody.streamTransport, "inproc");
 assert.equal(inprocBody.streamUrl, undefined, "inproc transport does not emit per-token HTTP streamUrl");
 
 const udsBody = payloadFor("uds");
+process.env.PM_PM_CHANNEL_STREAM_SOCKET = "/tmp/pm-channel-stream.sock";
+const udsBodyWithSocket = buildPmChannelIngressPayload(args);
 assert.equal(resolvePmChannelTransportMode(), "uds");
 assert.equal(udsBody.streamTransport, "uds");
 assert.equal(udsBody.streamUrl, undefined, "uds transport does not emit per-token HTTP streamUrl");
+assert.equal(udsBodyWithSocket.streamSocketPath, "/tmp/pm-channel-stream.sock", "uds transport emits local socket path when configured");
 
 const badBody = payloadFor("nonsense");
 assert.equal(resolvePmChannelTransportMode(), "http", "unknown transport falls back to http");
