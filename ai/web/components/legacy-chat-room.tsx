@@ -335,11 +335,17 @@ export default function ChatRoom({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollContentRef = useRef<HTMLDivElement>(null);
+  const pinnedToBottomRef = useRef(true);
+  const scrollFrameRef = useRef<number | null>(null);
+  const scrollSettleTimerRef = useRef<number | null>(null);
   const optimisticRenderStartsRef = useRef<Map<string, number>>(new Map());
   const activeTab = useActiveTab();
   const [, startOptimisticTransition] = useTransition();
   const [messageText, setMessageText] = useState("");
   const [composerOpen, setComposerOpen] = useState(false);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [bottomReservation, setBottomReservation] = useState(88);
   const [selectedFilesCount, setSelectedFilesCount] = useState(0);
   const [selectedTargets, setSelectedTargets] = useState<string[]>(
     defaultDiscussionTarget ? [defaultDiscussionTarget] : [],
@@ -459,48 +465,113 @@ export default function ChatRoom({
     }
   }, [optimisticEchoEnabled, displayedMessages]);
 
-  useLayoutEffect(() => {
+  const updatePinnedState = useCallback(() => {
+    const container = scrollRef.current;
+    if (!container) return true;
+
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    const isPinned = distanceFromBottom < 120;
+    pinnedToBottomRef.current = isPinned;
+    setShowJumpToLatest(!isPinned);
+    return isPinned;
+  }, []);
+
+  const scheduleScrollToLatest = useCallback((force = false) => {
     if (!discussionIsVisible) return;
+    if (!force && !pinnedToBottomRef.current) return;
 
     const scrollToLatest = () => {
-      if (scrollRef.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      const container = scrollRef.current;
+      if (!container) return;
+
+      container.scrollTop = container.scrollHeight;
+      pinnedToBottomRef.current = true;
+      setShowJumpToLatest(false);
+      if (force) {
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "auto" });
       }
-      formRef.current?.scrollIntoView({ block: "end" });
-      window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "auto" });
     };
 
-    const frame = window.requestAnimationFrame(scrollToLatest);
-    const timer = window.setTimeout(scrollToLatest, 80);
+    if (scrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(scrollFrameRef.current);
+    }
+    if (scrollSettleTimerRef.current !== null) {
+      window.clearTimeout(scrollSettleTimerRef.current);
+    }
 
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.clearTimeout(timer);
-    };
-  }, [discussionIsVisible, latestEventKey]);
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      scrollToLatest();
+    });
+    scrollSettleTimerRef.current = window.setTimeout(() => {
+      scrollSettleTimerRef.current = null;
+      scrollToLatest();
+    }, 80);
+  }, [discussionIsVisible]);
+
+  useLayoutEffect(() => {
+    if (!discussionIsVisible) return;
+    scheduleScrollToLatest(!showJumpToLatest);
+  }, [discussionIsVisible, latestEventKey, scheduleScrollToLatest, showJumpToLatest]);
 
   useEffect(() => {
     if (!discussionIsVisible || !scrollRef.current) return;
 
     const container = scrollRef.current;
-    let stickToBottom = true;
     const handleScroll = () => {
-      stickToBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+      updatePinnedState();
     };
-    const observer = new MutationObserver(() => {
-      if (stickToBottom) {
-        container.scrollTop = container.scrollHeight;
-      }
-    });
 
-    container.addEventListener("scroll", handleScroll);
-    observer.observe(container, { childList: true, subtree: true, characterData: true });
+    handleScroll();
+    container.addEventListener("scroll", handleScroll, { passive: true });
 
     return () => {
       container.removeEventListener("scroll", handleScroll);
-      observer.disconnect();
     };
-  }, [discussionIsVisible, latestEventKey]);
+  }, [discussionIsVisible, updatePinnedState]);
+
+  useEffect(() => {
+    if (!discussionIsVisible || !scrollContentRef.current) return;
+
+    const observer = new ResizeObserver(() => {
+      scheduleScrollToLatest();
+      updatePinnedState();
+    });
+    observer.observe(scrollContentRef.current);
+
+    return () => observer.disconnect();
+  }, [discussionIsVisible, scheduleScrollToLatest, updatePinnedState]);
+
+  useEffect(() => {
+    return () => {
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+      }
+      if (scrollSettleTimerRef.current !== null) {
+        window.clearTimeout(scrollSettleTimerRef.current);
+      }
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!composerOpen || !formRef.current) {
+      setBottomReservation(88);
+      scheduleScrollToLatest();
+      return;
+    }
+
+    const updateReservation = () => {
+      const height = formRef.current?.getBoundingClientRect().height ?? 0;
+      setBottomReservation(Math.max(88, height + 120));
+      scheduleScrollToLatest();
+    };
+
+    updateReservation();
+    const observer = new ResizeObserver(updateReservation);
+    observer.observe(formRef.current);
+
+    return () => observer.disconnect();
+  }, [composerOpen, scheduleScrollToLatest]);
 
   useEffect(() => {
     setSelectedTargets(defaultDiscussionTarget ? [defaultDiscussionTarget] : []);
@@ -893,8 +964,9 @@ export default function ChatRoom({
       {/* Messages List */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto p-4 space-y-6 min-h-0 scrollbar-thin"
+        className="flex-1 overflow-y-auto p-4 min-h-0 scrollbar-thin"
       >
+        <div ref={scrollContentRef} className="space-y-6">
         {displayedMessages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-6 border border-dashed border-[var(--color-line)] rounded-xl bg-[var(--color-panel-soft)]/20">
             <span className="text-xl">💬</span>
@@ -1021,7 +1093,19 @@ export default function ChatRoom({
             />
           </div>
         )}
+          <div aria-hidden="true" style={{ height: bottomReservation }} />
+        </div>
       </div>
+
+      {showJumpToLatest ? (
+        <button
+          type="button"
+          onClick={() => scheduleScrollToLatest(true)}
+          className="fixed bottom-24 right-6 z-40 rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-xs font-semibold text-[var(--color-text)] shadow-lg transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+        >
+          Jump to latest
+        </button>
+      ) : null}
 
       {/* Input Form */}
       {viewingArchive && !canContinueArchive ? (
