@@ -16,6 +16,8 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
+import { revalidateEpicReplyScope } from "@/lib/epics/cache";
 import {
   buildTaskNativeChannelPrompt,
   buildTaskNativeEditGrantPrompt,
@@ -59,10 +61,6 @@ function agentCallbackBaseUrl() {
   return process.env.PM_AGENT_CALLBACK_URL
     ?? process.env.PM_INTERNAL_APP_URL
     ?? "http://127.0.0.1:3000";
-}
-
-function optimisticLocalEchoEnabled() {
-  return process.env.NEXT_PUBLIC_PM_OPTIMISTIC_LOCAL_ECHO === "1";
 }
 
 function compactText(value: string) {
@@ -666,12 +664,64 @@ export async function sendAgentChatMessage(formData: FormData) {
     });
   }));
 
-  if (!optimisticLocalEchoEnabled()) {
-    if (taskId) revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-    if (epicId) revalidatePath(`/projects/${slug}/epics/${epicId}`);
-  }
+  if (taskId) revalidateTaskReplyScope(taskId, "chat");
+  if (epicId) revalidateEpicReplyScope(epicId, "chat");
 
   return { messageId: msg.id };
+}
+
+
+export async function getAgentChatRoomMessages(formData: FormData) {
+  await requireActor();
+  const slug = String(formData.get("projectSlug") ?? "");
+  const taskIdRaw = String(formData.get("taskId") ?? "");
+  const epicIdRaw = String(formData.get("epicId") ?? "");
+  const taskId = taskIdRaw === "" ? null : taskIdRaw;
+  const epicId = epicIdRaw === "" ? null : epicIdRaw;
+
+  if (!slug || (taskId === null) === (epicId === null)) return [];
+
+  const target = taskId
+    ? await db.task.findUnique({
+        where: { id: taskId },
+        select: { id: true, deletedAt: true, project: { select: { slug: true } } },
+      })
+    : await db.epic.findUnique({
+        where: { id: epicId! },
+        select: { id: true, deletedAt: true, project: { select: { slug: true } } },
+      });
+
+  if (!target || target.project.slug !== slug || target.deletedAt) return [];
+
+  const messages = await db.agentChatMessage.findMany({
+    where: {
+      taskId,
+      epicId,
+      agentSlug: "room",
+      archiveId: null,
+    },
+    orderBy: { createdAt: "asc" },
+    include: {
+      sender: {
+        select: {
+          id: true,
+          username: true,
+          kind: true,
+          name: true,
+          avatarUpdatedAt: true,
+          agent: { select: { slug: true, name: true, avatar: true } },
+        },
+      },
+      deletedBy: { select: { username: true, name: true, kind: true } },
+    },
+  });
+
+  return messages.map((message) => ({
+    ...message,
+    createdAt: message.createdAt.toISOString(),
+    editGrantUsedAt: message.editGrantUsedAt?.toISOString() ?? null,
+    deletedAt: message.deletedAt?.toISOString() ?? null,
+  }));
 }
 
 export async function archiveChatRoom(formData: FormData) {

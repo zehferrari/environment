@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useRef, useEffect, useLayoutEffect, useMemo, useOptimistic, useState, useTransition } from "react";
+import React, { useRef, useCallback, useEffect, useLayoutEffect, useMemo, useOptimistic, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { archiveChatRoom, sendAgentChatMessage, deleteChatMessage, restoreChatMessage } from "@/lib/agents/chat-actions";
+import { archiveChatRoom, getAgentChatRoomMessages, sendAgentChatMessage, deleteChatMessage, restoreChatMessage } from "@/lib/agents/chat-actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import MaximizableTextarea from "@/components/maximizable-textarea";
@@ -21,9 +21,9 @@ import { findPmOptionResolution, parsePmOptions } from "@/lib/pm-options";
 interface Message {
   id: string;
   body: string;
-  createdAt: Date;
+  createdAt: Date | string;
   allowDescriptionEdit: boolean;
-  editGrantUsedAt: Date | null;
+  editGrantUsedAt: Date | string | null;
   targetLabel?: string | null;
   targetType?: string | null;
   targetValue?: string | null;
@@ -355,9 +355,13 @@ export default function ChatRoom({
     !hasArchives && hasBinArchives ? "bin" : "archives",
   );
   const optimisticEchoEnabled = optimisticLocalEchoEnabled();
+  const [serverMessages, setServerMessages] = useState(messages);
+  useEffect(() => {
+    setServerMessages(messages);
+  }, [messages]);
   const visibleMessages = useMemo(
-    () => messages.filter((message) => !isInternalWorkflowNotification(message)),
-    [messages],
+    () => serverMessages.filter((message) => !isInternalWorkflowNotification(message)),
+    [serverMessages],
   );
   const [failedOptimisticMessages, setFailedOptimisticMessages] = useState<OptimisticMessage[]>([]);
   const [localLatestMessageId, setLocalLatestMessageId] = useState<string | null>(null);
@@ -638,6 +642,16 @@ export default function ChatRoom({
       // Failed state is rendered inline on the optimistic bubble.
     }
   };
+
+  const reconcileMessages = useCallback(async () => {
+    if (viewingArchive) return;
+    const formData = new FormData();
+    formData.append("projectSlug", projectSlug);
+    if (taskId) formData.append("taskId", taskId);
+    if (epicId) formData.append("epicId", epicId);
+    const nextMessages = await getAgentChatRoomMessages(formData);
+    setServerMessages(nextMessages as Message[]);
+  }, [epicId, projectSlug, taskId, viewingArchive]);
 
   const closeComposer = () => {
     setComposerOpen(false);
@@ -943,31 +957,33 @@ export default function ChatRoom({
             epicId={epicId}
             label={agent.username}
             anonymizeTyping
-            onFinal={({ text, status }) => {
+            onFinal={async ({ text, status }) => {
               if (status !== "done") return;
               setLocalPendingAgents((current) => current.filter((item) => item.slug !== agent.slug));
-              if (!text.trim()) return;
-              setStreamFinalMessages((current) => [
-                ...current.filter((message) => message.id !== `stream-final-${activeLatestMessageId}-${agent.slug}`),
-                {
-                  id: `stream-final-${activeLatestMessageId}-${agent.slug}`,
-                  body: text,
-                  createdAt: new Date(),
-                  allowDescriptionEdit: false,
-                  editGrantUsedAt: null,
-                  targetLabel: null,
-                  targetType: null,
-                  targetValue: null,
-                  sender: {
-                    username: agent.slug,
-                    kind: "agent",
-                    name: agent.username,
-                    agent: { slug: agent.slug, name: agent.username, avatar: "placeholder" },
+              if (text.trim()) {
+                setStreamFinalMessages((current) => [
+                  ...current.filter((message) => message.id !== `stream-final-${activeLatestMessageId}-${agent.slug}`),
+                  {
+                    id: `stream-final-${activeLatestMessageId}-${agent.slug}`,
+                    body: text,
+                    createdAt: new Date(),
+                    allowDescriptionEdit: false,
+                    editGrantUsedAt: null,
+                    targetLabel: null,
+                    targetType: null,
+                    targetValue: null,
+                    sender: {
+                      username: agent.slug,
+                      kind: "agent",
+                      name: agent.username,
+                      agent: { slug: agent.slug, name: agent.username, avatar: "placeholder" },
+                    },
+                    deletedAt: null,
+                    deletedBy: null,
                   },
-                  deletedAt: null,
-                  deletedBy: null,
-                },
-              ]);
+                ]);
+              }
+              await reconcileMessages();
             }}
           />
         ))}
