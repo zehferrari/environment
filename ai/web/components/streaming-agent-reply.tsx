@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePersistentPmStream } from "@/components/persistent-pm-stream-provider";
 import { MessageAvatar, type MessageActor } from "@/components/message-avatar";
 import { extractDiscussionSectionA } from "@/lib/agents/discussion-reply-format";
+import { renderFullMarkdown } from "@/lib/markdown";
 import { sendNativePmReplyNotification } from "@/lib/agents/native-pm-notifications";
 import {
   reconnectingCopy,
@@ -224,9 +225,10 @@ export default function StreamingAgentReply({
 
         {/* Main Message Content */}
         {displayText.trim() ? (
-          <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-            {displayText}
-          </div>
+          <div
+            className="md md-compact break-words text-sm leading-relaxed text-[var(--color-text)] [overflow-wrap:anywhere]"
+            dangerouslySetInnerHTML={renderFullMarkdown(displayText)}
+          />
         ) : status !== "error" && !reasoning.trim() ? (
           <div className="text-xs text-[var(--color-text-muted)] flex items-center gap-1">
             working... <TypingDots />
