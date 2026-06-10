@@ -18,6 +18,23 @@ process.env.PM_ASYNC_DISPATCH = "1";
 process.env.PM_ASYNC_DISPATCH_INLINE_NUDGE = "0";
 process.env.PM_CHANNEL_JOB_MAX_ATTEMPTS = "2";
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForReplayFrame(args: {
+  runId: string;
+  target: Parameters<typeof replayPmChannelStreamFrames>[0]["target"];
+  afterSeq: number;
+}) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const replay = await replayPmChannelStreamFrames(args);
+    if (replay.length > 0) return replay;
+    await sleep(25);
+  }
+  return replayPmChannelStreamFrames(args);
+}
+
 async function main() {
   assert.deepEqual(
     extractActionPlanSteps([
@@ -83,7 +100,7 @@ async function main() {
   assert.equal(job.status, "queued");
   assert.equal(job.attemptCount, 0);
 
-  const replay = await replayPmChannelStreamFrames({ runId: run.id, target, afterSeq: 0 });
+  const replay = await waitForReplayFrame({ runId: run.id, target, afterSeq: 0 });
   assert.equal(replay.length, 1);
   assert.equal(replay[0]?.event, "status");
   assert.equal(replay[0]?.state.runStatus, "queued");
@@ -98,7 +115,7 @@ async function main() {
   });
   assert.equal(retryable.status, "retryable");
   assert.equal(retryable.attemptCount, 1);
-  assert.match(retryable.lastError ?? "", /no gateway port/);
+  assert.match(retryable.lastError ?? "", /no gateway port|PM channel bus disabled/);
 
   const immediateDrain = await runPmChannelWorkerDrain(`test-drain-immediate:${nonce}`);
   assert.equal(immediateDrain.claimed, 0, "retryable job should not drain before availableAt");

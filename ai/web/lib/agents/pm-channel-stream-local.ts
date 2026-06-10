@@ -9,9 +9,7 @@ const GLOBAL_UDS_SERVER = "__vixiPmChannelStreamUdsServer";
 declare global {
   // Direct in-process callback used when the OpenClaw PM channel runtime and
   // PM web server are hosted in the same Node process.
-  // eslint-disable-next-line no-var
   var __vixiPmChannelStreamCallback: ((payload: Record<string, unknown>) => Promise<unknown>) | undefined;
-  // eslint-disable-next-line no-var
   var __vixiPmChannelStreamUdsServer: Server | undefined;
 }
 
