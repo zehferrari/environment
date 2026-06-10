@@ -6,7 +6,11 @@ import {
   type PmChannelReplyTarget,
   resolvePmChannelToken,
 } from "@/lib/agents/openclaw-pm-channel";
-import type { PmChannelStreamEventKind } from "@/lib/agents/pm-channel-stream";
+import type {
+  PmChannelLifecycleStatus,
+  PmChannelStreamEventKind,
+  PmChannelToolStatus,
+} from "@/lib/agents/pm-channel-stream";
 import {
   pmChannelRunTargetKey,
   pmChannelTargetHasDurableReply,
@@ -21,6 +25,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const EVENTS = new Set<PmChannelStreamEventKind>([
+  "status",
+  "status:thinking",
+  "status:reading",
+  "status:working",
+  "tool:call",
+  "tool:result",
+  "token",
   "partial",
   "reasoning",
   "final",
@@ -50,6 +61,14 @@ function tokenMatches(actual: string, expected: string) {
 function stringField(value: unknown, max: number) {
   if (typeof value !== "string") return undefined;
   return value.length > max ? value.slice(0, max) : value;
+}
+
+function lifecycleStatusField(value: unknown): PmChannelLifecycleStatus | undefined {
+  return value === "thinking" || value === "reading" || value === "working" ? value : undefined;
+}
+
+function toolStatusField(value: unknown): PmChannelToolStatus | undefined {
+  return value === "call" || value === "result" ? value : undefined;
 }
 
 async function recordStreamError(target: PmChannelReplyTarget, error: string | undefined) {
@@ -143,7 +162,7 @@ export async function POST(req: NextRequest) {
   const text = stringField(payload.text, 40_000);
   const delta = stringField(payload.delta, 8_000);
   if (
-    (event === "partial" || event === "final") &&
+    (event === "partial" || event === "token" || event === "final") &&
     (isSilentPmReplyText(text) || isSilentPmReplyText(delta))
   ) {
     return NextResponse.json({ ok: true, silent: true });
@@ -156,6 +175,9 @@ export async function POST(req: NextRequest) {
     delta,
     replace: payload.replace === true,
     error: stringField(payload.error, 2_000),
+    statusKind: lifecycleStatusField(payload.status),
+    toolStatus: toolStatusField(payload.toolStatus),
+    toolName: stringField(payload.toolName, 200),
   };
   const state = publishPmChannelStreamEventDurably(eventInput, async () => {
     await recordPmChannelRunEvent({

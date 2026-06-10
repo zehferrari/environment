@@ -11,6 +11,9 @@ type StreamState = {
   text?: string;
   reasoning?: string;
   status?: "streaming" | "done" | "error";
+  lifecycleStatus?: "thinking" | "reading" | "working" | null;
+  toolStatus?: "call" | "result" | null;
+  toolName?: string | null;
   runStatus?: "queued" | "accepted" | "streaming" | "retryable" | "complete" | "failed";
   error?: string | null;
   updatedAt?: number;
@@ -70,7 +73,9 @@ function formatElapsed(ms: number) {
 function waitingCopy(args: {
   status: "connecting" | "streaming" | "done" | "error";
   runStatus?: StreamState["runStatus"];
-  elapsedMs: number;
+  lifecycleStatus: StreamState["lifecycleStatus"];
+  toolStatus: StreamState["toolStatus"];
+  toolName: string | null;
   error: string | null;
 }) {
   if (args.status === "error") {
@@ -83,16 +88,15 @@ function waitingCopy(args: {
     return "Retrying...";
   }
 
-  const phases = [
-    { until: 4_000, label: "Waking..." },
-    { until: 12_000, label: "Thinking..." },
-    { until: 24_000, label: "Reading..." },
-    { until: 40_000, label: "Planning..." },
-    { until: 64_000, label: "Writing..." },
-    { until: 92_000, label: "Checking..." },
-    { until: 125_000, label: "Sending..." },
-  ];
-  return phases.find((phase) => args.elapsedMs < phase.until)?.label ?? "Recovering reply...";
+  if (args.toolStatus === "call") {
+    return args.toolName ? `Using ${args.toolName}...` : "Using tool...";
+  }
+  if (args.toolStatus === "result") {
+    return args.toolName ? `Read ${args.toolName} result...` : "Reading tool result...";
+  }
+  if (args.lifecycleStatus === "thinking") return "Thinking...";
+  if (args.lifecycleStatus === "reading") return "Reading...";
+  return "Working...";
 }
 
 export default function StreamingAgentReply({
@@ -110,6 +114,9 @@ export default function StreamingAgentReply({
   const [reasoning, setReasoning] = useState("");
   const [status, setStatus] = useState<"connecting" | "streaming" | "done" | "error">("connecting");
   const [runStatus, setRunStatus] = useState<StreamState["runStatus"]>("queued");
+  const [lifecycleStatus, setLifecycleStatus] = useState<StreamState["lifecycleStatus"]>(null);
+  const [toolStatus, setToolStatus] = useState<StreamState["toolStatus"]>(null);
+  const [toolName, setToolName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [startedAt] = useState(() => Date.now());
   const [lastUpdateAt, setLastUpdateAt] = useState<number | null>(null);
@@ -150,6 +157,9 @@ export default function StreamingAgentReply({
       const payload = parse(event);
       if (!payload) return;
       setError(payload.error ?? null);
+      setLifecycleStatus(payload.lifecycleStatus ?? null);
+      setToolStatus(payload.toolStatus ?? null);
+      setToolName(payload.toolName ?? null);
       setLastUpdateAt(payload.updatedAt ?? Date.now());
       applyStreamState(payload, setText, setReasoning, setStatus, setRunStatus);
       if (payload.status === "done") {
@@ -179,6 +189,13 @@ export default function StreamingAgentReply({
     };
 
     source.addEventListener("snapshot", onState);
+    source.addEventListener("status", onState);
+    source.addEventListener("status:thinking", onState);
+    source.addEventListener("status:reading", onState);
+    source.addEventListener("status:working", onState);
+    source.addEventListener("tool:call", onState);
+    source.addEventListener("tool:result", onState);
+    source.addEventListener("token", onState);
     source.addEventListener("partial", onState);
     source.addEventListener("reasoning", onState);
     source.addEventListener("final", onState);
@@ -223,7 +240,9 @@ export default function StreamingAgentReply({
   const waitLabel = waitingCopy({
     status,
     runStatus,
-    elapsedMs,
+    lifecycleStatus,
+    toolStatus,
+    toolName,
     error,
   });
   const displayText = targetKind === "task-chat" || targetKind === "epic-chat"

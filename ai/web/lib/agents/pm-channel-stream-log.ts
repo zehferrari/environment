@@ -39,6 +39,9 @@ function durabilityInput(input: PmChannelStreamInput): PersistedStreamInput {
     replace: input.replace,
     error: input.error,
     runStatus: input.runStatus,
+    statusKind: input.statusKind,
+    toolStatus: input.toolStatus,
+    toolName: input.toolName,
   };
 }
 
@@ -182,6 +185,9 @@ export async function appendPmChannelStreamEventForTarget(args: {
   replace?: boolean;
   error?: string;
   runStatus?: PmChannelStreamState["runStatus"];
+  statusKind?: PersistedStreamInput["statusKind"];
+  toolStatus?: PersistedStreamInput["toolStatus"];
+  toolName?: string;
 }) {
   const run = await ensurePmChannelRunForTarget(args.target);
   return appendPmChannelStreamEvent({
@@ -194,6 +200,9 @@ export async function appendPmChannelStreamEventForTarget(args: {
       replace: args.replace,
       error: args.error,
       runStatus: args.runStatus,
+      statusKind: args.statusKind,
+      toolStatus: args.toolStatus,
+      toolName: args.toolName,
     },
   });
 }
@@ -222,6 +231,9 @@ export async function replayPmChannelStreamFrames(args: {
       replace: payload.replace,
       error: payload.error,
       runStatus: payload.runStatus,
+      statusKind: payload.statusKind,
+      toolStatus: payload.toolStatus,
+      toolName: payload.toolName,
       seq: row.seq,
     });
     if (row.seq > args.afterSeq) {
