@@ -4,12 +4,6 @@ export type StreamingReplyStatus = "connecting" | "streaming" | "done" | "error"
 export const RECONNECTING_DEBOUNCE_MS = 1_200;
 export const RECONNECTING_STUCK_MS = 10_000;
 
-export function formatStreamingReplyElapsed(ms: number) {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
 export function waitingCopy(args: {
   status: StreamingReplyStatus;
   runStatus?: StreamingReplyRunStatus;

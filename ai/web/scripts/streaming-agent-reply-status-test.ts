@@ -46,6 +46,21 @@ assert.equal(
   "accepted copy falls back to generic work until a real event-specific state arrives",
 );
 assert.equal(
+  waitingCopy({ status: "streaming", runStatus: "streaming", lifecycleStatus: "thinking", error: null }),
+  "Thinking...",
+  "typed lifecycle status events may provide visible copy",
+);
+assert.equal(
+  waitingCopy({ status: "streaming", runStatus: "streaming", lifecycleStatus: "reading", error: null }),
+  "Reading...",
+  "typed lifecycle status events may provide visible copy",
+);
+assert.equal(
+  waitingCopy({ status: "streaming", runStatus: "streaming", toolStatus: "call", toolName: "grep", error: null }),
+  "Using grep...",
+  "typed tool events may provide visible copy",
+);
+assert.equal(
   waitingCopy({ status: "error", runStatus: "failed", error: "boom" }),
   "boom",
 );

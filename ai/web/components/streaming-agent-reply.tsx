@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { MessageAvatar, type MessageActor } from "@/components/message-avatar";
 import { extractDiscussionSectionA } from "@/lib/agents/discussion-reply-format";
 import {
-  formatStreamingReplyElapsed,
   reconnectingCopy,
   waitingCopy,
   type StreamingReplyRunStatus,
@@ -92,7 +91,6 @@ export default function StreamingAgentReply({
   const [startedAt] = useState(() => Date.now());
   const [lastUpdateAt, setLastUpdateAt] = useState<number | null>(null);
   const [connectionIssueAt, setConnectionIssueAt] = useState<number | null>(null);
-  const [elapsedMs, setElapsedMs] = useState(0);
   const [finalized, setFinalized] = useState(false);
   const finalNotifiedRef = useRef(false);
   const latestTextRef = useRef("");
@@ -212,13 +210,6 @@ export default function StreamingAgentReply({
     };
   }, [agentSlug, url]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setElapsedMs(Date.now() - startedAt);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [startedAt]);
-
   const [showReasoning, setShowReasoning] = useState(true);
   const actor: MessageActor = {
     username: agentSlug,
@@ -244,7 +235,7 @@ export default function StreamingAgentReply({
   const displayText = targetKind === "task-chat" || targetKind === "epic-chat"
     ? extractDiscussionSectionA(text)
     : text;
-  const elapsedLabel = formatStreamingReplyElapsed(lastUpdateAt ? Date.now() - lastUpdateAt : elapsedMs);
+  const liveStateLabel = status === "error" ? "stream error" : waitLabel;
   const liveTone = status === "error"
     ? "border-[var(--color-crit)]/30 bg-[var(--color-crit)]/[0.06] text-[var(--color-crit)]"
     : "border-[var(--color-accent)]/20 bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]";
@@ -269,7 +260,7 @@ export default function StreamingAgentReply({
           </div>
           {status === "error" || reconnectLabel ? null : (
             <div className="mt-2 flex items-center gap-2 text-[11px] text-[var(--color-text-muted)]">
-              <span>active {formatStreamingReplyElapsed(elapsedMs)}</span>
+              <span>{waitLabel}</span>
               <span className="h-1 flex-1 overflow-hidden rounded-full bg-[var(--color-line)]">
                 <span className="block h-full w-1/2 animate-pulse rounded-full bg-[var(--color-accent)]/60" />
               </span>
@@ -286,7 +277,7 @@ export default function StreamingAgentReply({
       <div className="w-fit min-w-0 max-w-[min(44rem,82%)] rounded-[1.15rem] rounded-bl-md border border-[var(--color-accent)]/20 bg-[var(--color-panel)] px-4 py-3 shadow-[0_8px_22px_rgba(15,23,42,0.05)] ring-1 ring-black/[0.02]">
         <div className="mb-2 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
           <span>{label} / live reply</span>
-          <span>{status === "done" ? "finalizing" : status === "error" ? "stream error" : `active ${elapsedLabel}`}</span>
+          <span>{status === "done" ? "finalizing" : liveStateLabel}</span>
         </div>
 
         {/* Collapsible Reasoning Thought Process Block */}
