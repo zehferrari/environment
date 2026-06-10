@@ -58,7 +58,7 @@ export type EpicAgentContextPacket = {
       status: string;
       description: string | null;
       approvedOn: string | null;
-      assignee: string;
+      workers: string[];
       actingManager: string;
     } | null;
     tasks: Array<{
@@ -266,9 +266,9 @@ function liveContextFetchBlockEpic(args: LiveContextAccessEpic) {
   }
   out.push(
     "LIVE PM CONTEXT — FETCH WHEN YOU NEED DEEPER HISTORY:",
-    "The RECENT block above is your PRIMARY context. PM also exposes loopback-only JSON endpoints for older history and full project state. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL.",
+    "The RECENT block above is your PRIMARY context. PM also exposes loopback-only JSON endpoints for older Epic history and project state required for work-item changes. PM is reachable ONLY at 127.0.0.1; do NOT call agents.vixi.au or any public URL.",
     "",
-    "  # Full epic: deeper history, full task list, comments, attachments:",
+    "  # Full epic: deeper history, full task list, comments, and Epic attachment section:",
     args.grantUrls?.epic
       ? `  curl -s '${args.grantUrls.epic}'`
       : missingGrant,
@@ -369,7 +369,10 @@ export async function buildEpicAgentContextPacket(args: {
           readmePath: true,
         },
       },
-      assignee: { select: { username: true, kind: true } },
+      workers: {
+        orderBy: { createdAt: "asc" },
+        select: { user: { select: { username: true, kind: true } } },
+      },
       actingManager: { select: { username: true, kind: true } },
       tasks: {
         where: { deletedAt: null, parentTaskId: null },
@@ -453,7 +456,7 @@ export async function buildEpicAgentContextPacket(args: {
             status: epic.status,
             description: epic.description,
             approvedOn: formatDate(epic.approvedOn),
-            assignee: actorLabel(epic.assignee),
+            workers: epic.workers.map((worker) => actorLabel(worker.user)),
             actingManager: actorLabel(epic.actingManager),
           }
         : null,
@@ -700,7 +703,7 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
   lines.push(
     `Epic: ${epic.title} (${epic.status}, ${epic.id})`,
     `Action Plan approved_on: ${epic.approvedOn || "(not approved)"}`,
-    `Assignee: ${epic.assignee}`,
+    `Worker pool: ${epic.workers.length ? epic.workers.join(", ") : "(none)"}`,
     `Acting manager: ${epic.actingManager}`,
   );
   pushDescription(lines, "EPIC DESCRIPTION", epic.description, packet.caps.epicDescriptionMax);
@@ -764,7 +767,7 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
   lines.push(
     "",
     "RESPONSE GUIDANCE:",
-    "Use the current turn together with the live PM Epic, timeline, tasks, and attachment context above. If an attachment is important but only metadata is available, say exactly which attachment needs inspection. Do not invent attachment contents.",
+    "Use the current turn together with the live PM Epic, timeline, tasks, and only the relevant Epic attachment context above. Do not fetch or summarize the whole project library. Use an attachment only when the Epic title/description/action plan/comments explicitly reference it or a safe plan cannot be made from text alone; mention why you used it. If an attachment is important but only metadata is available, say exactly which attachment needs inspection. Do not invent attachment contents.",
     "You can see EVERY comment and EVERY discussion message above, including messages between other people/agents that were not directed at you. Read them as background and use them in your reasoning.",
     "Visible PM comments must be direct and consolidated: put all current issues, blockers, findings, and required questions in one comment whenever possible.",
     "Do not repeat a blocker or decision already present in the recent hot path unless the current turn adds new information or asks for a status update.",

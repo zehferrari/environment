@@ -7,7 +7,7 @@ export type AttachmentAgentAccessReason =
   | "task.epic-acting-manager"
   | "task.mentioned"
   | "task.addressed"
-  | "epic.assignee"
+  | "epic.worker"
   | "epic.acting-manager"
   | "epic.child-task-role"
   | "epic.mentioned"
@@ -119,12 +119,12 @@ async function epicRelationReason(epicId: string, agent: AgentPrincipal) {
   const epic = await db.epic.findFirst({
     where: { id: epicId, archivedAt: null, deletedAt: null },
     select: {
-      assigneeId: true,
       actingManagerId: true,
+      workers: { where: { userId: agent.id }, select: { userId: true }, take: 1 },
     },
   });
   if (!epic) return null;
-  if (epic.assigneeId === agent.id) return "epic.assignee" as const;
+  if (epic.workers.length > 0) return "epic.worker" as const;
   if (epic.actingManagerId === agent.id) return "epic.acting-manager" as const;
 
   const childRoleCount = await db.task.count({

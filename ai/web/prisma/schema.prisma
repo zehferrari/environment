@@ -44,12 +44,12 @@ model User {
   approvedTasks               Task[]               @relation("TaskApprovedBy")
   archivedTasks               Task[]               @relation("TaskArchivedBy")
   deletedTasks                Task[]               @relation("TaskDeletedBy")
-  assignedEpics               Epic[]               @relation("EpicAssignee")
   actingManagerOfEpic         Epic[]               @relation("EpicActingManager")
   reportedEpics               Epic[]               @relation("EpicReporter")
   approvedEpics               Epic[]               @relation("EpicApprovedBy")
   archivedEpics               Epic[]               @relation("EpicArchivedBy")
   deletedEpics                Epic[]               @relation("EpicDeletedBy")
+  epicWorkerAssignments       EpicWorker[]
   comments                    Comment[]
   deletedComments             Comment[]            @relation("CommentDeletedBy")
   activity                    ActivityLog[]
@@ -206,13 +206,9 @@ model Epic {
   description     String?
   status          String   @default("Backlog") // "Backlog" | "Open" | "Done"
   statusChangedAt DateTime?
-  // Epic-level assignee + acting manager. Independent of any Task's
-  // assignee/actingManager — an Epic can be owned by one agent while its
-  // tasks are assigned to others (HOMELAB-47). Same User pool as Task
-  // (active humans + Users linked to Agent.role='coding'); enforced via
-  // lib/principals.ts on the read side and lib/workflow.ts on writes.
-  assigneeId      String?
-  assignee        User?    @relation("EpicAssignee", fields: [assigneeId], references: [id])
+  // Epic-level acting manager plus a multi-agent worker pool. Task
+  // assignee stays single; Epic workers define which coding agents the
+  // manager may pick from for child Tasks.
   actingManagerId String?
   actingManager   User?    @relation("EpicActingManager", fields: [actingManagerId], references: [id])
   reporterId      String?
@@ -239,6 +235,7 @@ model Epic {
   updatedAt       DateTime @updatedAt
 
   tasks       Task[]
+  workers     EpicWorker[]
   attachments Attachment[]
   comments    Comment[]
   deploymentPullRequests DeploymentPullRequest[]
@@ -249,13 +246,24 @@ model Epic {
   @@index([workItemKey])
   @@index([status])
   @@index([statusChangedAt])
-  @@index([assigneeId])
   @@index([actingManagerId])
   @@index([reporterId])
   @@index([approvedById])
   @@index([archivedAt])
   @@index([archivedById])
   @@index([deletedAt])
+}
+
+model EpicWorker {
+  id        String   @id @default(cuid())
+  epicId    String
+  epic      Epic     @relation(fields: [epicId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([epicId, userId])
+  @@index([userId])
 }
 
 model Task {

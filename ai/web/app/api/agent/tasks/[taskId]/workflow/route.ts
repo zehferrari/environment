@@ -38,6 +38,42 @@ function isWorkflowAction(value: unknown): value is WorkflowAction {
   return typeof value === "string" && (ACTIONS as readonly string[]).includes(value);
 }
 
+async function workflowNotificationReason(taskId: string, messageId: string) {
+  const rows = await db.activityLog.findMany({
+    where: {
+      taskId,
+      kind: "task.workflow.notify",
+    },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+    select: { payload: true },
+  });
+  for (const row of rows) {
+    try {
+      const payload = JSON.parse(row.payload ?? "{}") as {
+        messageId?: unknown;
+        reason?: unknown;
+      };
+      if (payload.messageId === messageId) {
+        return typeof payload.reason === "string" ? payload.reason : null;
+      }
+    } catch {
+      // Ignore malformed historical activity rows; they cannot authorize
+      // state-sensitive workflow actions.
+    }
+  }
+  return null;
+}
+
+async function commentAuthorId(commentId: string | null) {
+  if (!commentId) return null;
+  const comment = await db.comment.findUnique({
+    where: { id: commentId },
+    select: { userId: true, deletedAt: true },
+  });
+  return comment && !comment.deletedAt ? comment.userId : null;
+}
+
 async function moveTaskStatus(args: {
   taskId: string;
   projectId: string;
@@ -117,6 +153,7 @@ export async function POST(
       agentSlug: true,
       targetType: true,
       targetValue: true,
+      originCommentId: true,
     },
   });
   if (!original || original.taskId !== taskId) {
@@ -194,6 +231,19 @@ export async function POST(
     if (!isAssignee) return NextResponse.json({ error: "Only the assignee can start this task" }, { status: 403 });
     if (task.status !== "To Do" && task.status !== "Review") {
       return NextResponse.json({ error: "Task must be in To Do or Review before start/resume" }, { status: 409 });
+    }
+    if (task.status === "Review") {
+      const reason = await workflowNotificationReason(task.id, messageId);
+      const authorId = reason === "review_feedback"
+        ? null
+        : await commentAuthorId(original.originCommentId);
+      if (reason !== "review_feedback" && authorId !== reviewerId && authorId !== doneOwnerId) {
+        return NextResponse.json({
+          error: "This workflow turn cannot resume a task from Review. Wait for review feedback or call ready_for_review only if the work is already complete.",
+          currentStatus: task.status,
+          workflowReason: reason,
+        }, { status: 409 });
+      }
     }
     if (!task.approvedOn) {
       return NextResponse.json({ error: "Action Plan must be approved before start" }, { status: 409 });

@@ -13,6 +13,9 @@ import EpicStatusFilter from "./epic-status-filter";
 export const dynamic = "force-dynamic";
 
 const BOARD_STATUSES = ["Backlog", "Open", "Done"] as const;
+// Default board view surfaces in-flight work (Backlog + Open) and hides Done
+// until the user opts back into it via the status filter.
+const DEFAULT_BOARD_STATUSES = ["Backlog", "Open"] as const;
 const actorSelect = {
   id: true,
   username: true,
@@ -31,7 +34,7 @@ function parseBoardStatuses(statuses: string | undefined, legacyStatus: string |
     const match = BOARD_STATUSES.find((status) => status.toLowerCase() === legacyStatus.toLowerCase());
     if (match) return [match];
   }
-  if (statuses === undefined) return [...BOARD_STATUSES];
+  if (statuses === undefined) return [...DEFAULT_BOARD_STATUSES];
   const requested = statuses.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
   return BOARD_STATUSES.filter((status) => requested.includes(status.toLowerCase()));
 }
@@ -130,7 +133,7 @@ export default async function EpicsListPage({
         <p className="text-xs text-[var(--color-text-muted)]">
           {view === "archive"
             ? "Showing archived epics."
-            : "Board shows Backlog, Open, and Done epics based on the selected statuses."}
+            : "Board defaults to Backlog and Open epics; add Done from the status filter."}
         </p>
       </div>
 

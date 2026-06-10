@@ -41,6 +41,7 @@ export default function NewEpicFab({
         : null,
     },
   }));
+  const workerOptions = principalOptions.filter((option) => option.actor?.kind === "agent");
 
   return (
     <>
@@ -111,15 +112,16 @@ export default function NewEpicFab({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label className="text-xs">
                 <span className="mb-1 block text-[var(--color-text-muted)]">
-                  Assignee
+                  Worker pool
                 </span>
                 <AvatarCombobox
                   formId="newEpicForm"
                   name="assigneeId"
-                  defaultValue=""
-                  options={principalOptions}
-                  emptyLabel="Unassigned"
-                  ariaLabel="Assignee"
+                  defaultValues={[]}
+                  options={workerOptions}
+                  emptyLabel="No workers"
+                  ariaLabel="Worker pool"
+                  multiple
                 />
               </label>
               <label className="text-xs">

@@ -266,7 +266,6 @@ export async function commitProposal(
                 description: optionalText(op.description),
                 status: "Backlog",
                 statusChangedAt: new Date(),
-                assigneeId: createId(op.assignee),
                 actingManagerId: createId(op.actingManager),
                 reporterId: newItemReporterId,
               },
@@ -376,8 +375,7 @@ export async function commitProposal(
             where: { id },
             select: {
               id: true, title: true, description: true, status: true,
-              assigneeId: true, actingManagerId: true,
-              assignee: { select: { username: true } },
+              actingManagerId: true,
               actingManager: { select: { username: true } },
             },
           });
@@ -391,11 +389,6 @@ export async function commitProposal(
           }
           if (data.title !== undefined || data.description !== undefined) {
             logs.push({ kind: "epic.update", payload: { epicId: id, proposalId: proposal.id } });
-          }
-          const asg = resolvePrincipal(op.assignee);
-          if (asg !== undefined && asg !== epic.assigneeId) {
-            data.assigneeId = asg;
-            logs.push({ kind: "epic.assign", payload: { epicId: id, from: epic.assignee?.username ?? null, to: asg ? usernameById.get(asg) ?? null : null, proposalId: proposal.id } });
           }
           const am = resolvePrincipal(op.actingManager);
           if (am !== undefined && am !== epic.actingManagerId) {
