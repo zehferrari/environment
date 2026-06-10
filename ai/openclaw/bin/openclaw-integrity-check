@@ -943,7 +943,7 @@ def main():
 
     check_dev_shared_files(agent_registry, monitor_user, monitor_home)
     check_dev_env_drift(monitor_user, monitor_home, monitor_uid)
-    public_users = sorted(set(jira_users + bitbucket_users))
+    public_users = sorted(set(jira_users))
     check_dev_public_ingress(public_users, monitor_user=monitor_user or "monitor")
 
     for agent in monitor_agents:
