@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useEffect, useLayoutEffect, useMemo, useState, useTransition } from "react";
+import React, { useRef, useEffect, useLayoutEffect, useMemo, useOptimistic, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { archiveChatRoom, sendAgentChatMessage, deleteChatMessage, restoreChatMessage } from "@/lib/agents/chat-actions";
@@ -34,6 +34,11 @@ interface Message {
   deletedAt?: Date | string | null;
   deletedBy?: { username?: string | null; name?: string | null; kind?: string | null } | null;
 }
+
+type OptimisticMessage = Message & {
+  optimisticStatus?: "sending" | "failed";
+  optimisticTargets?: string[];
+};
 
 interface DiscussionTarget {
   value: string;
@@ -107,6 +112,10 @@ function participantKey(actor: MessageActor) {
 
 function isInternalWorkflowNotification(message: Message) {
   return message.body.startsWith("PM workflow notification for @");
+}
+
+function optimisticLocalEchoEnabled() {
+  return process.env.NEXT_PUBLIC_PM_OPTIMISTIC_LOCAL_ECHO === "1";
 }
 
 function RoomArchiveButton({
@@ -325,7 +334,9 @@ export default function ChatRoom({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const optimisticRenderStartsRef = useRef<Map<string, number>>(new Map());
   const activeTab = useActiveTab();
+  const [, startOptimisticTransition] = useTransition();
   const [messageText, setMessageText] = useState("");
   const [composerOpen, setComposerOpen] = useState(false);
   const [selectedFilesCount, setSelectedFilesCount] = useState(0);
@@ -343,22 +354,54 @@ export default function ChatRoom({
   const [archiveViewMode, setArchiveViewMode] = useState<"archives" | "bin">(
     !hasArchives && hasBinArchives ? "bin" : "archives",
   );
+  const optimisticEchoEnabled = optimisticLocalEchoEnabled();
   const visibleMessages = useMemo(
     () => messages.filter((message) => !isInternalWorkflowNotification(message)),
     [messages],
   );
+  const [failedOptimisticMessages, setFailedOptimisticMessages] = useState<OptimisticMessage[]>([]);
+  const currentUserActor = useMemo<MessageActor>(() => {
+    const previousCurrentUserMessage = [...visibleMessages]
+      .reverse()
+      .find((message) => currentUserId && message.sender.id === currentUserId);
+    if (previousCurrentUserMessage) return previousCurrentUserMessage.sender;
+    return {
+      id: currentUserId,
+      username: "you",
+      kind: "human",
+      name: "You",
+      avatarUpdatedAt: null,
+      agent: null,
+    };
+  }, [visibleMessages, currentUserId]);
+  const visibleMessagesWithFailures = useMemo<OptimisticMessage[]>(() => {
+    if (!optimisticEchoEnabled) return visibleMessages;
+    const serverIds = new Set(visibleMessages.map((message) => message.id));
+    return [
+      ...visibleMessages,
+      ...failedOptimisticMessages.filter((message) => !serverIds.has(message.id)),
+    ];
+  }, [optimisticEchoEnabled, visibleMessages, failedOptimisticMessages]);
+  const [optimisticMessages, addOptimisticMessage] = useOptimistic(
+    visibleMessagesWithFailures,
+    (currentMessages: OptimisticMessage[], optimisticMessage: OptimisticMessage) => [
+      ...currentMessages.filter((message) => message.id !== optimisticMessage.id),
+      optimisticMessage,
+    ],
+  );
+  const displayedMessages: OptimisticMessage[] = optimisticEchoEnabled ? optimisticMessages : visibleMessages;
   const pmOptionResolutions = useMemo(() => {
     const map = new Map<string, ReturnType<typeof findPmOptionResolution>>();
-    visibleMessages.forEach((message, index) => {
+    displayedMessages.forEach((message, index) => {
       const parsed = parsePmOptions(message.body);
       if (parsed.options.length === 0) return;
       map.set(
         message.id,
-        findPmOptionResolution(parsed.options, visibleMessages.slice(index + 1).map((later) => later.body)),
+        findPmOptionResolution(parsed.options, displayedMessages.slice(index + 1).map((later) => later.body)),
       );
     });
     return map;
-  }, [visibleMessages]);
+  }, [displayedMessages]);
   const canSend = messageText.trim().length > 0 || selectedFilesCount > 0;
   const activeCount = activeMessageCount ?? visibleMessages.length;
   const canContinueArchive = viewingArchive && !selectedArchiveDeleted && activeCount === 0;
@@ -366,20 +409,38 @@ export default function ChatRoom({
   const latestEventKey = [
     viewingArchive ? "archive" : "current",
     selectedArchiveId ?? "",
-    visibleMessages.length,
-    visibleMessages.at(-1)?.id ?? "",
+    displayedMessages.length,
+    displayedMessages.at(-1)?.id ?? "",
     latestMessageId ?? "",
     pendingAgents.map((agent) => agent.slug).join(","),
   ].join("|");
   const participantIndexes = useMemo(() => {
     const map = new Map<string, number>();
-    for (const message of visibleMessages) {
+    for (const message of displayedMessages) {
       if (currentUserId && message.sender.id === currentUserId) continue;
       const key = participantKey(message.sender);
       if (!map.has(key)) map.set(key, map.size);
     }
     return map;
-  }, [visibleMessages, currentUserId]);
+  }, [displayedMessages, currentUserId]);
+
+  useLayoutEffect(() => {
+    if (!optimisticEchoEnabled) return;
+
+    for (const message of displayedMessages) {
+      if (message.optimisticStatus !== "sending") continue;
+      const startedAt = optimisticRenderStartsRef.current.get(message.id);
+      if (startedAt == null) continue;
+
+      const duration = performance.now() - startedAt;
+      performance.measure("pm-channel-latency:own-message-render", {
+        start: startedAt,
+        duration,
+        detail: { messageId: message.id },
+      });
+      optimisticRenderStartsRef.current.delete(message.id);
+    }
+  }, [optimisticEchoEnabled, displayedMessages]);
 
   useLayoutEffect(() => {
     if (!discussionIsVisible) return;
@@ -462,14 +523,89 @@ export default function ChatRoom({
     }
   };
 
-  const actionHandler = async (formData: FormData) => {
-    await sendAgentChatMessage(formData);
+  const resetComposerAfterSend = () => {
     setMessageText("");
     setSelectedFilesCount(0);
     setComposerOpen(false);
     setTargetPickerOpen(false);
     if (textareaRef.current) textareaRef.current.value = "";
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const optimisticMessageFromForm = (formData: FormData, status: "sending" | "failed" = "sending"): OptimisticMessage => {
+    const body = String(formData.get("body") ?? "").trim();
+    const targets = formData
+      .getAll("discussionTarget")
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+    const selectedTargetLabel = targets
+      .map((value) => targetOptions.find((target) => target.value === value)?.label ?? value)
+      .join(", ");
+    return {
+      id: `optimistic-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      body,
+      createdAt: new Date(),
+      allowDescriptionEdit: false,
+      editGrantUsedAt: null,
+      targetLabel: selectedTargetLabel || null,
+      targetType: null,
+      targetValue: null,
+      sender: currentUserActor,
+      deletedAt: null,
+      deletedBy: null,
+      optimisticStatus: status,
+      optimisticTargets: targets,
+    };
+  };
+
+  const submitOptimisticMessage = async (formData: FormData, optimisticMessage: OptimisticMessage) => {
+    optimisticRenderStartsRef.current.set(optimisticMessage.id, performance.now());
+    startOptimisticTransition(() => addOptimisticMessage(optimisticMessage));
+    setFailedOptimisticMessages((current) => current.filter((message) => message.id !== optimisticMessage.id));
+    try {
+      await sendAgentChatMessage(formData);
+    } catch (error) {
+      setFailedOptimisticMessages((current) => [
+        ...current.filter((message) => message.id !== optimisticMessage.id),
+        { ...optimisticMessage, optimisticStatus: "failed" },
+      ]);
+      throw error;
+    }
+  };
+
+  const retryOptimisticMessage = async (message: OptimisticMessage) => {
+    const formData = new FormData();
+    formData.append("projectSlug", projectSlug);
+    if (taskId) formData.append("taskId", taskId);
+    if (epicId) formData.append("epicId", epicId);
+    formData.append("agentSlug", "room");
+    formData.append("body", message.body);
+    for (const target of message.optimisticTargets ?? []) {
+      formData.append("discussionTarget", target);
+    }
+    const retryMessage = optimisticMessageFromForm(formData);
+    setFailedOptimisticMessages((current) => current.filter((item) => item.id !== message.id));
+    try {
+      await submitOptimisticMessage(formData, retryMessage);
+    } catch {
+      // Failed state is rendered inline on the optimistic bubble.
+    }
+  };
+
+  const actionHandler = async (formData: FormData) => {
+    if (!optimisticEchoEnabled) {
+      await sendAgentChatMessage(formData);
+      resetComposerAfterSend();
+      return;
+    }
+
+    const optimisticMessage = optimisticMessageFromForm(formData);
+    resetComposerAfterSend();
+    try {
+      await submitOptimisticMessage(formData, optimisticMessage);
+    } catch {
+      // Failed state is rendered inline on the optimistic bubble.
+    }
   };
 
   const closeComposer = () => {
@@ -697,7 +833,7 @@ export default function ChatRoom({
         ref={scrollRef}
         className="flex-1 overflow-y-auto p-4 space-y-6 min-h-0 scrollbar-thin"
       >
-        {visibleMessages.length === 0 ? (
+        {displayedMessages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-6 border border-dashed border-[var(--color-line)] rounded-xl bg-[var(--color-panel-soft)]/20">
             <span className="text-xl">💬</span>
             <p className="mt-2 text-xs font-semibold text-[var(--color-text)]">
@@ -708,7 +844,7 @@ export default function ChatRoom({
             </p>
           </div>
         ) : (
-          visibleMessages.map((m) => {
+          displayedMessages.map((m) => {
             if (m.deletedAt) {
               // Soft-deleted action-plan bubble (HOMELAB-41 / item 2).
               // Restore (↺) only offered when viewing the live room —
@@ -738,7 +874,16 @@ export default function ChatRoom({
                 resolvedOption={pmOptionResolutions.get(m.id) ?? null}
                 preferShortAgentSections
                 participantIndex={participantIndexes.get(participantKey(m.sender)) ?? 0}
-                actions={!viewingArchive ? (
+                deliveryStatus={(m as OptimisticMessage).optimisticStatus}
+                actions={(m as OptimisticMessage).optimisticStatus === "failed" ? (
+                  <button
+                    type="button"
+                    onClick={() => retryOptimisticMessage(m as OptimisticMessage)}
+                    className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                  >
+                    Retry
+                  </button>
+                ) : !viewingArchive && !(m as OptimisticMessage).optimisticStatus ? (
                   <ConfirmedDeleteButton
                     action={deleteChatMessage}
                     fields={{ projectSlug, messageId: m.id }}

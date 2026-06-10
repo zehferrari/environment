@@ -664,6 +664,8 @@ export async function sendAgentChatMessage(formData: FormData) {
 
   if (taskId) revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   if (epicId) revalidatePath(`/projects/${slug}/epics/${epicId}`);
+
+  return { messageId: msg.id };
 }
 
 export async function archiveChatRoom(formData: FormData) {

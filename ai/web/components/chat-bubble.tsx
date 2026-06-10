@@ -33,6 +33,7 @@ interface ChatBubbleProps {
   className?: string;
   preferShortAgentSections?: boolean;
   participantIndex?: number;
+  deliveryStatus?: "sending" | "failed";
 }
 
 const senderPalette = [
@@ -65,6 +66,7 @@ export default function ChatBubble({
   className = "",
   preferShortAgentSections = false,
   participantIndex,
+  deliveryStatus,
 }: ChatBubbleProps) {
   const [showFullSection, setShowFullSection] = useState(false);
   const fromAgent = message.sender.kind === "agent";
@@ -161,6 +163,11 @@ export default function ChatBubble({
           className="md md-compact break-words text-sm leading-relaxed text-[var(--color-text)] [overflow-wrap:anywhere]"
           dangerouslySetInnerHTML={renderFullMarkdown(displayBody)}
         />
+        {deliveryStatus ? (
+          <div className={`mt-2 text-[10px] font-semibold uppercase tracking-wider ${deliveryStatus === "failed" ? "text-[var(--color-crit)]" : "text-[var(--color-text-muted)]"}`}>
+            {deliveryStatus === "failed" ? "Failed to send" : "Sending..."}
+          </div>
+        ) : null}
         {projectSlug && surface && parsedOptions.options.length > 0 ? (
           <PmOptions
             projectSlug={projectSlug}
