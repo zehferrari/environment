@@ -324,13 +324,28 @@ function liveContextFetchBlock(args: LiveContextAccess) {
   return out.join("\n");
 }
 
+function appendTaskNativePromptTail(
+  lines: string[],
+  slug: string,
+  directedDescriptor?: DirectedDescriptor | null,
+  contextAccess?: LiveContextAccess | null,
+) {
+  if (contextAccess) {
+    lines.push("", liveContextFetchBlock(contextAccess));
+  }
+  if (directedDescriptor) {
+    lines.push("", renderDirectedSilenceRule({ descriptor: directedDescriptor, recipientAgentSlug: slug }));
+  }
+  return lines.join("\n");
+}
+
 export function buildTaskNativeChannelPrompt(
   taskTitle: string,
   slug: string,
   directedDescriptor?: DirectedDescriptor | null,
   contextAccess?: LiveContextAccess | null,
 ): string {
-  const lines = [
+  return appendTaskNativePromptTail([
     `You have a PM message on task "${taskTitle}", addressed to @${slug}.`,
     "This turn arrived through the native OpenClaw PM channel.",
     "Golden rule: only create a visible PM reply when you have new information, a concrete action result, a required plan, review feedback, a blocker, or a necessary question.",
@@ -342,14 +357,26 @@ export function buildTaskNativeChannelPrompt(
     "If you are the reviewer and approve the task, use the workflow review_done action instead of an approval-only visible comment.",
     "Latest explicit human, reviewer, or acting-manager instruction wins over older agent discussion. Correct yourself silently unless a visible correction is required.",
     "Markdown formatting in your reply is welcome.",
-  ];
-  if (contextAccess) {
-    lines.push("", liveContextFetchBlock(contextAccess));
-  }
-  if (directedDescriptor) {
-    lines.push("", renderDirectedSilenceRule({ descriptor: directedDescriptor, recipientAgentSlug: slug }));
-  }
-  return lines.join("\n");
+  ], slug, directedDescriptor, contextAccess);
+}
+
+export function buildTaskNativeIncrementalChannelPrompt(
+  taskTitle: string,
+  slug: string,
+  previousMessageId: string,
+  directedDescriptor?: DirectedDescriptor | null,
+  contextAccess?: LiveContextAccess | null,
+): string {
+  return appendTaskNativePromptTail([
+    `Incremental PM follow-up on task "${taskTitle}", addressed to @${slug}.`,
+    `Continue from the existing OpenClaw session baseline through PM turn ${previousMessageId}.`,
+    "The user-visible text for this turn is the newly persisted message only; do not assume older PM state changed unless the hot-path delta or fetched PM context says so.",
+    "Only create a visible PM reply when you have new information, a concrete action result, a required plan, review feedback, a blocker, or a necessary question.",
+    `If you have no contribution to add, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
+    "Do not post acknowledgements, restatements, progress filler, or workflow-status acknowledgements.",
+    "When you do post visibly, consolidate related blockers/findings/questions into one concise comment.",
+    "Latest explicit human, reviewer, or acting-manager instruction in this delta wins over older session context.",
+  ], slug, directedDescriptor, contextAccess);
 }
 
 export function buildTaskNativeEditGrantPrompt(args: {

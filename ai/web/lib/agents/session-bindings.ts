@@ -9,6 +9,8 @@ export type AgentSessionBinding = {
   agentSlug: string;
   openclawSessionKey: string;
   openclawSessionId: string | null;
+  lastDispatchedMessageId: string | null;
+  lastDispatchedAt: Date | null;
 };
 
 function cleanSegment(value: string) {
@@ -66,6 +68,8 @@ export async function getOrCreateAgentSessionBinding(args: {
       agentSlug: true,
       openclawSessionKey: true,
       openclawSessionId: true,
+      lastDispatchedMessageId: true,
+      lastDispatchedAt: true,
     },
   });
 }

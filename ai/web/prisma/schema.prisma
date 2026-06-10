@@ -532,6 +532,8 @@ model AgentSessionBinding {
   agentSlug          String
   openclawSessionKey String   @unique
   openclawSessionId  String?
+  lastDispatchedMessageId String?
+  lastDispatchedAt DateTime?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 

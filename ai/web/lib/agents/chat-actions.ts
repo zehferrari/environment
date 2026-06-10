@@ -21,16 +21,15 @@ import { revalidateEpicReplyScope } from "@/lib/epics/cache";
 import {
   buildTaskNativeChannelPrompt,
   buildTaskNativeEditGrantPrompt,
+  buildTaskNativeIncrementalChannelPrompt,
 } from "@/lib/agents/task-chat-context";
 import {
   buildEpicNativeChannelPrompt,
   buildEpicNativeEditGrantPrompt,
+  buildEpicNativeIncrementalChannelPrompt,
 } from "@/lib/agents/epic-chat-context";
 import { extractMentions } from "@/lib/markdown";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
-import {
-  buildPmTurnSessionKey,
-} from "@/lib/agents/openclaw-pm-channel";
 import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
 import { createContextGrantUrl } from "@/lib/agents/context-grants";
 import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/discussion-reply-format";
@@ -577,56 +576,96 @@ export async function sendAgentChatMessage(formData: FormData) {
       turnId: msg.id,
     });
 
-    const prebuiltContext = await consumeSpeculativeAgentChatContext({
-      projectId: project.id,
-      taskId: taskId ? task.id : null,
-      epicId: taskId ? null : epic.id,
-      messageId: msg.id,
+    const sessionBinding = await getOrCreateAgentSessionBinding({
+      scopeType: taskId ? "task" : "epic",
+      scopeId: taskId ? task.id : epic.id,
       agentSlug,
     });
-    const baseSystemPrompt = prebuiltContext?.baseSystemPrompt ?? (taskId
-      ? buildTaskNativeChannelPrompt(task.title, agentSlug, directedDescriptor, {
+    const previousDispatchedMessageId = sessionBinding.lastDispatchedMessageId;
+    const isIncrementalTurn = !!previousDispatchedMessageId;
+    const taskGrantUrl = taskId
+      ? await createContextGrantUrl({
           baseUrl: fetchBaseUrl,
-          projectId: project.id,
-          inlineRecentBlock,
-          taskId: task.id,
-          epicId: task.epicId ?? null,
-          grantUrls: {
-            task: await createContextGrantUrl({
-              baseUrl: fetchBaseUrl,
-              agentSlug,
-              scopeType: "task",
-              scopeId: task.id,
-              turnId: msg.id,
-            }),
-            epic: task.epicId
-              ? await createContextGrantUrl({
-                  baseUrl: fetchBaseUrl,
-                  agentSlug,
-                  scopeType: "epic",
-                  scopeId: task.epicId,
-                  turnId: msg.id,
-                })
-              : null,
-            project: projectGrantUrl,
-          },
+          agentSlug,
+          scopeType: "task",
+          scopeId: task.id,
+          turnId: msg.id,
         })
-      : buildEpicNativeChannelPrompt(epic.title, agentSlug, directedDescriptor, {
+      : null;
+    const epicGrantUrl = taskId
+      ? task.epicId
+        ? await createContextGrantUrl({
+            baseUrl: fetchBaseUrl,
+            agentSlug,
+            scopeType: "epic",
+            scopeId: task.epicId,
+            turnId: msg.id,
+          })
+        : null
+      : await createContextGrantUrl({
           baseUrl: fetchBaseUrl,
+          agentSlug,
+          scopeType: "epic",
+          scopeId: epic.id,
+          turnId: msg.id,
+        });
+
+    const prebuiltContext = isIncrementalTurn
+      ? null
+      : await consumeSpeculativeAgentChatContext({
           projectId: project.id,
-          inlineRecentBlock,
-          epicId: epic.id,
-          grantUrls: {
-            epic: await createContextGrantUrl({
-              baseUrl: fetchBaseUrl,
-              agentSlug,
-              scopeType: "epic",
-              scopeId: epic.id,
-              turnId: msg.id,
-            }),
-            project: projectGrantUrl,
-          },
-        }));
+          taskId: taskId ? task.id : null,
+          epicId: taskId ? null : epic.id,
+          messageId: msg.id,
+          agentSlug,
+        });
+    const baseSystemPrompt = prebuiltContext?.baseSystemPrompt ?? (taskId
+      ? isIncrementalTurn
+        ? buildTaskNativeIncrementalChannelPrompt(task.title, agentSlug, previousDispatchedMessageId, directedDescriptor, {
+            baseUrl: fetchBaseUrl,
+            projectId: project.id,
+            inlineRecentBlock,
+            taskId: task.id,
+            epicId: task.epicId ?? null,
+            grantUrls: {
+              task: taskGrantUrl!,
+              epic: epicGrantUrl,
+              project: projectGrantUrl,
+            },
+          })
+        : buildTaskNativeChannelPrompt(task.title, agentSlug, directedDescriptor, {
+            baseUrl: fetchBaseUrl,
+            projectId: project.id,
+            inlineRecentBlock,
+            taskId: task.id,
+            epicId: task.epicId ?? null,
+            grantUrls: {
+              task: taskGrantUrl!,
+              epic: epicGrantUrl,
+              project: projectGrantUrl,
+            },
+          })
+      : isIncrementalTurn
+        ? buildEpicNativeIncrementalChannelPrompt(epic.title, agentSlug, previousDispatchedMessageId, directedDescriptor, {
+            baseUrl: fetchBaseUrl,
+            projectId: project.id,
+            inlineRecentBlock,
+            epicId: epic.id,
+            grantUrls: {
+              epic: epicGrantUrl!,
+              project: projectGrantUrl,
+            },
+          })
+        : buildEpicNativeChannelPrompt(epic.title, agentSlug, directedDescriptor, {
+            baseUrl: fetchBaseUrl,
+            projectId: project.id,
+            inlineRecentBlock,
+            epicId: epic.id,
+            grantUrls: {
+              epic: epicGrantUrl!,
+              project: projectGrantUrl,
+            },
+          }));
 
     const descriptionPrompt = allowDescriptionEdit
       ? taskId
@@ -666,16 +705,10 @@ export async function sendAgentChatMessage(formData: FormData) {
       workItemPrompt,
     ].filter(Boolean).join("\n\n");
 
-    const sessionBinding = await getOrCreateAgentSessionBinding({
-      scopeType: taskId ? "task" : "epic",
-      scopeId: taskId ? task.id : epic.id,
-      agentSlug,
-    });
-
     const delivery = await sendOrQueueOpenClawPmChannelTurn({
       gatewayPort,
       agentSlug,
-      sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
+      sessionKey: sessionBinding.openclawSessionKey,
       kind: taskId ? "task-chat" : "epic-chat",
       text: body,
       contextText: null,
@@ -702,6 +735,16 @@ export async function sendAgentChatMessage(formData: FormData) {
             projectSlug: slug,
           },
     });
+
+    if (delivery.ok) {
+      await db.agentSessionBinding.update({
+        where: { id: sessionBinding.id },
+        data: {
+          lastDispatchedMessageId: msg.id,
+          lastDispatchedAt: new Date(),
+        },
+      });
+    }
 
     await db.activityLog.create({
       data: {

@@ -5,6 +5,7 @@ export {
   buildEpicPlainChatPrompt,
   buildEpicNativeChannelPrompt,
   buildEpicNativeEditGrantPrompt,
+  buildEpicNativeIncrementalChannelPrompt,
   renderEpicAgentContextPacket,
   type EpicAgentContextPacket,
   type EpicAgentCurrentTurn,
