@@ -230,10 +230,6 @@ export async function dispatchOpenClawPmChannelTurn(
   args: SendPmChannelTurnArgs,
 ): Promise<SendPmChannelTurnResult> {
   const transportMode = resolvePmChannelTransportMode();
-  if (transportMode === "http") {
-    return dispatchOpenClawPmChannelTurnViaHttp(args);
-  }
-
   const bus = await publishPmChannelTurnToBus(args);
   if (bus.ok) {
     const result: SendPmChannelTurnResult = {
