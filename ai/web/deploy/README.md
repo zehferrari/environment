@@ -406,6 +406,13 @@ token file should be `0640` and owned by `root:<pm-consumer-group>`
 using the configured PM consumer group. The committed service file is only a
 template; `openclaw/install.sh` renders the installed unit with
 `PM_CONSUMER_USER` / `PM_CONSUMER_GROUP` or the PM app user/group defaults.
+Native PM-channel chat dispatch is bus-first: PM writes
+`openclaw.pm_channel_turn` envelopes to `PM_CHANNEL_BUS_DROP_DIR`, and
+`pm-consumer` reads them from `PM_CONSUMER_DROP_DIR`. On the standard
+file-drop deployment both variables should point at `/var/lib/pm/drop`.
+The worktree switch helper preserves this setting in
+`/etc/default/pm-active-worktree`; without it chat jobs remain queued and
+fail with `PM channel bus disabled`.
 OpenClaw requires `hook:` in the allowed session-key prefixes when no
 default hook session key is configured; PM chat/comment routing uses
 `pm:` keys created in `AgentSessionBinding`.

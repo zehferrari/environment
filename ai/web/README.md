@@ -741,6 +741,13 @@ See `.env.example` for the full list. Highlights:
 - `PM_OPENCLAW_CHANNEL_INGRESS_PATH` — gateway ingest path, default
   `/pm-channel/ingest`.
 - `PM_OPENCLAW_CHANNEL_TIMEOUT_MS` — ingest post timeout, default 5000.
+- `PM_CHANNEL_BUS_SOCKET`, `PM_CHANNEL_BUS_DROP_DIR`,
+  `PM_CHANNEL_BUS_HTTP_URL` — bus-first native PM-channel dispatch.
+  Production/file-drop previews set `PM_CHANNEL_BUS_DROP_DIR` to the same
+  directory as `PM_CONSUMER_DROP_DIR` (default `/var/lib/pm/drop`) so
+  `pm-consumer` can deliver `openclaw.pm_channel_turn` envelopes to each
+  agent's `/pm-channel/ingest` endpoint. At least one bus setting is
+  required when async native PM-channel dispatch is enabled.
 - `PM_INTERNAL_APP_URL` / `PM_AGENT_CALLBACK_URL` — loopback base PM
   hands to OpenClaw for the reply + stream callbacks, default
   `http://127.0.0.1:3000`. PM records send→accepted→first-token→final

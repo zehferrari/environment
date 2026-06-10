@@ -10,11 +10,13 @@ hook outage, it can fall back to the monitor agent's `openclaw-control wake-agen
 bridge. Slices 1-3 produced the envelope and emitter side; this slice
 closes the loop on the consumer end.
 
-Direct PM chat, task chat, and task-comment agent replies no longer use
-this consumer path. They enter OpenClaw through the native `pm` channel
-plugin at `/pm-channel/ingest`, which owns session recording and final
-reply delivery. The consumer remains for non-chat PM events such as task
-assignment and ack notifications.
+Direct PM chat, task chat, task-comment, and Epic chat turns are emitted
+as `openclaw.pm_channel_turn` bus envelopes. The same consumer service
+reads those envelopes and delivers them to the native OpenClaw `pm`
+channel plugin at `/pm-channel/ingest`, which owns session recording and
+final reply delivery. The older PM event envelopes remain on the same
+transport for non-chat PM events such as task assignment and ack
+notifications.
 
 ## Transports
 
@@ -27,6 +29,12 @@ exposes three transports:
 | File-drop     | `PM_CONSUMER_DROP_DIR=/var/lib/pm/drop`                  | Fallback. One JSON file per envelope; consumed in order. |
 | HTTP localhost| `PM_CONSUMER_HTTP_PORT=<port>` + `PM_CONSUMER_HTTP_TOKEN`| Explicit-opt-in only. Loopback bind, Bearer auth.        |
 
+Native PM-channel producers additionally set `PM_CHANNEL_BUS_DROP_DIR`
+to the same path as `PM_CONSUMER_DROP_DIR` unless a socket or HTTP bus is
+deployed. Without one of `PM_CHANNEL_BUS_SOCKET`,
+`PM_CHANNEL_BUS_DROP_DIR`, or `PM_CHANNEL_BUS_HTTP_URL`, native chat jobs
+cannot leave the PM worker.
+
 Both socket and file-drop legs can run concurrently and an in-process
 "call the consumer directly" transport is **not** exposed — that's
 the boundary that keeps HOMELAB-44 rule enforcement upstream of
@@ -36,7 +44,10 @@ dispatch.
 
 For each received envelope:
 
-1. `parsePmEvent(raw)` — wire-shape validation (kind, schema, id,
+1. Envelope classification. `openclaw.pm_channel_turn` is validated as a
+   native PM-channel bus envelope and posted directly to the target
+   agent's `/pm-channel/ingest`. Other envelopes pass through
+   `parsePmEvent(raw)` for legacy PM-event validation (kind, schema, id,
    actor, task, payload). Reject path writes nothing.
 2. `dedupeKeyFor(event)` — deterministic key from
    `${kind}:${task.id}:${event.id}`. Identical envelopes produce
@@ -151,6 +162,7 @@ session.
 # Primary + fallback (production deployment shape):
 PM_CONSUMER_SOCKET=/run/pm/events.sock \
 PM_CONSUMER_DROP_DIR=/var/lib/pm/drop \
+PM_CHANNEL_BUS_DROP_DIR=/var/lib/pm/drop \
 pnpm tsx scripts/pm-consumer.ts
 
 # Replay-test acceptance:

@@ -89,6 +89,29 @@ async function main() {
     assert.equal(envelope.payload.text, "hello over bus");
     assert.equal(envelope.payload.sessionKey, `test:${nonce}`);
 
+    const { createHandler } = await import("@/lib/pm-consumer/handler");
+    const delivered: unknown[] = [];
+    const handler = createHandler({
+      pmChannelDispatch: async (args) => {
+        delivered.push(args);
+        return {
+          ok: true,
+          status: 202,
+          driver: "openclaw-pm-channel",
+          transportMode: "http",
+        };
+      },
+    });
+    const consumerOutcome = await handler.handle(envelope);
+    assert.deepEqual(consumerOutcome, {
+      kind: "delivered",
+      dedupeKey: `openclaw.pm_channel_turn:${nonce}`,
+      targetSlug: "asdrubal",
+    });
+    assert.equal(delivered.length, 1, "consumer must dispatch exactly one PM-channel turn");
+    assert.equal((delivered[0] as BusEnvelope["payload"]).text, "hello over bus");
+    assert.equal((delivered[0] as BusEnvelope["payload"]).sessionKey, `test:${nonce}`);
+
     await db.pmChannelRun.deleteMany({ where: { targetKey } });
   } finally {
     delete process.env.PM_CHANNEL_BUS_DROP_DIR;

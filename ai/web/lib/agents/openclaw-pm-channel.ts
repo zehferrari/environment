@@ -285,7 +285,7 @@ export async function dispatchOpenClawPmChannelTurn(
   return result;
 }
 
-async function dispatchOpenClawPmChannelTurnViaHttp(
+export async function dispatchOpenClawPmChannelTurnViaHttp(
   args: SendPmChannelTurnArgs,
 ): Promise<SendPmChannelTurnResult> {
   if (!args.gatewayPort) {
