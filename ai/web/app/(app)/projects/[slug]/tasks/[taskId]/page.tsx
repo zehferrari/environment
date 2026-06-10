@@ -34,6 +34,7 @@ import { uploadAttachment, deleteAttachment } from "@/lib/attachments/actions";
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteTask } from "@/lib/bin/actions";
 import { archiveTask, unarchiveTask } from "@/lib/archive/actions";
+import { approveAndMergeDeploymentPullRequest, approveDeploymentLocalChanges } from "@/lib/deploy/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import {
@@ -1172,7 +1173,8 @@ function discussionTargetValue(
   return `user:${principal.id}`;
 }
 
-const TASK_TABS = ["Description", "Action Plan", "Deployment", "Sub-Tasks", "Attachments", "Comments", "Activities", "Changes"] as const;
+const DEVELOPMENT_TAB = "Development";
+const TASK_TABS = ["Description", "Action Plan", "Sub-Tasks", "Attachments", "Comments", "Activities", DEVELOPMENT_TAB, "Changes"] as const;
 
 function tabParam(tab: string) {
   return tab
@@ -1187,6 +1189,9 @@ function tabFromSearchParam(raw: string | undefined, tabs: readonly string[]) {
   const normalized = tabParam(raw);
   if (normalized === "discussion") {
     return tabs.find((tab) => tab === "Action Plan") ?? null;
+  }
+  if (normalized === "deployment") {
+    return tabs.find((tab) => tab === DEVELOPMENT_TAB) ?? null;
   }
   return tabs.find((tab) => tabParam(tab) === normalized) ?? null;
 }
@@ -1216,8 +1221,8 @@ export default async function TaskDetailPage({
   const task = taskShell ? { ...taskShell, comments, attachments } : null;
   if (!task || task.project.slug !== slug || task.deletedAt) notFound();
   const showDeploymentTab = canShowDeploymentTab(task);
-  const taskTabs = showDeploymentTab ? TASK_TABS : TASK_TABS.filter((name) => name !== "Deployment");
-  if (!showDeploymentTab && selectedTab === "Deployment") selectedTab = "Description";
+  const taskTabs = showDeploymentTab ? TASK_TABS : TASK_TABS.filter((name) => name !== DEVELOPMENT_TAB);
+  if (!showDeploymentTab && selectedTab === DEVELOPMENT_TAB) selectedTab = "Description";
 
   // Only human viewers get comment-delete controls (see deleteComment).
   const viewer = await requireActor();
@@ -1967,25 +1972,6 @@ export default async function TaskDetailPage({
               </TabPanel>
 
 
-              {showDeploymentTab ? (
-                <TabPanel name="Deployment">
-                  <DeploymentTab
-                    mode="task"
-                    title={task.title}
-                    deploymentStatus={task.deploymentStatus}
-                    rows={deploymentPullRequests}
-                    canAct={(row) => canShowDeploymentAction({
-                      provider: row.provider,
-                      viewerKind: viewer.kind,
-                      viewerId: viewer.id,
-                      reporterId: task.reporterId,
-                      reviewerId: task.actingManagerId,
-                      onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
-                    })}
-                  />
-                </TabPanel>
-              ) : null}
-
               <TabPanel name="Action Plan">
                 <div className="space-y-3 pt-2">
                   {canApproveActionPlan ? (
@@ -2228,6 +2214,27 @@ export default async function TaskDetailPage({
                   <ActivityTimeline rows={allActivity} />
                 </div>
               </TabPanel>
+
+              {showDeploymentTab ? (
+                <TabPanel name={DEVELOPMENT_TAB}>
+                  <DeploymentTab
+                    mode="task"
+                    title={task.title}
+                    deploymentStatus={task.deploymentStatus}
+                    rows={deploymentPullRequests}
+                    canAct={(row) => canShowDeploymentAction({
+                      provider: row.provider,
+                      viewerKind: viewer.kind,
+                      viewerId: viewer.id,
+                      reporterId: task.reporterId,
+                      reviewerId: task.actingManagerId,
+                      onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
+                    })}
+                    approveLocalChangesAction={approveDeploymentLocalChanges}
+                    approveAndMergeAction={approveAndMergeDeploymentPullRequest}
+                  />
+                </TabPanel>
+              ) : null}
 
               <TabPanel name="Changes">
                 <TaskChangesPanel

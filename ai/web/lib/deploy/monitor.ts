@@ -6,8 +6,9 @@ const execFileAsync = promisify(execFile);
 const LOG_EXCERPT_MAX = 4000;
 
 export type DeploymentScope = "epic" | "task";
-export type DeploymentMonitorAction = "opened-prs" | "reporter-email-required";
+export type DeploymentMonitorAction = "opened-prs" | "reporter-email-required" | "local-changes-approval-required";
 export type DeploymentPrTerminalStatus = "deployed" | "deployment_error" | "declined" | "pipeline_failed";
+export const DEPLOYMENT_LOCAL_CHANGES_PENDING = "local_changes_pending_approval";
 
 export interface ReporterIdentity {
   userId: string;
@@ -56,6 +57,13 @@ export interface BranchVerification {
   matchingCommitCount: number;
 }
 
+export interface DeploymentWorktreeState {
+  branchName: string;
+  currentBranch: string;
+  localSha: string;
+  dirtyStatus: string;
+}
+
 export interface OpenedDeploymentPr {
   target: DeploymentTarget;
   url: string;
@@ -70,6 +78,12 @@ export interface DeploymentMonitorResult {
   reporter: ReporterIdentity;
   prompt?: { userId: string; question: string };
   prs?: OpenedDeploymentPr[];
+  pendingLocalChanges?: Array<{
+    target: DeploymentTarget;
+    localSha: string;
+    currentBranch: string;
+    dirtyStatus: string;
+  }>;
 }
 
 export interface ProviderPullRequestState {
@@ -110,6 +124,9 @@ type DeploymentPrRow = {
   reporterEmail: string;
   status: string;
   mergeSha?: string | null;
+  localChangeSummary?: string | null;
+  localChangeApprovedAt?: Date | string | null;
+  localChangeApprovedById?: string | null;
   deploymentExitCode?: number | null;
   deploymentStdout?: string | null;
   deploymentStderr?: string | null;
@@ -150,9 +167,10 @@ function parseBitbucketRemote(url: string): { workspace: string; repoSlug: strin
   }
 }
 
-async function git(cwd: string, args: string[]) {
+async function git(cwd: string, args: string[], opts: { env?: Record<string, string | undefined> } = {}) {
   const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
     maxBuffer: 1024 * 1024 * 4,
+    env: opts.env ? { ...process.env, ...opts.env } : process.env,
   });
   return String(stdout).trim();
 }
@@ -182,7 +200,9 @@ export async function resolveDeploymentPlan(args: {
     if (!epic || epic.deletedAt || epic.archivedAt) throw new Error("Epic not found");
     if (!epic.reporter) throw new Error("Epic reporter is required before deployment");
     if (!epic.project.repositoryPath) throw new Error("Project repositoryPath is required before deployment");
-    const repo = await remoteBitbucketRepo(epic.project.repositoryPath);
+    const repo = epic.project.deploymentBitbucketWorkspace && epic.project.deploymentBitbucketRepoSlug
+      ? { workspace: epic.project.deploymentBitbucketWorkspace, repoSlug: epic.project.deploymentBitbucketRepoSlug }
+      : await remoteBitbucketRepo(epic.project.repositoryPath);
     const childTargets = epic.tasks.filter((task: any) => task.branchName);
     const targets = childTargets.length
       ? childTargets.map((task: any): DeploymentTarget => ({
@@ -240,7 +260,9 @@ export async function resolveDeploymentPlan(args: {
   if (!task.reporter) throw new Error("Task reporter is required before deployment");
   if (!task.project.repositoryPath) throw new Error("Project repositoryPath is required before deployment");
   if (!task.branchName) throw new Error("Task branchName is required before deployment");
-  const repo = await remoteBitbucketRepo(task.project.repositoryPath);
+  const repo = task.project.deploymentBitbucketWorkspace && task.project.deploymentBitbucketRepoSlug
+    ? { workspace: task.project.deploymentBitbucketWorkspace, repoSlug: task.project.deploymentBitbucketRepoSlug }
+    : await remoteBitbucketRepo(task.project.repositoryPath);
   return {
     scope: "task",
     scopeId: task.id,
@@ -271,6 +293,17 @@ export async function resolveDeploymentPlan(args: {
   };
 }
 
+export async function inspectDeploymentWorktree(args: {
+  repositoryPath: string;
+  branchName: string;
+}): Promise<DeploymentWorktreeState> {
+  await git(args.repositoryPath, ["rev-parse", "--verify", `refs/heads/${args.branchName}`]);
+  const currentBranch = await git(args.repositoryPath, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "unknown");
+  const dirty = await git(args.repositoryPath, ["status", "--porcelain"]);
+  const localSha = await git(args.repositoryPath, ["rev-parse", args.branchName]);
+  return { branchName: args.branchName, currentBranch, localSha, dirtyStatus: dirty };
+}
+
 export async function verifyDeploymentBranch(args: {
   repositoryPath: string;
   branchName: string;
@@ -278,10 +311,12 @@ export async function verifyDeploymentBranch(args: {
   reporter: ReporterIdentity;
   targetBranch: string;
 }): Promise<BranchVerification> {
-  await git(args.repositoryPath, ["rev-parse", "--verify", `refs/heads/${args.branchName}`]);
-  const dirty = await git(args.repositoryPath, ["status", "--porcelain"]);
-  if (dirty) throw new Error(`Worktree is not clean for ${args.branchName}`);
-  const localSha = await git(args.repositoryPath, ["rev-parse", args.branchName]);
+  const state = await inspectDeploymentWorktree({
+    repositoryPath: args.repositoryPath,
+    branchName: args.branchName,
+  });
+  if (state.dirtyStatus) throw new Error(`Worktree is not clean for ${args.branchName}`);
+  const localSha = state.localSha;
   const remoteLine = await git(args.repositoryPath, ["ls-remote", "--heads", "origin", args.branchName]).catch(() => "");
   const remoteSha = remoteLine ? remoteLine.split(/\s+/)[0] : null;
   let matchingCommitCount = 0;
@@ -367,6 +402,71 @@ export async function createBitbucketPullRequest(args: {
   };
 }
 
+function pendingLocalChangeProviderPrId(plan: DeploymentPlan, target: DeploymentTarget) {
+  const targetKey = target.taskId ?? target.epicId ?? target.branchName;
+  return `pending-local:${plan.scope}:${plan.scopeId}:${targetKey}`;
+}
+
+async function writePendingLocalChanges(args: {
+  db: any;
+  plan: DeploymentPlan;
+  target: DeploymentTarget;
+  worktree: DeploymentWorktreeState;
+}) {
+  const providerPrId = pendingLocalChangeProviderPrId(args.plan, args.target);
+  const data = {
+    projectId: args.plan.project.projectId,
+    taskId: args.target.taskId,
+    epicId: args.target.epicId,
+    provider: "bitbucket",
+    providerPrId,
+    url: "",
+    sourceBranch: args.target.branchName,
+    targetBranch: args.plan.project.prTargetBranch,
+    latestCommitSha: args.worktree.localSha,
+    reporterUserId: args.plan.reporter.userId,
+    reporterName: args.plan.reporter.name,
+    reporterEmail: args.plan.reporter.email ?? "",
+    status: DEPLOYMENT_LOCAL_CHANGES_PENDING,
+    localChangeSummary: args.worktree.dirtyStatus,
+    localChangeApprovedAt: null,
+    localChangeApprovedById: null,
+  };
+  if (typeof args.db.deploymentPullRequest.upsert === "function") {
+    await args.db.deploymentPullRequest.upsert({
+      where: { provider_providerPrId: { provider: "bitbucket", providerPrId } },
+      create: data,
+      update: data,
+    });
+  } else {
+    const existing = await args.db.deploymentPullRequest.findFirst?.({
+      where: { provider: "bitbucket", providerPrId },
+      select: { id: true },
+    });
+    if (existing) {
+      await args.db.deploymentPullRequest.update({ where: { id: existing.id }, data });
+    } else {
+      await args.db.deploymentPullRequest.create({ data });
+    }
+  }
+  await args.db.activityLog.create({
+    data: {
+      projectId: args.plan.project.projectId,
+      taskId: args.target.taskId,
+      userId: args.plan.reporter.userId,
+      kind: "deployment.local_changes_approval_required",
+      payload: JSON.stringify({
+        scope: args.plan.scope,
+        scopeId: args.plan.scopeId,
+        sourceBranch: args.target.branchName,
+        currentBranch: args.worktree.currentBranch,
+        latestCommitSha: args.worktree.localSha,
+        status: args.worktree.dirtyStatus,
+      }),
+    },
+  }).catch(() => null);
+}
+
 export async function handleDeploymentApproved(args: {
   scope: DeploymentScope;
   scopeId: string;
@@ -387,9 +487,40 @@ export async function handleDeploymentApproved(args: {
       },
     };
   }
-  // PR creation/polling uses Bitbucket's REST API. Check this before any git
-  // push so deployment approval fails on the actionable host credential issue.
-  bitbucketAuth();
+  let dirtyWorktree: { target: DeploymentTarget; worktree: DeploymentWorktreeState } | null = null;
+  for (const target of plan.targets) {
+    const worktree = await inspectDeploymentWorktree({
+      repositoryPath: plan.project.repositoryPath,
+      branchName: target.branchName,
+    });
+    if (worktree.dirtyStatus) {
+      dirtyWorktree = { target, worktree };
+      break;
+    }
+  }
+  if (dirtyWorktree) {
+    const currentTarget = plan.targets.find((target) => target.branchName === dirtyWorktree?.worktree.currentBranch) ?? dirtyWorktree.target;
+    const currentWorktree = currentTarget === dirtyWorktree.target
+      ? dirtyWorktree.worktree
+      : await inspectDeploymentWorktree({
+          repositoryPath: plan.project.repositoryPath,
+          branchName: currentTarget.branchName,
+        });
+    await writePendingLocalChanges({ db, plan, target: currentTarget, worktree: currentWorktree });
+    return {
+      action: "local-changes-approval-required",
+      reporter: plan.reporter,
+      pendingLocalChanges: [{
+        target: currentTarget,
+        localSha: currentWorktree.localSha,
+        currentBranch: currentWorktree.currentBranch,
+        dirtyStatus: currentWorktree.dirtyStatus,
+      }],
+    };
+  }
+  // PR creation/polling uses Bitbucket's REST API. Check this after the local
+  // worktree gate so dirty work can surface as an approval request first.
+  if (!args.createPr) bitbucketAuth();
   const prs: OpenedDeploymentPr[] = [];
   for (const target of plan.targets) {
     const verification = await verifyDeploymentBranch({
@@ -427,13 +558,168 @@ export async function handleDeploymentApproved(args: {
   return { action: "opened-prs", reporter: plan.reporter, prs };
 }
 
-export async function fetchBitbucketPullRequestState(row: DeploymentPrRow): Promise<ProviderPullRequestState> {
+function commitMessageForTarget(target: DeploymentTarget) {
+  const prefix = target.commitPrefix?.trim() || target.workItemKey?.trim();
+  return prefix ? `${prefix} deployment approved local changes` : `Deployment approved local changes: ${target.title}`;
+}
+
+export async function approveLocalChangesAndOpenDeploymentPr(args: {
+  rowId: string;
+  actorUserId: string;
+  db?: DbClient;
+  createPr?: typeof createBitbucketPullRequest;
+}): Promise<OpenedDeploymentPr> {
+  const db = prisma(args.db ?? defaultDb);
+  const createPr = args.createPr ?? createBitbucketPullRequest;
+  const row = await db.deploymentPullRequest.findUnique({
+    where: { id: args.rowId },
+    include: { project: true },
+  });
+  if (!row) throw new Error("Deployment approval row not found");
+  if (row.status !== DEPLOYMENT_LOCAL_CHANGES_PENDING) {
+    throw new Error("Deployment row is not waiting for local-change approval");
+  }
+  const scope: DeploymentScope = row.epicId ? "epic" : "task";
+  const scopeId = row.epicId ?? row.taskId;
+  if (!scopeId) throw new Error("Deployment row is not attached to an Epic or Task");
+  const plan = await resolveDeploymentPlan({ scope, scopeId, db });
+  if (!plan.reporter.email) throw new Error("Reporter email is required before committing local changes");
+  const target = plan.targets.find((candidate) =>
+    candidate.taskId === row.taskId &&
+    candidate.epicId === row.epicId &&
+    candidate.branchName === row.sourceBranch
+  );
+  if (!target) throw new Error("Deployment target no longer matches this approval row");
+
+  const worktree = await inspectDeploymentWorktree({
+    repositoryPath: plan.project.repositoryPath,
+    branchName: target.branchName,
+  });
+  if (worktree.dirtyStatus) {
+    if (worktree.currentBranch !== target.branchName) {
+      throw new Error(`Worktree has local changes on ${worktree.currentBranch}, but deployment target is ${target.branchName}`);
+    }
+    await git(plan.project.repositoryPath, ["add", "-A"]);
+    const afterAdd = await git(plan.project.repositoryPath, ["status", "--porcelain"]);
+    if (!afterAdd) throw new Error("No staged local changes remained after approval");
+    await git(
+      plan.project.repositoryPath,
+      [
+        "-c",
+        `user.name=${plan.reporter.name}`,
+        "-c",
+        `user.email=${plan.reporter.email}`,
+        "commit",
+        "-m",
+        commitMessageForTarget(target),
+      ],
+      {
+        env: {
+          GIT_AUTHOR_NAME: plan.reporter.name,
+          GIT_AUTHOR_EMAIL: plan.reporter.email,
+          GIT_COMMITTER_NAME: plan.reporter.name,
+          GIT_COMMITTER_EMAIL: plan.reporter.email,
+        },
+      },
+    );
+  }
+
+  if (!args.createPr) bitbucketAuth();
+  const verification = await verifyDeploymentBranch({
+    repositoryPath: plan.project.repositoryPath,
+    branchName: target.branchName,
+    commitPrefix: target.commitPrefix,
+    reporter: plan.reporter,
+    targetBranch: plan.project.prTargetBranch,
+  });
+  const pr = await createPr({
+    project: plan.project,
+    target,
+    reporter: plan.reporter,
+    latestCommitSha: verification.localSha,
+  });
+  await db.deploymentPullRequest.update({
+    where: { id: row.id },
+    data: {
+      providerPrId: pr.providerPrId,
+      url: pr.url,
+      sourceBranch: pr.sourceBranch,
+      targetBranch: pr.targetBranch,
+      latestCommitSha: pr.latestCommitSha,
+      status: "open",
+      localChangeSummary: worktree.dirtyStatus || null,
+      localChangeApprovedAt: new Date(),
+      localChangeApprovedById: args.actorUserId,
+    },
+  });
+  await db.activityLog.create({
+    data: {
+      projectId: plan.project.projectId,
+      taskId: target.taskId,
+      userId: args.actorUserId,
+      kind: "deployment.local_changes_approved",
+      payload: JSON.stringify({
+        scope: plan.scope,
+        scopeId: plan.scopeId,
+        prId: row.id,
+        providerPrId: pr.providerPrId,
+        latestCommitSha: pr.latestCommitSha,
+      }),
+    },
+  }).catch(() => null);
+  return pr;
+}
+
+async function bitbucketRepoForDeploymentRow(row: DeploymentPrRow) {
   const configuredRepo = row.project?.deploymentBitbucketWorkspace && row.project?.deploymentBitbucketRepoSlug
     ? { workspace: row.project.deploymentBitbucketWorkspace, repoSlug: row.project.deploymentBitbucketRepoSlug }
     : row.project?.repositoryPath
       ? await remoteBitbucketRepo(row.project.repositoryPath)
       : null;
-  if (!configuredRepo) throw new Error("Bitbucket workspace/repo slug is required to poll deployment PRs");
+  if (!configuredRepo) throw new Error("Bitbucket workspace/repo slug is required for deployment PRs");
+  return configuredRepo;
+}
+
+function bitbucketPullRequestBase(repo: { workspace: string; repoSlug: string }) {
+  return `https://api.bitbucket.org/2.0/repositories/${encodeURIComponent(repo.workspace)}/${encodeURIComponent(repo.repoSlug)}/pullrequests`;
+}
+
+export async function approveAndMergeBitbucketPullRequest(row: DeploymentPrRow): Promise<ProviderPullRequestState> {
+  if (row.provider.toLowerCase() !== "bitbucket") throw new Error(`Unsupported provider: ${row.provider}`);
+  if (row.status !== "open") throw new Error("Only open deployment pull requests can be approved and merged");
+  const repo = await bitbucketRepoForDeploymentRow(row);
+  const url = `${bitbucketPullRequestBase(repo)}/${encodeURIComponent(row.providerPrId)}`;
+  const headers = {
+    authorization: `Basic ${bitbucketAuth()}`,
+    accept: "application/json",
+    "content-type": "application/json",
+  };
+  const approve = await fetch(`${url}/approve`, { method: "POST", headers });
+  if (!approve.ok && approve.status !== 409) {
+    throw new Error(`Bitbucket PR approve failed (${approve.status}): ${await approve.text()}`);
+  }
+  const merge = await fetch(`${url}/merge`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      type: "pullrequest",
+      close_source_branch: false,
+      merge_strategy: "merge_commit",
+    }),
+  });
+  if (!merge.ok) throw new Error(`Bitbucket PR merge failed (${merge.status}): ${await merge.text()}`);
+  const json = await merge.json().catch(() => ({})) as any;
+  const rawState = String(json.state ?? "").toUpperCase();
+  const state: ProviderPullRequestState["state"] = rawState === "MERGED" || rawState === "FULFILLED"
+    ? "merged"
+    : rawState === "DECLINED" || rawState === "SUPERSEDED"
+      ? "declined"
+      : "open";
+  return { state, mergeSha: json.merge_commit?.hash ?? json.destination?.commit?.hash ?? null };
+}
+
+export async function fetchBitbucketPullRequestState(row: DeploymentPrRow): Promise<ProviderPullRequestState> {
+  const configuredRepo = await bitbucketRepoForDeploymentRow(row);
   const base = `https://api.bitbucket.org/2.0/repositories/${encodeURIComponent(configuredRepo.workspace)}/${encodeURIComponent(configuredRepo.repoSlug)}`;
   const res = await fetch(`${base}/pullrequests/${encodeURIComponent(row.providerPrId)}`, {
     headers: { authorization: `Basic ${bitbucketAuth()}`, accept: "application/json" },

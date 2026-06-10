@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { verifyDeploymentBranch, handleDeploymentApproved, pollDeploymentPullRequests } from "@/lib/deploy/monitor";
+import { approveLocalChangesAndOpenDeploymentPr, handleDeploymentApproved, pollDeploymentPullRequests, verifyDeploymentBranch } from "@/lib/deploy/monitor";
 
 function git(cwd: string, args: string[]) {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -80,6 +80,168 @@ async function missingReporterEmailReturnsPrompt() {
     const result = await handleDeploymentApproved({ scope: "task", scopeId: "task1", db: mockDb as never });
     assert.equal(result.action, "reporter-email-required");
     assert.match(result.prompt?.question ?? "", /email/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function dirtyDeploymentApprovalRecordsPendingLocalChanges() {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "deployment-dirty-"));
+  try {
+    const bare = path.join(dir, "origin.git");
+    const repo = path.join(dir, "repo");
+    execFileSync("git", ["init", "--bare", bare]);
+    execFileSync("git", ["init", repo]);
+    git(repo, ["config", "user.name", "Zeh Ferrari"]);
+    git(repo, ["config", "user.email", "e@zeh.me"]);
+    git(repo, ["remote", "add", "origin", bare]);
+    await import("node:fs/promises").then((fs) => fs.writeFile(path.join(repo, "README.md"), "base\n"));
+    git(repo, ["add", "README.md"]);
+    git(repo, ["commit", "-m", "base"]);
+    git(repo, ["branch", "-M", "main"]);
+    git(repo, ["checkout", "-b", "feature/deploy"]);
+    await import("node:fs/promises").then((fs) => fs.appendFile(path.join(repo, "README.md"), "dirty\n"));
+
+    let pending: any = null;
+    const mockDb = {
+      task: {
+        findUnique: async () => ({
+          id: "task1",
+          title: "Deploy me",
+          workItemKey: "ENV-19",
+          branchName: "feature/deploy",
+          commitPrefix: "ENV-19",
+          epicId: null,
+          deletedAt: null,
+          archivedAt: null,
+          reporter: { id: "u1", username: "zeh", name: "Zeh Ferrari", email: "e@zeh.me" },
+          project: {
+            id: "p1",
+            slug: "environment",
+            repositoryPath: repo,
+            deploymentProductionBranch: "main",
+            deploymentPrTargetBranch: "main",
+            deploymentBitbucketWorkspace: "workspace",
+            deploymentBitbucketRepoSlug: "repo",
+          },
+        }),
+      },
+      epic: { findUnique: async () => null },
+      deploymentPullRequest: {
+        upsert: async ({ create }: any) => { pending = create; return create; },
+      },
+      activityLog: { create: async () => ({}) },
+    };
+
+    const result = await handleDeploymentApproved({
+      scope: "task",
+      scopeId: "task1",
+      db: mockDb as never,
+      createPr: async () => { throw new Error("PR should not be created while dirty"); },
+    });
+    assert.equal(result.action, "local-changes-approval-required");
+    assert.equal(pending.status, "local_changes_pending_approval");
+    assert.match(pending.localChangeSummary, /README\.md/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function approvingLocalChangesCommitsPushesAndOpensPr() {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "deployment-local-approve-"));
+  try {
+    const bare = path.join(dir, "origin.git");
+    const repo = path.join(dir, "repo");
+    execFileSync("git", ["init", "--bare", bare]);
+    execFileSync("git", ["init", repo]);
+    git(repo, ["config", "user.name", "Monitor"]);
+    git(repo, ["config", "user.email", "monitor@example.test"]);
+    git(repo, ["remote", "add", "origin", bare]);
+    await import("node:fs/promises").then((fs) => fs.writeFile(path.join(repo, "README.md"), "base\n"));
+    git(repo, ["add", "README.md"]);
+    git(repo, ["commit", "-m", "base"]);
+    git(repo, ["branch", "-M", "main"]);
+    git(repo, ["push", "origin", "main"]);
+    git(repo, ["checkout", "-b", "feature/deploy"]);
+    await import("node:fs/promises").then((fs) => fs.appendFile(path.join(repo, "README.md"), "approved dirty\n"));
+
+    const row: any = {
+      id: "pending1",
+      projectId: "p1",
+      taskId: "task1",
+      epicId: null,
+      provider: "bitbucket",
+      providerPrId: "pending-local:task:task1:task1",
+      url: "",
+      sourceBranch: "feature/deploy",
+      targetBranch: "main",
+      latestCommitSha: git(repo, ["rev-parse", "feature/deploy"]),
+      reporterUserId: "u1",
+      reporterName: "Zeh Ferrari",
+      reporterEmail: "e@zeh.me",
+      status: "local_changes_pending_approval",
+      project: {
+        id: "p1",
+        slug: "environment",
+        repositoryPath: repo,
+        deploymentProductionBranch: "main",
+        deploymentPrTargetBranch: "main",
+        deploymentMode: "pr-only",
+        deploymentOnMerge: null,
+        deploymentPipelineName: null,
+        deploymentHost: null,
+        deploymentEnvironment: null,
+        deploymentBitbucketWorkspace: "workspace",
+        deploymentBitbucketRepoSlug: "repo",
+      },
+    };
+    const mockDb = {
+      deploymentPullRequest: {
+        findUnique: async () => row,
+        update: async ({ data }: any) => { Object.assign(row, data); return row; },
+      },
+      task: {
+        findUnique: async () => ({
+          id: "task1",
+          title: "Deploy me",
+          workItemKey: "ENV-19",
+          branchName: "feature/deploy",
+          commitPrefix: "ENV-19",
+          epicId: null,
+          deletedAt: null,
+          archivedAt: null,
+          reporter: { id: "u1", username: "zeh", name: "Zeh Ferrari", email: "e@zeh.me" },
+          project: row.project,
+        }),
+      },
+      epic: { findUnique: async () => null },
+      activityLog: { create: async () => ({}) },
+    };
+
+    const pr = await approveLocalChangesAndOpenDeploymentPr({
+      rowId: row.id,
+      actorUserId: "u1",
+      db: mockDb as never,
+      createPr: async ({ latestCommitSha }) => ({
+        target: { taskId: "task1", epicId: null, workItemKey: "ENV-19", title: "Deploy me", branchName: "feature/deploy", commitPrefix: "ENV-19" },
+        url: "https://bitbucket.org/workspace/repo/pull-requests/99",
+        providerPrId: "99",
+        sourceBranch: "feature/deploy",
+        targetBranch: "main",
+        latestCommitSha,
+      }),
+    });
+
+    assert.equal(pr.providerPrId, "99");
+    assert.equal(row.status, "open");
+    assert.equal(row.providerPrId, "99");
+    assert.equal(row.localChangeApprovedById, "u1");
+    assert.equal(git(repo, ["status", "--porcelain"]), "");
+    const [authorName, authorEmail, subject] = git(repo, ["log", "-1", "--format=%an%x00%ae%x00%s", "feature/deploy"]).split("\0");
+    assert.equal(authorName, "Zeh Ferrari");
+    assert.equal(authorEmail, "e@zeh.me");
+    assert.match(subject, /^ENV-19/);
+    assert.equal(git(repo, ["ls-remote", "--heads", "origin", "feature/deploy"]).split(/\s+/)[0], row.latestCommitSha);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -188,6 +350,8 @@ async function epicChildRollupWaitsForAllChildren() {
 async function main() {
   await branchVerificationPushesReporterAuthoredCommit();
   await missingReporterEmailReturnsPrompt();
+  await dirtyDeploymentApprovalRecordsPendingLocalChanges();
+  await approvingLocalChangesCommitsPushesAndOpensPr();
   await mergedScriptSuccessWritesReporterReport();
   await nonZeroScriptIsDeploymentErrorAndIdempotent();
   await declinedAndPipelineFailureFailDeployment();

@@ -11,9 +11,14 @@ export type DeploymentPrRow = {
   targetBranch: string;
   latestCommitSha: string;
   status: string;
+  localChangeSummary?: string | null;
+  localChangeApprovedAt?: Date | string | null;
+  localChangeApprovedById?: string | null;
   updatedAt: Date | string;
   task?: { workItemKey?: string | null; title?: string | null } | null;
 };
+
+const LOCAL_CHANGES_PENDING = "local_changes_pending_approval";
 
 export function canShowDeploymentTab(item: { epicId?: string | null; parentTaskId?: string | null } | "epic") {
   if (item === "epic") return true;
@@ -80,17 +85,21 @@ function prTitle(row: DeploymentPrRow, fallbackTitle: string) {
 
 function mergeState(row: DeploymentPrRow) {
   const status = row.status.toLowerCase();
+  if (status === LOCAL_CHANGES_PENDING) return "PR not opened";
   if (["merged", "fulfilled"].includes(status)) return "Merged";
   if (["declined", "rejected"].includes(status)) return "Declined";
   return "Waiting for merge";
 }
 
-function approvalState(deploymentStatus: string) {
+function approvalState(row: DeploymentPrRow, deploymentStatus: string) {
+  if (row.status === LOCAL_CHANGES_PENDING) return "Local commit approval needed";
+  if (row.localChangeApprovedAt) return "Local changes approved";
   return deploymentStatus === "Not Required" ? "Not required" : "Approved";
 }
 
 function deployResult(row: DeploymentPrRow, deploymentStatus: string) {
   const status = row.status.toLowerCase();
+  if (status === LOCAL_CHANGES_PENDING) return "Waiting for local commit approval";
   if (deploymentStatus === "Successfully Deployed") return "Deploy script succeeded";
   if (deploymentStatus === "Deployment Error") return "Deploy script failed";
   if (["failed", "error"].includes(status)) return "Pipeline failed";
@@ -99,6 +108,11 @@ function deployResult(row: DeploymentPrRow, deploymentStatus: string) {
 }
 
 function errorExcerpt(row: DeploymentPrRow, deploymentStatus: string) {
+  if (row.status === LOCAL_CHANGES_PENDING) {
+    return row.localChangeSummary
+      ? `Uncommitted local changes:\n${row.localChangeSummary}`
+      : "Uncommitted local changes are waiting for approval.";
+  }
   if (deploymentStatus === "Deployment Error") {
     return "Deployment failed; monitor will attach the captured log excerpt when available.";
   }
@@ -116,22 +130,57 @@ function StatusPill({ children }: { children: string }) {
   );
 }
 
-function DeploymentActions({ row, canAct }: { row: DeploymentPrRow; canAct: boolean }) {
+function DeploymentActions({
+  row,
+  canAct,
+  approveLocalChangesAction,
+  approveAndMergeAction,
+}: {
+  row: DeploymentPrRow;
+  canAct: boolean;
+  approveLocalChangesAction?: (formData: FormData) => void | Promise<void>;
+  approveAndMergeAction?: (formData: FormData) => void | Promise<void>;
+}) {
   if (row.provider.toLowerCase() !== "bitbucket") {
     return <span className="text-xs text-[var(--color-text-muted)]">Actions unavailable for {row.provider}</span>;
   }
   if (!canAct) {
     return <span className="text-xs text-[var(--color-text-muted)]">Reporter-only actions</span>;
   }
+  if (row.status === LOCAL_CHANGES_PENDING) {
+    if (!approveLocalChangesAction) {
+      return (
+        <button type="button" disabled className="rounded-lg border border-[var(--color-line)] px-2 py-1 text-xs text-[var(--color-text-muted)] opacity-70">
+          Approve local commit
+        </button>
+      );
+    }
+    return (
+      <form action={approveLocalChangesAction}>
+        <input type="hidden" name="deploymentPrId" value={row.id} />
+        <button type="submit" className="rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1 text-xs font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]">
+          Approve local commit
+        </button>
+      </form>
+    );
+  }
+  if (row.status !== "open") {
+    return <span className="text-xs text-[var(--color-text-muted)]">No action</span>;
+  }
+  if (!approveAndMergeAction) {
+    return (
+      <button type="button" disabled className="rounded-lg border border-[var(--color-line)] px-2 py-1 text-xs text-[var(--color-text-muted)] opacity-70">
+        Approve/Merge
+      </button>
+    );
+  }
   return (
-    <div className="flex flex-wrap gap-2">
-      <button type="button" disabled className="rounded-lg border border-[var(--color-line)] px-2 py-1 text-xs text-[var(--color-text-muted)] opacity-70">
-        Approve
+    <form action={approveAndMergeAction}>
+      <input type="hidden" name="deploymentPrId" value={row.id} />
+      <button type="submit" className="rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1 text-xs font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]">
+        Approve/Merge
       </button>
-      <button type="button" disabled className="rounded-lg border border-[var(--color-line)] px-2 py-1 text-xs text-[var(--color-text-muted)] opacity-70">
-        Merge
-      </button>
-    </div>
+    </form>
   );
 }
 
@@ -141,12 +190,16 @@ export default function DeploymentTab({
   deploymentStatus,
   rows,
   canAct,
+  approveLocalChangesAction,
+  approveAndMergeAction,
 }: {
   mode: "task" | "epic";
   title: string;
   deploymentStatus: string;
   rows: DeploymentPrRow[];
   canAct: (row: DeploymentPrRow) => boolean;
+  approveLocalChangesAction?: (formData: FormData) => void | Promise<void>;
+  approveAndMergeAction?: (formData: FormData) => void | Promise<void>;
 }) {
   const mockedRows = rows.length > 0 ? rows : [{
     id: "mock-deployment-record",
@@ -200,13 +253,20 @@ export default function DeploymentTab({
                     <code>{row.sourceBranch}</code> → <code>{row.targetBranch}</code>
                   </td>
                   <td className="px-3 py-3"><code className="text-xs">{row.latestCommitSha.slice(0, 12)}</code></td>
-                  <td className="px-3 py-3"><StatusPill>{approvalState(deploymentStatus)}</StatusPill></td>
+                  <td className="px-3 py-3"><StatusPill>{approvalState(row, deploymentStatus)}</StatusPill></td>
                   <td className="px-3 py-3 text-xs text-[var(--color-text-muted)]">{mergeState(row)}</td>
                   <td className="px-3 py-3 text-xs text-[var(--color-text-muted)]">
                     <div>{deployResult(row, deploymentStatus)}</div>
                     {excerpt ? <pre className="mt-2 max-w-xs whitespace-pre-wrap rounded-lg bg-[var(--color-bg)] p-2 font-mono text-[11px]">{excerpt}</pre> : null}
                   </td>
-                  <td className="px-3 py-3"><DeploymentActions row={row} canAct={canAct(row)} /></td>
+                  <td className="px-3 py-3">
+                    <DeploymentActions
+                      row={row}
+                      canAct={canAct(row)}
+                      approveLocalChangesAction={approveLocalChangesAction}
+                      approveAndMergeAction={approveAndMergeAction}
+                    />
+                  </td>
                 </tr>
               );
             })}

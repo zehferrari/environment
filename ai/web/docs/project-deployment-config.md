@@ -50,3 +50,9 @@ DRY_RUN=1 ./ai/openclaw/bin/deploy-on-merge
 ```
 
 The Monitor Agent runs this after Bitbucket reports the deployment PR as merged. A zero exit status becomes `Successfully Deployed`; a non-zero status becomes `Deployment Error` with a captured log excerpt.
+
+## Approval flow
+
+When deployment is approved, Monitor checks the project repository for uncommitted local changes before pushing or opening a PR. A clean worktree is pushed and opened as a deployment PR immediately. A dirty worktree creates a pending row in the Epic/Task Development tab; an authorized human must approve the local commit before Monitor commits the changes as the reporter, pushes the branch, and opens the PR.
+
+The Development tab lets the reporter, or the reviewer when project policy allows it, approve the local commit and approve/merge an open deployment PR. Provider reviewer assignment is not automatic yet because Bitbucket reviewer assignment requires the provider account UUID; PM currently stores only the reporter's PM user id and email.

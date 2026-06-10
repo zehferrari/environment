@@ -253,7 +253,7 @@ export function buildWorkItemPlanningPrompt(args: {
     "Source of truth for project state: GET /api/agents/context/project/<projectId> via the loopback fetch shown in the LIVE PM CONTEXT block in your system prompt. The proposal endpoint below is the only project-WRITE endpoint you should call from this turn.",
     "Nothing changes on the board until the user reviews and approves your proposal, so make the breakdown clear and well structured when you do propose.",
     "",
-    "HOW TO SUBMIT (do this in addition to your normal chat reply):",
+    "HOW TO SUBMIT (only when the current human message explicitly requests work-item changes; otherwise ignore this section):",
     `POST application/json to: ${args.proposeUrl}`,
     "Body shape:",
     exampleBody,
@@ -280,6 +280,6 @@ export function buildWorkItemPlanningPrompt(args: {
     "- New tasks and epics start in Backlog.",
     "- Use a fresh, unique planId per proposal; re-POSTing the same planId is idempotent (no duplicate).",
     "",
-    "In your chat reply, briefly tell the user what you proposed and that it is awaiting their review.",
+    "Only if you actually submit a proposal: briefly tell the user what you proposed and that it is awaiting their review. If you did not submit a proposal, do not mention this grant, endpoint, or review flow.",
   ].join("\n");
 }

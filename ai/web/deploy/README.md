@@ -150,8 +150,9 @@ why the review is waiting. Install with
 Deployment approval is a write path, separate from the read-only Review
 verifier above. The PM consumer runs the deployment monitor under the
 configured monitor service account. It uses that account's Git/SSH
-configuration to verify and push the source branch, then uses Bitbucket's
-REST API to open and monitor provider PRs.
+configuration to check for uncommitted local changes, commit them only after
+human approval in the Development tab, verify and push the source branch, then
+uses Bitbucket's REST API to open, approve/merge, and monitor provider PRs.
 
 Required host checks for every replicated server:
 
@@ -163,11 +164,13 @@ Required host checks for every replicated server:
   provider but is not authorized for the specific repository will fail
   deployment approval with `Unauthorized` / `Could not read from remote
   repository`.
-- The PM service environment must include Bitbucket API credentials:
+- The PM service environment must include Bitbucket API credentials with
+  pull-request write permission:
   `BITBUCKET_USERNAME` (or `BITBUCKET_USER`) plus
   `BITBUCKET_APP_PASSWORD` (or `BITBUCKET_TOKEN`). These are used only for
-  provider REST calls such as creating and polling pull requests; they do
-  not replace the monitor account's SSH key for git fetch/push.
+  provider REST calls such as creating, approving/merging, and polling pull
+  requests; they do not replace the monitor account's SSH key for git
+  fetch/push.
   Put them in the base PM env file (`/etc/default/pm` by default). The
   worktree switch helper copies that file into the generated active env file
   (`/etc/default/pm-active-worktree` by default) during `pm-switch`; rerun

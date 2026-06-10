@@ -17,6 +17,7 @@ import {
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { binTask, deleteEpic } from "@/lib/bin/actions";
 import { archiveEpic, unarchiveEpic } from "@/lib/archive/actions";
+import { approveAndMergeDeploymentPullRequest, approveDeploymentLocalChanges } from "@/lib/deploy/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import SortableTaskList from "@/components/sortable-task-list";
@@ -277,7 +278,8 @@ function settledAgentSlugsForMessage(
   return slugs;
 }
 
-const EPIC_TABS = ["Description", "Action Plan", "Deployment", "Tasks", "Attachments", "Comments", "Activities", "Changes"] as const;
+const DEVELOPMENT_TAB = "Development";
+const EPIC_TABS = ["Description", "Action Plan", "Tasks", "Attachments", "Comments", "Activities", DEVELOPMENT_TAB, "Changes"] as const;
 
 function tabParam(tab: string) {
   return tab
@@ -292,6 +294,9 @@ function tabFromSearchParam(raw: string | undefined, tabs: readonly string[]) {
   const normalized = tabParam(raw);
   if (normalized === "discussion") {
     return tabs.find((tab) => tab === "Action Plan") ?? null;
+  }
+  if (normalized === "deployment") {
+    return tabs.find((tab) => tab === DEVELOPMENT_TAB) ?? null;
   }
   return tabs.find((tab) => tabParam(tab) === normalized) ?? null;
 }
@@ -1154,24 +1159,6 @@ export default async function EpicDetailPage({
                 </div>
               </TabPanel>
 
-
-              <TabPanel name="Deployment">
-                <DeploymentTab
-                  mode="epic"
-                  title={epic.title}
-                  deploymentStatus={epic.deploymentStatus}
-                  rows={deploymentPullRequests}
-                  canAct={(row) => canShowDeploymentAction({
-                    provider: row.provider,
-                    viewerKind: session?.user?.kind === "agent" ? "agent" : "human",
-                    viewerId: session?.user?.id ?? null,
-                    reporterId: epic.reporterId,
-                    reviewerId: epic.actingManagerId,
-                    onlyReportersCanApprovePullRequests: epic.project.onlyReportersCanApprovePullRequests,
-                  })}
-                />
-              </TabPanel>
-
               <TabPanel name="Action Plan">
                 <div className="space-y-3 pt-2">
                   {canApproveActionPlan ? (
@@ -1389,6 +1376,25 @@ export default async function EpicDetailPage({
                 <div className="pt-2">
                   <ActivityTimeline rows={allActivity} />
                 </div>
+              </TabPanel>
+
+              <TabPanel name={DEVELOPMENT_TAB}>
+                <DeploymentTab
+                  mode="epic"
+                  title={epic.title}
+                  deploymentStatus={epic.deploymentStatus}
+                  rows={deploymentPullRequests}
+                  canAct={(row) => canShowDeploymentAction({
+                    provider: row.provider,
+                    viewerKind: session?.user?.kind === "agent" ? "agent" : "human",
+                    viewerId: session?.user?.id ?? null,
+                    reporterId: epic.reporterId,
+                    reviewerId: epic.actingManagerId,
+                    onlyReportersCanApprovePullRequests: epic.project.onlyReportersCanApprovePullRequests,
+                  })}
+                  approveLocalChangesAction={approveDeploymentLocalChanges}
+                  approveAndMergeAction={approveAndMergeDeploymentPullRequest}
+                />
               </TabPanel>
 
               <TabPanel name="Changes">

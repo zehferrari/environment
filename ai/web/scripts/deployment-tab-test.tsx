@@ -72,11 +72,13 @@ const html = renderToStaticMarkup(
       sourceBranch: "pm-deployments",
       targetBranch: "main",
       latestCommitSha: "abcdef1234567890",
-      status: "failed",
+      status: "open",
       updatedAt: new Date("2026-06-04T00:00:00Z"),
       task: { workItemKey: "ENV-17", title: "Deployment tab UI" },
     }]}
     canAct={() => true}
+    approveLocalChangesAction={async () => {}}
+    approveAndMergeAction={async () => {}}
   />,
 );
 
@@ -90,10 +92,40 @@ for (const expected of [
   "Waiting for merge",
   "Deploy script failed",
   "Deployment failed",
-  "Approve",
-  "Merge",
+  "Approve/Merge",
 ]) {
   assert.match(html, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `renders ${expected}`);
+}
+
+const pendingHtml = renderToStaticMarkup(
+  <DeploymentTab
+    mode="task"
+    title="Dirty task"
+    deploymentStatus="Deployment Approved"
+    rows={[{
+      id: "pr-local",
+      provider: "bitbucket",
+      providerPrId: "pending-local:task:task1:task1",
+      url: "",
+      sourceBranch: "feature/dirty",
+      targetBranch: "main",
+      latestCommitSha: "abcdef1234567890",
+      status: "local_changes_pending_approval",
+      localChangeSummary: " M ai/web/app/page.tsx",
+      updatedAt: new Date("2026-06-04T00:00:00Z"),
+    }]}
+    canAct={() => true}
+    approveLocalChangesAction={async () => {}}
+    approveAndMergeAction={async () => {}}
+  />,
+);
+for (const expected of [
+  "Local commit approval needed",
+  "Waiting for local commit approval",
+  "Uncommitted local changes",
+  "Approve local commit",
+]) {
+  assert.match(pendingHtml, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `renders ${expected}`);
 }
 
 const taskHtml = renderToStaticMarkup(

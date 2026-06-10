@@ -463,6 +463,16 @@ async function inferProjectIdFromPmWorkItemLinks(body: string) {
   return project?.id ?? null;
 }
 
+function directlyRequestsWorkItemManagement(body: string) {
+  const text = body.toLowerCase();
+  const workItemNoun = "(?:work[- ]?item|task|sub[- ]?task|epic|action plan|proposal|board|backlog)";
+  const managementVerb = "(?:create|add|make|open|update|edit|change|reorganize|re-organize|move|assign|comment|archive|delete|split|break down|breakdown|propose|submit)";
+  return (
+    new RegExp(`\\b${managementVerb}\\b.{0,80}\\b${workItemNoun}\\b`).test(text) ||
+    new RegExp(`\\b${workItemNoun}\\b.{0,80}\\b${managementVerb}\\b`).test(text)
+  );
+}
+
 function buildDirectLiveContextBlock(args: {
   projectUrl: string;
   tasks: Array<{ id: string; title: string; url: string }>;
@@ -866,8 +876,11 @@ export async function sendDirectAgentMessage(formData: FormData) {
   });
   if (!agent?.user || agent.deactivatedAt || agent.user.status !== "active") return;
 
-  // Optional project attachment for planning. A human-authored direct chat
-  // scoped to a project carries the one-shot proposal capability by default.
+  // Optional project attachment for planning. Project context may be useful for
+  // ordinary Q&A, but the one-shot proposal capability is only attached when
+  // the human message explicitly asks to manage work items. Otherwise the
+  // proposal instructions can pressure agents into sending unsolicited Action
+  // Plans/proposals during status/debug conversations.
   let projectId: string | null = requestedProjectId;
   if (!projectId) {
     projectId = await inferProjectIdFromPmWorkItemLinks(bodyRaw);
@@ -879,7 +892,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
     });
     if (!proj) projectId = null;
   }
-  const grantWorkItems = userKind === "human" && projectId !== null;
+  const grantWorkItems = userKind === "human" && projectId !== null && directlyRequestsWorkItemManagement(bodyRaw);
 
   let baseArchiveId = requestedBaseArchiveId;
   if (baseArchiveId) {

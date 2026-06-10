@@ -9,7 +9,14 @@ import { writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { auth } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { revalidatePath } from "next/cache";
 import { readSwitchState, SWITCH_DIR } from "@/lib/deploy/worktrees";
+import {
+  approveAndMergeBitbucketPullRequest,
+  approveLocalChangesAndOpenDeploymentPr,
+  DEPLOYMENT_LOCAL_CHANGES_PENDING,
+} from "@/lib/deploy/monitor";
 
 export async function requestWorktreeSwitch(
   target: string,
@@ -41,4 +48,77 @@ export async function requestWorktreeSwitch(
   await writeFile(tmp, body, { mode: 0o664 });
   await rename(tmp, path.join(SWITCH_DIR, "request.json"));
   return { id };
+}
+
+async function requireHumanActor() {
+  const session = await auth();
+  if (!session?.user?.id || session.user.kind === "agent") throw new Error("Forbidden");
+  return { id: session.user.id };
+}
+
+async function loadDeploymentActionRow(rowId: string) {
+  return db.deploymentPullRequest.findUnique({
+    where: { id: rowId },
+    include: {
+      project: true,
+      task: { select: { id: true, reporterId: true, actingManagerId: true } },
+      epic: { select: { id: true, reporterId: true, actingManagerId: true } },
+    },
+  });
+}
+
+function canActOnDeploymentRow(row: Awaited<ReturnType<typeof loadDeploymentActionRow>>, actorId: string) {
+  if (!row || row.provider.toLowerCase() !== "bitbucket") return false;
+  const reporterId = row.reporterUserId || row.epic?.reporterId || row.task?.reporterId || null;
+  const reviewerId = row.epic?.actingManagerId ?? row.task?.actingManagerId ?? null;
+  const isReporter = reporterId === actorId;
+  const isReviewer = reviewerId === actorId;
+  return row.project.onlyReportersCanApprovePullRequests ? isReporter : isReporter || isReviewer;
+}
+
+function revalidateDeploymentPaths(row: NonNullable<Awaited<ReturnType<typeof loadDeploymentActionRow>>>) {
+  revalidatePath(`/projects/${row.project.slug}`);
+  if (row.epicId) revalidatePath(`/projects/${row.project.slug}/epics/${row.epicId}`);
+  if (row.taskId) revalidatePath(`/projects/${row.project.slug}/tasks/${row.taskId}`);
+}
+
+export async function approveDeploymentLocalChanges(formData: FormData) {
+  const actor = await requireHumanActor();
+  const rowId = String(formData.get("deploymentPrId") ?? "");
+  if (!rowId) return;
+  const row = await loadDeploymentActionRow(rowId);
+  if (!row || row.status !== DEPLOYMENT_LOCAL_CHANGES_PENDING) return;
+  if (!canActOnDeploymentRow(row, actor.id)) throw new Error("Only the reporter or reviewer can approve deployment local changes.");
+
+  await approveLocalChangesAndOpenDeploymentPr({
+    rowId: row.id,
+    actorUserId: actor.id,
+  });
+  revalidateDeploymentPaths(row);
+}
+
+export async function approveAndMergeDeploymentPullRequest(formData: FormData) {
+  const actor = await requireHumanActor();
+  const rowId = String(formData.get("deploymentPrId") ?? "");
+  if (!rowId) return;
+  const row = await loadDeploymentActionRow(rowId);
+  if (!row || row.status !== "open") return;
+  if (!canActOnDeploymentRow(row, actor.id)) throw new Error("Only the reporter or reviewer can approve and merge deployment pull requests.");
+
+  const result = await approveAndMergeBitbucketPullRequest(row);
+  await db.activityLog.create({
+    data: {
+      projectId: row.projectId,
+      taskId: row.taskId,
+      userId: actor.id,
+      kind: "deployment.pr_approve_merge",
+      payload: JSON.stringify({
+        prId: row.id,
+        providerPrId: row.providerPrId,
+        providerState: result.state,
+        mergeSha: result.mergeSha,
+      }),
+    },
+  }).catch(() => null);
+  revalidateDeploymentPaths(row);
 }
