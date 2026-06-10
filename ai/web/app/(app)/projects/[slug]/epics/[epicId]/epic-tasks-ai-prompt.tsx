@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
+import { generateClientMessageId } from "@/lib/agents/client-message-id";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 
 export default function EpicTasksAiPrompt({
@@ -33,6 +34,7 @@ export default function EpicTasksAiPrompt({
     if (isSubmitting) return;
     setIsSubmitting(true);
     try {
+      formData.set("messageId", generateClientMessageId());
       await sendAgentChatMessage(formData);
       setOpen(false);
       router.refresh();

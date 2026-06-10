@@ -17,6 +17,7 @@ import ProposalReview from "@/app/(app)/agents/[agent]/chat/proposal-review";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
 import { findPmOptionResolution, parsePmOptions } from "@/lib/pm-options";
+import { generateClientMessageId } from "@/lib/agents/client-message-id";
 
 interface Message {
   id: string;
@@ -548,7 +549,16 @@ export default function ChatRoom({
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  const ensureClientMessageId = (formData: FormData) => {
+    const existing = String(formData.get("messageId") ?? "").trim();
+    if (existing) return existing;
+    const messageId = generateClientMessageId();
+    formData.set("messageId", messageId);
+    return messageId;
+  };
+
   const optimisticMessageFromForm = (formData: FormData, status: "sending" | "failed" = "sending"): OptimisticMessage => {
+    const messageId = ensureClientMessageId(formData);
     const body = String(formData.get("body") ?? "").trim();
     const targets = formData
       .getAll("discussionTarget")
@@ -558,7 +568,7 @@ export default function ChatRoom({
       .map((value) => targetOptions.find((target) => target.value === value)?.label ?? value)
       .join(", ");
     return {
-      id: `optimistic-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      id: messageId,
       body,
       createdAt: new Date(),
       allowDescriptionEdit: false,
@@ -614,6 +624,7 @@ export default function ChatRoom({
     if (taskId) formData.append("taskId", taskId);
     if (epicId) formData.append("epicId", epicId);
     formData.append("agentSlug", "room");
+    formData.append("messageId", generateClientMessageId());
     formData.append("body", message.body);
     for (const target of message.optimisticTargets ?? []) {
       formData.append("discussionTarget", target);
@@ -629,6 +640,7 @@ export default function ChatRoom({
 
   const actionHandler = async (formData: FormData) => {
     if (!optimisticEchoEnabled) {
+      ensureClientMessageId(formData);
       await sendAgentChatMessage(formData);
       resetComposerAfterSend();
       return;

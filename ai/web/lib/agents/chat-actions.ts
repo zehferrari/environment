@@ -48,6 +48,7 @@ import {
   recentComments,
   recentDiscussion,
 } from "@/lib/agents/context-api/recent";
+import { isValidClientMessageId } from "@/lib/agents/client-message-id";
 
 async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> {
   const session = await auth();
@@ -217,6 +218,7 @@ export async function sendAgentChatMessage(formData: FormData) {
   const originChannel = requestedOriginChannel === "description" ? "description" : "chat";
   const decisionForMessageId = String(formData.get("decisionForMessageId") ?? "").trim() || null;
   const decisionOption = String(formData.get("decisionOption") ?? "").trim() || null;
+  const requestedMessageId = String(formData.get("messageId") ?? "").trim() || null;
   const allowDescriptionEdit = actor.kind === "human";
   const allowWorkItemManagement = actor.kind === "human";
 
@@ -225,12 +227,25 @@ export async function sendAgentChatMessage(formData: FormData) {
     throw new Error("Chat target must be exactly one of taskId or epicId");
   }
   if (bodyRaw.length > 8000) return;
+  if (requestedMessageId && !isValidClientMessageId(requestedMessageId)) {
+    throw new Error("Invalid client messageId");
+  }
 
   const project = await db.project.findUnique({
     where: { slug },
     select: { id: true },
   });
   if (!project) return;
+
+  if (requestedMessageId) {
+    const existing = await db.agentChatMessage.findUnique({
+      where: { id: requestedMessageId },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new Error("Client messageId already exists");
+    }
+  }
 
   const users = await db.user.findMany({
     select: {
@@ -431,6 +446,7 @@ export async function sendAgentChatMessage(formData: FormData) {
 
   const msg = await db.agentChatMessage.create({
     data: {
+      ...(requestedMessageId ? { id: requestedMessageId } : {}),
       projectId: project.id,
       taskId,
       epicId,

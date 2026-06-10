@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
+import { generateClientMessageId } from "@/lib/agents/client-message-id";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import { renderFullMarkdown } from "@/lib/markdown";
 
@@ -245,6 +246,7 @@ export default function DescriptionField({
     setHasRollback(true);
     setAiSubmitting(true);
     try {
+      formData.set("messageId", generateClientMessageId());
       await sendAgentChatMessage(formData);
       setAiOpen(false);
       router.refresh();
