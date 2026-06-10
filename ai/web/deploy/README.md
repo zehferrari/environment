@@ -353,6 +353,10 @@ plugin posts partial reply chunks to
 `http://127.0.0.1:3000/api/openclaw/pm-channel/stream`; browsers subscribe
 to PM over same-origin SSE while final durable replies still land at
 `/api/openclaw/pm-channel/reply`.
+Direct-chat pages reconcile saved replies through the lightweight
+`GET /api/agents/<slug>/chat/messages` endpoint if the browser misses a
+final stream event. This avoids full-page polling while preserving the
+server-rendered page as the source of truth.
 
 PM resolves channel tokens in this order:
 `PM_OPENCLAW_CHANNEL_TOKEN_<AGENT_SLUG>`,
@@ -413,6 +417,14 @@ file-drop deployment both variables should point at `/var/lib/pm/drop`.
 The worktree switch helper preserves this setting in
 `/etc/default/pm-active-worktree`; without it chat jobs remain queued and
 fail with `PM channel bus disabled`.
+Keep direct HTTP as fallback only: set
+`PM_OPENCLAW_CHANNEL_HTTP_FALLBACK=1` only when the bus is unavailable
+and localhost gateway HTTP should be used as a temporary degraded path.
+Direct-chat warm entries are agent-scoped, so repeated direct messages
+and newly archived/restarted chats can reuse the same warm session within
+`PM_CHANNEL_WARM_POOL_TTL_MS`. Accepted-to-first-stream latency beyond
+`PM_OPENCLAW_FIRST_STREAM_WARNING_MS` writes a
+`pm.channel.latency_warning` audit row.
 OpenClaw requires `hook:` in the allowed session-key prefixes when no
 default hook session key is configured; PM chat/comment routing uses
 `pm:` keys created in `AgentSessionBinding`.

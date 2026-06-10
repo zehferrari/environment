@@ -775,6 +775,13 @@ See `.env.example` for the full list. Highlights:
   `PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`,
   `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT` — bounds on the direct-chat
   context packet (recent transcript + archive excerpt + chain depth).
+- `PM_DIRECT_CHAT_ALWAYS_INCLUDE_FILES_CONTEXT=1` — opt back into
+  unconditional direct-chat attachment/file context. By default PM only
+  reads text-like attachment files into the prompt when the current turn
+  uploaded files or asks for file/attachment context.
+- `PM_OPENCLAW_FIRST_STREAM_WARNING_MS` — accepted-to-first-stream
+  latency warning threshold, default `15000`; slow runs create
+  `pm.channel.latency_warning` activity rows with run/message metadata.
 
 ## Deployment
 

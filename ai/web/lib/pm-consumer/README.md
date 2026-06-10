@@ -34,6 +34,10 @@ to the same path as `PM_CONSUMER_DROP_DIR` unless a socket or HTTP bus is
 deployed. Without one of `PM_CHANNEL_BUS_SOCKET`,
 `PM_CHANNEL_BUS_DROP_DIR`, or `PM_CHANNEL_BUS_HTTP_URL`, native chat jobs
 cannot leave the PM worker.
+`PM_OPENCLAW_CHANNEL_HTTP_FALLBACK=1` keeps the old direct localhost
+gateway POST available as a degraded fallback, but the normal production
+path should remain bus-first so worktree switching and consumer
+ownership stay explicit.
 
 Both socket and file-drop legs can run concurrently and an in-process
 "call the consumer directly" transport is **not** exposed — that's
@@ -79,6 +83,12 @@ truncation" property.
 Duplicate file-drop envelopes are checked before insert as well as by
 the unique index. Stale duplicate files should be archived after one
 `skipped-duplicate` outcome instead of being retried forever.
+Native chat latency is tracked outside `PmEventDelivery`: `PmChannelRun`
+stores queued/accepted/streaming/complete timestamps, and slow
+accepted-to-first-stream spans create `pm.channel.latency_warning`
+activity rows. Direct-chat browser reconciliation happens through
+`GET /api/agents/<slug>/chat/messages`; the consumer only owns envelope
+delivery to OpenClaw.
 
 ## HOMELAB-46 acceptance
 
@@ -167,6 +177,22 @@ pnpm tsx scripts/pm-consumer.ts
 
 # Replay-test acceptance:
 pnpm tsx scripts/pm-consumer-replay-test.ts
+```
+
+Related PM web runtime knobs:
+
+```bash
+# Keep HTTP as fallback only; omit in the normal bus-first path.
+PM_OPENCLAW_CHANNEL_HTTP_FALLBACK=1
+
+# Slow first-token warning threshold.
+PM_OPENCLAW_FIRST_STREAM_WARNING_MS=15000
+
+# Direct-chat context controls.
+PM_DIRECT_CHAT_CONTEXT_MESSAGES=14
+PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES=12
+PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT=2
+PM_DIRECT_CHAT_ALWAYS_INCLUDE_FILES_CONTEXT=0
 ```
 
 ## Rebuild / Restart Guidance
