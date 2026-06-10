@@ -360,6 +360,9 @@ export default function ChatRoom({
     [messages],
   );
   const [failedOptimisticMessages, setFailedOptimisticMessages] = useState<OptimisticMessage[]>([]);
+  const [localLatestMessageId, setLocalLatestMessageId] = useState<string | null>(null);
+  const [localPendingAgents, setLocalPendingAgents] = useState<Array<{ slug: string; username: string }>>([]);
+  const [streamFinalMessages, setStreamFinalMessages] = useState<OptimisticMessage[]>([]);
   const currentUserActor = useMemo<MessageActor>(() => {
     const previousCurrentUserMessage = [...visibleMessages]
       .reverse()
@@ -377,11 +380,18 @@ export default function ChatRoom({
   const visibleMessagesWithFailures = useMemo<OptimisticMessage[]>(() => {
     if (!optimisticEchoEnabled) return visibleMessages;
     const serverIds = new Set(visibleMessages.map((message) => message.id));
+    const serverFingerprints = new Set(
+      visibleMessages.map((message) => `${message.sender.agent?.slug ?? message.sender.username}:${message.body}`),
+    );
     return [
       ...visibleMessages,
       ...failedOptimisticMessages.filter((message) => !serverIds.has(message.id)),
+      ...streamFinalMessages.filter((message) => (
+        !serverIds.has(message.id)
+        && !serverFingerprints.has(`${message.sender.agent?.slug ?? message.sender.username}:${message.body}`)
+      )),
     ];
-  }, [optimisticEchoEnabled, visibleMessages, failedOptimisticMessages]);
+  }, [optimisticEchoEnabled, visibleMessages, failedOptimisticMessages, streamFinalMessages]);
   const [optimisticMessages, addOptimisticMessage] = useOptimistic(
     visibleMessagesWithFailures,
     (currentMessages: OptimisticMessage[], optimisticMessage: OptimisticMessage) => [
@@ -390,6 +400,8 @@ export default function ChatRoom({
     ],
   );
   const displayedMessages: OptimisticMessage[] = optimisticEchoEnabled ? optimisticMessages : visibleMessages;
+  const activeLatestMessageId = localLatestMessageId ?? latestMessageId;
+  const activePendingAgents = localLatestMessageId ? localPendingAgents : pendingAgents;
   const pmOptionResolutions = useMemo(() => {
     const map = new Map<string, ReturnType<typeof findPmOptionResolution>>();
     displayedMessages.forEach((message, index) => {
@@ -411,8 +423,8 @@ export default function ChatRoom({
     selectedArchiveId ?? "",
     displayedMessages.length,
     displayedMessages.at(-1)?.id ?? "",
-    latestMessageId ?? "",
-    pendingAgents.map((agent) => agent.slug).join(","),
+    activeLatestMessageId ?? "",
+    activePendingAgents.map((agent) => agent.slug).join(","),
   ].join("|");
   const participantIndexes = useMemo(() => {
     const map = new Map<string, number>();
@@ -558,12 +570,31 @@ export default function ChatRoom({
     };
   };
 
+  const pendingAgentsFromForm = (formData: FormData) => {
+    const targets = formData
+      .getAll("discussionTarget")
+      .map((value) => String(value).trim())
+      .filter(Boolean);
+    const effectiveTargets = targets.length > 0 ? targets : selectedTargets;
+    const agentOptions = targetOptions.filter((target) => target.group === "Agents");
+    const selectedAgentOptions = effectiveTargets.includes("all-coders")
+      ? agentOptions
+      : agentOptions.filter((target) => effectiveTargets.includes(target.value));
+    return selectedAgentOptions
+      .map((target) => target.actor?.agent?.slug ? { slug: target.actor.agent.slug, username: target.actor.username ?? target.label } : null)
+      .filter((agent): agent is { slug: string; username: string } => Boolean(agent));
+  };
+
   const submitOptimisticMessage = async (formData: FormData, optimisticMessage: OptimisticMessage) => {
     optimisticRenderStartsRef.current.set(optimisticMessage.id, performance.now());
     startOptimisticTransition(() => addOptimisticMessage(optimisticMessage));
     setFailedOptimisticMessages((current) => current.filter((message) => message.id !== optimisticMessage.id));
     try {
-      await sendAgentChatMessage(formData);
+      const result = await sendAgentChatMessage(formData);
+      if (result?.messageId) {
+        setLocalLatestMessageId(result.messageId);
+        setLocalPendingAgents(pendingAgentsFromForm(formData));
+      }
     } catch (error) {
       setFailedOptimisticMessages((current) => [
         ...current.filter((message) => message.id !== optimisticMessage.id),
@@ -902,16 +933,42 @@ export default function ChatRoom({
         )}
 
         {/* Streaming Replies */}
-        {!viewingArchive && latestMessageId && pendingAgents.map((agent) => (
+        {!viewingArchive && activeLatestMessageId && activePendingAgents.map((agent) => (
           <StreamingAgentReply
-            key={agent.slug}
+            key={`${activeLatestMessageId}:${agent.slug}`}
             targetKind={taskId ? "task-chat" : "epic-chat"}
             agentSlug={agent.slug}
-            messageId={latestMessageId}
+            messageId={activeLatestMessageId}
             taskId={taskId}
             epicId={epicId}
             label={agent.username}
             anonymizeTyping
+            onFinal={({ text, status }) => {
+              if (status !== "done") return;
+              setLocalPendingAgents((current) => current.filter((item) => item.slug !== agent.slug));
+              if (!text.trim()) return;
+              setStreamFinalMessages((current) => [
+                ...current.filter((message) => message.id !== `stream-final-${activeLatestMessageId}-${agent.slug}`),
+                {
+                  id: `stream-final-${activeLatestMessageId}-${agent.slug}`,
+                  body: text,
+                  createdAt: new Date(),
+                  allowDescriptionEdit: false,
+                  editGrantUsedAt: null,
+                  targetLabel: null,
+                  targetType: null,
+                  targetValue: null,
+                  sender: {
+                    username: agent.slug,
+                    kind: "agent",
+                    name: agent.username,
+                    agent: { slug: agent.slug, name: agent.username, avatar: "placeholder" },
+                  },
+                  deletedAt: null,
+                  deletedBy: null,
+                },
+              ]);
+            }}
           />
         ))}
 

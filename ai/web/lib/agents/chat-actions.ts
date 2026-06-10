@@ -61,6 +61,10 @@ function agentCallbackBaseUrl() {
     ?? "http://127.0.0.1:3000";
 }
 
+function optimisticLocalEchoEnabled() {
+  return process.env.NEXT_PUBLIC_PM_OPTIMISTIC_LOCAL_ECHO === "1";
+}
+
 function compactText(value: string) {
   return value
     .replace(/```[\s\S]*?```/g, " code ")
@@ -662,8 +666,10 @@ export async function sendAgentChatMessage(formData: FormData) {
     });
   }));
 
-  if (taskId) revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-  if (epicId) revalidatePath(`/projects/${slug}/epics/${epicId}`);
+  if (!optimisticLocalEchoEnabled()) {
+    if (taskId) revalidatePath(`/projects/${slug}/tasks/${taskId}`);
+    if (epicId) revalidatePath(`/projects/${slug}/epics/${epicId}`);
+  }
 
   return { messageId: msg.id };
 }
