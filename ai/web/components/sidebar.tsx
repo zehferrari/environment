@@ -113,6 +113,16 @@ export default async function Sidebar() {
   const isAdmin = user?.name === "zeh";
   const liveAgents = snapshot?.agents ?? {};
 
+  // Surface the most active agents first: Busy → Live → Idle → Stale, then
+  // the inert states. Ties keep the alphabetical (slug) order the query returns.
+  const STATUS_ORDER: Record<string, number> = {
+    busy: 0,
+    live: 1,
+    idle: 2,
+    stale: 3,
+    registered: 4,
+    offline: 5,
+  };
   const navAgents: SidebarAgent[] = agents.map((agent) => {
     const live = liveAgents[agent.slug];
     const status = statusFor(agent, live);
@@ -131,6 +141,9 @@ export default async function Sidebar() {
       unread,
     };
   });
+  navAgents.sort(
+    (a, b) => (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99),
+  );
 
   const navProjects: SidebarProject[] = projects.map((p) => ({
     slug: p.slug,

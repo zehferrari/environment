@@ -75,6 +75,10 @@ type BoardProps = {
 // localStorage so each board remembers its own state across reloads.
 const BACKLOG_VISIBLE_KEY_PREFIX = "pm.board.backlogVisible.";
 
+// Workflow Focus mirrors the Backlog toggle: hidden by default, with the
+// preference persisted per project so each board remembers its own state.
+const FOCUS_VISIBLE_KEY_PREFIX = "pm.board.focusVisible.";
+
 // Backlog rows are full-width while the four workflow columns are
 // quarter-width. closestCorners can't disambiguate here: a full-width drag
 // rect ties across all four columns (their summed corner-distance is the
@@ -105,6 +109,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
   // post-mount effect, which is a normal state update and not a
   // hydration mismatch.
   const [backlogVisible, setBacklogVisible] = useState(false);
+  const [focusVisible, setFocusVisible] = useState(false);
   const [prefsHydrated, setPrefsHydrated] = useState(false);
 
   // Server is the source of truth: when revalidatePath re-renders this
@@ -203,6 +208,11 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       );
       if (stored === "true") setBacklogVisible(true);
       else if (stored === "false") setBacklogVisible(false);
+      const storedFocus = window.localStorage.getItem(
+        FOCUS_VISIBLE_KEY_PREFIX + projectSlug,
+      );
+      if (storedFocus === "true") setFocusVisible(true);
+      else if (storedFocus === "false") setFocusVisible(false);
     } catch {
       // localStorage can throw in private modes or sandboxed iframes —
       // fall back to the default (hidden) silently.
@@ -221,6 +231,18 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       // Same fallback as the read: ignore storage failures.
     }
   }, [backlogVisible, projectSlug, prefsHydrated]);
+
+  useEffect(() => {
+    if (!prefsHydrated) return;
+    try {
+      window.localStorage.setItem(
+        FOCUS_VISIBLE_KEY_PREFIX + projectSlug,
+        focusVisible ? "true" : "false",
+      );
+    } catch {
+      // Same fallback as the read: ignore storage failures.
+    }
+  }, [focusVisible, projectSlug, prefsHydrated]);
 
   useEffect(() => {
     setNow(Date.now());
@@ -571,12 +593,21 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
         </div>
       ) : null}
 
-      {workflowFocus.length > 0 ? (
+      {focusVisible && workflowFocus.length > 0 ? (
         <section className="mb-5 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] p-3">
           <div className="mb-2 flex items-center justify-between gap-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-              Workflow focus
-            </h2>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setFocusVisible(false)}
+                className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              >
+                Hide Focus
+              </button>
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                Workflow focus
+              </h2>
+            </div>
             <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
               feedback → review → start
             </span>
@@ -595,14 +626,41 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       ) : null}
 
       <section className="mb-6">
+        {/* When the Backlog is expanded, the Show Workflow Focus button gets
+            its own row on top of the backlog banner rather than sharing the
+            row with the Backlog heading / Hide Backlog control. */}
+        {backlogVisible && !focusVisible && workflowFocus.length > 0 ? (
+          <div className="mb-3 flex">
+            <button
+              type="button"
+              onClick={() => setFocusVisible(true)}
+              aria-pressed={focusVisible}
+              className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            >
+              Show Workflow Focus
+            </button>
+          </div>
+        ) : null}
         <div className="mb-3 flex items-center justify-between gap-3">
-          {backlogVisible ? (
-            <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
-              Backlog{backlogCount ? ` (${backlogCount})` : ""} · planning/opinions
-            </h2>
-          ) : (
-            <span aria-hidden="true" />
-          )}
+          {/* When the Backlog is hidden, the Show Workflow Focus button sits
+              inline at the left, level with the Show Backlog button. */}
+          <div className="flex items-center gap-3">
+            {!backlogVisible && !focusVisible && workflowFocus.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => setFocusVisible(true)}
+                aria-pressed={focusVisible}
+                className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              >
+                Show Workflow Focus
+              </button>
+            ) : null}
+            {backlogVisible ? (
+              <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
+                Backlog{backlogCount ? ` (${backlogCount})` : ""} · planning/opinions
+              </h2>
+            ) : null}
+          </div>
           <button
             type="button"
             onClick={() => setBacklogVisible((v) => !v)}
