@@ -22,6 +22,7 @@ ExecStart=/usr/bin/node24 server.js
 
 Restart=on-failure
 RestartSec=3s
+TimeoutStopSec=15s
 
 NoNewPrivileges=true
 ProtectSystem=strict
