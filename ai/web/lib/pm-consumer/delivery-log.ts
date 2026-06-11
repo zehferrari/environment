@@ -22,6 +22,20 @@ export interface AppendResult {
   deliveryId?: string;
 }
 
+export interface DeliveryTaskScopeFields {
+  kind: string;
+  taskId: string;
+  taskKey: string;
+  projectKey: string;
+}
+
+export function isTaskScopedDelivery(row: DeliveryTaskScopeFields): boolean {
+  return row.kind !== "openclaw.pm_channel_turn"
+    && row.taskId.trim() !== ""
+    && row.taskKey.trim() !== ""
+    && row.projectKey.trim() !== "";
+}
+
 const UNIQUE_VIOLATION_HINTS = [
   "Unique constraint failed",
   "UNIQUE constraint failed",
@@ -63,6 +77,59 @@ export async function appendDelivery(args: AppendArgs): Promise<AppendResult> {
     if (isUniqueViolation(err)) return { status: "duplicate" };
     throw err;
   }
+}
+
+// Dedupe guard for native `openclaw.pm_channel_turn` envelopes, which are not
+// PmEvents (they carry no task) but share the same UNIQUE(dedupeKey) table.
+// Without this, a retried bus publish — e.g. a publisher that timed out after
+// the consumer had already received and run the line — re-delivers the same
+// turn id and the agent runs the turn twice. Placeholder PmEvent columns are
+// empty strings; they are plain audit/index fields here, not foreign keys. Any
+// task/project delivery-log reporting should filter with isTaskScopedDelivery
+// (or the equivalent kind + non-empty task/project predicate) before treating
+// those fields as real PM task identifiers.
+export async function appendPmChannelTurnDelivery(args: {
+  dedupeKey: string;
+  id: string;
+  actorId: string;
+  targetSlug: string | null;
+  targetGatewayPort: number | null;
+  envelope: unknown;
+}): Promise<AppendResult> {
+  const existing = await db.pmEventDelivery.findUnique({
+    where: { dedupeKey: args.dedupeKey },
+    select: { id: true },
+  });
+  if (existing) return { status: "duplicate" };
+
+  try {
+    const row = await db.pmEventDelivery.create({
+      data: {
+        dedupeKey: args.dedupeKey,
+        eventId: args.id,
+        kind: "openclaw.pm_channel_turn",
+        taskId: "",
+        taskKey: "",
+        projectKey: "",
+        actorId: args.actorId,
+        targetAgentSlug: args.targetSlug,
+        targetGatewayPort: args.targetGatewayPort,
+        envelope: JSON.stringify(args.envelope),
+      },
+      select: { id: true },
+    });
+    return { status: "appended", deliveryId: row.id };
+  } catch (err) {
+    if (isUniqueViolation(err)) return { status: "duplicate" };
+    throw err;
+  }
+}
+
+// Drop a delivery slot so a genuinely failed dispatch can be retried instead of
+// being suppressed as a duplicate. Only called for turns whose gateway dispatch
+// failed (so the agent did not actually run).
+export async function releaseDelivery(dedupeKey: string): Promise<void> {
+  await db.pmEventDelivery.deleteMany({ where: { dedupeKey } });
 }
 
 export async function markDelivered(args: {

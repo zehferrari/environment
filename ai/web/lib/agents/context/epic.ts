@@ -286,13 +286,28 @@ function liveContextFetchBlockEpic(args: LiveContextAccessEpic) {
   return out.join("\n");
 }
 
+function appendEpicNativePromptTail(
+  lines: string[],
+  slug: string,
+  directedDescriptor?: DirectedDescriptor | null,
+  contextAccess?: LiveContextAccessEpic | null,
+) {
+  if (contextAccess) {
+    lines.push("", liveContextFetchBlockEpic(contextAccess));
+  }
+  if (directedDescriptor) {
+    lines.push("", renderDirectedSilenceRule({ descriptor: directedDescriptor, recipientAgentSlug: slug }));
+  }
+  return lines.join("\n");
+}
+
 export function buildEpicNativeChannelPrompt(
   epicTitle: string,
   slug: string,
   directedDescriptor?: DirectedDescriptor | null,
   contextAccess?: LiveContextAccessEpic | null,
 ): string {
-  const lines = [
+  return appendEpicNativePromptTail([
     `You have a PM message on epic "${epicTitle}", addressed to @${slug}.`,
     "This turn arrived through the native OpenClaw PM channel.",
     "Golden rule: only create a visible PM reply when you have new information, a concrete action result, a required plan, review feedback, a blocker, or a necessary question.",
@@ -303,14 +318,26 @@ export function buildEpicNativeChannelPrompt(
     "For straightforward work sequencing, decide once, update the task/Epic state, and avoid repeated implementation debate in comments.",
     "Latest explicit human, reviewer, or acting-manager instruction wins over older agent discussion. Correct yourself silently unless a visible correction is required.",
     "Markdown formatting in your reply is welcome.",
-  ];
-  if (contextAccess) {
-    lines.push("", liveContextFetchBlockEpic(contextAccess));
-  }
-  if (directedDescriptor) {
-    lines.push("", renderDirectedSilenceRule({ descriptor: directedDescriptor, recipientAgentSlug: slug }));
-  }
-  return lines.join("\n");
+  ], slug, directedDescriptor, contextAccess);
+}
+
+export function buildEpicNativeIncrementalChannelPrompt(
+  epicTitle: string,
+  slug: string,
+  previousMessageId: string,
+  directedDescriptor?: DirectedDescriptor | null,
+  contextAccess?: LiveContextAccessEpic | null,
+): string {
+  return appendEpicNativePromptTail([
+    `Incremental PM follow-up on epic "${epicTitle}", addressed to @${slug}.`,
+    `Continue from the existing OpenClaw session baseline through PM turn ${previousMessageId}.`,
+    "The user-visible text for this turn is the newly persisted message only; do not assume older PM state changed unless the hot-path delta or fetched PM context says so.",
+    "Only create a visible PM reply when you have new information, a concrete action result, a required plan, review feedback, a blocker, or a necessary question.",
+    `If you have no contribution to add, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
+    "Do not post acknowledgements, restatements, progress filler, or workflow-status acknowledgements.",
+    "When you do post visibly, consolidate related blockers/findings/questions into one concise comment.",
+    "Latest explicit human, reviewer, or acting-manager instruction in this delta wins over older session context.",
+  ], slug, directedDescriptor, contextAccess);
 }
 
 // HOMELAB-41 / item 4: the description endpoint creates a DRAFT for the

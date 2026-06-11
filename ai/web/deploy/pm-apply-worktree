@@ -199,6 +199,9 @@ if grep -q '^PM_APP_ROOT=' "$tmp_env"; then
 else
   printf 'PM_APP_ROOT=%s\n' "$app_root" >> "$tmp_env"
 fi
+if ! grep -q '^PM_CHANNEL_BUS_DROP_DIR=' "$tmp_env"; then
+  printf 'PM_CHANNEL_BUS_DROP_DIR=%s\n' "$DROP_DIR" >> "$tmp_env"
+fi
 install -o root -g "$env_group" -m 0640 "$tmp_env" "$ACTIVE_ENV_FILE"
 rm -f "$tmp_env"
 cat > "$PM_DROPIN" <<EOF
@@ -207,6 +210,7 @@ EnvironmentFile=
 EnvironmentFile=$ACTIVE_ENV_FILE
 WorkingDirectory=
 WorkingDirectory=$real
+TimeoutStopSec=15s
 ReadWritePaths=
 ReadWritePaths=$db_root $app_root/prisma -$app_root/.data $real/.next/cache /etc/openclaw/pm-agent-credentials $DROP_DIR $VERIFY_DIR -/srv/Data/projects -/srv/samba/shared $SWITCH_DIR
 EOF

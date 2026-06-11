@@ -71,6 +71,8 @@ export type ProposalOp =
       description?: string | null;
       actingManager?: PrincipalRef;
       status?: string;
+      alert_reporter?: boolean | number | string | null;
+      alertReporter?: boolean | number | string | null;
     }
   | {
       op: "update_task";
@@ -397,6 +399,7 @@ export async function validateProposal(
         validatePrincipal(raw.assignee, errors, "assignee");
         validatePrincipal(raw.actingManager, errors, "actingManager");
         validateTaskStatus(raw.status, errors);
+        if (raw.alert_reporter !== undefined && raw.alertReporter !== undefined) errors.push("use only one of alert_reporter or alertReporter");
         break;
       }
       case "comment_task": {

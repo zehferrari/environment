@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { archiveDirectAgentChat } from "@/lib/agents/direct-chat-actions";
 
 export default function NewChatButton({
@@ -10,6 +11,7 @@ export default function NewChatButton({
   agentSlug: string;
   hasActiveHistory: boolean;
 }) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<"choice" | "archive" | "delete">("choice");
   const [customTitle, setCustomTitle] = useState("");
@@ -22,16 +24,11 @@ export default function NewChatButton({
       formData.append("customTitle", customTitle.trim());
     }
     startTransition(async () => {
-      try {
-        await archiveDirectAgentChat(formData);
-        setOpen(false);
-        setCustomTitle("");
-        setStep("choice");
-      } catch (err) {
-        // Next.js redirect throws a special error which is handled by the framework,
-        // but if it's a real error, log it.
-        console.error("Archive error", err);
-      }
+      await archiveDirectAgentChat(formData);
+      setOpen(false);
+      setCustomTitle("");
+      setStep("choice");
+      router.refresh();
     });
   };
 
@@ -40,13 +37,10 @@ export default function NewChatButton({
     formData.append("agentSlug", agentSlug);
     formData.append("deleteToBin", "true");
     startTransition(async () => {
-      try {
-        await archiveDirectAgentChat(formData);
-        setOpen(false);
-        setStep("choice");
-      } catch (err) {
-        console.error("Delete error", err);
-      }
+      await archiveDirectAgentChat(formData);
+      setOpen(false);
+      setStep("choice");
+      router.refresh();
     });
   };
 
@@ -55,11 +49,7 @@ export default function NewChatButton({
       <button
         type="button"
         disabled={!hasActiveHistory}
-        onClick={() => {
-          setStep("choice");
-          setCustomTitle("");
-          setOpen(true);
-        }}
+        onClick={handleArchive}
         className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45 transition-colors cursor-pointer"
       >
         New Chat

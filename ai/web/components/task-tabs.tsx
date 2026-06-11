@@ -41,7 +41,15 @@ export function TabsProvider({
   return <Ctx.Provider value={{ active, setActive }}>{children}</Ctx.Provider>;
 }
 
-export function TabsNav({ tabs, sticky = false }: { tabs: readonly string[]; sticky?: boolean }) {
+export function TabsNav({
+  tabs,
+  sticky = false,
+  badges = {},
+}: {
+  tabs: readonly string[];
+  sticky?: boolean;
+  badges?: Partial<Record<string, number>>;
+}) {
   const ctx = useContext(Ctx);
   const router = useRouter();
   const pathname = usePathname();
@@ -73,6 +81,7 @@ export function TabsNav({ tabs, sticky = false }: { tabs: readonly string[]; sti
     >
       {tabs.map((tab) => {
         const selected = ctx.active === tab;
+        const badge = badges[tab] ?? 0;
         return (
           <button
             key={tab}
@@ -86,7 +95,14 @@ export function TabsNav({ tabs, sticky = false }: { tabs: readonly string[]; sti
                 : "border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
             }`}
           >
-            {tab}
+            <span className="inline-flex items-center gap-1.5">
+              <span>{tab}</span>
+              {badge > 0 ? (
+                <span className="rounded-full bg-[var(--color-crit)] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                  {badge > 99 ? "99+" : badge}
+                </span>
+              ) : null}
+            </span>
           </button>
         );
       })}

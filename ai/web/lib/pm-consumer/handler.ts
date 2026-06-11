@@ -12,11 +12,19 @@
 
 import { parsePmEvent, type PmEvent } from "@/lib/pm-events";
 import { handleDeploymentApproved } from "@/lib/deploy/monitor";
+import { PM_CHANNEL_BUS_SCHEMA_VERSION } from "@/lib/agents/pm-channel-bus";
+import {
+  dispatchOpenClawPmChannelTurnViaHttp,
+  parsePmChannelReplyTarget,
+  type SendPmChannelTurnArgs,
+} from "@/lib/agents/openclaw-pm-channel";
 import { dedupeKeyFor } from "./dedupe-key";
 import { createTargetResolver, type TargetResolver } from "./target";
 import {
   appendDelivery,
+  appendPmChannelTurnDelivery,
   markDelivered,
+  releaseDelivery,
 } from "./delivery-log";
 import { writeAuditRow } from "./audit";
 import { wakeAgent } from "./gateway-client";
@@ -32,13 +40,55 @@ export interface HandlerOptions {
   resolver?: TargetResolver;
   // Replay-test seam — defaults to live wakeAgent.
   wake?: typeof wakeAgent;
+  pmChannelDispatch?: typeof dispatchOpenClawPmChannelTurnViaHttp;
 }
 
 export function createHandler(opts: HandlerOptions = {}) {
   const resolver = opts.resolver ?? createTargetResolver();
   const wake = opts.wake ?? wakeAgent;
+  const pmChannelDispatch = opts.pmChannelDispatch ?? dispatchOpenClawPmChannelTurnViaHttp;
 
   async function handle(raw: unknown): Promise<HandleOutcome> {
+    const pmChannelTurn = parsePmChannelBusTurn(raw);
+    if (pmChannelTurn.ok) {
+      const dedupeKey = `openclaw.pm_channel_turn:${pmChannelTurn.id}`;
+      // Insert-once before dispatch so a re-published turn (retry after a
+      // false-negative publisher timeout) is suppressed here instead of running
+      // the agent a second time. Unlike PmEvents, native turns have an explicit
+      // retry path (pm-channel-jobs), so a genuinely failed dispatch releases
+      // the slot below to let the retry actually run.
+      const append = await appendPmChannelTurnDelivery({
+        dedupeKey,
+        id: pmChannelTurn.id,
+        actorId: pmChannelTurn.args.actor.id,
+        targetSlug: pmChannelTurn.args.agentSlug,
+        targetGatewayPort: pmChannelTurn.args.gatewayPort,
+        envelope: raw,
+      });
+      if (append.status === "duplicate") {
+        return { kind: "skipped-duplicate", dedupeKey };
+      }
+
+      const result = await pmChannelDispatch(pmChannelTurn.args);
+      if (!result.ok) {
+        await releaseDelivery(dedupeKey);
+        return {
+          kind: "failed",
+          dedupeKey,
+          error: result.error ?? `PM channel ingress failed${result.status ? ` (${result.status})` : ""}`,
+        };
+      }
+      await markDelivered({ deliveryId: append.deliveryId!, status: "delivered" });
+      return {
+        kind: "delivered",
+        dedupeKey,
+        targetSlug: pmChannelTurn.args.agentSlug,
+      };
+    }
+    if (pmChannelTurn.error) {
+      return { kind: "rejected", error: pmChannelTurn.error };
+    }
+
     let event: PmEvent;
     try {
       event = parsePmEvent(raw);
@@ -175,6 +225,71 @@ export function createHandler(opts: HandlerOptions = {}) {
   }
 
   return { handle };
+}
+
+type ParsedPmChannelBusTurn =
+  | { ok: true; id: string; args: SendPmChannelTurnArgs }
+  | { ok: false; error?: string };
+
+function parsePmChannelBusTurn(raw: unknown): ParsedPmChannelBusTurn {
+  if (!raw || typeof raw !== "object") return { ok: false };
+  const event = raw as Record<string, unknown>;
+  if (event.kind !== "openclaw.pm_channel_turn") return { ok: false };
+  if (event.schema !== PM_CHANNEL_BUS_SCHEMA_VERSION) {
+    return { ok: false, error: "PM channel bus: unsupported schema" };
+  }
+  const id = typeof event.id === "string" && event.id.trim() ? event.id.trim() : "";
+  if (!id) return { ok: false, error: "PM channel bus: missing id" };
+  if (!event.payload || typeof event.payload !== "object") {
+    return { ok: false, error: "PM channel bus: missing payload" };
+  }
+  const payload = event.payload as Record<string, unknown>;
+  const agentSlug = typeof payload.agentSlug === "string" ? payload.agentSlug.trim() : "";
+  const sessionKey = typeof payload.sessionKey === "string" ? payload.sessionKey.trim() : "";
+  const text = typeof payload.text === "string" ? payload.text : "";
+  const kind = payload.kind;
+  const gatewayPort = typeof payload.gatewayPort === "number" && Number.isFinite(payload.gatewayPort)
+    ? payload.gatewayPort
+    : null;
+  const target = parsePmChannelReplyTarget(payload.replyTarget);
+  const actorRaw = payload.actor && typeof payload.actor === "object"
+    ? payload.actor as Record<string, unknown>
+    : {};
+  const actorKind = actorRaw.kind === "agent" ? "agent" : "human";
+  const actorId = typeof actorRaw.id === "string" && actorRaw.id.trim()
+    ? actorRaw.id.trim()
+    : "pm-channel-bus";
+
+  if (!agentSlug) return { ok: false, error: "PM channel bus: missing agentSlug" };
+  if (!sessionKey) return { ok: false, error: "PM channel bus: missing sessionKey" };
+  if (!target) return { ok: false, error: "PM channel bus: invalid replyTarget" };
+  if (kind !== "direct" && kind !== "task-chat" && kind !== "task-comment" && kind !== "epic-chat") {
+    return { ok: false, error: "PM channel bus: invalid turn kind" };
+  }
+
+  return {
+    ok: true,
+    id,
+    args: {
+      gatewayPort,
+      agentSlug,
+      sessionKey,
+      kind,
+      text,
+      contextText: typeof payload.contextText === "string" ? payload.contextText : null,
+      systemPrompt: typeof payload.systemPrompt === "string" ? payload.systemPrompt : null,
+      actor: {
+        id: actorId,
+        username: typeof actorRaw.username === "string" ? actorRaw.username : null,
+        kind: actorKind,
+      },
+      replyTarget: target,
+      projectId: typeof payload.projectId === "string" ? payload.projectId : null,
+      timeoutMs: typeof payload.timeoutMs === "number" && Number.isFinite(payload.timeoutMs)
+        ? payload.timeoutMs
+        : undefined,
+    },
+  };
 }
 
 function wakeText(event: PmEvent): string {

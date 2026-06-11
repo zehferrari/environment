@@ -69,6 +69,9 @@ export interface TaskContextResponse {
     workItemKey: string | null;
     title: string;
     status: string;
+    approved_on: string | null;
+    approvedOn: string | null;
+    alert_reporter: boolean;
     description: string | null;
     branchName: string | null;
     commitPrefix: string | null;
@@ -175,7 +178,7 @@ export async function buildTaskContextJson(
     where: { id: taskId, archivedAt: null, deletedAt: null },
     select: {
       id: true, title: true, status: true, description: true, branchName: true,
-      commitPrefix: true, workItemKey: true, createdAt: true, updatedAt: true,
+      commitPrefix: true, workItemKey: true, approvedOn: true, alertReporter: true, createdAt: true, updatedAt: true,
       project: {
         select: {
           id: true, slug: true, name: true, description: true,
@@ -319,6 +322,9 @@ export async function buildTaskContextJson(
       workItemKey: task.workItemKey,
       title: task.title,
       status: task.status,
+      approved_on: task.approvedOn?.toISOString() ?? null,
+      approvedOn: task.approvedOn?.toISOString() ?? null,
+      alert_reporter: task.alertReporter,
       description: task.description,
       branchName: task.branchName,
       commitPrefix: effectiveCommitPrefix({

@@ -3,6 +3,9 @@ import {
   tagsForTaskReplyScope,
   revalidateTaskReplyScope,
   revalidateTaskAttachments,
+  revalidateTaskShell,
+  selectLatestRepoVerifyActivity,
+  sortByCreatedAtAsc,
   taskCacheTag,
 } from "../lib/tasks/cache";
 import {
@@ -49,6 +52,22 @@ for (const off of [
   assert(!commentRevalidated.includes(off), `comment reply must not revalidate ${off}`);
 }
 
+const shellRevalidated: string[] = [];
+revalidateTaskShell(taskId, (tag) => shellRevalidated.push(tag));
+assert.deepEqual(
+  shellRevalidated,
+  [taskCacheTag.shell(taskId), taskCacheTag.activity(taskId)],
+  "task shell mutations revalidate shell + activity",
+);
+for (const off of [
+  taskCacheTag.chat(taskId),
+  taskCacheTag.chatArchives(taskId),
+  taskCacheTag.attachments(taskId),
+  taskCacheTag.comments(taskId),
+]) {
+  assert(!shellRevalidated.includes(off), `task shell mutation must not revalidate ${off}`);
+}
+
 const attachmentRevalidated: string[] = [];
 revalidateTaskAttachments(taskId, (tag) => attachmentRevalidated.push(tag));
 assert.deepEqual(
@@ -88,5 +107,30 @@ assert(!epicCommentTags.includes(epicCacheTag.attachments(epicId)), "epic commen
 const revalidatedEpic: string[] = [];
 revalidateEpicReplyScope(epicId, "chat", (tag) => revalidatedEpic.push(tag));
 assert.deepEqual(revalidatedEpic, epicChatTags, "epic chat reply revalidates only the epic chat resource tags");
+
+const latestVerify = selectLatestRepoVerifyActivity([
+  {
+    kind: "pm.repo.verify.enqueue",
+    payload: "{}",
+    createdAt: "2026-06-11T11:14:53.036Z",
+  },
+  {
+    kind: "pm.repo.verify.ok",
+    payload: "{}",
+    createdAt: 1781179230442,
+  },
+]);
+assert.equal(latestVerify?.kind, "pm.repo.verify.ok", "latest verifier activity must compare mixed timestamp encodings");
+
+const sortedComments = sortByCreatedAtAsc([
+  { id: "newer-epoch", createdAt: 1781175875568 },
+  { id: "middle-iso", createdAt: "2026-06-11T11:04:25.198Z" },
+  { id: "oldest-epoch", createdAt: 1781174819403 },
+]);
+assert.deepEqual(
+  sortedComments.map((comment) => comment.id),
+  ["oldest-epoch", "middle-iso", "newer-epoch"],
+  "comments must sort chronologically across mixed timestamp encodings",
+);
 
 console.log("cache scope tests passed");

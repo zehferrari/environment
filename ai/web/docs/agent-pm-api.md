@@ -421,3 +421,8 @@ Two operational notes surfaced during this pass:
 | Recent-exchange helpers       | [`lib/agents/context-api/recent.ts`](../lib/agents/context-api/recent.ts) |
 | Dispatcher (thin envelope)    | [`lib/agents/chat-actions.ts`](../lib/agents/chat-actions.ts) |
 | Acceptance baseline suite     | [`scripts/pm-acceptance-baseline-test.ts`](../scripts/pm-acceptance-baseline-test.ts) |
+
+
+### Reporter alert flag
+
+Task update proposals may include `alert_reporter` (or `alertReporter`) as `true`/`1` when a task is blocked in a way agents cannot resolve and a human/reporter must intervene. The PM UI highlights those task rows/cards with a low-opacity red background until the flag is cleared. Do not use it for ordinary reviewer feedback, routine review waits, or agent-actionable blockers.

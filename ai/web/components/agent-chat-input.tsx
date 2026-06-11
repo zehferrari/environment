@@ -2,6 +2,7 @@
 
 import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
 import MaximizableTextarea from "@/components/maximizable-textarea";
+import { generateClientMessageId } from "@/lib/agents/client-message-id";
 import React, { useRef, useState } from "react";
 
 interface AgentChatInputProps {
@@ -32,6 +33,7 @@ export default function AgentChatInput({
   };
 
   const actionHandler = async (formData: FormData) => {
+    formData.set("messageId", generateClientMessageId());
     await sendAgentChatMessage(formData);
     setMessageText("");
     if (textareaRef.current) textareaRef.current.value = "";

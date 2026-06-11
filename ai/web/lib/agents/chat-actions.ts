@@ -16,19 +16,20 @@
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
+import { revalidateEpicReplyScope } from "@/lib/epics/cache";
 import {
   buildTaskNativeChannelPrompt,
   buildTaskNativeEditGrantPrompt,
+  buildTaskNativeIncrementalChannelPrompt,
 } from "@/lib/agents/task-chat-context";
 import {
   buildEpicNativeChannelPrompt,
   buildEpicNativeEditGrantPrompt,
+  buildEpicNativeIncrementalChannelPrompt,
 } from "@/lib/agents/epic-chat-context";
 import { extractMentions } from "@/lib/markdown";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
-import {
-  buildPmTurnSessionKey,
-} from "@/lib/agents/openclaw-pm-channel";
 import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
 import { createContextGrantUrl } from "@/lib/agents/context-grants";
 import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/discussion-reply-format";
@@ -46,6 +47,14 @@ import {
   recentComments,
   recentDiscussion,
 } from "@/lib/agents/context-api/recent";
+import { isValidClientMessageId } from "@/lib/agents/client-message-id";
+import {
+  chatContextRevision,
+  consumeSpeculativeAgentChatContext,
+  directedTargetKey,
+  scheduleSpeculativeAgentChatContext,
+} from "@/lib/agents/speculative-context";
+import { stripChatMarkdown as compactText, truncateSummary } from "@/lib/text";
 
 async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> {
   const session = await auth();
@@ -59,21 +68,6 @@ function agentCallbackBaseUrl() {
   return process.env.PM_AGENT_CALLBACK_URL
     ?? process.env.PM_INTERNAL_APP_URL
     ?? "http://127.0.0.1:3000";
-}
-
-function compactText(value: string) {
-  return value
-    .replace(/```[\s\S]*?```/g, " code ")
-    .replace(/[#*_>`[\]()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function truncateSummary(value: string, max = 72) {
-  if (value.length <= max) return value;
-  const sliced = value.slice(0, max - 1).trimEnd();
-  const breakAt = Math.max(sliced.lastIndexOf(" "), sliced.lastIndexOf("."));
-  return `${(breakAt > 28 ? sliced.slice(0, breakAt) : sliced).trimEnd()}...`;
 }
 
 function summarizeRoomMessages(
@@ -190,6 +184,39 @@ function appendAttachmentLinks(
   return lines.join("\n");
 }
 
+
+export async function prebuildAgentChatContext(formData: FormData) {
+  await requireActor();
+  const projectSlug = String(formData.get("projectSlug") ?? "");
+  const taskIdRaw = String(formData.get("taskId") ?? "");
+  const epicIdRaw = String(formData.get("epicId") ?? "");
+  const messageId = String(formData.get("messageId") ?? "").trim();
+  const bodyRaw = String(formData.get("body") ?? "").trim();
+  const taskId = taskIdRaw === "" ? null : taskIdRaw;
+  const epicId = epicIdRaw === "" ? null : epicIdRaw;
+  const selectedTargets = Array.from(
+    new Set(
+      formData
+        .getAll("discussionTarget")
+        .map((value) => String(value).trim())
+        .filter(Boolean),
+    ),
+  );
+
+  if (!projectSlug || !messageId || !isValidClientMessageId(messageId)) return { scheduled: false };
+  if ((taskId === null) === (epicId === null)) return { scheduled: false };
+  if (bodyRaw.length > 8000) return { scheduled: false };
+
+  return scheduleSpeculativeAgentChatContext({
+    projectSlug,
+    taskId,
+    epicId,
+    messageId,
+    bodyRaw,
+    selectedTargets,
+  });
+}
+
 export async function sendAgentChatMessage(formData: FormData) {
   const actor = await requireActor();
   const slug = String(formData.get("projectSlug") ?? "");
@@ -215,6 +242,7 @@ export async function sendAgentChatMessage(formData: FormData) {
   const originChannel = requestedOriginChannel === "description" ? "description" : "chat";
   const decisionForMessageId = String(formData.get("decisionForMessageId") ?? "").trim() || null;
   const decisionOption = String(formData.get("decisionOption") ?? "").trim() || null;
+  const requestedMessageId = String(formData.get("messageId") ?? "").trim() || null;
   const allowDescriptionEdit = actor.kind === "human";
   const allowWorkItemManagement = actor.kind === "human";
 
@@ -223,12 +251,25 @@ export async function sendAgentChatMessage(formData: FormData) {
     throw new Error("Chat target must be exactly one of taskId or epicId");
   }
   if (bodyRaw.length > 8000) return;
+  if (requestedMessageId && !isValidClientMessageId(requestedMessageId)) {
+    throw new Error("Invalid client messageId");
+  }
 
   const project = await db.project.findUnique({
     where: { slug },
     select: { id: true },
   });
   if (!project) return;
+
+  if (requestedMessageId) {
+    const existing = await db.agentChatMessage.findUnique({
+      where: { id: requestedMessageId },
+      select: { id: true },
+    });
+    if (existing) {
+      throw new Error("Client messageId already exists");
+    }
+  }
 
   const users = await db.user.findMany({
     select: {
@@ -429,6 +470,7 @@ export async function sendAgentChatMessage(formData: FormData) {
 
   const msg = await db.agentChatMessage.create({
     data: {
+      ...(requestedMessageId ? { id: requestedMessageId } : {}),
       projectId: project.id,
       taskId,
       epicId,
@@ -490,6 +532,24 @@ export async function sendAgentChatMessage(formData: FormData) {
     activeAgentSlugs,
   });
 
+  // Speculative-context lookup key shared by every target agent of this send.
+  // The directed key pins the cache entry to the recipients/silence rule that
+  // was actually sent (see directedTargetKey); the revision is identical across
+  // agents, so compute it at most once and reuse it for each consume instead of
+  // re-running the ~9-aggregate revision query per agent. Computed lazily so a
+  // send where every turn is incremental (no consume) pays nothing.
+  const speculativeDirectedKey = directedTargetKey({ targetType, targetValue, targetLabel });
+  let speculativeRevisionPromise: Promise<string> | null = null;
+  const getSpeculativeRevision = () => {
+    speculativeRevisionPromise ??= chatContextRevision({
+      projectId: project.id,
+      taskId: taskId ? task.id : null,
+      epicId: taskId ? null : epic.id,
+      excludeMessageId: msg.id,
+    });
+    return speculativeRevisionPromise;
+  };
+
   // Recent-exchange slice (HOMELAB-41 prioritization fix). This is the
   // single most important context for "did the participant just agree to
   // a specific scope?" — so we compute it once and inline it ABOVE the
@@ -522,49 +582,98 @@ export async function sendAgentChatMessage(formData: FormData) {
       turnId: msg.id,
     });
 
-    const baseSystemPrompt = taskId
-      ? buildTaskNativeChannelPrompt(task.title, agentSlug, directedDescriptor, {
+    const sessionBinding = await getOrCreateAgentSessionBinding({
+      scopeType: taskId ? "task" : "epic",
+      scopeId: taskId ? task.id : epic.id,
+      agentSlug,
+    });
+    const previousDispatchedMessageId = sessionBinding.lastDispatchedMessageId;
+    const isIncrementalTurn = !!previousDispatchedMessageId;
+    const taskGrantUrl = taskId
+      ? await createContextGrantUrl({
           baseUrl: fetchBaseUrl,
-          projectId: project.id,
-          inlineRecentBlock,
-          taskId: task.id,
-          epicId: task.epicId ?? null,
-          grantUrls: {
-            task: await createContextGrantUrl({
-              baseUrl: fetchBaseUrl,
-              agentSlug,
-              scopeType: "task",
-              scopeId: task.id,
-              turnId: msg.id,
-            }),
-            epic: task.epicId
-              ? await createContextGrantUrl({
-                  baseUrl: fetchBaseUrl,
-                  agentSlug,
-                  scopeType: "epic",
-                  scopeId: task.epicId,
-                  turnId: msg.id,
-                })
-              : null,
-            project: projectGrantUrl,
-          },
+          agentSlug,
+          scopeType: "task",
+          scopeId: task.id,
+          turnId: msg.id,
         })
-      : buildEpicNativeChannelPrompt(epic.title, agentSlug, directedDescriptor, {
+      : null;
+    const epicGrantUrl = taskId
+      ? task.epicId
+        ? await createContextGrantUrl({
+            baseUrl: fetchBaseUrl,
+            agentSlug,
+            scopeType: "epic",
+            scopeId: task.epicId,
+            turnId: msg.id,
+          })
+        : null
+      : await createContextGrantUrl({
           baseUrl: fetchBaseUrl,
-          projectId: project.id,
-          inlineRecentBlock,
-          epicId: epic.id,
-          grantUrls: {
-            epic: await createContextGrantUrl({
-              baseUrl: fetchBaseUrl,
-              agentSlug,
-              scopeType: "epic",
-              scopeId: epic.id,
-              turnId: msg.id,
-            }),
-            project: projectGrantUrl,
-          },
+          agentSlug,
+          scopeType: "epic",
+          scopeId: epic.id,
+          turnId: msg.id,
         });
+
+    const prebuiltContext = isIncrementalTurn
+      ? null
+      : await consumeSpeculativeAgentChatContext({
+          projectId: project.id,
+          taskId: taskId ? task.id : null,
+          epicId: taskId ? null : epic.id,
+          messageId: msg.id,
+          agentSlug,
+          directedKey: speculativeDirectedKey,
+          revision: await getSpeculativeRevision(),
+        });
+    const baseSystemPrompt = prebuiltContext?.baseSystemPrompt ?? (taskId
+      ? isIncrementalTurn
+        ? buildTaskNativeIncrementalChannelPrompt(task.title, agentSlug, previousDispatchedMessageId, directedDescriptor, {
+            baseUrl: fetchBaseUrl,
+            projectId: project.id,
+            inlineRecentBlock,
+            taskId: task.id,
+            epicId: task.epicId ?? null,
+            grantUrls: {
+              task: taskGrantUrl!,
+              epic: epicGrantUrl,
+              project: projectGrantUrl,
+            },
+          })
+        : buildTaskNativeChannelPrompt(task.title, agentSlug, directedDescriptor, {
+            baseUrl: fetchBaseUrl,
+            projectId: project.id,
+            inlineRecentBlock,
+            taskId: task.id,
+            epicId: task.epicId ?? null,
+            grantUrls: {
+              task: taskGrantUrl!,
+              epic: epicGrantUrl,
+              project: projectGrantUrl,
+            },
+          })
+      : isIncrementalTurn
+        ? buildEpicNativeIncrementalChannelPrompt(epic.title, agentSlug, previousDispatchedMessageId, directedDescriptor, {
+            baseUrl: fetchBaseUrl,
+            projectId: project.id,
+            inlineRecentBlock,
+            epicId: epic.id,
+            grantUrls: {
+              epic: epicGrantUrl!,
+              project: projectGrantUrl,
+            },
+          })
+        : buildEpicNativeChannelPrompt(epic.title, agentSlug, directedDescriptor, {
+            baseUrl: fetchBaseUrl,
+            projectId: project.id,
+            inlineRecentBlock,
+            epicId: epic.id,
+            grantUrls: {
+              epic: epicGrantUrl!,
+              project: projectGrantUrl,
+            },
+          }));
 
     const descriptionPrompt = allowDescriptionEdit
       ? taskId
@@ -604,16 +713,10 @@ export async function sendAgentChatMessage(formData: FormData) {
       workItemPrompt,
     ].filter(Boolean).join("\n\n");
 
-    const sessionBinding = await getOrCreateAgentSessionBinding({
-      scopeType: taskId ? "task" : "epic",
-      scopeId: taskId ? task.id : epic.id,
-      agentSlug,
-    });
-
     const delivery = await sendOrQueueOpenClawPmChannelTurn({
       gatewayPort,
       agentSlug,
-      sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
+      sessionKey: sessionBinding.openclawSessionKey,
       kind: taskId ? "task-chat" : "epic-chat",
       text: body,
       contextText: null,
@@ -641,6 +744,16 @@ export async function sendAgentChatMessage(formData: FormData) {
           },
     });
 
+    if (delivery.ok) {
+      await db.agentSessionBinding.update({
+        where: { id: sessionBinding.id },
+        data: {
+          lastDispatchedMessageId: msg.id,
+          lastDispatchedAt: new Date(),
+        },
+      });
+    }
+
     await db.activityLog.create({
       data: {
         projectId: project.id,
@@ -662,8 +775,64 @@ export async function sendAgentChatMessage(formData: FormData) {
     });
   }));
 
-  if (taskId) revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-  if (epicId) revalidatePath(`/projects/${slug}/epics/${epicId}`);
+  if (taskId) revalidateTaskReplyScope(taskId, "chat");
+  if (epicId) revalidateEpicReplyScope(epicId, "chat");
+
+  return { messageId: msg.id };
+}
+
+
+export async function getAgentChatRoomMessages(formData: FormData) {
+  await requireActor();
+  const slug = String(formData.get("projectSlug") ?? "");
+  const taskIdRaw = String(formData.get("taskId") ?? "");
+  const epicIdRaw = String(formData.get("epicId") ?? "");
+  const taskId = taskIdRaw === "" ? null : taskIdRaw;
+  const epicId = epicIdRaw === "" ? null : epicIdRaw;
+
+  if (!slug || (taskId === null) === (epicId === null)) return [];
+
+  const target = taskId
+    ? await db.task.findUnique({
+        where: { id: taskId },
+        select: { id: true, deletedAt: true, project: { select: { slug: true } } },
+      })
+    : await db.epic.findUnique({
+        where: { id: epicId! },
+        select: { id: true, deletedAt: true, project: { select: { slug: true } } },
+      });
+
+  if (!target || target.project.slug !== slug || target.deletedAt) return [];
+
+  const messages = await db.agentChatMessage.findMany({
+    where: {
+      taskId,
+      epicId,
+      agentSlug: "room",
+      archiveId: null,
+    },
+    orderBy: { createdAt: "asc" },
+    include: {
+      sender: {
+        select: {
+          id: true,
+          username: true,
+          kind: true,
+          name: true,
+          avatarUpdatedAt: true,
+          agent: { select: { slug: true, name: true, avatar: true } },
+        },
+      },
+      deletedBy: { select: { username: true, name: true, kind: true } },
+    },
+  });
+
+  return messages.map((message) => ({
+    ...message,
+    createdAt: message.createdAt.toISOString(),
+    editGrantUsedAt: message.editGrantUsedAt?.toISOString() ?? null,
+    deletedAt: message.deletedAt?.toISOString() ?? null,
+  }));
 }
 
 export async function archiveChatRoom(formData: FormData) {

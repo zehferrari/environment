@@ -13,7 +13,7 @@ import {
 } from "@/lib/tasks/workflow-actors";
 import { enqueueBranchVerifyJob } from "@/lib/deploy/branch-verify";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
-import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
+import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
 import { resolveGitIdentity } from "@/lib/settings/system";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
@@ -110,6 +110,7 @@ async function moveTaskStatus(args: {
       },
     }),
   ]);
+  revalidateTaskShell(args.taskId);
   publishBoardTouch(args.projectId);
 }
 
@@ -381,6 +382,7 @@ export async function POST(
       });
     }
     if (comment) revalidateTaskReplyScope(task.id, "chat");
+    revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     return NextResponse.json({ ok: true, taskId: task.id, approved: true, status: moveToTodo ? "To Do" : task.status });
@@ -638,8 +640,10 @@ export async function POST(
       messageId,
       action,
     });
+    revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     if (completion.nextTask) {
+      revalidateTaskShell(completion.nextTask.id);
       revalidatePath(`/projects/${task.project.slug}/tasks/${completion.nextTask.id}`);
     }
     revalidatePath(`/projects/${task.project.slug}`);

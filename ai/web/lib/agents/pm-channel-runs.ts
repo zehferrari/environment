@@ -22,6 +22,10 @@ const STREAM_INACTIVE_TIMEOUT_MS = Number.parseInt(
   process.env.PM_OPENCLAW_STREAM_INACTIVE_TIMEOUT_MS ?? "180000",
   10,
 );
+const FIRST_STREAM_WARNING_MS = Number.parseInt(
+  process.env.PM_OPENCLAW_FIRST_STREAM_WARNING_MS ?? "15000",
+  10,
+);
 
 export function pmChannelRunTargetKey(target: PmChannelReplyTarget): string {
   if (target.kind === "direct") {
@@ -55,6 +59,10 @@ async function record(run: () => Promise<unknown>, label: string) {
 
 function timeoutMs(value: number, fallback: number) {
   return Number.isFinite(value) && value >= 30_000 ? value : fallback;
+}
+
+function warningMs(value: number, fallback: number) {
+  return Number.isFinite(value) && value >= 1_000 ? value : fallback;
 }
 
 function replyActivityKind(target: PmChannelReplyTarget) {
@@ -177,6 +185,9 @@ export async function recordPmChannelRunDispatch(args: {
       where: { targetKey: pmChannelRunTargetKey(args.target) },
       data: {
         httpStatus: args.result.status ?? null,
+        driver: args.result.transportMode
+          ? `openclaw-pm-channel:${args.result.transportMode}`
+          : "openclaw-pm-channel",
         status: ok ? "accepted" : "failed",
         error: ok ? null : clippedError(args.result.error),
         acceptedAt: ok ? now : null,
@@ -355,9 +366,18 @@ export async function recordPmChannelRunEvent(args: {
     async () => {
       const existing = await db.pmChannelRun.findUnique({
         where: { targetKey },
-        select: { streamingAt: true },
+        select: { id: true, status: true, createdAt: true, acceptedAt: true, streamingAt: true },
       });
+      // Never resurrect a run the watchdog (or a prior terminal event) already
+      // settled. A late streaming chunk must not reopen a failed/complete run
+      // and re-show the spinner; a late `final` may still upgrade a failed run
+      // to complete because a real reply did arrive after all.
+      if (existing?.status === "complete") return;
+      if (existing?.status === "failed" && status !== "complete") return;
       const firstTokenAt = existing?.streamingAt ?? now;
+      const firstStreamMs = existing?.streamingAt || !existing?.acceptedAt
+        ? null
+        : now.getTime() - existing.acceptedAt.getTime();
       await db.pmChannelRun.upsert({
         where: { targetKey },
         create: {
@@ -385,6 +405,28 @@ export async function recordPmChannelRunEvent(args: {
           lastEventAt: now,
         },
       });
+      const thresholdMs = warningMs(FIRST_STREAM_WARNING_MS, 15_000);
+      if (firstStreamMs !== null && firstStreamMs > thresholdMs) {
+        const payload = {
+          targetKey,
+          kind: args.target.kind,
+          agentSlug: args.target.agentSlug,
+          messageId: args.target.messageId,
+          runId: existing?.id ?? null,
+          acceptedAt: existing?.acceptedAt?.toISOString() ?? null,
+          firstStreamAt: now.toISOString(),
+          firstStreamMs,
+          thresholdMs,
+        };
+        console.warn("[pm-channel] slow first stream", payload);
+        await db.activityLog.create({
+          data: {
+            kind: "pm.channel.latency_warning",
+            targetAgent: args.target.agentSlug,
+            payload: JSON.stringify(payload),
+          },
+        });
+      }
     },
     "stream run state",
   );

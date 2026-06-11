@@ -1,8 +1,11 @@
 import { db } from "@/lib/db";
 import type { PmChannelReplyTarget } from "@/lib/agents/openclaw-pm-channel";
 import {
+  acknowledgePmChannelStreamSeq,
   applyPmChannelStreamInput,
   emptyPmChannelStreamState,
+  publishPmChannelStreamEvent,
+  pmChannelStreamKey,
   type PmChannelReplayFrame,
   type PmChannelStreamEventKind,
   type PmChannelStreamInput,
@@ -14,6 +17,94 @@ import {
 } from "@/lib/agents/pm-channel-runs";
 
 export type PersistedStreamInput = Omit<PmChannelStreamInput, "target">;
+
+const STREAM_DURABILITY_RETRY_BASE_MS = 250;
+const STREAM_DURABILITY_RETRY_MAX_MS = 5_000;
+
+type DurabilitySuccess = (
+  persisted: Awaited<ReturnType<typeof appendPmChannelStreamEventForTarget>>,
+) => void | Promise<void>;
+
+const durabilityChains = new Map<string, Promise<void>>();
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function durabilityInput(input: PmChannelStreamInput): PersistedStreamInput {
+  return {
+    event: input.event,
+    text: input.text,
+    delta: input.delta,
+    replace: input.replace,
+    error: input.error,
+    runStatus: input.runStatus,
+    statusKind: input.statusKind,
+    toolStatus: input.toolStatus,
+    toolName: input.toolName,
+  };
+}
+
+async function persistWithRetry(input: PmChannelStreamInput, onPersisted?: DurabilitySuccess) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const persisted = await appendPmChannelStreamEventForTarget({
+        target: input.target,
+        ...durabilityInput(input),
+      });
+      acknowledgePmChannelStreamSeq(input.target, persisted.seq);
+      if (onPersisted) {
+        Promise.resolve(onPersisted(persisted)).catch((err) => {
+          console.warn("[pm-channel] failed to run stream durability callback", {
+            key: pmChannelStreamKey(input.target),
+            event: input.event,
+            error: err,
+          });
+        });
+      }
+      return;
+    } catch (err) {
+      console.warn("[pm-channel] failed to persist stream event; retrying", {
+        key: pmChannelStreamKey(input.target),
+        event: input.event,
+        attempt,
+        error: err,
+      });
+      await sleep(Math.min(
+        STREAM_DURABILITY_RETRY_MAX_MS,
+        STREAM_DURABILITY_RETRY_BASE_MS * 2 ** Math.min(8, attempt - 1),
+      ));
+    }
+  }
+}
+
+export function enqueuePmChannelStreamDurability(
+  input: PmChannelStreamInput,
+  onPersisted?: DurabilitySuccess,
+) {
+  const key = pmChannelStreamKey(input.target);
+  const previous = durabilityChains.get(key) ?? Promise.resolve();
+  const next = previous
+    .catch((err) => {
+      console.warn("[pm-channel] stream durability queue recovered after failure", { key, error: err });
+    })
+    .then(() => persistWithRetry(input, onPersisted));
+
+  durabilityChains.set(key, next);
+  next.finally(() => {
+    if (durabilityChains.get(key) === next) durabilityChains.delete(key);
+  });
+  return next;
+}
+
+export function publishPmChannelStreamEventDurably(
+  input: PmChannelStreamInput,
+  onPersisted?: DurabilitySuccess,
+) {
+  const state = publishPmChannelStreamEvent(input);
+  enqueuePmChannelStreamDurability(input, onPersisted);
+  return state;
+}
 
 function targetKind(target: PmChannelReplyTarget) {
   return target.kind;
@@ -70,7 +161,7 @@ export async function appendPmChannelStreamEvent(args: {
       },
       select: { streamSeq: true },
     });
-    return tx.pmChannelStreamEvent.create({
+    const created = await tx.pmChannelStreamEvent.create({
       data: {
         runId: args.runId,
         seq: run.streamSeq,
@@ -83,6 +174,18 @@ export async function appendPmChannelStreamEvent(args: {
       },
       select: { id: true, runId: true, seq: true, kind: true, payload: true, createdAt: true },
     });
+    // A `final` carrying replace+full-text is a self-contained terminal frame:
+    // replay can reconstruct the complete reply from it alone. Drop the now-
+    // redundant per-token/partial rows so this append-only ledger doesn't grow
+    // without bound (a long streamed reply is otherwise hundreds of rows that
+    // every reconnect re-reads). Finals without replace text are left intact so
+    // delta-accumulated replies still replay correctly.
+    if (args.event === "final" && args.input.replace && args.input.text) {
+      await tx.pmChannelStreamEvent.deleteMany({
+        where: { runId: args.runId, seq: { lt: run.streamSeq } },
+      });
+    }
+    return created;
   });
 }
 
@@ -94,6 +197,9 @@ export async function appendPmChannelStreamEventForTarget(args: {
   replace?: boolean;
   error?: string;
   runStatus?: PmChannelStreamState["runStatus"];
+  statusKind?: PersistedStreamInput["statusKind"];
+  toolStatus?: PersistedStreamInput["toolStatus"];
+  toolName?: string;
 }) {
   const run = await ensurePmChannelRunForTarget(args.target);
   return appendPmChannelStreamEvent({
@@ -106,6 +212,9 @@ export async function appendPmChannelStreamEventForTarget(args: {
       replace: args.replace,
       error: args.error,
       runStatus: args.runStatus,
+      statusKind: args.statusKind,
+      toolStatus: args.toolStatus,
+      toolName: args.toolName,
     },
   });
 }
@@ -134,6 +243,9 @@ export async function replayPmChannelStreamFrames(args: {
       replace: payload.replace,
       error: payload.error,
       runStatus: payload.runStatus,
+      statusKind: payload.statusKind,
+      toolStatus: payload.toolStatus,
+      toolName: payload.toolName,
       seq: row.seq,
     });
     if (row.seq > args.afterSeq) {

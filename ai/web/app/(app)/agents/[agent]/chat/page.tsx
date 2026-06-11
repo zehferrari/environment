@@ -11,12 +11,15 @@ import {
   getAgentChatUploadDir,
 } from "@/lib/agents/direct-chat-actions";
 import { getPmChannelRunSnapshot } from "@/lib/agents/pm-channel-runs";
+import { messageSenderSelect, serializeSender } from "@/lib/agents/chat-message-sender";
 import ChatLayoutClient from "./chat-layout-client";
 import ChatInput from "@/components/chat-input";
 import ProposalReview from "./proposal-review";
 import ChatMessagesContainer from "./chat-messages-container";
 import ArchiveSidebarClient from "./archive-sidebar-client";
 import NewChatButton from "@/components/new-chat-button";
+import NativePmNotificationToggle from "@/components/native-pm-notification-toggle";
+import DirectChatOptimisticProvider from "@/components/direct-chat-optimistic-provider";
 import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
@@ -54,32 +57,6 @@ function TypingDots() {
   );
 }
 
-const messageSenderSelect = {
-  id: true,
-  username: true,
-  kind: true,
-  name: true,
-  avatarUpdatedAt: true,
-  agent: { select: { slug: true, name: true, avatar: true } },
-} as const;
-
-function serializeSender(sender: {
-  id: string;
-  username: string;
-  kind: string;
-  name: string | null;
-  avatarUpdatedAt: Date | null;
-  agent: { slug: string; name: string; avatar: string | null } | null;
-}) {
-  return {
-    id: sender.id,
-    username: sender.username,
-    kind: sender.kind,
-    name: sender.name,
-    avatarUpdatedAt: sender.avatarUpdatedAt?.toISOString() ?? null,
-    agent: sender.agent,
-  };
-}
 
 type ArchiveSummary = {
   id: string;
@@ -266,7 +243,11 @@ export default async function DirectAgentChatPage({
       where: { agentSlug: slug, archiveId: null },
       // Soft-deleted bubbles (HOMELAB-41 / item 2) stay in this list so
       // chat-messages-container can render the collapsed dotted divider.
-      orderBy: { createdAt: "asc" },
+      // Take the NEWEST 120 (desc) and restore ascending order after the
+      // Promise.all below. asc + take keeps the OLDEST 120 and drops the recent
+      // turn in a long chat, so the reconcile poll (which returns newest-120)
+      // and any router.refresh() would clobber the just-streamed reply.
+      orderBy: { createdAt: "desc" },
       take: 120,
       include: {
         sender: { select: messageSenderSelect },
@@ -312,6 +293,8 @@ export default async function DirectAgentChatPage({
       })
       : Promise.resolve(null),
   ]);
+  // Restore chronological (ascending) order after taking the newest 120 above.
+  activeMessages.reverse();
   const viewingArchive = Boolean(selectedArchive);
   const activeBaseArchiveId = activeMessages.find((m) => m.baseArchiveId)?.baseArchiveId ?? null;
   // The project the active conversation is attached to (carried forward),
@@ -576,7 +559,8 @@ export default async function DirectAgentChatPage({
           </div>
         </Link>
         
-        <div className="shrink-0">
+        <div className="flex shrink-0 items-center gap-2">
+          {!viewingArchive ? <NativePmNotificationToggle /> : null}
           {viewingArchive ? (
             <Link
               href={`/agents/${slug}/chat`}
@@ -595,6 +579,7 @@ export default async function DirectAgentChatPage({
 
       <ChatLayoutClient
         chatSection={
+          <DirectChatOptimisticProvider agentSlug={slug} baseArchiveId={activeBaseArchiveId}>
           <section className="flex min-h-0 h-full flex-col rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] shadow-sm">
             <div className="border-b border-[var(--color-line)] px-4 py-3 shrink-0">
               <p className="text-sm font-medium">{viewingArchive ? "Archived chat" : "Current chat"}</p>
@@ -680,6 +665,7 @@ export default async function DirectAgentChatPage({
               />
             )}
           </section>
+          </DirectChatOptimisticProvider>
         }
         asideSection={
           <ArchiveSidebarClient

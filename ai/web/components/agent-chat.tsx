@@ -9,6 +9,7 @@ import {
 import { renderFullMarkdown } from "@/lib/markdown";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import AgentChatInput from "./agent-chat-input";
+import NativePmNotificationToggle from "@/components/native-pm-notification-toggle";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
 import {
@@ -82,11 +83,14 @@ export default async function AgentChatSidebar(props: TargetProps) {
         <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
           Agent chat
         </div>
-        {dispatchIsDisabled() ? (
+        <div className="flex items-center gap-2">
+          <NativePmNotificationToggle compact />
+          {dispatchIsDisabled() ? (
           <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
             Stored
           </span>
-        ) : null}
+          ) : null}
+        </div>
       </div>
 
       {targets.length === 0 ? (

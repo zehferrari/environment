@@ -367,12 +367,21 @@ as failed so the chat UI does not wait indefinitely.
 
 **Direct agent chat.** `/agents/<slug>/chat` opens a sidebar-launched
 conversation with one agent. Sending a direct message persists it,
-then posts a native `direct` turn to the agent's OpenClaw `pm` channel.
+then schedules native `direct` dispatch work so the browser can show the
+human message immediately while context building and gateway handoff run
+off the submit path. The normal transport is the PM-channel bus
+(`PM_CHANNEL_BUS_SOCKET`, `PM_CHANNEL_BUS_DROP_DIR`, or
+`PM_CHANNEL_BUS_HTTP_URL`); direct HTTP remains available only as the
+explicit `PM_OPENCLAW_CHANNEL_HTTP_FALLBACK=1` fallback.
 OpenClaw records the session, streams partial reply chunks back to
 `POST /api/openclaw/pm-channel/stream` for the live browser projection,
 and delivers the durable final reply back to
 `POST /api/openclaw/pm-channel/reply` with the shared PM channel token.
-To ensure responsive streaming, `/api/openclaw/pm-channel/events` is 
+The browser listens to `/api/openclaw/pm-channel/events` for live stream
+frames and reconciles active direct-chat rows through
+`GET /api/agents/<slug>/chat/messages`; that lightweight reconcile path
+replaces full-page polling after missed or late final stream events. To
+ensure responsive streaming, `/api/openclaw/pm-channel/events` is
 excluded from middleware proxy buffering.
 
 The UI supports several key enhancements:
@@ -380,9 +389,9 @@ The UI supports several key enhancements:
 - **Collapsible Sidebar**: The archive sidebar can be toggled using an icon button at the top-right of the chat header (persisted in `localStorage`).
 - **Interactive Calendar & Lineage**: The sidebar includes a monthly calendar displaying highlight indicators on dates with active chats, syncing on hover. Clicking on a highlighted date filters the list to show only conversations from that day. Archive cards in the sidebar are designed to be extremely compact, displaying dates in a modern format (e.g., `Today · 15:30` or `25 May · 15:30`), along with paperclip attachment indicators, cumulative message counts, and total memory sizes in KB. Relationships are no longer displayed on the cards; instead, viewing an archive with parents displays a **Chat Initial Context** button at the top of the chat which dynamically prepends the parent conversation history each time it is clicked, showing **Chat Start...** once the oldest ancestor is reached. Parent archives with active continuation children cannot be deleted.
 - **Smart Scroll**: When sending or receiving messages, the chat auto-scrolls. If a message is taller than the viewport, the top of the message is aligned with the top of the chat area.
-- **Samba Attachments**: Supports file uploads inside the compose box. Selected files are uploaded and saved to the agent's Samba drive under `/srv/samba/shared/[agent]/chats/[chatId]/`. Supported text-like attachments have their content extracted and appended as context in the prompt payload sent to the agent. Deleting an archive automatically purges its uploads folder.
+- **Samba Attachments**: Supports file uploads inside the compose box. Selected files are uploaded and saved to the agent's Samba drive under `/srv/samba/shared/[agent]/chats/[chatId]/`. Supported text-like attachments have their content extracted and appended as context when the current message uploads files or asks for attachment/file context; set `PM_DIRECT_CHAT_ALWAYS_INCLUDE_FILES_CONTEXT=1` to restore unconditional file-context inclusion. Deleting an archive automatically purges its uploads folder.
 
-OpenClaw exposes the selected thinking budget and run metadata inside a collapsible `<details>` panel, not private chain-of-thought text. To keep reply latency down, the PM channel context includes a bounded recent transcript and bounded parent-archive excerpt (`PM_DIRECT_CHAT_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT`). Because PM and OpenClaw run on the same host, channel callbacks default to `http://127.0.0.1:3000`; set `PM_AGENT_CALLBACK_URL` or `PM_INTERNAL_APP_URL` to override that.
+OpenClaw exposes the selected thinking budget and run metadata inside a collapsible `<details>` panel, not private chain-of-thought text. To keep reply latency down, the PM channel context includes a bounded recent transcript and bounded parent-archive excerpt (`PM_DIRECT_CHAT_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT`). Native PM-channel dispatch is durable via queued jobs, persisted stream events, and bus delivery/retry state rather than a warm-agent pool; direct-chat browser reconciliation uses a `(createdAt, id)` incremental cursor so same-timestamp messages are not skipped. Slow accepted-to-first-stream runs emit `pm.channel.latency_warning` activity rows when they exceed `PM_OPENCLAW_FIRST_STREAM_WARNING_MS` (default `15000`). Because PM and OpenClaw run on the same host, channel callbacks default to `http://127.0.0.1:3000`; set `PM_AGENT_CALLBACK_URL` or `PM_INTERNAL_APP_URL` to override that.
 
 **Agent work-item proposals.** A direct chat (`/agents/<slug>/chat`) can
 be attached to a project, and Task/Epic Action Plan messages plus
@@ -484,13 +493,13 @@ message, or task comment that targets an agent, PM:
 
 1. Persists the PM-side row (`DirectAgentChatMessage`, `AgentChatMessage`,
    or `Comment` plus mirrored `AgentChatMessage` for comment origins).
-2. Builds bounded channel guidance for the current turn. Task/Epic chat
-   prompts include the recent hot path plus scoped live-context grant
-   URLs; smaller workflow/comment paths may still include compact inline
-   context.
-3. Resolves an `AgentSessionBinding`, derives the channel session key
+2. Resolves an `AgentSessionBinding`, derives the channel session key
    for that surface, records a durable local run/job, and sends or queues
    the turn for the target agent gateway:
+3. Builds bounded channel guidance for the current turn off the direct
+   chat submit path. Task/Epic chat prompts include the recent hot path
+   plus scoped live-context grant URLs; smaller workflow/comment paths may
+   still include compact inline context.
 
 ```json
 {
@@ -741,6 +750,13 @@ See `.env.example` for the full list. Highlights:
 - `PM_OPENCLAW_CHANNEL_INGRESS_PATH` — gateway ingest path, default
   `/pm-channel/ingest`.
 - `PM_OPENCLAW_CHANNEL_TIMEOUT_MS` — ingest post timeout, default 5000.
+- `PM_CHANNEL_BUS_SOCKET`, `PM_CHANNEL_BUS_DROP_DIR`,
+  `PM_CHANNEL_BUS_HTTP_URL` — bus-first native PM-channel dispatch.
+  Production/file-drop previews set `PM_CHANNEL_BUS_DROP_DIR` to the same
+  directory as `PM_CONSUMER_DROP_DIR` (default `/var/lib/pm/drop`) so
+  `pm-consumer` can deliver `openclaw.pm_channel_turn` envelopes to each
+  agent's `/pm-channel/ingest` endpoint. At least one bus setting is
+  required when async native PM-channel dispatch is enabled.
 - `PM_INTERNAL_APP_URL` / `PM_AGENT_CALLBACK_URL` — loopback base PM
   hands to OpenClaw for the reply + stream callbacks, default
   `http://127.0.0.1:3000`. PM records send→accepted→first-token→final
@@ -759,6 +775,13 @@ See `.env.example` for the full list. Highlights:
   `PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`,
   `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT` — bounds on the direct-chat
   context packet (recent transcript + archive excerpt + chain depth).
+- `PM_DIRECT_CHAT_ALWAYS_INCLUDE_FILES_CONTEXT=1` — opt back into
+  unconditional direct-chat attachment/file context. By default PM only
+  reads text-like attachment files into the prompt when the current turn
+  uploaded files or asks for file/attachment context.
+- `PM_OPENCLAW_FIRST_STREAM_WARNING_MS` — accepted-to-first-stream
+  latency warning threshold, default `15000`; slow runs create
+  `pm.channel.latency_warning` activity rows with run/message metadata.
 
 ## Deployment
 

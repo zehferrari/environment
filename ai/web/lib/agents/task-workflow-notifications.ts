@@ -209,6 +209,7 @@ function workflowPrompt(args: {
     "- After Action Plan approval, do not keep discussing straightforward implementation. Start it, complete it, then use one concise ready_for_review note when the work is ready.",
     "- Task-local subtasks are progress/checklist rows for the parent Task. Do not treat them as top-level Epic implementation tasks or as independent next-task assignments unless a human explicitly promotes one.",
     "- If you are the assignee and you are waiting for reviewer, manager, or reporter feedback/response, call action=ready_for_review with one concise `comment` explaining the blocker/question. Do not leave waiting work in In Progress.",
+    "- If a task is blocked in a way agents cannot resolve and human/reporter intervention is required, set `alert_reporter` to true/1 via a task update proposal so the task is visually highlighted for the reporter.",
     "- Review means the completed work is waiting for reviewer feedback. If you are allowed by project policy to complete the task and are satisfied, call action=review_done; do not write an approval-only comment. PM will then assign the next unassigned To Do task in the same Open Epic to the next eligible Epic worker and wake them. If changes or blockers remain, call action=review_feedback with a clear comment.",
     args.onlyReportersCanSetTasksDone
       ? "- Project policy: only the reporter can set Tasks to Done. Reviewers should leave concise review feedback or agreement, then wait for the reporter to complete it."

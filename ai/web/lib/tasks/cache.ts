@@ -1,6 +1,17 @@
 import { revalidateTag, unstable_cache } from "next/cache";
 import { db } from "@/lib/db";
 
+type RepoVerifyActivityRow = {
+  kind: string;
+  payload: string | null;
+  createdAt: Date | string | number | bigint | null;
+};
+
+type CreatedAtRow = {
+  id?: string;
+  createdAt: Date | string | number | bigint | null;
+};
+
 export const taskCacheTag = {
   shell: (taskId: string) => `task:${taskId}:shell`,
   comments: (taskId: string) => `task:${taskId}:comments`,
@@ -151,6 +162,7 @@ export function getCachedTaskDetailShell(taskId: string) {
             workItemKey: true,
             title: true,
             status: true,
+            alertReporter: true,
             updatedAt: true,
             assignee: { select: { username: true } },
           },
@@ -163,37 +175,32 @@ export function getCachedTaskDetailShell(taskId: string) {
 }
 
 export function getCachedTaskComments(taskId: string) {
-  return unstable_cache(
-    async () => db.comment.findMany({
-      where: { taskId },
-      // Soft-deleted comments are returned to humans on the task page so
-      // they can render the collapsed dotted divider. Agent context queries
-      // filter deletedAt: null upstream so agents never see deleted bodies.
-      orderBy: { createdAt: "asc" },
-      include: {
-        user: {
-          select: {
-            id: true,
-            username: true,
-            kind: true,
-            name: true,
-            avatarUpdatedAt: true,
-            agent: { select: { slug: true, name: true, avatar: true } },
-          },
-        },
-        deletedBy: {
-          select: {
-            id: true,
-            username: true,
-            name: true,
-            kind: true,
-          },
+  return db.comment.findMany({
+    where: { taskId },
+    // Soft-deleted comments are returned to humans on the task page so
+    // they can render the collapsed dotted divider. Agent context queries
+    // filter deletedAt: null upstream so agents never see deleted bodies.
+    include: {
+      user: {
+        select: {
+          id: true,
+          username: true,
+          kind: true,
+          name: true,
+          avatarUpdatedAt: true,
+          agent: { select: { slug: true, name: true, avatar: true } },
         },
       },
-    }),
-    ["task-comments", taskId],
-    { tags: [taskCacheTag.comments(taskId)] },
-  )();
+      deletedBy: {
+        select: {
+          id: true,
+          username: true,
+          name: true,
+          kind: true,
+        },
+      },
+    },
+  }).then(sortByCreatedAtAsc);
 }
 
 export function getCachedTaskAttachments(taskId: string) {
@@ -274,18 +281,47 @@ export function getCachedTaskActivity(taskId: string) {
 }
 
 export function getCachedLatestRepoVerifyActivity(taskId: string) {
-  return unstable_cache(
-    async () => db.activityLog.findFirst({
-      where: {
-        taskId,
-        kind: { in: ["pm.repo.verify.ok", "pm.repo.verify.fail", "pm.repo.verify.enqueue"] },
-      },
-      orderBy: { createdAt: "desc" },
-      select: { kind: true, payload: true, createdAt: true },
-    }),
-    ["task-repo-verify", taskId],
-    { tags: [taskCacheTag.activity(taskId)] },
-  )();
+  return db.activityLog.findMany({
+    where: {
+      taskId,
+      kind: { in: ["pm.repo.verify.ok", "pm.repo.verify.fail", "pm.repo.verify.enqueue"] },
+    },
+    select: { kind: true, payload: true, createdAt: true },
+  }).then(selectLatestRepoVerifyActivity);
+}
+
+export function selectLatestRepoVerifyActivity<T extends RepoVerifyActivityRow>(rows: T[]): T | null {
+  let latest: T | null = null;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const row of rows) {
+    const rowMs = createdAtMs(row.createdAt);
+    if (rowMs > latestMs) {
+      latest = row;
+      latestMs = rowMs;
+    }
+  }
+  return latest;
+}
+
+export function sortByCreatedAtAsc<T extends CreatedAtRow>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const delta = createdAtMs(a.createdAt) - createdAtMs(b.createdAt);
+    if (delta !== 0) return delta;
+    return (a.id ?? "").localeCompare(b.id ?? "");
+  });
+}
+
+export function createdAtMs(createdAt: CreatedAtRow["createdAt"]): number {
+  if (createdAt instanceof Date) return createdAt.getTime();
+  if (typeof createdAt === "number") return Number.isFinite(createdAt) ? createdAt : Number.NEGATIVE_INFINITY;
+  if (typeof createdAt === "bigint") return Number(createdAt);
+  if (typeof createdAt === "string") {
+    const numeric = Number(createdAt);
+    if (Number.isFinite(numeric)) return numeric;
+    const parsed = Date.parse(createdAt);
+    return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+  }
+  return Number.NEGATIVE_INFINITY;
 }
 
 export function getCachedTaskRoomMessages(taskId: string) {

@@ -4,6 +4,7 @@ export {
   buildTaskEditGrantPrompt,
   buildTaskNativeChannelPrompt,
   buildTaskNativeEditGrantPrompt,
+  buildTaskNativeIncrementalChannelPrompt,
   buildTaskPlainChatPrompt,
   renderAgentContextPacket,
   type AgentContextPacket,

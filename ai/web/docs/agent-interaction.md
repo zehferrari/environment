@@ -62,19 +62,22 @@ visible failure bubble instead of waiting indefinitely.
 
 PM creates an `AgentSessionBinding` for every direct/task/epic
 conversation. Direct chats use that stable `pm:` key for continuity.
-Task, Epic, and task-comment turns derive a per-message key from the
-binding so each PM request starts with a clean OpenClaw transcript while
-still carrying PM-owned channel guidance. Task/Epic chat guidance now
-uses a recent hot-path slice plus scoped live-context grant URLs instead
-of putting the full DB-backed context packet in `contextText`. OpenClaw
-owns inbound recording, model dispatch, and final reply delivery from
-there; those are channel behavior, not instructions shown to the model.
+Task and Epic chat turns also reuse the stable binding after their first
+successful dispatch: the initial turn establishes the native-channel
+baseline, and later chat turns send only the newly persisted message plus
+the recent hot-path delta and scoped live-context grant URLs. If no prior
+dispatch marker exists, PM falls back to the full first-turn prompt and
+then records the marker on successful handoff. OpenClaw owns inbound
+recording, model dispatch, and final reply delivery from there; those are
+channel behavior, not instructions shown to the model.
 
 Workflow/comment payloads may still include compact PM context in
 `contextText`, delivered to OpenClaw as supplemental context rather than
-duplicated into the visible wake text. PM is the source of truth for
-task, Epic, comments, activity, and attachment extracts; OpenClaw is the
-owner of the channel session and communication lifecycle.
+duplicated into the visible wake text. Task-comment workflow turns still
+use per-message keys because they are discrete workflow notifications.
+PM is the source of truth for task, Epic, comments, activity, and
+attachment extracts; OpenClaw is the owner of the channel session and
+communication lifecycle.
 
 Task comments addressed to an agent, assigned to an agent, or mentioning
 an agent use the same native channel directly. They do not enqueue a

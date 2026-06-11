@@ -10,11 +10,8 @@ import {
   pmChannelRunTargetKey,
   recordPmChannelRunQueued,
 } from "@/lib/agents/pm-channel-runs";
-import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel-stream";
-import {
-  appendPmChannelStreamEvent,
-  appendPmChannelStreamEventForTarget,
-} from "@/lib/agents/pm-channel-stream-log";
+import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel-stream-log";
+import { rollbackDispatchedMessageId } from "@/lib/agents/session-bindings";
 
 type DispatchJobPayload = Omit<SendPmChannelTurnArgs, "fetchImpl">;
 
@@ -61,26 +58,15 @@ function retryDelayMs(attemptCount: number) {
 }
 
 async function appendAndPublishStatus(args: {
-  runId: string;
   payload: DispatchJobPayload;
   runStatus: "queued" | "accepted" | "retryable" | "failed" | "complete";
   error?: string | null;
 }) {
-  const persisted = await appendPmChannelStreamEvent({
-    runId: args.runId,
-    event: "status",
-    input: {
-      event: "status",
-      runStatus: args.runStatus,
-      error: args.error ?? undefined,
-    },
-  });
-  publishPmChannelStreamEvent({
+  publishPmChannelStreamEventDurably({
     target: args.payload.replyTarget,
     event: "status",
     runStatus: args.runStatus,
     error: args.error ?? undefined,
-    seq: persisted.seq,
   });
 }
 
@@ -126,7 +112,7 @@ export async function enqueueOpenClawPmChannelTurn(
       lastError: null,
     },
   });
-  await appendAndPublishStatus({ runId: run.id, payload, runStatus: "queued" });
+  await appendAndPublishStatus({ payload, runStatus: "queued" });
   if (inlineWorkerNudgeEnabled()) {
     setTimeout(() => {
       runPmChannelWorkerOnce(`pm-inline:${process.pid}`).catch((err) => {
@@ -193,7 +179,7 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
         lastError: null,
       },
     });
-    await appendAndPublishStatus({ runId: job.runId, payload, runStatus: "accepted" });
+    await appendAndPublishStatus({ payload, runStatus: "accepted" });
     return result;
   }
 
@@ -223,12 +209,36 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
     }),
   ]);
   await appendAndPublishStatus({
-    runId: job.runId,
     payload,
     runStatus: status,
     error,
   });
+  if (exhausted) {
+    await rollbackDispatchedTurnBinding(payload);
+  }
   return result;
+}
+
+// When a room-chat turn fails for good, roll back the optimistic incremental
+// baseline so the next turn rebuilds full context (see rollbackDispatchedMessageId).
+// Only task-chat/epic-chat advance the binding; comments and direct chats do not.
+async function rollbackDispatchedTurnBinding(payload: DispatchJobPayload) {
+  const target = payload.replyTarget;
+  if (target.kind === "task-chat") {
+    await rollbackDispatchedMessageId({
+      scopeType: "task",
+      scopeId: target.taskId,
+      agentSlug: target.agentSlug,
+      messageId: target.messageId,
+    });
+  } else if (target.kind === "epic-chat") {
+    await rollbackDispatchedMessageId({
+      scopeType: "epic",
+      scopeId: target.epicId,
+      agentSlug: target.agentSlug,
+      messageId: target.messageId,
+    });
+  }
 }
 
 export async function runPmChannelWorkerOnce(workerId = `pm-channel-worker:${process.pid}`) {
@@ -306,5 +316,5 @@ export async function pmChannelQueueStats() {
 export async function appendPmChannelCompletionEvent(target: unknown) {
   const parsed = parsePmChannelReplyTarget(target);
   if (!parsed) return;
-  await appendPmChannelStreamEventForTarget({ target: parsed, event: "done", runStatus: "complete" });
+  publishPmChannelStreamEventDurably({ target: parsed, event: "done", runStatus: "complete" });
 }

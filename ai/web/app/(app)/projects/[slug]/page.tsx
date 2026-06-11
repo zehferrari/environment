@@ -16,6 +16,7 @@ import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
+import { revalidateTaskShell } from "@/lib/tasks/cache";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
 import { COLUMNS, COLUMN_IDS } from "./columns";
@@ -272,8 +273,10 @@ async function moveTask(
         message: "Could not complete this reviewed task.",
       };
     }
+    revalidateTaskShell(taskId);
     revalidatePath(`/projects/${slug}`);
     if (completion.nextTask) {
+      revalidateTaskShell(completion.nextTask.id);
       revalidatePath(`/projects/${slug}/tasks/${completion.nextTask.id}`);
     }
     publishBoardTouch(current.projectId);
@@ -338,6 +341,7 @@ async function moveTask(
       });
     }
   }
+  revalidateTaskShell(taskId);
   revalidatePath(`/projects/${slug}`);
   publishBoardTouch(current.projectId);
   return { ok: true };
@@ -401,6 +405,7 @@ export default async function ProjectBoardPage({
   async function reorderBoardTasks(orderedIds: string[]): Promise<void> {
     "use server";
     await reorderTasks(orderedIds);
+    for (const id of orderedIds) revalidateTaskShell(id);
     revalidatePath(`/projects/${slug}`);
     publishBoardTouch(projectId);
   }

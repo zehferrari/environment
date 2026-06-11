@@ -19,6 +19,7 @@ import { binTask, deleteEpic } from "@/lib/bin/actions";
 import { archiveEpic, unarchiveEpic } from "@/lib/archive/actions";
 import { approveAndMergeDeploymentPullRequest, approveDeploymentLocalChanges } from "@/lib/deploy/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
+import { createdAtMs } from "@/lib/tasks/cache";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import SortableTaskList from "@/components/sortable-task-list";
 import AttachmentList from "@/components/attachment-list";
@@ -403,6 +404,7 @@ export default async function EpicDetailPage({
           workItemKey: true,
           title: true,
           status: true,
+          alertReporter: true,
           createdAt: true,
           updatedAt: true,
           statusChangedAt: true,
@@ -554,6 +556,34 @@ export default async function EpicDetailPage({
       deletedBy: { select: { username: true, name: true, kind: true } },
     },
   });
+  const currentUserId = session?.user?.id ?? null;
+  const epicChatCursorKey = `epic:${epic.id}`;
+  const epicChatReadCursor = currentUserId
+    ? await db.chatReadCursor.findUnique({
+        where: { userId_agentSlug: { userId: currentUserId, agentSlug: epicChatCursorKey } },
+        select: { lastReadAt: true },
+      })
+    : null;
+  // Normalize both sides to epoch ms before comparing the read cursor so the
+  // unread filter stays correct regardless of whether createdAt is a Date or a
+  // (cache-revived) ISO string. See the task page for the cached-string variant.
+  const epicChatReadCursorMs = epicChatReadCursor ? epicChatReadCursor.lastReadAt.getTime() : null;
+  const unreadActionPlanMessages = currentUserId
+    ? chatMessages.filter((message) => (
+        !message.deletedAt
+        && !message.body.startsWith("PM workflow notification for @")
+        && message.sender.id !== currentUserId
+        && (epicChatReadCursorMs === null || createdAtMs(message.createdAt) > epicChatReadCursorMs)
+      ))
+    : [];
+  const firstUnreadMessageId = unreadActionPlanMessages[0]?.id ?? null;
+  if (currentUserId && selectedTab === "Action Plan" && !chatArchive) {
+    await db.chatReadCursor.upsert({
+      where: { userId_agentSlug: { userId: currentUserId, agentSlug: epicChatCursorKey } },
+      create: { userId: currentUserId, agentSlug: epicChatCursorKey },
+      update: { lastReadAt: new Date() },
+    });
+  }
   const pendingProposals = await db.workItemProposal.findMany({
     where: {
       status: "pending",
@@ -945,6 +975,7 @@ export default async function EpicDetailPage({
             <TabsNav
               tabs={EPIC_TABS}
               sticky
+              badges={{ "Action Plan": unreadActionPlanMessages.length }}
             />
             <div className="pt-4">
               <TabPanel name="Description">
@@ -1208,7 +1239,9 @@ export default async function EpicDetailPage({
                     defaultDiscussionTarget={defaultDiscussionTarget}
                     pendingAgents={pendingAgents}
                     latestMessageId={viewingChatArchive ? null : pendingChatMessageId}
-                    currentUserId={session?.user?.id ?? null}
+                    firstUnreadMessageId={firstUnreadMessageId}
+                    currentUserId={currentUserId}
+                    currentUsername={session?.user?.name ?? null}
                     pendingProposals={pendingProposals}
                   />
                 </div>
@@ -1248,6 +1281,7 @@ export default async function EpicDetailPage({
                 workItemKey: t.workItemKey,
                 title: t.title,
                 status: t.status,
+                alertReporter: t.alertReporter,
                 href: `/projects/${slug}/tasks/${t.id}`,
                 createdAt: t.createdAt.toISOString(),
                 statusChangedAt: t.statusChangedAt?.toISOString() ?? null,

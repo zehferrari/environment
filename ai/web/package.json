@@ -26,11 +26,19 @@
     "context-grant-status": "tsx scripts/context-grant-status.ts",
     "test:p0-kernel": "tsx scripts/p0-kernel-test.ts",
     "test:pm-async-default": "tsx scripts/pm-async-default-test.ts",
+    "test:pm-channel-bus": "tsx scripts/pm-channel-bus-test.ts",
     "test:pm-acceptance-baseline": "tsx scripts/pm-acceptance-baseline-test.ts",
     "test:db-maintenance": "tsx scripts/db-maintenance-test.ts",
     "test:deployment-monitor": "tsx scripts/deployment-monitor-test.ts",
     "test:deployment-tab": "tsx scripts/deployment-tab-test.tsx",
-    "test:add-epic-task-fab": "tsx scripts/add-epic-task-fab-test.tsx"
+    "test:add-epic-task-fab": "tsx scripts/add-epic-task-fab-test.tsx",
+    "test:pm-channel-stream-protocol": "tsx scripts/pm-channel-stream-protocol-test.ts",
+    "test:pm-channel-transport": "tsx scripts/pm-channel-transport-test.ts",
+    "test:chat-room-decomposition": "tsx scripts/chat-room-decomposition-test.ts",
+    "test:chat-composer-keyboard": "tsx scripts/chat-composer-keyboard-test.ts",
+    "test:direct-chat-cursor": "tsx scripts/direct-chat-cursor-test.ts",
+    "test:speculative-context": "tsx scripts/speculative-context-test.ts",
+    "test:cross-tab-stream-coordinator": "tsx scripts/cross-tab-stream-coordinator-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",
@@ -46,6 +54,7 @@
     "next-auth": "5.0.0-beta.25",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "web-push": "^3.6.7",
     "zod": "^3.24.1"
   },
   "devDependencies": {
@@ -54,6 +63,7 @@
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.4",
     "@types/react-dom": "^19.0.2",
+    "@types/web-push": "^3.6.4",
     "eslint": "^9.18.0",
     "eslint-config-next": "^15.1.4",
     "prisma": "^6.1.0",

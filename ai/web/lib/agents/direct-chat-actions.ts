@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { stripChatMarkdown as compactText, truncateSummary } from "@/lib/text";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, rename, rm, stat, writeFile, readdir, readFile, chmod, chown } from "node:fs/promises";
@@ -14,7 +15,8 @@ import {
   type AgentSessionBinding,
 } from "@/lib/agents/session-bindings";
 import { wakeAgent as wakeGatewayAgent } from "@/lib/pm-consumer/gateway-client";
-import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
+import { pmAsyncDispatchEnabled, sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
+import { recordPmChannelRunEvent, recordPmChannelRunQueued } from "@/lib/agents/pm-channel-runs";
 import {
   buildProjectEnvContext,
   buildWorkItemPlanningPrompt,
@@ -71,6 +73,17 @@ function archiveContextMessages() {
 
 function archiveChainLimit() {
   return intEnv("PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT", DEFAULT_ARCHIVE_CHAIN_LIMIT, 1, 6);
+}
+
+function shouldIncludeDirectFilesContext(args: {
+  body: string;
+  attachmentCount: number;
+  projectId: string | null;
+}) {
+  if (args.attachmentCount > 0) return true;
+  if (process.env.PM_DIRECT_CHAT_ALWAYS_INCLUDE_FILES_CONTEXT === "1") return true;
+  if (args.projectId) return false;
+  return /\b(attach(?:ed|ment|ments)?|file|files|document|context|folder|upload|readme|logs?)\b/i.test(args.body);
 }
 
 export async function getAgentChatUploadDir(agentSlug: string, chatId: string): Promise<string> {
@@ -318,21 +331,6 @@ function buildDirectReplyPrompt(args: {
     "Conversation context:",
     args.sessionContext,
   ].join("\n");
-}
-
-function compactText(value: string) {
-  return value
-    .replace(/```[\s\S]*?```/g, " code ")
-    .replace(/[#*_>`[\]()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function truncateSummary(value: string, max = 72) {
-  if (value.length <= max) return value;
-  const sliced = value.slice(0, max - 1).trimEnd();
-  const breakAt = Math.max(sliced.lastIndexOf(" "), sliced.lastIndexOf("."));
-  return `${(breakAt > 28 ? sliced.slice(0, breakAt) : sliced).trimEnd()}...`;
 }
 
 function summarizeMessages(messages: Array<{ body: string; sender: { kind: string } }>) {
@@ -736,8 +734,21 @@ async function handleDirectAgentMessage(args: {
   sessionBinding: AgentSessionBinding;
   projectId: string | null;
   allowWorkItemManagement: boolean;
+  attachmentCount: number;
 }) {
+  const timingStartedAt = Date.now();
+  const timings: Record<string, number> = {};
+  const sizes: Record<string, number> = {};
+  const mark = (name: string, startedAt: number) => {
+    timings[name] = Date.now() - startedAt;
+  };
+
+  let stepStartedAt = Date.now();
   const sessionContext = await buildDirectSessionContext(args);
+  mark("sessionContextMs", stepStartedAt);
+  sizes.sessionContextChars = sessionContext.length;
+
+  stepStartedAt = Date.now();
   const original = await db.directAgentChatMessage.findUnique({
     where: { id: args.messageId },
     select: { baseArchiveId: true, archiveId: true },
@@ -745,7 +756,16 @@ async function handleDirectAgentMessage(args: {
   const baseArchiveId = original?.baseArchiveId ?? null;
   const parentFolders = await getConversationFolderIds(args.agentSlug, baseArchiveId);
   const folderIds = [args.sessionBinding.scopeId, ...parentFolders];
-  const filesContext = await appendFilesContext(args.agentSlug, folderIds);
+  const includeFilesContext = shouldIncludeDirectFilesContext({
+    body: args.body,
+    attachmentCount: args.attachmentCount,
+    projectId: args.projectId,
+  });
+  const filesContext = includeFilesContext
+    ? await appendFilesContext(args.agentSlug, folderIds)
+    : "";
+  mark("filesContextMs", stepStartedAt);
+  sizes.filesContextChars = filesContext.length;
 
   // Project-scoped planning: when a project is attached, include its
   // environment packet; when the user also granted work-item management,
@@ -759,6 +779,7 @@ async function handleDirectAgentMessage(args: {
     "Keep the answer useful and concise unless the user asked for detail.",
   ];
   let projectContextText = "";
+  stepStartedAt = Date.now();
   if (args.projectId) {
     const env = await buildProjectEnvContext(args.projectId);
     if (env) {
@@ -789,11 +810,15 @@ async function handleDirectAgentMessage(args: {
       }
     }
   }
+  mark("projectContextMs", stepStartedAt);
+  sizes.projectContextChars = projectContextText.length;
 
   const contextText = [sessionContext, filesContext, projectContextText]
     .filter(Boolean)
     .join("\n\n");
+  sizes.contextTextChars = contextText.length;
 
+  stepStartedAt = Date.now();
   const delivery = await sendOrQueueOpenClawPmChannelTurn({
     gatewayPort: args.gatewayPort,
     agentSlug: args.agentSlug,
@@ -814,6 +839,8 @@ async function handleDirectAgentMessage(args: {
       messageId: args.messageId,
     },
   });
+  mark("queueOrDispatchMs", stepStartedAt);
+  timings.totalBeforeActivityLogMs = Date.now() - timingStartedAt;
 
   await db.activityLog.create({
     data: {
@@ -829,6 +856,10 @@ async function handleDirectAgentMessage(args: {
         status: delivery.status ?? null,
         openclawSessionKey: args.sessionBinding.openclawSessionKey,
         error: delivery.error ?? null,
+        timings,
+        sizes,
+        includeFilesContext,
+        parentFolderCount: parentFolders.length,
       }),
     },
   });
@@ -992,7 +1023,19 @@ export async function sendDirectAgentMessage(formData: FormData) {
     }
   }
 
-  await handleDirectAgentMessage({
+  // Durability: create the queued run row synchronously so a committed user
+  // message ALWAYS has a recoverable run. If the process dies before the
+  // dispatch job is created, getPmChannelRunSnapshot's queued-timeout watchdog
+  // can still settle the run as failed instead of leaving a permanent spinner.
+  await recordPmChannelRunQueued({
+    target: { kind: "direct", agentSlug, messageId: msg.id },
+    kind: "direct",
+    projectId,
+    gatewayPort: agent.gatewayPort,
+    sessionKey: sessionBinding.openclawSessionKey,
+  });
+
+  const dispatchArgs = {
     agentSlug,
     actorName: userName,
     messageId: msg.id,
@@ -1002,7 +1045,52 @@ export async function sendDirectAgentMessage(formData: FormData) {
     sessionBinding,
     projectId,
     allowWorkItemManagement: grantWorkItems,
-  });
+    attachmentCount: attachments.length,
+  };
+  const recordDispatchFailure = async (err: unknown) => {
+    const error = err instanceof Error ? err.message : String(err);
+    console.warn(`[direct-chat] failed to queue ${agentSlug} PM-channel turn`, err);
+    await db.activityLog.create({
+      data: {
+        userId,
+        kind: "agent.direct_chat.dispatch_failed",
+        targetAgent: agentSlug,
+        payload: JSON.stringify({
+          agentSlug,
+          messageId: msg.id,
+          openclawSessionKey: sessionBinding.openclawSessionKey,
+          error,
+        }),
+      },
+    }).catch(() => undefined);
+    // Settle the run so the browser surfaces a failure bubble instead of an
+    // indefinite "thinking" spinner.
+    await recordPmChannelRunEvent({
+      target: { kind: "direct", agentSlug, messageId: msg.id },
+      event: "error",
+      error,
+    }).catch(() => undefined);
+  };
+
+  // With async dispatch (the default) the enqueue commits a durable run + job
+  // and returns right after the DB write — the agent turn runs off-request in
+  // the worker — so awaiting it does NOT block the send on the model, but it
+  // DOES guarantee the durable job exists before the request returns (no lost
+  // message on a process restart). In legacy synchronous-dispatch mode the call
+  // would block on the whole agent turn, so keep it detached there.
+  if (pmAsyncDispatchEnabled()) {
+    try {
+      await handleDirectAgentMessage(dispatchArgs);
+    } catch (err) {
+      await recordDispatchFailure(err);
+    }
+  } else {
+    setTimeout(() => {
+      handleDirectAgentMessage(dispatchArgs).catch((err) => {
+        void recordDispatchFailure(err);
+      });
+    }, 0);
+  }
 
   revalidatePath(`/agents/${agentSlug}/chat`);
   if (continueFromArchive) redirect(`/agents/${agentSlug}/chat`);

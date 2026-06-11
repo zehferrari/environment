@@ -289,6 +289,12 @@ async function rebuildLiveWorktreeIfNeeded(job: BranchVerifyJob, state: LocalSta
   }
 
   try {
+    // The verifier itself uses Prisma against the same SQLite database that
+    // pm-switch migrates before rebuilding the live worktree. Release the
+    // verifier connection before invoking pm-switch; otherwise Prisma migrate
+    // can fail with `database is locked` even after pm.service/pm-consumer have
+    // been stopped. The module-level client reconnects on the next DB query.
+    await db.$disconnect();
     const output = await run(SWITCH_SCRIPT, [served], { timeout: 240_000, maxBuffer: 1024 * 1024 * 4 });
     return { attempted: true, ok: true, target: served, log: tail(output) };
   } catch (err) {

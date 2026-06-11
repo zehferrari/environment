@@ -108,6 +108,7 @@ function MaximizableTextarea({
                 ref={expandedRef}
                 value={text}
                 onChange={(event) => updateValue(event.currentTarget.value)}
+                onKeyDown={props.onKeyDown}
                 rows={expandedRows}
                 maxLength={props.maxLength}
                 placeholder={props.placeholder}

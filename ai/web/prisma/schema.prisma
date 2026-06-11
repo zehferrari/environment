@@ -312,6 +312,8 @@ model Task {
   // Free-text commit-message prefix (e.g. a ticket key) the agent prepends
   // to commits on this task. Edited alongside branchName on the task form.
   commitPrefix    String?
+  // Agents set this when human/reporter intervention is required.
+  alertReporter   Boolean  @default(false) @map("alert_reporter")
   // Soft delete (HOMELAB-48). See Epic.deletedAt for semantics. Sub-tasks
   // cascade with their parent task; an Epic delete cascades to its
   // non-deleted Tasks (and through them to sub-tasks). Active read
@@ -342,6 +344,7 @@ model Task {
   @@index([archivedAt])
   @@index([archivedById])
   @@index([deletedAt])
+  @@index([alertReporter])
 }
 
 // ------------------------------------------------------------------
@@ -532,6 +535,8 @@ model AgentSessionBinding {
   agentSlug          String
   openclawSessionKey String   @unique
   openclawSessionId  String?
+  lastDispatchedMessageId String?
+  lastDispatchedAt DateTime?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -915,12 +920,13 @@ model DescriptionDraft {
 }
 
 // ------------------------------------------------------------------
-// ChatReadCursor — per-user, per-agent "last time I looked at this
-// direct chat" marker. Drives the sidebar unread red dot: a direct
-// chat shows unread when the agent has authored a DirectAgentChatMessage
-// newer than the viewer's lastReadAt for that agent. userId is a plain
-// string (no FK) so the cursor survives independently of user lifecycle;
-// the chat page upserts lastReadAt = now() on open.
+// ChatReadCursor — per-user, per-chat-scope "last time I looked at this"
+// marker. agentSlug stores either a direct agent slug or a scope-prefixed
+// work-item room key (task:<id>, epic:<id>). Direct chats drive sidebar
+// unread dots; task/epic action-plan rooms drive tab badges and the first
+// unread divider. userId is a plain string (no FK) so the cursor survives
+// independently of user lifecycle; active chat pages upsert lastReadAt on
+// open.
 // ------------------------------------------------------------------
 
 model ChatReadCursor {
@@ -931,4 +937,27 @@ model ChatReadCursor {
 
   @@unique([userId, agentSlug])
   @@index([agentSlug])
+}
+
+// ------------------------------------------------------------------
+// WebPushSubscription — a browser Push API subscription owned by a human
+// user, used to deliver agent-reply notifications when the PM tab/app is
+// closed (the in-page Notification API only fires with a tab open). One
+// row per device/browser; `endpoint` is the unique push endpoint URL and
+// p256dh/auth are the client public key + auth secret used to encrypt the
+// payload. userId is a plain string (no FK) so a subscription survives
+// independent of user lifecycle; dead endpoints are pruned on 404/410.
+// ------------------------------------------------------------------
+
+model WebPushSubscription {
+  id         String   @id @default(cuid())
+  userId     String
+  endpoint   String   @unique
+  p256dh     String
+  auth       String
+  userAgent  String?
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime?
+
+  @@index([userId])
 }
