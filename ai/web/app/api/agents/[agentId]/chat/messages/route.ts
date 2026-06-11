@@ -52,15 +52,19 @@ export async function GET(
     ? Math.min(200, Math.max(1, limitParam))
     : 120;
 
+  // Take the NEWEST `limit` messages (desc), then restore chronological order.
+  // Ordering asc + take would keep the OLDEST rows and drop recent ones in a
+  // long active chat — including the in-flight turn the poll is reconciling.
   const rows = await db.directAgentChatMessage.findMany({
     where: { agentSlug, archiveId: null },
-    orderBy: { createdAt: "asc" },
+    orderBy: { createdAt: "desc" },
     take: limit,
     include: {
       sender: { select: messageSenderSelect },
       deletedBy: { select: { username: true, name: true, kind: true } },
     },
   });
+  rows.reverse();
 
   return NextResponse.json({
     messages: rows.map((m) => ({

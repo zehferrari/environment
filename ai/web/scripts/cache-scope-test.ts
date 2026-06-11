@@ -3,6 +3,7 @@ import {
   tagsForTaskReplyScope,
   revalidateTaskReplyScope,
   revalidateTaskAttachments,
+  revalidateTaskShell,
   taskCacheTag,
 } from "../lib/tasks/cache";
 import {
@@ -47,6 +48,22 @@ for (const off of [
   taskCacheTag.attachments(taskId),
 ]) {
   assert(!commentRevalidated.includes(off), `comment reply must not revalidate ${off}`);
+}
+
+const shellRevalidated: string[] = [];
+revalidateTaskShell(taskId, (tag) => shellRevalidated.push(tag));
+assert.deepEqual(
+  shellRevalidated,
+  [taskCacheTag.shell(taskId), taskCacheTag.activity(taskId)],
+  "task shell mutations revalidate shell + activity",
+);
+for (const off of [
+  taskCacheTag.chat(taskId),
+  taskCacheTag.chatArchives(taskId),
+  taskCacheTag.attachments(taskId),
+  taskCacheTag.comments(taskId),
+]) {
+  assert(!shellRevalidated.includes(off), `task shell mutation must not revalidate ${off}`);
 }
 
 const attachmentRevalidated: string[] = [];

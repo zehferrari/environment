@@ -8,6 +8,7 @@ import {
   writeNativePmNotificationsEnabled,
   type NativePmNotificationPermission,
 } from "@/lib/agents/native-pm-notifications";
+import { registerPushSubscription, unregisterPushSubscription } from "@/lib/push/client";
 
 type ToggleState = {
   supported: boolean;
@@ -47,6 +48,8 @@ export default function NativePmNotificationToggle({ compact = false }: { compac
     if (current.enabled) {
       writeNativePmNotificationsEnabled(false);
       setState(readState());
+      // Also drop this device's closed-app push subscription.
+      void unregisterPushSubscription();
       return;
     }
 
@@ -61,6 +64,11 @@ export default function NativePmNotificationToggle({ compact = false }: { compac
 
     writeNativePmNotificationsEnabled(permission === "granted");
     setState(readState());
+    if (permission === "granted") {
+      // Best-effort: also subscribe for closed-app Web Push. No-ops when the
+      // server has no VAPID key configured, so in-page alerts still work.
+      void registerPushSubscription();
+    }
   }, []);
 
   const disabled = !state.supported || state.permission === "denied";

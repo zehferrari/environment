@@ -938,3 +938,26 @@ model ChatReadCursor {
   @@unique([userId, agentSlug])
   @@index([agentSlug])
 }
+
+// ------------------------------------------------------------------
+// WebPushSubscription — a browser Push API subscription owned by a human
+// user, used to deliver agent-reply notifications when the PM tab/app is
+// closed (the in-page Notification API only fires with a tab open). One
+// row per device/browser; `endpoint` is the unique push endpoint URL and
+// p256dh/auth are the client public key + auth secret used to encrypt the
+// payload. userId is a plain string (no FK) so a subscription survives
+// independent of user lifecycle; dead endpoints are pruned on 404/410.
+// ------------------------------------------------------------------
+
+model WebPushSubscription {
+  id         String   @id @default(cuid())
+  userId     String
+  endpoint   String   @unique
+  p256dh     String
+  auth       String
+  userAgent  String?
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime?
+
+  @@index([userId])
+}

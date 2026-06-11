@@ -22,6 +22,7 @@ import {
   sendTaskWorkflowNotification,
 } from "@/lib/agents/task-workflow-notifications";
 import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
+import { notifyHumanOfAgentReply } from "@/lib/push/notify-reply";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { revalidateEpicReplyScope } from "@/lib/epics/cache";
 import { tryCompleteTaskFromReviewerComment } from "@/lib/tasks/review-automation";
@@ -539,6 +540,9 @@ export async function POST(req: NextRequest) {
       await recordPmChannelRunEvent({ target, event: "final" });
       await markPmChannelJobCompleteForTarget(target);
     });
+    // Closed-app delivery: push the reply to the human's devices so it lands
+    // even with no PM tab open. Best-effort and no-op without VAPID config.
+    void notifyHumanOfAgentReply(target, eventInput.text);
   } else {
     const error = "error" in result.body && typeof result.body.error === "string"
       ? result.body.error

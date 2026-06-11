@@ -18,6 +18,7 @@ import ChatMessagesContainer from "./chat-messages-container";
 import ArchiveSidebarClient from "./archive-sidebar-client";
 import NewChatButton from "@/components/new-chat-button";
 import NativePmNotificationToggle from "@/components/native-pm-notification-toggle";
+import DirectChatOptimisticProvider from "@/components/direct-chat-optimistic-provider";
 import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
@@ -597,6 +598,7 @@ export default async function DirectAgentChatPage({
 
       <ChatLayoutClient
         chatSection={
+          <DirectChatOptimisticProvider agentSlug={slug} baseArchiveId={activeBaseArchiveId}>
           <section className="flex min-h-0 h-full flex-col rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] shadow-sm">
             <div className="border-b border-[var(--color-line)] px-4 py-3 shrink-0">
               <p className="text-sm font-medium">{viewingArchive ? "Archived chat" : "Current chat"}</p>
@@ -682,6 +684,7 @@ export default async function DirectAgentChatPage({
               />
             )}
           </section>
+          </DirectChatOptimisticProvider>
         }
         asideSection={
           <ArchiveSidebarClient

@@ -57,6 +57,7 @@ import {
   getCachedTaskDetailShell,
   getCachedTaskRoomMessages,
   revalidateTaskReplyScope,
+  revalidateTaskShell,
 } from "@/lib/tasks/cache";
 import SortableTaskList from "@/components/sortable-task-list";
 import AttachmentList from "@/components/attachment-list";
@@ -451,6 +452,7 @@ async function updateTask(formData: FormData) {
     console.error("Failed to delete description draft:", e);
   }
 
+  revalidateTaskShell(taskId);
   revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   revalidatePath(`/projects/${slug}`);
   publishBoardTouch(task.projectId);
@@ -666,6 +668,7 @@ async function approveTaskActionPlan(formData: FormData) {
     });
   }
 
+  revalidateTaskShell(task.id);
   revalidatePath(`/projects/${slug}/tasks/${task.id}`);
   revalidatePath(`/projects/${slug}`);
 }
@@ -936,6 +939,7 @@ async function createSubtask(formData: FormData) {
   });
 
   revalidatePath(`/projects/${slug}/tasks/${parentTaskId}`);
+  revalidateTaskShell(parentTaskId);
   revalidatePath(`/projects/${slug}/tasks/${child.id}`);
   revalidatePath(`/projects/${slug}`);
 }
@@ -1591,6 +1595,7 @@ export default async function TaskDetailPage({
   async function reorderSubtasks(orderedIds: string[]): Promise<void> {
     "use server";
     await reorderTasks(orderedIds);
+    revalidateTaskShell(taskId);
     revalidatePath(`/projects/${slug}/tasks/${taskId}`);
     revalidatePath(`/projects/${slug}`);
   }

@@ -14,7 +14,8 @@ import {
   type AgentSessionBinding,
 } from "@/lib/agents/session-bindings";
 import { wakeAgent as wakeGatewayAgent } from "@/lib/pm-consumer/gateway-client";
-import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
+import { pmAsyncDispatchEnabled, sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
+import { recordPmChannelRunEvent, recordPmChannelRunQueued } from "@/lib/agents/pm-channel-runs";
 import {
   buildProjectEnvContext,
   buildWorkItemPlanningPrompt,
@@ -1036,36 +1037,74 @@ export async function sendDirectAgentMessage(formData: FormData) {
     }
   }
 
-  setTimeout(() => {
-    handleDirectAgentMessage({
-      agentSlug,
-      actorName: userName,
-      messageId: msg.id,
-      body,
-      userId,
-      gatewayPort: agent.gatewayPort,
-      sessionBinding,
-      projectId,
-      allowWorkItemManagement: grantWorkItems,
-      attachmentCount: attachments.length,
-    }).catch(async (err) => {
-      const error = err instanceof Error ? err.message : String(err);
-      console.warn(`[direct-chat] failed to queue ${agentSlug} PM-channel turn`, err);
-      await db.activityLog.create({
-        data: {
-          userId,
-          kind: "agent.direct_chat.dispatch_failed",
-          targetAgent: agentSlug,
-          payload: JSON.stringify({
-            agentSlug,
-            messageId: msg.id,
-            openclawSessionKey: sessionBinding.openclawSessionKey,
-            error,
-          }),
-        },
-      }).catch(() => undefined);
-    });
-  }, 0);
+  // Durability: create the queued run row synchronously so a committed user
+  // message ALWAYS has a recoverable run. If the process dies before the
+  // dispatch job is created, getPmChannelRunSnapshot's queued-timeout watchdog
+  // can still settle the run as failed instead of leaving a permanent spinner.
+  await recordPmChannelRunQueued({
+    target: { kind: "direct", agentSlug, messageId: msg.id },
+    kind: "direct",
+    projectId,
+    gatewayPort: agent.gatewayPort,
+    sessionKey: sessionBinding.openclawSessionKey,
+  });
+
+  const dispatchArgs = {
+    agentSlug,
+    actorName: userName,
+    messageId: msg.id,
+    body,
+    userId,
+    gatewayPort: agent.gatewayPort,
+    sessionBinding,
+    projectId,
+    allowWorkItemManagement: grantWorkItems,
+    attachmentCount: attachments.length,
+  };
+  const recordDispatchFailure = async (err: unknown) => {
+    const error = err instanceof Error ? err.message : String(err);
+    console.warn(`[direct-chat] failed to queue ${agentSlug} PM-channel turn`, err);
+    await db.activityLog.create({
+      data: {
+        userId,
+        kind: "agent.direct_chat.dispatch_failed",
+        targetAgent: agentSlug,
+        payload: JSON.stringify({
+          agentSlug,
+          messageId: msg.id,
+          openclawSessionKey: sessionBinding.openclawSessionKey,
+          error,
+        }),
+      },
+    }).catch(() => undefined);
+    // Settle the run so the browser surfaces a failure bubble instead of an
+    // indefinite "thinking" spinner.
+    await recordPmChannelRunEvent({
+      target: { kind: "direct", agentSlug, messageId: msg.id },
+      event: "error",
+      error,
+    }).catch(() => undefined);
+  };
+
+  // With async dispatch (the default) the enqueue commits a durable run + job
+  // and returns right after the DB write — the agent turn runs off-request in
+  // the worker — so awaiting it does NOT block the send on the model, but it
+  // DOES guarantee the durable job exists before the request returns (no lost
+  // message on a process restart). In legacy synchronous-dispatch mode the call
+  // would block on the whole agent turn, so keep it detached there.
+  if (pmAsyncDispatchEnabled()) {
+    try {
+      await handleDirectAgentMessage(dispatchArgs);
+    } catch (err) {
+      await recordDispatchFailure(err);
+    }
+  } else {
+    setTimeout(() => {
+      handleDirectAgentMessage(dispatchArgs).catch((err) => {
+        void recordDispatchFailure(err);
+      });
+    }, 0);
+  }
 
   revalidatePath(`/agents/${agentSlug}/chat`);
   if (continueFromArchive) redirect(`/agents/${agentSlug}/chat`);

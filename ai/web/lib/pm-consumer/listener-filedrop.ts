@@ -41,9 +41,22 @@ export async function startFileDropListener(
       .sort();
     for (const file of files) {
       const src = path.join(opts.dir, file);
+      const dest = path.join(processedDir, file);
+      // Claim-then-process: move the envelope OUT of the inbox BEFORE handling.
+      // If the process crashes mid-dispatch, the file is already claimed and is
+      // never re-handled on restart — so a native pm_channel_turn (which is not
+      // idempotent at the dispatch boundary) cannot double-run the agent and
+      // post a duplicate reply. A turn lost in the rare crash window is settled
+      // by the PmChannelRun watchdog instead, and is resendable.
+      try {
+        await rename(src, dest);
+      } catch {
+        // Another pass/consumer already claimed it, or it vanished — skip.
+        continue;
+      }
       let raw: unknown;
       try {
-        const text = await readFile(src, "utf8");
+        const text = await readFile(dest, "utf8");
         raw = JSON.parse(text);
       } catch (err) {
         opts.onOutcome?.(
@@ -53,12 +66,10 @@ export async function startFileDropListener(
           },
           file,
         );
-        await rename(src, path.join(processedDir, file)).catch(() => {});
         continue;
       }
       const outcome = await opts.handler.handle(raw);
       opts.onOutcome?.(outcome, file);
-      await rename(src, path.join(processedDir, file)).catch(() => {});
     }
   }
 

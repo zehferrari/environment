@@ -366,8 +366,14 @@ export async function recordPmChannelRunEvent(args: {
     async () => {
       const existing = await db.pmChannelRun.findUnique({
         where: { targetKey },
-        select: { id: true, createdAt: true, acceptedAt: true, streamingAt: true },
+        select: { id: true, status: true, createdAt: true, acceptedAt: true, streamingAt: true },
       });
+      // Never resurrect a run the watchdog (or a prior terminal event) already
+      // settled. A late streaming chunk must not reopen a failed/complete run
+      // and re-show the spinner; a late `final` may still upgrade a failed run
+      // to complete because a real reply did arrive after all.
+      if (existing?.status === "complete") return;
+      if (existing?.status === "failed" && status !== "complete") return;
       const firstTokenAt = existing?.streamingAt ?? now;
       const firstStreamMs = existing?.streamingAt || !existing?.acceptedAt
         ? null

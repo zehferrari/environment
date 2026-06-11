@@ -12,12 +12,12 @@ function assert(condition: unknown, message: string) {
 }
 
 assert(
-  wrapper.includes('process.env.NEXT_PUBLIC_PM_DECOMPOSED_CHAT_ROOM === "1"'),
-  "chat room wrapper must keep the decomposed path behind the explicit feature flag",
+  wrapper.includes('process.env.NEXT_PUBLIC_PM_DECOMPOSED_CHAT_ROOM === "0"'),
+  "chat room wrapper must keep the legacy room behind the explicit opt-out flag",
 );
 assert(
-  wrapper.indexOf("<DecomposedChatRoom") < wrapper.indexOf("<LegacyChatRoom"),
-  "wrapper must fall back to the legacy chat room when the feature flag is off",
+  wrapper.indexOf("<LegacyChatRoom") < wrapper.indexOf("<DecomposedChatRoom"),
+  "wrapper must default to the decomposed chat room, with legacy as the explicit fallback",
 );
 
 for (const component of ["MessageList", "Composer", "StreamController"]) {

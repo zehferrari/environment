@@ -16,6 +16,7 @@ import {
 import { buildTaskAckReady } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
 import { publishBoardTouch } from "@/lib/pm/board-events";
+import { revalidateTaskShell } from "@/lib/tasks/cache";
 
 export async function POST(
   _req: Request,
@@ -93,6 +94,7 @@ export async function POST(
   ]);
 
   // Surface the auto-transition to any open board (live SSE refresh).
+  revalidateTaskShell(task.id);
   publishBoardTouch(task.projectId);
 
   // Dispatch is downstream of persistence (HOMELAB-44 contract). The

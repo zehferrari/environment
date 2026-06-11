@@ -2,7 +2,14 @@
 
 import { sendDirectAgentMessage } from "@/lib/agents/direct-chat-actions";
 import MaximizableTextarea from "@/components/maximizable-textarea";
+import { useDirectChatOptimistic } from "@/components/direct-chat-optimistic-provider";
+import { generateClientMessageId } from "@/lib/agents/client-message-id";
 import React, { useRef, useState } from "react";
+
+function isNextRedirectError(err: unknown) {
+  return typeof (err as { digest?: unknown } | null)?.digest === "string"
+    && (err as { digest: string }).digest.startsWith("NEXT_REDIRECT");
+}
 
 interface ChatInputProps {
   agentSlug: string;
@@ -23,6 +30,7 @@ export default function ChatInput({
   projects = [],
   attachedProjectId = null,
 }: ChatInputProps) {
+  const { addOptimistic, markFailed } = useDirectChatOptimistic();
   const formRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -54,10 +62,21 @@ export default function ChatInput({
   };
 
   const actionHandler = async (formData: FormData) => {
+    const submittedBody = String(formData.get("body") ?? "").trim();
+    // Echo the user's own message instantly (current-chat sends only; the
+    // child-chat / archive path redirects, so an echo would be discarded).
+    const echoClientId = !viewingArchive && submittedBody ? generateClientMessageId() : null;
+    if (echoClientId) addOptimistic(echoClientId, submittedBody);
     setMessageText("");
     setSelectedFilesCount(0);
-    await sendDirectAgentMessage(formData);
     setComposerOpen(false);
+    try {
+      await sendDirectAgentMessage(formData);
+    } catch (err) {
+      if (isNextRedirectError(err)) throw err; // let Next perform the redirect
+      if (echoClientId) markFailed(echoClientId);
+      return;
+    }
     if (textareaRef.current) {
       textareaRef.current.value = "";
     }

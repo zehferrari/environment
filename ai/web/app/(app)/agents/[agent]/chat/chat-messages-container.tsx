@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { deleteDirectAgentMessage, restoreDirectAgentMessage } from "@/lib/agents/direct-chat-actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
@@ -10,6 +11,7 @@ import {
   type MessageActor,
 } from "@/components/message-avatar";
 import { getMessageGroupState, messageParticipantKey } from "@/lib/agents/message-grouping";
+import { useDirectChatOptimistic } from "@/components/direct-chat-optimistic-provider";
 
 interface Message {
   id: string;
@@ -49,12 +51,29 @@ export default function ChatMessagesContainer({
   slug,
   currentUserId = null,
 }: ChatMessagesContainerProps) {
+  const { optimistic, reconcileAgainst, resend, removeOptimistic } = useDirectChatOptimistic();
+  const router = useRouter();
   const [visibleParentsCount, setVisibleParentsCount] = useState(0);
   const [liveMessages, setLiveMessages] = useState(messages);
+  // The id of the user message whose agent reply has reached a terminal state
+  // (done/error), including the silent no-contribution case where no agent
+  // bubble is ever appended. Once settled we stop the reconcile poll and the
+  // live spinner so a silent turn does not poll forever.
+  const [settledReplyFor, setSettledReplyFor] = useState<string | null>(null);
 
   useEffect(() => {
     setLiveMessages(messages);
   }, [messages]);
+
+  // Once the server persists a message matching an optimistic echo, drop the
+  // echo so it does not duplicate the real bubble.
+  useEffect(() => {
+    if (viewingArchive) return;
+    const userBodies = liveMessages
+      .filter((m) => m.sender.kind !== "agent" && (!currentUserId || m.sender.id === currentUserId))
+      .map((m) => m.body);
+    reconcileAgainst(userBodies);
+  }, [liveMessages, viewingArchive, currentUserId, reconcileAgainst]);
 
   const prependedMessages = useMemo(() => {
     const result: Message[] = [];
@@ -144,8 +163,10 @@ export default function ChatMessagesContainer({
 
   const latest = liveMessages.at(-1) ?? null;
   const latestMessageId = latest?.id ?? null;
+  const replySettled = settledReplyFor !== null && settledReplyFor === latestMessageId;
   const liveShowAgentProcessing = showAgentProcessing
     && !viewingArchive
+    && !replySettled
     && Boolean(latest && latest.sender.kind !== "agent");
   const participantIndexes = useMemo(() => {
     const map = new Map<string, number>();
@@ -156,6 +177,25 @@ export default function ChatMessagesContainer({
     }
     return map;
   }, [allMessages, currentUserId]);
+
+  // Actor used to render optimistic echoes — reuse the viewer's most recent
+  // human message so the avatar/name match; fall back to a minimal actor on a
+  // brand-new chat.
+  const optimisticActor = useMemo<MessageActor>(() => {
+    for (let i = allMessages.length - 1; i >= 0; i--) {
+      const s = allMessages[i]!.sender;
+      if (s.kind !== "agent" && (!currentUserId || s.id === currentUserId)) return s;
+    }
+    return { id: currentUserId ?? "you", username: "you", kind: "human", name: "You", agent: null };
+  }, [allMessages, currentUserId]);
+
+  // Keep the newest optimistic echo in view when it is added.
+  const optimisticCount = optimistic.length;
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || optimisticCount === 0) return;
+    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+  }, [optimisticCount]);
 
   const reconcileMessages = React.useCallback(async () => {
     if (viewingArchive) return;
@@ -178,10 +218,21 @@ export default function ChatMessagesContainer({
   useEffect(() => {
     if (!liveShowAgentProcessing || !latestMessageId) return;
 
+    // Hard cap so a backend that never settles the run cannot keep the page
+    // polling (and the spinner up) indefinitely — ~10 minutes at 4s.
+    const MAX_POLLS = 150;
+    let polls = 0;
+
     const initialRefresh = setTimeout(() => {
       void reconcileMessages();
     }, 1_500);
     const interval = setInterval(() => {
+      polls += 1;
+      if (polls >= MAX_POLLS) {
+        clearInterval(interval);
+        setSettledReplyFor(latestMessageId);
+        return;
+      }
       void reconcileMessages();
     }, 4_000);
 
@@ -268,6 +319,37 @@ export default function ChatMessagesContainer({
           );
         })
       )}
+      {!viewingArchive && optimistic.map((m) => (
+        <ChatBubble
+          key={m.clientId}
+          message={{ id: m.clientId, body: m.body, createdAt: m.createdAt, sender: optimisticActor }}
+          currentUserId={currentUserId}
+          participantIndex={0}
+          deliveryStatus={m.status}
+          className="mt-6 first:mt-0"
+          actions={m.status === "failed" ? (
+            <span className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => resend(m.clientId)}
+                className="cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-accent)] transition hover:bg-[var(--color-accent)]/10"
+                title="Resend message"
+              >
+                Resend
+              </button>
+              <button
+                type="button"
+                onClick={() => removeOptimistic(m.clientId)}
+                className="cursor-pointer text-[12px] font-bold text-[var(--color-text-muted)] transition hover:text-[var(--color-crit)]"
+                title="Dismiss failed message"
+                aria-label="Dismiss failed message"
+              >
+                ×
+              </button>
+            </span>
+          ) : null}
+        />
+      ))}
       {liveShowAgentProcessing && latest && (
         <div ref={lastMessageRef}>
           <StreamingAgentReply
@@ -276,7 +358,16 @@ export default function ChatMessagesContainer({
             messageId={latest.id}
             label={agentUsername}
             onFinal={() => {
+              // Terminal reply (including silent no-contribution): settle so the
+              // poll and spinner stop even when no agent bubble is appended.
+              setSettledReplyFor(latest.id);
               void reconcileMessages();
+              // Re-render the server tree once so the just-arrived reply is
+              // persisted into the page AND the sidebar unread cursor advances
+              // (page upserts lastReadAt on render) — clearing the red dot on
+              // the chat you are actively reading. Fires once per reply, not
+              // per stream tick, so it does not reintroduce per-tick refresh.
+              router.refresh();
             }}
           />
         </div>

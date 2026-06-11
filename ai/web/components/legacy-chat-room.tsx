@@ -14,6 +14,7 @@ import {
   type MessageActor,
 } from "@/components/message-avatar";
 import ProposalReview from "@/app/(app)/agents/[agent]/chat/proposal-review";
+import NativePmNotificationToggle from "@/components/native-pm-notification-toggle";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
 import { findPmOptionResolution, parsePmOptions } from "@/lib/pm-options";
@@ -887,6 +888,7 @@ export default function ChatRoom({
           </span>
         </div>
         <div className="flex items-center gap-2">
+          {!viewingArchive ? <NativePmNotificationToggle compact /> : null}
           {hasAnyArchive ? (
             <button
               type="button"
