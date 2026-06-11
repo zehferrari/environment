@@ -542,7 +542,12 @@ export async function POST(req: NextRequest) {
     });
     // Closed-app delivery: push the reply to the human's devices so it lands
     // even with no PM tab open. Best-effort and no-op without VAPID config.
-    void notifyHumanOfAgentReply(target, eventInput.text);
+    // Silent replies (no-contribution / workflow acks) persist no visible
+    // message, so skip the push — otherwise every silent agent fires a content-
+    // less "New reply" notification that opens a chat with nothing new in it.
+    if (eventInput.text.trim().length > 0) {
+      void notifyHumanOfAgentReply(target, eventInput.text);
+    }
   } else {
     const error = "error" in result.body && typeof result.body.error === "string"
       ? result.body.error

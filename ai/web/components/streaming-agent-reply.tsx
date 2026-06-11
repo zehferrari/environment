@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePersistentPmStream } from "@/components/persistent-pm-stream-provider";
 import { MessageAvatar, type MessageActor } from "@/components/message-avatar";
 import { extractDiscussionSectionA } from "@/lib/agents/discussion-reply-format";
@@ -141,6 +141,17 @@ export default function StreamingAgentReply({
     agent: { slug: agentSlug, name: label, avatar: "placeholder" },
   };
 
+  // Memoize the per-render markdown parse: this component re-renders on every
+  // stream event (including heartbeats and reasoning-only deltas that leave the
+  // reply text unchanged), and re-parsing the whole accumulated reply each time
+  // is wasted main-thread work during streaming. Keyed on the text it derives
+  // from, so a parse only happens when the rendered content actually changes.
+  const displayText = useMemo(
+    () => (targetKind === "task-chat" || targetKind === "epic-chat" ? extractDiscussionSectionA(text) : text),
+    [targetKind, text],
+  );
+  const markdownHtml = useMemo(() => renderFullMarkdown(displayText), [displayText]);
+
   if (status === "done") return null;
 
   const waitLabel = waitingCopy({
@@ -155,9 +166,6 @@ export default function StreamingAgentReply({
     ? Date.now() - connectionIssueAt
     : null;
   const reconnectLabel = reconnectingCopy(reconnectingMs);
-  const displayText = targetKind === "task-chat" || targetKind === "epic-chat"
-    ? extractDiscussionSectionA(text)
-    : text;
   const liveStateLabel = status === "error" ? "stream error" : waitLabel;
   const liveTone = status === "error"
     ? "border-[var(--color-crit)]/30 bg-[var(--color-crit)]/[0.06] text-[var(--color-crit)]"
@@ -227,7 +235,7 @@ export default function StreamingAgentReply({
         {displayText.trim() ? (
           <div
             className="md md-compact break-words text-sm leading-relaxed text-[var(--color-text)] [overflow-wrap:anywhere]"
-            dangerouslySetInnerHTML={renderFullMarkdown(displayText)}
+            dangerouslySetInnerHTML={markdownHtml}
           />
         ) : status !== "error" && !reasoning.trim() ? (
           <div className="text-xs text-[var(--color-text-muted)] flex items-center gap-1">

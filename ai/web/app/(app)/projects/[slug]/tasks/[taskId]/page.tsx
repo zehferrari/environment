@@ -52,6 +52,7 @@ import {
   getCachedRecentTaskChatMessages,
   getCachedTaskActivity,
   getCachedTaskAttachments,
+  createdAtMs,
   getCachedTaskChatArchives,
   getCachedTaskComments,
   getCachedTaskDetailShell,
@@ -1305,11 +1306,15 @@ export default async function TaskDetailPage({
     where: { userId_agentSlug: { userId: viewer.id, agentSlug: taskChatCursorKey } },
     select: { lastReadAt: true },
   });
+  // chatMessages come from unstable_cache, which JSON-revives createdAt as an
+  // ISO string; comparing string > Date coerces to NaN (always false), so
+  // normalize both sides to epoch ms before comparing the read cursor.
+  const taskChatReadCursorMs = taskChatReadCursor ? taskChatReadCursor.lastReadAt.getTime() : null;
   const unreadActionPlanMessages = chatMessages.filter((message) => (
     !message.deletedAt
     && !message.body.startsWith("PM workflow notification for @")
     && message.sender.id !== viewer.id
-    && (!taskChatReadCursor || message.createdAt > taskChatReadCursor.lastReadAt)
+    && (taskChatReadCursorMs === null || createdAtMs(message.createdAt) > taskChatReadCursorMs)
   ));
   const firstUnreadMessageId = unreadActionPlanMessages[0]?.id ?? null;
   if (selectedTab === "Action Plan" && !chatArchive) {

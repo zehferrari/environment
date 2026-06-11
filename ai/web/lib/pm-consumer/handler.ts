@@ -22,7 +22,9 @@ import { dedupeKeyFor } from "./dedupe-key";
 import { createTargetResolver, type TargetResolver } from "./target";
 import {
   appendDelivery,
+  appendPmChannelTurnDelivery,
   markDelivered,
+  releaseDelivery,
 } from "./delivery-log";
 import { writeAuditRow } from "./audit";
 import { wakeAgent } from "./gateway-client";
@@ -49,15 +51,34 @@ export function createHandler(opts: HandlerOptions = {}) {
   async function handle(raw: unknown): Promise<HandleOutcome> {
     const pmChannelTurn = parsePmChannelBusTurn(raw);
     if (pmChannelTurn.ok) {
-      const result = await pmChannelDispatch(pmChannelTurn.args);
       const dedupeKey = `openclaw.pm_channel_turn:${pmChannelTurn.id}`;
+      // Insert-once before dispatch so a re-published turn (retry after a
+      // false-negative publisher timeout) is suppressed here instead of running
+      // the agent a second time. Unlike PmEvents, native turns have an explicit
+      // retry path (pm-channel-jobs), so a genuinely failed dispatch releases
+      // the slot below to let the retry actually run.
+      const append = await appendPmChannelTurnDelivery({
+        dedupeKey,
+        id: pmChannelTurn.id,
+        actorId: pmChannelTurn.args.actor.id,
+        targetSlug: pmChannelTurn.args.agentSlug,
+        targetGatewayPort: pmChannelTurn.args.gatewayPort,
+        envelope: raw,
+      });
+      if (append.status === "duplicate") {
+        return { kind: "skipped-duplicate", dedupeKey };
+      }
+
+      const result = await pmChannelDispatch(pmChannelTurn.args);
       if (!result.ok) {
+        await releaseDelivery(dedupeKey);
         return {
           kind: "failed",
           dedupeKey,
           error: result.error ?? `PM channel ingress failed${result.status ? ` (${result.status})` : ""}`,
         };
       }
+      await markDelivered({ deliveryId: append.deliveryId!, status: "delivered" });
       return {
         kind: "delivered",
         dedupeKey,

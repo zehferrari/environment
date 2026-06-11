@@ -83,8 +83,14 @@ truncation" property.
 Duplicate file-drop envelopes are checked before insert as well as by
 the unique index. Stale duplicate files should be archived after one
 `skipped-duplicate` outcome instead of being retried forever.
-Native chat latency is tracked outside `PmEventDelivery`: `PmChannelRun`
-stores queued/accepted/streaming/complete timestamps, and slow
+Native PM-channel turn rows share `PmEventDelivery` for dedupe but are
+not task-scoped PM events: their `kind` is `openclaw.pm_channel_turn`
+and the legacy `taskId`/`taskKey`/`projectKey` columns are empty-string
+placeholders. Delivery-log reporting that means "real PM task event"
+must filter on non-empty task/project fields and exclude the native-turn
+kind; use `isTaskScopedDelivery` for in-process queries. Native chat
+latency is tracked outside `PmEventDelivery`: `PmChannelRun` stores
+queued/accepted/streaming/complete timestamps, and slow
 accepted-to-first-stream spans create `pm.channel.latency_warning`
 activity rows. Direct-chat browser reconciliation happens through
 `GET /api/agents/<slug>/chat/messages`; the consumer only owns envelope

@@ -65,9 +65,13 @@ async function recordStreamTransport(
   transportMode: PmChannelStreamTransportMode,
 ) {
   try {
+    const driver = `openclaw-pm-channel:${transportMode}`;
+    // The transport mode is constant for a run, so only the first event needs to
+    // write it. Gating on `driver: { not }` makes every later event a no-op
+    // match instead of rewriting the same constant on the hot path.
     await db.pmChannelRun.updateMany({
-      where: { targetKey: pmChannelRunTargetKey(target) },
-      data: { driver: `openclaw-pm-channel:${transportMode}` },
+      where: { targetKey: pmChannelRunTargetKey(target), driver: { not: driver } },
+      data: { driver },
     });
   } catch (err) {
     console.warn("[pm-channel] failed to record stream transport", err);

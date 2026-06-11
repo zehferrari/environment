@@ -11,6 +11,7 @@ import {
   recordPmChannelRunQueued,
 } from "@/lib/agents/pm-channel-runs";
 import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel-stream-log";
+import { rollbackDispatchedMessageId } from "@/lib/agents/session-bindings";
 
 type DispatchJobPayload = Omit<SendPmChannelTurnArgs, "fetchImpl">;
 
@@ -212,7 +213,32 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
     runStatus: status,
     error,
   });
+  if (exhausted) {
+    await rollbackDispatchedTurnBinding(payload);
+  }
   return result;
+}
+
+// When a room-chat turn fails for good, roll back the optimistic incremental
+// baseline so the next turn rebuilds full context (see rollbackDispatchedMessageId).
+// Only task-chat/epic-chat advance the binding; comments and direct chats do not.
+async function rollbackDispatchedTurnBinding(payload: DispatchJobPayload) {
+  const target = payload.replyTarget;
+  if (target.kind === "task-chat") {
+    await rollbackDispatchedMessageId({
+      scopeType: "task",
+      scopeId: target.taskId,
+      agentSlug: target.agentSlug,
+      messageId: target.messageId,
+    });
+  } else if (target.kind === "epic-chat") {
+    await rollbackDispatchedMessageId({
+      scopeType: "epic",
+      scopeId: target.epicId,
+      agentSlug: target.agentSlug,
+      messageId: target.messageId,
+    });
+  }
 }
 
 export async function runPmChannelWorkerOnce(workerId = `pm-channel-worker:${process.pid}`) {

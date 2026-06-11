@@ -1,3 +1,5 @@
+import { stripChatMarkdown } from "@/lib/text";
+
 export const PM_NATIVE_NOTIFICATIONS_STORAGE_KEY = "pm:native-notifications:v1:enabled";
 export const PM_NATIVE_NOTIFICATIONS_SEEN_PREFIX = "pm:native-notifications:v1:seen:";
 
@@ -69,7 +71,9 @@ export function shouldSendNativePmNotification(input: NativePmNotificationDecisi
 }
 
 export function compactNativePmNotificationBody(text: string, maxLength = 160) {
-  const compact = text.replace(/\s+/g, " ").trim();
+  // Strip markdown so a notification doesn't show raw **/`/#, matching how the
+  // reply reads in web-push and chat summaries (see lib/text).
+  const compact = stripChatMarkdown(text);
   if (compact.length <= maxLength) return compact;
   return `${compact.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }

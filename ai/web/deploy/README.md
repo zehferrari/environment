@@ -420,9 +420,9 @@ fail with `PM channel bus disabled`.
 Keep direct HTTP as fallback only: set
 `PM_OPENCLAW_CHANNEL_HTTP_FALLBACK=1` only when the bus is unavailable
 and localhost gateway HTTP should be used as a temporary degraded path.
-Direct-chat warm entries are agent-scoped, so repeated direct messages
-and newly archived/restarted chats can reuse the same warm session within
-`PM_CHANNEL_WARM_POOL_TTL_MS`. Accepted-to-first-stream latency beyond
+Agents stay warm via their stable per-scope OpenClaw session key
+(`pm:<scope>:agent:<slug>` in `AgentSessionBinding`), which OpenClaw reuses
+across turns. Accepted-to-first-stream latency beyond
 `PM_OPENCLAW_FIRST_STREAM_WARNING_MS` writes a
 `pm.channel.latency_warning` audit row.
 OpenClaw requires `hook:` in the allowed session-key prefixes when no

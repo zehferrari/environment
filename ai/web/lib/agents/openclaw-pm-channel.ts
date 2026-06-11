@@ -7,10 +7,6 @@ import {
   pmChannelHttpFallbackEnabled,
   publishPmChannelTurnToBus,
 } from "@/lib/agents/pm-channel-bus";
-import {
-  acquirePmChannelWarmAgent,
-  type PmChannelWarmAgentHint,
-} from "@/lib/agents/pm-channel-warm-pool";
 
 export type PmChannelReplyTarget =
   | {
@@ -51,7 +47,6 @@ export interface SendPmChannelTurnArgs {
   replyTarget: PmChannelReplyTarget;
   projectId?: string | null;
   timeoutMs?: number;
-  warmAgent?: PmChannelWarmAgentHint;
   fetchImpl?: typeof fetch;
 }
 
@@ -208,7 +203,6 @@ export function buildPmChannelIngressPayload(
     systemPrompt: args.systemPrompt ?? null,
     actor: args.actor,
     replyTarget: args.replyTarget,
-    warmAgent: args.warmAgent ?? null,
     callbackUrl: new URL(
       "/api/openclaw/pm-channel/reply",
       callbackBaseUrl(),
@@ -217,19 +211,6 @@ export function buildPmChannelIngressPayload(
     streamUrl: pmChannelStreamUrl(transportMode),
     streamSocketPath: pmChannelStreamSocketPath(transportMode),
   };
-}
-
-function logPmChannelWarmPool(args: SendPmChannelTurnArgs, result: SendPmChannelTurnResult) {
-  const hint = args.warmAgent;
-  if (!hint || hint.status === "disabled") return;
-  console.info("[pm-channel] warm-agent", {
-    status: hint.status,
-    key: hint.key,
-    sessionKey: hint.sessionKey,
-    transportMode: result.transportMode,
-    ok: result.ok,
-    statusCode: result.status ?? null,
-  });
 }
 
 export async function sendOpenClawPmChannelTurn(
@@ -248,10 +229,8 @@ export async function sendOpenClawPmChannelTurn(
 export async function dispatchOpenClawPmChannelTurn(
   args: SendPmChannelTurnArgs,
 ): Promise<SendPmChannelTurnResult> {
-  const lease = acquirePmChannelWarmAgent(args);
-  const dispatchArgs = { ...args, warmAgent: lease.hint };
   const transportMode = resolvePmChannelTransportMode();
-  const bus = await publishPmChannelTurnToBus(dispatchArgs);
+  const bus = await publishPmChannelTurnToBus(args);
   if (bus.ok) {
     const result: SendPmChannelTurnResult = {
       ok: true,
@@ -259,13 +238,18 @@ export async function dispatchOpenClawPmChannelTurn(
       driver: "openclaw-pm-channel",
       transportMode,
     };
-    lease.release(true);
-    logPmChannelWarmPool(dispatchArgs, result);
     await recordPmChannelRunDispatch({ target: args.replyTarget, result });
     return result;
   }
 
-  if (!pmChannelHttpFallbackEnabled()) {
+  // Auto-fall back to the direct gateway when the bus is entirely unconfigured
+  // (no PM_CHANNEL_BUS_* env at all — e.g. local dev, or a restart that lost the
+  // bus env), so turns still deliver instead of hard-failing with "PM channel
+  // bus disabled". A configured-but-failing bus only falls back when
+  // PM_OPENCLAW_CHANNEL_HTTP_FALLBACK is set, to avoid double-delivery on a
+  // transient bus error where the consumer may already have received the line.
+  const busUnconfigured = bus.skipped === "disabled";
+  if (!busUnconfigured && !pmChannelHttpFallbackEnabled()) {
     const result: SendPmChannelTurnResult = {
       ok: false,
       status: bus.status,
@@ -273,16 +257,11 @@ export async function dispatchOpenClawPmChannelTurn(
       transportMode,
       error: bus.error ?? "PM channel bus publish failed",
     };
-    lease.release(false);
-    logPmChannelWarmPool(dispatchArgs, result);
     await recordPmChannelRunDispatch({ target: args.replyTarget, result });
     return result;
   }
 
-  const result = await dispatchOpenClawPmChannelTurnViaHttp(dispatchArgs);
-  lease.release(result.ok);
-  logPmChannelWarmPool(dispatchArgs, result);
-  return result;
+  return dispatchOpenClawPmChannelTurnViaHttp(args);
 }
 
 export async function dispatchOpenClawPmChannelTurnViaHttp(

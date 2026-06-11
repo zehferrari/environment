@@ -216,14 +216,38 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
     notify(record);
   }, [notify]);
 
+  // Fully release a record's side effects. Without this, deleting a record from
+  // the map would orphan its CrossTabStreamCoordinator — leaving the heartbeat
+  // and stale-check intervals plus its BroadcastChannel alive for the life of
+  // the tab, and a zombie "leader" that prevents a freshly re-ensured stream for
+  // the same key from ever claiming leadership and opening its own connection.
+  const teardownRecord = useCallback((record: StreamRecord) => {
+    record.coordinatorUnsubscribeRole?.();
+    record.coordinatorUnsubscribeState?.();
+    record.coordinatorUnsubscribePeerJoin?.();
+    record.coordinatorUnsubscribeRole = null;
+    record.coordinatorUnsubscribeState = null;
+    record.coordinatorUnsubscribePeerJoin = null;
+    record.coordinator?.close();
+    record.coordinator = null;
+    record.controller?.abort();
+    record.controller = null;
+    record.started = false;
+    if (record.cleanupTimer) {
+      clearTimeout(record.cleanupTimer);
+      record.cleanupTimer = null;
+    }
+  }, []);
+
   const scheduleCleanup = useCallback((record: StreamRecord) => {
     if (record.cleanupTimer) clearTimeout(record.cleanupTimer);
     record.cleanupTimer = setTimeout(() => {
       if (record.listeners.size === 0 && (record.state.status === "done" || record.state.status === "error")) {
+        teardownRecord(record);
         recordsRef.current.delete(record.key);
       }
     }, TERMINAL_CLEANUP_MS);
-  }, []);
+  }, [teardownRecord]);
 
   const startConnection = useCallback((record: StreamRecord) => {
     if (record.coordinator && !record.coordinator.isLeader()) return;
@@ -409,15 +433,13 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
     },
   }), [attachCoordinator, scheduleCleanup, startConnection]);
 
-  useEffect(() => () => {
-    recordsRef.current.forEach((record) => {
-      record.coordinatorUnsubscribeRole?.();
-      record.coordinatorUnsubscribeState?.();
-      record.coordinatorUnsubscribePeerJoin?.();
-      record.coordinator?.close();
-      record.controller?.abort();
-    });
-  }, []);
+  useEffect(() => {
+    const records = recordsRef.current;
+    return () => {
+      records.forEach((record) => teardownRecord(record));
+      records.clear();
+    };
+  }, [teardownRecord]);
 
   return <PersistentPmStreamContext.Provider value={store}>{children}</PersistentPmStreamContext.Provider>;
 }

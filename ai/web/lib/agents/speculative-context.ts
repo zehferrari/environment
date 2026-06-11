@@ -195,7 +195,22 @@ function resolveTargets(args: {
     activeAgentSlugs,
   });
 
-  return { targetAgents: [...targetAgents.values()], directedDescriptor };
+  return { targetAgents: [...targetAgents.values()], directedDescriptor, targetType, targetValue, targetLabel };
+}
+
+// The directed prompt baked into a prebuilt entry is fully determined by the
+// resolved (targetType, targetValue, targetLabel) — so folding them into the
+// cache key means an entry is only consumed when the message actually sent
+// resolves to the same recipients/silence rule. A draft edited after prebuild
+// (e.g. an added @mention) changes these, so the stale entry is no longer a
+// hit and the send rebuilds. It also makes any drift between the prebuild and
+// send target-resolution paths degrade to a cache miss instead of a wrong prompt.
+export function directedTargetKey(args: {
+  targetType: string | null;
+  targetValue: string | null;
+  targetLabel: string | null;
+}) {
+  return JSON.stringify([args.targetType, args.targetValue, args.targetLabel]);
 }
 
 function newestDate(...values: Array<Date | null | undefined>) {
@@ -276,9 +291,10 @@ function cacheKey(args: {
   projectId: string;
   messageId: string;
   agentSlug: string;
+  directedKey: string;
   revision: string;
 }) {
-  return [args.scopeType, args.scopeId, args.projectId, args.messageId, args.agentSlug, args.revision].join(":");
+  return [args.scopeType, args.scopeId, args.projectId, args.messageId, args.agentSlug, args.directedKey, args.revision].join(":");
 }
 
 function pruneCache() {
@@ -352,7 +368,7 @@ async function prebuildNow(args: {
   const scopeType = task ? "task" as const : "epic" as const;
   const scopeId = task ? task.id : epic!.id;
   const revision = await chatContextRevision({ projectId: project.id, taskId: task?.id ?? null, epicId: epic?.id ?? null });
-  const { targetAgents, directedDescriptor } = resolveTargets({
+  const { targetAgents, directedDescriptor, targetType, targetValue, targetLabel } = resolveTargets({
     users,
     bodyRaw: args.bodyRaw,
     selectedTargets: args.selectedTargets,
@@ -360,6 +376,7 @@ async function prebuildNow(args: {
     epic: epic as any,
   });
   if (targetAgents.length === 0) return { built: 0 };
+  const directedKey = directedTargetKey({ targetType, targetValue, targetLabel });
 
   const [recentDisc, recentCmts] = await Promise.all([
     recentDiscussion(task ? { taskId: task.id } : { epicId: epic!.id }),
@@ -426,7 +443,7 @@ async function prebuildNow(args: {
             project: projectGrantUrl,
           },
         });
-    const key = cacheKey({ scopeType, scopeId, projectId: project.id, messageId: args.messageId, agentSlug: target.slug, revision });
+    const key = cacheKey({ scopeType, scopeId, projectId: project.id, messageId: args.messageId, agentSlug: target.slug, directedKey, revision });
     cache.set(key, {
       key,
       createdAt: now,
@@ -474,12 +491,18 @@ export async function consumeSpeculativeAgentChatContext(args: {
   epicId?: string | null;
   messageId: string;
   agentSlug: string;
+  directedKey: string;
+  // The revision is identical across every target agent of a single send, so
+  // the caller computes it once and passes it in to avoid re-running the
+  // ~9-aggregate revision query per agent. Falls back to computing it when omitted.
+  revision?: string;
 }) {
   const scopeType = args.taskId ? "task" as const : "epic" as const;
   const scopeId = args.taskId ?? args.epicId;
   if (!scopeId) return null;
-  const revision = await chatContextRevision({ projectId: args.projectId, taskId: args.taskId, epicId: args.epicId, excludeMessageId: args.messageId });
-  const key = cacheKey({ scopeType, scopeId, projectId: args.projectId, messageId: args.messageId, agentSlug: args.agentSlug, revision });
+  const revision = args.revision
+    ?? await chatContextRevision({ projectId: args.projectId, taskId: args.taskId, epicId: args.epicId, excludeMessageId: args.messageId });
+  const key = cacheKey({ scopeType, scopeId, projectId: args.projectId, messageId: args.messageId, agentSlug: args.agentSlug, directedKey: args.directedKey, revision });
   const entry = cache.get(key);
   if (!entry || entry.expiresAt <= Date.now()) {
     if (entry) cache.delete(key);

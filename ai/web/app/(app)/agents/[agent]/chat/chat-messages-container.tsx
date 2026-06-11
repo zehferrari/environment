@@ -30,6 +30,23 @@ interface ParentArchive {
   messages: Message[];
 }
 
+// Merge incrementally-polled rows into the current list, deduping by id and
+// keeping chronological (ascending) order to match the server render.
+function mergeMessages(prev: Message[], incoming: Message[]): Message[] {
+  if (incoming.length === 0) return prev;
+  const byId = new Map(prev.map((m) => [m.id, m]));
+  let changed = false;
+  for (const m of incoming) {
+    if (!byId.has(m.id)) changed = true;
+    byId.set(m.id, m);
+  }
+  if (!changed) return prev;
+  return [...byId.values()].sort((a, b) => {
+    const delta = Date.parse(a.createdAt) - Date.parse(b.createdAt);
+    return delta !== 0 ? delta : a.id.localeCompare(b.id);
+  });
+}
+
 interface ChatMessagesContainerProps {
   messages: Message[];
   parentArchives?: ParentArchive[];
@@ -60,6 +77,13 @@ export default function ChatMessagesContainer({
   // bubble is ever appended. Once settled we stop the reconcile poll and the
   // live spinner so a silent turn does not poll forever.
   const [settledReplyFor, setSettledReplyFor] = useState<string | null>(null);
+
+  // Mirror of liveMessages for the poll's incremental cursor, so reconcile can
+  // read the newest known createdAt without being recreated on every change.
+  const liveMessagesRef = useRef(liveMessages);
+  useEffect(() => {
+    liveMessagesRef.current = liveMessages;
+  }, [liveMessages]);
 
   useEffect(() => {
     setLiveMessages(messages);
@@ -199,16 +223,25 @@ export default function ChatMessagesContainer({
 
   const reconcileMessages = React.useCallback(async () => {
     if (viewingArchive) return;
+    // Incremental cursor: only ask for rows after the latest (createdAt, id)
+    // pair we already have. Including the id prevents same-timestamp messages
+    // from being skipped without re-fetching/deduping the cursor row.
+    const current = liveMessagesRef.current;
+    const cursor = current.length > 0 ? current[current.length - 1]! : null;
+    const query = cursor
+      ? `?after=${encodeURIComponent(cursor.createdAt)}&afterId=${encodeURIComponent(cursor.id)}`
+      : "";
     try {
-      const res = await fetch(`/api/agents/${encodeURIComponent(slug)}/chat/messages`, {
+      const res = await fetch(`/api/agents/${encodeURIComponent(slug)}/chat/messages${query}`, {
         method: "GET",
         headers: { Accept: "application/json" },
         cache: "no-store",
       });
       if (!res.ok) return;
       const payload = (await res.json()) as { messages?: Message[] };
-      if (Array.isArray(payload.messages)) {
-        setLiveMessages(payload.messages);
+      if (Array.isArray(payload.messages) && payload.messages.length > 0) {
+        const incoming = payload.messages;
+        setLiveMessages((prev) => mergeMessages(prev, incoming));
       }
     } catch {
       // Best-effort UI reconciliation; the server-rendered page remains source of truth.

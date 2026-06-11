@@ -6,14 +6,10 @@
 import { db } from "@/lib/db";
 import type { PmChannelReplyTarget } from "@/lib/agents/openclaw-pm-channel";
 import { sendWebPushToUser, webPushConfigured, type WebPushPayload } from "@/lib/push/web-push";
+import { stripChatMarkdown } from "@/lib/text";
 
 function snippet(body: string, max = 140): string {
-  const text = body
-    .replace(/```[\s\S]*?```/g, " [code] ")
-    .replace(/^#+\s*/gm, "")
-    .replace(/[*_`>#\[\]()]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const text = stripChatMarkdown(body);
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
 }
 

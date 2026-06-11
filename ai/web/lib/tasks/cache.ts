@@ -311,7 +311,7 @@ export function sortByCreatedAtAsc<T extends CreatedAtRow>(rows: T[]): T[] {
   });
 }
 
-function createdAtMs(createdAt: CreatedAtRow["createdAt"]): number {
+export function createdAtMs(createdAt: CreatedAtRow["createdAt"]): number {
   if (createdAt instanceof Date) return createdAt.getTime();
   if (typeof createdAt === "number") return Number.isFinite(createdAt) ? createdAt : Number.NEGATIVE_INFINITY;
   if (typeof createdAt === "bigint") return Number(createdAt);

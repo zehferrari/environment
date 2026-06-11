@@ -276,10 +276,23 @@ export function createPmChannelEventStream(
       }
       subscribers.add(send);
 
+      // Read the in-memory head once, synchronously, after registering the
+      // subscriber (so no live event can be missed between the two).
+      const memState = s.states.get(key);
       if (replayFrames.length > 0) {
         for (const frame of replayFrames) send(frame.event, frame.state);
+        // Reconcile replay against the in-memory head. Events are published to
+        // memory BEFORE the async DB persist, and the caller reads replay frames
+        // from the DB before this subscriber is registered — so a terminal
+        // (final/done/error) published in that window is absent from replay and
+        // was never delivered live. Without this the client replays up to the
+        // last persisted partial and hangs until the 10-minute sweep. If the
+        // in-memory head is terminal, deliver it now (idempotent for the client).
+        if (memState && (memState.status === "done" || memState.status === "error")) {
+          send(memState.status === "error" ? "stream-error" : "snapshot", memState);
+        }
       } else {
-        const snapshot = s.states.get(key) ?? initialState;
+        const snapshot = memState ?? initialState;
         if (snapshot) send("snapshot", snapshot);
       }
 

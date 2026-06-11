@@ -136,8 +136,8 @@ export default function ChatBubble({
     boxShadow: `0 10px 28px color-mix(in srgb, ${senderAccent} 14%, transparent)`,
   } satisfies CSSProperties;
   const connectedCornerClass = fromCurrentUser
-    ? `${isGroupStart ? "" : "rounded-tr-md"} ${isGroupEnd ? "rounded-br-md" : "rounded-br-md"}`
-    : `${isGroupStart ? "" : "rounded-tl-md"} ${isGroupEnd ? "rounded-bl-md" : "rounded-bl-md"}`;
+    ? `${isGroupStart ? "" : "rounded-tr-md"} ${isGroupEnd ? "" : "rounded-br-md"}`
+    : `${isGroupStart ? "" : "rounded-tl-md"} ${isGroupEnd ? "" : "rounded-bl-md"}`;
   const showGroupHeader = !isGroupedContinuation;
   const compactMetaClass = fromCurrentUser ? "justify-end" : "justify-start";
 

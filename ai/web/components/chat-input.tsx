@@ -37,6 +37,7 @@ export default function ChatInput({
   const [messageText, setMessageText] = useState("");
   const [composerOpen, setComposerOpen] = useState(false);
   const [selectedFilesCount, setSelectedFilesCount] = useState(0);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canSend = messageText.trim().length > 0 || selectedFilesCount > 0;
 
@@ -58,15 +59,22 @@ export default function ChatInput({
   const closeComposer = () => {
     setComposerOpen(false);
     setSelectedFilesCount(0);
+    setErrorMessage(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const actionHandler = async (formData: FormData) => {
+    setErrorMessage(null);
     const submittedBody = String(formData.get("body") ?? "").trim();
     // Echo the user's own message instantly (current-chat sends only; the
     // child-chat / archive path redirects, so an echo would be discarded).
     const echoClientId = !viewingArchive && submittedBody ? generateClientMessageId() : null;
     if (echoClientId) addOptimistic(echoClientId, submittedBody);
+    // Remember what we optimistically cleared so a failed send that has no
+    // optimistic bubble to fall back on (attachment-only or archive/child-chat
+    // sends) can restore the composer instead of silently dropping the input.
+    const previousText = messageText;
+    const hadFiles = selectedFilesCount > 0;
     setMessageText("");
     setSelectedFilesCount(0);
     setComposerOpen(false);
@@ -74,7 +82,21 @@ export default function ChatInput({
       await sendDirectAgentMessage(formData);
     } catch (err) {
       if (isNextRedirectError(err)) throw err; // let Next perform the redirect
-      if (echoClientId) markFailed(echoClientId);
+      if (echoClientId) {
+        // The optimistic bubble carries the failure + resend affordance.
+        markFailed(echoClientId);
+      } else {
+        // No echo exists for this send, so reopen the composer and surface the
+        // error rather than losing the message with zero feedback. Files cannot
+        // be restored into a file input programmatically, so prompt to re-attach.
+        setMessageText(previousText);
+        setComposerOpen(true);
+        setErrorMessage(
+          hadFiles
+            ? "Couldn't send your message. Re-attach your files and try again."
+            : "Couldn't send your message. Please try again.",
+        );
+      }
       return;
     }
     if (textareaRef.current) {
@@ -130,7 +152,10 @@ export default function ChatInput({
               ref={textareaRef}
               name="body"
               value={messageText}
-              onValueChange={setMessageText}
+              onValueChange={(value) => {
+                setMessageText(value);
+                if (errorMessage) setErrorMessage(null);
+              }}
               rows={5}
               maxLength={8000}
               placeholder={
@@ -142,6 +167,15 @@ export default function ChatInput({
               expandedTitle={`Message @${agentUsername}`}
               className="w-full resize-none rounded-xl border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
             />
+
+            {errorMessage ? (
+              <p
+                role="alert"
+                className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-400"
+              >
+                {errorMessage}
+              </p>
+            ) : null}
 
             {projects.length > 0 ? (
               <label className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-muted)]">
@@ -190,7 +224,10 @@ export default function ChatInput({
 
       <button
         type="button"
-        onClick={() => setComposerOpen(true)}
+        onClick={() => {
+          setErrorMessage(null);
+          setComposerOpen(true);
+        }}
         aria-label={viewingArchive ? "Start child chat" : `Message @${agentUsername}`}
         className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-accent)] text-3xl leading-none text-[var(--color-bg)] shadow-lg transition hover:opacity-90"
       >

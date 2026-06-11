@@ -161,7 +161,7 @@ export async function appendPmChannelStreamEvent(args: {
       },
       select: { streamSeq: true },
     });
-    return tx.pmChannelStreamEvent.create({
+    const created = await tx.pmChannelStreamEvent.create({
       data: {
         runId: args.runId,
         seq: run.streamSeq,
@@ -174,6 +174,18 @@ export async function appendPmChannelStreamEvent(args: {
       },
       select: { id: true, runId: true, seq: true, kind: true, payload: true, createdAt: true },
     });
+    // A `final` carrying replace+full-text is a self-contained terminal frame:
+    // replay can reconstruct the complete reply from it alone. Drop the now-
+    // redundant per-token/partial rows so this append-only ledger doesn't grow
+    // without bound (a long streamed reply is otherwise hundreds of rows that
+    // every reconnect re-reads). Finals without replace text are left intact so
+    // delta-accumulated replies still replay correctly.
+    if (args.event === "final" && args.input.replace && args.input.text) {
+      await tx.pmChannelStreamEvent.deleteMany({
+        where: { runId: args.runId, seq: { lt: run.streamSeq } },
+      });
+    }
+    return created;
   });
 }
 

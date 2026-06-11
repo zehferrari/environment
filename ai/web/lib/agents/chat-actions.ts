@@ -49,9 +49,12 @@ import {
 } from "@/lib/agents/context-api/recent";
 import { isValidClientMessageId } from "@/lib/agents/client-message-id";
 import {
+  chatContextRevision,
   consumeSpeculativeAgentChatContext,
+  directedTargetKey,
   scheduleSpeculativeAgentChatContext,
 } from "@/lib/agents/speculative-context";
+import { stripChatMarkdown as compactText, truncateSummary } from "@/lib/text";
 
 async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> {
   const session = await auth();
@@ -65,21 +68,6 @@ function agentCallbackBaseUrl() {
   return process.env.PM_AGENT_CALLBACK_URL
     ?? process.env.PM_INTERNAL_APP_URL
     ?? "http://127.0.0.1:3000";
-}
-
-function compactText(value: string) {
-  return value
-    .replace(/```[\s\S]*?```/g, " code ")
-    .replace(/[#*_>`[\]()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function truncateSummary(value: string, max = 72) {
-  if (value.length <= max) return value;
-  const sliced = value.slice(0, max - 1).trimEnd();
-  const breakAt = Math.max(sliced.lastIndexOf(" "), sliced.lastIndexOf("."));
-  return `${(breakAt > 28 ? sliced.slice(0, breakAt) : sliced).trimEnd()}...`;
 }
 
 function summarizeRoomMessages(
@@ -544,6 +532,24 @@ export async function sendAgentChatMessage(formData: FormData) {
     activeAgentSlugs,
   });
 
+  // Speculative-context lookup key shared by every target agent of this send.
+  // The directed key pins the cache entry to the recipients/silence rule that
+  // was actually sent (see directedTargetKey); the revision is identical across
+  // agents, so compute it at most once and reuse it for each consume instead of
+  // re-running the ~9-aggregate revision query per agent. Computed lazily so a
+  // send where every turn is incremental (no consume) pays nothing.
+  const speculativeDirectedKey = directedTargetKey({ targetType, targetValue, targetLabel });
+  let speculativeRevisionPromise: Promise<string> | null = null;
+  const getSpeculativeRevision = () => {
+    speculativeRevisionPromise ??= chatContextRevision({
+      projectId: project.id,
+      taskId: taskId ? task.id : null,
+      epicId: taskId ? null : epic.id,
+      excludeMessageId: msg.id,
+    });
+    return speculativeRevisionPromise;
+  };
+
   // Recent-exchange slice (HOMELAB-41 prioritization fix). This is the
   // single most important context for "did the participant just agree to
   // a specific scope?" — so we compute it once and inline it ABOVE the
@@ -618,6 +624,8 @@ export async function sendAgentChatMessage(formData: FormData) {
           epicId: taskId ? null : epic.id,
           messageId: msg.id,
           agentSlug,
+          directedKey: speculativeDirectedKey,
+          revision: await getSpeculativeRevision(),
         });
     const baseSystemPrompt = prebuiltContext?.baseSystemPrompt ?? (taskId
       ? isIncrementalTurn

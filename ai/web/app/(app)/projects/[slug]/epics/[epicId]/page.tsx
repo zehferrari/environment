@@ -19,6 +19,7 @@ import { binTask, deleteEpic } from "@/lib/bin/actions";
 import { archiveEpic, unarchiveEpic } from "@/lib/archive/actions";
 import { approveAndMergeDeploymentPullRequest, approveDeploymentLocalChanges } from "@/lib/deploy/actions";
 import { reorderTasks } from "@/lib/tasks/reorder";
+import { createdAtMs } from "@/lib/tasks/cache";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import SortableTaskList from "@/components/sortable-task-list";
 import AttachmentList from "@/components/attachment-list";
@@ -563,12 +564,16 @@ export default async function EpicDetailPage({
         select: { lastReadAt: true },
       })
     : null;
+  // Normalize both sides to epoch ms before comparing the read cursor so the
+  // unread filter stays correct regardless of whether createdAt is a Date or a
+  // (cache-revived) ISO string. See the task page for the cached-string variant.
+  const epicChatReadCursorMs = epicChatReadCursor ? epicChatReadCursor.lastReadAt.getTime() : null;
   const unreadActionPlanMessages = currentUserId
     ? chatMessages.filter((message) => (
         !message.deletedAt
         && !message.body.startsWith("PM workflow notification for @")
         && message.sender.id !== currentUserId
-        && (!epicChatReadCursor || message.createdAt > epicChatReadCursor.lastReadAt)
+        && (epicChatReadCursorMs === null || createdAtMs(message.createdAt) > epicChatReadCursorMs)
       ))
     : [];
   const firstUnreadMessageId = unreadActionPlanMessages[0]?.id ?? null;

@@ -520,6 +520,7 @@ export default function DecomposedChatRoom({
   pendingProposals = [],
 }: ChatRoomProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const formRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -998,7 +999,22 @@ export default function DecomposedChatRoom({
     if (epicId) formData.append("epicId", epicId);
     const nextMessages = await getAgentChatRoomMessages(formData);
     setServerMessages(nextMessages as Message[]);
-  }, [epicId, projectSlug, taskId, viewingArchive]);
+    // Refetching messages alone leaves the rest of the server-rendered tree
+    // stale (work-item proposals, agent-edited task description, the server-
+    // computed pendingAgents). The old StreamingAgentReply called router.refresh
+    // on completion; preserve that so a reply that submits a proposal or edits
+    // the description shows up without a manual reload.
+    router.refresh();
+  }, [epicId, projectSlug, router, taskId, viewingArchive]);
+
+  // Once every optimistic stream has settled, stop shadowing the server-
+  // computed latestMessageId/pendingAgents so later server updates (e.g. another
+  // participant's message) can drive the typing indicators again.
+  useEffect(() => {
+    if (localLatestMessageId && localPendingAgents.length === 0) {
+      setLocalLatestMessageId(null);
+    }
+  }, [localLatestMessageId, localPendingAgents.length]);
 
   const closeComposer = () => {
     setComposerOpen(false);
@@ -1491,9 +1507,11 @@ const StreamController = React.memo(function StreamController(props: any) {
       label={agent.username}
       anonymizeTyping
       onFinal={async ({ text, status }: { text: string; status: string }) => {
-        if (status !== "done") return;
+        // Clear this agent's typing indicator on ANY terminal status. The old
+        // early-return on error left the indicator spinning forever and skipped
+        // the reconcile that refreshes the rest of the server tree.
         setLocalPendingAgents((current: Array<{ slug: string; username: string }>) => current.filter((item) => item.slug !== agent.slug));
-        if (text.trim()) {
+        if (status === "done" && text.trim()) {
           setStreamFinalMessages((current: OptimisticMessage[]) => [
             ...current.filter((message) => message.id !== `stream-final-${activeLatestMessageId}-${agent.slug}`),
             {

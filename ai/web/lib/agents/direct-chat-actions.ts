@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { stripChatMarkdown as compactText, truncateSummary } from "@/lib/text";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, rename, rm, stat, writeFile, readdir, readFile, chmod, chown } from "node:fs/promises";
@@ -330,21 +331,6 @@ function buildDirectReplyPrompt(args: {
     "Conversation context:",
     args.sessionContext,
   ].join("\n");
-}
-
-function compactText(value: string) {
-  return value
-    .replace(/```[\s\S]*?```/g, " code ")
-    .replace(/[#*_>`[\]()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function truncateSummary(value: string, max = 72) {
-  if (value.length <= max) return value;
-  const sliced = value.slice(0, max - 1).trimEnd();
-  const breakAt = Math.max(sliced.lastIndexOf(" "), sliced.lastIndexOf("."));
-  return `${(breakAt > 28 ? sliced.slice(0, breakAt) : sliced).trimEnd()}...`;
 }
 
 function summarizeMessages(messages: Array<{ body: string; sender: { kind: string } }>) {

@@ -1,36 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { messageSenderSelect, serializeSender } from "@/lib/agents/chat-message-sender";
+import { directChatCursorWhere, parseDirectChatCursor } from "@/lib/agents/direct-chat-cursor";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const messageSenderSelect = {
-  id: true,
-  username: true,
-  kind: true,
-  name: true,
-  avatarUpdatedAt: true,
-  agent: { select: { slug: true, name: true, avatar: true } },
-} as const;
-
-function serializeSender(sender: {
-  id: string;
-  username: string;
-  kind: string;
-  name: string | null;
-  avatarUpdatedAt: Date | null;
-  agent: { slug: string; name: string; avatar: string | null } | null;
-}) {
-  return {
-    id: sender.id,
-    username: sender.username,
-    kind: sender.kind,
-    name: sender.name,
-    avatarUpdatedAt: sender.avatarUpdatedAt?.toISOString() ?? null,
-    agent: sender.agent,
-  };
-}
 
 export async function GET(
   req: NextRequest,
@@ -52,12 +27,21 @@ export async function GET(
     ? Math.min(200, Math.max(1, limitParam))
     : 120;
 
+  // Optional incremental cursor: the poll passes the (createdAt, id) pair for
+  // its newest known message. The composite cursor prevents same-timestamp
+  // messages from being skipped while still avoiding >= re-fetch churn.
+  const cursor = parseDirectChatCursor(req.nextUrl.searchParams);
+
   // Take the NEWEST `limit` messages (desc), then restore chronological order.
   // Ordering asc + take would keep the OLDEST rows and drop recent ones in a
   // long active chat — including the in-flight turn the poll is reconciling.
   const rows = await db.directAgentChatMessage.findMany({
-    where: { agentSlug, archiveId: null },
-    orderBy: { createdAt: "desc" },
+    where: {
+      agentSlug,
+      archiveId: null,
+      ...directChatCursorWhere(cursor),
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: limit,
     include: {
       sender: { select: messageSenderSelect },
