@@ -21,15 +21,20 @@ only via the SQLite DB (DATABASE_URL from /etc/default/pm-active-worktree).
 Decoupled from pm.service so a Review-time switch can't interrupt verification.
 
 Config via env (set in the systemd unit):
-  PM_BRANCH_VERIFY_DIR, PM_MONITOR_USER, PM_VERIFY_POLL_SECONDS
+  PM_BRANCH_VERIFY_DIR, PM_MONITOR_USER, PM_VERIFY_POLL_SECONDS,
+  PM_ACTIVE_ENV_FILE
 """
 import datetime
 import os
+import re
+import shlex
 import subprocess
 import time
 
 VERIFY_DIR = os.environ.get("PM_BRANCH_VERIFY_DIR", "/var/lib/pm/branch-verify")
+ACTIVE_ENV_FILE = os.environ.get("PM_ACTIVE_ENV_FILE", "/etc/default/pm-active-worktree")
 POLL = float(os.environ.get("PM_VERIFY_POLL_SECONDS", "2"))
+ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def now():
@@ -51,19 +56,55 @@ def active_app_dir():
     return None
 
 
+def active_env():
+    """Reload the active PM env file for every job.
+
+    systemd EnvironmentFile values are fixed at service start, but worktree
+    switches rewrite /etc/default/pm-active-worktree while leaving this runner
+    alive. Re-reading here keeps DATABASE_URL aligned with the live PM DB.
+    """
+    env = os.environ.copy()
+    try:
+        with open(ACTIVE_ENV_FILE, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                try:
+                    parts = shlex.split(line, comments=True, posix=True)
+                except ValueError:
+                    parts = [line]
+                if not parts or "=" not in parts[0]:
+                    continue
+                key, value = parts[0].split("=", 1)
+                if ENV_KEY_RE.match(key):
+                    env[key] = value
+    except OSError:
+        pass
+    return env
+
+
 def process_one(jobfile, app_dir):
-    print(f"[{now()}] processing {jobfile}", flush=True)
+    running = jobfile + ".running"
+    try:
+        os.rename(jobfile, running)
+    except OSError as err:
+        print(f"[{now()}] could not claim {jobfile}: {err}", flush=True)
+        return
+
+    print(f"[{now()}] processing {running}", flush=True)
     try:
         proc = subprocess.run(
-            ["pnpm", "exec", "tsx", "scripts/pm-verify-branch-pushed.ts", jobfile],
+            ["pnpm", "exec", "tsx", "scripts/pm-verify-branch-pushed.ts", running],
             cwd=app_dir,
+            env=active_env(),
             capture_output=True, text=True,
             timeout=180,
         )
     except subprocess.TimeoutExpired:
-        print(f"[{now()}] verifier timeout on {jobfile}", flush=True)
+        print(f"[{now()}] verifier timeout on {running}", flush=True)
         try:
-            os.rename(jobfile, jobfile + ".failed")
+            os.rename(running, jobfile + ".failed")
         except OSError:
             pass
         return
@@ -74,8 +115,13 @@ def process_one(jobfile, app_dir):
         # Move to .failed so we don't spin on the same job. Operator can
         # rename back to .json to retry.
         try:
-            if os.path.exists(jobfile):
-                os.rename(jobfile, jobfile + ".failed")
+            if os.path.exists(running):
+                os.rename(running, jobfile + ".failed")
+        except OSError:
+            pass
+    elif os.path.exists(running):
+        try:
+            os.unlink(running)
         except OSError:
             pass
 

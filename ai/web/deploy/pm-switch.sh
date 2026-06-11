@@ -29,6 +29,15 @@ log()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+run_build() {
+  ( cd "$APP_DIR" && DATABASE_URL="$BRANCH_DB_URL" "$PNPM" build )
+}
+
+is_transient_next_trace_failure() {
+  local log_file="$1"
+  grep -Eq "ENOENT:.*(\\.nft\\.json|pages-manifest\\.json)" "$log_file"
+}
+
 served_worktree() {
   local wd; wd="$(systemctl show -p WorkingDirectory --value pm.service 2>/dev/null || true)"
   [[ "$wd" == */ai/web/.next/standalone ]] && printf '%s\n' "${wd%/ai/web/.next/standalone}"
@@ -124,7 +133,17 @@ rm -rf "$APP_DIR"/node_modules/.pnpm/@prisma+client*/node_modules/.prisma 2>/dev
 # 2. Build. Group-collaborative /srv/Code perms let any code-agent build; the
 #    serving user reads the bundle through the shared code-agents group.
 log "Building $APP_DIR …"
-( cd "$APP_DIR" && DATABASE_URL="$BRANCH_DB_URL" "$PNPM" build )
+build_log="$(mktemp)"
+if ! run_build > >(tee "$build_log") 2> >(tee -a "$build_log" >&2); then
+  if is_transient_next_trace_failure "$build_log"; then
+    warn "Next.js reported a transient trace artifact ENOENT; retrying build once without re-cleaning."
+    run_build || die "build failed after retry"
+  else
+    rm -f "$build_log"
+    die "build failed"
+  fi
+fi
+rm -f "$build_log"
 [[ -f "$STANDALONE/server.js" ]] || die "build did not produce $STANDALONE/server.js"
 
 # 3. The only privileged step.
