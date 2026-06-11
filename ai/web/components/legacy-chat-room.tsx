@@ -85,6 +85,7 @@ interface ChatRoomProps {
   latestMessageId: string | null;
   firstUnreadMessageId?: string | null;
   currentUserId?: string | null;
+  currentUsername?: string | null;
   pendingProposals?: any[];
 }
 
@@ -213,14 +214,10 @@ function RoomArchiveButton({
       <button
         type="button"
         disabled={!hasActiveHistory}
-        onClick={() => {
-          setStep("choice");
-          setCustomTitle("");
-          setOpen(true);
-        }}
+        onClick={() => runArchive(false)}
         className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-[11px] font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
       >
-        New Action Plan
+        New Discussion
       </button>
 
       {open ? (
@@ -248,7 +245,7 @@ function RoomArchiveButton({
                   </button>
                 </div>
                 <p className="text-sm leading-relaxed text-[var(--color-text-muted)]">
-                  Archive the current room to keep the transcript, or move it to the bin and clear this Task/Epic chat.
+                  Save the current discussion to Recent Discussions, or move it to the bin and clear this Task/Epic chat.
                 </p>
                 <div className="grid gap-2">
                   <button
@@ -256,7 +253,7 @@ function RoomArchiveButton({
                     onClick={() => setStep("archive")}
                     className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-left text-sm font-medium text-[var(--color-text)] transition hover:border-[var(--color-accent)] cursor-pointer"
                   >
-                    Archive current room
+                    Save current discussion
                   </button>
                   <button
                     type="button"
@@ -274,7 +271,7 @@ function RoomArchiveButton({
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-3">
                   <h3 className="text-sm font-semibold text-[var(--color-text)]">
-                    Archive room
+                    Save discussion
                   </h3>
                   <button
                     type="button"
@@ -286,7 +283,7 @@ function RoomArchiveButton({
                   </button>
                 </div>
                 <label className="block space-y-1.5 text-xs font-medium text-[var(--color-text-muted)]">
-                  <span>Archive title</span>
+                  <span>Discussion title</span>
                   <input
                     type="text"
                     disabled={isPending}
@@ -314,7 +311,7 @@ function RoomArchiveButton({
                     onClick={() => runArchive(false)}
                     className="rounded-lg bg-[var(--color-accent)] px-4 py-1.5 text-xs font-semibold text-[var(--color-bg)] transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
                   >
-                    {isPending ? "Archiving..." : "Archive room"}
+                    {isPending ? "Saving..." : "Save discussion"}
                   </button>
                 </div>
               </div>
@@ -382,6 +379,7 @@ export default function ChatRoom({
   latestMessageId,
   firstUnreadMessageId = null,
   currentUserId = null,
+  currentUsername = null,
   pendingProposals = [],
 }: ChatRoomProps) {
   const pathname = usePathname();
@@ -894,8 +892,8 @@ export default function ChatRoom({
               type="button"
               onClick={() => setArchiveSidebarOpen((open) => !open)}
               className="grid h-8 w-8 place-items-center rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer"
-              aria-label={archiveSidebarOpen ? "Hide action plan archives" : "Show action plan archives"}
-              title={archiveSidebarOpen ? "Hide action plan archives" : "Show action plan archives"}
+              aria-label={archiveSidebarOpen ? "Hide recent discussions" : "Show recent discussions"}
+              title={archiveSidebarOpen ? "Hide recent discussions" : "Show recent discussions"}
             >
               {archiveSidebarOpen ? (
                 <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -914,7 +912,7 @@ export default function ChatRoom({
           ) : null}
           {viewingArchive ? (
             <span className="hidden text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider font-semibold sm:inline">
-              Archived Room
+              Archived Discussion
             </span>
           ) : null}
           {viewingArchive ? (
@@ -922,7 +920,7 @@ export default function ChatRoom({
               href={`${pathname}?chatRoom=current`}
               className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-[11px] font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
             >
-              Current Room
+              Current Discussion
             </Link>
           ) : (
             <RoomArchiveButton
@@ -942,7 +940,7 @@ export default function ChatRoom({
             <div>
               <div className="flex items-center gap-1.5">
                 <p className="text-xs font-semibold text-[var(--color-text)]">
-                  {archiveViewMode === "archives" ? "Archived action plans" : "Action plan bin"}
+                  {archiveViewMode === "archives" ? "Recent Discussions" : "Discussion bin"}
                 </p>
                 <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
                   archiveViewMode === "archives"
@@ -953,7 +951,7 @@ export default function ChatRoom({
                 </span>
               </div>
               <p className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
-                {archiveViewMode === "archives" ? "Latest rooms" : "Deleted rooms"}
+                {archiveViewMode === "archives" ? "Latest discussions" : "Deleted discussions"}
               </p>
             </div>
             <div className="flex items-center gap-1.5">
@@ -961,7 +959,7 @@ export default function ChatRoom({
                 type="button"
                 onClick={() => setArchiveSidebarOpen(false)}
                 className="grid h-7 w-7 place-items-center rounded-md border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer"
-                aria-label="Close action plan archives"
+                aria-label="Close recent discussions"
                 title="Hide sidebar"
               >
                 <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -985,7 +983,7 @@ export default function ChatRoom({
                     : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
                 }`}
               >
-                Archive <span className="text-[10px] text-[var(--color-text-muted)]">({archives.length})</span>
+                Recent <span className="text-[10px] text-[var(--color-text-muted)]">({archives.length})</span>
               </button>
             ) : null}
             {hasBinArchives ? (
@@ -1011,7 +1009,7 @@ export default function ChatRoom({
                   : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
               }`}
             >
-              <span className="font-semibold">Current action plan</span>
+              <span className="font-semibold">Current discussion</span>
               <span className="mt-1 block text-[10px] uppercase tracking-wider">
                 {activeCount} message{activeCount === 1 ? "" : "s"}
               </span>
@@ -1020,7 +1018,7 @@ export default function ChatRoom({
             {archiveViewMode === "archives" ? (
               archives.length === 0 ? (
                 <p className="rounded-lg border border-dashed border-[var(--color-line)] p-3 text-center text-xs text-[var(--color-text-muted)]">
-                  No archived action plans.
+                  No recent discussions.
                 </p>
               ) : (
                 <div className="space-y-3">
@@ -1139,6 +1137,7 @@ export default function ChatRoom({
                 message={m}
                 currentUserId={currentUserId}
                 projectSlug={projectSlug}
+                highlighted={Boolean(currentUsername && new RegExp(`(^|[^A-Za-z0-9_])@${currentUsername.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_])`, "i").test(m.body))}
                 surface={taskId ? "task-chat" : "epic-chat"}
                 resolvedOption={pmOptionResolutions.get(m.id) ?? null}
                 preferShortAgentSections
@@ -1253,9 +1252,9 @@ export default function ChatRoom({
           {selectedArchiveDeleted ? (
             "Deleted action plans are read-only."
           ) : activeCount > 0 ? (
-            "Archive the current action plan before continuing from this archived action plan."
+            "Save the current discussion before continuing from this recent discussion."
           ) : (
-            "Archived action plans are read-only."
+            "Recent Discussions are read-only."
           )}{" "}
           <Link href={`${pathname}?chatRoom=current`} className="font-semibold text-[var(--color-accent)] hover:underline">
             Open the current action plan

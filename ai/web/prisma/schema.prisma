@@ -312,6 +312,8 @@ model Task {
   // Free-text commit-message prefix (e.g. a ticket key) the agent prepends
   // to commits on this task. Edited alongside branchName on the task form.
   commitPrefix    String?
+  // Agents set this when human/reporter intervention is required.
+  alertReporter   Boolean  @default(false) @map("alert_reporter")
   // Soft delete (HOMELAB-48). See Epic.deletedAt for semantics. Sub-tasks
   // cascade with their parent task; an Epic delete cascades to its
   // non-deleted Tasks (and through them to sub-tasks). Active read
@@ -342,6 +344,7 @@ model Task {
   @@index([archivedAt])
   @@index([archivedById])
   @@index([deletedAt])
+  @@index([alertReporter])
 }
 
 // ------------------------------------------------------------------

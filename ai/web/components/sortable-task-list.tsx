@@ -43,6 +43,7 @@ export type SortableTaskItem = {
   assigneeName?: string | null;
   reviewerName?: string | null;
   updatedAt?: string | null;
+  alertReporter?: boolean | null;
 };
 
 type Props = {
@@ -223,7 +224,7 @@ function SortableRow({
             router.push(item.href);
           }
         }}
-        className={`grid min-w-[72rem] cursor-pointer grid-cols-[minmax(16rem,1fr)_8rem_10rem_10rem_7rem_7rem_7rem_2rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-[var(--color-panel)] ${statusRowClass(item.status)} ${
+        className={`grid min-w-[72rem] cursor-pointer grid-cols-[minmax(16rem,1fr)_8rem_10rem_10rem_7rem_7rem_7rem_2rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-[var(--color-panel)] ${item.alertReporter ? "bg-red-500/[0.08]" : statusRowClass(item.status)} ${
           isDragging ? "opacity-50" : ""
         }`}
       >
@@ -299,7 +300,7 @@ function SortableRow({
     <li
       ref={setNodeRef}
       style={style}
-      className={`flex items-center gap-2 px-3 py-2 text-sm ${
+      className={`flex items-center gap-2 px-3 py-2 text-sm ${item.alertReporter ? "bg-red-500/[0.08]" : ""} ${
         isDragging ? "opacity-50" : ""
       }`}
     >

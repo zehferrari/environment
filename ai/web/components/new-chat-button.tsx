@@ -49,11 +49,7 @@ export default function NewChatButton({
       <button
         type="button"
         disabled={!hasActiveHistory}
-        onClick={() => {
-          setStep("choice");
-          setCustomTitle("");
-          setOpen(true);
-        }}
+        onClick={handleArchive}
         className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45 transition-colors cursor-pointer"
       >
         New Chat

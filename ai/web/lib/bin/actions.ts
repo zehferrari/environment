@@ -22,6 +22,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { deleteAttachmentFile } from "@/lib/attachments/storage";
 import { publishBoardTouch } from "@/lib/pm/board-events";
+import { cleanupEpicGitRefs } from "@/lib/bin/git-cleanup";
 
 async function requireActorId(): Promise<string> {
   const session = await auth();
@@ -270,14 +271,14 @@ export async function emptyProjectBin(formData: FormData) {
 
   const project = await db.project.findUnique({
     where: { slug },
-    select: { id: true, slug: true },
+    select: { id: true, slug: true, repositoryPath: true },
   });
   if (!project) return;
 
   const [deletedEpics, deletedTasks] = await Promise.all([
     db.epic.findMany({
       where: { projectId: project.id, deletedAt: { not: null } },
-      select: { id: true },
+      select: { id: true, branchName: true },
     }),
     db.task.findMany({
       where: { projectId: project.id, deletedAt: { not: null } },
@@ -304,6 +305,7 @@ export async function emptyProjectBin(formData: FormData) {
     purgedTasks: 0,
     removedBlobs: 0,
     errors: [] as string[],
+    gitCleanup: { cleaned: [] as string[], skipped: [] as string[], errors: [] as string[] },
     manual: true,
   };
 
@@ -320,6 +322,14 @@ export async function emptyProjectBin(formData: FormData) {
     result.purgedTasks = taskIds.length;
   } catch (err) {
     result.errors.push(`project bin empty: ${(err as Error).message}`);
+  }
+
+  if (result.errors.length === 0 && epicIds.length > 0) {
+    result.gitCleanup = await cleanupEpicGitRefs({
+      repositoryPath: project.repositoryPath,
+      branches: deletedEpics.map((epic) => epic.branchName),
+    });
+    result.errors.push(...result.gitCleanup.errors.map((msg) => `git cleanup: ${msg}`));
   }
 
   if (result.errors.length === 0) {

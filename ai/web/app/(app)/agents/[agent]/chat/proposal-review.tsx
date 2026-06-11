@@ -95,6 +95,7 @@ function fieldRows(op: Op): Array<{ label: string; value: string }> {
       add("Assignee", "assignee");
       add("Acting manager", "actingManager");
       add("Status", "status");
+      add("Alert reporter", "alert_reporter");
       break;
     case "update_task":
       add("Target", "target");

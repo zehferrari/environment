@@ -151,6 +151,7 @@ export function getCachedTaskDetailShell(taskId: string) {
             workItemKey: true,
             title: true,
             status: true,
+            alertReporter: true,
             updatedAt: true,
             assignee: { select: { username: true } },
           },

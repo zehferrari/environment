@@ -412,7 +412,7 @@ export async function commitProposal(
             where: { id },
             select: {
               id: true, title: true, description: true, status: true, epicId: true, parentTaskId: true,
-              assigneeId: true, actingManagerId: true, reporterId: true, approvedOn: true,
+              assigneeId: true, actingManagerId: true, reporterId: true, approvedOn: true, alertReporter: true,
               assignee: { select: { username: true } },
               actingManager: { select: { username: true } },
               epic: { select: { status: true, actingManagerId: true } },
@@ -454,6 +454,15 @@ export async function commitProposal(
             if (parentTaskId !== task.parentTaskId) {
               data.parentTaskId = parentTaskId;
               logs.push({ kind: "task.update", payload: { taskId: id, parentTaskId, proposalId: proposal.id } });
+            }
+          }
+
+          const alertReporterRaw = op.alert_reporter !== undefined ? op.alert_reporter : op.alertReporter;
+          if (alertReporterRaw !== undefined) {
+            const alertReporter = alertReporterRaw === true || alertReporterRaw === 1 || alertReporterRaw === "1" || alertReporterRaw === "true";
+            if (alertReporter !== task.alertReporter) {
+              data.alertReporter = alertReporter;
+              logs.push({ kind: "task.alert_reporter", payload: { taskId: id, from: task.alertReporter, to: alertReporter, proposalId: proposal.id } });
             }
           }
           if (typeof op.status === "string" && op.status !== task.status) {

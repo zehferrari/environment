@@ -23,6 +23,7 @@ export interface ChatBubbleMessage {
 }
 
 interface ChatBubbleProps {
+  highlighted?: boolean;
   message: ChatBubbleMessage;
   currentUserId?: string | null;
   projectSlug?: string;
@@ -50,6 +51,29 @@ const senderPalette = [
   "#4338ca",
 ];
 
+function summarizeAgentMessage(body: string) {
+  const parsedSections = parseDiscussionReplySections(body);
+  if (parsedSections?.sectionB) return parsedSections.sectionB;
+  const cleaned = body
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
+    .replace(/[*_`>]/g, "")
+    .trim();
+  if (cleaned.length <= 520) return null;
+  const paragraphs = cleaned
+    .split(/\n\s*\n+/)
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .filter((part) => !/^section\s+[ab]\b/i.test(part));
+  const picked = paragraphs.slice(0, 2).map((part) => {
+    if (part.length <= 260) return part;
+    const sentence = part.match(/^.{80,260}?[.!?](?:\s|$)/)?.[0]?.trim();
+    return sentence && sentence.length >= 80 ? sentence : `${part.slice(0, 257).trim()}…`;
+  });
+  return picked.length > 0 ? picked.join("\n\n") : null;
+}
+
 function hashString(value: string) {
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) {
@@ -73,6 +97,7 @@ export default function ChatBubble({
   isGroupStart = true,
   isGroupEnd = true,
   isGroupedContinuation = false,
+  highlighted = false,
 }: ChatBubbleProps) {
   const [showFullSection, setShowFullSection] = useState(false);
   const fromAgent = message.sender.kind === "agent";
@@ -81,11 +106,14 @@ export default function ChatBubble({
   const sections = preferShortAgentSections && fromAgent
     ? parseDiscussionReplySections(message.body)
     : null;
+  const agentSummary = !sections && fromAgent ? summarizeAgentMessage(message.body) : null;
   const rawDisplayBody = sections
     ? showFullSection
       ? sections.sectionA
       : sections.sectionB
-    : message.body;
+    : agentSummary && !showFullSection
+      ? agentSummary
+      : message.body;
   const parsedOptions = parsePmOptions(rawDisplayBody);
   const displayBody = parsedOptions.body;
   const senderKey = message.sender.id ?? message.sender.agent?.slug ?? message.sender.username;
@@ -100,9 +128,11 @@ export default function ChatBubble({
   } satisfies CSSProperties;
   const articleStyle = {
     borderColor: `color-mix(in srgb, ${senderAccent} 52%, transparent)`,
-    background: fromCurrentUser
-      ? `color-mix(in srgb, ${senderAccent} 18%, var(--color-panel))`
-      : `color-mix(in srgb, ${senderAccent} ${fromAgent ? "16%" : "14%"}, var(--color-panel))`,
+    background: highlighted
+      ? "color-mix(in srgb, #facc15 18%, var(--color-panel))"
+      : fromCurrentUser
+        ? `color-mix(in srgb, ${senderAccent} 18%, var(--color-panel))`
+        : `color-mix(in srgb, ${senderAccent} ${fromAgent ? "16%" : "14%"}, var(--color-panel))`,
     boxShadow: `0 10px 28px color-mix(in srgb, ${senderAccent} 14%, transparent)`,
   } satisfies CSSProperties;
   const connectedCornerClass = fromCurrentUser
@@ -145,12 +175,12 @@ export default function ChatBubble({
             </span>
             <span className="flex shrink-0 items-center gap-2">
               <MessageTimestamp value={message.createdAt} />
-              {sections ? (
+              {sections || agentSummary ? (
                 <button
                   type="button"
                   onClick={() => setShowFullSection((current) => !current)}
-                  aria-label={showFullSection ? "Show short reply" : "Show full reply"}
-                  title={showFullSection ? "Show short reply" : "Show full reply"}
+                  aria-label={showFullSection ? "Show summary" : "Show full message"}
+                  title={showFullSection ? "Show summary" : "Show full message"}
                   className="grid h-6 w-6 place-items-center rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
                 >
                   {showFullSection ? (

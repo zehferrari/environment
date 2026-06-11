@@ -92,6 +92,12 @@ type ActorRow = {
   agent: { slug: string; name: string; avatar: string | null } | null;
 };
 
+function mentionedUsername(body: string, username: string | null | undefined) {
+  if (!username) return false;
+  const escaped = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^A-Za-z0-9_])@${escaped}(?![A-Za-z0-9_])`, "i").test(body);
+}
+
 function serializeActor(actor: ActorRow | null) {
   if (!actor) return null;
   return {
@@ -104,12 +110,12 @@ function serializeActor(actor: ActorRow | null) {
   };
 }
 
-async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
+async function requireActor(): Promise<{ id: string; username: string; kind: ActorKind }> {
   const session = await auth();
   const id = session?.user?.id;
   if (!id) throw new Error("Unauthenticated");
   const kind: ActorKind = session.user?.kind === "agent" ? "agent" : "human";
-  return { id, kind };
+  return { id, username: session.user?.name ?? "", kind };
 }
 
 async function requireActorId(): Promise<string> {
@@ -2022,6 +2028,7 @@ export default async function TaskDetailPage({
                     latestMessageId={viewingChatArchive ? null : pendingChatMessageId}
                     firstUnreadMessageId={firstUnreadMessageId}
                     currentUserId={viewer.id}
+                    currentUsername={viewer.username}
                     pendingProposals={pendingProposals}
                   />
                 </div>
@@ -2052,6 +2059,7 @@ export default async function TaskDetailPage({
                 workItemKey: st.workItemKey,
                 title: st.title,
                 status: st.status,
+                alertReporter: st.alertReporter,
                 href: `/projects/${slug}/tasks/${st.id}`,
                 assigneeName: st.assignee?.username ?? null,
               }))}
@@ -2124,6 +2132,7 @@ export default async function TaskDetailPage({
             <ul className="space-y-3">
               {task.comments.map((c, index) => {
                 const parsedPmOptions = parsePmOptions(c.body);
+                const mentionedCurrentUser = mentionedUsername(c.body, viewer.username);
                 const resolvedPmOption = findPmOptionResolution(
                   parsedPmOptions.options,
                   task.comments.slice(index + 1).filter((later) => !later.deletedAt).map((later) => later.body),
@@ -2155,7 +2164,7 @@ export default async function TaskDetailPage({
                     className="flex items-start gap-3 text-sm"
                   >
                     <MessageAvatar actor={c.user} size="sm" />
-                    <div className="min-w-0 flex-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2">
+                    <div className={`min-w-0 flex-1 rounded-xl border border-[var(--color-line)] px-3 py-2 ${mentionedCurrentUser ? "bg-yellow-400/[0.12]" : "bg-[var(--color-panel-soft)]"}`}>
                       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
                         <div className="flex min-w-0 flex-wrap items-center gap-2">
                           <strong className="truncate font-medium text-[var(--color-text)]">

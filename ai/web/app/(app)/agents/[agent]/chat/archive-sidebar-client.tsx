@@ -257,7 +257,7 @@ export default function ArchiveSidebarClient({
         <div>
           <div className="flex items-center gap-1.5">
             <p className="text-sm font-semibold">
-              {viewMode === "archives" ? "Archived chats" : "Trash Bin"}
+              {viewMode === "archives" ? "Recent Chats" : "Trash Bin"}
             </p>
             {viewMode === "archives" ? (
               archives.length > 0 && (
@@ -274,7 +274,7 @@ export default function ArchiveSidebarClient({
             )}
           </div>
           <p className="text-xs text-[var(--color-text-muted)]">
-            {viewMode === "archives" ? "Latest conversations" : "Deleted conversations"}
+            {viewMode === "archives" ? "Recent conversations" : "Deleted conversations"}
           </p>
         </div>
         <div className="flex items-center gap-1.5">
@@ -326,7 +326,7 @@ export default function ArchiveSidebarClient({
               : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
           }`}
         >
-          Archive <span className="text-[10px] text-[var(--color-text-muted)]">({archives.length})</span>
+          Recent <span className="text-[10px] text-[var(--color-text-muted)]">({archives.length})</span>
         </button>
         <button
           type="button"
@@ -431,7 +431,7 @@ export default function ArchiveSidebarClient({
       <div className="flex-1 overflow-y-auto min-h-0 pr-1 space-y-3 scrollbar-thin">
         {viewMode === "archives" ? (
           filteredArchives.length === 0 ? (
-            <p className="text-sm text-[var(--color-text-muted)]">No archived chats match.</p>
+            <p className="text-sm text-[var(--color-text-muted)]">No recent chats match.</p>
           ) : (
             filteredArchives.map((archive) => {
               const selected = selectedArchiveId === archive.id;

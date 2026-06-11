@@ -14,6 +14,7 @@ import "monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution"
 import "monaco-editor/esm/vs/basic-languages/php/php.contribution";
 import "monaco-editor/esm/vs/language/css/monaco.contribution";
 import { SyntaxLine } from "@/components/code-syntax";
+import { renderFullMarkdown } from "@/lib/markdown";
 import {
   commitCodeFile,
   mergeCodeSource,
@@ -376,7 +377,9 @@ function EditorPane({
   slug: string;
   source: CodeSource;
 }) {
-  const isSvg = relPath.toLowerCase().endsWith(".svg");
+  const lowerRelPath = relPath.toLowerCase();
+  const isSvg = lowerRelPath.endsWith(".svg");
+  const isMarkdown = lowerRelPath.endsWith(".md") || lowerRelPath.endsWith(".markdown");
   return (
     <main className="flex h-full min-w-[42rem] flex-col bg-[var(--color-panel)]">
       <div className="flex h-9 shrink-0 items-center border-b border-[var(--color-line)] bg-[var(--color-panel)]">
@@ -410,6 +413,8 @@ function EditorPane({
             <BlameEditor rows={file.blame} relPath={relPath} />
           ) : isSvg ? (
             <SvgEditor content={content} relPath={relPath} setContent={setContent} />
+          ) : isMarkdown ? (
+            <MarkdownEditor content={content} relPath={relPath} setContent={setContent} />
           ) : (
             <MonacoCodeEditor content={content} relPath={relPath} setContent={setContent} />
           )
@@ -537,6 +542,32 @@ function ImagePreview({
       </div>
       <div className="font-mono text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
         {relPath.split("/").at(-1)} · {formatBytes(size)}
+      </div>
+    </div>
+  );
+}
+
+function MarkdownEditor({
+  content,
+  relPath,
+  setContent,
+}: {
+  content: string;
+  relPath: string;
+  setContent: (value: string) => void;
+}) {
+  return (
+    <div className="grid h-full min-h-[24rem] grid-rows-[minmax(16rem,1fr)_minmax(14rem,0.8fr)] lg:grid-cols-2 lg:grid-rows-1">
+      <div className="overflow-auto border-b border-[var(--color-line)] bg-[var(--color-bg-elev)] p-6 lg:border-b-0 lg:border-r">
+        <div className="mx-auto max-w-3xl rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] px-6 py-5 shadow-sm">
+          <div className="mb-4 border-b border-[var(--color-line)] pb-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+            Markdown preview · {relPath.split("/").at(-1)}
+          </div>
+          <div className="md" dangerouslySetInnerHTML={renderFullMarkdown(content)} />
+        </div>
+      </div>
+      <div className="min-h-0">
+        <MonacoCodeEditor content={content} relPath={relPath} setContent={setContent} />
       </div>
     </div>
   );

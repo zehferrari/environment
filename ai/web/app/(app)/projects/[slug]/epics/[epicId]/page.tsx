@@ -403,6 +403,7 @@ export default async function EpicDetailPage({
           workItemKey: true,
           title: true,
           status: true,
+          alertReporter: true,
           createdAt: true,
           updatedAt: true,
           statusChangedAt: true,
@@ -1235,6 +1236,7 @@ export default async function EpicDetailPage({
                     latestMessageId={viewingChatArchive ? null : pendingChatMessageId}
                     firstUnreadMessageId={firstUnreadMessageId}
                     currentUserId={currentUserId}
+                    currentUsername={session?.user?.name ?? null}
                     pendingProposals={pendingProposals}
                   />
                 </div>
@@ -1274,6 +1276,7 @@ export default async function EpicDetailPage({
                 workItemKey: t.workItemKey,
                 title: t.title,
                 status: t.status,
+                alertReporter: t.alertReporter,
                 href: `/projects/${slug}/tasks/${t.id}`,
                 createdAt: t.createdAt.toISOString(),
                 statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
