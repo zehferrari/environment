@@ -164,37 +164,33 @@ export function getCachedTaskDetailShell(taskId: string) {
 }
 
 export function getCachedTaskComments(taskId: string) {
-  return unstable_cache(
-    async () => db.comment.findMany({
-      where: { taskId },
-      // Soft-deleted comments are returned to humans on the task page so
-      // they can render the collapsed dotted divider. Agent context queries
-      // filter deletedAt: null upstream so agents never see deleted bodies.
-      orderBy: { createdAt: "asc" },
-      include: {
-        user: {
-          select: {
-            id: true,
-            username: true,
-            kind: true,
-            name: true,
-            avatarUpdatedAt: true,
-            agent: { select: { slug: true, name: true, avatar: true } },
-          },
-        },
-        deletedBy: {
-          select: {
-            id: true,
-            username: true,
-            name: true,
-            kind: true,
-          },
+  return db.comment.findMany({
+    where: { taskId },
+    // Soft-deleted comments are returned to humans on the task page so
+    // they can render the collapsed dotted divider. Agent context queries
+    // filter deletedAt: null upstream so agents never see deleted bodies.
+    orderBy: { createdAt: "asc" },
+    include: {
+      user: {
+        select: {
+          id: true,
+          username: true,
+          kind: true,
+          name: true,
+          avatarUpdatedAt: true,
+          agent: { select: { slug: true, name: true, avatar: true } },
         },
       },
-    }),
-    ["task-comments", taskId],
-    { tags: [taskCacheTag.comments(taskId)] },
-  )();
+      deletedBy: {
+        select: {
+          id: true,
+          username: true,
+          name: true,
+          kind: true,
+        },
+      },
+    },
+  });
 }
 
 export function getCachedTaskAttachments(taskId: string) {
@@ -275,18 +271,14 @@ export function getCachedTaskActivity(taskId: string) {
 }
 
 export function getCachedLatestRepoVerifyActivity(taskId: string) {
-  return unstable_cache(
-    async () => db.activityLog.findFirst({
-      where: {
-        taskId,
-        kind: { in: ["pm.repo.verify.ok", "pm.repo.verify.fail", "pm.repo.verify.enqueue"] },
-      },
-      orderBy: { createdAt: "desc" },
-      select: { kind: true, payload: true, createdAt: true },
-    }),
-    ["task-repo-verify", taskId],
-    { tags: [taskCacheTag.activity(taskId)] },
-  )();
+  return db.activityLog.findFirst({
+    where: {
+      taskId,
+      kind: { in: ["pm.repo.verify.ok", "pm.repo.verify.fail", "pm.repo.verify.enqueue"] },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { kind: true, payload: true, createdAt: true },
+  });
 }
 
 export function getCachedTaskRoomMessages(taskId: string) {
