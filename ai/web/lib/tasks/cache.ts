@@ -7,6 +7,11 @@ type RepoVerifyActivityRow = {
   createdAt: Date | string | number | bigint | null;
 };
 
+type CreatedAtRow = {
+  id?: string;
+  createdAt: Date | string | number | bigint | null;
+};
+
 export const taskCacheTag = {
   shell: (taskId: string) => `task:${taskId}:shell`,
   comments: (taskId: string) => `task:${taskId}:comments`,
@@ -175,7 +180,6 @@ export function getCachedTaskComments(taskId: string) {
     // Soft-deleted comments are returned to humans on the task page so
     // they can render the collapsed dotted divider. Agent context queries
     // filter deletedAt: null upstream so agents never see deleted bodies.
-    orderBy: { createdAt: "asc" },
     include: {
       user: {
         select: {
@@ -196,7 +200,7 @@ export function getCachedTaskComments(taskId: string) {
         },
       },
     },
-  });
+  }).then(sortByCreatedAtAsc);
 }
 
 export function getCachedTaskAttachments(taskId: string) {
@@ -290,7 +294,7 @@ export function selectLatestRepoVerifyActivity<T extends RepoVerifyActivityRow>(
   let latest: T | null = null;
   let latestMs = Number.NEGATIVE_INFINITY;
   for (const row of rows) {
-    const rowMs = repoVerifyCreatedAtMs(row.createdAt);
+    const rowMs = createdAtMs(row.createdAt);
     if (rowMs > latestMs) {
       latest = row;
       latestMs = rowMs;
@@ -299,7 +303,15 @@ export function selectLatestRepoVerifyActivity<T extends RepoVerifyActivityRow>(
   return latest;
 }
 
-function repoVerifyCreatedAtMs(createdAt: RepoVerifyActivityRow["createdAt"]): number {
+export function sortByCreatedAtAsc<T extends CreatedAtRow>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => {
+    const delta = createdAtMs(a.createdAt) - createdAtMs(b.createdAt);
+    if (delta !== 0) return delta;
+    return (a.id ?? "").localeCompare(b.id ?? "");
+  });
+}
+
+function createdAtMs(createdAt: CreatedAtRow["createdAt"]): number {
   if (createdAt instanceof Date) return createdAt.getTime();
   if (typeof createdAt === "number") return Number.isFinite(createdAt) ? createdAt : Number.NEGATIVE_INFINITY;
   if (typeof createdAt === "bigint") return Number(createdAt);

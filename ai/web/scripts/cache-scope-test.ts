@@ -5,6 +5,7 @@ import {
   revalidateTaskAttachments,
   revalidateTaskShell,
   selectLatestRepoVerifyActivity,
+  sortByCreatedAtAsc,
   taskCacheTag,
 } from "../lib/tasks/cache";
 import {
@@ -120,5 +121,16 @@ const latestVerify = selectLatestRepoVerifyActivity([
   },
 ]);
 assert.equal(latestVerify?.kind, "pm.repo.verify.ok", "latest verifier activity must compare mixed timestamp encodings");
+
+const sortedComments = sortByCreatedAtAsc([
+  { id: "newer-epoch", createdAt: 1781175875568 },
+  { id: "middle-iso", createdAt: "2026-06-11T11:04:25.198Z" },
+  { id: "oldest-epoch", createdAt: 1781174819403 },
+]);
+assert.deepEqual(
+  sortedComments.map((comment) => comment.id),
+  ["oldest-epoch", "middle-iso", "newer-epoch"],
+  "comments must sort chronologically across mixed timestamp encodings",
+);
 
 console.log("cache scope tests passed");
