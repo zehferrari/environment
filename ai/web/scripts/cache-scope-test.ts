@@ -4,6 +4,7 @@ import {
   revalidateTaskReplyScope,
   revalidateTaskAttachments,
   revalidateTaskShell,
+  selectLatestRepoVerifyActivity,
   taskCacheTag,
 } from "../lib/tasks/cache";
 import {
@@ -105,5 +106,19 @@ assert(!epicCommentTags.includes(epicCacheTag.attachments(epicId)), "epic commen
 const revalidatedEpic: string[] = [];
 revalidateEpicReplyScope(epicId, "chat", (tag) => revalidatedEpic.push(tag));
 assert.deepEqual(revalidatedEpic, epicChatTags, "epic chat reply revalidates only the epic chat resource tags");
+
+const latestVerify = selectLatestRepoVerifyActivity([
+  {
+    kind: "pm.repo.verify.enqueue",
+    payload: "{}",
+    createdAt: "2026-06-11T11:14:53.036Z",
+  },
+  {
+    kind: "pm.repo.verify.ok",
+    payload: "{}",
+    createdAt: 1781179230442,
+  },
+]);
+assert.equal(latestVerify?.kind, "pm.repo.verify.ok", "latest verifier activity must compare mixed timestamp encodings");
 
 console.log("cache scope tests passed");

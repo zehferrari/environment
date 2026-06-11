@@ -1,6 +1,12 @@
 import { revalidateTag, unstable_cache } from "next/cache";
 import { db } from "@/lib/db";
 
+type RepoVerifyActivityRow = {
+  kind: string;
+  payload: string | null;
+  createdAt: Date | string | number | bigint | null;
+};
+
 export const taskCacheTag = {
   shell: (taskId: string) => `task:${taskId}:shell`,
   comments: (taskId: string) => `task:${taskId}:comments`,
@@ -271,14 +277,39 @@ export function getCachedTaskActivity(taskId: string) {
 }
 
 export function getCachedLatestRepoVerifyActivity(taskId: string) {
-  return db.activityLog.findFirst({
+  return db.activityLog.findMany({
     where: {
       taskId,
       kind: { in: ["pm.repo.verify.ok", "pm.repo.verify.fail", "pm.repo.verify.enqueue"] },
     },
-    orderBy: { createdAt: "desc" },
     select: { kind: true, payload: true, createdAt: true },
-  });
+  }).then(selectLatestRepoVerifyActivity);
+}
+
+export function selectLatestRepoVerifyActivity<T extends RepoVerifyActivityRow>(rows: T[]): T | null {
+  let latest: T | null = null;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const row of rows) {
+    const rowMs = repoVerifyCreatedAtMs(row.createdAt);
+    if (rowMs > latestMs) {
+      latest = row;
+      latestMs = rowMs;
+    }
+  }
+  return latest;
+}
+
+function repoVerifyCreatedAtMs(createdAt: RepoVerifyActivityRow["createdAt"]): number {
+  if (createdAt instanceof Date) return createdAt.getTime();
+  if (typeof createdAt === "number") return Number.isFinite(createdAt) ? createdAt : Number.NEGATIVE_INFINITY;
+  if (typeof createdAt === "bigint") return Number(createdAt);
+  if (typeof createdAt === "string") {
+    const numeric = Number(createdAt);
+    if (Number.isFinite(numeric)) return numeric;
+    const parsed = Date.parse(createdAt);
+    return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+  }
+  return Number.NEGATIVE_INFINITY;
 }
 
 export function getCachedTaskRoomMessages(taskId: string) {
