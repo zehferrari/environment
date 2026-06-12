@@ -313,11 +313,13 @@ function RoomArchiveButton({
   taskId,
   epicId,
   hasActiveHistory,
+  onArchived,
 }: {
   projectSlug: string;
   taskId?: string;
   epicId?: string;
   hasActiveHistory: boolean;
+  onArchived?: () => void;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -340,6 +342,7 @@ function RoomArchiveButton({
       setOpen(false);
       setStep("choice");
       setCustomTitle("");
+      if (!moveToBin) onArchived?.();
       router.refresh();
     });
   };
@@ -1072,6 +1075,7 @@ export default function DecomposedChatRoom({
               taskId={taskId}
               epicId={epicId}
               hasActiveHistory={(activeMessageCount ?? visibleMessages.length) > 0}
+              onArchived={() => setComposerOpen(true)}
             />
           )}
         </div>
@@ -1248,6 +1252,8 @@ export default function DecomposedChatRoom({
         reconcileMessages={reconcileMessages}
         pendingProposals={pendingProposals}
         bottomReservation={bottomReservation}
+        setMessageText={setMessageText}
+        setComposerOpen={setComposerOpen}
       />
 
       {showJumpToLatest ? (
@@ -1323,7 +1329,10 @@ const MessageList = React.memo(function MessageList(props: any) {
     reconcileMessages,
     pendingProposals,
     bottomReservation,
+    setMessageText,
+    setComposerOpen,
   } = props;
+  const [canceledMessageIds, setCanceledMessageIds] = useState<Set<string>>(() => new Set());
 
   if (process.env.NEXT_PUBLIC_PM_CHAT_RENDER_PROBE === "1") {
     performance.mark(`pm-chat-render:message-list:${displayedMessages.length}`);
@@ -1339,6 +1348,27 @@ const MessageList = React.memo(function MessageList(props: any) {
     messages: displayedMessages,
     scrollRef,
   });
+
+  const cancelAndEdit = useCallback(async (message: OptimisticMessage) => {
+    const pending = activeLatestMessageId === message.id ? activePendingAgents : [];
+    await Promise.all(pending.map((agent: { slug: string }) => fetch("/api/openclaw/pm-channel/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        target: taskId
+          ? { kind: "task-chat", agentSlug: agent.slug, taskId, messageId: message.id, projectSlug }
+          : { kind: "epic-chat", agentSlug: agent.slug, epicId, messageId: message.id, projectSlug },
+      }),
+    })));
+    setLocalPendingAgents([]);
+    setCanceledMessageIds((current) => {
+      const next = new Set(current);
+      next.add(message.id);
+      return next;
+    });
+    setMessageText(message.body);
+    setComposerOpen(true);
+  }, [activeLatestMessageId, activePendingAgents, epicId, projectSlug, setComposerOpen, setLocalPendingAgents, setMessageText, taskId]);
 
   return (
     <>
@@ -1415,27 +1445,50 @@ const MessageList = React.memo(function MessageList(props: any) {
                     isGroupEnd={groupState.isGroupEnd}
                     isGroupedContinuation={groupState.isGroupedContinuation}
                     deliveryStatus={(m as OptimisticMessage).optimisticStatus}
-                    actions={(m as OptimisticMessage).optimisticStatus === "failed" ? (
-                      <button
-                        type="button"
-                        onClick={() => retryOptimisticMessage(m as OptimisticMessage)}
-                        className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-                      >
-                        Retry
-                      </button>
-                    ) : !viewingArchive && !(m as OptimisticMessage).optimisticStatus ? (
-                      <ConfirmedDeleteButton
-                        action={deleteChatMessage}
-                        fields={{ projectSlug, messageId: m.id }}
-                        label="×"
-                        title="Delete message"
-                        description="The action plan bubble will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
-                        confirmLabel="Delete message"
-                        buttonTitle="Delete message"
-                        ariaLabel="Delete message"
-                        className="text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)] cursor-pointer"
-                      />
-                    ) : null}
+                    actions={(
+                      <span className="inline-flex items-center gap-1.5">
+                        {canceledMessageIds.has(m.id) ? (
+                          <span className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                            canceled
+                          </span>
+                        ) : null}
+                        {!viewingArchive &&
+                        activeLatestMessageId === m.id &&
+                        activePendingAgents.length > 0 &&
+                        m.sender.kind !== "agent" &&
+                        currentUserId &&
+                        m.sender.id === currentUserId ? (
+                          <button
+                            type="button"
+                            onClick={() => cancelAndEdit(m as OptimisticMessage)}
+                            className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] transition hover:border-[var(--color-crit)] hover:text-[var(--color-crit)]"
+                          >
+                            Stop and edit
+                          </button>
+                        ) : null}
+                        {(m as OptimisticMessage).optimisticStatus === "failed" ? (
+                          <button
+                            type="button"
+                            onClick={() => retryOptimisticMessage(m as OptimisticMessage)}
+                            className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                          >
+                            Retry
+                          </button>
+                        ) : !viewingArchive && !(m as OptimisticMessage).optimisticStatus ? (
+                          <ConfirmedDeleteButton
+                            action={deleteChatMessage}
+                            fields={{ projectSlug, messageId: m.id }}
+                            label="×"
+                            title="Delete message"
+                            description="The action plan bubble will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
+                            confirmLabel="Delete message"
+                            buttonTitle="Delete message"
+                            ariaLabel="Delete message"
+                            className="text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)] cursor-pointer"
+                          />
+                        ) : null}
+                      </span>
+                    )}
                   />
                 </div>
               );
@@ -1535,6 +1588,9 @@ const StreamController = React.memo(function StreamController(props: any) {
           ]);
         }
         await reconcileMessages();
+      }}
+      onCanceled={({ agentSlug }: { agentSlug: string }) => {
+        setLocalPendingAgents((current: Array<{ slug: string; username: string }>) => current.filter((item) => item.slug !== agentSlug));
       }}
     />
   ));
@@ -1784,4 +1840,3 @@ const Composer = React.memo(function Composer(props: any) {
     </>
   );
 });
-

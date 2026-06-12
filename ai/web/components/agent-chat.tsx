@@ -6,7 +6,7 @@ import {
   deleteChatMessage,
   restoreChatMessage,
 } from "@/lib/agents/chat-actions";
-import { renderFullMarkdown } from "@/lib/markdown";
+import { renderChatMarkdown } from "@/lib/markdown";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import AgentChatInput from "./agent-chat-input";
 import NativePmNotificationToggle from "@/components/native-pm-notification-toggle";
@@ -184,7 +184,7 @@ export default async function AgentChatSidebar(props: TargetProps) {
                           />
                         </div>
                       </div>
-                      <div className="relative md md-compact" dangerouslySetInnerHTML={renderFullMarkdown(m.body)} />
+                      <div className="relative md md-compact" dangerouslySetInnerHTML={renderChatMarkdown(m.body)} />
                     </article>
                     {fromCurrentUser ? <MessageAvatar actor={m.sender as MessageActor} size="sm" /> : null}
                   </div>

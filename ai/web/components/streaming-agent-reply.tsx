@@ -39,6 +39,7 @@ interface StreamingAgentReplyProps {
   anonymizeTyping?: boolean;
   initialStatus?: StreamingReplyStatus;
   onFinal?: (payload: { agentSlug: string; text: string; reasoning: string; status: "done" | "error" }) => void;
+  onCanceled?: (payload: { agentSlug: string }) => void;
 }
 
 function TypingDots() {
@@ -70,6 +71,7 @@ export default function StreamingAgentReply({
   anonymizeTyping = false,
   initialStatus = "pending",
   onFinal,
+  onCanceled,
 }: StreamingAgentReplyProps) {
   const stream = usePersistentPmStream({ targetKind, agentSlug, messageId, taskId, epicId }, initialStatus);
   const {
@@ -89,6 +91,8 @@ export default function StreamingAgentReply({
   const latestTextRef = useRef("");
   const latestReasoningRef = useRef("");
   const onFinalRef = useRef(onFinal);
+  const onCanceledRef = useRef(onCanceled);
+  const [canceling, setCanceling] = useState(false);
 
   useEffect(() => {
     latestTextRef.current = text;
@@ -101,6 +105,10 @@ export default function StreamingAgentReply({
   useEffect(() => {
     onFinalRef.current = onFinal;
   }, [onFinal]);
+
+  useEffect(() => {
+    onCanceledRef.current = onCanceled;
+  }, [onCanceled]);
 
   useEffect(() => {
     finalNotifiedRef.current = false;
@@ -140,6 +148,40 @@ export default function StreamingAgentReply({
     name: label,
     agent: { slug: agentSlug, name: label, avatar: "placeholder" },
   };
+
+  const cancelTarget = useMemo(() => {
+    if (targetKind === "direct") return { kind: "direct", agentSlug, messageId };
+    if (targetKind === "epic-chat") return { kind: "epic-chat", agentSlug, epicId, messageId };
+    return { kind: targetKind, agentSlug, taskId, messageId };
+  }, [agentSlug, epicId, messageId, targetKind, taskId]);
+
+  const stopReply = useCallback(async () => {
+    if (canceling) return;
+    setCanceling(true);
+    try {
+      await fetch("/api/openclaw/pm-channel/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: cancelTarget }),
+      });
+      onCanceledRef.current?.({ agentSlug });
+    } finally {
+      setCanceling(false);
+    }
+  }, [agentSlug, cancelTarget, canceling]);
+
+  const stopButton = (
+    <button
+      type="button"
+      onClick={stopReply}
+      disabled={canceling}
+      className="shrink-0 rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] transition hover:border-[var(--color-crit)] hover:text-[var(--color-crit)] disabled:opacity-50"
+      aria-label={`Stop ${label} response`}
+      title={`Stop ${label} response`}
+    >
+      {canceling ? "Stopping" : "Stop"}
+    </button>
+  );
 
   // Memoize the per-render markdown parse: this component re-renders on every
   // stream event (including heartbeats and reasoning-only deltas that leave the
@@ -188,6 +230,7 @@ export default function StreamingAgentReply({
             </span>
             <span className="min-w-0 break-words">{typingText}</span>
             {status === "error" || reconnectLabel ? null : <TypingDots />}
+            {stopButton}
           </div>
           {status === "error" || reconnectLabel ? null : (
             <div className="mt-2 flex items-center gap-2 text-[11px] text-[var(--color-text-muted)]">
@@ -208,7 +251,10 @@ export default function StreamingAgentReply({
       <div className="w-fit min-w-0 max-w-[min(44rem,82%)] rounded-[1.15rem] rounded-bl-md border border-[var(--color-accent)]/20 bg-[var(--color-panel)] px-4 py-3 shadow-[0_8px_22px_rgba(15,23,42,0.05)] ring-1 ring-black/[0.02]">
         <div className="mb-2 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
           <span>{label} / live reply</span>
-          <span>{liveStateLabel}</span>
+          <span className="flex items-center gap-2">
+            <span>{liveStateLabel}</span>
+            {stopButton}
+          </span>
         </div>
 
         {/* Collapsible Reasoning Thought Process Block */}

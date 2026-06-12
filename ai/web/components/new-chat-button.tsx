@@ -28,6 +28,7 @@ export default function NewChatButton({
       setOpen(false);
       setCustomTitle("");
       setStep("choice");
+      window.dispatchEvent(new CustomEvent("pm:new-direct-chat", { detail: { agentSlug } }));
       router.refresh();
     });
   };
@@ -40,6 +41,7 @@ export default function NewChatButton({
       await archiveDirectAgentChat(formData);
       setOpen(false);
       setStep("choice");
+      window.dispatchEvent(new CustomEvent("pm:new-direct-chat", { detail: { agentSlug } }));
       router.refresh();
     });
   };

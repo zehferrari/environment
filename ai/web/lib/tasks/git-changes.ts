@@ -251,18 +251,10 @@ export async function getTaskGitChanges(args: {
   if (!args.repositoryPath) {
     return { commits: [], ref: null, error: "Project repository path is not set." };
   }
-  if (!args.branchName) {
-    return { commits: [], ref: null, error: "Task branch is not set." };
-  }
 
-  const ref = await resolveRef(args.repositoryPath, args.branchName);
-  if (!ref) {
-    return {
-      commits: [],
-      ref: null,
-      error: `No local ref found for ${args.branchName}.`,
-    };
-  }
+  const requestedBranch = args.branchName?.trim() || null;
+  const ref = requestedBranch ? await resolveRef(args.repositoryPath, requestedBranch) : null;
+  const logRef = ref ?? "--all";
 
   try {
     const { stdout } = await git([
@@ -271,12 +263,12 @@ export async function getTaskGitChanges(args: {
       "--date=iso-strict",
       "--format=%H%x1f%h%x1f%an%x1f%ae%x1f%aI%x1f%s",
       "--name-status",
-      ref,
+      logRef,
       "--",
     ], args.repositoryPath);
     return {
       commits: filterCommits(parseLog(stdout), args.commitPrefix ?? null, args.windows),
-      ref,
+      ref: ref ?? (requestedBranch ? `all refs (missing ${requestedBranch})` : "all refs"),
       error: null,
     };
   } catch (error) {

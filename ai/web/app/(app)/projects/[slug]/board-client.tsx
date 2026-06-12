@@ -874,26 +874,13 @@ function TaskCard({
             aria-label={`Select ${task.title}`}
             className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
           />
-          <div className="relative shrink-0">
-            {/* Discrete glowing pulse ring while an agent is actively working
-                on this task (In Progress + busy assignee) — mirrors the
-                sidebar busy-agent treatment. */}
-            {task.activeWorking ? (
-              <span
-                className="absolute -inset-1 animate-ping rounded-full bg-[var(--color-accent)] opacity-30"
-                aria-hidden="true"
-              />
-            ) : null}
-            <div className="relative">
-              {task.status === "Done" ? (
-                <BoardReporterMarker task={task} />
-              ) : actor ? (
-                <MessageAvatar actor={actor} size="sm" />
-              ) : (
-                <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
-              )}
-            </div>
-          </div>
+          {task.status === "Done" ? (
+            <BoardReporterMarker task={task} />
+          ) : actor ? (
+            <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
+          ) : (
+            <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
+          )}
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
               {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
@@ -962,26 +949,13 @@ function WorkflowFocusCard({
     >
       <div className="relative z-10 flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
-          <div className="relative shrink-0">
-            {/* Discrete glowing pulse ring while an agent is actively working
-                on this task (In Progress + busy assignee) — mirrors the
-                sidebar busy-agent treatment. */}
-            {task.activeWorking ? (
-              <span
-                className="absolute -inset-1 animate-ping rounded-full bg-[var(--color-accent)] opacity-30"
-                aria-hidden="true"
-              />
-            ) : null}
-            <div className="relative">
-              {task.status === "Done" ? (
-                <BoardReporterMarker task={task} />
-              ) : actor ? (
-                <MessageAvatar actor={actor} size="sm" />
-              ) : (
-                <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
-              )}
-            </div>
-          </div>
+          {task.status === "Done" ? (
+            <BoardReporterMarker task={task} />
+          ) : actor ? (
+            <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
+          ) : (
+            <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
+          )}
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
               <span className={`shrink-0 rounded border px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${columnHeaderPillClass(task.status)}`}>

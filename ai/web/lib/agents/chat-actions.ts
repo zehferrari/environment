@@ -659,6 +659,7 @@ export async function sendAgentChatMessage(formData: FormData) {
             projectId: project.id,
             inlineRecentBlock,
             epicId: epic.id,
+            workflowMessageId: msg.id,
             grantUrls: {
               epic: epicGrantUrl!,
               project: projectGrantUrl,
@@ -669,6 +670,7 @@ export async function sendAgentChatMessage(formData: FormData) {
             projectId: project.id,
             inlineRecentBlock,
             epicId: epic.id,
+            workflowMessageId: msg.id,
             grantUrls: {
               epic: epicGrantUrl!,
               project: projectGrantUrl,

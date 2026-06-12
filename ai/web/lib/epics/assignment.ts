@@ -1,6 +1,6 @@
 import type { Prisma } from "@prisma/client";
 
-export const ACTIVE_TASK_ASSIGNMENT_STATUSES = ["To Do", "In Progress", "Review"] as const;
+export const ACTIVE_TASK_ASSIGNMENT_STATUSES = ["To Do", "In Progress"] as const;
 
 export async function findAvailableEpicWorker(
   tx: Prisma.TransactionClient,

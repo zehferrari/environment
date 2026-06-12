@@ -79,6 +79,26 @@ function serializeActor(actor: ActorRow | null) {
   };
 }
 
+async function readBusyAgentSlugs() {
+  try {
+    const res = await fetch("http://127.0.0.1:3013/agents/snapshot", {
+      cache: "no-store",
+      next: { revalidate: 0 },
+    });
+    if (!res.ok) return new Set<string>();
+    const snapshot = (await res.json()) as {
+      agents?: Record<string, { busy_state?: { is_busy?: boolean } | null }>;
+    };
+    const busy = new Set<string>();
+    for (const [slug, agent] of Object.entries(snapshot.agents ?? {})) {
+      if (agent?.busy_state?.is_busy) busy.add(slug);
+    }
+    return busy;
+  } catch {
+    return new Set<string>();
+  }
+}
+
 type SerializedActor = NonNullable<ReturnType<typeof serializeActor>>;
 type TaskActivityActorRow = {
   taskId: string | null;
@@ -477,7 +497,7 @@ export default async function EpicDetailPage({
   const session = await auth();
   const canDeleteComments = session?.user?.kind !== "agent";
   const taskIds = epic.tasks.map((task) => task.id);
-  const [principals, recentReplyActivity, allActivity, taskActivityRows, deploymentPullRequests] = await Promise.all([
+  const [principals, recentReplyActivity, allActivity, taskActivityRows, deploymentPullRequests, busyAgentSlugs] = await Promise.all([
     listAssignablePrincipals(),
     db.activityLog.findMany({
       where: {
@@ -528,6 +548,7 @@ export default async function EpicDetailPage({
       orderBy: [{ taskId: "asc" }, { updatedAt: "desc" }],
       include: { task: { select: { workItemKey: true, title: true } } },
     }) as Promise<DeploymentPrRow[]>,
+    readBusyAgentSlugs(),
   ]);
   const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows);
   const selectedAgentSlug = chat || epic.actingManager?.agent?.slug || null;
@@ -1295,6 +1316,7 @@ export default async function EpicDetailPage({
                 assigneeName: t.assignee?.username ?? null,
                 reviewerName: t.actingManager?.username ?? null,
                 updatedAt: t.updatedAt.toISOString(),
+                activeWorking: t.status === "In Progress" && Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug)),
               }))}
               projectSlug={slug}
               reorderEpicTasks={reorderEpicTasks}

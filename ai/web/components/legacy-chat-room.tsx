@@ -179,11 +179,13 @@ function RoomArchiveButton({
   taskId,
   epicId,
   hasActiveHistory,
+  onArchived,
 }: {
   projectSlug: string;
   taskId?: string;
   epicId?: string;
   hasActiveHistory: boolean;
+  onArchived?: () => void;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -206,6 +208,7 @@ function RoomArchiveButton({
       setOpen(false);
       setStep("choice");
       setCustomTitle("");
+      if (!moveToBin) onArchived?.();
       router.refresh();
     });
   };
@@ -930,6 +933,7 @@ export default function ChatRoom({
               taskId={taskId}
               epicId={epicId}
               hasActiveHistory={(activeMessageCount ?? visibleMessages.length) > 0}
+              onArchived={() => setComposerOpen(true)}
             />
           )}
         </div>
@@ -1214,6 +1218,9 @@ export default function ChatRoom({
                 ]);
               }
               await reconcileMessages();
+            }}
+            onCanceled={({ agentSlug }) => {
+              setLocalPendingAgents((current) => current.filter((item) => item.slug !== agentSlug));
             }}
           />
         ))}

@@ -41,7 +41,7 @@ export interface PmChannelStreamState {
   lifecycleStatus: PmChannelLifecycleStatus | null;
   toolStatus: PmChannelToolStatus | null;
   toolName: string | null;
-  runStatus?: "queued" | "accepted" | "streaming" | "retryable" | "complete" | "failed";
+  runStatus?: "queued" | "accepted" | "streaming" | "retryable" | "complete" | "failed" | "canceled";
   error: string | null;
   seq?: number;
   updatedAt: number;
@@ -194,7 +194,7 @@ export function applyPmChannelStreamInput(
       state.runStatus = input.runStatus;
       state.status = input.runStatus === "failed" || input.runStatus === "retryable"
         ? "error"
-        : input.runStatus === "complete"
+        : input.runStatus === "complete" || input.runStatus === "canceled"
           ? "done"
           : "streaming";
     }

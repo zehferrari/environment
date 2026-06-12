@@ -319,6 +319,17 @@ runs the cheap version (signals 1+2) and surfaces a `⚙ busy` chip on
 agent cards. The monitor agent's `INCIDENT_HANDLING.md` Step 2 also re-checks busy
 before acting.
 
+### Broken User Managers
+
+If `systemctl --user` probes fail with `Transport endpoint is not connected`,
+`Bad message`, or `Failed to connect to bus`, ai-monitor raises
+`user-manager-bus-broken` instead of one alert per affected user service. This
+kind bypasses monitor-agent triage: ai-monitor restarts `user@UID.service`,
+then restarts the agent's managed `openclaw-*` services through
+`openclaw-control`. `openclaw-control restart-services` has the same preflight
+repair, so PM workflow recovery can repair the user bus before sending a
+PM-channel nudge.
+
 ## Dashboard
 
 Read-only, real-time, basic-auth-gated:

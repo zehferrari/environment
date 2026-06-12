@@ -4,7 +4,7 @@ import { sendDirectAgentMessage } from "@/lib/agents/direct-chat-actions";
 import MaximizableTextarea from "@/components/maximizable-textarea";
 import { useDirectChatOptimistic } from "@/components/direct-chat-optimistic-provider";
 import { generateClientMessageId } from "@/lib/agents/client-message-id";
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 function isNextRedirectError(err: unknown) {
   return typeof (err as { digest?: unknown } | null)?.digest === "string"
@@ -44,6 +44,20 @@ export default function ChatInput({
   // Project attachment is carried forward across the conversation. Human
   // project-scoped requests automatically carry the one-shot proposal capability.
   const [projectId, setProjectId] = useState(attachedProjectId ?? "");
+
+  useEffect(() => {
+    const openNewChatComposer = (event: Event) => {
+      const detail = (event as CustomEvent<{ agentSlug?: string; body?: string }>).detail;
+      if (detail?.agentSlug && detail.agentSlug !== agentSlug) return;
+      setMessageText(detail?.body ?? "");
+      setSelectedFilesCount(0);
+      setErrorMessage(null);
+      setComposerOpen(true);
+      window.requestAnimationFrame(() => textareaRef.current?.focus());
+    };
+    window.addEventListener("pm:new-direct-chat", openNewChatComposer);
+    return () => window.removeEventListener("pm:new-direct-chat", openNewChatComposer);
+  }, [agentSlug]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {

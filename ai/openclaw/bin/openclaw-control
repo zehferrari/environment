@@ -88,6 +88,49 @@ _user_systemctl() {
     systemctl --user "$@"
 }
 
+user_bus_error_needs_manager_restart() {
+  local err_file="$1"
+  grep -Eq 'Transport endpoint is not connected|Bad message|Failed to connect to bus' "$err_file"
+}
+
+restart_user_manager() {
+  local user="$1"
+  local uid
+  uid=$(id -u "$user") || return 1
+  echo "openclaw-control: restarting user@${uid}.service for $user after broken user bus" >&2
+  systemctl restart "user@${uid}.service"
+  sleep 2
+}
+
+ensure_user_manager_bus() {
+  local user="$1"
+  local err_file
+  err_file=$(mktemp /tmp/openclaw-control-user-bus.XXXXXX)
+
+  if systemctl --user -M "${user}@" --no-pager is-active default.target >/dev/null 2>"$err_file"; then
+    rm -f "$err_file"
+    return 0
+  fi
+  if _user_systemctl "$user" is-active default.target >/dev/null 2>>"$err_file"; then
+    rm -f "$err_file"
+    return 0
+  fi
+
+  if user_bus_error_needs_manager_restart "$err_file"; then
+    cat "$err_file" >&2
+    restart_user_manager "$user" || {
+      cat "$err_file" >&2
+      rm -f "$err_file"
+      return 1
+    }
+    rm -f "$err_file"
+    return 0
+  fi
+
+  rm -f "$err_file"
+  return 0
+}
+
 daemon_reload_user() {
   local user="$1"
   systemctl --user -M "${user}@" --no-pager daemon-reload >/dev/null 2>&1 \
@@ -121,6 +164,19 @@ restart_user_service() {
     return 0
   fi
 
+  if user_bus_error_needs_manager_restart "$err_file"; then
+    restart_user_manager "$user" || true
+    daemon_reload_user "$user" || true
+    if systemctl --user -M "${user}@" --no-pager restart "$svc" 2>"$err_file"; then
+      rm -f "$err_file"
+      return 0
+    fi
+    if _user_systemctl "$user" restart "$svc" 2>>"$err_file"; then
+      rm -f "$err_file"
+      return 0
+    fi
+  fi
+
   cat "$err_file" >&2
   rm -f "$err_file"
   return 1
@@ -128,6 +184,7 @@ restart_user_service() {
 
 restart_services() {
   local user="$1"
+  ensure_user_manager_bus "$user" || true
   daemon_reload_user "$user" || true
   mapfile -t services < <(list_managed_user_services "$user")
 

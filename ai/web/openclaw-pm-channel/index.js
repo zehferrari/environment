@@ -47,6 +47,8 @@ const { setRuntime: setPmRuntime, getRuntime: getPmRuntime } = createPluginRunti
   errorMessage: "PM channel runtime not initialized",
 });
 
+const activeTurns = new Map();
+
 function normalizeAccountId(accountId) {
   const value = typeof accountId === "string" && accountId.trim()
     ? accountId.trim()
@@ -108,6 +110,7 @@ function listPmAccountIds(cfg) {
 }
 
 function safeJsonParse(value) {
+  activeTurns.set(sessionKey, { acceptedId, agentId, accountId: account.accountId });
   try {
     return JSON.parse(value);
   } catch {
@@ -480,7 +483,7 @@ function writeJson(res, status, body) {
   res.end(text);
 }
 
-async function runPmTurn({ cfg, payload, accountId, logger }) {
+async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   const runtime = getPmRuntime();
   const account = resolvePmAccount({ cfg, accountId });
   if (!account.enabled || !account.configured) {
@@ -643,6 +646,31 @@ async function runPmTurn({ cfg, payload, accountId, logger }) {
   } catch (err) {
     await stream.error(err);
     throw err;
+  } finally {
+    const active = activeTurns.get(sessionKey);
+    if (!active || active.acceptedId === acceptedId) {
+      activeTurns.delete(sessionKey);
+    }
+  }
+}
+
+async function abortActiveTurn(sessionKey) {
+  const active = activeTurns.get(sessionKey);
+  if (!active) return { aborted: false, reason: "not_active" };
+  try {
+    const harness = await import("openclaw/plugin-sdk/agent-harness");
+    const embeddedSessionId =
+      typeof harness.resolveActiveEmbeddedRunSessionId === "function"
+        ? await harness.resolveActiveEmbeddedRunSessionId(sessionKey)
+        : sessionKey;
+    if (typeof harness.abortAgentHarnessRun === "function") {
+      await harness.abortAgentHarnessRun(embeddedSessionId);
+      activeTurns.delete(sessionKey);
+      return { aborted: true };
+    }
+    return { aborted: false, reason: "abort_unavailable" };
+  } catch (err) {
+    return { aborted: false, reason: String(err?.message ?? err) };
   }
 }
 
@@ -669,7 +697,7 @@ async function handleIngress({ cfg, logger, req, res }) {
 
   const acceptedId = randomUUID();
   setImmediate(() => {
-    runPmTurn({ cfg, payload, accountId, logger }).catch((err) => {
+    runPmTurn({ cfg, payload, accountId, logger, acceptedId }).catch((err) => {
       logger.error?.(`[pm-channel] turn ${acceptedId} failed: ${String(err)}`);
     });
   });
@@ -680,6 +708,38 @@ async function handleIngress({ cfg, logger, req, res }) {
     channel: CHANNEL_ID,
     sessionKey: payload.sessionKey,
   });
+  return true;
+}
+
+async function handleCancel({ cfg, req, res }) {
+  if (req.method !== "POST") {
+    writeJson(res, 405, { error: "Method not allowed" });
+    return true;
+  }
+
+  let payload;
+  try {
+    payload = safeJsonParse(await readRequestBody(req));
+  } catch (err) {
+    writeJson(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    return true;
+  }
+
+  const accountId = normalizeAccountId(payload.accountId);
+  const account = resolvePmAccount({ cfg, accountId });
+  if (!tokensEqual(authHeader(req), account.token)) {
+    writeJson(res, 401, { error: "Unauthorized" });
+    return true;
+  }
+
+  const sessionKey = typeof payload.sessionKey === "string" ? payload.sessionKey.trim() : "";
+  if (!sessionKey) {
+    writeJson(res, 400, { error: "sessionKey is required" });
+    return true;
+  }
+
+  const result = await abortActiveTurn(sessionKey);
+  writeJson(res, 200, { ok: true, ...result });
   return true;
 }
 
@@ -794,6 +854,16 @@ export default defineChannelPluginEntry({
       handler: (req, res) => handleIngress({
         cfg: api.config,
         logger: api.logger,
+        req,
+        res,
+      }),
+    });
+    api.registerHttpRoute({
+      path: "/pm-channel/cancel",
+      auth: "plugin",
+      match: "exact",
+      handler: (req, res) => handleCancel({
+        cfg: api.config,
         req,
         res,
       }),

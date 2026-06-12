@@ -114,6 +114,18 @@ def probe_systemd_user(user, uid, unit):
     return {"is_active": out.strip() or "unknown", "rc": rc, "err": err.strip()[:160]}
 
 
+def systemd_user_bus_broken(state):
+    err = state.get("err", "") or ""
+    return any(
+        marker in err
+        for marker in (
+            "Transport endpoint is not connected",
+            "Bad message",
+            "Failed to connect to bus",
+        )
+    )
+
+
 def probe_resources(thresholds):
     res = {"ts": int(time.time())}
     try:
@@ -1786,7 +1798,30 @@ def deterministic_issues(probes):
                 "reason": f"systemctl is-active reports '{v}'",
                 "suggested_action": "investigate",
             })
+    broken_user_managers = {}
     for key, state in probes.get("user_units", {}).items():
+        if systemd_user_bus_broken(state):
+            user = state.get("user") or key.split("/", 1)[0]
+            broken_user_managers.setdefault(user, {
+                "uid": state.get("uid"),
+                "err": state.get("err", ""),
+            })
+    for user, meta in broken_user_managers.items():
+        uid_text = f" uid={meta.get('uid')}" if meta.get("uid") is not None else ""
+        out.append({
+            "unit": f"user-manager:{user}",
+            "kind": "user-manager-bus-broken",
+            "severity": "crit",
+            "reason": (
+                f"{user}{uid_text}: systemd user bus is broken "
+                f"({(meta.get('err') or '')[:120]})"
+            ),
+            "suggested_action": "restart user@UID.service and restart openclaw user services",
+        })
+    for key, state in probes.get("user_units", {}).items():
+        user = state.get("user") or key.split("/", 1)[0]
+        if user in broken_user_managers:
+            continue
         v = state.get("is_active")
         if v != "active":
             out.append({
@@ -2366,6 +2401,76 @@ def _bucket_needs_pm_restart(bucket):
         (p.get("kind") or "") in ("pm-channel-no-start", "pm-channel-stalled")
         for p in bucket.get("pm_tasks") or []
     )
+
+
+def _user_from_user_manager_issue(issue):
+    unit = issue.get("unit", "")
+    if not unit.startswith("user-manager:"):
+        return None
+    user = unit.split(":", 1)[1].split("/", 1)[0].strip()
+    return user or None
+
+
+def auto_repair_user_managers(issues):
+    """Deterministic repair for a broken systemd user manager/bus.
+
+    A broken user bus prevents normal `systemctl --user` operations and can make
+    PM-channel nudges look accepted while no stream ever starts. Restarting
+    user@UID is intentionally reserved for this explicit bus-broken signal.
+    """
+    users = sorted({u for u in (_user_from_user_manager_issue(i) for i in issues) if u})
+    results = {}
+    for user in users:
+        try:
+            uid = pwd.getpwnam(user).pw_uid
+        except KeyError:
+            results[user] = {
+                "action": "restart-user-manager",
+                "recovered": False,
+                "restart_rc": 1,
+                "restart_err": "unknown user",
+            }
+            continue
+
+        restart_cmd = ["systemctl", "restart", f"user@{uid}.service"]
+        restart_rc, _, restart_err = run_cmd(restart_cmd, timeout=60)
+        time.sleep(2)
+
+        services_cmd = [
+            "sudo", "-n", "/usr/local/sbin/openclaw-control",
+            "restart-services", user, "ai-monitor user manager bus repair",
+        ]
+        services_rc, _, services_err = run_cmd(services_cmd, timeout=120)
+        time.sleep(3)
+
+        probe_rc, probe_out, probe_err = run_cmd([
+            "sudo", "-n", "-u", user, "env",
+            f"XDG_RUNTIME_DIR=/run/user/{uid}",
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+            "systemctl", "--user", "is-active", "default.target",
+        ], timeout=10)
+        recovered = probe_rc == 0 and (probe_out.strip() in ("active", "reloading"))
+        results[user] = {
+            "action": "restart-user-manager-and-services",
+            "uid": uid,
+            "restart_rc": restart_rc,
+            "restart_err": restart_err.strip()[:240],
+            "services_rc": services_rc,
+            "services_err": services_err.strip()[:240],
+            "probe_rc": probe_rc,
+            "probe_state": probe_out.strip() or "unknown",
+            "probe_err": probe_err.strip()[:240],
+            "recovered": bool(recovered),
+        }
+    return results
+
+
+def _merge_recovery_results(*parts):
+    merged = {}
+    for part in parts:
+        if part:
+            merged.update(part)
+    return merged
 
 
 def restart_and_wake_stalled_agents(no_agent_issues, cfg=None):
@@ -3136,6 +3241,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
         default_auto_action_kinds = {
             "agent-idle-with-queue",
             "email-awaiting-action",
+            "user-manager-bus-broken",
             "pm-backlog-plan-missing",
             "pm-action-plan-missing",
             "pm-action-plan-awaiting-approval",
@@ -3189,7 +3295,18 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
             tier_actions = []
 
             if tier1_issues:
-                wake_results = auto_wake_stalled_agents(tier1_issues, cfg)
+                manager_issues = [
+                    i for i in tier1_issues
+                    if i.get("kind") == "user-manager-bus-broken"
+                ]
+                wake_issues = [
+                    i for i in tier1_issues
+                    if i.get("kind") != "user-manager-bus-broken"
+                ]
+                wake_results = _merge_recovery_results(
+                    auto_wake_stalled_agents(wake_issues, cfg) if wake_issues else {},
+                    auto_repair_user_managers(manager_issues) if manager_issues else {},
+                )
                 for i in tier1_issues:
                     k = event_key(i)
                     ev = state["events"].get(k, {})
@@ -3210,7 +3327,18 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                 })
 
             if tier2_issues:
-                rw_results = restart_and_wake_stalled_agents(tier2_issues, cfg)
+                manager_issues = [
+                    i for i in tier2_issues
+                    if i.get("kind") == "user-manager-bus-broken"
+                ]
+                wake_issues = [
+                    i for i in tier2_issues
+                    if i.get("kind") != "user-manager-bus-broken"
+                ]
+                rw_results = _merge_recovery_results(
+                    restart_and_wake_stalled_agents(wake_issues, cfg) if wake_issues else {},
+                    auto_repair_user_managers(manager_issues) if manager_issues else {},
+                )
                 for i in tier2_issues:
                     k = event_key(i)
                     ev = state["events"].get(k, {})
@@ -3231,7 +3359,18 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                 })
 
             if tier3_issues:
-                final_results = restart_and_wake_stalled_agents(tier3_issues, cfg)
+                manager_issues = [
+                    i for i in tier3_issues
+                    if i.get("kind") == "user-manager-bus-broken"
+                ]
+                wake_issues = [
+                    i for i in tier3_issues
+                    if i.get("kind") != "user-manager-bus-broken"
+                ]
+                final_results = _merge_recovery_results(
+                    restart_and_wake_stalled_agents(wake_issues, cfg) if wake_issues else {},
+                    auto_repair_user_managers(manager_issues) if manager_issues else {},
+                )
                 for i in tier3_issues:
                     k = event_key(i)
                     ev = state["events"].get(k, {})
@@ -3892,6 +4031,7 @@ def expand_watch_from_registry(cfg, registry):
 
 def gather_probes(cfg):
     registry, registry_health = load_registry(cfg)
+    registry = registry or {"agents": []}
     user_units_spec, listeners_spec = expand_watch_from_registry(cfg, registry)
 
     probes = {
@@ -3915,7 +4055,9 @@ def gather_probes(cfg):
     }
     for user, uid, unit in user_units_spec:
         key = f"{user}/{unit}"
-        probes["user_units"][key] = probe_systemd_user(user, uid, unit)
+        state = probe_systemd_user(user, uid, unit)
+        state.update({"user": user, "uid": uid, "unit": unit})
+        probes["user_units"][key] = state
     for entry in listeners_spec:
         key = f"{entry['host']}:{entry['port']}"
         probes["listeners"][key] = probe_listener(entry["host"], entry["port"])

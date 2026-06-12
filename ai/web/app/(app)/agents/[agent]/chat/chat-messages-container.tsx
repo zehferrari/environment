@@ -77,6 +77,7 @@ export default function ChatMessagesContainer({
   // bubble is ever appended. Once settled we stop the reconcile poll and the
   // live spinner so a silent turn does not poll forever.
   const [settledReplyFor, setSettledReplyFor] = useState<string | null>(null);
+  const [canceledMessageIds, setCanceledMessageIds] = useState<Set<string>>(() => new Set());
 
   // Mirror of liveMessages for the poll's incremental cursor, so reconcile can
   // read the newest known createdAt without being recreated on every change.
@@ -192,6 +193,25 @@ export default function ChatMessagesContainer({
     && !viewingArchive
     && !replySettled
     && Boolean(latest && latest.sender.kind !== "agent");
+
+  const cancelAndEdit = async (message: Message) => {
+    await fetch("/api/openclaw/pm-channel/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        target: { kind: "direct", agentSlug, messageId: message.id },
+      }),
+    });
+    setSettledReplyFor(message.id);
+    setCanceledMessageIds((current) => {
+      const next = new Set(current);
+      next.add(message.id);
+      return next;
+    });
+    window.dispatchEvent(new CustomEvent("pm:new-direct-chat", {
+      detail: { agentSlug, body: message.body },
+    }));
+  };
   const participantIndexes = useMemo(() => {
     const map = new Map<string, number>();
     for (const message of allMessages) {
@@ -336,17 +356,33 @@ export default function ChatMessagesContainer({
               isGroupedContinuation={groupState.isGroupedContinuation}
               className={groupState.isGroupedContinuation ? "mt-1" : "mt-6 first:mt-0"}
               actions={!viewingArchive ? (
-                <ConfirmedDeleteButton
-                  action={deleteDirectAgentMessage}
-                  fields={{ agentSlug: slug, messageId: m.id }}
-                  label="×"
-                  title="Delete message"
-                  description="The bubble will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
-                  confirmLabel="Delete message"
-                  buttonTitle="Delete message"
-                  ariaLabel="Delete message"
-                  className="cursor-pointer text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)]"
-                />
+                <span className="inline-flex items-center gap-1.5">
+                  {canceledMessageIds.has(m.id) ? (
+                    <span className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                      canceled
+                    </span>
+                  ) : null}
+                  {liveShowAgentProcessing && latest?.id === m.id && currentUserId && m.sender.id === currentUserId ? (
+                    <button
+                      type="button"
+                      onClick={() => cancelAndEdit(m)}
+                      className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] transition hover:border-[var(--color-crit)] hover:text-[var(--color-crit)]"
+                    >
+                      Stop and edit
+                    </button>
+                  ) : null}
+                  <ConfirmedDeleteButton
+                    action={deleteDirectAgentMessage}
+                    fields={{ agentSlug: slug, messageId: m.id }}
+                    label="×"
+                    title="Delete message"
+                    description="The bubble will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."
+                    confirmLabel="Delete message"
+                    buttonTitle="Delete message"
+                    ariaLabel="Delete message"
+                    className="cursor-pointer text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)]"
+                  />
+                </span>
               ) : null}
             />
           );
@@ -401,6 +437,9 @@ export default function ChatMessagesContainer({
               // the chat you are actively reading. Fires once per reply, not
               // per stream tick, so it does not reintroduce per-tick refresh.
               router.refresh();
+            }}
+            onCanceled={() => {
+              setSettledReplyFor(latest.id);
             }}
           />
         </div>

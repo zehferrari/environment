@@ -10,6 +10,7 @@ import { authorizePmChannelCallback } from "@/lib/agents/pm-channel-callback-aut
 
 import {
   pmChannelRunTargetKey,
+  pmChannelTargetIsCanceled,
   pmChannelTargetHasDurableReply,
   recordPmChannelRunEvent,
 } from "@/lib/agents/pm-channel-runs";
@@ -496,6 +497,10 @@ export async function POST(req: NextRequest) {
     expectedAgent,
   })) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (await pmChannelTargetIsCanceled(target)) {
+    return NextResponse.json({ ok: true, canceled: true, ignored: true });
   }
 
   const rateLimit = checkPmChannelCallbackRateLimit({

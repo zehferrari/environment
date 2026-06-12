@@ -31,10 +31,18 @@ async function requireActorId(): Promise<string> {
   return id;
 }
 
+async function requireHumanActorId(): Promise<string> {
+  const session = await auth();
+  const id = session?.user?.id;
+  if (!id) throw new Error("Unauthenticated");
+  if (session.user?.kind === "agent") throw new Error("Only human users can move work items to the bin");
+  return id;
+}
+
 // ---- Delete --------------------------------------------------------
 
 export async function binTask(formData: FormData): Promise<void> {
-  const actorId = await requireActorId();
+  const actorId = await requireHumanActorId();
   const slug = String(formData.get("projectSlug") ?? "");
   const taskId = String(formData.get("taskId") ?? "");
   if (!slug || !taskId) return;
@@ -88,7 +96,7 @@ export async function deleteTask(formData: FormData) {
 }
 
 export async function binEpic(formData: FormData): Promise<void> {
-  const actorId = await requireActorId();
+  const actorId = await requireHumanActorId();
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
   if (!slug || !epicId) return;

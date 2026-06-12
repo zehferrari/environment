@@ -11,6 +11,7 @@ import {
 } from "@/lib/agents/pm-channel-stream";
 import {
   pmChannelRunTargetKey,
+  pmChannelTargetIsCanceled,
   pmChannelTargetHasDurableReply,
   recordPmChannelRunEvent,
 } from "@/lib/agents/pm-channel-runs";
@@ -79,6 +80,12 @@ async function recordStreamTransport(
 }
 
 async function recordStreamError(target: PmChannelReplyTarget, error: string | undefined) {
+  const existingRun = await db.pmChannelRun.findUnique({
+    where: { targetKey: pmChannelRunTargetKey(target) },
+    select: { status: true },
+  });
+  if (existingRun?.status === "complete") return;
+
   const payload = JSON.stringify({
     driver: "openclaw-pm-channel",
     target,
@@ -133,6 +140,10 @@ export async function applyPmChannelStreamCallback(args: {
   const transportMode = normalizeTransportMode(
     args.transportMode ?? (typeof args.payload.transportMode === "string" ? args.payload.transportMode : null),
   );
+
+  if (await pmChannelTargetIsCanceled(target)) {
+    return { status: 200, body: { ok: true, canceled: true, ignored: true } };
+  }
 
   if (args.rateLimit !== false) {
     const rateLimit = checkPmChannelCallbackRateLimit({

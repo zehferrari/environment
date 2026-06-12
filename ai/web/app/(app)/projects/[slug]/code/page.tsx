@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import {
   canReadRepository,
+  canWriteRepositoryFile,
   chooseCodeSource,
   getCodeGitState,
   listCodeSources,
@@ -49,7 +50,7 @@ export default async function ProjectCodePage({
   if (!project || project.deletedAt || !project.repositoryPath) notFound();
 
   const session = await auth();
-  const canWrite = Boolean(session?.user?.id && session.user.kind !== "agent");
+  const canWriteSession = Boolean(session?.user?.id && session.user.kind !== "agent");
   const sources = await listCodeSources(project.repositoryPath);
   const source = chooseCodeSource(sources, sp.source);
   if (!source) notFound();
@@ -70,6 +71,14 @@ export default async function ProjectCodePage({
       ? readRepositoryFile(source, relPath, showBlame)
       : Promise.resolve(null),
   ]);
+  const writeCapability = canWriteSession && canRead && kind === "file"
+    ? await canWriteRepositoryFile(source, relPath)
+    : {
+        ok: false,
+        reason: canWriteSession
+          ? "Open a writable text file to edit."
+          : "Only logged-in human users can run code actions.",
+      };
   const targetBranch = project.deploymentPrTargetBranch ?? project.deploymentProductionBranch ?? "main";
   const git = await getCodeGitState(source, sources, targetBranch).catch((error) => ({
     targetBranch,
@@ -114,7 +123,9 @@ export default async function ProjectCodePage({
         slug={project.slug}
         source={source}
         sources={sources}
-        canWrite={canWrite}
+        canWrite={canWriteSession}
+        canEditFile={writeCapability.ok}
+        canWriteReason={writeCapability.reason}
       />
     </div>
   );

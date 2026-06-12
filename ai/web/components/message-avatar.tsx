@@ -57,10 +57,19 @@ function initialFor(actor: MessageActor) {
 export function MessageAvatar({
   actor,
   size = "md",
+  busy = false,
 }: {
   actor: MessageActor;
   size?: "sm" | "md";
+  busy?: boolean;
 }) {
+  const busyRing = busy && actor.kind === "agent" ? (
+    <span
+      className="absolute -inset-1 animate-ping rounded-full bg-[var(--color-accent)] opacity-30"
+      aria-hidden="true"
+    />
+  ) : null;
+
   if (actor.kind === "system") {
     return (
       <div
@@ -78,23 +87,26 @@ export function MessageAvatar({
   const sizeClass = size === "sm" ? "h-7 w-7 text-[11px]" : "h-9 w-9 text-xs";
 
   return (
-    <div
-      className={`${sizeClass} grid shrink-0 place-items-center overflow-hidden rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] font-semibold text-[var(--color-text-muted)] shadow-sm`}
-      title={label}
-      aria-label={`${label} avatar`}
-    >
-      {src ? (
-        <img
-          src={src}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          className="h-full w-full object-cover"
-        />
-      ) : (
-        <span>{initialFor(actor)}</span>
-      )}
-    </div>
+    <span className="relative inline-grid shrink-0">
+      {busyRing}
+      <span
+        className={`${sizeClass} relative grid shrink-0 place-items-center overflow-hidden rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] font-semibold text-[var(--color-text-muted)] shadow-sm`}
+        title={label}
+        aria-label={`${label} avatar`}
+      >
+        {src ? (
+          <img
+            src={src}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <span>{initialFor(actor)}</span>
+        )}
+      </span>
+    </span>
   );
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type CSSProperties, type ReactNode, type Ref } from "react";
-import { renderFullMarkdown } from "@/lib/markdown";
+import { renderChatMarkdown } from "@/lib/markdown";
 import { parsePmOptions, isPmOptionsTargetedAtCurrentUser, type PmOption } from "@/lib/pm-options";
 import { parseDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
 import PmOptions from "@/components/pm-options";
@@ -209,7 +209,7 @@ export default function ChatBubble({
         )}
         <div
           className="md md-compact break-words text-sm leading-relaxed text-[var(--color-text)] [overflow-wrap:anywhere]"
-          dangerouslySetInnerHTML={renderFullMarkdown(displayBody)}
+          dangerouslySetInnerHTML={renderChatMarkdown(displayBody)}
         />
         {deliveryStatus ? (
           <div className={`mt-2 text-[10px] font-semibold uppercase tracking-wider ${deliveryStatus === "failed" ? "text-[var(--color-crit)]" : "text-[var(--color-text-muted)]"}`}>

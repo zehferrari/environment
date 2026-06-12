@@ -44,6 +44,7 @@ export type SortableTaskItem = {
   reviewerName?: string | null;
   updatedAt?: string | null;
   alertReporter?: boolean | null;
+  activeWorking?: boolean | null;
 };
 
 type Props = {
@@ -265,7 +266,7 @@ function SortableRow({
         </div>
         {showStatusBadge ? <StatusCell status={item.status ?? null} archivedAt={item.archivedAt ?? null} /> : <span />}
         {showAssignee ? (
-          <PersonCell actor={item.assignee ?? null} fallbackName={item.assigneeName} emptyLabel="unassigned" />
+          <PersonCell actor={item.assignee ?? null} fallbackName={item.assigneeName} emptyLabel="unassigned" busy={Boolean(item.activeWorking)} />
         ) : <span />}
         {showReviewer ? (
           <PersonCell actor={item.reviewer ?? null} fallbackName={item.reviewerName} emptyLabel="none" />
@@ -358,15 +359,17 @@ function PersonCell({
   actor,
   fallbackName,
   emptyLabel,
+  busy = false,
 }: {
   actor: MessageActor | null;
   fallbackName?: string | null;
   emptyLabel: string;
+  busy?: boolean;
 }) {
   return (
     <span className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-muted)]">
       {actor ? (
-        <MessageAvatar actor={actor} size="sm" />
+        <MessageAvatar actor={actor} size="sm" busy={busy} />
       ) : (
         <span className="truncate">{fallbackName ? `@${fallbackName}` : emptyLabel}</span>
       )}

@@ -255,6 +255,30 @@ const marked = new Marked({
   },
 });
 
+const chatMarked = new Marked({
+  gfm: true,
+  breaks: true,
+  pedantic: false,
+  renderer: {
+    html({ text }) {
+      return escapeHtml(text);
+    },
+    link({ href, title, tokens }) {
+      const label = this.parser.parseInline(tokens);
+      if (!isSafeHref(href)) return escapeHtml(`[${label}](${href})`);
+      const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+      const externalAttrs = /^https?:\/\//i.test(href)
+        ? ' rel="noreferrer noopener" target="_blank"'
+        : "";
+      return `<a href="${escapeHtml(href)}"${titleAttr}${externalAttrs}>${label}</a>`;
+    },
+    image({ href, text }) {
+      if (!isSafeHref(href)) return escapeHtml(text);
+      return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text)}">`;
+    },
+  },
+});
+
 export interface RenderedMarkdown {
   __html: string;
 }
@@ -264,6 +288,12 @@ export interface RenderedMarkdown {
 export function renderFullMarkdown(input: string): RenderedMarkdown {
   if (!input) return { __html: "" };
   const out = marked.parse(input, { async: false });
+  return { __html: typeof out === "string" ? out : "" };
+}
+
+export function renderChatMarkdown(input: string): RenderedMarkdown {
+  if (!input) return { __html: "" };
+  const out = chatMarked.parse(input, { async: false });
   return { __html: typeof out === "string" ? out : "" };
 }
 

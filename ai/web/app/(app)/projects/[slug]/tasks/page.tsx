@@ -73,6 +73,26 @@ function buildTaskActivityActorMaps(rows: TaskActivityActorRow[]) {
   return { createdBy, updatedBy };
 }
 
+async function readBusyAgentSlugs() {
+  try {
+    const res = await fetch("http://127.0.0.1:3013/agents/snapshot", {
+      cache: "no-store",
+      next: { revalidate: 0 },
+    });
+    if (!res.ok) return new Set<string>();
+    const snapshot = (await res.json()) as {
+      agents?: Record<string, { busy_state?: { is_busy?: boolean } | null }>;
+    };
+    const busy = new Set<string>();
+    for (const [slug, agent] of Object.entries(snapshot.agents ?? {})) {
+      if (agent?.busy_state?.is_busy) busy.add(slug);
+    }
+    return busy;
+  } catch {
+    return new Set<string>();
+  }
+}
+
 function single(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
 }
@@ -131,7 +151,7 @@ export default async function ProjectTasksPage({
     ...(status ? { status } : {}),
   };
 
-  const [principals, tasks, totalCount, archivedCount] = await Promise.all([
+  const [principals, tasks, totalCount, archivedCount, busyAgentSlugs] = await Promise.all([
     listAssignablePrincipals(),
     db.task.findMany({
       where,
@@ -159,6 +179,7 @@ export default async function ProjectTasksPage({
     db.task.count({
       where: { projectId: project.id, deletedAt: null, parentTaskId: null, archivedAt: { not: null } },
     }),
+    readBusyAgentSlugs(),
   ]);
   const taskIds = tasks.map((task) => task.id);
   const activityRows = taskIds.length > 0
@@ -218,7 +239,11 @@ export default async function ProjectTasksPage({
         <StatusPill status={task.status} />
         {canShowDeploymentForTask(task) ? <DeploymentIndicator status={deploymentStatus} /> : <span aria-hidden="true" />}
         <PersonCell actor={serializeActor(task.reporter)} emptyLabel="none" />
-        <PersonCell actor={serializeActor(task.assignee)} emptyLabel="unassigned" />
+        <PersonCell
+          actor={serializeActor(task.assignee)}
+          emptyLabel="unassigned"
+          busy={task.status === "In Progress" && Boolean(task.assignee?.agent?.slug && busyAgentSlugs.has(task.assignee.agent.slug))}
+        />
         <PersonCell actor={serializeActor(task.actingManager)} emptyLabel="none" />
         <ElapsedCell
           status={task.status}
@@ -551,10 +576,10 @@ function FilterField({ label, children }: { label: string; children: React.React
   );
 }
 
-function PersonCell({ actor, emptyLabel }: { actor: MessageActor | null; emptyLabel: string }) {
+function PersonCell({ actor, emptyLabel, busy = false }: { actor: MessageActor | null; emptyLabel: string; busy?: boolean }) {
   return (
     <span className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-muted)]">
-      {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
+      {actor ? <MessageAvatar actor={actor} size="sm" busy={busy} /> : null}
       <span className="truncate">{actor ? actorDisplayName(actor) : emptyLabel}</span>
     </span>
   );

@@ -328,6 +328,12 @@ export default function SidebarNav({
                     within bounds so the collapsed rail never scrolls);
                     stale/offline → grayscale; unread → red dot. */}
                 <div className="relative h-8 w-8 shrink-0">
+                  {agent.pulse ? (
+                    <span
+                      className="pointer-events-none absolute -inset-1 animate-ping rounded-lg bg-[var(--color-accent)] opacity-30"
+                      aria-hidden="true"
+                    />
+                  ) : null}
                   <div className="relative grid h-8 w-8 place-items-center overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-xs font-semibold text-[var(--color-text)]">
                     {agent.avatarSrc ? (
                       // eslint-disable-next-line @next/next/no-img-element
@@ -343,12 +349,6 @@ export default function SidebarNav({
                       agent.name.slice(0, 1)
                     )}
                   </div>
-                  {agent.pulse ? (
-                    <span
-                      className="pointer-events-none absolute inset-0 animate-pulse rounded-lg ring-2 ring-[var(--color-accent)]/60"
-                      aria-hidden="true"
-                    />
-                  ) : null}
                   {agent.unread ? (
                     <span
                       className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-[var(--color-panel)] bg-red-500"

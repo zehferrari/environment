@@ -36,6 +36,8 @@ type VisualCodeProps = {
   activePath: string;
   browserPath: string;
   canWrite: boolean;
+  canEditFile: boolean;
+  canWriteReason?: string | null;
   entries: RepoEntry[];
   file: FileView | null;
   git: CodeGitState;
@@ -51,6 +53,8 @@ export default function VisualCode({
   activePath,
   browserPath,
   canWrite,
+  canEditFile,
+  canWriteReason = null,
   entries,
   file,
   git,
@@ -68,7 +72,7 @@ export default function VisualCode({
   const [notice, setNotice] = useState<CodeActionResult | null>(null);
   const [pending, startTransition] = useTransition();
 
-  const editable = canWrite && kind === "file" && file?.kind === "text" && !showBlame;
+  const editable = canWrite && canEditFile && kind === "file" && file?.kind === "text" && !showBlame;
   const dirty = editable && content !== savedContent;
 
   useEffect(() => {
@@ -138,6 +142,8 @@ export default function VisualCode({
           </div>
           <GitActions
             canWrite={canWrite}
+            canEditFile={canEditFile}
+            canWriteReason={canWriteReason}
             commit={commit}
             commitMessage={commitMessage}
             dirty={dirty}
@@ -232,6 +238,8 @@ export default function VisualCode({
 
 function GitActions({
   canWrite,
+  canEditFile,
+  canWriteReason,
   commit,
   commitMessage,
   dirty,
@@ -249,6 +257,8 @@ function GitActions({
   showBlame,
 }: {
   canWrite: boolean;
+  canEditFile: boolean;
+  canWriteReason?: string | null;
   commit: () => void;
   commitMessage: string;
   dirty: boolean;
@@ -266,7 +276,7 @@ function GitActions({
   showBlame: boolean;
 }) {
   const router = useRouter();
-  const blocked = !canWrite ? "Only logged-in human users can run code actions." : null;
+  const blocked = !canWrite ? (canWriteReason ?? "Code actions are not available for this file.") : null;
   const commitBlocked =
     blocked ??
     (!relPath ? "Choose a file to commit." : null) ??
@@ -297,7 +307,7 @@ function GitActions({
         onClick={save}
         disabled={!editable || !dirty || pending}
         className="rounded-md border border-[var(--color-line)] bg-[var(--color-panel)] px-2.5 py-1.5 font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45"
-        title={!editable ? "Open a text file without blame mode to edit." : undefined}
+        title={!editable ? (!canEditFile ? (canWriteReason ?? "Open a writable text file to edit.") : (blocked ?? "Open a text file without blame mode to edit.")) : undefined}
       >
         Save
       </button>

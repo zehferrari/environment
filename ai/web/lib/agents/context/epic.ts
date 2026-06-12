@@ -10,6 +10,7 @@ import {
   type DirectedDescriptor,
 } from "@/lib/agents/directed-targets";
 import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
+import { createEpicWorkflowToken } from "@/lib/agents/epic-workflow-token";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
 // from agent.role. Coding agents (can_modify_code=true) get the 1M-token
@@ -246,6 +247,7 @@ export interface LiveContextAccessEpic {
   };
   epicId: string;
   projectId: string;
+  workflowMessageId?: string | null;
   /** Inlined "recent exchange" block — same idea as the task variant. */
   inlineRecentBlock?: string;
 }
@@ -298,7 +300,59 @@ function appendEpicNativePromptTail(
   if (directedDescriptor) {
     lines.push("", renderDirectedSilenceRule({ descriptor: directedDescriptor, recipientAgentSlug: slug }));
   }
+  if (contextAccess?.workflowMessageId) {
+    lines.push("", buildEpicWorkflowPrompt({
+      baseUrl: contextAccess.baseUrl,
+      epicId: contextAccess.epicId,
+      messageId: contextAccess.workflowMessageId,
+      agentSlug: slug,
+    }));
+  }
   return lines.join("\n");
+}
+
+function buildEpicWorkflowPrompt(args: {
+  baseUrl: string;
+  epicId: string;
+  messageId: string;
+  agentSlug: string;
+}) {
+  const token = createEpicWorkflowToken(args.messageId, args.epicId, args.agentSlug);
+  const workflowUrl = new URL(
+    `/api/agent/epics/${encodeURIComponent(args.epicId)}/workflow`,
+    args.baseUrl,
+  ).toString();
+  const bodyShape = JSON.stringify(
+    {
+      messageId: args.messageId,
+      token,
+      action: "<advance_queue | assign_next | create_tasks>",
+      summary: "<required for create_tasks: why the new tasks are needed to achieve the existing Epic goal>",
+      tasks: [
+        {
+          title: "<required for create_tasks>",
+          description: "<optional markdown>",
+        },
+      ],
+    },
+    null,
+    2,
+  );
+
+  return [
+    "EPIC MANAGER WORKFLOW CAPABILITY:",
+    "If you are the Epic acting manager, use this endpoint to keep the Epic queue moving instead of only commenting.",
+    "- `advance_queue`: when the Epic is Open and approved, move direct child Backlog tasks to To Do and assign the next eligible worker.",
+    "- `assign_next`: when the Epic is Open and approved, assign the next unassigned To Do task without changing Backlog tasks.",
+    "- `create_tasks`: create unforeseen tasks that are necessary to achieve the current Epic goal. This immediately pauses the Epic by moving it to Backlog and clearing approval; a human must approve before queue advancement resumes.",
+    "- Do not use create_tasks to expand the Epic scope. Use it only to cover missing work required by the existing Epic goal.",
+    "- If a workflow action fully handles the turn and you have nothing substantive to add, reply exactly with the silent reply token from the PM channel prompt.",
+    "",
+    "Workflow endpoint:",
+    `POST application/json to: ${workflowUrl}`,
+    "Body shape:",
+    bodyShape,
+  ].join("\n");
 }
 
 export function buildEpicNativeChannelPrompt(

@@ -1,7 +1,8 @@
 "use server";
 
 import { execFile as execFileCb } from "node:child_process";
-import { lstat, writeFile } from "node:fs/promises";
+import { access, lstat, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { promisify } from "node:util";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
@@ -54,6 +55,9 @@ export async function saveCodeFile(input: SaveCodeFileInput): Promise<CodeAction
     if (!abs) throw new Error("Path is outside the selected repository.");
     const st = await lstat(abs).catch(() => null);
     if (!st?.isFile()) throw new Error("Only existing regular files can be edited here.");
+    await access(abs, fsConstants.W_OK).catch(() => {
+      throw new Error("The PM service user cannot write this file. Fix the worktree/file ACLs or choose a writable source.");
+    });
 
     await writeFile(abs, input.content, "utf8");
     await logCodeActivity(project.id, actor.id, "code.file.save", {

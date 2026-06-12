@@ -16,6 +16,8 @@ import { rollbackDispatchedMessageId } from "@/lib/agents/session-bindings";
 type DispatchJobPayload = Omit<SendPmChannelTurnArgs, "fetchImpl">;
 
 const MAX_ATTEMPTS = Number.parseInt(process.env.PM_CHANNEL_JOB_MAX_ATTEMPTS ?? "3", 10);
+const CLAIM_TIMEOUT_MS = Number.parseInt(process.env.PM_CHANNEL_JOB_CLAIM_TIMEOUT_MS ?? "120000", 10);
+const RECOVERY_MAX_AGE_MS = Number.parseInt(process.env.PM_CHANNEL_JOB_RECOVERY_MAX_AGE_MS ?? "21600000", 10);
 
 function flagDisabled(value: string | undefined) {
   return value === "0" || value === "false" || value === "no" || value === "off";
@@ -57,9 +59,21 @@ function retryDelayMs(attemptCount: number) {
   return Math.min(5 * 60_000, boundedBase * Math.max(1, 2 ** Math.max(0, attemptCount - 1)));
 }
 
+function claimTimeoutMs() {
+  return Number.isFinite(CLAIM_TIMEOUT_MS) && CLAIM_TIMEOUT_MS > 0
+    ? CLAIM_TIMEOUT_MS
+    : 120_000;
+}
+
+function recoveryMaxAgeMs() {
+  return Number.isFinite(RECOVERY_MAX_AGE_MS) && RECOVERY_MAX_AGE_MS > 0
+    ? RECOVERY_MAX_AGE_MS
+    : 21_600_000;
+}
+
 async function appendAndPublishStatus(args: {
   payload: DispatchJobPayload;
-  runStatus: "queued" | "accepted" | "retryable" | "failed" | "complete";
+  runStatus: "queued" | "accepted" | "retryable" | "failed" | "complete" | "canceled";
   error?: string | null;
 }) {
   publishPmChannelStreamEventDurably({
@@ -134,6 +148,7 @@ export async function sendOrQueueOpenClawPmChannelTurn(
 
 export async function claimNextPmChannelJob(workerId: string) {
   const now = new Date();
+  await requeueStaleClaimedPmChannelJobs(now);
   const job = await db.pmChannelJob.findFirst({
     where: {
       status: { in: ["queued", "retryable"] },
@@ -165,8 +180,103 @@ export async function claimNextPmChannelJob(workerId: string) {
   });
 }
 
+export async function requeueStaleClaimedPmChannelJobs(now = new Date()) {
+  const staleBefore = new Date(now.getTime() - claimTimeoutMs());
+  const recentAfter = new Date(now.getTime() - recoveryMaxAgeMs());
+  const stale = await db.pmChannelJob.findMany({
+    where: {
+      OR: [
+        { status: "claimed", claimedAt: { gt: recentAfter, lt: staleBefore } },
+        {
+          status: "accepted",
+          acceptedAt: { gt: recentAfter, lt: staleBefore },
+          run: {
+            streamingAt: null,
+            completedAt: null,
+            failedAt: null,
+          },
+        },
+      ],
+    },
+    take: 50,
+    select: {
+      id: true,
+      runId: true,
+      payload: true,
+      attemptCount: true,
+      status: true,
+    },
+  });
+  for (const job of stale) {
+    const exhausted = job.attemptCount >= (Number.isFinite(MAX_ATTEMPTS) && MAX_ATTEMPTS > 0 ? MAX_ATTEMPTS : 3);
+    const status = exhausted ? "failed" : "retryable";
+    const error = exhausted
+      ? `PM channel job ${job.status} lease expired after max attempts`
+      : `PM channel job ${job.status} lease expired; requeued`;
+    await db.$transaction([
+      db.pmChannelJob.updateMany({
+        where: { id: job.id, status: job.status },
+        data: {
+          status,
+          availableAt: now,
+          claimedBy: null,
+          claimedAt: null,
+          lastError: error,
+        },
+      }),
+      db.pmChannelRun.update({
+        where: { id: job.runId },
+        data: {
+          status,
+          error,
+          failedAt: exhausted ? now : null,
+          lastEventAt: now,
+        },
+      }),
+    ]);
+    try {
+      const payload = parseJobPayload(job.payload);
+      appendAndPublishStatus({
+        payload,
+        runStatus: status,
+        error,
+      }).catch((err) => {
+        console.warn("[pm-channel] failed to publish stale claim recovery", {
+          jobId: job.id,
+          error: err,
+        });
+      });
+      if (exhausted) await rollbackDispatchedTurnBinding(payload);
+    } catch (err) {
+      console.warn("[pm-channel] failed to publish stale claim recovery", {
+        jobId: job.id,
+        error: err,
+      });
+    }
+  }
+  return stale.length;
+}
+
 export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof claimNextPmChannelJob>>>) {
   const payload = parseJobPayload(job.payload);
+  const currentRun = await db.pmChannelRun.findUnique({
+    where: { id: job.runId },
+    select: { status: true },
+  });
+  if (currentRun?.status === "canceled") {
+    await db.pmChannelJob.update({
+      where: { id: job.id },
+      data: {
+        status: "canceled",
+        claimedBy: null,
+        claimedAt: null,
+        completedAt: new Date(),
+        lastError: null,
+      },
+    });
+    await appendAndPublishStatus({ payload, runStatus: "canceled" });
+    return { ok: true, status: 200, driver: "openclaw-pm-channel" } satisfies SendPmChannelTurnResult;
+  }
   const result = await dispatchOpenClawPmChannelTurn(payload);
   const now = new Date();
 

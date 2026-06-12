@@ -12,7 +12,8 @@ export type PmChannelRunStatus =
   | "streaming"
   | "retryable"
   | "complete"
-  | "failed";
+  | "failed"
+  | "canceled";
 
 const FIRST_ACTIVITY_TIMEOUT_MS = Number.parseInt(
   process.env.PM_OPENCLAW_FIRST_ACTIVITY_TIMEOUT_MS ?? "300000",
@@ -47,6 +48,29 @@ function targetIds(target: PmChannelReplyTarget) {
 function clippedError(error: string | null | undefined) {
   if (!error) return null;
   return error.length > 2_000 ? error.slice(0, 2_000) : error;
+}
+
+async function settlePmChannelJobsForTargetKey(args: {
+  targetKey: string;
+  status: "complete" | "failed";
+  now: Date;
+  error?: string | null;
+}) {
+  const run = await db.pmChannelRun.findUnique({
+    where: { targetKey: args.targetKey },
+    select: { id: true },
+  });
+  if (!run) return;
+  await db.pmChannelJob.updateMany({
+    where: { runId: run.id, status: { in: ["queued", "claimed", "accepted", "retryable"] } },
+    data: {
+      status: args.status,
+      claimedBy: null,
+      claimedAt: null,
+      completedAt: args.status === "complete" ? args.now : null,
+      lastError: args.status === "failed" ? clippedError(args.error) : null,
+    },
+  });
 }
 
 async function record(run: () => Promise<unknown>, label: string) {
@@ -89,6 +113,58 @@ export async function pmChannelTargetHasDurableReply(target: PmChannelReplyTarge
     select: { id: true },
   });
   return Boolean(row);
+}
+
+export async function pmChannelTargetIsCanceled(target: PmChannelReplyTarget) {
+  const row = await db.pmChannelRun.findUnique({
+    where: { targetKey: pmChannelRunTargetKey(target) },
+    select: { status: true },
+  });
+  return row?.status === "canceled";
+}
+
+export async function cancelPmChannelRunForTarget(args: {
+  target: PmChannelReplyTarget;
+  actorUserId: string;
+}) {
+  const now = new Date();
+  const targetKey = pmChannelRunTargetKey(args.target);
+  const run = await db.pmChannelRun.findUnique({
+    where: { targetKey },
+    select: { id: true, status: true },
+  });
+  if (!run) return { canceled: false as const, reason: "not_found" as const };
+  if (run.status === "complete" || run.status === "failed" || run.status === "canceled") {
+    return { canceled: false as const, reason: "terminal" as const, status: run.status };
+  }
+  await db.$transaction([
+    db.pmChannelRun.update({
+      where: { id: run.id },
+      data: {
+        status: "canceled",
+        error: null,
+        failedAt: null,
+        completedAt: now,
+        lastEventAt: now,
+      },
+    }),
+    db.pmChannelJob.updateMany({
+      where: { runId: run.id, status: { in: ["queued", "claimed", "accepted", "retryable"] } },
+      data: { status: "canceled", completedAt: now, lastError: null },
+    }),
+    db.activityLog.create({
+      data: {
+        userId: args.actorUserId,
+        kind: "pm.channel.cancel",
+        targetAgent: args.target.agentSlug,
+        payload: JSON.stringify({
+          targetKey,
+          target: args.target,
+        }),
+      },
+    }),
+  ]);
+  return { canceled: true as const, runId: run.id };
 }
 
 async function failRun(target: PmChannelReplyTarget, error: string) {
@@ -200,32 +276,72 @@ export async function recordPmChannelRunDispatch(args: {
 }
 
 export async function recordPmChannelRunWorkflowAction(args: {
-  taskId: string;
+  taskId?: string | null;
+  epicId?: string | null;
   agentSlug: string;
   messageId: string;
   action: string;
 }) {
   const now = new Date();
-  const targetKey = pmChannelRunTargetKey({
-    kind: "task-comment",
-    agentSlug: args.agentSlug,
-    taskId: args.taskId,
-    messageId: args.messageId,
-  });
+  const targetKeys = args.epicId
+    ? [pmChannelRunTargetKey({
+        kind: "epic-chat",
+        agentSlug: args.agentSlug,
+        epicId: args.epicId,
+        messageId: args.messageId,
+      })]
+    : args.taskId
+      ? [
+          pmChannelRunTargetKey({
+            kind: "task-comment",
+            agentSlug: args.agentSlug,
+            taskId: args.taskId,
+            messageId: args.messageId,
+          }),
+          pmChannelRunTargetKey({
+            kind: "task-chat",
+            agentSlug: args.agentSlug,
+            taskId: args.taskId,
+            messageId: args.messageId,
+          }),
+        ]
+      : [];
+  if (targetKeys.length === 0) return;
   await record(
-    () => db.pmChannelRun.updateMany({
-      where: {
-        targetKey,
-        status: { in: ["queued", "accepted", "streaming"] },
-      },
-      data: {
-        status: "complete",
-        error: null,
-        completedAt: now,
-        failedAt: null,
-        lastEventAt: now,
-      },
-    }),
+    async () => {
+      const runs = await db.pmChannelRun.findMany({
+        where: { targetKey: { in: targetKeys } },
+        select: { id: true },
+      });
+      if (runs.length === 0) return;
+      const runIds = runs.map((run) => run.id);
+      await db.$transaction([
+        db.pmChannelRun.updateMany({
+          where: {
+            id: { in: runIds },
+            status: { in: ["queued", "accepted", "streaming", "retryable"] },
+          },
+          data: {
+            status: "complete",
+            error: null,
+            completedAt: now,
+            failedAt: null,
+            lastEventAt: now,
+          },
+        }),
+        db.pmChannelJob.updateMany({
+          where: {
+            runId: { in: runIds },
+            status: { in: ["queued", "claimed", "accepted", "retryable"] },
+          },
+          data: {
+            status: "complete",
+            completedAt: now,
+            lastError: null,
+          },
+        }),
+      ]);
+    },
     `workflow action run state (${args.action})`,
   );
 }
@@ -246,6 +362,7 @@ export async function recordPmChannelRunEvent(args: {
           where: { targetKey },
           select: { status: true },
         });
+        if (existing?.status === "canceled") return;
         if (existing?.status === "complete" || await pmChannelTargetHasDurableReply(args.target)) {
           await db.pmChannelRun.upsert({
             where: { targetKey },
@@ -269,6 +386,7 @@ export async function recordPmChannelRunEvent(args: {
               lastEventAt: now,
             },
           });
+          await settlePmChannelJobsForTargetKey({ targetKey, status: "complete", now });
           return;
         }
         await db.pmChannelRun.upsert({
@@ -291,6 +409,12 @@ export async function recordPmChannelRunEvent(args: {
             failedAt: now,
             lastEventAt: now,
           },
+        });
+        await settlePmChannelJobsForTargetKey({
+          targetKey,
+          status: "failed",
+          now,
+          error: "Agent finished without posting a reply.",
         });
       },
       "done run state",
@@ -305,6 +429,7 @@ export async function recordPmChannelRunEvent(args: {
           where: { targetKey },
           select: { status: true },
         });
+        if (existing?.status === "canceled") return;
         if (existing?.status === "complete" || await pmChannelTargetHasDurableReply(args.target)) {
           await db.pmChannelRun.upsert({
             where: { targetKey },
@@ -328,9 +453,11 @@ export async function recordPmChannelRunEvent(args: {
               lastEventAt: now,
             },
           });
+          await settlePmChannelJobsForTargetKey({ targetKey, status: "complete", now });
           return;
         }
 
+        const error = clippedError(args.error) ?? "OpenClaw stream failed";
         await db.pmChannelRun.upsert({
           where: { targetKey },
           create: {
@@ -341,17 +468,18 @@ export async function recordPmChannelRunEvent(args: {
             taskId: ids.taskId,
             epicId: ids.epicId,
             status: "failed",
-            error: clippedError(args.error) ?? "OpenClaw stream failed",
+            error,
             failedAt: now,
             lastEventAt: now,
           },
           update: {
             status: "failed",
-            error: clippedError(args.error) ?? "OpenClaw stream failed",
+            error,
             failedAt: now,
             lastEventAt: now,
           },
         });
+        await settlePmChannelJobsForTargetKey({ targetKey, status: "failed", now, error });
       },
       "error run state",
     );
@@ -372,7 +500,7 @@ export async function recordPmChannelRunEvent(args: {
       // settled. A late streaming chunk must not reopen a failed/complete run
       // and re-show the spinner; a late `final` may still upgrade a failed run
       // to complete because a real reply did arrive after all.
-      if (existing?.status === "complete") return;
+      if (existing?.status === "complete" || existing?.status === "canceled") return;
       if (existing?.status === "failed" && status !== "complete") return;
       const firstTokenAt = existing?.streamingAt ?? now;
       const firstStreamMs = existing?.streamingAt || !existing?.acceptedAt
@@ -405,6 +533,9 @@ export async function recordPmChannelRunEvent(args: {
           lastEventAt: now,
         },
       });
+      if (status === "complete") {
+        await settlePmChannelJobsForTargetKey({ targetKey, status: "complete", now });
+      }
       const thresholdMs = warningMs(FIRST_STREAM_WARNING_MS, 15_000);
       if (firstStreamMs !== null && firstStreamMs > thresholdMs) {
         const payload = {
@@ -454,7 +585,7 @@ export async function getPmChannelRunSnapshot(target: PmChannelReplyTarget) {
   const now = Date.now();
   const lastEventAt = run.lastEventAt?.getTime() ?? run.updatedAt.getTime();
 
-  if (run.status === "complete" && run.completedAt) return run;
+  if ((run.status === "complete" || run.status === "canceled") && run.completedAt) return run;
 
   if (
     (run.status === "queued" || run.status === "accepted") &&

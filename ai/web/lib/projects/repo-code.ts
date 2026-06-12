@@ -286,6 +286,19 @@ export async function canReadRepository(repositoryPath: string): Promise<boolean
   }
 }
 
+export async function canWriteRepositoryFile(source: CodeSource, relPath: string): Promise<{ ok: boolean; reason: string | null }> {
+  const abs = resolveInside(source.path, relPath);
+  if (!abs) return { ok: false, reason: "Path is outside the selected repository." };
+  const st = await lstat(abs).catch(() => null);
+  if (!st?.isFile()) return { ok: false, reason: "Only existing regular files can be edited here." };
+  try {
+    await access(abs, fsConstants.W_OK);
+    return { ok: true, reason: null };
+  } catch {
+    return { ok: false, reason: "The PM service user cannot write this file. Fix the worktree/file ACLs or choose a writable source." };
+  }
+}
+
 export async function getCodeGitState(
   source: CodeSource,
   sources: CodeSource[],

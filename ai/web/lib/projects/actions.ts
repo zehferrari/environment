@@ -195,6 +195,7 @@ export async function setProjectSettings(formData: FormData) {
 
 export async function deleteProject(formData: FormData) {
   const actor = await requireActor();
+  if (actor.kind !== "human") throw new Error("Only human users can move projects to the bin");
   const slug = String(formData.get("projectSlug") ?? "");
   if (!slug) return;
 

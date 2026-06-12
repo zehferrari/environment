@@ -1,4 +1,4 @@
-export type StreamingReplyRunStatus = "queued" | "accepted" | "streaming" | "retryable" | "complete" | "failed";
+export type StreamingReplyRunStatus = "queued" | "accepted" | "streaming" | "retryable" | "complete" | "failed" | "canceled";
 export type StreamingReplyStatus = "pending" | "connecting" | "thinking" | "streaming" | "done" | "error";
 
 export const RECONNECTING_DEBOUNCE_MS = 1_200;
@@ -14,6 +14,9 @@ export function waitingCopy(args: {
 }) {
   if (args.status === "error" || args.runStatus === "failed") {
     return args.error ?? "Agent stream failed";
+  }
+  if (args.runStatus === "canceled") {
+    return "canceled";
   }
   if (args.runStatus === "queued") {
     return "queued...";
