@@ -5,6 +5,9 @@ import { describeActivity } from "@/lib/activity";
 import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel-latency";
 import { MessageAvatar, MessageTimestamp, type MessageActor } from "@/components/message-avatar";
 import AgentServiceControls, { type AgentService } from "./agent-service-controls";
+import fs from "fs/promises";
+import path from "path";
+import AgentManagementControls, { EditAgentButton } from "./agent-management-controls";
 
 export const dynamic = "force-dynamic";
 
@@ -191,6 +194,34 @@ function lastActivityLabel(live?: SnapshotAgent | null) {
   return first.preview ? `${prefix}: ${first.preview}` : prefix;
 }
 
+async function getModelConfig(slug: string) {
+  const defaultModelConfig = {
+    provider: "google-gravity",
+    default_model: "google-gravity/gemini-3.5-flash",
+    fallback_models: [] as string[],
+  };
+
+  try {
+    const configPath = `/srv/agents/openclaw/${slug}/openclaw.json`;
+    const content = await fs.readFile(configPath, "utf8");
+    const json = JSON.parse(content);
+    const primary = json.agents?.defaults?.model?.primary || json.agents?.defaults?.model || "";
+    if (primary && typeof primary === "string") {
+      const provider = primary.split("/")[0] || "google-gravity";
+      const fallbacks = json.agents?.defaults?.model?.fallbacks || [];
+      return {
+        provider,
+        default_model: primary,
+        fallback_models: Array.isArray(fallbacks) ? (fallbacks as string[]) : [],
+      };
+    }
+  } catch (err) {
+    // ignore
+  }
+
+  return defaultModelConfig;
+}
+
 export default async function AgentsPage() {
   const [agents, recentActivity, snapshot, totalOpenTasks, totalActivityLogs, recentPmRuns] = await Promise.all([
     db.agent.findMany({
@@ -248,6 +279,21 @@ export default async function AgentsPage() {
   const system = snapshot?.system ?? {};
   const monitor = snapshot?.monitor ?? null;
   const rawAgentJsons = agents.map((agent) => agent.rawJson);
+  const clientAgents = await Promise.all(
+    agents.map(async (a) => {
+      const raw = (a.rawJson || {}) as any;
+      const modelConfig = await getModelConfig(a.slug);
+      return {
+        slug: a.slug,
+        name: a.name,
+        role: a.role,
+        email: a.email,
+        telegram: raw.telegram || null,
+        integrations: raw.integrations || null,
+        model_config: modelConfig,
+      };
+    })
+  );
   const effectiveConfigs = new Map(
     await Promise.all(
       agents.map(async (agent) => [agent.slug, await resolveEffectiveAgentConfig(agent.rawJson, rawAgentJsons)] as const),
@@ -291,8 +337,9 @@ export default async function AgentsPage() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
+        <div className="flex items-center gap-3">
           <h1 className="text-3xl font-semibold tracking-tight">Agents</h1>
+          <AgentManagementControls agents={clientAgents} />
         </div>
         <Link
           href="/system/activity"
@@ -369,6 +416,7 @@ export default async function AgentsPage() {
                     <div className="flex items-center gap-2">
                       <h2 className="truncate text-xl font-semibold tracking-tight">{a.name}</h2>
                       <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: ring.ring }} />
+                      <EditAgentButton slug={a.slug} />
                     </div>
                     <p className="font-mono text-xs text-[var(--color-text-muted)]">@{a.slug} · {a.role}</p>
                     <div className="mt-3 flex flex-wrap gap-2 text-xs">

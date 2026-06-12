@@ -119,6 +119,7 @@ do_install 755 "$REPO_ROOT/bin/ai-monitor"                /usr/local/bin/ai-moni
 do_install 755 "$REPO_ROOT/bin/openclaw-registry-check"   /usr/local/bin/openclaw-registry-check
 do_install 755 "$REPO_ROOT/bin/openclaw-integrity-check"  /usr/local/bin/openclaw-integrity-check
 do_install 755 "$REPO_ROOT/bin/openclaw-control"          /usr/local/sbin/openclaw-control
+do_install 755 "$REPO_ROOT/bin/openclaw-manage-user"     /usr/local/sbin/openclaw-manage-user
 do_install 755 "$REPO_ROOT/bin/pm-workflow-nudge"         /usr/local/sbin/pm-workflow-nudge
 do_install 755 "$REPO_ROOT/bin/openclaw-patch-session-fence" /usr/local/sbin/openclaw-patch-session-fence
 do_install 755 "$REPO_ROOT/bin/agent-dashboard"           /usr/local/bin/agent-dashboard
