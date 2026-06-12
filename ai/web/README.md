@@ -125,7 +125,7 @@ user.
 | `lib/agents/index-loader.ts` | `/srv/agents/index.json` reader. |
 | `lib/agents/provisioning.ts` | unprivileged half of agent provisioning — renders per-agent file content (`SOUL`/`IDENTITY`/`openclaw.json`…), allocates UID + gateway/sidecar ports, builds the registry entry. `openclaw.json` is rendered from the providers + models selected in the form. |
 | `lib/agents/providers.ts` | model-provider catalog (Codex, Claude CLI/`anthropic`, Ollama, OpenRouter) — the single source for each provider's openclaw.json connection block, auth profile, refresh strategy, and seed models. Shared by the form, the model-refresh route, and the renderer. |
-| `lib/agents/manage-user.ts` | invokes the root `openclaw-manage-user` helper via sudo (arg-array, payload through a `0600` temp file) — the single privileged boundary behind `/api/agents/{add,edit,remove}`. |
+| `lib/agents/manage-user.ts` | provisioning hand-off. pm.service is `NoNewPrivileges` and can't sudo, so this spools a request into `/var/lib/pm/agent-provision/` and polls for the result; `openclaw-agent-runner` (monitor's system identity) runs the privileged `openclaw-manage-user` step. Synchronous from the route's view. |
 | `lib/agents/credentials.ts` | per-agent host-private credential seeding. |
 | `lib/agents/profile.ts` | shared agent profile read/write + ACL. |
 | `lib/agents/model-settings.ts` | shared model-config store (HOMELAB-52). |
@@ -237,13 +237,14 @@ per-card `Edit`, and `Delete` (`agent-management-controls.tsx`). These post to
 `/api/agents/{add,edit,remove}`, which are **route-centric**: the web app
 (running as the monitor user) validates input, allocates the next free UID
 (≥ 1001) and gateway/sidecar ports, and renders the agent's file content in
-`lib/agents/provisioning.ts` — but performs no privileged I/O itself. Every
-privileged step is delegated to **one** boundary,
-`/usr/local/sbin/openclaw-manage-user` (`lib/agents/manage-user.ts` →
-tightly-scoped NOPASSWD sudo): the system user, Samba/sudoers, per-agent files,
-doc symlinks (to the **main** checkout), gateway + PM-channel install, and the
-registry write. The route then reconciles the PM DB with `syncAgents()` and
-writes an `agent.registry.{add,edit,remove}` audit row.
+`lib/agents/provisioning.ts` — but performs no privileged I/O itself (pm.service
+is `NoNewPrivileges` and cannot sudo). `lib/agents/manage-user.ts` spools the job
+into `/var/lib/pm/agent-provision/` and polls for a result; **`openclaw-agent-runner`**
+(the monitor's system identity, `NoNewPrivileges=no`) runs the single privileged
+boundary `/usr/local/sbin/openclaw-manage-user`: the system user, Samba/sudoers,
+per-agent files, doc symlinks (to the **main** checkout), gateway + PM-channel
+install, and the registry write. The route then reconciles the PM DB with
+`syncAgents()` and writes an `agent.registry.{add,edit,remove}` audit row.
 
 - **Guards.** Protected accounts (`root`, `zeh`, the monitor, system users,
   `code-agents`) cannot be created, edited, or removed — enforced in both the

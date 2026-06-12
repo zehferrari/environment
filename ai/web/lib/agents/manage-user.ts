@@ -1,44 +1,68 @@
-import { execFile } from "child_process";
-import { promisify } from "util";
-import { writeFile, unlink } from "fs/promises";
+import { writeFile, readFile, rename, unlink, mkdir } from "fs/promises";
 import path from "path";
-import os from "os";
 import { randomBytes } from "crypto";
 
-const execFileP = promisify(execFile);
-
 /**
- * The single privileged boundary. The PM web layer (running as the monitor
- * user) shells out to this root helper via a tightly-scoped NOPASSWD sudoers
- * rule. We pass arguments as an array (never a shell string) and hand any
- * provisioning payload through a 0600 temp file rather than argv/stdin.
+ * Privileged provisioning hand-off.
+ *
+ * pm.service runs `NoNewPrivileges=true`, so the web app cannot `sudo`. Instead
+ * it spools a request into a directory watched by `openclaw-agent-runner`
+ * (the monitor agent's system identity, NoNewPrivileges=no, with karen's
+ * NOPASSWD grant for `openclaw-manage-user`). That runner is the deterministic
+ * executor — the only command it ever runs is the single privileged boundary,
+ * `openclaw-manage-user` — and it writes back a result we poll for here, so the
+ * route still resolves synchronously.
  */
-const HELPER = "/usr/local/sbin/openclaw-manage-user";
+const SPOOL = process.env.PM_AGENT_PROVISION_DIR ?? "/var/lib/pm/agent-provision";
+const POLL_MS = Number(process.env.PM_AGENT_PROVISION_POLL_MS ?? 1000);
+const TIMEOUT_MS = Number(process.env.PM_AGENT_PROVISION_TIMEOUT_MS ?? 360_000);
 
 export class ManageUserError extends Error {
-  constructor(message: string, readonly stderr?: string) {
+  constructor(message: string) {
     super(message);
     this.name = "ManageUserError";
   }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+type RunnerResult = { id: string; ok: boolean; error?: string | null };
+
 export async function runManageUser(positional: string[], payload?: unknown): Promise<void> {
-  let payloadPath: string | undefined;
-  const args = ["-n", HELPER, ...positional];
+  const id = `${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`;
+  const reqPath = path.join(SPOOL, `${id}.req.json`);
+  const tmpPath = path.join(SPOOL, `.${id}.req.tmp`);
+  const resPath = path.join(SPOOL, `${id}.res.json`);
+  const job = { id, args: positional, payload: payload ?? null, requestedAt: new Date().toISOString() };
+
   try {
-    if (payload !== undefined) {
-      payloadPath = path.join(
-        os.tmpdir(),
-        `openclaw-provision-${process.pid}-${randomBytes(6).toString("hex")}.json`,
-      );
-      await writeFile(payloadPath, JSON.stringify(payload), { mode: 0o600 });
-      args.push(payloadPath);
+    await mkdir(SPOOL, { recursive: true }).catch(() => undefined);
+    // Write then rename so the runner never sees a partial request file.
+    await writeFile(tmpPath, JSON.stringify(job), { mode: 0o600 });
+    await rename(tmpPath, reqPath);
+  } catch (err) {
+    await unlink(tmpPath).catch(() => undefined);
+    throw new ManageUserError(`failed to enqueue provisioning job: ${(err as Error).message}`);
+  }
+
+  const deadline = Date.now() + TIMEOUT_MS;
+  try {
+    while (Date.now() < deadline) {
+      let res: RunnerResult | null = null;
+      try {
+        res = JSON.parse(await readFile(resPath, "utf8")) as RunnerResult;
+      } catch {
+        await sleep(POLL_MS);
+        continue;
+      }
+      if (!res.ok) throw new ManageUserError(res.error || "provisioning failed");
+      return;
     }
-    await execFileP("sudo", args, { timeout: 300_000, maxBuffer: 8 * 1024 * 1024 });
-  } catch (err: any) {
-    const stderr = typeof err?.stderr === "string" ? err.stderr.trim() : undefined;
-    throw new ManageUserError(stderr || err?.message || "openclaw-manage-user failed", stderr);
+    throw new ManageUserError(
+      "provisioning timed out waiting for openclaw-agent-runner (is the service running?)",
+    );
   } finally {
-    if (payloadPath) await unlink(payloadPath).catch(() => undefined);
+    await unlink(resPath).catch(() => undefined);
+    await unlink(reqPath).catch(() => undefined);
   }
 }

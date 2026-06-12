@@ -120,6 +120,7 @@ do_install 755 "$REPO_ROOT/bin/openclaw-registry-check"   /usr/local/bin/opencla
 do_install 755 "$REPO_ROOT/bin/openclaw-integrity-check"  /usr/local/bin/openclaw-integrity-check
 do_install 755 "$REPO_ROOT/bin/openclaw-control"          /usr/local/sbin/openclaw-control
 do_install 755 "$REPO_ROOT/bin/openclaw-manage-user"     /usr/local/sbin/openclaw-manage-user
+do_install 755 "$REPO_ROOT/bin/openclaw-agent-runner"    /usr/local/sbin/openclaw-agent-runner
 do_install 755 "$REPO_ROOT/bin/pm-workflow-nudge"         /usr/local/sbin/pm-workflow-nudge
 do_install 755 "$REPO_ROOT/bin/openclaw-patch-session-fence" /usr/local/sbin/openclaw-patch-session-fence
 do_install 755 "$REPO_ROOT/bin/agent-dashboard"           /usr/local/bin/agent-dashboard
@@ -213,6 +214,29 @@ if [ -d "$REPO_ROOT/webhooks" ] && [ -r "$REGISTRY" ] && command -v jq >/dev/nul
     else
         warn "  no monitor agent in registry — skipping webhook scripts"
     fi
+fi
+
+# 4b.2 agent provisioning runner (openclaw-agent-runner.service)
+# The PM web app (pm.service) is NoNewPrivileges and cannot sudo. It spools a
+# request; this monitor-owned runner (NOT NoNewPrivileges) runs the privileged
+# openclaw-manage-user step and writes a result the web app polls for.
+log "[4b/7] agent provisioning runner"
+RUNNER_MONITOR=""
+if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
+    RUNNER_MONITOR=$(jq -r '.agents[] | select(.role == "monitor" and .enabled == true) | .user' "$REGISTRY" | head -1)
+fi
+RUNNER_MONITOR="${RUNNER_MONITOR:-karen}"
+PM_AGENT_PROVISION_DIR="${PM_AGENT_PROVISION_DIR:-/var/lib/pm/agent-provision}"
+if [ "$DRY" -eq 1 ]; then
+    log "  would install openclaw-agent-runner.service (User=$RUNNER_MONITOR)"
+    log "  would install -d -o $RUNNER_MONITOR -g code-agents -m 0700 $PM_AGENT_PROVISION_DIR"
+else
+    TMP_UNIT=$(mktemp)
+    sed "s|__MONITOR_USER__|$RUNNER_MONITOR|g" "$REPO_ROOT/systemd/openclaw-agent-runner.service" > "$TMP_UNIT"
+    install -o root -g root -m 644 "$TMP_UNIT" /etc/systemd/system/openclaw-agent-runner.service
+    rm -f "$TMP_UNIT"
+    install -d -o "$RUNNER_MONITOR" -g code-agents -m 0700 "$PM_AGENT_PROVISION_DIR"
+    ok "openclaw-agent-runner.service (User=$RUNNER_MONITOR) + $PM_AGENT_PROVISION_DIR"
 fi
 
 # 4c. agent-self.js symlink → every agent's ~/.openclaw/skills/agent-self.js
@@ -808,6 +832,9 @@ if [ "$DRY" -eq 1 ]; then
 else
     systemctl daemon-reload
     ok "systemctl daemon-reload (system)"
+    systemctl enable --now openclaw-agent-runner.service 2>/dev/null \
+        && ok "openclaw-agent-runner.service enabled + started" \
+        || warn "  could not enable/start openclaw-agent-runner.service (continuing)"
     for u in agent-dashboard.service \
              pm.service \
              pm-consumer.service \
