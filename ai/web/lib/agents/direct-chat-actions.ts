@@ -3,6 +3,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { redirect } from "next/navigation";
+import { isValidClientMessageId } from "@/lib/agents/client-message-id";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -894,7 +895,13 @@ export async function sendDirectAgentMessage(formData: FormData) {
   const attachments = directChatUploadedFiles(formData);
   const body = appendDirectAttachmentNames(bodyRaw, attachments);
   const requestedProjectId = String(formData.get("projectId") ?? "").trim() || null;
+  // The client supplies the message id so the optimistic echo can reconcile by
+  // id (not fragile body matching) and a double-fire is idempotent.
+  const requestedMessageId = String(formData.get("clientMessageId") ?? "").trim() || null;
   if (!agentSlug || (!bodyRaw && attachments.length === 0) || body.length > 8000) return;
+  if (requestedMessageId && !isValidClientMessageId(requestedMessageId)) {
+    throw new Error("Invalid client messageId");
+  }
 
   const agent = await db.agent.findUnique({
     where: { slug: agentSlug },
@@ -941,9 +948,24 @@ export async function sendDirectAgentMessage(formData: FormData) {
     baseArchiveId = latestActive?.baseArchiveId ?? null;
   }
 
+  // Idempotency: a retried/double-fired submit with the same client id must not
+  // create a second row (and must not re-dispatch).
+  if (requestedMessageId) {
+    const existing = await db.directAgentChatMessage.findUnique({
+      where: { id: requestedMessageId },
+      select: { id: true },
+    });
+    if (existing) {
+      revalidatePath(`/agents/${agentSlug}/chat`);
+      if (continueFromArchive) redirect(`/agents/${agentSlug}/chat`);
+      return;
+    }
+  }
+
   const msg = await db.$transaction(async (tx) => {
     const created = await tx.directAgentChatMessage.create({
       data: {
+        ...(requestedMessageId ? { id: requestedMessageId } : {}),
         agentSlug,
         senderUserId: userId,
         baseArchiveId,

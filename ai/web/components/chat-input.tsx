@@ -69,7 +69,12 @@ export default function ChatInput({
     // Echo the user's own message instantly (current-chat sends only; the
     // child-chat / archive path redirects, so an echo would be discarded).
     const echoClientId = !viewingArchive && submittedBody ? generateClientMessageId() : null;
-    if (echoClientId) addOptimistic(echoClientId, submittedBody);
+    if (echoClientId) {
+      addOptimistic(echoClientId, submittedBody);
+      // Send the same id to the server so it becomes the message's id — the echo
+      // then reconciles by id (reliable) instead of by body text.
+      formData.set("clientMessageId", echoClientId);
+    }
     // Remember what we optimistically cleared so a failed send that has no
     // optimistic bubble to fall back on (attachment-only or archive/child-chat
     // sends) can restore the composer instead of silently dropping the input.
