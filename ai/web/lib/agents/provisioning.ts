@@ -15,7 +15,12 @@
  * testable without root.
  */
 
+import { getProvider } from "./providers";
+
 export type AgentRole = "coding" | "monitor";
+
+/** A model the admin ticked as available to the agent, with its provider. */
+export type SelectedModel = { provider: string; id: string; name?: string };
 
 export type ProvisionListener = {
   host: string;
@@ -44,7 +49,7 @@ export type AgentRegistryEntry = {
   email: string;
   avatar: string;
   telegram: { enabled: boolean; bot: string };
-  integrations: { gmail: boolean; jira: boolean; bitbucket: boolean };
+  integrations: { gmail: boolean; jira: boolean; bitbucket: boolean; maildir: boolean };
   listeners: ProvisionListener[];
 };
 
@@ -199,76 +204,60 @@ export function renderMemory(): string {
 `;
 }
 
-/** Static model catalog written into every agent's openclaw.json. */
-const MODEL_PROVIDERS = {
-  "google-gravity": {
-    baseUrl: "https://gravity.googleapis.com",
-    apiKey: "google-gravity-oauth",
-    auth: "oauth",
-    api: "google-generative-ai",
-    models: [
-      { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash high", api: "google-generative-ai", input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1048576, maxTokens: 8192 },
-      { id: "gemini-3.1-pro", name: "Gemini 3.1 Pro High", api: "google-generative-ai", input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 2000000, maxTokens: 8192 },
-      { id: "claude-opus-4.6", name: "Claude Opus 4.6", api: "google-generative-ai", input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 4096 },
-      { id: "claude-sonnet-4.6", name: "Claude Sonnet 4.6", api: "google-generative-ai", input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 8192 },
-    ],
-  },
-  "openai-codex": {
-    baseUrl: "https://chatgpt.com/backend-api/v1",
-    apiKey: "codex-app-server",
-    auth: "token",
-    api: "openai-codex-responses",
-    models: [
-      { id: "gpt-5.5", name: "gpt-5.5", api: "openai-codex-responses", reasoning: true, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 272000, maxTokens: 128000 },
-    ],
-  },
-  ollama: {
-    baseUrl: "http://127.0.0.1:11434",
-    apiKey: "ollama-local",
-    api: "ollama",
-    models: [
-      { id: "gemma4:31b-cloud", name: "gemma4:31b-cloud", input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000 },
-      { id: "nemotron-3-ultra:cloud", name: "nemotron-3-ultra:cloud", input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000 },
-    ],
-  },
-} as const;
+/**
+ * Build an agent's openclaw.json from the providers + models the admin selected.
+ * Only the chosen providers' connection blocks are written, each carrying just
+ * the ticked models; `auth.profiles` is added for providers that need one.
+ */
+export function renderOpenClawJson(args: {
+  user: string;
+  email: string;
+  primary: string;
+  fallbacks: string[];
+  selectedModels: SelectedModel[];
+  now?: string;
+}): string {
+  const now = args.now ?? new Date().toISOString();
 
-const MODEL_ALIASES = {
-  "google-gravity/gemini-3.5-flash": { alias: "Gemini 3.5 Flash high" },
-  "google-gravity/gemini-3.1-pro": { alias: "Gemini 3.1 Pro High" },
-  "google-gravity/claude-opus-4.6": { alias: "Claude Opus 4.6" },
-  "google-gravity/claude-sonnet-4.6": { alias: "Claude Sonnet 4.6" },
-  "ollama/gemma4:31b-cloud": { alias: "gemma4:31b-cloud" },
-  "ollama/nemotron-3-ultra:cloud": { alias: "nemotron-3-ultra:cloud" },
-} as const;
+  const byProvider = new Map<string, SelectedModel[]>();
+  for (const m of args.selectedModels) {
+    const arr = byProvider.get(m.provider) ?? [];
+    arr.push(m);
+    byProvider.set(m.provider, arr);
+  }
 
-export function renderOpenClawJson(
-  name: string,
-  user: string,
-  email: string,
-  primary: string,
-  fallbacks: string[],
-  provider: string,
-  now: string = new Date().toISOString(),
-): string {
+  const providers: Record<string, unknown> = {};
+  const profiles: Record<string, unknown> = {};
+  const aliases: Record<string, unknown> = {};
+
+  for (const [pid, models] of byProvider) {
+    const def = getProvider(pid);
+    if (!def) continue;
+    providers[pid] = {
+      ...def.connection,
+      models: models.map((m) => ({
+        id: m.id,
+        name: m.name || m.id,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      })),
+    };
+    if (def.authMode) {
+      profiles[`${pid}:default`] = { provider: def.authProvider ?? pid, mode: def.authMode, email: args.email };
+    }
+    for (const m of models) aliases[`${pid}/${m.id}`] = { alias: m.name || m.id };
+  }
+
   const config = {
     meta: { lastTouchedVersion: "2026.5.22", lastTouchedAt: now },
     wizard: { lastRunAt: now, lastRunVersion: "2026.5.22", lastRunCommand: "configure", lastRunMode: "local" },
-    auth: {
-      profiles: {
-        [`${provider}:default`]: {
-          provider,
-          mode: provider === "google-gravity" ? "oauth" : "token",
-          email,
-        },
-      },
-    },
-    models: { mode: "merge", providers: MODEL_PROVIDERS },
+    auth: { profiles },
+    models: { mode: "merge", providers },
     agents: {
       defaults: {
-        model: { primary, fallbacks },
-        models: MODEL_ALIASES,
-        workspace: `/home/${user}/workspace`,
+        model: { primary: args.primary, fallbacks: args.fallbacks },
+        models: aliases,
+        workspace: `/home/${args.user}/workspace`,
         compaction: { mode: "safeguard" },
         typingIntervalSeconds: 2,
         typingMode: "message",
@@ -283,9 +272,9 @@ export function renderAgentFiles(args: {
   user: string;
   role: AgentRole;
   email: string;
-  provider: string;
-  primaryModel: string;
-  fallbackModels: string[];
+  primary: string;
+  fallbacks: string[];
+  selectedModels: SelectedModel[];
 }): RenderedAgentFiles {
   return {
     soul: renderSoul(args.name, args.user, args.role, args.email),
@@ -293,14 +282,13 @@ export function renderAgentFiles(args: {
     tools: renderTools(),
     memory: renderMemory(),
     heartbeat: "# HEARTBEAT.md\n",
-    openclawJson: renderOpenClawJson(
-      args.name,
-      args.user,
-      args.email,
-      args.primaryModel,
-      args.fallbackModels,
-      args.provider,
-    ),
+    openclawJson: renderOpenClawJson({
+      user: args.user,
+      email: args.email,
+      primary: args.primary,
+      fallbacks: args.fallbacks,
+      selectedModels: args.selectedModels,
+    }),
   };
 }
 
@@ -311,7 +299,7 @@ export function buildAgentEntry(args: {
   role: AgentRole;
   email: string;
   telegram?: { enabled?: boolean; bot?: string } | null;
-  integrations?: { gmail?: boolean; jira?: boolean; bitbucket?: boolean } | null;
+  integrations?: { gmail?: boolean; jira?: boolean; bitbucket?: boolean; maildir?: boolean } | null;
   listeners: ProvisionListener[];
 }): AgentRegistryEntry {
   return {
@@ -332,6 +320,7 @@ export function buildAgentEntry(args: {
       gmail: args.integrations?.gmail ?? false,
       jira: args.integrations?.jira ?? false,
       bitbucket: args.integrations?.bitbucket ?? false,
+      maildir: args.integrations?.maildir ?? false,
     },
     listeners: args.listeners,
   };

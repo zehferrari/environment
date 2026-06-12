@@ -78,7 +78,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/(app)/projects/[slug]/settings` | project settings — repository path, default git identity, default assignee/reviewer for pickers, Done-card TTL, and project delete; plus a recent-activity agenda. For admin (`zeh`) on git/worktree-exposed projects, also a **Worktree live preview** switcher (build a worktree + flip which one `pm.service` serves; currently shared-service-scoped — see TODO). |
 | `app/(app)/projects/[slug]/bin` | soft-delete bin — lists deleted Epics + Tasks with per-row Restore and "Restore + N children" actions. |
 | `app/(app)/agents` | agents grid; merges PM DB rows with Atlas live snapshot. Admin (`zeh`) gets `Add Agent` + per-card `Edit`/`Delete` lifecycle controls (`agent-management-controls.tsx`). |
-| `app/(app)/agents/[agent]` | per-agent deck — Atlas controls, profile editor, model settings. |
+| `app/(app)/agents/[agent]` | per-agent deck, three tabs (`?tab=`): **Profile & controls** (Atlas controls, profile editor, audit), **Operations** (models, tickets, current task, lifecycle, listeners), **Activity** (recent activity-log stream). |
 | `app/(app)/agents/[agent]/chat` | direct per-agent chat opened from the global sidebar CHAT section. |
 | `app/(app)/system/activity` | system-wide ActivityLog stream. |
 | `app/(app)/system/settings` | system-wide setting defaults. |
@@ -95,6 +95,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/api/agents/[agentId]/services/{toggle,restart}` | Atlas service controls. |
 | `app/api/agents/[agentId]/registry/toggle` | activate/deactivate registry entry. |
 | `app/api/agents/{add,edit,remove}` | admin-only (`zeh`) agent lifecycle. Validate + allocate UID/ports + render config, then provision through the root `openclaw-manage-user` helper (sudo); reconcile the PM DB (`syncAgents`) and write an `agent.registry.{add,edit,remove}` audit row. See [Agent lifecycle](#agent-lifecycle-create--edit--remove). |
+| `app/api/agents/models` | admin-only live model-list refresh for the agent form. Per `?provider=` it queries Ollama (`/api/tags` + curated popular), OpenRouter (`/api/v1/models`, `?filter=free\|popular`), Anthropic (if keyed), or returns Codex/seed lists; always falls back to the provider's seed list. |
 | `app/api/agents/[agentId]/integrations/credentials` | per-agent credential surface. |
 | `app/api/agents/context/{task,epic,project}/[id]` | loopback-only live PM read API for agents; scoped `?grant=` URLs are preferred, with bearer fallback only while enabled. |
 | `app/api/openclaw/pm-channel/stream` | token-scoped native PM channel live partial-reply callback from OpenClaw. |
@@ -122,7 +123,8 @@ user.
 | `lib/auth/rate-limit.ts` | in-process login rate limit (per-IP + per-username). |
 | `lib/agents/sync.ts` | the canonical agent sync — boot + periodic interval. |
 | `lib/agents/index-loader.ts` | `/srv/agents/index.json` reader. |
-| `lib/agents/provisioning.ts` | unprivileged half of agent provisioning — renders per-agent file content (`SOUL`/`IDENTITY`/`openclaw.json`…), allocates UID + gateway/sidecar ports, builds the registry entry. |
+| `lib/agents/provisioning.ts` | unprivileged half of agent provisioning — renders per-agent file content (`SOUL`/`IDENTITY`/`openclaw.json`…), allocates UID + gateway/sidecar ports, builds the registry entry. `openclaw.json` is rendered from the providers + models selected in the form. |
+| `lib/agents/providers.ts` | model-provider catalog (Codex, Claude CLI/`anthropic`, Ollama, OpenRouter) — the single source for each provider's openclaw.json connection block, auth profile, refresh strategy, and seed models. Shared by the form, the model-refresh route, and the renderer. |
 | `lib/agents/manage-user.ts` | invokes the root `openclaw-manage-user` helper via sudo (arg-array, payload through a `0600` temp file) — the single privileged boundary behind `/api/agents/{add,edit,remove}`. |
 | `lib/agents/credentials.ts` | per-agent host-private credential seeding. |
 | `lib/agents/profile.ts` | shared agent profile read/write + ACL. |
@@ -248,6 +250,15 @@ writes an `agent.registry.{add,edit,remove}` audit row.
   route and the helper. A failed create is rolled back (helper `delete`).
 - **Edit.** Re-renders files + registry; a role change reallocates listeners and
   reinstalls the gateway without destroying the agent's home directory.
+- **Models.** The form ticks one or more providers (`lib/agents/providers.ts`),
+  refreshes each provider's live model list (`/api/agents/models`), marks which
+  models the agent may use, picks a default, and orders fallbacks by drag. Only
+  the chosen providers/models are written into the agent's `openclaw.json`.
+- **Telegram.** When enabled, the bot token is captured and the helper writes it
+  to `~/.config/openclaw/telegram-token` + `TELEGRAM_BOT_TOKEN`; DM pairing then
+  authorises the operator's account.
+- **Server email.** The `maildir` integration provisions `~/Maildir` + a mail
+  listener for local server mail (host needs an MTA — see [`../X1.md`](../X1.md)).
 - **Registry ownership.** `openclaw-manage-user` is the sole writer of
   `/srv/agents/index.json` for lifecycle changes; `agent-dashboard` only watches
   the file and re-broadcasts it over SSE. Helper + privilege model:

@@ -260,6 +260,41 @@ upsert_registry_entry() {
   mv -f "$tmp" "$REGISTRY"
 }
 
+write_telegram_token() {
+  # write_telegram_token <user> <payload-file>
+  local user="$1" pf="$2"
+  local token
+  token=$(jq -r '.telegramToken // empty' "$pf")
+  [[ -n "$token" ]] || return 0
+  local cfg="/home/$user/.config/openclaw"
+  mkdir -p "$cfg"
+  printf '%s\n' "$token" > "$cfg/telegram-token"
+  # Also expose it as TELEGRAM_BOT_TOKEN for the typing-keepalive sidecar.
+  local env="$cfg/openclaw-secrets.env"
+  touch "$env"
+  if grep -q '^TELEGRAM_BOT_TOKEN=' "$env" 2>/dev/null; then
+    sed -i "s|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=$token|" "$env"
+  else
+    printf 'TELEGRAM_BOT_TOKEN=%s\n' "$token" >> "$env"
+  fi
+  chown -R "$user:$user" "$cfg"
+  chmod 0600 "$cfg/telegram-token" "$env"
+}
+
+provision_maildir() {
+  # provision_maildir <user> <payload-file> — local server-mail (Maildir).
+  # The MTA (Postfix/Dovecot) and the openclaw-mail-listener service are host
+  # prerequisites wired by install.sh; here we just lay down the mailbox.
+  local user="$1" pf="$2"
+  local on
+  on=$(jq -r '.entry.integrations.maildir // false' "$pf")
+  [[ "$on" == "true" ]] || return 0
+  local home="/home/$user"
+  mkdir -p "$home/Maildir/new" "$home/Maildir/cur" "$home/Maildir/tmp" "$home/.openclaw/mail"
+  chown -R "$user:$user" "$home/Maildir" "$home/.openclaw/mail"
+  chmod -R 0700 "$home/Maildir"
+}
+
 cmd="${1:-}"
 case "$cmd" in
   add)
@@ -340,6 +375,8 @@ EOF
       write_agent_files "$user" "$payload"
       setup_doc_symlinks "$user" "$role"
       upsert_registry_entry "$payload"
+      write_telegram_token "$user" "$payload"
+      provision_maildir "$user" "$payload"
 
       gateway_port=$(jq -r '.gatewayPort // empty' "$payload")
       [[ -n "$gateway_port" ]] && install_gateway "$user" "$uid" "$gateway_port"
@@ -382,6 +419,8 @@ EOF
     write_agent_files "$user" "$payload"
     setup_doc_symlinks "$user" "$role"
     upsert_registry_entry "$payload"
+    write_telegram_token "$user" "$payload"
+    provision_maildir "$user" "$payload"
 
     if [[ "$(jq -r '.reinstallGateway // false' "$payload")" == "true" ]]; then
       gateway_port=$(jq -r '.gatewayPort // empty' "$payload")

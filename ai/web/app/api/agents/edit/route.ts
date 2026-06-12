@@ -22,14 +22,23 @@ const EditSchema = z.object({
   name: z.string().min(1).max(120),
   role: z.enum(["coding", "monitor"]),
   email: z.string().email(),
-  telegram: z.object({ enabled: z.boolean(), bot: z.string() }).optional(),
+  telegram: z
+    .object({ enabled: z.boolean(), bot: z.string(), token: z.string().optional().default("") })
+    .optional(),
   integrations: z
-    .object({ gmail: z.boolean(), jira: z.boolean(), bitbucket: z.boolean() })
+    .object({
+      gmail: z.boolean(),
+      jira: z.boolean(),
+      bitbucket: z.boolean(),
+      maildir: z.boolean().optional().default(false),
+    })
     .optional(),
   model_config: z.object({
-    provider: z.string().min(1),
     default_model: z.string().min(1),
     fallback_models: z.array(z.string()).default([]),
+    selected_models: z
+      .array(z.object({ provider: z.string().min(1), id: z.string().min(1), name: z.string().optional() }))
+      .min(1, "select at least one model"),
   }),
 });
 
@@ -99,10 +108,12 @@ export async function POST(request: Request) {
     user: data.user,
     role: data.role,
     email: data.email,
-    provider: data.model_config.provider,
-    primaryModel: data.model_config.default_model,
-    fallbackModels: data.model_config.fallback_models,
+    primary: data.model_config.default_model,
+    fallbacks: data.model_config.fallback_models,
+    selectedModels: data.model_config.selected_models,
   });
+
+  const telegramToken = data.telegram?.enabled ? data.telegram.token ?? "" : "";
 
   try {
     await runManageUser(["update", data.user], {
@@ -110,6 +121,7 @@ export async function POST(request: Request) {
       files,
       reinstallGateway: roleChanged,
       gatewayPort,
+      telegramToken,
     });
   } catch (err) {
     console.error("[agents/edit] update failed:", err);

@@ -17,20 +17,31 @@ export const dynamic = "force-dynamic";
 
 const PROTECTED_USERS = ["root", "zeh", "karen", "system", "admin", "daemon", "bin", "sys", "code-agents"];
 
+const ModelConfigSchema = z.object({
+  default_model: z.string().min(1),
+  fallback_models: z.array(z.string()).default([]),
+  selected_models: z
+    .array(z.object({ provider: z.string().min(1), id: z.string().min(1), name: z.string().optional() }))
+    .min(1, "select at least one model"),
+});
+
 const AddSchema = z.object({
   user: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/, "lowercase slug, starts with a letter"),
   name: z.string().min(1).max(120),
   role: z.enum(["coding", "monitor"]),
   email: z.string().email(),
-  telegram: z.object({ enabled: z.boolean(), bot: z.string() }).optional(),
-  integrations: z
-    .object({ gmail: z.boolean(), jira: z.boolean(), bitbucket: z.boolean() })
+  telegram: z
+    .object({ enabled: z.boolean(), bot: z.string(), token: z.string().optional().default("") })
     .optional(),
-  model_config: z.object({
-    provider: z.string().min(1),
-    default_model: z.string().min(1),
-    fallback_models: z.array(z.string()).default([]),
-  }),
+  integrations: z
+    .object({
+      gmail: z.boolean(),
+      jira: z.boolean(),
+      bitbucket: z.boolean(),
+      maildir: z.boolean().optional().default(false),
+    })
+    .optional(),
+  model_config: ModelConfigSchema,
 });
 
 export async function POST(request: Request) {
@@ -79,15 +90,22 @@ export async function POST(request: Request) {
     user: data.user,
     role: data.role,
     email: data.email,
-    provider: data.model_config.provider,
-    primaryModel: data.model_config.default_model,
-    fallbackModels: data.model_config.fallback_models,
+    primary: data.model_config.default_model,
+    fallbacks: data.model_config.fallback_models,
+    selectedModels: data.model_config.selected_models,
   });
+
+  const telegramToken = data.telegram?.enabled ? data.telegram.token ?? "" : "";
 
   // Privileged provisioning happens entirely in the root helper, which also
   // owns the registry write. On any failure, roll the system user back.
   try {
-    await runManageUser(["add", data.user, String(uid), data.role], { gatewayPort, entry, files });
+    await runManageUser(["add", data.user, String(uid), data.role], {
+      gatewayPort,
+      entry,
+      files,
+      telegramToken,
+    });
   } catch (err) {
     console.error("[agents/add] provisioning failed, rolling back:", err);
     await runManageUser(["delete", data.user]).catch((e) =>

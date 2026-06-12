@@ -13,7 +13,7 @@ import {
 } from "@/components/message-avatar";
 import ProfileEditor from "./profile-editor";
 import AtlasControls from "./atlas-controls";
-import AgentTabs from "./agent-tabs";
+import AgentTabs, { type AgentTab } from "./agent-tabs";
 import ModelsSettings from "./models-settings";
 
 export const dynamic = "force-dynamic";
@@ -149,7 +149,9 @@ export default async function AgentProfilePage({
   searchParams?: Promise<{ tab?: string }>;
 }) {
   const { agent: slug } = await params;
-  const requestedTab = (await searchParams)?.tab === "operations" ? "operations" : "controls";
+  const tabParam = (await searchParams)?.tab;
+  const requestedTab: AgentTab =
+    tabParam === "operations" ? "operations" : tabParam === "activity" ? "activity" : "controls";
   const session = await auth();
   const [agent, snapshot, allAgents] = await Promise.all([
     db.agent.findUnique({ where: { slug }, include: { user: true } }),
@@ -313,31 +315,32 @@ export default async function AgentProfilePage({
               <Panel title="Listeners">
                 <ChipGrid items={[raw.telegram?.enabled ? `telegram: ${raw.telegram.bot ?? "enabled"}` : null, ...listeners.map((l) => `${l.owner ?? "listener"}: ${l.host ?? "?"}:${l.port ?? "?"}`)].filter(Boolean) as string[]} empty="No listeners reported." />
               </Panel>
-
-              <Panel title="Activity">
-                {activity.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No activity recorded.</p> : (
-                  <ul className="divide-y divide-[var(--color-line)] text-sm">
-                    {activity.map((row) => {
-                      const actor = serializeActivityActor(row.user) ?? systemActor;
-                      return (
-                        <li key={row.id} className="py-2">
-                          <div className="flex min-w-0 flex-wrap items-center gap-2">
-                            <MessageTimestamp value={row.createdAt} />
-                            <MessageAvatar actor={actor} size="sm" />
-                            <span className="font-medium">{row.kind}</span>
-                          </div>
-                          <div className="mt-1 text-xs text-[var(--color-text-muted)]">
-                            {actorDisplayName(actor)}
-                            {row.task ? ` · ${row.task.title}` : ""}
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </Panel>
             </div>
           </div>
+        )}
+        activity={(
+          <Panel title="Recent activity">
+            {activity.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No activity recorded.</p> : (
+              <ul className="divide-y divide-[var(--color-line)] text-sm">
+                {activity.map((row) => {
+                  const actor = serializeActivityActor(row.user) ?? systemActor;
+                  return (
+                    <li key={row.id} className="py-2">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <MessageTimestamp value={row.createdAt} />
+                        <MessageAvatar actor={actor} size="sm" />
+                        <span className="font-medium">{row.kind}</span>
+                      </div>
+                      <div className="mt-1 text-xs text-[var(--color-text-muted)]">
+                        {actorDisplayName(actor)}
+                        {row.task ? ` · ${row.task.title}` : ""}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Panel>
         )}
       />
     </div>
