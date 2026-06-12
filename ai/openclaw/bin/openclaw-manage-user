@@ -12,8 +12,103 @@ SHARED_GROUP="${OPENCLAW_SHARED_GROUP:-code-agents}"
 SAMBA_SHARED_ROOT="${OPENCLAW_SAMBA_SHARED_ROOT:-${SAMBA_SHARED_ROOT:-/srv/samba/shared}}"
 SAMBA_PASSWORD_SYNC_DIR="${OPENCLAW_SAMBA_PASSWORD_SYNC_DIR:-${SAMBA_PASSWORD_SYNC_DIR:-/tmp/samba-password-sync}}"
 REPO_ROOT="${OPENCLAW_REPO_ROOT:-${REPO_ROOT:-/srv/Code/environment}}"
+PM_CONSUMER_TOKEN_FILE="${PM_CONSUMER_TOKEN_FILE:-/etc/openclaw/pm-consumer-tokens.json}"
 
 VISUDO=$(command -v visudo || command -v /usr/sbin/visudo || command -v /sbin/visudo || echo "/usr/sbin/visudo")
+
+generate_hook_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+    return
+  fi
+  LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 64
+  printf '\n'
+}
+
+hook_token_for_agent() {
+  local agent="$1" cfg="$2" token=""
+  if [ -r "$PM_CONSUMER_TOKEN_FILE" ] && command -v jq >/dev/null 2>&1; then
+    token=$(jq -r --arg agent "$agent" '.[$agent] // empty' "$PM_CONSUMER_TOKEN_FILE" 2>/dev/null || true)
+  fi
+  if [ -z "$token" ] && [ -r "$cfg" ] && command -v jq >/dev/null 2>&1; then
+    token=$(jq -r '.hooks.token // empty' "$cfg" 2>/dev/null || true)
+  fi
+  if [ -z "$token" ]; then
+    token=$(generate_hook_token)
+  fi
+  printf '%s\n' "$token"
+}
+
+reconcile_gateway_hooks() {
+  local user="$1"
+  local cfg="/srv/agents/openclaw/$user/openclaw.json"
+  if [ ! -f "$cfg" ]; then
+    echo "Warning: $cfg not found, skipping gateway hooks reconciliation." >&2
+    return 0
+  fi
+
+  local token
+  token=$(hook_token_for_agent "$user" "$cfg")
+  
+  # Ensure the directory and file for consumer tokens exist with correct permissions
+  mkdir -p "$(dirname "$PM_CONSUMER_TOKEN_FILE")"
+  if [ ! -f "$PM_CONSUMER_TOKEN_FILE" ] || ! jq empty "$PM_CONSUMER_TOKEN_FILE" >/dev/null 2>&1; then
+    printf '{}\n' > "$PM_CONSUMER_TOKEN_FILE"
+  fi
+  chmod 0640 "$PM_CONSUMER_TOKEN_FILE"
+  chown root:karen "$PM_CONSUMER_TOKEN_FILE" 2>/dev/null || true
+
+  # Update consumer tokens file
+  local tmp_tokens
+  tmp_tokens=$(mktemp)
+  jq --arg agent "$user" --arg token "$token" '. + {($agent): $token}' "$PM_CONSUMER_TOKEN_FILE" > "$tmp_tokens"
+  mv -f "$tmp_tokens" "$PM_CONSUMER_TOKEN_FILE"
+  chmod 0640 "$PM_CONSUMER_TOKEN_FILE"
+  chown root:karen "$PM_CONSUMER_TOKEN_FILE" 2>/dev/null || true
+
+  # Reconcile openclaw.json gateway and hooks settings
+  local tmp_cfg
+  tmp_cfg=$(mktemp)
+  if jq --arg token "$token" '
+    .gateway = ((.gateway // {}) + {
+      bind: "loopback",
+      trustedProxies: ["127.0.0.1", "::1"]
+    })
+    | .gateway.auth = ((.gateway.auth // {}) + {
+      trustedProxy: ((.gateway.auth.trustedProxy // {}) + {
+        allowLoopback: true
+      })
+    })
+    | .hooks = ((.hooks // {}) + {
+      enabled: true,
+      path: "/hooks",
+      token: $token,
+      allowRequestSessionKey: true
+    })
+    | .hooks.allowedSessionKeyPrefixes = (((.hooks.allowedSessionKeyPrefixes // []) + ["hook:", "pm:"]) | unique)
+  ' "$cfg" > "$tmp_cfg"; then
+    local cfg_group
+    cfg_group=$(jq -r '.codeGroup // empty' "$REGISTRY")
+    [ -n "$cfg_group" ] || cfg_group=$(id -gn "$user" 2>/dev/null || stat -c '%G' "$cfg" 2>/dev/null || printf '%s' "$user")
+    local cfg_mode
+    cfg_mode=$(stat -c '%a' "$cfg" 2>/dev/null || printf '0660')
+    
+    mv -f "$tmp_cfg" "$cfg"
+    chown "$user:$cfg_group" "$cfg"
+    chmod "$cfg_mode" "$cfg"
+    
+    # Symlink ~/.openclaw/openclaw.json to /srv/agents/openclaw/<user>/openclaw.json
+    local home="/home/$user"
+    local home_cfg="$home/.openclaw/openclaw.json"
+    mkdir -p "$home/.openclaw"
+    chown "$user:$user" "$home/.openclaw" 2>/dev/null || true
+    link_doc "$cfg" "$home_cfg"
+    chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
+  else
+    rm -f "$tmp_cfg"
+    echo "Warning: failed to parse/update gateway and hooks configuration for $user" >&2
+  fi
+}
 
 die() {
   printf 'openclaw-manage-user: %s\n' "$*" >&2
@@ -236,7 +331,7 @@ install_gateway() {
 install_pm_channel() {
   [[ "${OPENCLAW_SANDBOX_TESTING:-}" == "true" ]] && return 0
   local user="$1"
-  "$NODE_BIN" "$REPO_ROOT/ai/web/deploy/install-openclaw-pm-channel.mjs" "--agents=$user"
+  "$NODE_BIN" "$REPO_ROOT/ai/web/deploy/install-openclaw-pm-channel.mjs" "--agents=$user" --restart
 }
 
 upsert_registry_entry() {
@@ -373,6 +468,8 @@ EOF
       write_telegram_token "$user" "$payload"
       provision_maildir "$user" "$payload"
 
+      reconcile_gateway_hooks "$user"
+
       gateway_port=$(jq -r '.gatewayPort // empty' "$payload")
       [[ -n "$gateway_port" ]] && install_gateway "$user" "$uid" "$gateway_port"
       install_pm_channel "$user"
@@ -419,6 +516,9 @@ EOF
     upsert_registry_entry "$payload"
     write_telegram_token "$user" "$payload"
     provision_maildir "$user" "$payload"
+
+    reconcile_gateway_hooks "$user"
+    install_pm_channel "$user"
 
     if [[ "$(jq -r '.reinstallGateway // false' "$payload")" == "true" ]]; then
       gateway_port=$(jq -r '.gatewayPort // empty' "$payload")

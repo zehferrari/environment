@@ -253,6 +253,7 @@ export function renderOpenClawJson(args: {
     wizard: { lastRunAt: now, lastRunVersion: "2026.5.22", lastRunCommand: "configure", lastRunMode: "local" },
     auth: { profiles },
     models: { mode: "merge", providers },
+    gateway: { mode: "local" },
     agents: {
       defaults: {
         model: { primary: args.primary, fallbacks: args.fallbacks },
