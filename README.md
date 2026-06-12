@@ -96,6 +96,13 @@ deeper docs before acting:
   Never build without an immediate restart.
 - **Prisma migrations are separate** and easy to forget — a `P2022: column does
   not exist` at runtime means the live DB is missing `prisma migrate deploy`.
+- **Agents are provisioned from the PM webapp.** The Agents page (admin only)
+  drives `/api/agents/{add,edit,remove}`, which delegate every privileged step
+  to the root `openclaw-manage-user` helper via tightly-scoped sudo —
+  `agent-dashboard` no longer mutates the registry. Full flow, privilege model,
+  and a fresh-host replication runbook: [`ai/X1.md`](./ai/X1.md) § Agent
+  Lifecycle Management and [`ai/web/README.md`](./ai/web/README.md) § Agent
+  lifecycle.
 
 ### Multi-agent / branch workflow
 

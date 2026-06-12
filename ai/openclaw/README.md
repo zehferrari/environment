@@ -57,7 +57,7 @@ worktree checkout, not a stale main checkout.
 | `/home/<user>/.openclaw/workspace/jira/*.js` | `<openclaw-root>/skills/jira/` |
 | `/home/<user>/.openclaw/skills/google-workspace/*.js` | `<openclaw-root>/skills/google-workspace/` |
 | `/home/<user>/workspace/mail/*.js` | `<openclaw-root>/skills/local-mail/` on yoga510 |
-| `/etc/openclaw/agents.json` | `/srv/agents/index.json` (live runtime registry, NOT in this repo — edited by the dashboard's POST /agents/registry/toggle; see [`index.example.json`](./index.example.json) for the template) |
+| `/etc/openclaw/agents.json` | `/srv/agents/index.json` (live runtime registry, NOT in this repo). Enable/disable flips come from the dashboard's `POST /agents/registry/toggle`; **agent create/edit/remove** are written by the root `/usr/local/sbin/openclaw-manage-user` helper ([`bin/openclaw-manage-user`](./bin/openclaw-manage-user)), driven by the PM webapp's `/api/agents/*` routes — see [`../X1.md`](../X1.md) § Agent Lifecycle Management. Template: [`index.example.json`](./index.example.json). |
 | `/home/<user>/workspace/{SOUL,USER,MEMORY,IDENTITY,TOOLS,HEARTBEAT}.md` | `<agentFilesRoot>/<user>/...` per-agent private files |
 | `/home/<user>/.openclaw/workspace/{SOUL,USER,MEMORY,IDENTITY,TOOLS,HEARTBEAT}.md` | same |
 | `/home/<user>/.openclaw/openclaw.json` | `<agentFilesRoot>/<user>/openclaw.json` per-agent runtime config, agent-owned and writable by the configured `codeGroup` |

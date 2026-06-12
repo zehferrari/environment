@@ -2,6 +2,14 @@
 
 These files stay separate for each registered coding agent. Each lives under `/home/<user>/`. The shared repo deliberately does not version-control them.
 
+> **How they're created.** When an agent is added through the PM webapp (Agents
+> → `Add Agent`), the root `openclaw-manage-user` helper scaffolds the per-agent
+> files (`SOUL`, `IDENTITY`, `TOOLS`, `MEMORY`, `HEARTBEAT`, `openclaw.json`)
+> into the agent-files root `/srv/agents/openclaw/<user>/` from templates
+> rendered by `ai/web/lib/agents/provisioning.ts`, and points
+> `~/.openclaw/openclaw.json` at the canonical copy by symlink. Editing the
+> agent re-renders them. See [`../X1.md`](../X1.md) § Agent Lifecycle Management.
+
 ## Identity & persona — `~/workspace/*.md`
 
 `AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`, `CODE_REPOS.md`, and `USER.md` are **shared by every agent** and live in this repo. The remaining files (`SOUL`, `IDENTITY`, `TOOLS`, `MEMORY`, `HEARTBEAT`) are **per-agent in content** but **single-canonical in location**: each lives once at `~/workspace/<file>` and `~/.openclaw/workspace/<file>` is a symlink to it, so no matter which workspace path the runtime reads, it sees the same file.

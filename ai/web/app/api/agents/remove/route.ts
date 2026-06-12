@@ -1,50 +1,77 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { readAgentIndex } from "@/lib/agents/index-loader";
+import { syncAgents } from "@/lib/agents/sync";
+import { runManageUser } from "@/lib/agents/manage-user";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-async function proxyAtlas(path: string, payload: unknown) {
-  const res = await fetch(`http://127.0.0.1:3013${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-    cache: "no-store",
-  });
-  const text = await res.text();
-  return new NextResponse(text, {
-    status: res.status,
-    headers: { "content-type": res.headers.get("content-type") ?? "application/json" },
-  });
-}
+const PROTECTED_USERS = ["root", "zeh", "karen", "system", "admin", "daemon", "bin", "sys", "code-agents"];
+
+const RemoveSchema = z.object({
+  user: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
+});
 
 export async function POST(request: Request) {
   const session = await auth();
-  if (!session?.user) return NextResponse.json({ error: "unauth" }, { status: 401 });
+  if (!session?.user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
   if (session.user.name !== "zeh") return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
-  const payload = await request.json().catch(() => null);
-  if (!payload || typeof payload !== "object" || !payload.user) {
-    return NextResponse.json({ error: "invalid json payload or missing user slug" }, { status: 400 });
+  const body = await request.json().catch(() => null);
+  const parsed = RemoveSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "validation_failed", details: parsed.error.format() }, { status: 400 });
+  }
+  const { user } = parsed.data;
+
+  // Never deprovision the operator, the monitor that runs this service, or a
+  // system account. (The root helper enforces this too — defence in depth.)
+  if (PROTECTED_USERS.includes(user)) {
+    return NextResponse.json({ error: "protected_user" }, { status: 400 });
   }
 
-  const response = await proxyAtlas("/agents/registry/remove", payload);
-  
-  if (response.ok) {
+  try {
+    const index = await readAgentIndex();
+    if (!index.agents.some((a) => a.user === user)) {
+      return NextResponse.json({ error: "agent_not_found" }, { status: 404 });
+    }
+  } catch {
+    // If the registry can't be read, fall through — the helper still validates.
+  }
+
+  // The root helper removes the system user, Samba/sudoers state, the runtime
+  // dir, and the registry entry, then reconciles via install.sh.
+  try {
+    await runManageUser(["delete", user]);
+  } catch (err) {
+    console.error("[agents/remove] deprovisioning failed:", err);
+    return NextResponse.json(
+      { error: "deprovisioning_failed", message: (err as Error).message },
+      { status: 500 },
+    );
+  }
+
+  try {
+    await syncAgents();
+  } catch (err) {
+    console.error("[agents/remove] syncAgents failed:", err);
+  }
+
+  try {
     await db.activityLog.create({
       data: {
         userId: session.user.id,
         kind: "agent.registry.remove",
-        targetAgent: payload.user,
-        payload: JSON.stringify({
-          driver: "atlas",
-          status: response.status,
-          payload,
-        }),
+        targetAgent: user,
+        payload: JSON.stringify({ user }),
       },
     });
+  } catch (err) {
+    console.error("[agents/remove] activityLog failed:", err);
   }
 
-  return response;
+  return NextResponse.json({ ok: true, removed: user });
 }
