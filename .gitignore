@@ -82,3 +82,6 @@ ha/shell_scripts/output.txt
 *.wmv
 
 __pycache__/
+
+# Local OpenClaw multi-agent scratch workspaces (not part of the repo)
+.agents/

@@ -1,0 +1,584 @@
+#!/usr/bin/env bash
+#
+# openclaw-manage-user — privileged user lifecycle helper for OpenClaw.
+# Managed by root, executed by the monitor user (karen) via NOPASSWD sudo.
+#
+set -euo pipefail
+
+# Environment-configurable paths to support testing/sandboxing
+REGISTRY="${OPENCLAW_AGENTS_JSON:-${REGISTRY:-/etc/openclaw/agents.json}}"
+SUDOERS_D="${OPENCLAW_SUDOERS_D:-${SUDOERS_D:-/etc/sudoers.d}}"
+SHARED_GROUP="${OPENCLAW_SHARED_GROUP:-code-agents}"
+SAMBA_SHARED_ROOT="${OPENCLAW_SAMBA_SHARED_ROOT:-${SAMBA_SHARED_ROOT:-/srv/samba/shared}}"
+SAMBA_PASSWORD_SYNC_DIR="${OPENCLAW_SAMBA_PASSWORD_SYNC_DIR:-${SAMBA_PASSWORD_SYNC_DIR:-/tmp/samba-password-sync}}"
+REPO_ROOT="${OPENCLAW_REPO_ROOT:-${REPO_ROOT:-/srv/Code/environment}}"
+PM_CONSUMER_TOKEN_FILE="${PM_CONSUMER_TOKEN_FILE:-/etc/openclaw/pm-consumer-tokens.json}"
+
+VISUDO=$(command -v visudo || command -v /usr/sbin/visudo || command -v /sbin/visudo || echo "/usr/sbin/visudo")
+
+generate_hook_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+    return
+  fi
+  LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 64
+  printf '\n'
+}
+
+hook_token_for_agent() {
+  local agent="$1" cfg="$2" token=""
+  if [ -r "$PM_CONSUMER_TOKEN_FILE" ] && command -v jq >/dev/null 2>&1; then
+    token=$(jq -r --arg agent "$agent" '.[$agent] // empty' "$PM_CONSUMER_TOKEN_FILE" 2>/dev/null || true)
+  fi
+  if [ -z "$token" ] && [ -r "$cfg" ] && command -v jq >/dev/null 2>&1; then
+    token=$(jq -r '.hooks.token // empty' "$cfg" 2>/dev/null || true)
+  fi
+  if [ -z "$token" ]; then
+    token=$(generate_hook_token)
+  fi
+  printf '%s\n' "$token"
+}
+
+reconcile_gateway_hooks() {
+  local user="$1"
+  local cfg="/srv/agents/openclaw/$user/openclaw.json"
+  if [ ! -f "$cfg" ]; then
+    echo "Warning: $cfg not found, skipping gateway hooks reconciliation." >&2
+    return 0
+  fi
+
+  local token
+  token=$(hook_token_for_agent "$user" "$cfg")
+  
+  # Ensure the directory and file for consumer tokens exist with correct permissions
+  mkdir -p "$(dirname "$PM_CONSUMER_TOKEN_FILE")"
+  if [ ! -f "$PM_CONSUMER_TOKEN_FILE" ] || ! jq empty "$PM_CONSUMER_TOKEN_FILE" >/dev/null 2>&1; then
+    printf '{}\n' > "$PM_CONSUMER_TOKEN_FILE"
+  fi
+  chmod 0640 "$PM_CONSUMER_TOKEN_FILE"
+  chown root:karen "$PM_CONSUMER_TOKEN_FILE" 2>/dev/null || true
+
+  # Update consumer tokens file
+  local tmp_tokens
+  tmp_tokens=$(mktemp)
+  jq --arg agent "$user" --arg token "$token" '. + {($agent): $token}' "$PM_CONSUMER_TOKEN_FILE" > "$tmp_tokens"
+  mv -f "$tmp_tokens" "$PM_CONSUMER_TOKEN_FILE"
+  chmod 0640 "$PM_CONSUMER_TOKEN_FILE"
+  chown root:karen "$PM_CONSUMER_TOKEN_FILE" 2>/dev/null || true
+
+  # Reconcile openclaw.json gateway and hooks settings
+  local tmp_cfg
+  tmp_cfg=$(mktemp)
+  if jq --arg token "$token" '
+    .gateway = ((.gateway // {}) + {
+      bind: "loopback",
+      trustedProxies: ["127.0.0.1", "::1"]
+    })
+    | .gateway.auth = ((.gateway.auth // {}) + {
+      trustedProxy: ((.gateway.auth.trustedProxy // {}) + {
+        allowLoopback: true
+      })
+    })
+    | .hooks = ((.hooks // {}) + {
+      enabled: true,
+      path: "/hooks",
+      token: $token,
+      allowRequestSessionKey: true
+    })
+    | .hooks.allowedSessionKeyPrefixes = (((.hooks.allowedSessionKeyPrefixes // []) + ["hook:", "pm:"]) | unique)
+  ' "$cfg" > "$tmp_cfg"; then
+    local cfg_group
+    cfg_group=$(jq -r '.codeGroup // empty' "$REGISTRY")
+    [ -n "$cfg_group" ] || cfg_group=$(id -gn "$user" 2>/dev/null || stat -c '%G' "$cfg" 2>/dev/null || printf '%s' "$user")
+    local cfg_mode
+    cfg_mode=$(stat -c '%a' "$cfg" 2>/dev/null || printf '0660')
+    
+    mv -f "$tmp_cfg" "$cfg"
+    chown "$user:$cfg_group" "$cfg"
+    chmod "$cfg_mode" "$cfg"
+    
+    # Symlink ~/.openclaw/openclaw.json to /srv/agents/openclaw/<user>/openclaw.json
+    local home="/home/$user"
+    local home_cfg="$home/.openclaw/openclaw.json"
+    mkdir -p "$home/.openclaw"
+    chown "$user:$user" "$home/.openclaw" 2>/dev/null || true
+    link_doc "$cfg" "$home_cfg"
+    chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
+  else
+    rm -f "$tmp_cfg"
+    echo "Warning: failed to parse/update gateway and hooks configuration for $user" >&2
+  fi
+}
+
+die() {
+  printf 'openclaw-manage-user: %s\n' "$*" >&2
+  exit 1
+}
+
+# Ensure running as root
+if [[ $EUID -ne 0 ]]; then
+  die "must run as root (via sudo)"
+fi
+
+# Validate REPO_ROOT to prevent privilege escalation via environment override
+if [[ "$REPO_ROOT" =~ ^/srv/Code/environment(\.worktrees/[a-zA-Z0-9_-]+)?$ ]]; then
+  :
+elif [[ "${OPENCLAW_SANDBOX_TESTING:-}" = "true" && "$REPO_ROOT" =~ ^/tmp/ ]]; then
+  :
+else
+  echo "Error: REPO_ROOT '$REPO_ROOT' is invalid. Privilege escalation hazard." >&2
+  exit 1
+fi
+
+# Validate registry JSON integrity if it exists
+if [ -f "$REGISTRY" ]; then
+  if ! jq empty "$REGISTRY" >/dev/null 2>&1; then
+    echo "Error: Registry JSON integrity check failed." >&2
+    exit 1
+  fi
+fi
+
+usage() {
+  cat >&2 <<USAGE
+Usage:
+  openclaw-manage-user add <username> <uid> <role> [payload.json]
+  openclaw-manage-user update <username> <payload.json>
+  openclaw-manage-user delete <username>
+
+  <role> is coding|monitor. When a payload file is supplied, full provisioning
+  is performed (files, docs, registry, gateway, PM channel); otherwise add only
+  creates the system user + registry skeleton.
+USAGE
+  exit 2
+}
+
+validate_username() {
+  local user="$1"
+  [[ "$user" =~ ^[a-z0-9_-]+$ ]] || die "Invalid username format: $user"
+  [[ ${#user} -le 32 ]] || die "Username too long (max 32 chars): $user"
+  case "$user" in
+    root|zeh|karen|system|admin|daemon|bin|sys|nobody)
+      die "Protected system user: $user"
+      ;;
+  esac
+}
+
+validate_uid() {
+  local uid="$1"
+  [[ "$uid" =~ ^[0-9]+$ ]] || die "Invalid UID: $uid"
+  [[ "$uid" -ge 1001 ]] || die "UID must be >= 1001: $uid"
+}
+
+regenerate_monitor_sudoers() {
+  if [[ ! -r "$REGISTRY" ]]; then
+    echo "Warning: registry not readable, skipping monitor sudoers regeneration." >&2
+    return 0
+  fi
+  
+  local m_user
+  m_user=$(jq -r '.agents[] | select(.role == "monitor" and .enabled == true) | .user' "$REGISTRY" | head -1)
+  m_user="${m_user:-karen}"
+  
+  local coding_users
+  coding_users=$(jq -r '.agents[] | select(.role == "coding" and .enabled == true) | .user' "$REGISTRY" | paste -sd, -)
+  
+  local tmp
+  tmp=$(mktemp /tmp/openclaw-sudoers.XXXXXX)
+  
+  cat >"$tmp" <<EOF
+# Sudoers for the monitor agent ($m_user). Generated by openclaw-manage-user.
+# DO NOT EDIT MANUALLY.
+Defaults:$m_user !requiretty
+
+$m_user ALL=(root) NOPASSWD: /usr/local/sbin/openclaw-control *
+$m_user ALL=(root) NOPASSWD: /usr/local/sbin/openclaw-manage-user *
+$m_user ALL=(root) NOPASSWD: $REPO_ROOT/ai/openclaw/install.sh
+
+# Systemctl and journals
+$m_user ALL=(root) NOPASSWD: /usr/bin/systemctl restart ollama.service
+$m_user ALL=(root) NOPASSWD: /usr/bin/systemctl restart nginx.service
+$m_user ALL=(root) NOPASSWD: /usr/bin/systemctl restart agent-dashboard.service
+$m_user ALL=(root) NOPASSWD: /usr/bin/systemctl restart openclaw-typing-keepalive.service
+$m_user ALL=(root) NOPASSWD: /usr/bin/systemctl restart ai-monitor.service
+$m_user ALL=(root) NOPASSWD: /usr/bin/systemctl status *
+$m_user ALL=(root) NOPASSWD: /usr/bin/systemctl is-active *
+$m_user ALL=(root) NOPASSWD: /usr/bin/systemctl is-failed *
+$m_user ALL=(root) NOPASSWD: /usr/bin/systemctl list-units *
+$m_user ALL=(root) NOPASSWD: /usr/bin/systemctl list-unit-files *
+$m_user ALL=(root) NOPASSWD: /usr/bin/systemctl show *
+$m_user ALL=(root) NOPASSWD: /usr/bin/journalctl *
+EOF
+
+  if [[ -n "$coding_users" ]]; then
+    cat >>"$tmp" <<EOF
+$m_user ALL=($coding_users) NOPASSWD: /usr/bin/systemctl --user *
+$m_user ALL=($coding_users) NOPASSWD: /usr/bin/node $REPO_ROOT/ai/openclaw/skills/*
+EOF
+  fi
+
+  cat >>"$tmp" <<EOF
+# Read-only fs inspection
+$m_user ALL=(root) NOPASSWD: /usr/bin/stat *
+$m_user ALL=(root) NOPASSWD: /usr/bin/ls *
+$m_user ALL=(root) NOPASSWD: /usr/bin/cat /etc/openclaw/*, /usr/bin/cat /etc/agent-dashboard/*, /usr/bin/cat /home/*, /usr/bin/cat /var/lib/ai-monitor/*, /usr/bin/cat /var/log/ai-monitor/*
+EOF
+
+  if "$VISUDO" -c -f "$tmp" >/dev/null 2>&1; then
+    mv -f "$tmp" "$SUDOERS_D/$m_user-openclaw-control"
+    chmod 0440 "$SUDOERS_D/$m_user-openclaw-control"
+  else
+    rm -f "$tmp"
+    die "Generated sudoers file failed validation; aborting monitor sudoers update."
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Full-provisioning helpers (payload-driven).
+#
+# When the PM web layer creates/edits an agent it renders all file *content* in
+# TypeScript and hands us a JSON payload (a temp file path passed as the last
+# positional arg). We — running as root — are the single privileged boundary:
+# we place those files with the correct ownership, wire the per-role doc
+# symlinks to the MAIN checkout ($REPO_ROOT), install the gateway + PM channel,
+# and write the registry entry. Without a payload, `add` keeps its legacy
+# skeleton behaviour so the sandbox test-suite is unaffected.
+# ---------------------------------------------------------------------------
+
+NODE_BIN=$(command -v node || echo /usr/local/bin/node)
+
+validate_role() {
+  [[ "$1" =~ ^(coding|monitor)$ ]] || die "Invalid role (expected coding|monitor): $1"
+}
+
+require_payload() {
+  local pf="$1"
+  [[ -n "$pf" ]] || die "payload file required for full provisioning"
+  [[ -r "$pf" ]] || die "payload file not readable: $pf"
+  jq empty "$pf" >/dev/null 2>&1 || die "payload file is not valid JSON: $pf"
+}
+
+link_doc() {
+  # link_doc <src> <dst> — replace any existing file/symlink at dst.
+  local src="$1" dst="$2"
+  [[ -e "$dst" || -L "$dst" ]] && rm -f "$dst"
+  ln -sf "$src" "$dst"
+}
+
+write_agent_files() {
+  # write_agent_files <user> <payload-file>
+  local user="$1" pf="$2"
+  local home="/home/$user"
+  local runtime="/srv/agents/openclaw/$user"
+
+  mkdir -p "$runtime"
+  jq -r '.files.soul'         "$pf" > "$runtime/SOUL.md"
+  jq -r '.files.identity'     "$pf" > "$runtime/IDENTITY.md"
+  jq -r '.files.tools'        "$pf" > "$runtime/TOOLS.md"
+  jq -r '.files.memory'       "$pf" > "$runtime/MEMORY.md"
+  jq -r '.files.heartbeat'    "$pf" > "$runtime/HEARTBEAT.md"
+  jq -r '.files.openclawJson' "$pf" > "$runtime/openclaw.json"
+
+  # USER.md is the shared single-source symlink, never a generated file.
+  link_doc /srv/agents/openclaw/_shared/USER.md "$runtime/USER.md"
+
+  # Runtime dir is group-owned so the PM web user (code-agents) can read configs.
+  chown -R "$user:$SHARED_GROUP" "$runtime"
+  chmod -R 0770 "$runtime"
+
+  # Per-agent runtime config is single-source in the runtime dir; the home copy
+  # is a symlink (see ai/openclaw/AGENT_FILES.md) so Mission Control and the
+  # gateway runtime share exactly one file.
+  mkdir -p "$home/.openclaw"
+  link_doc "$runtime/openclaw.json" "$home/.openclaw/openclaw.json"
+  chown -h "$user:$user" "$home/.openclaw/openclaw.json"
+}
+
+setup_doc_symlinks() {
+  # setup_doc_symlinks <user> <role> — agent docs point at the MAIN checkout.
+  local user="$1" role="$2"
+  local home="/home/$user"
+  local docs="$REPO_ROOT/ai/openclaw"
+  local ws="$home/workspace"
+  local ows="$home/.openclaw/workspace"
+  mkdir -p "$ws" "$ows"
+
+  link_doc /srv/agents/openclaw/_shared/USER.md "$ws/USER.md"
+  link_doc /srv/agents/openclaw/_shared/USER.md "$ows/USER.md"
+  local d
+  for d in AGENTS ROLES TEAM_WORKFLOW CODE_REPOS; do
+    link_doc "$docs/$d.md" "$ws/$d.md"
+    link_doc "$docs/$d.md" "$ows/$d.md"
+  done
+  if [[ "$role" == "monitor" ]]; then
+    for d in INCIDENT_HANDLING MONITORING SERVICES; do
+      link_doc "$docs/$d.md" "$ows/$d.md"
+    done
+  fi
+  link_doc /srv/Code "$home/Code"
+  chown -h "$user:$user" "$home/Code" 2>/dev/null || true
+  chown -R "$user:$user" "$ws" "$ows" 2>/dev/null || true
+}
+
+install_gateway() {
+  # install_gateway <user> <uid> <port>
+  [[ "${OPENCLAW_SANDBOX_TESTING:-}" == "true" ]] && return 0
+  local user="$1" uid="$2" port="$3"
+  loginctl enable-linger "$user" || true
+  sudo -n -u "$user" env "HOME=/home/$user" "XDG_RUNTIME_DIR=/run/user/$uid" \
+    /usr/local/bin/openclaw gateway install --port "$port"
+}
+
+install_pm_channel() {
+  [[ "${OPENCLAW_SANDBOX_TESTING:-}" == "true" ]] && return 0
+  local user="$1"
+  "$NODE_BIN" "$REPO_ROOT/ai/web/deploy/install-openclaw-pm-channel.mjs" "--agents=$user" --restart
+}
+
+upsert_registry_entry() {
+  # upsert_registry_entry <payload-file> — replace-or-append .entry by .user.
+  local pf="$1"
+  [[ -f "$REGISTRY" ]] || printf '%s\n' '{"version":1,"codeOwner":"zeh","agents":[]}' > "$REGISTRY"
+  local entry euser
+  entry=$(jq -c '.entry' "$pf")
+  [[ "$entry" != "null" && -n "$entry" ]] || die "payload missing .entry"
+  euser=$(jq -r '.entry.user' "$pf")
+  local tmp
+  tmp=$(mktemp /tmp/agents-json.XXXXXX)
+  jq --argjson e "$entry" --arg u "$euser" \
+    '.agents = ((.agents // []) | map(select(.user != $u)) + [$e])' \
+    "$REGISTRY" > "$tmp"
+  mv -f "$tmp" "$REGISTRY"
+}
+
+write_telegram_token() {
+  # write_telegram_token <user> <payload-file>
+  local user="$1" pf="$2"
+  local token
+  token=$(jq -r '.telegramToken // empty' "$pf")
+  [[ -n "$token" ]] || return 0
+  local cfg="/home/$user/.config/openclaw"
+  mkdir -p "$cfg"
+  printf '%s\n' "$token" > "$cfg/telegram-token"
+  # Also expose it as TELEGRAM_BOT_TOKEN for the typing-keepalive sidecar.
+  local env="$cfg/openclaw-secrets.env"
+  touch "$env"
+  if grep -q '^TELEGRAM_BOT_TOKEN=' "$env" 2>/dev/null; then
+    sed -i "s|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=$token|" "$env"
+  else
+    printf 'TELEGRAM_BOT_TOKEN=%s\n' "$token" >> "$env"
+  fi
+  chown -R "$user:$user" "$cfg"
+  chmod 0600 "$cfg/telegram-token" "$env"
+}
+
+provision_maildir() {
+  # provision_maildir <user> <payload-file> — local server-mail (Maildir).
+  # The MTA (Postfix/Dovecot) and the openclaw-mail-listener service are host
+  # prerequisites wired by install.sh; here we just lay down the mailbox.
+  local user="$1" pf="$2"
+  local on
+  on=$(jq -r '.entry.integrations.maildir // false' "$pf")
+  [[ "$on" == "true" ]] || return 0
+  local home="/home/$user"
+  mkdir -p "$home/Maildir/new" "$home/Maildir/cur" "$home/Maildir/tmp" "$home/.openclaw/mail"
+  chown -R "$user:$user" "$home/Maildir" "$home/.openclaw/mail"
+  chmod -R 0700 "$home/Maildir"
+}
+
+cmd="${1:-}"
+case "$cmd" in
+  add)
+    [[ $# -eq 4 || $# -eq 5 ]] || usage
+    user="$2"
+    uid="$3"
+    role="$4"
+    payload="${5:-}"
+
+    validate_username "$user"
+    validate_uid "$uid"
+    validate_role "$role"
+    
+    # 0. Check group and UID conflict
+    getent group "$SHARED_GROUP" >/dev/null || groupadd -r "$SHARED_GROUP" || groupadd "$SHARED_GROUP"
+    
+    if getent passwd "$uid" >/dev/null; then
+      existing_user=$(getent passwd "$uid" | cut -d: -f1)
+      [[ "$existing_user" == "$user" ]] || die "UID $uid is already taken by user $existing_user"
+    fi
+    
+    # 1. Create Linux group and user
+    if getent group "$user" >/dev/null 2>&1; then
+      echo "Group $user already exists, skipping groupadd" >&2
+    else
+      groupadd -g "$uid" "$user"
+    fi
+    
+    if id "$user" >/dev/null 2>&1; then
+      echo "User $user already exists, skipping useradd" >&2
+    else
+      useradd -u "$uid" -g "$user" -m -s /bin/bash -G "$SHARED_GROUP" "$user"
+      passwd -l "$user"
+    fi
+    
+    # 2. Home directories
+    mkdir -p "/home/$user/workspace" "/home/$user/.openclaw/workspace"
+    chown -R "$user:$user" "/home/$user/workspace" "/home/$user/.openclaw"
+    
+    # 3. Samba folders
+    mkdir -p "$SAMBA_SHARED_ROOT/$user"
+    chown "$user:$user" "$SAMBA_SHARED_ROOT/$user"
+    chmod 0700 "$SAMBA_SHARED_ROOT/$user"
+    ln -sf "$SAMBA_SHARED_ROOT/$user" "/home/$user/Shared"
+    chown -h "$user:$user" "/home/$user/Shared"
+    
+    # 4. Password sync queues
+    mkdir -p "$SAMBA_PASSWORD_SYNC_DIR"
+    chown root:root "$SAMBA_PASSWORD_SYNC_DIR"
+    chmod 0711 "$SAMBA_PASSWORD_SYNC_DIR"
+    
+    mkdir -p "$SAMBA_PASSWORD_SYNC_DIR/$user"
+    chown "$user:$user" "$SAMBA_PASSWORD_SYNC_DIR/$user"
+    chmod 0700 "$SAMBA_PASSWORD_SYNC_DIR/$user"
+    
+    # 5. Sudoers rule fragment (self-wake)
+    tmp_agent_sudo=$(mktemp /tmp/openclaw-agent-sudo.XXXXXX)
+    cat >"$tmp_agent_sudo" <<EOF
+# Allow $user to wake themselves
+$user ALL=(root) NOPASSWD: /usr/local/sbin/openclaw-control wake-agent $user *
+EOF
+    if "$VISUDO" -c -f "$tmp_agent_sudo" >/dev/null 2>&1; then
+      mv -f "$tmp_agent_sudo" "$SUDOERS_D/openclaw-wake-$user"
+      chmod 0440 "$SUDOERS_D/openclaw-wake-$user"
+    else
+      rm -f "$tmp_agent_sudo"
+      echo "Warning: agent sudoers validation failed; skipping $SUDOERS_D/openclaw-wake-$user creation" >&2
+    fi
+    
+    if [[ -n "$payload" ]]; then
+      # Full provisioning: render-on-disk files, docs, registry, gateway, PM channel.
+      require_payload "$payload"
+      p_user=$(jq -r '.entry.user' "$payload")
+      p_uid=$(jq -r '.entry.uid' "$payload")
+      [[ "$p_user" == "$user" ]] || die "payload .entry.user ($p_user) does not match $user"
+      [[ "$p_uid" == "$uid" ]]   || die "payload .entry.uid ($p_uid) does not match $uid"
+
+      write_agent_files "$user" "$payload"
+      setup_doc_symlinks "$user" "$role"
+      upsert_registry_entry "$payload"
+      write_telegram_token "$user" "$payload"
+      provision_maildir "$user" "$payload"
+
+      reconcile_gateway_hooks "$user"
+
+      gateway_port=$(jq -r '.gatewayPort // empty' "$payload")
+      [[ -n "$gateway_port" ]] && install_gateway "$user" "$uid" "$gateway_port"
+      install_pm_channel "$user"
+      # NOTE: the global install.sh reconcile is intentionally NOT run here — it
+      # restarts pm.service, which would kill the web request awaiting this job
+      # (and is far too heavy for one agent). Per-agent integration systemd
+      # services are reconciled out-of-band by an admin `install.sh` run.
+    else
+      # 5.5 Legacy skeleton registry add (no payload — used by the sandbox tests).
+      if [[ -f "$REGISTRY" ]]; then
+        if ! jq --arg u "$user" '.agents[] | select(.user == $u) | .user' "$REGISTRY" 2>/dev/null | grep -q "$user"; then
+          new_agent_json=$(jq -n \
+            --arg u "$user" \
+            --argjson uid "$uid" \
+            --arg r "$role" \
+            '{user: $u, uid: $uid, enabled: true, role: $r}')
+          tmp_reg=$(mktemp /tmp/agents-json.XXXXXX)
+          jq --argjson new_agent "$new_agent_json" '.agents += [$new_agent]' "$REGISTRY" > "$tmp_reg"
+          mv -f "$tmp_reg" "$REGISTRY"
+        fi
+      fi
+    fi
+
+    # 6. Regenerate monitor sudoers
+    regenerate_monitor_sudoers
+    ;;
+
+  update)
+    # Re-render files + registry for an existing agent (edit, incl. role change).
+    [[ $# -eq 3 ]] || usage
+    user="$2"
+    payload="$3"
+
+    validate_username "$user"
+    id "$user" >/dev/null 2>&1 || die "user does not exist: $user"
+    require_payload "$payload"
+
+    role=$(jq -r '.entry.role' "$payload")
+    validate_role "$role"
+    uid=$(id -u "$user")
+
+    write_agent_files "$user" "$payload"
+    setup_doc_symlinks "$user" "$role"
+    upsert_registry_entry "$payload"
+    write_telegram_token "$user" "$payload"
+    provision_maildir "$user" "$payload"
+
+    reconcile_gateway_hooks "$user"
+    install_pm_channel "$user"
+
+    if [[ "$(jq -r '.reinstallGateway // false' "$payload")" == "true" ]]; then
+      gateway_port=$(jq -r '.gatewayPort // empty' "$payload")
+      [[ -n "$gateway_port" ]] && install_gateway "$user" "$uid" "$gateway_port"
+    fi
+    # A model/provider/profile edit needs no PM-channel reinstall or global
+    # reconcile — rewriting files + registry + sudoers is sufficient. install.sh
+    # is deliberately NOT run here (it would restart pm.service mid-request).
+    regenerate_monitor_sudoers
+    ;;
+
+  delete)
+    [[ $# -eq 2 ]] || usage
+    user="$2"
+    validate_username "$user"
+    
+    # Safe deprovisioning boundary check
+    if id -u "$user" >/dev/null 2>&1; then
+      target_uid=$(id -u "$user")
+      if [ "$target_uid" -lt 1001 ]; then
+        echo "Error: Cannot delete system user '$user' with UID $target_uid (< 1001)." >&2
+        exit 1
+      fi
+    fi
+    
+    # 1. Terminate user services and lingering
+    loginctl disable-linger "$user" || true
+    loginctl terminate-user "$user" || true
+    pkill -u "$user" || true
+    sleep 1
+    
+    # 2. Delete Linux user and group
+    if id "$user" >/dev/null 2>&1; then
+      userdel -r "$user" || true
+    fi
+    if getent group "$user" >/dev/null 2>&1; then
+      groupdel "$user" 2>/dev/null || true
+    fi
+    
+    # 3. Clean directories
+    rm -rf "$SAMBA_SHARED_ROOT/$user"
+    rm -rf "$SAMBA_PASSWORD_SYNC_DIR/$user"
+    rm -rf "/srv/agents/openclaw/$user"
+    
+    # 4. Remove agent sudoers rule
+    rm -f "$SUDOERS_D/openclaw-wake-$user"
+    
+    # Remove from registry JSON if present
+    if [[ -f "$REGISTRY" ]]; then
+      tmp_reg=$(mktemp /tmp/agents-json.XXXXXX)
+      jq --arg u "$user" 'del(.agents[] | select(.user == $u))' "$REGISTRY" > "$tmp_reg"
+      mv -f "$tmp_reg" "$REGISTRY"
+    fi
+
+    # 5. Regenerate monitor sudoers (purges the deleted user). A global
+    # install.sh reconcile is NOT run here — it would restart pm.service.
+    regenerate_monitor_sudoers
+    ;;
+
+  *)
+    usage
+    ;;
+esac

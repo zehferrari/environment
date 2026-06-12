@@ -1,0 +1,25 @@
+[Unit]
+Description=OpenClaw agent provisioning runner (monitor-driven, deterministic)
+Documentation=https://zeh-ferrari.atlassian.net/browse/HOMELAB-41
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as the monitor agent's *system* identity (not the LLM). Deliberately NOT
+# NoNewPrivileges: it must `sudo -n openclaw-manage-user` — the single privileged
+# step — allowed by /etc/sudoers.d/<monitor>-openclaw-control. Decoupled from
+# pm.service (which is NoNewPrivileges and cannot sudo). install.sh substitutes
+# __MONITOR_USER__ from the registry's enabled monitor agent.
+User=__MONITOR_USER__
+Group=code-agents
+Environment=HOME=/home/__MONITOR_USER__
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PM_AGENT_PROVISION_DIR=/var/lib/pm/agent-provision
+Environment=MANAGE_USER_BIN=/usr/local/sbin/openclaw-manage-user
+ExecStart=/usr/local/sbin/openclaw-agent-runner
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

@@ -6,7 +6,7 @@ import { chmod, chown, copyFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-const DEFAULT_AGENTS = ["asdrubal", "barekbaal", "karen"];
+const DEFAULT_AGENTS = ["asdrubal", "barekbaal", "karen", "carmen"];
 const DEFAULT_AGENT_ROOT = "/srv/agents/openclaw";
 const DEFAULT_REGISTRY = "/etc/openclaw/agents.json";
 const DEFAULT_TOKEN_FILE = "/etc/openclaw/pm-channel-tokens.json";

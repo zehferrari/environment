@@ -7,7 +7,6 @@ import { readAgentIndex } from "@/lib/agents/index-loader";
 
 export const PROFILE_FILES = [
   "SOUL.md",
-  "USER.md",
   "MEMORY.md",
   "IDENTITY.md",
   "TOOLS.md",

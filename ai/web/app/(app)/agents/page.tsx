@@ -5,6 +5,9 @@ import { describeActivity } from "@/lib/activity";
 import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel-latency";
 import { MessageAvatar, MessageTimestamp, type MessageActor } from "@/components/message-avatar";
 import AgentServiceControls, { type AgentService } from "./agent-service-controls";
+import fs from "fs/promises";
+import path from "path";
+import AgentManagementControls, { EditAgentButton } from "./agent-management-controls";
 
 export const dynamic = "force-dynamic";
 
@@ -149,10 +152,23 @@ function ringFor(status: string) {
   return { ring: "#94a3b8", bg: "rgba(148,163,184,0.16)", label: status };
 }
 
+// Avatar treatment matching the sidebar: stale/offline render grayscale, busy
+// agents get a discrete pulse ring; live/idle stay in full colour.
+function avatarTone(status: string): { grayscale: boolean; pulse: boolean } {
+  return { grayscale: status === "stale" || status === "offline", pulse: status === "busy" };
+}
+
+function shortModel(ref?: string | null) {
+  if (!ref) return "model unknown";
+  const id = ref.includes("/") ? ref.slice(ref.indexOf("/") + 1) : ref;
+  return id.replace(/^claude-/, "").replace(/:cloud$/, "");
+}
+
 function accentFor(slug: string) {
   if (slug === "barekbaal") return "#0a7c66";
   if (slug === "asdrubal") return "#4f63ff";
   if (slug === "karen") return "#b34dd2";
+  if (slug === "carmen") return "#ea580c";
   return "#6b7280";
 }
 
@@ -188,6 +204,34 @@ function lastActivityLabel(live?: SnapshotAgent | null) {
   if (!first) return last.role ? `${last.role} activity` : "activity captured";
   const prefix = first.name || first.kind || last.role || "activity";
   return first.preview ? `${prefix}: ${first.preview}` : prefix;
+}
+
+type SelectedModel = { provider: string; id: string; name?: string };
+type AgentModelConfig = {
+  default_model: string;
+  fallback_models: string[];
+  selected_models: SelectedModel[];
+};
+
+async function getModelConfig(slug: string): Promise<AgentModelConfig> {
+  const empty: AgentModelConfig = { default_model: "", fallback_models: [], selected_models: [] };
+  try {
+    const content = await fs.readFile(`/srv/agents/openclaw/${slug}/openclaw.json`, "utf8");
+    const json = JSON.parse(content);
+    const model = json.agents?.defaults?.model;
+    const primary = typeof model === "string" ? model : model?.primary || "";
+    const fallbacks = Array.isArray(model?.fallbacks) ? (model.fallbacks as string[]) : [];
+    const providers = json.models?.providers ?? {};
+    const selected: SelectedModel[] = [];
+    for (const [provider, block] of Object.entries(providers) as [string, any][]) {
+      for (const m of block?.models ?? []) {
+        if (m?.id) selected.push({ provider, id: m.id, name: m.name || m.id });
+      }
+    }
+    return { default_model: primary, fallback_models: fallbacks, selected_models: selected };
+  } catch {
+    return empty;
+  }
 }
 
 export default async function AgentsPage() {
@@ -247,6 +291,21 @@ export default async function AgentsPage() {
   const system = snapshot?.system ?? {};
   const monitor = snapshot?.monitor ?? null;
   const rawAgentJsons = agents.map((agent) => agent.rawJson);
+  const clientAgents = await Promise.all(
+    agents.map(async (a) => {
+      const raw = (a.rawJson || {}) as any;
+      const modelConfig = await getModelConfig(a.slug);
+      return {
+        slug: a.slug,
+        name: a.name,
+        role: a.role,
+        email: a.email,
+        telegram: raw.telegram || null,
+        integrations: raw.integrations || null,
+        model_config: modelConfig,
+      };
+    })
+  );
   const effectiveConfigs = new Map(
     await Promise.all(
       agents.map(async (agent) => [agent.slug, await resolveEffectiveAgentConfig(agent.rawJson, rawAgentJsons)] as const),
@@ -290,8 +349,9 @@ export default async function AgentsPage() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
+        <div className="flex items-center gap-3">
           <h1 className="text-3xl font-semibold tracking-tight">Agents</h1>
+          <AgentManagementControls agents={clientAgents} />
         </div>
         <Link
           href="/system/activity"
@@ -339,101 +399,81 @@ export default async function AgentsPage() {
               name,
               status: system[`${a.slug}/${name}`]?.is_active ?? system[name]?.is_active ?? null,
             }));
+            const activeSvc = agentServices.filter((svc) => svc.status === "active").length;
+            const tone = avatarTone(status);
+            const ticketStatus = liveTask?.ticket
+              ? `${liveTask.ticket} · ${liveTask.status ?? "—"}`
+              : liveTask?.status
+                ? liveTask.status
+                : pmTask
+                  ? `${pmTask.project.slug} · ${pmTask.status}`
+                  : "—";
             return (
               <article
                 key={a.id}
-                className="group relative overflow-hidden rounded-[18px] border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-[var(--color-accent)] hover:shadow-md"
+                className="group relative overflow-hidden rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm transition hover:border-[var(--color-accent)] hover:shadow-md"
                 style={{ "--agent-hue": accentFor(a.slug) } as React.CSSProperties}
               >
-                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_0%_0%,color-mix(in_srgb,var(--agent-hue)_18%,transparent),transparent_45%)]" />
-                <div className="relative grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-4">
+                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_0%_0%,color-mix(in_srgb,var(--agent-hue)_14%,transparent),transparent_42%)]" />
+
+                <div className="relative flex items-start gap-3">
                   <div className="relative shrink-0">
-                    {/* Discreet status ring; busy agents pulse gently (opacity
-                        only) to mirror the sidebar busy treatment. */}
+                    {tone.pulse && (
+                      <span className="absolute -inset-1 animate-pulse rounded-[20px] border-2" style={{ borderColor: ring.ring }} aria-hidden="true" />
+                    )}
                     <div
-                      className={`absolute -inset-1 rounded-[22px] ${status === "busy" ? "animate-pulse" : ""}`}
-                      style={{ border: `2px solid ${ring.ring}`, background: ring.bg, boxShadow: `0 0 0 2px ${ring.bg}` }}
-                      aria-hidden="true"
-                    />
-                    <div className="relative grid h-16 w-16 place-items-center overflow-hidden rounded-2xl border bg-[var(--color-panel-soft)] text-2xl font-semibold" style={{ borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))" }}>
+                      className={`relative grid h-14 w-14 place-items-center overflow-hidden rounded-2xl border bg-[var(--color-panel-soft)] text-xl font-semibold ${tone.grayscale ? "opacity-80 grayscale" : ""}`}
+                      style={{ borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))" }}
+                    >
                       {avatarSrc ? (
                         <img src={avatarSrc} alt={`${a.name} avatar`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
                       ) : live?.avatar_url ? (
                         <img src={live.avatar_url} alt={`${a.name} avatar`} className="h-full w-full object-cover" />
                       ) : (live?.avatar ?? a.name.slice(0, 1))}
                     </div>
-                    <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide" style={{ color: ring.ring }}>{ring.label}</span>
+                    <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide" style={{ color: ring.ring }}>{status}</span>
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <h2 className="truncate text-xl font-semibold tracking-tight">{a.name}</h2>
-                      <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: ring.ring }} />
+                      <h2 className="truncate text-lg font-semibold tracking-tight">{a.name}</h2>
+                      <EditAgentButton slug={a.slug} />
                     </div>
                     <p className="font-mono text-xs text-[var(--color-text-muted)]">@{a.slug} · {a.role}</p>
-                    <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                      <span className="rounded-full bg-[var(--color-accent-soft)] px-2 py-0.5 text-[var(--color-accent)]">{status}</span>
-                      <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">idle {formatIdle(live?.session_idle_s)}</span>
-                      <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">port {(live?.gateway_listeners ?? [a.gatewayPort]).filter(Boolean).join(", ") || "—"}</span>
-                      <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">{tickets.length} tickets</span>
-                      <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">{pendingRuns.length} PM turns</span>
-                    </div>
-                  </div>
-                  <div className="grid h-16 w-16 place-items-center rounded-2xl border border-[var(--color-line)] bg-[var(--color-bg)]">
-                    <div className="text-center">
-                      <div className="text-2xl font-semibold" style={{ color: ring.ring }}>
-                        {agentServices.filter((svc) => svc.status === "active").length}
-                      </div>
-                      <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">svc</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="relative mt-5 space-y-3 text-sm">
-                  <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Services</div>
-                      <Link
-                        href={`/agents/${a.slug}`}
-                        className="text-[11px] font-medium text-[var(--color-accent)] hover:underline"
-                      >
-                        Deck
-                      </Link>
-                    </div>
-                    <AgentServiceControls agent={a.slug} services={agentServices} />
-                  </div>
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-3 gap-2">
-                      <CockpitStat label="Signals" value={signalLabel(live)} tone={live?.busy_state?.is_busy ? "warn" : "ok"} />
+                    <div className="mt-2 grid grid-cols-3 gap-2">
                       <CockpitStat label="Idle" value={formatIdle(live?.session_idle_s)} />
-                      <CockpitStat label="Port" value={(live?.gateway_listeners ?? [a.gatewayPort]).filter(Boolean).join(", ") || "—"} />
+                      <CockpitStat label="Model" value={shortModel(live?.model_primary)} tone={live?.busy_state?.is_busy ? "warn" : undefined} />
+                      <CockpitStat label="Services" value={`${activeSvc}/${agentServices.length || 0}`} />
                     </div>
-                    <Metric label="Current task" value={liveTask?.heading ?? pmTask?.title ?? "No active task pinned"} />
-                    <Metric label="Ticket/status" value={liveTask?.ticket ? `${liveTask.ticket} · ${liveTask.status ?? "—"}` : pmTask ? `${pmTask.project.slug} · ${pmTask.status}` : "—"} />
-                    <Metric label="Model" value={live?.model_primary ?? "model unknown"} />
-                    <Metric
-                      label="PM channel"
-                      value={newestPmRun
-                        ? `${newestPmRun.kind} ${newestPmRun.status} · ${formatAge(newestPmRun.updatedAt)}`
-                        : "no PM channel turns"}
-                    />
-                    <Metric
-                      label="PM latency"
-                      value={newestPmLatency
-                        ? `send→accepted ${formatLatency(newestPmLatency.sendToAcceptedMs)} · accepted→first ${formatLatency(newestPmLatency.acceptedToFirstTokenMs)} · first→final ${formatLatency(newestPmLatency.firstTokenToFinalMs)}`
-                        : "no spans recorded"}
-                    />
-                    <Metric label="Last action" value={lastActivityLabel(live)} />
-                    <Metric label="PM user" value={a.user ? `${a.user.username} · ${a.user.status}` : "not seeded"} />
                   </div>
                 </div>
 
-                <div className="relative mt-4 flex flex-wrap items-center gap-2 text-xs font-medium">
-                  <Link href={`/agents/${a.slug}`} className="text-[var(--color-text-muted)] hover:text-[var(--color-accent)] hover:underline">
-                    Open mission deck →
-                  </Link>
-                  <Link href={`/agents/${a.slug}/chat`} className="text-[var(--color-text-muted)] hover:text-[var(--color-accent)] hover:underline">
-                    Chat →
-                  </Link>
+                <div className="relative mt-3 space-y-2 text-sm">
+                  <Metric label="Current task" value={liveTask?.heading ?? pmTask?.title ?? "No active task"} />
+                  <Metric label="Ticket / status" value={ticketStatus} />
+                  <Metric label="Last action" value={lastActivityLabel(live)} />
+                </div>
+
+                <div className="relative mt-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-2.5">
+                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Services</span>
+                    <Link href={`/agents/${a.slug}`} className="text-[10px] font-medium text-[var(--color-accent)] hover:underline">Deck →</Link>
+                  </div>
+                  <AgentServiceControls agent={a.slug} services={agentServices} />
+                </div>
+
+                <div className="relative mt-3 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5 text-[var(--color-text-muted)]">{tickets.length} tickets</span>
+                  <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5 text-[var(--color-text-muted)]">{pendingRuns.length} PM turns</span>
+                  {newestPmRun ? (
+                    <span
+                      className="rounded-full border border-[var(--color-line)] px-2 py-0.5 text-[var(--color-text-muted)]"
+                      title={newestPmLatency ? `send→accepted ${formatLatency(newestPmLatency.sendToAcceptedMs)} · accepted→first ${formatLatency(newestPmLatency.acceptedToFirstTokenMs)} · first→final ${formatLatency(newestPmLatency.firstTokenToFinalMs)}` : undefined}
+                    >
+                      pm {newestPmRun.status} · {formatAge(newestPmRun.updatedAt)}
+                    </span>
+                  ) : null}
+                  <span className="flex-1" />
+                  <Link href={`/agents/${a.slug}/chat`} className="font-medium text-[var(--color-text-muted)] hover:text-[var(--color-accent)] hover:underline">Chat →</Link>
                 </div>
               </article>
             );

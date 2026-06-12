@@ -60,6 +60,9 @@ export type ActivityKind =
   | "agent.service.restart_failed"
   | "agent.registry.toggle"
   | "agent.registry.toggle_failed"
+  | "agent.registry.add"
+  | "agent.registry.edit"
+  | "agent.registry.remove"
   | "agent.integration.credentials"
   | "agent.integration.credentials_failed"
   | "agent.model.update"
@@ -405,6 +408,18 @@ export function describeActivity(row: ActivityRow): string {
       const base = `${actor(row.actorName)} ${verb} ${p?.kind ?? "setting"}.${p?.key ?? "unknown"} for ${targetAgent(row)}`;
       return row.kind.endsWith("_failed") ? `${base} failed${p?.error ? `: ${p.error}` : ""}` : base;
     }
+    case "agent.registry.add": {
+      const p = parsePayload<{ uid?: number; role?: string }>(row.payload);
+      const suffix = p?.role ? ` (${p.role}${p?.uid ? `, uid ${p.uid}` : ""})` : "";
+      return `${actor(row.actorName)} created agent ${targetAgent(row)}${suffix}`;
+    }
+    case "agent.registry.edit": {
+      const p = parsePayload<{ roleChanged?: boolean; role?: string }>(row.payload);
+      const suffix = p?.roleChanged && p?.role ? ` → ${p.role}` : "";
+      return `${actor(row.actorName)} edited agent ${targetAgent(row)}${suffix}`;
+    }
+    case "agent.registry.remove":
+      return `${actor(row.actorName)} removed agent ${targetAgent(row)}`;
     case "agent.integration.credentials":
     case "agent.integration.credentials_failed": {
       const p = parsePayload<{ integration?: string; fields?: string[]; error?: string | null }>(row.payload);

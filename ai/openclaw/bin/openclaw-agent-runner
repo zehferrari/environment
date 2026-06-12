@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""openclaw-agent-runner — monitor-driven agent provisioning runner.
+
+pm.service (the PM web app) runs `NoNewPrivileges=true` and therefore cannot
+sudo. It only drops a request JSON into the spool dir; THIS runner — the monitor
+agent's *system* identity, running `NoNewPrivileges=no` with karen's existing
+NOPASSWD grant for `openclaw-manage-user` — picks it up, runs the privileged
+provisioning command, and writes a result JSON the web app polls for.
+
+It is a deterministic executor: the monitor LLM is NOT in the loop. The only
+command it ever runs is `openclaw-manage-user` (the single privileged boundary).
+
+Spool (PM_AGENT_PROVISION_DIR, default /var/lib/pm/agent-provision):
+  <id>.req.json  — written by the web app: {id, args:[...], payload:{}|null, requestedAt}
+  <id>.res.json  — written here:           {id, ok, exitCode, error, finishedAt}
+"""
+import datetime
+import json
+import os
+import re
+import subprocess
+import tempfile
+import time
+
+SPOOL = os.environ.get("PM_AGENT_PROVISION_DIR", "/var/lib/pm/agent-provision")
+MANAGE_BIN = os.environ.get("MANAGE_USER_BIN", "/usr/local/sbin/openclaw-manage-user")
+POLL = float(os.environ.get("PM_AGENT_PROVISION_POLL_SECONDS", "1"))
+RESULT_TTL = float(os.environ.get("PM_AGENT_PROVISION_RESULT_TTL", "3600"))
+CMD_TIMEOUT = float(os.environ.get("PM_AGENT_PROVISION_CMD_TIMEOUT", "600"))
+
+ALLOWED_OPS = {"add", "update", "delete"}
+USER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def write_json_atomic(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f)
+    os.replace(tmp, path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def validate(args):
+    """Defence in depth — the helper validates again, but never run anything weird."""
+    if not args or args[0] not in ALLOWED_OPS:
+        return "invalid or missing op"
+    if len(args) < 2 or not USER_RE.match(str(args[1])):
+        return "invalid or missing username"
+    if args[0] == "add":
+        if len(args) < 4:
+            return "add requires <user> <uid> <role>"
+        if not re.match(r"^[0-9]+$", str(args[2])):
+            return "invalid uid"
+        if args[3] not in ("coding", "monitor"):
+            return "invalid role"
+    return None
+
+
+def run_job(req):
+    rid = req.get("id")
+    args = req.get("args") or []
+    err = validate(args)
+    if err:
+        return {"id": rid, "ok": False, "exitCode": None, "error": err, "finishedAt": now()}
+
+    payload = req.get("payload")
+    payload_path = None
+    try:
+        cmd = ["sudo", "-n", MANAGE_BIN] + [str(a) for a in args]
+        if payload is not None:
+            fd, payload_path = tempfile.mkstemp(prefix="agent-provision-", suffix=".json", dir=SPOOL)
+            with os.fdopen(fd, "w") as f:
+                json.dump(payload, f)
+            os.chmod(payload_path, 0o600)
+            cmd.append(payload_path)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=CMD_TIMEOUT)
+        if proc.returncode == 0:
+            return {"id": rid, "ok": True, "exitCode": 0, "error": None, "finishedAt": now()}
+        stderr = (proc.stderr or "").strip().splitlines()
+        tail = "\n".join(stderr[-12:]) if stderr else (proc.stdout or "").strip()[-800:]
+        return {"id": rid, "ok": False, "exitCode": proc.returncode,
+                "error": tail or f"exit {proc.returncode}", "finishedAt": now()}
+    except subprocess.TimeoutExpired:
+        return {"id": rid, "ok": False, "exitCode": None, "error": "provisioning timed out", "finishedAt": now()}
+    except Exception as e:  # noqa: BLE001 — surface any failure as a result
+        return {"id": rid, "ok": False, "exitCode": None, "error": str(e), "finishedAt": now()}
+    finally:
+        if payload_path:
+            try:
+                os.unlink(payload_path)
+            except OSError:
+                pass
+
+
+def gc_results():
+    cutoff = time.time() - RESULT_TTL
+    for name in os.listdir(SPOOL):
+        if name.endswith(".res.json"):
+            p = os.path.join(SPOOL, name)
+            try:
+                if os.path.getmtime(p) < cutoff:
+                    os.unlink(p)
+            except OSError:
+                pass
+
+
+def main():
+    os.makedirs(SPOOL, exist_ok=True)
+    while True:
+        try:
+            for name in sorted(os.listdir(SPOOL)):
+                if not name.endswith(".req.json"):
+                    continue
+                rid = name[: -len(".req.json")]
+                req_path = os.path.join(SPOOL, name)
+                res_path = os.path.join(SPOOL, rid + ".res.json")
+                if os.path.exists(res_path):
+                    continue
+                try:
+                    with open(req_path) as f:
+                        req = json.load(f)
+                except Exception:
+                    write_json_atomic(res_path, {"id": rid, "ok": False,
+                                                 "error": "unreadable request", "finishedAt": now()})
+                    continue
+                res = run_job(req)
+                write_json_atomic(res_path, res)
+                try:
+                    os.unlink(req_path)
+                except OSError:
+                    pass
+            gc_results()
+        except Exception:
+            pass
+        time.sleep(POLL)
+
+
+if __name__ == "__main__":
+    main()

@@ -90,15 +90,13 @@ export default function ChatMessagesContainer({
     setLiveMessages(messages);
   }, [messages]);
 
-  // Once the server persists a message matching an optimistic echo, drop the
-  // echo so it does not duplicate the real bubble.
+  // Once the server persists a message whose id matches an optimistic echo's
+  // clientId (the client supplies the id), drop the echo so it does not
+  // duplicate the real bubble. Matching by id is exact — no body-text fragility.
   useEffect(() => {
     if (viewingArchive) return;
-    const userBodies = liveMessages
-      .filter((m) => m.sender.kind !== "agent" && (!currentUserId || m.sender.id === currentUserId))
-      .map((m) => m.body);
-    reconcileAgainst(userBodies);
-  }, [liveMessages, viewingArchive, currentUserId, reconcileAgainst]);
+    reconcileAgainst(liveMessages.map((m) => m.id));
+  }, [liveMessages, viewingArchive, reconcileAgainst]);
 
   const prependedMessages = useMemo(() => {
     const result: Message[] = [];
@@ -390,7 +388,7 @@ export default function ChatMessagesContainer({
       )}
       {!viewingArchive && optimistic.map((m) => (
         <ChatBubble
-          key={m.clientId}
+          key={`optimistic-${m.clientId}`}
           message={{ id: m.clientId, body: m.body, createdAt: m.createdAt, sender: optimisticActor }}
           currentUserId={currentUserId}
           participantIndex={0}

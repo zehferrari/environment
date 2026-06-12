@@ -29,8 +29,9 @@ interface DirectChatOptimisticValue {
   addOptimistic: (clientId: string, body: string) => void;
   markFailed: (clientId: string) => void;
   removeOptimistic: (clientId: string) => void;
-  // Drop optimistic echoes that the server has now persisted (matched by body).
-  reconcileAgainst: (serverUserBodies: string[]) => void;
+  // Drop optimistic echoes the server has now persisted (matched by message id,
+  // since the client supplies the id used for both the echo and the server row).
+  reconcileAgainst: (serverMessageIds: string[]) => void;
   resend: (clientId: string) => void;
 }
 
@@ -97,13 +98,12 @@ export default function DirectChatOptimisticProvider({
     }
   }, []);
 
-  const reconcileAgainst = useCallback((serverUserBodies: string[]) => {
+  const reconcileAgainst = useCallback((serverMessageIds: string[]) => {
+    const idSet = new Set(serverMessageIds);
     setOptimistic((prev) =>
       prev.filter((m) => {
         if (m.status === "failed") return true; // keep failed bubbles until resolved
-        const settled = serverUserBodies.some(
-          (body) => body === m.body || body.startsWith(m.body),
-        );
+        const settled = idSet.has(m.clientId);
         if (settled) {
           const timer = timers.current.get(m.clientId);
           if (timer) {
@@ -127,6 +127,7 @@ export default function DirectChatOptimisticProvider({
     const formData = new FormData();
     formData.set("agentSlug", agentSlug);
     formData.set("body", target.body);
+    formData.set("clientMessageId", clientId); // reconcile by id + idempotent resend
     if (baseArchiveId) formData.set("baseArchiveId", baseArchiveId);
     void sendDirectAgentMessage(formData).catch(() => markFailed(clientId));
   }, [agentSlug, baseArchiveId, markFailed, optimistic, removeOptimistic]);
