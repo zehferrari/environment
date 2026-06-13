@@ -435,6 +435,18 @@ export function describeActivity(row: ActivityRow): string {
     }
     case "agent.profile.update":
       return `${actor(row.actorName)} updated ${targetAgent(row)} profile${row.targetFile ? ` (${row.targetFile})` : ""}`;
+    case "agent.profile.image_update":
+      return `${actor(row.actorName)} uploaded ${targetAgent(row)} image${row.targetFile ? ` (${row.targetFile})` : ""}`;
+    case "agent.profile.image_remove":
+      return `${actor(row.actorName)} removed ${targetAgent(row)} image${row.targetFile ? ` (${row.targetFile})` : ""}`;
+    case "agent.profile.image_request": {
+      const p = parsePayload<{ generatorAgent?: string; theme?: string }>(row.payload);
+      return `${actor(row.actorName)} requested profile images for ${targetAgent(row)}${p?.generatorAgent ? ` from @${p.generatorAgent}` : ""}${p?.theme ? ` (${p.theme})` : ""}`;
+    }
+    case "agent.profile.image_request_failed": {
+      const p = parsePayload<{ reason?: string; error?: string; theme?: string }>(row.payload);
+      return `${actor(row.actorName)} profile image request for ${targetAgent(row)} failed${p?.reason || p?.error ? `: ${p.reason ?? p.error}` : ""}`;
+    }
     case "agent.restart.requested":
     case "agent.restart.failed": {
       const p = parsePayload<{ reason?: string; services?: Array<{ service?: string; ok?: boolean }> }>(row.payload);

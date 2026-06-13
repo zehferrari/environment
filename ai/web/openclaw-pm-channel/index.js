@@ -110,7 +110,6 @@ function listPmAccountIds(cfg) {
 }
 
 function safeJsonParse(value) {
-  activeTurns.set(sessionKey, { acceptedId, agentId, accountId: account.accountId });
   try {
     return JSON.parse(value);
   } catch {

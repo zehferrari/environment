@@ -122,6 +122,7 @@ do_install 755 "$REPO_ROOT/bin/openclaw-control"          /usr/local/sbin/opencl
 do_install 755 "$REPO_ROOT/bin/openclaw-manage-user"     /usr/local/sbin/openclaw-manage-user
 do_install 755 "$REPO_ROOT/bin/openclaw-agent-runner"    /usr/local/sbin/openclaw-agent-runner
 do_install 755 "$REPO_ROOT/bin/pm-workflow-nudge"         /usr/local/sbin/pm-workflow-nudge
+do_install 755 "$REPO_ROOT/bin/pm-self-assignment-guard" /usr/local/sbin/pm-self-assignment-guard
 do_install 755 "$REPO_ROOT/bin/openclaw-patch-session-fence" /usr/local/sbin/openclaw-patch-session-fence
 do_install 755 "$REPO_ROOT/bin/agent-dashboard"           /usr/local/bin/agent-dashboard
 do_install 755 "$REPO_ROOT/bin/openclaw-monitor-sync"     /usr/local/sbin/openclaw-monitor-sync
@@ -630,7 +631,8 @@ else
                     })
                     | .gateway.auth = ((.gateway.auth // {}) + {
                         trustedProxy: ((.gateway.auth.trustedProxy // {}) + {
-                            allowLoopback: true
+                            allowLoopback: true,
+                            userHeader: ((.gateway.auth.trustedProxy.userHeader) // "x-forwarded-user")
                         })
                     })
                     | .hooks = ((.hooks // {}) + {
@@ -746,7 +748,7 @@ else
                 -e "s|^EnvironmentFile=.*|EnvironmentFile=$PM_ENV_FILE|" \
                 -e "s|^Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=.*|Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=$PM_OPENCLAW_CHANNEL_TOKEN_FILE|" \
                 -e "s|^ExecStart=.*|ExecStart=$PM_NODE_BIN server.js|" \
-                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_WEB_ROOT/.data $PM_AGENT_CREDENTIALS_DIR $PM_DROP_DIR /srv/agents/openclaw -$PM_ATTACHMENT_ROOT -$PM_SAMBA_SHARED_ROOT|" \
+                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_WEB_ROOT/.data $PM_AGENT_CREDENTIALS_DIR $PM_DROP_DIR /srv/agents/openclaw /srv/agents/Pictures -$PM_ATTACHMENT_ROOT -$PM_SAMBA_SHARED_ROOT|" \
                 -e "s|^ReadOnlyPaths=.*|ReadOnlyPaths=/srv/agents $PM_OPENCLAW_CHANNEL_TOKEN_FILE|" \
                 "$pm_unit_src" > "$tmp_unit"
             install -o root -g root -m 0644 "$tmp_unit" /etc/systemd/system/pm.service

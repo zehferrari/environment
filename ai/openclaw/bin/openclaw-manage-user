@@ -75,6 +75,7 @@ reconcile_gateway_hooks() {
       trustedProxies: ["127.0.0.1", "::1"]
     })
     | .gateway.auth = ((.gateway.auth // {}) + {
+      mode: "trusted-proxy",
       trustedProxy: ((.gateway.auth.trustedProxy // {}) + {
         allowLoopback: true,
         userHeader: ((.gateway.auth.trustedProxy.userHeader) // "x-forwarded-user")
@@ -98,13 +99,7 @@ reconcile_gateway_hooks() {
     chown "$user:$cfg_group" "$cfg"
     chmod "$cfg_mode" "$cfg"
     
-    # Symlink ~/.openclaw/openclaw.json to /srv/agents/openclaw/<user>/openclaw.json
-    local home="/home/$user"
-    local home_cfg="$home/.openclaw/openclaw.json"
-    mkdir -p "$home/.openclaw"
-    chown "$user:$user" "$home/.openclaw" 2>/dev/null || true
-    link_doc "$cfg" "$home_cfg"
-    chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
+    link_home_openclaw_config "$user"
   else
     rm -f "$tmp_cfg"
     echo "Warning: failed to parse/update gateway and hooks configuration for $user" >&2
@@ -290,6 +285,20 @@ link_doc() {
   ln -sf "$src" "$dst"
 }
 
+link_home_openclaw_config() {
+  # link_home_openclaw_config <user> — keep the home config a symlink to the
+  # canonical runtime config. `openclaw gateway install` may rewrite this path,
+  # so callers relink after any install/reconcile step that can touch it.
+  local user="$1"
+  local home="/home/$user"
+  local cfg="/srv/agents/openclaw/$user/openclaw.json"
+  local home_cfg="$home/.openclaw/openclaw.json"
+  mkdir -p "$home/.openclaw"
+  chown "$user:$user" "$home/.openclaw" 2>/dev/null || true
+  link_doc "$cfg" "$home_cfg"
+  chown -h "$user:$user" "$home_cfg" 2>/dev/null || true
+}
+
 write_agent_files() {
   # write_agent_files <user> <payload-file>
   local user="$1" pf="$2"
@@ -314,13 +323,11 @@ write_agent_files() {
   # Per-agent runtime config is single-source in the runtime dir; the home copy
   # is a symlink (see ai/openclaw/AGENT_FILES.md) so Mission Control and the
   # gateway runtime share exactly one file.
-  mkdir -p "$home/.openclaw"
-  link_doc "$runtime/openclaw.json" "$home/.openclaw/openclaw.json"
-  chown -h "$user:$user" "$home/.openclaw/openclaw.json"
+  link_home_openclaw_config "$user"
 }
 
 setup_doc_symlinks() {
-  # setup_doc_symlinks <user> <role> — agent docs point at the MAIN checkout.
+  # setup_doc_symlinks <user> <role> — agent docs point at the validated checkout.
   local user="$1" role="$2"
   local home="/home/$user"
   local docs="$REPO_ROOT/ai/openclaw"
@@ -345,6 +352,24 @@ setup_doc_symlinks() {
   chown -R "$user:$user" "$ws" "$ows" 2>/dev/null || true
 }
 
+setup_picture_dir() {
+  # setup_picture_dir <user> — PM and code-agents can write generated/manual images.
+  local user="$1"
+  local first
+  first="$(tr '[:lower:]' '[:upper:]' <<<"${user:0:1}")${user:1}"
+  local root="/srv/agents/Pictures"
+  local dir="$root/$first"
+  mkdir -p "$dir"
+  if getent group "$SHARED_GROUP" >/dev/null 2>&1; then
+    chown "root:$SHARED_GROUP" "$root" 2>/dev/null || true
+    chmod 2775 "$root" 2>/dev/null || true
+    chown "$user:$SHARED_GROUP" "$dir" 2>/dev/null || true
+    chmod 2775 "$dir" 2>/dev/null || true
+  else
+    chmod 0755 "$root" "$dir" 2>/dev/null || true
+  fi
+}
+
 install_gateway() {
   # install_gateway <user> <uid> <port>
   [[ "${OPENCLAW_SANDBOX_TESTING:-}" == "true" ]] && return 0
@@ -352,6 +377,7 @@ install_gateway() {
   loginctl enable-linger "$user" || true
   sudo -n -u "$user" env "HOME=/home/$user" "XDG_RUNTIME_DIR=/run/user/$uid" \
     /usr/local/bin/openclaw gateway install --port "$port"
+  link_home_openclaw_config "$user"
 }
 
 install_pm_channel() {
@@ -495,6 +521,7 @@ EOF
 
       write_agent_files "$user" "$payload"
       setup_doc_symlinks "$user" "$role"
+      setup_picture_dir "$user"
       upsert_registry_entry "$payload"
       write_telegram_token "$user" "$payload"
       provision_maildir "$user" "$payload"
@@ -546,6 +573,7 @@ EOF
 
     write_agent_files "$user" "$payload"
     setup_doc_symlinks "$user" "$role"
+    setup_picture_dir "$user"
     upsert_registry_entry "$payload"
     write_telegram_token "$user" "$payload"
     provision_maildir "$user" "$payload"

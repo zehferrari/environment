@@ -28,7 +28,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma /srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/.data /etc/openclaw/pm-agent-credentials /var/lib/pm/drop /var/lib/pm/agent-provision -/srv/Data/projects -/srv/samba/shared
+ReadWritePaths=/srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/prisma /srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/web/.data /etc/openclaw/pm-agent-credentials /var/lib/pm/drop /var/lib/pm/agent-provision /srv/agents/Pictures -/srv/Data/projects -/srv/samba/shared
 ReadOnlyPaths=/srv/agents /etc/openclaw/pm-channel-tokens.json
 
 [Install]

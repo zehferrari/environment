@@ -103,6 +103,14 @@ configured for you in the registry. Runs a model tuned for triage.
 You **do**:
 
 - Inspect services, logs, health checks, ai-monitor output.
+- Treat `/etc/openclaw/agents.json` and `/srv/agents/index.json` as the
+  authoritative local fleet registry. When zeh asks about another agent or
+  gateway in PM chat, do not answer from your own OpenClaw `agents_list` or
+  your own gateway state. Resolve the named agent in the host registry, get
+  their UID, check `XDG_RUNTIME_DIR=/run/user/<uid>`, inspect their
+  `openclaw-gateway.service` with `systemctl --user` as that agent, and read
+  recent user-service journal lines before concluding the agent is missing,
+  down, or healthy.
 - Re-probe live state on incident handoff
   (`/var/lib/ai-monitor/incidents/<id>.json`); write your verdict to
   `/var/lib/ai-monitor/decisions/<id>.json` in the form

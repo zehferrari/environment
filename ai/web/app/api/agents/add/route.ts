@@ -6,6 +6,8 @@ import { readAgentIndex } from "@/lib/agents/index-loader";
 import { syncAgents } from "@/lib/agents/sync";
 import { runManageUser } from "@/lib/agents/manage-user";
 import { getSystemSettings } from "@/lib/settings/system";
+import { queueProfileImageGenerationRequest } from "@/lib/agents/profile-image-generation";
+import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/profile-image-themes";
 import {
   allocatePorts,
   allocateUid,
@@ -45,11 +47,13 @@ const AddSchema = z.object({
     })
     .optional(),
   model_config: ModelConfigSchema,
+  image_theme: z.string().trim().min(1).max(120).optional().default(MANUAL_IMAGE_THEME),
 });
 
 export async function POST(request: Request) {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+  if (!session.user.id) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
   if (session.user.name !== "zeh") return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const body = await request.json().catch(() => null);
@@ -58,6 +62,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "validation_failed", details: parsed.error.format() }, { status: 400 });
   }
   const data = parsed.data;
+  const imageTheme = normalizeProfileImageTheme(data.image_theme);
 
   if (PROTECTED_USERS.includes(data.user)) {
     return NextResponse.json({ error: "protected_user" }, { status: 400 });
@@ -101,6 +106,7 @@ export async function POST(request: Request) {
     email: data.email,
     telegram: data.telegram,
     integrations: data.integrations,
+    imageTheme,
     listeners,
   });
 
@@ -151,14 +157,28 @@ export async function POST(request: Request) {
         userId: session.user.id,
         kind: "agent.registry.add",
         targetAgent: data.user,
-        payload: JSON.stringify({ uid, role: data.role }),
+        payload: JSON.stringify({ uid, role: data.role, imageTheme }),
       },
     });
   } catch (err) {
     console.error("[agents/add] activityLog failed:", err);
   }
 
-  return NextResponse.json({ ok: true, agent: entry }, { status: 201 });
+  let imageRequest: Awaited<ReturnType<typeof queueProfileImageGenerationRequest>> | null = null;
+  try {
+    imageRequest = await queueProfileImageGenerationRequest({
+      newAgentSlug: data.user,
+      newAgentName: data.name,
+      theme: imageTheme,
+      requestedByUserId: session.user.id,
+      requestedByName: session.user.name ?? session.user.id,
+    });
+  } catch (err) {
+    console.error("[agents/add] profile image generation request failed:", err);
+    imageRequest = { requested: false, reason: (err as Error).message };
+  }
+
+  return NextResponse.json({ ok: true, agent: entry, imageRequest }, { status: 201 });
 }
 
 function activeRepoRoot(): string | null {

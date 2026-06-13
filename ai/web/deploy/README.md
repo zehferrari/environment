@@ -198,6 +198,12 @@ Unix user is still the cleaner long-term option; set
 `PM_APP_USER` / `PM_APP_GROUP` when running `openclaw/install.sh` to
 render the units for a different service account.
 
+`pm.service` needs write access to `/srv/agents/Pictures` for manual
+profile/avatar uploads on agents created with the `Manually Uploaded` image
+theme. The OpenClaw lifecycle helper also creates per-agent picture directories
+with `code-agents` group-write permissions so image-generation agents can write
+the generated `profile.png` and `avatar.png` files.
+
 The PM units are host-wide system services. Their unit files are
 root-owned under `/etc/systemd/system`, while the runtime processes use
 the configured PM service account. Do not install or enable
@@ -372,6 +378,14 @@ file and mirrors those values into the gateway configs. When no
 `--agents` override is passed, the installer discovers enabled agents
 from `/etc/openclaw/agents.json`; `openclaw/install.sh` passes that
 registry explicitly.
+
+When `openclaw-pm-channel/index.js` changes, reinstall the staged plugin and
+restart affected gateways. Running gateways keep the old plugin module in
+memory until restart, so a source-only deploy is not enough:
+
+```bash
+sudo node deploy/install-openclaw-pm-channel.mjs --registry /etc/openclaw/agents.json --restart
+```
 
 `openclaw/install.sh` also applies the host runtime patch
 `openclaw-patch-session-fence`. Without it, an OpenClaw provider timeout

@@ -20,6 +20,10 @@ export interface SystemSettingsValues {
   doneTtlDays: number | null;
   binTtlDays: number | null;
   theme: SystemTheme;
+  openRouterApiKey: string | null;
+  hasOpenRouterApiKey: boolean;
+  openRouterReferer: string | null;
+  openRouterTitle: string | null;
 }
 
 export type SystemTheme = "light" | "dark";
@@ -30,6 +34,10 @@ const EMPTY: SystemSettingsValues = {
   doneTtlDays: null,
   binTtlDays: null,
   theme: "light",
+  openRouterApiKey: null,
+  hasOpenRouterApiKey: false,
+  openRouterReferer: null,
+  openRouterTitle: null,
 };
 
 export async function getSystemSettings(): Promise<SystemSettingsValues> {
@@ -41,12 +49,16 @@ export async function getSystemSettings(): Promise<SystemSettingsValues> {
       doneTtlDays: true,
       binTtlDays: true,
       theme: true,
+      openRouterApiKey: true,
+      openRouterReferer: true,
+      openRouterTitle: true,
     },
   });
   if (!row) return EMPTY;
   return {
     ...row,
     theme: normalizeTheme(row.theme),
+    hasOpenRouterApiKey: Boolean(row.openRouterApiKey),
   };
 }
 

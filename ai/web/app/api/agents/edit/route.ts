@@ -6,6 +6,7 @@ import { readAgentIndex, gatewayPortFor } from "@/lib/agents/index-loader";
 import { syncAgents } from "@/lib/agents/sync";
 import { runManageUser } from "@/lib/agents/manage-user";
 import { getSystemSettings } from "@/lib/settings/system";
+import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/profile-image-themes";
 import {
   allocatePorts,
   buildAgentEntry,
@@ -42,6 +43,7 @@ const EditSchema = z.object({
       .array(z.object({ provider: z.string().min(1), id: z.string().min(1), name: z.string().optional() }))
       .min(1, "select at least one model"),
   }),
+  image_theme: z.string().trim().min(1).max(120).optional().default(MANUAL_IMAGE_THEME),
 });
 
 export async function POST(request: Request) {
@@ -55,6 +57,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "validation_failed", details: parsed.error.format() }, { status: 400 });
   }
   const data = parsed.data;
+  const imageTheme = normalizeProfileImageTheme(data.image_theme);
 
   // Protected/system identities are not editable through this surface.
   if (PROTECTED_USERS.includes(data.user)) {
@@ -115,6 +118,7 @@ export async function POST(request: Request) {
     email: data.email,
     telegram: data.telegram,
     integrations: data.integrations,
+    imageTheme,
     listeners,
   });
 
@@ -160,7 +164,7 @@ export async function POST(request: Request) {
         userId: session.user.id,
         kind: "agent.registry.edit",
         targetAgent: data.user,
-        payload: JSON.stringify({ roleChanged, role: data.role }),
+        payload: JSON.stringify({ roleChanged, role: data.role, imageTheme }),
       },
     });
   } catch (err) {

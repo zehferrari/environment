@@ -271,11 +271,11 @@ async function main(): Promise<void> {
     expectOpError("epic requires title", await validateProposal(P, [{ op: "create_epic", ref: "tmp:e1" }], actor), 0, "title is required");
     expectOpError("create requires tmp ref", await validateProposal(P, [{ op: "create_task", ref: "t1", title: "X" }], actor), 0, "tmp:");
     expectOpError("undeclared epic ref", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: "tmp:nope" }], actor), 0, "not declared");
-    expectOpError("task under new epic ref blocked until epic plan approval", await validateProposal(P, [
+    expectOk("task under new epic ref allowed before approval", await validateProposal(P, [
       { op: "create_epic", ref: "tmp:e1", title: "Epic One", description: "x" },
       { op: "create_task", ref: "tmp:t1", title: "X", epic: "tmp:e1" },
-    ], actor), 1, "approve the Epic Action Plan first");
-    expectOpError("unapproved epic blocks task breakdown", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: epic.id }], actor), 0, "Epic Action Plan must be approved");
+    ], actor));
+    expectOk("unapproved epic task breakdown allowed", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: epic.id }], actor));
     expectOk("link approved existing epic id", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: approvedEpic.id }], actor));
     await prisma.task.create({
       data: {
@@ -287,14 +287,14 @@ async function main(): Promise<void> {
         statusChangedAt: new Date(),
       },
     });
-    expectOpError("existing epic task sequence blocks more agent-created epic tasks", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: approvedEpic.id }], actor), 0, "already has top-level tasks");
+    expectOk("existing epic task sequence allows additional planned tasks", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: approvedEpic.id }], actor));
     expectOpError("bogus epic id", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: "c_nope" }], actor), 0, "not found");
     expectOpError("subtask requires parent", await validateProposal(P, [{ op: "create_subtask", ref: "tmp:s1", title: "X" }], actor), 0, "parent");
-    expectOpError("subtask under new task blocked", await validateProposal(P, [
+    expectOk("subtask under new task allowed", await validateProposal(P, [
       { op: "create_task", ref: "tmp:t1", title: "Task", epic: approvedEpic.id },
       { op: "create_subtask", ref: "tmp:s1", parent: "tmp:t1", title: "Sub" },
-    ], actor), 1, "requires an existing approved parent Task");
-    expectOpError("unapproved parent blocks subtask", await validateProposal(P, [{ op: "create_subtask", ref: "tmp:s1", parent: tTodo.id, title: "Sub" }], actor), 0, "Task Action Plan must be approved");
+    ], actor));
+    expectOk("unapproved parent allows planning subtask", await validateProposal(P, [{ op: "create_subtask", ref: "tmp:s1", parent: tTodo.id, title: "Sub" }], actor));
 
     // --- duplicate ref ---
     {
@@ -310,10 +310,12 @@ async function main(): Promise<void> {
     }
 
     // --- agent guardrails (validated as the agent, not the approver) ---
-    expectOpError("self-assign blocked", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", assignee: agent.slug }], actor), 0, "self-assign");
-    expectOk("assign to human ok", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", assignee: human.username }], actor));
-    expectOpError("self acting-manager blocked", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", actingManager: agent.slug }], actor), 0, "acting manager");
-    expectOpError("unknown assignee", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", assignee: "ghost" }], actor), 0, "not an active assignable principal");
+    expectOpError("create assignee blocked", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", assignee: human.username }], actor), 0, "cannot set an assignee");
+    expectOpError("self-assign blocked", await validateProposal(P, [{ op: "update_task", target: tTodo.id, assignee: agent.slug }], actor), 0, "agents cannot set themselves");
+    expectOk("assign to human ok", await validateProposal(P, [{ op: "update_task", target: tTodo.id, assignee: human.username }], actor));
+    expectOpError("create acting-manager blocked", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", actingManager: human.username }], actor), 0, "cannot set a reviewer");
+    expectOpError("self acting-manager blocked", await validateProposal(P, [{ op: "update_task", target: tTodo.id, actingManager: agent.slug }], actor), 0, "agents cannot set themselves");
+    expectOpError("unknown assignee", await validateProposal(P, [{ op: "update_task", target: tTodo.id, assignee: "ghost" }], actor), 0, "not an active assignable principal");
 
     // --- transitions ---
     expectOpError("transition out of Done blocked", await validateProposal(P, [{ op: "update_task", target: tDone.id, status: "Review" }], actor), 0, "Review/Done");
@@ -368,7 +370,7 @@ async function main(): Promise<void> {
 
     const applyOps = [
       { op: "create_epic", ref: "tmp:e", title: "Smoke Epic", description: "from smoke" },
-      { op: "create_task", ref: "tmp:t", title: "Smoke Task", epic: approvedApplyEpic.id, assignee: human.username },
+      { op: "create_task", ref: "tmp:t", title: "Smoke Task", epic: approvedApplyEpic.id },
       { op: "create_subtask", ref: "tmp:s", parent: approvedApplyParent.id, title: "Smoke Sub" },
       { op: "comment_task", target: tTodo.id, body: "smoke comment" },
     ];
@@ -402,7 +404,7 @@ async function main(): Promise<void> {
     });
     check("task created in Backlog", createdTask?.status === "Backlog", createdTask);
     check("task linked to approved apply epic", !!createdTask && createdTask.epicId === approvedApplyEpic.id, createdTask);
-    check("task assigned to human", createdTask?.assigneeId === human.id, createdTask);
+    check("agent-created task is unassigned", createdTask?.assigneeId === null, createdTask);
     const createdSub = await prisma.task.findFirst({
       where: { projectId: P, title: "Smoke Sub" },
       select: { id: true, parentTaskId: true },

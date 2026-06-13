@@ -46,6 +46,12 @@ export interface CommitResult {
   taskId?: string | null;
   epicId?: string | null;
   counts: CommitCounts;
+  createdItems?: Array<{
+    kind: "epic" | "task" | "subtask";
+    id: string;
+    title: string;
+    url: string;
+  }>;
 }
 
 const ZERO: CommitCounts = { epics: 0, tasks: 0, subtasks: 0, updates: 0, comments: 0 };
@@ -206,6 +212,7 @@ export async function commitProposal(
   };
 
   const counts: CommitCounts = { ...ZERO };
+  const createdItems: NonNullable<CommitResult["createdItems"]> = [];
   const agentId = proposal.proposedByUserId;
   const projectId = proposal.projectId;
   const workflowNotifications: WorkflowNotification[] = [];
@@ -266,13 +273,19 @@ export async function commitProposal(
                 description: optionalText(op.description),
                 status: "Backlog",
                 statusChangedAt: new Date(),
-                actingManagerId: createId(op.actingManager),
+                actingManagerId: null,
                 reporterId: newItemReporterId,
               },
               select: { id: true, title: true },
             });
             refToId.set(ref, epic.id);
             counts.epics++;
+            createdItems.push({
+              kind: "epic",
+              id: epic.id,
+              title: epic.title,
+              url: `/projects/${projectSlug}/epics/${epic.id}`,
+            });
             await tx.activityLog.create({
               data: {
                 projectId,
@@ -320,8 +333,8 @@ export async function commitProposal(
                 status: "Backlog",
                 rank: nextRank++,
                 statusChangedAt: new Date(),
-                assigneeId: createId(op.assignee),
-                actingManagerId: createId(op.actingManager),
+                assigneeId: null,
+                actingManagerId: null,
                 reporterId: newItemReporterId,
                 branchName: inheritedBranchName,
                 commitPrefix: inheritedCommitPrefix,
@@ -331,6 +344,12 @@ export async function commitProposal(
             refToId.set(ref, task.id);
             if (isSub) counts.subtasks++;
             else counts.tasks++;
+            createdItems.push({
+              kind: isSub ? "subtask" : "task",
+              id: task.id,
+              title: task.title,
+              url: `/projects/${projectSlug}/tasks/${task.id}`,
+            });
             let parentTitle: string | null = null;
             if (parentTaskId) {
               const parent = await tx.task.findUnique({ where: { id: parentTaskId }, select: { title: true } });
@@ -345,18 +364,6 @@ export async function commitProposal(
                 payload: JSON.stringify({ title: task.title, epicId, parentTaskId, parentTitle, proposalId: proposal.id }),
               },
             });
-            if (task.assigneeId) {
-              workflowNotifications.push({
-                taskId: task.id,
-                targetUserId: task.assigneeId,
-                reason: "backlog_plan_requested",
-                body: taskWorkflowBody({
-                  title: task.title,
-                  actorUsername,
-                  reason: "backlog_plan_requested",
-                }),
-              });
-            }
           }
           pending.splice(k, 1);
           progressed = true;
@@ -607,5 +614,5 @@ export async function commitProposal(
     ),
   ]);
 
-  return { ok: true, projectSlug, agentSlug, taskId, epicId, counts };
+  return { ok: true, projectSlug, agentSlug, taskId, epicId, counts, createdItems };
 }

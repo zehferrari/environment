@@ -1033,6 +1033,10 @@ def _database_url_to_path(raw):
 
 
 def _read_pm_database_url_from_env_file(path):
+    return _read_env_file_value(path, "DATABASE_URL")
+
+
+def _read_env_file_value(path, wanted_key):
     try:
         with open(path, "r", encoding="utf-8") as fh:
             for line in fh:
@@ -1040,7 +1044,7 @@ def _read_pm_database_url_from_env_file(path):
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 key, value = line.split("=", 1)
-                if key.strip() != "DATABASE_URL":
+                if key.strip() != wanted_key:
                     continue
                 try:
                     return shlex.split(value, comments=False, posix=True)[0]
@@ -1049,6 +1053,152 @@ def _read_pm_database_url_from_env_file(path):
     except Exception:
         return ""
     return ""
+
+
+def _active_agent_docs_root(cfg):
+    watch = cfg.get("watch") or {}
+    configured = watch.get("agent_docs_root")
+    if configured:
+        return os.path.realpath(str(configured))
+
+    active_root = (
+        _read_env_file_value("/etc/default/pm-active-worktree", "PM_APP_ROOT")
+        or _read_env_file_value("/etc/default/pm-active-worktree", "PM_APP_DIR")
+        or _read_env_file_value("/etc/default/pm", "PM_APP_ROOT")
+        or _read_env_file_value("/etc/default/pm", "PM_APP_DIR")
+    )
+    active_root = (active_root or "").strip()
+    if active_root.endswith("/ai/web"):
+        return os.path.realpath(active_root[:-len("/ai/web")] + "/ai/openclaw")
+    if active_root.endswith("/ai"):
+        return os.path.realpath(active_root + "/openclaw")
+    if active_root:
+        return os.path.realpath(os.path.join(active_root, "ai/openclaw"))
+    return os.path.realpath("/srv/Code/environment.worktrees/main/ai/openclaw")
+
+
+def _symlink_probe(path, expected, label):
+    path = str(path)
+    expected = str(expected)
+    item = {
+        "path": path,
+        "expected": expected,
+        "expected_real": os.path.realpath(expected),
+        "label": label,
+        "ok": False,
+    }
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        item["reason"] = "missing"
+        return item
+    except Exception as e:
+        item["reason"] = f"stat failed: {e}"
+        return item
+    item["is_symlink"] = stat.S_ISLNK(st.st_mode)
+    if not item["is_symlink"]:
+        item["reason"] = "not a symlink"
+        item["resolved"] = os.path.realpath(path)
+        return item
+    try:
+        item["link_target"] = os.readlink(path)
+        item["resolved"] = os.path.realpath(path)
+    except Exception as e:
+        item["reason"] = f"readlink failed: {e}"
+        return item
+    if item["resolved"] != item["expected_real"]:
+        item["reason"] = "wrong target"
+        return item
+    item["ok"] = True
+    return item
+
+
+def probe_agent_symlinks(cfg, registry):
+    sc = (cfg.get("agent_symlinks") or cfg.get("symlink_check") or {})
+    out = {
+        "enabled": sc.get("enabled", True),
+        "issues": [],
+        "checked": 0,
+    }
+    if not out["enabled"] or not registry:
+        return out
+
+    agent_files_root = (
+        sc.get("agent_files_root")
+        or registry.get("agentFilesRoot")
+        or "/srv/agents/openclaw"
+    )
+    docs_root = _active_agent_docs_root(cfg)
+    shared_user_doc = os.path.realpath(os.path.join(agent_files_root, "_shared", "USER.md"))
+    user_doc_expected = shared_user_doc if os.path.exists(shared_user_doc) else os.path.join(docs_root, "USER.md")
+
+    common_docs = list(sc.get("common_docs") or [
+        "AGENTS.md",
+        "ROLES.md",
+        "TEAM_WORKFLOW.md",
+        "CODE_REPOS.md",
+        "USER.md",
+    ])
+    monitor_docs = list(sc.get("monitor_docs") or [
+        "INCIDENT_HANDLING.md",
+        "MONITORING.md",
+        "SERVICES.md",
+    ])
+
+    def expected_doc(name):
+        if name == "USER.md":
+            return user_doc_expected
+        return os.path.join(docs_root, name)
+
+    for agent in registry.get("agents", []) or []:
+        if not agent.get("enabled"):
+            continue
+        user = agent.get("user")
+        if not user:
+            continue
+        home = agent.get("home") or f"/home/{user}"
+        expected_config = os.path.join(agent_files_root, user, "openclaw.json")
+        config_probe = _symlink_probe(
+            os.path.join(home, ".openclaw", "openclaw.json"),
+            expected_config,
+            "openclaw-config",
+        )
+        out["checked"] += 1
+        if not config_probe.get("ok"):
+            out["issues"].append({"agent": user, **config_probe})
+
+        doc_roots = []
+        role = agent.get("role")
+        if role == "monitor":
+            doc_roots.append(os.path.join(home, ".openclaw", "workspace"))
+            docs = common_docs + [d for d in monitor_docs if d not in common_docs]
+        else:
+            workspace = agent.get("workspace") or os.path.join(home, "workspace")
+            doc_roots.extend([
+                workspace,
+                os.path.join(home, ".openclaw", "workspace"),
+            ])
+            docs = common_docs
+
+        seen = set()
+        for root in doc_roots:
+            if root in seen:
+                continue
+            seen.add(root)
+            for doc in docs:
+                probe = _symlink_probe(
+                    os.path.join(root, doc),
+                    expected_doc(doc),
+                    f"doc:{doc}",
+                )
+                out["checked"] += 1
+                if not probe.get("ok"):
+                    out["issues"].append({"agent": user, **probe})
+
+    out["issue_count"] = len(out["issues"])
+    out["docs_root"] = docs_root
+    out["agent_files_root"] = agent_files_root
+    return out
 
 
 def _sqlite_pm_db_path(cfg):
@@ -1268,12 +1418,17 @@ def _pm_workflow_notification_is_current(row):
 def probe_pm_workflow(cfg, registry):
     """Probe Mission Control / PM workflow invariants for the monitor agent.
 
-    The PM webapp owns writes; this probe is read-only. It classifies tasks
-    into concrete reminders that ai-monitor can route to the responsible
-    agent with task id, status, Epic state, and next action.
+    The PM webapp owns writes. Before the read-only drift probe, this runs
+    the PM self-assignment guard through the active PM app so illegal agent
+    self-assignments are undone and activity-logged.
     """
     pc = cfg.get("pm_workflow") or {}
-    out = {"items": [], "errors": [], "enabled": pc.get("enabled", True)}
+    out = {
+        "items": [],
+        "errors": [],
+        "self_assignment_repairs": [],
+        "enabled": pc.get("enabled", True),
+    }
     if not out["enabled"]:
         return out
     db_path = _sqlite_pm_db_path(cfg)
@@ -1288,6 +1443,22 @@ def probe_pm_workflow(cfg, registry):
     warn_review_s = int(pc.get("review_wait_warn_minutes", 10)) * 60
     warn_channel_s = int(pc.get("channel_no_start_warn_minutes", 2)) * 60
     max_items = int(pc.get("max_items", 50))
+
+    if pc.get("self_assignment_guard_enabled", True):
+        rc, guard_out, guard_err = run_cmd(
+            ["/usr/local/sbin/pm-self-assignment-guard"],
+            timeout=int(pc.get("self_assignment_guard_timeout_seconds", 60)),
+        )
+        if rc != 0:
+            out["errors"].append(
+                f"PM self-assignment guard failed rc={rc}: {(guard_err or guard_out).strip()[:240]}"
+            )
+        elif guard_out.strip():
+            try:
+                parsed = json.loads(guard_out)
+                out["self_assignment_repairs"] = parsed.get("repairs") or []
+            except Exception as e:
+                out["errors"].append(f"PM self-assignment guard returned invalid JSON: {e}")
 
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -1782,6 +1953,14 @@ def build_compact_input(probes):
              "required_action": p.get("required_action", "")[:140]}
             for p in probes.get("pm_workflow", {}).get("items", [])
         ],
+        "agent_symlinks": [
+            {"agent": s.get("agent"),
+             "label": s.get("label"),
+             "path": s.get("path"),
+             "reason": s.get("reason"),
+             "expected": s.get("expected")}
+            for s in probes.get("agent_symlinks", {}).get("issues", [])[:20]
+        ],
     }
 
 
@@ -1890,6 +2069,21 @@ def deterministic_issues(probes):
             "kind": "registry-empty",
             "severity": "warn",
             "reason": "agents.json has zero enabled+monitored agents — nothing tenant-side is being watched",
+            "suggested_action": "investigate",
+        })
+    symlinks = probes.get("agent_symlinks", {})
+    for issue in symlinks.get("issues", []) or []:
+        label = issue.get("label", "symlink")
+        severity = "crit" if label == "openclaw-config" else "warn"
+        resolved = issue.get("resolved") or issue.get("link_target") or "none"
+        out.append({
+            "unit": f"agent-symlink:{issue.get('agent','?')}/{label}",
+            "kind": "agent-symlink-drift",
+            "severity": severity,
+            "reason": (
+                f"{issue.get('path')} is {issue.get('reason','invalid')}; "
+                f"resolved={resolved}; expected={issue.get('expected_real') or issue.get('expected')}"
+            ),
             "suggested_action": "investigate",
         })
     stalled = probes.get("stalled_tasks", {})
@@ -2013,6 +2207,19 @@ def deterministic_issues(probes):
             "suggested_action": "investigate",
         })
     pmw = probes.get("pm_workflow", {})
+    for repair in pmw.get("self_assignment_repairs", []) or []:
+        out.append({
+            "unit": f"pm:self-assignment/{repair.get('scope','item')}:{repair.get('id','unknown')}",
+            "kind": "pm-self-assignment-repaired",
+            "severity": "warn",
+            "reason": (
+                f"PM self-assignment guard cleared {repair.get('field','field')} "
+                f"for @{repair.get('agentUsername','agent')} on "
+                f"{repair.get('scope','item')} {repair.get('id','unknown')} "
+                f"({repair.get('title','')})."
+            ),
+            "suggested_action": "investigate",
+        })
     for item in pmw.get("items", []) or []:
         age_min = (item.get("age_s") or 0) // 60
         out.append({
@@ -4052,6 +4259,7 @@ def gather_probes(cfg):
         "pending_email_tasks": probe_pending_email_tasks(cfg, registry),
         "pending_mentions": probe_pending_mentions(cfg, registry),
         "pm_workflow": probe_pm_workflow(cfg, registry),
+        "agent_symlinks": probe_agent_symlinks(cfg, registry),
     }
     for user, uid, unit in user_units_spec:
         key = f"{user}/{unit}"
@@ -4137,6 +4345,9 @@ def main():
             "threshold_breaches": probes["resources"].get("threshold_breaches", []),
             "pending_email_tasks": len(
                 probes.get("pending_email_tasks", {}).get("pending", [])
+            ),
+            "agent_symlink_drift": len(
+                probes.get("agent_symlinks", {}).get("issues", [])
             ),
             "down_listeners": [
                 k for k, v in probes["listeners"].items() if not v.get("open")

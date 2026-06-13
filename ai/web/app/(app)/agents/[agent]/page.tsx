@@ -15,6 +15,8 @@ import ProfileEditor from "./profile-editor";
 import AtlasControls from "./atlas-controls";
 import AgentTabs, { type AgentTab } from "./agent-tabs";
 import ModelsSettings from "./models-settings";
+import AgentImagesPanel from "./agent-images-panel";
+import { readAgentImagesState } from "@/lib/agents/profile-images";
 
 export const dynamic = "force-dynamic";
 
@@ -160,7 +162,10 @@ export default async function AgentProfilePage({
   ]);
   if (!agent) notFound();
 
-  const profileResult = await readProfileForPage(slug);
+  const [profileResult, imageState] = await Promise.all([
+    readProfileForPage(slug),
+    readAgentImagesState(slug),
+  ]);
   const canEdit = await canEditProfile({ name: session?.user?.name, kind: session?.user?.kind }, slug);
   const [audit, activity, modelSettings] = await Promise.all([
     db.activityLog.findMany({
@@ -233,6 +238,10 @@ export default async function AgentProfilePage({
         controls={(
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
             <div className="space-y-4">
+              <Panel title="Profile images">
+                <AgentImagesPanel agent={slug} state={imageState} canEdit={canEdit} />
+              </Panel>
+
               <Panel title="Identity files">
                 {profileResult.profile ? (
                   <ProfileEditor agent={slug} files={profileResult.profile.files} canEdit={canEdit} />

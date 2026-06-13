@@ -76,6 +76,7 @@ export async function setProjectSettings(formData: FormData) {
   const payload: Record<string, unknown> = { scope };
   let slugChanged = false;
   let newSlug = slug;
+  let managerAssignableAgentIds: string[] | null = null;
 
   if (scope === "general" || scope === "all") {
     const name = trimOrNull(formData.get("name"));
@@ -125,6 +126,27 @@ export async function setProjectSettings(formData: FormData) {
     const onlyReportersCanApprovePullRequests = formData.get("onlyReportersCanApprovePullRequests") === "on";
     const defaultAssigneeId = trimOrNull(formData.get("defaultAssigneeId"));
     const defaultReviewerId = trimOrNull(formData.get("defaultReviewerId"));
+    const rawManagerAssignableAgentIds = formData
+      .getAll("managerAssignableAgentId")
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .filter(Boolean);
+    managerAssignableAgentIds = [...new Set(rawManagerAssignableAgentIds)];
+    if (managerAssignableAgentIds.length > 0) {
+      const validUsers = await db.user.findMany({
+        where: {
+          id: { in: managerAssignableAgentIds },
+          status: "active",
+          kind: "agent",
+          agent: { is: { role: "coding", deactivatedAt: null } },
+        },
+        select: { id: true },
+      });
+      const valid = new Set(validUsers.map((user) => user.id));
+      const invalid = managerAssignableAgentIds.filter((id) => !valid.has(id));
+      if (invalid.length > 0) {
+        throw new Error("Manager assignment pool can only include active coding agents.");
+      }
+    }
     // Blank automatic archive age inherits the system default (resolved on read).
     const doneTtlDaysRaw = String(formData.get("doneTtlDays") ?? "").trim();
     const doneTtlDays =
@@ -145,6 +167,7 @@ export async function setProjectSettings(formData: FormData) {
       doneTtlDays,
     });
     Object.assign(payload, data);
+    payload.managerAssignableAgentCount = managerAssignableAgentIds.length;
   }
 
   if (scope === "deployment" || scope === "all") {
@@ -168,20 +191,35 @@ export async function setProjectSettings(formData: FormData) {
     payload.deployment = deploymentData;
   }
 
-  await db.$transaction([
-    db.project.update({
+  await db.$transaction(async (tx) => {
+    await tx.project.update({
       where: { id: project.id },
       data,
-    }),
-    db.activityLog.create({
+    });
+    if (managerAssignableAgentIds) {
+      await tx.projectManagerAssignableAgent.deleteMany({
+        where: {
+          projectId: project.id,
+          userId: { notIn: managerAssignableAgentIds },
+        },
+      });
+      for (const userId of managerAssignableAgentIds) {
+        await tx.projectManagerAssignableAgent.upsert({
+          where: { projectId_userId: { projectId: project.id, userId } },
+          create: { projectId: project.id, userId },
+          update: {},
+        });
+      }
+    }
+    await tx.activityLog.create({
       data: {
         projectId: project.id,
         userId: actor.id,
         kind: "project.settings",
         payload: JSON.stringify(payload),
       },
-    }),
-  ]);
+    });
+  });
 
   revalidatePath(`/projects`);
   revalidatePath(`/projects/${slug}`);

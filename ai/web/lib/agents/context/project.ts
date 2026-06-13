@@ -65,6 +65,10 @@ export async function buildProjectEnvContext(
       deletedAt: true,
       defaultAssignee: { select: { username: true } },
       defaultReviewer: { select: { username: true } },
+      managerAssignableAgents: {
+        select: { user: { select: { username: true } } },
+        orderBy: { user: { username: "asc" } },
+      },
     },
   });
   if (!project || project.deletedAt) return null;
@@ -117,6 +121,11 @@ export async function buildProjectEnvContext(
     `Policy - only reporters can approve Pull Requests: ${project.onlyReportersCanApprovePullRequests ? "yes" : "no"}`,
     `Default assignee: ${project.defaultAssignee?.username ? `@${project.defaultAssignee.username}` : "(none)"}`,
     `Default reviewer: ${project.defaultReviewer?.username ? `@${project.defaultReviewer.username}` : "(none)"}`,
+    `Manager assignment pool: ${
+      project.managerAssignableAgents.length > 0
+        ? project.managerAssignableAgents.map((row) => `@${row.user.username}`).join(", ")
+        : "(unrestricted active coding agents)"
+    }`,
     `README path: ${project.readmePath || "(not set)"}`,
   ];
   if (project.description?.trim()) {
@@ -230,16 +239,19 @@ export function buildWorkItemPlanningPrompt(args: {
   proposeUrl: string;
   grantMessageId: string;
   token: string;
+  autoApply?: boolean;
+  publicOrigin?: string | null;
 }): string {
   const exampleBody = JSON.stringify(
     {
       grantMessageId: args.grantMessageId,
       token: args.token,
+      publicOrigin: args.publicOrigin ?? "<public browser origin provided by PM>",
       planId: "<a fresh unique id for this proposal, e.g. a uuid>",
       summary: "<one-line summary of the change-set>",
       operations: [
         { op: "create_epic", ref: "tmp:epic1", title: "Epic title", description: "..." },
-        { op: "create_subtask", ref: "tmp:sub1", parent: "<existing approved Task id assigned to you>", title: "Sub-task title" },
+        { op: "create_subtask", ref: "tmp:sub1", parent: "<existing top-level Task id>", title: "Sub-task title" },
       ],
     },
     null,
@@ -248,21 +260,28 @@ export function buildWorkItemPlanningPrompt(args: {
 
   return [
     `WORK-ITEM PLANNING GRANT for @${args.agentSlug} on project "${args.projectSlug}".`,
-    "A human-authored message in this project-scoped chat gives you a one-shot capability to PROPOSE work-item changes.",
+    args.autoApply
+      ? "A human-authored direct message in this project-scoped chat gives you a one-shot capability to execute requested work-item changes immediately without an additional approval step."
+      : "A human-authored message in this project-scoped chat gives you a one-shot capability to PROPOSE work-item changes.",
     "Use it only when the current human message directly asks you to create, update, reorganize, comment on, or otherwise change project work items. If the message is only a question, discussion, or status check, do not submit a proposal.",
     "Source of truth for project state: GET /api/agents/context/project/<projectId> via the loopback fetch shown in the LIVE PM CONTEXT block in your system prompt. The proposal endpoint below is the only project-WRITE endpoint you should call from this turn.",
-    "Nothing changes on the board until the user reviews and approves your proposal, so make the breakdown clear and well structured when you do propose.",
+    args.autoApply
+      ? "For direct-chat grants, valid operations are applied immediately. The endpoint response includes links for created items when available; include those links in your visible reply."
+      : "Nothing changes on the board until the user reviews and approves your proposal, so make the breakdown clear and well structured when you do propose.",
     "",
     "HOW TO SUBMIT (only when the current human message explicitly requests work-item changes; otherwise ignore this section):",
     `POST application/json to: ${args.proposeUrl}`,
     "Body shape:",
     exampleBody,
+    args.publicOrigin
+      ? `PUBLIC_ORIGIN for returned created-resource links: ${args.publicOrigin}. Send this exact value as publicOrigin in the JSON body.`
+      : "Send publicOrigin in the JSON body only when PM provides a PUBLIC_ORIGIN value.",
     "",
-    "OPERATIONS (a change-set applied in order, all-or-nothing on approval):",
-    "- create_epic    { ref, title, description?, assignee?, actingManager? }",
-    "- create_task    { ref, title, description?, epic?, assignee?, actingManager? }   (epic optional; top-level task)",
-    "- create_subtask { ref, parent, title, description?, assignee?, actingManager? }  (parent required)",
-    "- update_epic    { target, title?, description?, assignee?, actingManager?, status? }   (status: Backlog|Open|Done|Archive)",
+    `OPERATIONS (a change-set applied in order, all-or-nothing ${args.autoApply ? "immediately after validation" : "on approval"}):`,
+    "- create_epic    { ref, title, description? }",
+    "- create_task    { ref, title, description?, epic? }   (epic optional; top-level task)",
+    "- create_subtask { ref, parent, title, description? }  (parent required)",
+    "- update_epic    { target, title?, description?, actingManager? }",
     "- update_task    { target, title?, description?, assignee?, actingManager?, epic?, parent?, status? }",
     "- comment_task   { target, body }",
     "",
@@ -273,13 +292,20 @@ export function buildWorkItemPlanningPrompt(args: {
     "",
     "RULES (your proposal is validated against these; violations are flagged for the user):",
     "- You may propose changes anywhere in the project when the current human message explicitly asks for them.",
-    "- Keep requested assignee / actingManager values exactly as the human asked; otherwise leave them null.",
+    "- Never set yourself as reporter, assignee, reviewer, or acting manager.",
+    "- Never change Epic status.",
+    "- New Epics/Tasks/Subtasks created by you must not include assignee or actingManager. PM records the requesting human as reporter automatically.",
+    "- For existing item updates only, keep requested assignee / actingManager values exactly as the human asked; otherwise leave them null.",
     "- create_task can link to an existing Epic or to a newly created Epic in the same proposal when the human asked for that breakdown.",
     "- create_subtask must reference a top-level Task, either existing or newly created in the same proposal. Do not create subtasks under another subtask.",
-    "- Nothing is applied until the human reviews and approves the proposal.",
+    args.autoApply
+      ? "- Direct-chat requests are applied immediately after validation. Do not tell the user it is awaiting approval."
+      : "- Nothing is applied until the human reviews and approves the proposal.",
     "- New tasks and epics start in Backlog.",
     "- Use a fresh, unique planId per proposal; re-POSTing the same planId is idempotent (no duplicate).",
     "",
-    "Only if you actually submit a proposal: briefly tell the user what you proposed and that it is awaiting their review. If you did not submit a proposal, do not mention this grant, endpoint, or review flow.",
+    args.autoApply
+      ? "Only if you actually submit operations: briefly tell the user what changed and include returned links for created resources when possible. If you did not submit operations, do not mention this grant or endpoint."
+      : "Only if you actually submit a proposal: briefly tell the user what you proposed and that it is awaiting their review. If you did not submit a proposal, do not mention this grant, endpoint, or review flow.",
   ].join("\n");
 }

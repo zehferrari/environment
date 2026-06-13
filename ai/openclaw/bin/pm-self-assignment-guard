@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${PM_ENV:-}" ]]; then
+  env_files=("$PM_ENV")
+else
+  env_files=(/etc/default/pm /etc/default/pm-active-worktree)
+fi
+for env_file in "${env_files[@]}"; do
+  if [[ -r "$env_file" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$env_file"
+    set +a
+  fi
+done
+
+WEB_ROOT=${PM_APP_ROOT:-}
+if [[ -z "$WEB_ROOT" && "${DATABASE_URL:-}" == file://* ]]; then
+  db_path=${DATABASE_URL#file://}
+  case "$db_path" in
+    */web/prisma/*) WEB_ROOT="${db_path%%/web/prisma/*}/web" ;;
+  esac
+fi
+WEB_ROOT=${WEB_ROOT:-/srv/Code/environment/ai/web}
+RUNUSER=${RUNUSER:-/usr/sbin/runuser}
+
+PM_USER=${PM_USER:-karen}
+export NODE_ENV=${NODE_ENV:-production}
+export HOME=${PM_PNPM_HOME:-/var/lib/pm/pnpm-home}
+export XDG_CONFIG_HOME=${PM_XDG_CONFIG_HOME:-/var/lib/pm/pnpm-config}
+export XDG_CACHE_HOME=${PM_XDG_CACHE_HOME:-/var/lib/pm/pnpm-cache}
+export PNPM_HOME=${PM_PNPM_HOME:-/var/lib/pm/pnpm-home}
+export NPM_CONFIG_USERCONFIG=${PM_NPM_CONFIG_USERCONFIG:-/var/lib/pm/pnpm-home/.npmrc}
+export npm_config_userconfig=${npm_config_userconfig:-$NPM_CONFIG_USERCONFIG}
+
+if [[ ! -d "$WEB_ROOT" ]]; then
+  echo "pm-self-assignment-guard: PM web root not found: $WEB_ROOT" >&2
+  exit 2
+fi
+
+if [[ "$(id -un)" == "$PM_USER" ]]; then
+  cd "$WEB_ROOT"
+  exec pnpm tsx scripts/pm-self-assignment-guard.ts "$@"
+fi
+
+exec "$RUNUSER" -u "$PM_USER" -- env \
+  DATABASE_URL="${DATABASE_URL:-}" \
+  AUTH_SECRET="${AUTH_SECRET:-}" \
+  AUTH_TRUST_HOST="${AUTH_TRUST_HOST:-}" \
+  AUTH_URL="${AUTH_URL:-}" \
+  NEXTAUTH_URL="${NEXTAUTH_URL:-}" \
+  APP_URL="${APP_URL:-}" \
+  NODE_ENV="$NODE_ENV" \
+  HOME="$HOME" \
+  XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+  XDG_CACHE_HOME="$XDG_CACHE_HOME" \
+  PNPM_HOME="$PNPM_HOME" \
+  NPM_CONFIG_USERCONFIG="$NPM_CONFIG_USERCONFIG" \
+  npm_config_userconfig="$npm_config_userconfig" \
+  bash -lc "cd '$WEB_ROOT' && exec pnpm tsx scripts/pm-self-assignment-guard.ts \"\$@\"" \
+  pm-self-assignment-guard "$@"

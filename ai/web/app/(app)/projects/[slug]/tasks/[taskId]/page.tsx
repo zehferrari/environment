@@ -202,6 +202,7 @@ async function updateTask(formData: FormData) {
   let assignmentTarget: { id: string; kind: string; username: string } | null =
     null;
   let assignmentChanged = false;
+  let reviewerPlanTargetId: string | null = null;
   let statusChangedTo: string | null = null;
   let completeReviewAfterSave = false;
 
@@ -365,6 +366,7 @@ async function updateTask(formData: FormData) {
         throw new Error("Reviewer not found or inactive");
       }
       toUsername = target.username;
+      reviewerPlanTargetId = newActingManagerId;
     }
     data.actingManager =
       newActingManagerId === null
@@ -529,6 +531,20 @@ async function updateTask(formData: FormData) {
     });
   }
 
+  if (reviewerPlanTargetId) {
+    await sendTaskWorkflowNotification({
+      taskId: task.id,
+      targetUserId: reviewerPlanTargetId,
+      actor,
+      reason: "reviewer_plan_requested",
+      body: [
+        `You have been set as Reviewer for "${titleRaw}".`,
+        "If the task has no assignee, read the full task context and post one reviewer plan of action in Action Plan, including the subtasks/topics/items that must be addressed or watched.",
+        "Do not start implementation or move status. After the reporter approves the plan, call action=assign_after_plan_approval so PM can assign an eligible coding agent and move Backlog to To Do if needed.",
+      ].join("\n"),
+    });
+  }
+
   if (completeReviewAfterSave) {
     const actorUser = await db.user.findUnique({
       where: { id: actor.id },
@@ -667,6 +683,21 @@ async function approveTaskActionPlan(formData: FormData) {
         "Keep visible replies concise; use a comment only if a blocker or material plan change appears.",
       ].join("\n"),
     });
+  } else {
+    const reviewerId = resolveReviewOwnerId(task);
+    if (reviewerId) {
+      await sendTaskWorkflowNotification({
+        taskId: task.id,
+        targetUserId: reviewerId,
+        actor,
+        reason: "reviewer_assignment_requested",
+        body: [
+          `The Action Plan for "${task.title}" was approved, but the task has no assignee.`,
+          "If you are the assigned task reviewer, call the workflow endpoint with action=assign_after_plan_approval. PM will choose an eligible coding agent and move Backlog to To Do if needed.",
+          "Do not start implementation yourself.",
+        ].join("\n"),
+      });
+    }
   }
 
   revalidateTaskShell(task.id);

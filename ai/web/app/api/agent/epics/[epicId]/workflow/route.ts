@@ -236,8 +236,8 @@ export async function POST(
             status: "Backlog",
             rank: nextRank++,
             statusChangedAt: now,
-            actingManagerId: epic.actingManagerId,
-            reporterId: epic.reporterId ?? agent.user!.id,
+            actingManagerId: null,
+            reporterId: epic.reporterId ?? null,
             branchName: epic.branchName,
             commitPrefix: epic.commitPrefix,
           },
@@ -260,15 +260,6 @@ export async function POST(
         });
       }
 
-      await tx.epic.update({
-        where: { id: epic.id },
-        data: {
-          status: "Backlog",
-          statusChangedAt: now,
-          approvedOn: null,
-          approvedById: null,
-        },
-      });
       await tx.agentChatMessage.create({
         data: {
           projectId: epic.projectId,
@@ -277,7 +268,8 @@ export async function POST(
           agentSlug: "room",
           senderUserId: agent.user!.id,
           body: [
-            `Epic manager @${agent.slug} created ${rows.length} new Backlog task${rows.length === 1 ? "" : "s"} and paused the Epic for human approval.`,
+            `Epic manager @${agent.slug} created ${rows.length} new Backlog task${rows.length === 1 ? "" : "s"}.`,
+            "A human must still approve/open the Epic before the manager can advance the queue or assign workers.",
             "",
             summary,
             "",
@@ -297,24 +289,9 @@ export async function POST(
             epicId: epic.id,
             summary,
             taskIds: rows.map((row) => row.id),
-            previousStatus: epic.status,
-            status: "Backlog",
-            approvalCleared: true,
-          }),
-        },
-      });
-      await tx.activityLog.create({
-        data: {
-          projectId: epic.projectId,
-          userId: agent.user!.id,
-          kind: "epic.status",
-          targetAgent: agent.slug,
-          payload: JSON.stringify({
-            epicId: epic.id,
-            from: epic.status,
-            to: "Backlog",
-            via: "epic-manager-workflow",
-            action,
+            status: epic.status,
+            approvalCleared: false,
+            epicStatusChanged: false,
           }),
         },
       });
@@ -330,7 +307,7 @@ export async function POST(
     revalidatePath(`/projects/${epic.project.slug}`);
     revalidatePath(`/projects/${epic.project.slug}/epics/${epic.id}`);
     publishBoardTouch(epic.projectId);
-    return NextResponse.json({ ok: true, epicId: epic.id, status: "Backlog", tasks: created });
+    return NextResponse.json({ ok: true, epicId: epic.id, status: epic.status, tasks: created });
   }
 
   if (!epic.approvedOn || epic.status !== "Open") {

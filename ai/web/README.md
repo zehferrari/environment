@@ -91,6 +91,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/api/agent/projects/[projectId]/proposals` | agent work-item proposal submission — grant-gated change-set (epics/tasks/sub-tasks + updates/comments), dry-run-validated and stored pending for human apply. Idempotent on `planId`. |
 | `app/api/attachments/[id]` | streamed attachment download (auth-gated). |
 | `app/api/agents/[agentId]/profile/...` | per-agent profile read/write (HOMELAB-52). |
+| `app/api/agents/[agentId]/images/{profile,avatar}` | authenticated agent profile-image read/write. Upload/remove is allowed only when the agent registry entry has `profileImages.theme="Manually Uploaded"`. |
 | `app/api/agents/[agentId]/models` | model settings read/write. |
 | `app/api/agents/[agentId]/services/{toggle,restart}` | Atlas service controls. |
 | `app/api/agents/[agentId]/registry/toggle` | activate/deactivate registry entry. |
@@ -128,6 +129,9 @@ user.
 | `lib/agents/manage-user.ts` | provisioning hand-off. pm.service is `NoNewPrivileges` and can't sudo, so this spools a request into `/var/lib/pm/agent-provision/` and polls for the result; `openclaw-agent-runner` (monitor's system identity) runs the privileged `openclaw-manage-user` step. Synchronous from the route's view. |
 | `lib/agents/credentials.ts` | per-agent host-private credential seeding. |
 | `lib/agents/profile.ts` | shared agent profile read/write + ACL. |
+| `lib/agents/profile-images.ts` | profile/avatar image metadata, upload conversion, delete, and ACL enforcement for `/srv/agents/Pictures/<Agent>/`. |
+| `lib/agents/profile-image-generation.ts` | queues non-manual image-generation requests to the first active agent with an OpenAI/Codex/ChatGPT-style model. |
+| `lib/agents/profile-image-themes.ts` | Add Agent character-theme combobox options; first option is `Manually Uploaded`. |
 | `lib/agents/model-settings.ts` | shared model-config store (HOMELAB-52). |
 | `lib/agents/restart.ts` | systemd restart fan-out via Atlas gateway. |
 | `lib/agents/seed-zeh.ts` | idempotent seeder for the `zeh` human user. |
@@ -263,6 +267,15 @@ route then reconciles the PM DB with `syncAgents()` and writes an
   refreshes each provider's live model list (`/api/agents/models`), marks which
   models the agent may use, picks a default, and orders fallbacks by drag. Only
   the chosen providers/models are written into the agent's `openclaw.json`.
+- **Profile images.** Add Agent includes a character-theme combobox stored in
+  the registry entry as `profileImages.theme`. `Manually Uploaded` enables
+  upload/remove controls on the agent profile page for
+  `/srv/agents/Pictures/<Username>/{profile,avatar}.png`. Any other theme queues
+  a direct PM-channel request to the first active agent with an OpenAI/Codex or
+  ChatGPT-style model, asking it to create a photoreal `profile.png` and plush
+  doll `avatar.png` in that directory. The helper creates the picture directory
+  with `code-agents` group-write permissions; `pm.service` needs
+  `/srv/agents/Pictures` in `ReadWritePaths`.
 - **Telegram.** When enabled, the bot token is captured and the helper writes it
   to `~/.config/openclaw/telegram-token` + `TELEGRAM_BOT_TOKEN`; DM pairing then
   authorises the operator's account.

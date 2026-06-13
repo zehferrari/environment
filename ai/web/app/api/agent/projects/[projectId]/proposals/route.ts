@@ -15,9 +15,12 @@
 //   - body.token is the HMAC grant token bound to (projectId, agentSlug,
 //     messageId);
 //   - the slug's Agent + seeded User must be active.
-// On success: persist pending proposal, stamp the grant used, write an
-// ActivityLog row as the agent. Re-using the grant returns 410. Re-using
-// the same planId returns the existing proposal (idempotent).
+// On success: persist the proposal, stamp the grant used, write an
+// ActivityLog row as the agent. Direct-chat human grants auto-apply after
+// validation; discussion grants remain pending except narrow workflow
+// auto-apply cases such as Epic-manager task breakdowns. Re-using the grant
+// returns 410. Re-using the same planId returns the existing proposal
+// (idempotent).
 
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
@@ -25,6 +28,13 @@ import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { verifyWorkItemGrantToken } from "@/lib/agents/work-item-token";
 import { validateProposal } from "@/lib/work-items/proposal";
+import { commitProposal } from "@/lib/work-items/apply";
+import {
+  absolutePublicUrl,
+  isLoopbackOrigin,
+  normalizePublicOrigin,
+  publicOriginFromHeaders,
+} from "@/lib/http/public-origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,6 +47,7 @@ type WorkItemGrant =
       projectId: string | null;
       allowWorkItemManagement: boolean;
       workItemGrantUsedAt: Date | null;
+      sender: { kind: string; status: string } | null;
       taskId?: null;
       epicId?: null;
     }
@@ -76,6 +87,97 @@ async function findDiscussionGrantRun(projectId: string, grantMessageId: string,
   return run;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isEpicManagerTaskBreakdown(operations: unknown[], epicId: string) {
+  const topLevelTaskRefs = new Set<string>();
+  const subtaskRefs = new Set<string>();
+
+  for (const raw of operations) {
+    if (!isRecord(raw)) return false;
+    if (raw.op === "create_task") {
+      if (raw.epic !== epicId) return false;
+      if (typeof raw.ref !== "string" || !raw.ref.startsWith("tmp:")) return false;
+      topLevelTaskRefs.add(raw.ref);
+      continue;
+    }
+    if (raw.op === "create_subtask") {
+      if (typeof raw.ref !== "string" || !raw.ref.startsWith("tmp:")) return false;
+      if (typeof raw.parent !== "string" || !topLevelTaskRefs.has(raw.parent)) return false;
+      subtaskRefs.add(raw.ref);
+      continue;
+    }
+    return false;
+  }
+
+  return topLevelTaskRefs.size > 0 && subtaskRefs.size + topLevelTaskRefs.size === operations.length;
+}
+
+async function canAutoApplyEpicManagerTaskBreakdown(args: {
+  grant: WorkItemGrant;
+  projectId: string;
+  agentUserId: string;
+  operations: unknown[];
+}) {
+  if (args.grant.source !== "discussion" || !args.grant.epicId) return false;
+  if (!isEpicManagerTaskBreakdown(args.operations, args.grant.epicId)) return false;
+
+  const epic = await db.epic.findFirst({
+    where: {
+      id: args.grant.epicId,
+      projectId: args.projectId,
+      actingManagerId: args.agentUserId,
+      deletedAt: null,
+    },
+    select: { id: true },
+  });
+  return Boolean(epic);
+}
+
+function parsePayloadOrigin(payload: string | null): string | null {
+  if (!payload) return null;
+  try {
+    const parsed = JSON.parse(payload) as { publicOrigin?: unknown };
+    return normalizePublicOrigin(parsed.publicOrigin);
+  } catch {
+    return null;
+  }
+}
+
+async function storedPublicOriginForGrant(grant: WorkItemGrant): Promise<string | null> {
+  const kinds = grant.source === "direct"
+    ? ["agent.direct_chat.send"]
+    : grant.taskId
+      ? ["task.chat.send"]
+      : ["epic.chat.send"];
+  const row = await db.activityLog.findFirst({
+    where: {
+      kind: { in: kinds },
+      ...(grant.source === "direct" ? { targetAgent: grant.agentSlug } : {}),
+      payload: { contains: `"messageId":"${grant.id}"` },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { payload: true },
+  });
+  return parsePayloadOrigin(row?.payload ?? null);
+}
+
+function publicOriginFallback(req: NextRequest): string | null {
+  const appUrl = normalizePublicOrigin(process.env.APP_URL);
+  if (appUrl) return appUrl;
+  const fromHeaders = publicOriginFromHeaders(req.headers);
+  return isLoopbackOrigin(fromHeaders) ? null : fromHeaders;
+}
+
+function publicCreatedItems<T extends { url: string }>(items: T[] | undefined, origin: string | null) {
+  return (items ?? []).map((item) => ({
+    ...item,
+    url: absolutePublicUrl(item.url, origin),
+  }));
+}
+
 export async function POST(
   req: NextRequest,
   ctx: { params: Promise<{ projectId: string }> },
@@ -85,6 +187,7 @@ export async function POST(
   let payload: {
     grantMessageId?: unknown;
     token?: unknown;
+    publicOrigin?: unknown;
     planId?: unknown;
     summary?: unknown;
     operations?: unknown;
@@ -98,6 +201,7 @@ export async function POST(
   const grantMessageId =
     typeof payload.grantMessageId === "string" ? payload.grantMessageId : "";
   const token = typeof payload.token === "string" ? payload.token : "";
+  const requestedPublicOrigin = normalizePublicOrigin(payload.publicOrigin);
   const planId = typeof payload.planId === "string" ? payload.planId : "";
   const summary =
     typeof payload.summary === "string" && payload.summary.trim()
@@ -147,6 +251,7 @@ export async function POST(
       projectId: true,
       allowWorkItemManagement: true,
       workItemGrantUsedAt: true,
+      sender: { select: { kind: true, status: true } },
     },
   });
   let grant: WorkItemGrant | null = directGrant
@@ -204,6 +309,15 @@ export async function POST(
   ) {
     return NextResponse.json({ error: "Invalid grant token" }, { status: 403 });
   }
+  if (
+    grant.source === "direct" &&
+    (grant.sender?.kind !== "human" || grant.sender.status !== "active")
+  ) {
+    return NextResponse.json(
+      { error: "Direct work-item execution requires an active human requester" },
+      { status: 403 },
+    );
+  }
 
   const agent = await db.agent.findUnique({
     where: { slug: grant.agentSlug },
@@ -238,6 +352,19 @@ export async function POST(
       { status: 422 },
     );
   }
+
+  const autoApplyDirectHumanRequest = grant.source === "direct";
+  const autoApplyEpicManagerBreakdown = await canAutoApplyEpicManagerTaskBreakdown({
+    grant,
+    projectId,
+    agentUserId,
+    operations,
+  });
+  const autoApply = autoApplyDirectHumanRequest || autoApplyEpicManagerBreakdown;
+  const publicOrigin =
+    await storedPublicOriginForGrant(grant) ??
+    requestedPublicOrigin ??
+    publicOriginFallback(req);
 
   try {
     const created = await db.$transaction(async (tx) => {
@@ -282,6 +409,40 @@ export async function POST(
       });
       return proposal;
     });
+
+    if (autoApply) {
+      const applied = await commitProposal(created.id, agentUserId);
+      if (!applied.ok) {
+        return NextResponse.json(
+          {
+            ok: false,
+            proposalId: created.id,
+            status: "pending",
+            error: applied.error,
+          },
+          { status: 409 },
+        );
+      }
+      revalidatePath(`/projects/${project.slug}`);
+      if (grant.epicId) {
+        revalidatePath(`/projects/${project.slug}/epics/${grant.epicId}`);
+      }
+      return NextResponse.json(
+        {
+          ok: true,
+          proposalId: created.id,
+          status: "applied",
+          autoApplied: true,
+          autoApplyReason: autoApplyDirectHumanRequest
+            ? "direct_human_request"
+            : "epic_manager_task_breakdown",
+          validation,
+          result: applied.counts,
+          links: publicCreatedItems(applied.createdItems, publicOrigin),
+        },
+        { status: 201 },
+      );
+    }
 
     if (grant.source === "direct") {
       revalidatePath(`/agents/${grant.agentSlug}/chat`);

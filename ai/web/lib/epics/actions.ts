@@ -124,9 +124,10 @@ async function notifyEpicActingManagerAssigned(args: {
     `You have been assigned as Acting Manager for Epic "${args.epicTitle}".`,
     "Read the Epic description, Action Plan thread, comments, current tasks, and Epic attachment section before replying.",
     "Do not fetch or summarize the whole project library. Use attachments only when the Epic text/comments/action plan explicitly reference them or the plan cannot be made safely without them; say which attachment you used.",
-    "If the Epic has no description, synthesize a concise description from the available Epic context.",
-    "If the Epic needs implementation tasks, prepare an ordered task breakdown with task-local subtasks/topics so board progress is visible.",
-    "When the Epic is opened, assign work only from the Epic worker pool, one task per project per agent, and never assign yourself as task assignee/reporter/acting manager.",
+    "If the Epic has no description, use the description endpoint to write a concise description directly from the available Epic/project context. No human Save is required for this empty-description manager write.",
+    "If the Epic needs implementation tasks, create the ordered Backlog task breakdown through the Epic manager workflow. Include a concise summary explaining why the tasks are needed.",
+    "Creating descriptions/tasks is allowed before Epic approval. Starting the plan is not: only advance the queue or assign workers after a human opens/approves the Epic.",
+    "Never change Epic status. When the Epic is opened by a human, assign work only from the Epic worker pool, one task per project per agent, and never assign yourself as task assignee/reporter/acting manager.",
     "Do not post an acknowledgement-only response.",
   ].join("\n"));
 
@@ -677,6 +678,7 @@ export async function createTaskInEpic(
       commitPrefix: true,
       approvedOn: true,
       actingManagerId: true,
+      reporterId: true,
       deletedAt: true,
       _count: {
         select: {
@@ -696,9 +698,6 @@ export async function createTaskInEpic(
   }
   if (actor.kind !== "human" && actor.id !== epic.actingManagerId) {
     return { ok: false, error: "Only the Epic acting manager can create the initial Epic task breakdown." };
-  }
-  if (actor.kind !== "human" && !epic.approvedOn) {
-    return { ok: false, error: "Epic Action Plan must be approved before tasks can be created." };
   }
   if (actor.kind !== "human" && epic._count.tasks > 0) {
     return { ok: false, error: "Epic tasks can only be created when the Epic has no top-level child tasks yet." };
@@ -721,8 +720,8 @@ export async function createTaskInEpic(
       rank: (maxRank._max.rank ?? 0) + 1,
       statusChangedAt: new Date(),
       assigneeId: null,
-      actingManagerId: epic.project.defaultReviewerId ?? null,
-      reporterId: actor.id,
+      actingManagerId: actor.kind === "human" ? epic.project.defaultReviewerId ?? null : null,
+      reporterId: actor.kind === "human" ? actor.id : epic.reporterId ?? null,
       branchName: epic.branchName ?? null,
       commitPrefix: epic.commitPrefix ?? null,
     },

@@ -22,6 +22,7 @@
 import { db } from "@/lib/db";
 import { listAssignablePrincipals } from "@/lib/principals";
 import {
+  checkStatusTransition,
   checkHierarchy,
   isTaskStatus,
 } from "@/lib/workflow";
@@ -131,7 +132,7 @@ function rootError(message: string, opCount: number): ProposalValidation {
 export async function validateProposal(
   projectId: string,
   rawOperations: unknown,
-  _actor: ProposalActor,
+  actor: ProposalActor,
 ): Promise<ProposalValidation> {
   if (!Array.isArray(rawOperations)) {
     return rootError("operations must be a JSON array", 0);
@@ -197,11 +198,12 @@ export async function validateProposal(
     taskIds.size
       ? db.task.findMany({
           where: { id: { in: [...taskIds] }, projectId, archivedAt: null, deletedAt: null },
-          select: { id: true, parentTaskId: true },
+          select: { id: true, parentTaskId: true, status: true },
         })
       : Promise.resolve([] as Array<{
           id: string;
           parentTaskId: string | null;
+          status: string;
         }>),
     listAssignablePrincipals(),
   ]);
@@ -249,9 +251,9 @@ export async function validateProposal(
       errors.push(`${label} @${username} is not an active assignable principal`);
       return;
     }
-    // Human-approved proposals are delegated human edits. The proposal layer
-    // only verifies that the referenced principal exists and is assignable;
-    // workflow self-assignment policy remains on agent-only native endpoints.
+    if (principal.id === actor.userId || principal.agentSlug === actor.agentSlug) {
+      errors.push(`agents cannot set themselves as ${label}`);
+    }
   };
 
   // Epic reference for create_task.epic / update_task.epic — tmp ref to a
@@ -342,15 +344,21 @@ export async function validateProposal(
       case "create_epic": {
         validateTitle(raw.title, errors, true);
         validateDescription(raw.description, errors);
-        validatePrincipal(raw.actingManager, errors, "actingManager");
+        if (raw.actingManager !== undefined && raw.actingManager !== null) {
+          errors.push("agent-created epics cannot set an acting manager; the requester is recorded as reporter");
+        }
         break;
       }
       case "create_task": {
         validateTitle(raw.title, errors, true);
         validateDescription(raw.description, errors);
         validateEpicLink(raw.epic, errors);
-        validatePrincipal(raw.assignee, errors, "assignee");
-        validatePrincipal(raw.actingManager, errors, "actingManager");
+        if (raw.assignee !== undefined && raw.assignee !== null) {
+          errors.push("agent-created tasks cannot set an assignee; the requester is recorded as reporter");
+        }
+        if (raw.actingManager !== undefined && raw.actingManager !== null) {
+          errors.push("agent-created tasks cannot set a reviewer/acting manager; the requester is recorded as reporter");
+        }
         const h = checkHierarchy({ level: "task", parentTaskId: null });
         if (!h.ok) errors.push(h.message);
         break;
@@ -368,8 +376,12 @@ export async function validateProposal(
             errors.push("Subtasks can only be created directly under top-level Tasks, not under another subtask.");
           }
         }
-        validatePrincipal(raw.assignee, errors, "assignee");
-        validatePrincipal(raw.actingManager, errors, "actingManager");
+        if (raw.assignee !== undefined && raw.assignee !== null) {
+          errors.push("agent-created subtasks cannot set an assignee; the requester is recorded as reporter");
+        }
+        if (raw.actingManager !== undefined && raw.actingManager !== null) {
+          errors.push("agent-created subtasks cannot set a reviewer/acting manager; the requester is recorded as reporter");
+        }
         const parentId = typeof raw.parent === "string" ? raw.parent : "x";
         const h = checkHierarchy({ level: "subtask", parentTaskId: parentId });
         if (!h.ok) errors.push(h.message);
@@ -380,8 +392,12 @@ export async function validateProposal(
         validateTitle(raw.title, errors, false);
         validateDescription(raw.description, errors);
         validatePrincipal(raw.actingManager, errors, "actingManager");
-        if (raw.status !== undefined && !EPIC_STATUSES.includes(raw.status as EpicStatus)) {
-          errors.push(`unknown epic status: ${String(raw.status)}`);
+        if (raw.status !== undefined) {
+          if (!EPIC_STATUSES.includes(raw.status as EpicStatus)) {
+            errors.push(`unknown epic status: ${String(raw.status)}`);
+          } else {
+            errors.push("agents cannot change Epic status");
+          }
         }
         break;
       }
@@ -399,6 +415,15 @@ export async function validateProposal(
         validatePrincipal(raw.assignee, errors, "assignee");
         validatePrincipal(raw.actingManager, errors, "actingManager");
         validateTaskStatus(raw.status, errors);
+        const target = requireExistingTask(raw.target, []);
+        if (typeof raw.status === "string" && isTaskStatus(raw.status) && target) {
+          const transition = checkStatusTransition({
+            from: target.status,
+            to: raw.status,
+            actor: { id: actor.userId, kind: "agent" },
+          });
+          if (!transition.ok) errors.push(transition.message);
+        }
         if (raw.alert_reporter !== undefined && raw.alertReporter !== undefined) errors.push("use only one of alert_reporter or alertReporter");
         break;
       }

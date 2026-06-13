@@ -51,6 +51,7 @@ export type AgentRegistryEntry = {
   avatar: string;
   telegram: { enabled: boolean; bot: string };
   integrations: { gmail: boolean; jira: boolean; bitbucket: boolean; maildir: boolean };
+  profileImages?: { theme: string };
   listeners: ProvisionListener[];
 };
 
@@ -347,6 +348,7 @@ export function buildAgentEntry(args: {
   email: string;
   telegram?: { enabled?: boolean; bot?: string } | null;
   integrations?: { gmail?: boolean; jira?: boolean; bitbucket?: boolean; maildir?: boolean } | null;
+  imageTheme?: string;
   listeners: ProvisionListener[];
 }): AgentRegistryEntry {
   return {
@@ -369,6 +371,7 @@ export function buildAgentEntry(args: {
       bitbucket: args.integrations?.bitbucket ?? false,
       maildir: args.integrations?.maildir ?? false,
     },
+    profileImages: { theme: args.imageTheme ?? "Manually Uploaded" },
     listeners: args.listeners,
   };
 }

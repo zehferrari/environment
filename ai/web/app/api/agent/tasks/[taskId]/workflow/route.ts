@@ -18,6 +18,7 @@ import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtask
 import { resolveGitIdentity } from "@/lib/settings/system";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 import { publishBoardTouch } from "@/lib/pm/board-events";
+import { assignTaskAfterPlanApproval } from "@/lib/tasks/reviewer-assignment";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,6 +31,7 @@ const ACTIONS = [
   "review_done",
   "triage_to_todo",
   "approve_plan",
+  "assign_after_plan_approval",
 ] as const;
 
 type WorkflowAction = (typeof ACTIONS)[number];
@@ -380,12 +382,54 @@ export async function POST(
           "Do not post a visible acknowledgement unless a blocker or material plan change appears.",
         ].join("\n"),
       });
+    } else if (reviewerId) {
+      await sendTaskWorkflowNotification({
+        taskId: task.id,
+        targetUserId: reviewerId,
+        actor,
+        reason: "reviewer_assignment_requested",
+        body: [
+          `The Action Plan for "${task.title}" was approved by @${agent.user.username}, but the task has no assignee.`,
+          "If you are the assigned task reviewer, call the workflow endpoint with action=assign_after_plan_approval. PM will choose an eligible coding agent and move Backlog to To Do if needed.",
+          "Do not start implementation yourself.",
+        ].join("\n"),
+      });
     }
     if (comment) revalidateTaskReplyScope(task.id, "chat");
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     return NextResponse.json({ ok: true, taskId: task.id, approved: true, status: moveToTodo ? "To Do" : task.status });
+  }
+
+  if (action === "assign_after_plan_approval") {
+    if (task.actingManagerId !== agent.user.id) {
+      return NextResponse.json({ error: "Only the assigned task reviewer can assign this task after plan approval" }, { status: 403 });
+    }
+    const result = await assignTaskAfterPlanApproval({
+      taskId: task.id,
+      actor,
+      requireReviewerUserId: agent.user.id,
+    });
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: result.status ?? 400 });
+    }
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
+    revalidateTaskShell(task.id);
+    revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    revalidatePath(`/projects/${task.project.slug}`);
+    return NextResponse.json({
+      ok: true,
+      taskId: task.id,
+      status: result.task.status,
+      assignedTo: result.assignee,
+      movedToTodo: result.movedToTodo,
+    });
   }
 
   if (action === "ready_for_review" || action === "submit_review") {

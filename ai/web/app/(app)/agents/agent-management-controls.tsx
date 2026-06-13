@@ -26,6 +26,11 @@ import {
   type ProviderId,
   type ProviderModel,
 } from "@/lib/agents/providers";
+import {
+  AGENT_PROFILE_IMAGE_THEMES,
+  MANUAL_IMAGE_THEME,
+  normalizeProfileImageTheme,
+} from "@/lib/agents/profile-image-themes";
 
 type SelectedModel = { provider: string; id: string; name?: string };
 
@@ -42,6 +47,7 @@ export type AgentFormData = {
   email: string;
   telegram: { enabled: boolean; bot: string; token: string };
   integrations: { gmail: boolean; jira: boolean; bitbucket: boolean; maildir: boolean };
+  image_theme: string;
 };
 
 type AgentRow = {
@@ -52,6 +58,7 @@ type AgentRow = {
   telegram?: { enabled: boolean; bot: string } | null;
   integrations?: { gmail: boolean; jira: boolean; bitbucket: boolean; maildir?: boolean } | null;
   model_config?: ModelConfig;
+  image_theme?: string | null;
 };
 
 type AgentManagementControlsProps = { agents: AgentRow[] };
@@ -69,6 +76,7 @@ function blankForm(): AgentFormData {
     email: "",
     telegram: { enabled: false, bot: "", token: "" },
     integrations: { gmail: false, jira: false, bitbucket: false, maildir: false },
+    image_theme: MANUAL_IMAGE_THEME,
   };
 }
 
@@ -123,6 +131,7 @@ export default function AgentManagementControls({ agents }: AgentManagementContr
         bitbucket: agent.integrations?.bitbucket ?? false,
         maildir: agent.integrations?.maildir ?? false,
       },
+      image_theme: normalizeProfileImageTheme(agent.image_theme),
     });
 
     // Prefill model selection from the agent's openclaw.json, dropping any
@@ -376,6 +385,27 @@ export default function AgentManagementControls({ agents }: AgentManagementContr
                     className={inputCls}
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className={labelCls}>Character theme / inspiration</label>
+                <input
+                  list="agent-profile-image-themes"
+                  required
+                  disabled={busy}
+                  value={form.image_theme}
+                  onChange={(e) => setForm({ ...form, image_theme: e.target.value })}
+                  className={inputCls}
+                />
+                <datalist id="agent-profile-image-themes">
+                  {AGENT_PROFILE_IMAGE_THEMES.map((theme) => (
+                    <option key={theme} value={theme} />
+                  ))}
+                </datalist>
+                <p className="mt-1 text-[10px] text-[var(--color-text-muted)]">
+                  Pick <span className="font-medium">{MANUAL_IMAGE_THEME}</span> to upload profile/avatar images yourself from the agent profile page.
+                  Any other inspiration queues a ChatGPT-capable agent to generate the image files.
+                </p>
               </div>
 
               {/* ---- Model providers + models ---- */}

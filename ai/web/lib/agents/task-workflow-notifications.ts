@@ -54,6 +54,8 @@ export type TaskWorkflowNotificationReason =
   | "review_feedback"
   | "review_done"
   | "action_plan_review_requested"
+  | "reviewer_plan_requested"
+  | "reviewer_assignment_requested"
   | "policy_update";
 
 function agentCallbackBaseUrl() {
@@ -141,7 +143,7 @@ function workflowPrompt(args: {
     {
       messageId: args.messageId,
       token,
-      action: "<start | approve_plan | ready_for_review | review_feedback | review_done | triage_to_todo>",
+      action: "<start | approve_plan | ready_for_review | review_feedback | review_done | triage_to_todo | assign_after_plan_approval>",
       comment: "<optional on ready_for_review; required for review_feedback; use on ready_for_review when waiting for reviewer/manager/reporter feedback>",
       repoTouched: "<true | false, only on ready_for_review; default true when branchName is set>",
     },
@@ -199,10 +201,12 @@ function workflowPrompt(args: {
     "Workflow rules:",
     "- Backlog is for planning and opinions only. If you are the assignee and the task is in Backlog, reply in Action Plan with one concrete technical plan. Do not change task status and do not start work.",
     "- To Do means the task is actionable, but execution is still blocked until the Action Plan has approved_on set. If you are the assignee and approved_on is empty, reply in Action Plan with one concrete technical plan and wait.",
+    "- If you are the assigned task reviewer on an unassigned task, post one reviewer plan of action in Action Plan. Include the task-local subtasks/topics/items to be addressed or watched. Do not start implementation and do not assign anyone until the plan is approved.",
     "- If you are the resolved reviewer or reporter and you accept the assignee's Action Plan, call action=approve_plan and include one concise `comment` explaining why the plan is acceptable or naming any constraints. If the task was in Backlog, PM will move it to To Do and wake the assignee.",
     args.onlyReportersCanApproveActionPlans
       ? "- Project policy: only the reporter can approve Action Plans. Reviewers and acting managers should comment with feedback or agreement, but must wait for reporter approval."
       : "- Project policy: the reporter or resolved reviewer may approve Action Plans.",
+    "- If you are the assigned task reviewer, the plan is approved, and the task still has no assignee, call action=assign_after_plan_approval. PM will choose an eligible coding agent and move the task from Backlog to To Do if needed.",
     "- If you are the assignee and the task is in To Do with approved_on set, call the workflow endpoint with action=start, then begin work immediately.",
     "- If you are the assignee and the task is in Review because you were waiting for reviewer, manager, reporter, or human input, and that response has now arrived, call action=start to move it back to In Progress and continue. When the follow-up work is complete, call action=ready_for_review again.",
     "- In Progress means active implementation. When implementation is complete, call the workflow endpoint with action=ready_for_review.",
@@ -305,6 +309,8 @@ export async function sendTaskWorkflowNotification(args: {
   const planChannelNotification =
     args.reason === "backlog_plan_requested" ||
     args.reason === "action_plan_review_requested" ||
+    args.reason === "reviewer_plan_requested" ||
+    args.reason === "reviewer_assignment_requested" ||
     (args.reason === "todo_start_required" && !task.approvedOn);
 
   const msg = await db.agentChatMessage.create({

@@ -28,13 +28,41 @@ export async function setSystemSettings(formData: FormData) {
   const userId = session?.user?.id;
   if (!userId) throw new Error("Unauthenticated");
 
-  const defaultGitUserName = trimOrNull(formData.get("defaultGitUserName"));
-  const defaultGitUserEmail = trimOrNull(formData.get("defaultGitUserEmail"));
-  const doneTtlDays = intOrNull(formData.get("doneTtlDays"), 1, 365);
-  const binTtlDays = intOrNull(formData.get("binTtlDays"), 1, 3650);
-  const theme = normalizeTheme(formData.get("theme"));
+  const rawScope = String(formData.get("settingsScope") ?? "general");
+  const scope = rawScope === "models" ? "models" : "general";
+  const data: {
+    defaultGitUserName?: string | null;
+    defaultGitUserEmail?: string | null;
+    doneTtlDays?: number | null;
+    binTtlDays?: number | null;
+    theme?: ReturnType<typeof normalizeTheme>;
+    openRouterApiKey?: string | null;
+    openRouterReferer?: string | null;
+    openRouterTitle?: string | null;
+  } = {};
+  const payload: Record<string, unknown> = { scope };
 
-  const data = { defaultGitUserName, defaultGitUserEmail, doneTtlDays, binTtlDays, theme };
+  if (scope === "general") {
+    data.defaultGitUserName = trimOrNull(formData.get("defaultGitUserName"));
+    data.defaultGitUserEmail = trimOrNull(formData.get("defaultGitUserEmail"));
+    data.doneTtlDays = intOrNull(formData.get("doneTtlDays"), 1, 365);
+    data.binTtlDays = intOrNull(formData.get("binTtlDays"), 1, 3650);
+    data.theme = normalizeTheme(formData.get("theme"));
+    Object.assign(payload, data);
+  } else {
+    const current = await db.systemSettings.findUnique({
+      where: { id: "system" },
+      select: { openRouterApiKey: true },
+    });
+    const incomingKey = trimOrNull(formData.get("openRouterApiKey"));
+    const clearKey = formData.get("clearOpenRouterApiKey") === "on";
+    data.openRouterApiKey = clearKey ? null : incomingKey ?? current?.openRouterApiKey ?? null;
+    data.openRouterReferer = trimOrNull(formData.get("openRouterReferer"));
+    data.openRouterTitle = trimOrNull(formData.get("openRouterTitle"));
+    payload.openRouterApiKey = clearKey ? "cleared" : incomingKey ? "set" : current?.openRouterApiKey ? "unchanged" : "empty";
+    payload.openRouterReferer = data.openRouterReferer;
+    payload.openRouterTitle = data.openRouterTitle;
+  }
 
   await db.$transaction([
     db.systemSettings.upsert({
@@ -46,11 +74,12 @@ export async function setSystemSettings(formData: FormData) {
       data: {
         userId,
         kind: "system.settings",
-        payload: JSON.stringify(data),
+        payload: JSON.stringify(payload),
       },
     }),
   ]);
 
   revalidatePath("/system/settings");
+  revalidatePath("/system/settings?tab=models");
   revalidatePath("/");
 }

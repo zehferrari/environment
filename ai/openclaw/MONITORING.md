@@ -23,6 +23,14 @@ the entry-point overview.
   `openclaw-gmail-listener`, `openclaw-webhook-receiver`,
   `openclaw-mail-listener`). Per-agent `services` in `agents.json` adds extras.
 - **Listeners** declared under `listeners` in `agents.json`.
+- **Agent symlink drift**. `probe_agent_symlinks` checks every enabled agent's
+  `~/.openclaw/openclaw.json` resolves to
+  `/srv/agents/openclaw/<agent>/openclaw.json` and that the agent-facing docs
+  in `~/workspace` / `~/.openclaw/workspace` resolve to the active PM
+  worktree's `ai/openclaw` docs. `USER.md` resolves to the shared agent file
+  under `/srv/agents/openclaw/_shared` when present. Config drift is `crit`
+  because a stale regular home config can break gateway auth; doc drift is
+  `warn`.
 - **Stalled Jira tickets** for any agent with `role: "coding"` and
   `integrations.jira: true`. Two complementary kinds: `task-stalled-no-agent`
   (primary, defined by *most-recent activity* — max of newest openclaw
@@ -134,6 +142,23 @@ the merge. After that step every agent record exposes its `services` and
 `capabilities` arrays — same shape as the legacy explicit form, derived
 not authored. See the comments block at the top of `agent-defaults.json`
 for the merge algorithm.
+
+### Monitor chat diagnostics
+
+When the monitor agent is asked in PM direct chat about a named agent,
+gateway, or service, the local OpenClaw session list is not authoritative.
+The monitor must inspect the host fleet registry and runtime state:
+
+1. Resolve the agent in `/etc/openclaw/agents.json` or
+   `/srv/agents/index.json`.
+2. Get the Linux UID with `id <agent>` and use
+   `XDG_RUNTIME_DIR=/run/user/<uid>` for user-service commands.
+3. Check the target service as the target user, for example
+   `systemctl --user status openclaw-gateway.service --no-pager`.
+4. Read recent target-user journal lines for `openclaw-gateway.service`.
+5. Use `openclaw-control wake-agent`, `restart-services`, or
+   `restart-and-wake` only after the live checks identify a recoverable
+   condition.
 
 ### Per-agent project resources (`~/.local/openclaw/monitor.json`)
 

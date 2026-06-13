@@ -102,13 +102,51 @@ export async function POST(
 
   const epic = await db.epic.findUnique({
     where: { id: epicId },
-    select: { id: true, projectId: true, deletedAt: true },
+    select: {
+      id: true,
+      projectId: true,
+      description: true,
+      actingManagerId: true,
+      deletedAt: true,
+    },
   });
   if (!epic || epic.deletedAt) {
     return NextResponse.json({ error: "Epic not found" }, { status: 404 });
   }
 
   const newDescription = description.trim();
+  const canDirectWriteEmptyEpicDescription =
+    !epic.description?.trim() && epic.actingManagerId === resolvedAgent.user.id;
+
+  if (canDirectWriteEmptyEpicDescription) {
+    await db.$transaction([
+      db.epic.update({
+        where: { id: epicId },
+        data: { description: newDescription },
+      }),
+      db.agentChatMessage.update({
+        where: { id: messageId },
+        data: { editGrantUsedAt: new Date() },
+      }),
+      db.activityLog.create({
+        data: {
+          projectId: epic.projectId,
+          userId: resolvedAgent.user.id,
+          kind: "epic.description.agent_write",
+          payload: JSON.stringify({
+            messageId,
+            epicId,
+            agentSlug: resolvedAgent.slug,
+            requesterUserId: grant.senderUserId,
+            length: newDescription.length,
+            draft: false,
+            reason: "empty_epic_description_by_acting_manager",
+          }),
+        },
+      }),
+    ]);
+    return NextResponse.json({ ok: true, applied: true });
+  }
 
   // Persist the draft against the human who triggered the grant (mirrors
   // the task route). Anyone else viewing the epic sees nothing; the

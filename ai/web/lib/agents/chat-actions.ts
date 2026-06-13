@@ -14,6 +14,7 @@
 // stamped on first use.
 
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
@@ -55,6 +56,7 @@ import {
   scheduleSpeculativeAgentChatContext,
 } from "@/lib/agents/speculative-context";
 import { stripChatMarkdown as compactText, truncateSummary } from "@/lib/text";
+import { publicOriginFromHeaders } from "@/lib/http/public-origin";
 
 async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> {
   const session = await auth();
@@ -218,6 +220,7 @@ export async function prebuildAgentChatContext(formData: FormData) {
 }
 
 export async function sendAgentChatMessage(formData: FormData) {
+  const publicOrigin = publicOriginFromHeaders(await headers());
   const actor = await requireActor();
   const slug = String(formData.get("projectSlug") ?? "");
   const taskIdRaw = String(formData.get("taskId") ?? "");
@@ -500,6 +503,7 @@ export async function sendAgentChatMessage(formData: FormData) {
         epicId,
         allowDescriptionEdit,
         allowWorkItemManagement,
+        publicOrigin,
         originChannel,
         baseArchiveId,
         targetType,
@@ -705,6 +709,7 @@ export async function sendAgentChatMessage(formData: FormData) {
         proposeUrl,
         grantMessageId: msg.id,
         token,
+        publicOrigin,
       });
     }
 

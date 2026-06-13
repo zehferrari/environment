@@ -42,7 +42,7 @@ const LOOPBACK_HOSTS = new Set([
  */
 export function isLoopbackRequest(req: NextRequest): boolean {
   // Defense in depth (HOMELAB-41): don't trust a single header. The
-  // agents.vixi.au nginx vhost sets BOTH X-Forwarded-For and X-Real-IP to the
+  // The public nginx vhost sets BOTH X-Forwarded-For and X-Real-IP to the
   // real client IP on every proxied request, while a direct on-host agent curl
   // to 127.0.0.1:3000 sends neither. Collect every client-IP signal and reject
   // as soon as ANY of them is non-loopback.

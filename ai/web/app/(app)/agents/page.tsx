@@ -213,6 +213,19 @@ type AgentModelConfig = {
   selected_models: SelectedModel[];
 };
 
+function parseAgentRaw(rawJson: string | null) {
+  if (!rawJson) return {};
+  try {
+    return JSON.parse(rawJson) as {
+      telegram?: { enabled: boolean; bot: string } | null;
+      integrations?: { gmail: boolean; jira: boolean; bitbucket: boolean; maildir?: boolean } | null;
+      profileImages?: { theme?: unknown };
+    };
+  } catch {
+    return {};
+  }
+}
+
 async function getModelConfig(slug: string): Promise<AgentModelConfig> {
   const empty: AgentModelConfig = { default_model: "", fallback_models: [], selected_models: [] };
   try {
@@ -293,7 +306,7 @@ export default async function AgentsPage() {
   const rawAgentJsons = agents.map((agent) => agent.rawJson);
   const clientAgents = await Promise.all(
     agents.map(async (a) => {
-      const raw = (a.rawJson || {}) as any;
+      const raw = parseAgentRaw(a.rawJson);
       const modelConfig = await getModelConfig(a.slug);
       return {
         slug: a.slug,
@@ -303,6 +316,7 @@ export default async function AgentsPage() {
         telegram: raw.telegram || null,
         integrations: raw.integrations || null,
         model_config: modelConfig,
+        image_theme: typeof raw.profileImages?.theme === "string" ? raw.profileImages.theme : null,
       };
     })
   );

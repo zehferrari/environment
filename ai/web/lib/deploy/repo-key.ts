@@ -21,7 +21,9 @@ export function displayWorktreesForRepo<T extends { path: string; branch: string
   worktrees: T[],
   repoKey: string,
 ): T[] {
-  const related = worktrees.filter((w) => worktreeRepoKey(w.path) === repoKey);
+  const related = worktrees.filter((w) =>
+    worktreeRepoKey(w.path) === repoKey && isLinkedWorktreePath(w.path)
+  );
   const linkedBranches = new Set(
     related
       .filter((w) => isLinkedWorktreePath(w.path))

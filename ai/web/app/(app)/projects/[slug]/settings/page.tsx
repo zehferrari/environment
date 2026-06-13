@@ -51,6 +51,7 @@ export default async function ProjectSettingsPage({
     include: {
       defaultAssignee: { select: { username: true } },
       defaultReviewer: { select: { username: true } },
+      managerAssignableAgents: { select: { userId: true } },
       members: { where: { userId: session?.user?.id ?? "__anonymous__" }, select: { role: true } },
     },
   });
@@ -73,6 +74,8 @@ export default async function ProjectSettingsPage({
   const showSwitcher = eligible && switchState !== null && relatedWorktrees.length > 0;
 
   const principals = await listAssignablePrincipals();
+  const codingAgentPrincipals = principals.filter((p) => p.kind === "agent" && p.agentRole === "coding");
+  const managerAssignableUserIds = new Set(project.managerAssignableAgents.map((row) => row.userId));
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -244,6 +247,36 @@ export default async function ProjectSettingsPage({
               />
             </SettingsRow>
           </div>
+          </SettingsCard>
+
+          <SettingsCard
+            title="Manager assignment pool"
+            hint="Agents acting as Epic managers or Task reviewers may only assign work to these coding agents. Leave empty to allow any active coding agent."
+            tone="neutral"
+          >
+            {codingAgentPrincipals.length > 0 ? (
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {codingAgentPrincipals.map((p) => (
+                  <label
+                    key={p.id}
+                    className="flex min-h-10 items-center gap-2 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-sm"
+                  >
+                    <input
+                      type="checkbox"
+                      name="managerAssignableAgentId"
+                      value={p.id}
+                      defaultChecked={managerAssignableUserIds.has(p.id)}
+                      className="h-4 w-4 rounded border-[var(--color-line)] accent-[var(--color-accent)]"
+                    />
+                    <span className="min-w-0 truncate">@{p.username}</span>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <p className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-sm text-[var(--color-text-muted)]">
+                No active coding agents are available.
+              </p>
+            )}
           </SettingsCard>
 
           <SettingsCard

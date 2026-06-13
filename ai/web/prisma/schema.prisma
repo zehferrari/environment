@@ -64,6 +64,7 @@ model User {
   deletedDirectAgentChatArchives DirectAgentChatArchive[] @relation("DirectAgentChatArchiveDeletedBy")
   defaultAssigneeForProjects  Project[]            @relation("ProjectDefaultAssignee")
   defaultReviewerForProjects  Project[]            @relation("ProjectDefaultReviewer")
+  managerAssignableProjects   ProjectManagerAssignableAgent[]
   deletedProjects             Project[]            @relation("ProjectDeletedBy")
   workItemProposalsProposed   WorkItemProposal[]   @relation("WorkItemProposalProposedBy")
   workItemProposalsApplied    WorkItemProposal[]   @relation("WorkItemProposalAppliedBy")
@@ -150,6 +151,7 @@ model Project {
   defaultAssignee     User?     @relation("ProjectDefaultAssignee", fields: [defaultAssigneeId], references: [id])
   defaultReviewerId   String?
   defaultReviewer     User?     @relation("ProjectDefaultReviewer", fields: [defaultReviewerId], references: [id])
+  managerAssignableAgents ProjectManagerAssignableAgent[]
   // Null inherits the system default (SystemSettings.doneTtlDays → 5).
   doneTtlDays         Int?
   deploymentProvider String @default("bitbucket") @map("deployment_provider")
@@ -263,6 +265,18 @@ model EpicWorker {
   createdAt DateTime @default(now())
 
   @@unique([epicId, userId])
+  @@index([userId])
+}
+
+model ProjectManagerAssignableAgent {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, userId])
   @@index([userId])
 }
 
@@ -887,6 +901,9 @@ model SystemSettings {
   doneTtlDays         Int?
   binTtlDays          Int?
   theme               String   @default("light")
+  openRouterApiKey    String?
+  openRouterReferer   String?
+  openRouterTitle     String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }

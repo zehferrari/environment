@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { getProvider, type ProviderModel } from "@/lib/agents/providers";
+import { getSystemSettings } from "@/lib/settings/system";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,7 +29,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ provider: providerId, source: "live", models });
     }
     if (provider.refresh === "openrouter") {
-      const models = await fetchOpenRouter(filter, ctrl);
+      const settings = await getSystemSettings();
+      const models = await fetchOpenRouter(filter, ctrl, settings.openRouterApiKey);
       return NextResponse.json({ provider: providerId, source: "live", models });
     }
     if (provider.refresh === "anthropic") {
@@ -60,8 +62,10 @@ async function fetchOllama(baseUrl: string, filter: string, signal: AbortSignal)
   return out.sort((a, b) => a.id.localeCompare(b.id));
 }
 
-async function fetchOpenRouter(filter: string, signal: AbortSignal): Promise<ProviderModel[]> {
-  const res = await fetch("https://openrouter.ai/api/v1/models", { signal, cache: "no-store" });
+async function fetchOpenRouter(filter: string, signal: AbortSignal, apiKey?: string | null): Promise<ProviderModel[]> {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const res = await fetch("https://openrouter.ai/api/v1/models", { signal, cache: "no-store", headers });
   if (!res.ok) throw new Error(`openrouter /models ${res.status}`);
   const json = (await res.json()) as {
     data?: Array<{ id: string; name?: string; pricing?: { prompt?: string; completion?: string } }>;

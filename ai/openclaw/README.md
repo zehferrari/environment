@@ -116,6 +116,9 @@ For PM-driven agent add/edit, the web route passes the active PM worktree as
 the helper payload `repoRoot`; the helper validates that it is under
 `/srv/Code/environment.worktrees/<name>` before using it for doc symlinks,
 sudoers, `install.sh`, and PM-channel scripts.
+The helper also creates `/srv/agents/Pictures/<Username>` with `code-agents`
+group-write permissions so PM manual uploads and agent-generated profile images
+can write `profile.png` and `avatar.png`.
 
 The installer also runs `/usr/local/sbin/openclaw-patch-session-fence`
 against the installed OpenClaw runtime. That patch keeps provider timeout
@@ -130,6 +133,9 @@ Gateway hook config lives in `/srv/agents/openclaw/<agent>/openclaw.json`;
 canonical file so Mission Control writes and the gateway runtime read the
 same config. `install.sh` verifies that link and refuses to replace a
 different regular home file until an operator reconciles the two copies.
+`ai-monitor` also audits this symlink every tick and raises
+`agent-symlink-drift` if the home config or agent-facing docs drift away from
+the active PM worktree.
 `gateway.bind="loopback"`, `gateway.trustedProxies=["127.0.0.1","::1"]`,
 `gateway.auth.trustedProxy.allowLoopback=true`, `hooks.enabled=true`,
 `hooks.path="/hooks"`, `hooks.token=<secret>`,

@@ -3,6 +3,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { isValidClientMessageId } from "@/lib/agents/client-message-id";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
@@ -24,12 +25,22 @@ import {
 } from "@/lib/agents/context/project";
 import { createContextGrantUrl } from "@/lib/agents/context-grants";
 import { createWorkItemGrantToken } from "@/lib/agents/work-item-token";
+import { publicOriginFromHeaders } from "@/lib/http/public-origin";
 
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_ACTIVE_CONTEXT_MESSAGES = 14;
 const DEFAULT_ARCHIVE_CONTEXT_MESSAGES = 12;
 const DEFAULT_ARCHIVE_CHAIN_LIMIT = 2;
+const MONITOR_DIRECT_CHAT_CONTEXT = [
+  "MONITOR ROLE HOST-FLEET CONTEXT:",
+  "You are the local monitor agent for the x1 OpenClaw fleet, not just your own OpenClaw session.",
+  "When a user asks about any named agent, gateway, PM workflow stall, or service health, inspect the host fleet before answering.",
+  "Do not rely on your local OpenClaw agents_list or your own gateway state as proof that another agent is missing or unreachable.",
+  "Use the host registry and service surfaces that are available to the monitor role: /etc/openclaw/agents.json, /srv/agents/index.json, agent-dashboard snapshots, ai-monitor state/logs, systemctl user services for the target agent, and journalctl logs.",
+  "For a gateway issue, resolve the target user's UID, check XDG_RUNTIME_DIR=/run/user/<uid>, inspect openclaw-gateway.service as that user, check recent logs, then restart/wake through openclaw-control when appropriate.",
+  "If you cannot run one of those checks, say exactly which check was unavailable and what evidence you do have.",
+].join("\n");
 
 async function requireUserId() {
   const session = await auth();
@@ -727,6 +738,7 @@ async function persistAgentReply(args: {
 
 async function handleDirectAgentMessage(args: {
   agentSlug: string;
+  agentRole: string | null;
   actorName: string;
   body: string;
   messageId: string;
@@ -736,6 +748,7 @@ async function handleDirectAgentMessage(args: {
   projectId: string | null;
   allowWorkItemManagement: boolean;
   attachmentCount: number;
+  publicOrigin: string | null;
 }) {
   const timingStartedAt = Date.now();
   const timings: Record<string, number> = {};
@@ -779,6 +792,9 @@ async function handleDirectAgentMessage(args: {
     "Reply normally; OpenClaw will deliver your visible response back to the PM chat window.",
     "Keep the answer useful and concise unless the user asked for detail.",
   ];
+  if (args.agentRole === "monitor") {
+    systemPromptParts.push("", MONITOR_DIRECT_CHAT_CONTEXT);
+  }
   let projectContextText = "";
   stepStartedAt = Date.now();
   if (args.projectId) {
@@ -806,6 +822,8 @@ async function handleDirectAgentMessage(args: {
             proposeUrl,
             grantMessageId: args.messageId,
             token,
+            autoApply: true,
+            publicOrigin: args.publicOrigin,
           }),
         );
       }
@@ -887,6 +905,7 @@ function getGidByName(groupName: string): number | null {
 }
 
 export async function sendDirectAgentMessage(formData: FormData) {
+  const publicOrigin = publicOriginFromHeaders(await headers());
   const { userId, userName, userKind } = await requireUserId();
   const agentSlug = String(formData.get("agentSlug") ?? "").trim();
   const requestedBaseArchiveId = String(formData.get("baseArchiveId") ?? "").trim() || null;
@@ -907,6 +926,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
     where: { slug: agentSlug },
     select: {
       slug: true,
+      role: true,
       deactivatedAt: true,
       gatewayPort: true,
       user: { select: { id: true, status: true } },
@@ -986,6 +1006,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
           baseArchiveId,
           projectId,
           allowWorkItemManagement: grantWorkItems,
+          publicOrigin,
         }),
       },
     });
@@ -1059,6 +1080,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
 
   const dispatchArgs = {
     agentSlug,
+    agentRole: agent.role ?? null,
     actorName: userName,
     messageId: msg.id,
     body,
@@ -1068,6 +1090,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
     projectId,
     allowWorkItemManagement: grantWorkItems,
     attachmentCount: attachments.length,
+    publicOrigin,
   };
   const recordDispatchFailure = async (err: unknown) => {
     const error = err instanceof Error ? err.message : String(err);

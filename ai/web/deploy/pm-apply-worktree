@@ -212,7 +212,7 @@ WorkingDirectory=
 WorkingDirectory=$real
 TimeoutStopSec=15s
 ReadWritePaths=
-ReadWritePaths=$db_root $app_root/prisma -$app_root/.data $real/.next/cache /etc/openclaw/pm-agent-credentials $DROP_DIR $VERIFY_DIR -/srv/Data/projects -/srv/samba/shared $SWITCH_DIR
+ReadWritePaths=$db_root $app_root/prisma -$app_root/.data $real/.next/cache /etc/openclaw/pm-agent-credentials $DROP_DIR $VERIFY_DIR /srv/agents/Pictures -/srv/Data/projects -/srv/samba/shared $SWITCH_DIR
 EOF
 
 if systemctl list-unit-files 'pm-consumer.service' --no-legend 2>/dev/null | grep -q '^pm-consumer\.service'; then

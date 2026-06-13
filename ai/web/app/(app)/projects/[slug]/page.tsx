@@ -184,6 +184,19 @@ async function createTask(formData: FormData) {
       ].join("\n"),
     });
   }
+  if (actingManagerId) {
+    await sendTaskWorkflowNotification({
+      taskId: task.id,
+      targetUserId: actingManagerId,
+      actor,
+      reason: "reviewer_plan_requested",
+      body: [
+        `You have been set as Reviewer for "${task.title}".`,
+        "If the task has no assignee, read the full task context and post one reviewer plan of action in Action Plan, including the subtasks/topics/items that must be addressed or watched.",
+        "Do not start implementation or move status. After the reporter approves the plan, call action=assign_after_plan_approval so PM can assign an eligible coding agent and move Backlog to To Do if needed.",
+      ].join("\n"),
+    });
+  }
 
   revalidatePath(`/projects/${projectSlug}`);
 }

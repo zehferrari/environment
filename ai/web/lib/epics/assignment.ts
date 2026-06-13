@@ -11,6 +11,12 @@ export async function findAvailableEpicWorker(
   },
 ) {
   const excluded = new Set(args.excludeUserIds?.filter(Boolean) as string[]);
+  const allowedRows = await tx.projectManagerAssignableAgent.findMany({
+    where: { projectId: args.projectId },
+    select: { userId: true },
+  });
+  const allowed = new Set(allowedRows.map((row) => row.userId));
+  const restricted = allowed.size > 0;
   const workers = await tx.epicWorker.findMany({
     where: {
       epicId: args.epicId,
@@ -31,6 +37,7 @@ export async function findAvailableEpicWorker(
 
   for (const worker of workers) {
     if (excluded.has(worker.userId)) continue;
+    if (restricted && !allowed.has(worker.userId)) continue;
     const activeInProject = await tx.task.count({
       where: {
         projectId: args.projectId,
