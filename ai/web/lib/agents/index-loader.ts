@@ -1,7 +1,7 @@
 import { readFile } from "fs/promises";
 
 /**
- * Schema of /srv/agents/index.json — only the fields PM reads in v1.
+ * Schema of the OpenClaw agent registry — only the fields PM reads in v1.
  * The file carries more; we tolerate extras silently.
  */
 export type IndexListener = {
@@ -29,7 +29,7 @@ export type AgentIndex = {
   agents: IndexAgent[];
 };
 
-const INDEX_PATH = process.env.AGENT_INDEX_PATH ?? "/srv/agents/index.json";
+const INDEX_PATH = process.env.AGENT_INDEX_PATH ?? "/etc/openclaw/agents.json";
 
 export async function readAgentIndex(path: string = INDEX_PATH): Promise<AgentIndex> {
   const raw = await readFile(path, "utf8");

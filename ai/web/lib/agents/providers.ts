@@ -10,9 +10,9 @@
  * the installed openclaw bundle (`/usr/local/lib/node_modules/openclaw`): Codex
  * and Ollama match live agent configs; the Claude provider is keyed `anthropic`
  * with `api: "claude-cli"` (CLI OAuth) and an `auth.profiles` provider of
- * `claude-cli`; OpenRouter uses `api: "openrouter"` and namespaces models as
- * `openrouter/<vendor>/<model>`. The exact apiKey/secret wiring for anthropic +
- * openrouter still merits a live smoke-test, but the schema is no longer a guess.
+ * `claude-cli`; OpenRouter is OpenAI-compatible, so it uses the supported
+ * `openai-completions` adapter while model refs stay namespaced as
+ * `openrouter/<vendor>/<model>`.
  */
 
 export type ProviderId = "openai-codex" | "anthropic" | "ollama" | "openrouter";
@@ -94,7 +94,7 @@ export const PROVIDERS: ProviderDef[] = [
     connection: {
       baseUrl: "https://openrouter.ai/api/v1",
       apiKey: "openrouter-api-key",
-      api: "openrouter",
+      api: "openai-completions",
       auth: "token",
     },
     authMode: "token",

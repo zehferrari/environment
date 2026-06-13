@@ -205,6 +205,35 @@ function restartGateway(agent, home) {
   ], { stdio: "inherit" });
 }
 
+function gatewayActiveState(agent, home) {
+  const uid = uidFor(agent);
+  try {
+    return execFileSync("sudo", [
+      "-n",
+      "-u",
+      agent,
+      "env",
+      `HOME=${home}`,
+      `XDG_RUNTIME_DIR=/run/user/${uid}`,
+      "systemctl",
+      "--user",
+      "is-active",
+      "openclaw-gateway.service",
+    ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "inactive";
+  }
+}
+
+async function waitForGatewayActive(agent, home) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const state = gatewayActiveState(agent, home);
+    if (state === "active") return;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error(`${agent}: openclaw-gateway.service did not become active after restart`);
+}
+
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const pluginPath = path.resolve(argValue("--plugin", path.join(repoRoot, "openclaw-pm-channel")));
 const agentRoot = argValue("--agent-root", process.env.PM_OPENCLAW_AGENT_ROOT ?? DEFAULT_AGENT_ROOT);
@@ -257,7 +286,10 @@ for (const agent of uniqueAgents) {
   }
 
   runOpenClawInstall(agent, home, installedPluginPath, openclawBin);
-  if (restart) restartGateway(agent, home);
+  if (restart) {
+    restartGateway(agent, home);
+    await waitForGatewayActive(agent, home);
+  }
   console.log(`[pm-channel] configured ${agent}`);
 }
 

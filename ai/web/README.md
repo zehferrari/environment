@@ -46,7 +46,7 @@ pnpm dev
 
 The Next.js app boots → `instrumentation.node.ts` seeds the `zeh` user
 and runs the first agent sync against `$AGENT_INDEX_PATH` (default
-`/srv/agents/index.json`). On a dev box where that file is absent, the
+`/etc/openclaw/agents.json`). On a dev box where that file is absent, the
 boot sync logs an error and continues — log in as `zeh` / `password1`
 and rotate the password, then visit `/agents` to see the (empty) table.
 
@@ -122,8 +122,8 @@ user.
 | `lib/auth/password.ts` | argon2id hashing helpers. |
 | `lib/auth/rate-limit.ts` | in-process login rate limit (per-IP + per-username). |
 | `lib/agents/sync.ts` | the canonical agent sync — boot + periodic interval. |
-| `lib/agents/index-loader.ts` | `/srv/agents/index.json` reader. |
-| `lib/agents/provisioning.ts` | unprivileged half of agent provisioning — renders per-agent file content (`SOUL`/`IDENTITY`/`openclaw.json`…), allocates UID + gateway/sidecar ports, builds the registry entry. `openclaw.json` is rendered from the providers + models selected in the form. |
+| `lib/agents/index-loader.ts` | `/etc/openclaw/agents.json` reader (`AGENT_INDEX_PATH` overrideable). |
+| `lib/agents/provisioning.ts` | unprivileged half of agent provisioning — renders per-agent file content (`SOUL`/`IDENTITY`/`openclaw.json`…), allocates UID + a verified gateway/browser-sidecar port pair, builds the registry entry. `openclaw.json` is rendered from the providers + models selected in the form. |
 | `lib/agents/providers.ts` | model-provider catalog (Codex, Claude CLI/`anthropic`, Ollama, OpenRouter) — the single source for each provider's openclaw.json connection block, auth profile, refresh strategy, and seed models. Shared by the form, the model-refresh route, and the renderer. |
 | `lib/agents/manage-user.ts` | provisioning hand-off. pm.service is `NoNewPrivileges` and can't sudo, so this spools a request into `/var/lib/pm/agent-provision/` and polls for the result; `openclaw-agent-runner` (monitor's system identity) runs the privileged `openclaw-manage-user` step. Synchronous from the route's view. |
 | `lib/agents/credentials.ts` | per-agent host-private credential seeding. |
@@ -242,13 +242,21 @@ is `NoNewPrivileges` and cannot sudo). `lib/agents/manage-user.ts` spools the jo
 into `/var/lib/pm/agent-provision/` and polls for a result; **`openclaw-agent-runner`**
 (the monitor's system identity, `NoNewPrivileges=no`) runs the single privileged
 boundary `/usr/local/sbin/openclaw-manage-user`: the system user, Samba/sudoers,
-per-agent files, doc symlinks (to the **main** checkout), gateway + PM-channel
-install, and the registry write. The route then reconciles the PM DB with
-`syncAgents()` and writes an `agent.registry.{add,edit,remove}` audit row.
+per-agent files, doc symlinks (to the active PM worktree root supplied in the
+payload), gateway + PM-channel install, and the registry write. The helper may
+validate a payload `repoRoot` under `/srv/Code/environment.worktrees/<name>`;
+do not stage lifecycle changes by editing `/srv/Code/environment` directly. The
+route then reconciles the PM DB with `syncAgents()` and writes an
+`agent.registry.{add,edit,remove}` audit row.
 
 - **Guards.** Protected accounts (`root`, `zeh`, the monitor, system users,
   `code-agents`) cannot be created, edited, or removed — enforced in both the
   route and the helper. A failed create is rolled back (helper `delete`).
+- **Ports.** Port allocation is not registry-only. `allocatePorts()` treats an
+  OpenClaw gateway as a port pair (`gatewayPort` and the browser/control
+  listener at `gatewayPort + 2`) and proves both ports are bindable on
+  `127.0.0.1` and `::1` before returning them. Add/edit returns
+  `port_allocation_failed` rather than provisioning an agent onto a busy port.
 - **Edit.** Re-renders files + registry; a role change reallocates listeners and
   reinstalls the gateway without destroying the agent's home directory.
 - **Models.** The form ticks one or more providers (`lib/agents/providers.ts`),
@@ -260,9 +268,14 @@ install, and the registry write. The route then reconciles the PM DB with
   authorises the operator's account.
 - **Server email.** The `maildir` integration provisions `~/Maildir` + a mail
   listener for local server mail (host needs an MTA — see [`../X1.md`](../X1.md)).
-- **Registry ownership.** `openclaw-manage-user` is the sole writer of
-  `/srv/agents/index.json` for lifecycle changes; `agent-dashboard` only watches
-  the file and re-broadcasts it over SSE. Helper + privilege model:
+- **Gateway verification.** The PM-channel installer restarts the affected
+  `openclaw-gateway.service` and waits for systemd to report `active`; a gateway
+  restart failure is surfaced as provisioning failure instead of a silent broken
+  agent.
+- **Registry ownership.** `openclaw-manage-user` is the sole writer of the
+  canonical host registry (`/etc/openclaw/agents.json`, historically also
+  exposed at `/srv/agents/index.json`) for lifecycle changes; `agent-dashboard`
+  only watches the file and re-broadcasts it over SSE. Helper + privilege model:
   [`../X1.md`](../X1.md) § Agent lifecycle management and
   [`../openclaw/bin/openclaw-manage-user`](../openclaw/bin/openclaw-manage-user).
 
@@ -270,7 +283,7 @@ install, and the registry write. The route then reconciles the PM DB with
 
 **Auth & identity.** Password-only (Credentials provider + argon2id). No
 Google SSO in v1 — deferred to v1.1+. Seeded `zeh` plus one agent user
-per `codeOwner`-matched entry in `/srv/agents/index.json`. Login rate
+per `codeOwner`-matched entry in `/etc/openclaw/agents.json`. Login rate
 limit is in-process sliding-fixed-window: 10/5min per IP + 5/5min per
 username. Forced password rotation on first login is enforced by
 `middleware.ts`. Behind nginx the middleware uses `x-forwarded-host` to
@@ -655,7 +668,7 @@ the consumer service when the PM checkout is present.
 - `User` / `RolePermission` / `PasswordResetToken` — auth and identity.
   `User.kind` is `"human" | "agent"`; agent users link to `Agent` via
   `agentId`.
-- `Agent` — system-managed mirror of `/srv/agents/index.json`. Carries
+- `Agent` — system-managed mirror of `/etc/openclaw/agents.json`. Carries
   slug, role, `codeOwner`, `gatewayPort`, last-seen `rawJson`, and a
   `deactivatedAt` tombstone.
 - `Project` / `ProjectMember` / `Epic` / `Task` / `Comment` — board
@@ -766,7 +779,7 @@ See `.env.example` for the full list. Highlights:
 - `AUTH_SECRET` — `openssl rand -base64 32`.
 - `AUTH_TRUST_HOST=true` — required behind nginx.
 - `APP_URL` — public URL, used for cookies + reset links.
-- `AGENT_INDEX_PATH` — host descriptor (default `/srv/agents/index.json`).
+- `AGENT_INDEX_PATH` — host descriptor (default `/etc/openclaw/agents.json`).
 - `AGENT_CREDENTIALS_DIR` — per-agent seed-credential dir (mode 0600).
 - `AGENT_SYNC_INTERVAL_MIN` — periodic sync cadence (minutes).
 - `PM_DISPATCH_DRIVER`, `PM_DISPATCH_SOCKET`, `PM_DISPATCH_DROP_DIR` —

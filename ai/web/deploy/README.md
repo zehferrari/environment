@@ -53,6 +53,9 @@ Do not use the legacy direct rebuild path against a managed worktree. If
 `rebuild-and-restart.sh` is pointed at `/srv/Code/environment.worktrees/...`,
 it delegates to `pm-switch` so Prisma generated-client ownership, per-branch
 SQLite forks, `pm.service`, and `pm-consumer.service` are handled together.
+Do not manually edit or stage deployment artifacts through the primary
+`/srv/Code/environment` checkout; make changes in a branch/worktree and switch
+with `pm-switch`.
 
 Browser-triggered rebuilds run as the monitor service user, not as the human
 who last built the worktree. The switch pipeline therefore calls the privileged,
@@ -224,7 +227,7 @@ sudo zypper --non-interactive install sqlite3
 # sudo apt-get install sqlite3
 
 # 1. Build the standalone bundle (uses pnpm; runs prisma generate + next build).
-cd /srv/Code/environment/ai/web
+cd /srv/Code/environment.worktrees/<worktree>/ai/web
 pnpm install
 pnpm build
 # Standalone output: .next/standalone/server.js
@@ -247,8 +250,8 @@ sudo $EDITOR /etc/default/pm
 # sudo PM_SQLITE_DIR=/srv/Data/pm deploy/move-sqlite-db.sh
 
 # 4. Install/reconcile PM units, PM token files, OpenClaw gateway hooks,
-#    and the native OpenClaw pm channel plugin.
-sudo PM_WEB_ROOT="$PWD" /srv/Code/environment.worktrees/feature_HOMELAB-41-local-project-manager-webapp-/ai/openclaw/install.sh
+#    and the native OpenClaw pm channel plugin from the current worktree.
+sudo PM_WEB_ROOT="$PWD" "$PWD/../openclaw/install.sh"
 
 # Equivalent manual unit install, if you are not using openclaw/install.sh:
 sudo install -o root -g root -m 0644 deploy/pm.service /etc/systemd/system/pm.service
@@ -283,15 +286,18 @@ sudo rm -rf /home/*/.config/systemd/user/pm.service \
 
 # 4b. Reconcile local OpenClaw gateway hooks when doing manual unit install.
 #     This populates each agent's hooks.token and mirrors the values into
-#     /etc/openclaw/pm-consumer-tokens.json for the PM consumer.
-sudo PM_WEB_ROOT=/srv/Code/environment/ai/web /srv/Code/environment/ai/openclaw/install.sh
+#     /etc/openclaw/pm-consumer-tokens.json for the PM consumer. Run this from
+#     the current worktree, not from /srv/Code/environment.
+sudo PM_WEB_ROOT="$PWD" "$PWD/../openclaw/install.sh"
 
 # 4c. Install/configure the native PM channel plugin for local agents.
 #     The helper stages a root-owned plugin copy at
 #     /usr/local/share/openclaw/plugins/pm-channel, links that copy into
 #     each enabled registry agent's OpenClaw config, writes per-agent PM channel tokens,
 #     keeps the token file readable by the PM web service group, and
-#     removes stale worktree plugin paths from plugins.load.paths.
+#     removes stale worktree plugin paths from plugins.load.paths. With
+#     --restart it waits for each affected openclaw-gateway.service to become
+#     active and fails if a gateway cannot restart cleanly.
 sudo node deploy/install-openclaw-pm-channel.mjs --registry /etc/openclaw/agents.json --restart
 
 # 5. Bring up the nginx vhost (cert assumed already issued; certbot --nginx -d <pm-hostname> if not).
@@ -449,7 +455,8 @@ or temporary hook failures.
   `<pm-app-user>`). The credential is host-private, never
   logged, and used only for the agent's first login + forced rotation flow.
 
-The boot-time sync (in `instrumentation.node.ts`) reads `/srv/agents/index.json`,
+The boot-time sync (in `instrumentation.node.ts`) reads
+`/etc/openclaw/agents.json` by default,
 reconciles the `Agent` table, and seeds the user rows + credential files. The
 same path also runs on a 5-minute interval — see `AGENT_SYNC_INTERVAL_MIN`.
 

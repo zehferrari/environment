@@ -16,7 +16,9 @@ Host inventory below covers the networked roles (where they live, what they do);
 - Host/IP: `x1`, `10.0.0.108`
 - OS: openSUSE Tumbleweed
 - Role: OpenClaw multi-agent host, WDT playground host, local service host.
-- Active users and their roles are listed in `/etc/openclaw/agents.json` (symlinked from `/srv/agents/index.json`). UIDs start at 1001 for agents.
+- Active users and their roles are listed in `/etc/openclaw/agents.json`
+  (historically also exposed at `/srv/agents/index.json`). UIDs start at 1001
+  for agents.
 
 ### Samba Private Shared Folders
 
@@ -91,6 +93,10 @@ deeper docs before acting:
   the CLI (`pm-switch <wt>`) or the PM webapp's Settings → live-preview panel.
   `rebuild-and-restart.sh` is the legacy single-checkout path and now delegates
   to `pm-switch` when pointed at a managed worktree.
+- **Do not edit or deploy through the primary checkout
+  (`/srv/Code/environment/`).** It is the stable base checkout only; all PM and
+  OpenClaw changes are made in `/srv/Code/environment.worktrees/<branch>/` and
+  promoted with git + `pm-switch`.
 - **Build and restart are one step.** `next build` wipes `.next/standalone`; a
   still-running process then serves stale HTML and 404s its own hashed assets.
   Never build without an immediate restart.
@@ -115,6 +121,7 @@ deeper docs before acting:
   hook enforces this).
 - **Agents never create or merge pull requests — humans (zeh) only.** An agent's
   job ends at "branch pushed, ready for review."
-- **Agent-facing docs propagate from `main`:** each agent's workspace docs are
-  symlinks to `ai/openclaw/*.md` in the **main** checkout, so a doc change only
-  reaches agents once it lands on `main`.
+- **Agent-facing docs propagate through the active OpenClaw install:** each
+  agent's workspace docs are symlinks to `ai/openclaw/*.md` from the validated
+  deployed worktree. A doc change reaches agents once it lands in git and the
+  active PM/OpenClaw worktree is reconciled.

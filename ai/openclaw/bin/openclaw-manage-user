@@ -76,7 +76,8 @@ reconcile_gateway_hooks() {
     })
     | .gateway.auth = ((.gateway.auth // {}) + {
       trustedProxy: ((.gateway.auth.trustedProxy // {}) + {
-        allowLoopback: true
+        allowLoopback: true,
+        userHeader: ((.gateway.auth.trustedProxy.userHeader) // "x-forwarded-user")
       })
     })
     | .hooks = ((.hooks // {}) + {
@@ -120,15 +121,28 @@ if [[ $EUID -ne 0 ]]; then
   die "must run as root (via sudo)"
 fi
 
-# Validate REPO_ROOT to prevent privilege escalation via environment override
-if [[ "$REPO_ROOT" =~ ^/srv/Code/environment(\.worktrees/[a-zA-Z0-9_-]+)?$ ]]; then
-  :
-elif [[ "${OPENCLAW_SANDBOX_TESTING:-}" = "true" && "$REPO_ROOT" =~ ^/tmp/ ]]; then
-  :
-else
-  echo "Error: REPO_ROOT '$REPO_ROOT' is invalid. Privilege escalation hazard." >&2
+validate_repo_root() {
+  local root="$1"
+  if [[ "$root" =~ ^/srv/Code/environment(\.worktrees/[a-zA-Z0-9_-]+)?$ ]]; then
+    return 0
+  fi
+  if [[ "${OPENCLAW_SANDBOX_TESTING:-}" = "true" && "$root" =~ ^/tmp/ ]]; then
+    return 0
+  fi
+  echo "Error: REPO_ROOT '$root' is invalid. Privilege escalation hazard." >&2
   exit 1
-fi
+}
+
+use_payload_repo_root() {
+  local pf="$1" payload_repo_root
+  payload_repo_root=$(jq -r '.repoRoot // empty' "$pf")
+  [[ -n "$payload_repo_root" ]] || return 0
+  validate_repo_root "$payload_repo_root"
+  REPO_ROOT="$payload_repo_root"
+}
+
+# Validate REPO_ROOT to prevent privilege escalation via environment override.
+validate_repo_root "$REPO_ROOT"
 
 # Validate registry JSON integrity if it exists
 if [ -f "$REGISTRY" ]; then
@@ -239,7 +253,7 @@ EOF
 # TypeScript and hands us a JSON payload (a temp file path passed as the last
 # positional arg). We — running as root — are the single privileged boundary:
 # we place those files with the correct ownership, wire the per-role doc
-# symlinks to the MAIN checkout ($REPO_ROOT), install the gateway + PM channel,
+# symlinks to the validated OpenClaw checkout ($REPO_ROOT), install the gateway + PM channel,
 # and write the registry entry. Without a payload, `add` keeps its legacy
 # skeleton behaviour so the sandbox test-suite is unaffected.
 # ---------------------------------------------------------------------------
@@ -255,6 +269,18 @@ require_payload() {
   [[ -n "$pf" ]] || die "payload file required for full provisioning"
   [[ -r "$pf" ]] || die "payload file not readable: $pf"
   jq empty "$pf" >/dev/null 2>&1 || die "payload file is not valid JSON: $pf"
+}
+
+fix_registry_permissions() {
+  # Registry readers include PM (karen) and agent-side tooling. Keep writes
+  # root-owned while allowing code-agents to read the canonical host registry.
+  [[ -f "$REGISTRY" ]] || return 0
+  if getent group "$SHARED_GROUP" >/dev/null 2>&1; then
+    chown "root:$SHARED_GROUP" "$REGISTRY" 2>/dev/null || true
+    chmod 0640 "$REGISTRY" 2>/dev/null || true
+  else
+    chmod 0644 "$REGISTRY" 2>/dev/null || true
+  fi
 }
 
 link_doc() {
@@ -337,7 +363,10 @@ install_pm_channel() {
 upsert_registry_entry() {
   # upsert_registry_entry <payload-file> — replace-or-append .entry by .user.
   local pf="$1"
-  [[ -f "$REGISTRY" ]] || printf '%s\n' '{"version":1,"codeOwner":"zeh","agents":[]}' > "$REGISTRY"
+  [[ -f "$REGISTRY" ]] || {
+    printf '%s\n' '{"version":1,"codeOwner":"zeh","agents":[]}' > "$REGISTRY"
+    fix_registry_permissions
+  }
   local entry euser
   entry=$(jq -c '.entry' "$pf")
   [[ "$entry" != "null" && -n "$entry" ]] || die "payload missing .entry"
@@ -348,6 +377,7 @@ upsert_registry_entry() {
     '.agents = ((.agents // []) | map(select(.user != $u)) + [$e])' \
     "$REGISTRY" > "$tmp"
   mv -f "$tmp" "$REGISTRY"
+  fix_registry_permissions
 }
 
 write_telegram_token() {
@@ -457,6 +487,7 @@ EOF
     if [[ -n "$payload" ]]; then
       # Full provisioning: render-on-disk files, docs, registry, gateway, PM channel.
       require_payload "$payload"
+      use_payload_repo_root "$payload"
       p_user=$(jq -r '.entry.user' "$payload")
       p_uid=$(jq -r '.entry.uid' "$payload")
       [[ "$p_user" == "$user" ]] || die "payload .entry.user ($p_user) does not match $user"
@@ -489,6 +520,7 @@ EOF
           tmp_reg=$(mktemp /tmp/agents-json.XXXXXX)
           jq --argjson new_agent "$new_agent_json" '.agents += [$new_agent]' "$REGISTRY" > "$tmp_reg"
           mv -f "$tmp_reg" "$REGISTRY"
+          fix_registry_permissions
         fi
       fi
     fi
@@ -506,6 +538,7 @@ EOF
     validate_username "$user"
     id "$user" >/dev/null 2>&1 || die "user does not exist: $user"
     require_payload "$payload"
+    use_payload_repo_root "$payload"
 
     role=$(jq -r '.entry.role' "$payload")
     validate_role "$role"
@@ -571,6 +604,7 @@ EOF
       tmp_reg=$(mktemp /tmp/agents-json.XXXXXX)
       jq --arg u "$user" 'del(.agents[] | select(.user == $u))' "$REGISTRY" > "$tmp_reg"
       mv -f "$tmp_reg" "$REGISTRY"
+      fix_registry_permissions
     fi
 
     # 5. Regenerate monitor sudoers (purges the deleted user). A global

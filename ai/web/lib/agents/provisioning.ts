@@ -15,6 +15,7 @@
  * testable without root.
  */
 
+import net from "node:net";
 import { getProvider } from "./providers";
 
 export type AgentRole = "coding" | "monitor";
@@ -74,31 +75,69 @@ export function allocateUid(agents: Array<{ uid?: number }>): number {
 }
 
 /**
- * Allocate gateway (+ browser sidecar for coding agents) ports, mirroring the
- * historical dashboard behaviour so existing agents keep their port range.
+ * Allocate gateway (+ browser sidecar for coding agents) ports.
+ *
+ * OpenClaw's gateway process also binds a local browser/control listener at
+ * gatewayPort + 2. Treat both as one allocation unit and prove the candidate
+ * ports are bindable on loopback before committing them to the registry.
  */
-export function allocatePorts(
-  agents: Array<{ listeners?: Array<{ port?: number }> }>,
+export async function allocatePorts(
+  agents: Array<{ listeners?: Array<{ port?: number; owner?: string }> }>,
   role: AgentRole,
-): { listeners: ProvisionListener[]; gatewayPort: number } {
-  const ports: number[] = [];
+): Promise<{ listeners: ProvisionListener[]; gatewayPort: number }> {
+  const ports = new Set<number>();
   for (const a of agents) {
     for (const l of a.listeners ?? []) {
-      if (l.port) ports.push(Number(l.port));
+      const port = Number(l.port);
+      if (Number.isFinite(port)) {
+        ports.add(port);
+        if (l.owner === "openclaw-gateway") ports.add(browserPortForGateway(port));
+      }
     }
   }
-  let gw = 18789;
-  while (ports.includes(gw)) gw++;
-  let bs = gw + 1;
-  while (ports.includes(bs) || bs === gw) bs++;
 
-  const listeners: ProvisionListener[] = [
-    { host: "127.0.0.1", port: gw, owner: "openclaw-gateway", expected: true },
-  ];
-  if (role === "coding") {
-    listeners.push({ host: "127.0.0.1", port: bs, owner: "browser sidecar", expected: true });
+  for (let gw = 18789; gw <= 19999; gw++) {
+    const bs = browserPortForGateway(gw);
+    if (ports.has(gw) || ports.has(bs)) continue;
+    if (!(await areLoopbackPortsAvailable([gw, bs]))) continue;
+
+    const listeners: ProvisionListener[] = [
+      { host: "127.0.0.1", port: gw, owner: "openclaw-gateway", expected: true },
+      { host: "127.0.0.1", port: bs, owner: "browser sidecar", expected: true },
+    ];
+    return { listeners, gatewayPort: gw };
   }
-  return { listeners, gatewayPort: gw };
+
+  throw new Error(`No free OpenClaw gateway port pair found for role ${role}`);
+}
+
+function browserPortForGateway(gatewayPort: number): number {
+  return gatewayPort + 2;
+}
+
+async function areLoopbackPortsAvailable(ports: number[]): Promise<boolean> {
+  for (const port of ports) {
+    if (!(await isLoopbackPortAvailable(port))) return false;
+  }
+  return true;
+}
+
+async function isLoopbackPortAvailable(port: number): Promise<boolean> {
+  const checks = await Promise.all([
+    canBindPort(port, "127.0.0.1"),
+    canBindPort(port, "::1"),
+  ]);
+  return checks.every(Boolean);
+}
+
+function canBindPort(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.listen({ host, port, exclusive: true }, () => {
+      server.close(() => resolve(true));
+    });
+  });
 }
 
 export function renderSoul(name: string, user: string, role: AgentRole, email: string): string {
@@ -215,6 +254,7 @@ export function renderOpenClawJson(args: {
   primary: string;
   fallbacks: string[];
   selectedModels: SelectedModel[];
+  openRouterApiKey?: string | null;
   now?: string;
 }): string {
   const now = args.now ?? new Date().toISOString();
@@ -233,8 +273,12 @@ export function renderOpenClawJson(args: {
   for (const [pid, models] of byProvider) {
     const def = getProvider(pid);
     if (!def) continue;
+    const connection = { ...def.connection };
+    if (pid === "openrouter" && args.openRouterApiKey) {
+      connection.apiKey = args.openRouterApiKey;
+    }
     providers[pid] = {
-      ...def.connection,
+      ...connection,
       models: models.map((m) => ({
         id: m.id,
         name: m.name || m.id,
@@ -276,6 +320,7 @@ export function renderAgentFiles(args: {
   primary: string;
   fallbacks: string[];
   selectedModels: SelectedModel[];
+  openRouterApiKey?: string | null;
 }): RenderedAgentFiles {
   return {
     soul: renderSoul(args.name, args.user, args.role, args.email),
@@ -289,6 +334,7 @@ export function renderAgentFiles(args: {
       primary: args.primary,
       fallbacks: args.fallbacks,
       selectedModels: args.selectedModels,
+      openRouterApiKey: args.openRouterApiKey,
     }),
   };
 }

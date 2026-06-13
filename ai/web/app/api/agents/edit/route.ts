@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { readAgentIndex, gatewayPortFor } from "@/lib/agents/index-loader";
 import { syncAgents } from "@/lib/agents/sync";
 import { runManageUser } from "@/lib/agents/manage-user";
+import { getSystemSettings } from "@/lib/settings/system";
 import {
   allocatePorts,
   buildAgentEntry,
@@ -16,6 +17,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const PROTECTED_USERS = ["root", "zeh", "karen", "system", "admin", "daemon", "bin", "sys", "code-agents"];
+const APP_ROOT_SUFFIX = "/ai/web";
 
 const EditSchema = z.object({
   user: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
@@ -73,6 +75,11 @@ export async function POST(request: Request) {
   if (existing.uid == null) {
     return NextResponse.json({ error: "agent_missing_uid" }, { status: 500 });
   }
+  const settings = await getSystemSettings();
+  const usesOpenRouter = data.model_config.selected_models.some((m) => m.provider === "openrouter");
+  if (usesOpenRouter && !settings.openRouterApiKey) {
+    return NextResponse.json({ error: "openrouter_api_key_required" }, { status: 400 });
+  }
 
   const roleChanged = existing.role !== data.role;
 
@@ -81,10 +88,18 @@ export async function POST(request: Request) {
   let listeners: ProvisionListener[];
   let gatewayPort: number | undefined;
   if (roleChanged) {
-    const allocation = allocatePorts(
-      index.agents.filter((a) => a.user !== data.user),
-      data.role,
-    );
+    let allocation;
+    try {
+      allocation = await allocatePorts(
+        index.agents.filter((a) => a.user !== data.user),
+        data.role,
+      );
+    } catch (err) {
+      return NextResponse.json(
+        { error: "port_allocation_failed", message: (err as Error).message },
+        { status: 500 },
+      );
+    }
     listeners = allocation.listeners;
     gatewayPort = allocation.gatewayPort;
   } else {
@@ -111,12 +126,14 @@ export async function POST(request: Request) {
     primary: data.model_config.default_model,
     fallbacks: data.model_config.fallback_models,
     selectedModels: data.model_config.selected_models,
+    openRouterApiKey: settings.openRouterApiKey,
   });
 
   const telegramToken = data.telegram?.enabled ? data.telegram.token ?? "" : "";
 
   try {
     await runManageUser(["update", data.user], {
+      repoRoot: activeRepoRoot(),
       entry,
       files,
       reinstallGateway: roleChanged,
@@ -151,4 +168,12 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ ok: true, agent: entry });
+}
+
+function activeRepoRoot(): string | null {
+  const appRoot = process.env.PM_APP_ROOT;
+  if (appRoot?.endsWith(APP_ROOT_SUFFIX)) {
+    return appRoot.slice(0, -APP_ROOT_SUFFIX.length);
+  }
+  return null;
 }

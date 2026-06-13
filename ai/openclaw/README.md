@@ -2,7 +2,10 @@
 
 Single source of truth for OpenClaw agent operating rules and shared skill helpers. Lives under [`environment/ai/openclaw/`](../../) in the unified `environment` repo.
 
-The contents of this folder are cloned to the host checkout (x1: **`/srv/Code/environment/ai/openclaw/`**; yoga510: **`/home/rachael/Code/environment/ai/openclaw/`**). Every agent reads from it through symlinks; every edit goes through git.
+The contents of this folder are cloned to the host checkout. On x1, feature
+work happens only in **`/srv/Code/environment.worktrees/<branch>/ai/openclaw/`**;
+do not edit the primary `/srv/Code/environment/` checkout. Every agent reads
+from the active OpenClaw install through symlinks; every edit goes through git.
 
 For broader context:
 - Host inventory (x1 / moonlight / thinkpad) → [`../../README.md`](../../README.md)
@@ -23,7 +26,7 @@ For broader context:
 ├── ROLES.md               task-role behaviour for coding agents + monitor role
 ├── TEAM_WORKFLOW.md       canonical workflow rules — symlinked into every agent's workspace
 ├── CODE_REPOS.md          shared /srv/Code/ project repos + mandatory branch workflow
-├── index.example.json     agent registry template (single record) — copy to /srv/agents/index.json (live, NOT in repo) and edit
+├── index.example.json     agent registry template (single record) — copy to /etc/openclaw/agents.json (live, NOT in repo) and edit
 └── skills/
     ├── agent-self.js      registry-driven identity resolver (reads /etc/openclaw/agents.json by os.userInfo().username)
     ├── jira/              Jira API helpers (jira-comment.js, jira-transition.js, lib.js, …)
@@ -57,7 +60,7 @@ worktree checkout, not a stale main checkout.
 | `/home/<user>/.openclaw/workspace/jira/*.js` | `<openclaw-root>/skills/jira/` |
 | `/home/<user>/.openclaw/skills/google-workspace/*.js` | `<openclaw-root>/skills/google-workspace/` |
 | `/home/<user>/workspace/mail/*.js` | `<openclaw-root>/skills/local-mail/` on yoga510 |
-| `/etc/openclaw/agents.json` | `/srv/agents/index.json` (live runtime registry, NOT in this repo). Enable/disable flips come from the dashboard's `POST /agents/registry/toggle`; **agent create/edit/remove** are written by the root `/usr/local/sbin/openclaw-manage-user` helper ([`bin/openclaw-manage-user`](./bin/openclaw-manage-user)), driven by the PM webapp's `/api/agents/*` routes — see [`../X1.md`](../X1.md) § Agent Lifecycle Management. Template: [`index.example.json`](./index.example.json). |
+| `/etc/openclaw/agents.json` | Live runtime registry, NOT in this repo; historical installs may symlink it to `/srv/agents/index.json`. Enable/disable flips come from the dashboard's `POST /agents/registry/toggle`; **agent create/edit/remove** are written by the root `/usr/local/sbin/openclaw-manage-user` helper ([`bin/openclaw-manage-user`](./bin/openclaw-manage-user)), driven by the PM webapp's `/api/agents/*` routes — see [`../X1.md`](../X1.md) § Agent Lifecycle Management. Template: [`index.example.json`](./index.example.json). |
 | `/home/<user>/workspace/{SOUL,USER,MEMORY,IDENTITY,TOOLS,HEARTBEAT}.md` | `<agentFilesRoot>/<user>/...` per-agent private files |
 | `/home/<user>/.openclaw/workspace/{SOUL,USER,MEMORY,IDENTITY,TOOLS,HEARTBEAT}.md` | same |
 | `/home/<user>/.openclaw/openclaw.json` | `<agentFilesRoot>/<user>/openclaw.json` per-agent runtime config, agent-owned and writable by the configured `codeGroup` |
@@ -79,15 +82,19 @@ status, and send/reply helpers block recipients outside that policy.
 
 ## Editing
 
-Edit any file under the host checkout, commit, push. Use `/srv/Code/environment/ai/openclaw` on x1 and `/home/rachael/Code/environment/ai/openclaw` on yoga510. Every agent picks up the new content on the next read.
+Edit files in a branch/worktree checkout, commit, push, then deploy/reconcile
+that worktree. On x1 use `/srv/Code/environment.worktrees/<branch>/ai/openclaw`;
+do not edit `/srv/Code/environment/` directly. On yoga510 use
+`/home/rachael/Code/environment/ai/openclaw`. Every agent picks up the new
+content on the next read after its symlinks point at the active install.
 
 The working tree is owned by a single configured user (the **git owner**) so git operations don't need sudo for that user. Files are world-readable so all consumers (root, the monitoring agent, every coding agent) can read.
 
 ```bash
 # Resolve the git owner dynamically from the working tree's ownership:
-OWNER=$(stat -c %U /srv/Code/environment/ai/openclaw)
+OWNER=$(stat -c %U /srv/Code/environment.worktrees/<branch>/ai/openclaw)
 
-cd /srv/Code/environment/ai/openclaw
+cd /srv/Code/environment.worktrees/<branch>/ai/openclaw
 sudo -u "$OWNER" git pull
 # edit files
 sudo -u "$OWNER" git commit -am "<message>"
@@ -105,6 +112,10 @@ every enabled agent gateway to loopback, enables its external
 OpenClaw `pm` channel plugin for every enabled registry agent, and mirrors token maps into
 `/etc/openclaw/pm-consumer-tokens.json` and
 `/etc/openclaw/pm-channel-tokens.json`.
+For PM-driven agent add/edit, the web route passes the active PM worktree as
+the helper payload `repoRoot`; the helper validates that it is under
+`/srv/Code/environment.worktrees/<name>` before using it for doc symlinks,
+sudoers, `install.sh`, and PM-channel scripts.
 
 The installer also runs `/usr/local/sbin/openclaw-patch-session-fence`
 against the installed OpenClaw runtime. That patch keeps provider timeout
@@ -137,15 +148,21 @@ so browser reconnects can resume from accepted/streaming/failed state
 without relying on `/hooks/wake` or polling.
 The installer preserves `hooks.internal` and
 restarts `openclaw-gateway.service` when it changes hook or channel
-config. Do not expose hooks or the PM channel through nginx; PM calls
-them on `127.0.0.1`. Any nginx dashboard proxy for the gateway must use
+config. The PM-channel installer waits for the restarted
+`openclaw-gateway.service` to report `active` so provisioning fails loudly if a
+new or edited agent cannot come online. Do not expose hooks or the PM channel
+through nginx; PM calls them on `127.0.0.1`. Any nginx dashboard proxy for the
+gateway must use
 `127.0.0.1:<gateway_port>` as the upstream, not the host's LAN IP, and
 must explicitly block prefixed paths such as `/<agent>/hooks` and
 `/<agent>/pm-channel`.
 
 ## Agent identity in code
 
-Helper modules under `skills/` MUST NOT hardcode agent-specific constants (email, displayName, accountId). They resolve identity at runtime via `skills/agent-self.js`, which looks up the running user in the registry at `/etc/openclaw/agents.json` (symlink → `/srv/agents/index.json`):
+Helper modules under `skills/` MUST NOT hardcode agent-specific constants
+(email, displayName, accountId). They resolve identity at runtime via
+`skills/agent-self.js`, which looks up the running user in the registry at
+`/etc/openclaw/agents.json`:
 
 ```javascript
 const self = require('../agent-self');
