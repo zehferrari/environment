@@ -9,9 +9,9 @@ import {
   deleteDirectAgentMessage,
   getConversationFolderIds,
   getAgentChatUploadDir,
-} from "@/lib/agents/direct-chat-actions";
+} from "@/lib/agents/chat/direct-chat-actions";
 import { getPmChannelRunSnapshot } from "@/lib/agents/pm-channel-runs";
-import { messageSenderSelect, serializeSender } from "@/lib/agents/chat-message-sender";
+import { messageSenderSelect, serializeSender } from "@/lib/agents/chat/chat-message-sender";
 import ChatLayoutClient from "./chat-layout-client";
 import ChatInput from "@/components/chat-input";
 import ProposalReview from "./proposal-review";

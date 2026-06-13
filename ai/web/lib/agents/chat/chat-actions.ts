@@ -33,7 +33,7 @@ import { extractMentions } from "@/lib/markdown";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
 import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
 import { createContextGrantUrl } from "@/lib/agents/context-grants";
-import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/discussion-reply-format";
+import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/chat/discussion-reply-format";
 import { createTaskDescriptionWriteToken } from "@/lib/agents/task-chat-token";
 import { createEpicDescriptionWriteToken } from "@/lib/agents/epic-chat-token";
 import { createWorkItemGrantToken } from "@/lib/agents/work-item-token";

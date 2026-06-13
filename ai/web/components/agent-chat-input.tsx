@@ -1,6 +1,6 @@
 "use client";
 
-import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
+import { sendAgentChatMessage } from "@/lib/agents/chat/chat-actions";
 import MaximizableTextarea from "@/components/maximizable-textarea";
 import { generateClientMessageId } from "@/lib/agents/client-message-id";
 import React, { useRef, useState } from "react";

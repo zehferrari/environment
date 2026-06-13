@@ -1,6 +1,6 @@
 "use client";
 
-import { sendDirectAgentMessage } from "@/lib/agents/direct-chat-actions";
+import { sendDirectAgentMessage } from "@/lib/agents/chat/direct-chat-actions";
 import MaximizableTextarea from "@/components/maximizable-textarea";
 import { useDirectChatOptimistic } from "@/components/direct-chat-optimistic-provider";
 import { generateClientMessageId } from "@/lib/agents/client-message-id";

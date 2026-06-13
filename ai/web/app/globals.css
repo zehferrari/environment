@@ -53,6 +53,22 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Firefox/Wayland can leave a stale hit-test layer after fixed full-page
+   backdrops using backdrop-filter unmount. When that happens the page looks
+   normal, but clicks are intercepted until refresh. Keep modal backdrops as
+   plain translucent overlays in Firefox; Chromium/Safari keep the blur. */
+@supports (-moz-appearance: none) {
+  .backdrop-blur,
+  .backdrop-blur-sm,
+  .backdrop-blur-md,
+  .backdrop-blur-lg,
+  .backdrop-blur-xl,
+  .backdrop-blur-\[1px\] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}
+
 * {
   box-sizing: border-box;
 }

@@ -3,7 +3,7 @@
 import { useState, type CSSProperties, type ReactNode, type Ref } from "react";
 import { renderChatMarkdown } from "@/lib/markdown";
 import { parsePmOptions, isPmOptionsTargetedAtCurrentUser, type PmOption } from "@/lib/pm-options";
-import { parseDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
+import { parseDiscussionReplySections } from "@/lib/agents/chat/discussion-reply-format";
 import PmOptions from "@/components/pm-options";
 import {
   actorDisplayName,

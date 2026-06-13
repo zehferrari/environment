@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePersistentPmStream } from "@/components/persistent-pm-stream-provider";
 import { MessageAvatar, type MessageActor } from "@/components/message-avatar";
-import { extractDiscussionSectionA } from "@/lib/agents/discussion-reply-format";
+import { extractDiscussionSectionA } from "@/lib/agents/chat/discussion-reply-format";
 import { renderFullMarkdown } from "@/lib/markdown";
 import { sendNativePmReplyNotification } from "@/lib/agents/native-pm-notifications";
 import {
@@ -12,7 +12,7 @@ import {
   shouldShowTypingDots,
   type StreamingReplyRunStatus,
   type StreamingReplyStatus,
-} from "@/lib/agents/streaming-agent-reply-status";
+} from "@/lib/agents/chat/streaming-agent-reply-status";
 
 type TargetKind = "direct" | "task-chat" | "task-comment" | "epic-chat";
 

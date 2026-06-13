@@ -3,7 +3,7 @@
 import React, { useRef, useCallback, useEffect, useLayoutEffect, useMemo, useOptimistic, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { archiveChatRoom, getAgentChatRoomMessages, sendAgentChatMessage, deleteChatMessage, restoreChatMessage, prebuildAgentChatContext } from "@/lib/agents/chat-actions";
+import { archiveChatRoom, getAgentChatRoomMessages, sendAgentChatMessage, deleteChatMessage, restoreChatMessage, prebuildAgentChatContext } from "@/lib/agents/chat/chat-actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import MaximizableTextarea from "@/components/maximizable-textarea";
@@ -19,7 +19,7 @@ import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
 import { findPmOptionResolution, parsePmOptions } from "@/lib/pm-options";
 import { generateClientMessageId } from "@/lib/agents/client-message-id";
-import { getMessageGroupState, messageParticipantKey } from "@/lib/agents/message-grouping";
+import { getMessageGroupState, messageParticipantKey } from "@/lib/agents/chat/message-grouping";
 
 interface Message {
   id: string;

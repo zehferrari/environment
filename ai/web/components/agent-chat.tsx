@@ -1,11 +1,11 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { auth } from "@/lib/auth";
-import { listChatTargets } from "@/lib/agents/chat-targets";
+import { listChatTargets } from "@/lib/agents/chat/chat-targets";
 import {
   deleteChatMessage,
   restoreChatMessage,
-} from "@/lib/agents/chat-actions";
+} from "@/lib/agents/chat/chat-actions";
 import { renderChatMarkdown } from "@/lib/markdown";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import AgentChatInput from "./agent-chat-input";

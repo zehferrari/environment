@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { getAgentChatUploadDir } from "@/lib/agents/direct-chat-actions";
+import { getAgentChatUploadDir } from "@/lib/agents/chat/direct-chat-actions";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { resolveBinTtlMs } from "@/lib/settings/system";

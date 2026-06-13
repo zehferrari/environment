@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { deleteDirectAgentMessage, restoreDirectAgentMessage } from "@/lib/agents/direct-chat-actions";
+import { deleteDirectAgentMessage, restoreDirectAgentMessage } from "@/lib/agents/chat/direct-chat-actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
@@ -10,7 +10,7 @@ import DeletedMessageDivider from "@/components/deleted-message-divider";
 import {
   type MessageActor,
 } from "@/components/message-avatar";
-import { getMessageGroupState, messageParticipantKey } from "@/lib/agents/message-grouping";
+import { getMessageGroupState, messageParticipantKey } from "@/lib/agents/chat/message-grouping";
 import { useDirectChatOptimistic } from "@/components/direct-chat-optimistic-provider";
 
 interface Message {

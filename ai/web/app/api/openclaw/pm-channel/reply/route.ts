@@ -17,7 +17,7 @@ import {
 import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel-jobs";
 import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel-stream-log";
 import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel-rate-limit";
-import { normalizeDiscussionReplySections } from "@/lib/agents/discussion-reply-format";
+import { normalizeDiscussionReplySections } from "@/lib/agents/chat/discussion-reply-format";
 import {
   sendTaskCommentNotifications,
   sendTaskWorkflowNotification,

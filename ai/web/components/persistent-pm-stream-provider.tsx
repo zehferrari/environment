@@ -1,7 +1,7 @@
 "use client";
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import type { StreamingReplyRunStatus } from "@/lib/agents/streaming-agent-reply-status";
+import type { StreamingReplyRunStatus } from "@/lib/agents/chat/streaming-agent-reply-status";
 import { CrossTabStreamCoordinator } from "@/lib/agents/cross-tab-stream-coordinator";
 
 type TargetKind = "direct" | "task-chat" | "task-comment" | "epic-chat";

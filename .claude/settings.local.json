@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sudo -n journalctl -u openclaw-agent-runner.service --since \"-3 hours\" --no-pager)"
+    ]
+  }
+}

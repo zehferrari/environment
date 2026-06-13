@@ -3,7 +3,7 @@
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { parsePmOptions } from "@/lib/pm-options";
-import { sendAgentChatMessage } from "@/lib/agents/chat-actions";
+import { sendAgentChatMessage } from "@/lib/agents/chat/chat-actions";
 import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
 import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
 

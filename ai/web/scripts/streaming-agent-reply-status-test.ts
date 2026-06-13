@@ -5,7 +5,7 @@ import {
   reconnectingCopy,
   waitingCopy,
   shouldShowTypingDots,
-} from "../lib/agents/streaming-agent-reply-status";
+} from "../lib/agents/chat/streaming-agent-reply-status";
 
 assert.equal(reconnectingCopy(null), null, "normal streaming should not show a reconnect chip");
 assert.equal(
