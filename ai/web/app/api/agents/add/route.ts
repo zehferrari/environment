@@ -7,6 +7,14 @@ import { syncAgents } from "@/lib/agents/sync";
 import { runManageUser } from "@/lib/agents/manage-user";
 import { getSystemSettings } from "@/lib/settings/system";
 import { queueProfileImageGenerationRequest } from "@/lib/agents/profile-image-generation";
+import {
+  normalizeProfileImageAgeGroup,
+  normalizeProfileImageContextText,
+  normalizeProfileImageCustomizationMode,
+  normalizeProfileImageEthnicity,
+  normalizeProfileImageGender,
+  normalizeProfileImagePrompt,
+} from "@/lib/agents/profile-image-options";
 import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/profile-image-themes";
 import {
   allocatePorts,
@@ -48,6 +56,14 @@ const AddSchema = z.object({
     .optional(),
   model_config: ModelConfigSchema,
   image_theme: z.string().trim().min(1).max(120).optional().default(MANUAL_IMAGE_THEME),
+  image_gender: z.string().trim().min(1).max(40).optional().default("Random"),
+  image_age_group: z.string().trim().min(1).max(40).optional().default("Random"),
+  image_ethnicity: z.string().trim().min(1).max(40).optional().default("Random"),
+  image_customization_mode: z.string().trim().min(1).max(20).optional().default("Random"),
+  image_prompt: z.string().trim().min(1).max(2000).optional(),
+  image_username: z.string().trim().max(120).optional(),
+  image_full_name: z.string().trim().max(120).optional(),
+  image_bio: z.string().trim().max(500).optional(),
 });
 
 export async function POST(request: Request) {
@@ -63,6 +79,14 @@ export async function POST(request: Request) {
   }
   const data = parsed.data;
   const imageTheme = normalizeProfileImageTheme(data.image_theme);
+  const imageGender = normalizeProfileImageGender(data.image_gender);
+  const imageAgeGroup = normalizeProfileImageAgeGroup(data.image_age_group);
+  const imageEthnicity = normalizeProfileImageEthnicity(data.image_ethnicity);
+  const imageCustomizationMode = normalizeProfileImageCustomizationMode(data.image_customization_mode);
+  const imagePrompt = normalizeProfileImagePrompt(data.image_prompt);
+  const imageUsername = normalizeProfileImageContextText(data.image_username) || data.user;
+  const imageFullName = normalizeProfileImageContextText(data.image_full_name) || data.name;
+  const imageBio = normalizeProfileImageContextText(data.image_bio, 500);
 
   if (PROTECTED_USERS.includes(data.user)) {
     return NextResponse.json({ error: "protected_user" }, { status: 400 });
@@ -107,6 +131,14 @@ export async function POST(request: Request) {
     telegram: data.telegram,
     integrations: data.integrations,
     imageTheme,
+    imageGender,
+    imageAgeGroup,
+    imageEthnicity,
+    imageCustomizationMode,
+    imagePrompt,
+    imageUsername,
+    imageFullName,
+    imageBio,
     listeners,
   });
 
@@ -157,7 +189,7 @@ export async function POST(request: Request) {
         userId: session.user.id,
         kind: "agent.registry.add",
         targetAgent: data.user,
-        payload: JSON.stringify({ uid, role: data.role, imageTheme }),
+        payload: JSON.stringify({ uid, role: data.role, imageTheme, imageGender, imageAgeGroup, imageEthnicity }),
       },
     });
   } catch (err) {
@@ -170,6 +202,14 @@ export async function POST(request: Request) {
       newAgentSlug: data.user,
       newAgentName: data.name,
       theme: imageTheme,
+      customizationMode: imageCustomizationMode,
+      prompt: imagePrompt,
+      gender: imageGender,
+      ageGroup: imageAgeGroup,
+      ethnicity: imageEthnicity,
+      username: imageUsername,
+      fullName: imageFullName,
+      bio: imageBio,
       requestedByUserId: session.user.id,
       requestedByName: session.user.name ?? session.user.id,
     });

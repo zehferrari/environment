@@ -11,6 +11,7 @@
 // purge jobs can import it directly. Writes go through lib/settings/actions.ts.
 
 import { db } from "@/lib/db";
+import { DEFAULT_PROFILE_IMAGE_PROMPT, normalizeProfileImagePrompt } from "@/lib/agents/profile-image-options";
 
 export const DONE_TTL_FALLBACK_DAYS = 5;
 
@@ -24,6 +25,7 @@ export interface SystemSettingsValues {
   hasOpenRouterApiKey: boolean;
   openRouterReferer: string | null;
   openRouterTitle: string | null;
+  profileImagePrompt: string;
 }
 
 export type SystemTheme = "light" | "dark";
@@ -38,6 +40,7 @@ const EMPTY: SystemSettingsValues = {
   hasOpenRouterApiKey: false,
   openRouterReferer: null,
   openRouterTitle: null,
+  profileImagePrompt: DEFAULT_PROFILE_IMAGE_PROMPT,
 };
 
 export async function getSystemSettings(): Promise<SystemSettingsValues> {
@@ -52,6 +55,7 @@ export async function getSystemSettings(): Promise<SystemSettingsValues> {
       openRouterApiKey: true,
       openRouterReferer: true,
       openRouterTitle: true,
+      profileImagePrompt: true,
     },
   });
   if (!row) return EMPTY;
@@ -59,6 +63,7 @@ export async function getSystemSettings(): Promise<SystemSettingsValues> {
     ...row,
     theme: normalizeTheme(row.theme),
     hasOpenRouterApiKey: Boolean(row.openRouterApiKey),
+    profileImagePrompt: normalizeProfileImagePrompt(row.profileImagePrompt),
   };
 }
 

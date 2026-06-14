@@ -280,8 +280,20 @@ fix_registry_permissions() {
 
 link_doc() {
   # link_doc <src> <dst> — replace any existing file/symlink at dst.
+  # If dst is a non-empty directory, leave it in place and warn. This helper is
+  # called during unrelated registry/profile updates; a legacy home directory
+  # must not make those updates fail.
   local src="$1" dst="$2"
-  [[ -e "$dst" || -L "$dst" ]] && rm -f "$dst"
+  if [[ -L "$dst" || -f "$dst" ]]; then
+    rm -f "$dst"
+  elif [[ -d "$dst" ]]; then
+    if ! rmdir "$dst" 2>/dev/null; then
+      echo "Warning: refusing to replace non-empty directory $dst with symlink to $src" >&2
+      return 0
+    fi
+  elif [[ -e "$dst" ]]; then
+    rm -f "$dst"
+  fi
   ln -sf "$src" "$dst"
 }
 

@@ -67,3 +67,55 @@ This folder mirrors the Wayland/Hyprland desktop configuration for the workstati
 - NVIDIA proprietary stack installed (`akmod-nvidia`, CUDA userspace available)
 - AMD GPU stack active via `amdgpu`
 - Multimedia stack installed (RPM Fusion + codecs, FFmpeg, GStreamer full plugins, HEIC/AVIF/WebP support)
+
+## ComfyUI / Confy Image Service
+
+- Host/IP: `fedora`, `10.0.0.17`
+- Service: user unit `confy.service`
+- Wrapper: `~/.local/bin/confy {start|stop|restart}`
+- ComfyUI root: `~/Code/ComfyUI`
+- Python environment: `~/Code/ComfyUI/.venv`
+- API/UI: `http://10.0.0.17:8188`
+- PM webapp usage: agent profile-image generation from `ai/web` through
+  `PM_PROFILE_IMAGE_CONFY_URL` (default `http://10.0.0.17:8188`).
+
+The PM app generates agent `profile.png` and `avatar.png` as 256x256 PNGs.
+The Profile is generated with FLUX.1-dev FP8. The Avatar uses the Profile as a
+face identity reference through PuLID-FLUX, so it should
+preserve the same face shape, age cues, gender presentation, ethnicity cues,
+hairline, and facial proportions much better than plain img2img.
+The PM UI stages the Profile first; Avatar generation is manually triggered only
+after a Profile source has been delivered. If an Avatar is not generated, PM
+saves `avatar.png` as a symlink to `profile.png`.
+
+Installed ComfyUI custom node:
+
+- `~/Code/ComfyUI/custom_nodes/ComfyUI-PuLID-Flux`
+  - Local compatibility patch: `pulidflux.py::forward_orig` accepts
+    `timestep_zero_index`/extra kwargs for ComfyUI `0.24.0`.
+
+Installed model files:
+
+- `~/Code/ComfyUI/models/checkpoints/flux1-dev-fp8.safetensors`
+- `~/Code/ComfyUI/models/pulid/pulid_flux_v0.9.1.safetensors`
+- `~/Code/ComfyUI/models/insightface/models/antelopev2/`
+
+Important PM-side tuning knobs:
+
+- `PM_PROFILE_IMAGE_CONFY_MODEL`: checkpoint name, defaults to
+  `flux1-dev-fp8.safetensors`
+- `PM_PROFILE_IMAGE_STEPS`: normal saved-generation sampling steps, defaults
+  to `20`
+- `PM_PROFILE_IMAGE_PREVIEW_STEPS`: staged preview/regeneration sampling steps,
+  defaults to `18`
+- `PM_PROFILE_IMAGE_PULID_FLUX_MODEL`: PuLID-FLUX model name, defaults to
+  `pulid_flux_v0.9.1.safetensors`
+- `PM_PROFILE_IMAGE_PULID_FLUX_WEIGHT`: identity-reference strength, defaults
+  to `1.15`
+
+Verification:
+
+```bash
+systemctl --user status confy.service --no-pager
+curl -s http://127.0.0.1:8188/object_info | rg 'PulidFlux|ApplyPulid'
+```

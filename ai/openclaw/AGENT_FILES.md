@@ -75,7 +75,12 @@ mail sent by another local agent.
 
 ## Code workspaces — `~/Code/`
 
-Per-agent clones of project repos (e.g., `~/Code/whitsunday-discovery-trail`). Each agent has its own working copy with its own branch state. NOT shared.
+On x1, `~/Code` should be a symlink to the shared `/srv/Code` tree. Agents
+claim isolated branches through `/srv/Code/environment.worktrees/<branch>/`
+instead of using private per-agent checkouts. During provisioning/update,
+`openclaw-manage-user` repairs missing file/symlink targets, but it will not
+delete a non-empty `~/Code` directory just to create the symlink; that condition
+should be treated as an operational drift item and fixed deliberately.
 
 ## Webhook routing — `/srv/agents/index.json`
 

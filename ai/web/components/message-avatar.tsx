@@ -26,7 +26,7 @@ function agentAvatarUrl(name: string) {
   if (first.length > 0) {
     first = first.charAt(0).toUpperCase() + first.slice(1);
   }
-  return `/agents/avatars/${encodeURIComponent(first)}`;
+  return `/agents/avatars/${encodeURIComponent(first)}?v=agent-image-v2`;
 }
 
 export function actorDisplayName(actor: MessageActor) {

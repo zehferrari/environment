@@ -904,6 +904,7 @@ model SystemSettings {
   openRouterApiKey    String?
   openRouterReferer   String?
   openRouterTitle     String?
+  profileImagePrompt  String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }

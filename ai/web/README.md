@@ -92,6 +92,9 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/api/attachments/[id]` | streamed attachment download (auth-gated). |
 | `app/api/agents/[agentId]/profile/...` | per-agent profile read/write (HOMELAB-52). |
 | `app/api/agents/[agentId]/images/{profile,avatar}` | authenticated agent profile-image read/write. Upload/remove is allowed only when the agent registry entry has `profileImages.theme="Manually Uploaded"`. |
+| `app/api/agents/[agentId]/images/preview` | stages generated agent profile images without writing final files. Profile generation is requested first; Avatar generation is a separate user-triggered request that uses the delivered Profile as the identity source. |
+| `app/api/agents/[agentId]/images/staged/[stageId]` | authenticated status/read endpoint for staged generated profile images. |
+| `app/api/agents/[agentId]/images/theme` | saves profile-image settings and promotes staged generated images to `/srv/agents/Pictures/<Agent>/` only when the user presses Save. |
 | `app/api/agents/[agentId]/models` | model settings read/write. |
 | `app/api/agents/[agentId]/services/{toggle,restart}` | Atlas service controls. |
 | `app/api/agents/[agentId]/registry/toggle` | activate/deactivate registry entry. |
@@ -130,7 +133,7 @@ user.
 | `lib/agents/credentials.ts` | per-agent host-private credential seeding. |
 | `lib/agents/profile.ts` | shared agent profile read/write + ACL. |
 | `lib/agents/profile-images.ts` | profile/avatar image metadata, upload conversion, delete, and ACL enforcement for `/srv/agents/Pictures/<Agent>/`. |
-| `lib/agents/profile-image-generation.ts` | queues non-manual image-generation requests to the first active agent with an OpenAI/Codex/ChatGPT-style model. |
+| `lib/agents/profile-image-generation.ts` | sends non-manual image-generation requests to the Confy/ComfyUI service (`PM_PROFILE_IMAGE_CONFY_URL`, default `http://10.0.0.17:8188`). Profiles use FLUX.1-dev FP8; Avatars use the Profile as a PuLID-FLUX identity reference. Default saved generations use 20 steps (`PM_PROFILE_IMAGE_STEPS`); staged previews use 18 steps (`PM_PROFILE_IMAGE_PREVIEW_STEPS`). |
 | `lib/agents/profile-image-themes.ts` | Add Agent character-theme combobox options; first option is `Manually Uploaded`. |
 | `lib/agents/model-settings.ts` | shared model-config store (HOMELAB-52). |
 | `lib/agents/restart.ts` | systemd restart fan-out via Atlas gateway. |
@@ -270,12 +273,14 @@ route then reconciles the PM DB with `syncAgents()` and writes an
 - **Profile images.** Add Agent includes a character-theme combobox stored in
   the registry entry as `profileImages.theme`. `Manually Uploaded` enables
   upload/remove controls on the agent profile page for
-  `/srv/agents/Pictures/<Username>/{profile,avatar}.png`. Any other theme queues
-  a direct PM-channel request to the first active agent with an OpenAI/Codex or
-  ChatGPT-style model, asking it to create a photoreal `profile.png` and plush
-  doll `avatar.png` in that directory. The helper creates the picture directory
-  with `code-agents` group-write permissions; `pm.service` needs
-  `/srv/agents/Pictures` in `ReadWritePaths`.
+  `/srv/agents/Pictures/<Username>/{profile,avatar}.png`. Any other theme uses
+  the Confy/ComfyUI service to stage a 256px Profile. Once that Profile is
+  delivered, the user can manually request a PuLID-FLUX Avatar derived from the
+  Profile reference. If the user saves without creating a generated Avatar,
+  `avatar.png` is symlinked to `profile.png`. Staged generated images are
+  promoted to `/srv/agents/Pictures/<Username>/` only after the user presses
+  Save. The helper creates the picture directory with `code-agents` group-write
+  permissions; `pm.service` needs `/srv/agents/Pictures` in `ReadWritePaths`.
 - **Telegram.** When enabled, the bot token is captured and the helper writes it
   to `~/.config/openclaw/telegram-token` + `TELEGRAM_BOT_TOKEN`; DM pairing then
   authorises the operator's account.

@@ -13,12 +13,14 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function imageHeaders(bytes: Buffer, sourceSize: number, mtimeMs: number) {
+function imageHeaders(bytes: Buffer, sourceSize: number, mtimeMs: number, immutable: boolean) {
   const etag = `"${bytes.byteLength.toString(16)}-${sourceSize.toString(16)}-${Math.floor(mtimeMs).toString(16)}"`;
   return {
     "content-type": "image/png",
     "content-length": String(bytes.byteLength),
-    "cache-control": "private, no-cache, no-store, max-age=0, must-revalidate",
+    "cache-control": immutable
+      ? "private, max-age=31536000, immutable"
+      : "private, max-age=300, stale-while-revalidate=86400",
     "etag": etag,
   };
 }
@@ -34,7 +36,8 @@ export async function GET(
     const { agentId, kind } = await params;
     assertAgentImageKind(kind);
     const image = await readAgentImage(agentId, kind);
-    const headers = imageHeaders(image.bytes, image.size, image.mtimeMs);
+    const url = new URL(request.url);
+    const headers = imageHeaders(image.bytes, image.size, image.mtimeMs, url.searchParams.has("v"));
     if (request.headers.get("if-none-match") === headers.etag) {
       const { "content-length": _contentLength, ...notModifiedHeaders } = headers;
       return new NextResponse(null, { status: 304, headers: notModifiedHeaders });

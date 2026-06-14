@@ -14,7 +14,7 @@ function avatarHeaders(bytes: Buffer, sourceSize: number, mtimeMs: number) {
   return {
     "content-type": "image/png",
     "content-length": String(bytes.byteLength),
-    "cache-control": "public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800",
+    "cache-control": "public, max-age=0, must-revalidate",
     "etag": etag,
   };
 }

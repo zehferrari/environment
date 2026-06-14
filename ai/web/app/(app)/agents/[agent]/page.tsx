@@ -16,9 +16,16 @@ import AtlasControls from "./atlas-controls";
 import AgentTabs, { type AgentTab } from "./agent-tabs";
 import ModelsSettings from "./models-settings";
 import AgentImagesPanel from "./agent-images-panel";
+import AgentDangerZone from "./agent-danger-zone";
 import { readAgentImagesState } from "@/lib/agents/profile-images";
+import { summarizeAgentDeletion } from "@/lib/agents/deletion-summary";
+import { getSystemSettings } from "@/lib/settings/system";
 
 export const dynamic = "force-dynamic";
+
+// Mirrors PROTECTED_USERS in /api/agents/remove: accounts that must never be
+// deprovisioned from the UI (operator, the monitor running this service, system).
+const PROTECTED_AGENTS = new Set(["root", "zeh", "karen", "system", "admin", "daemon", "bin", "sys", "code-agents"]);
 
 type SnapshotAgent = {
   name?: string;
@@ -104,7 +111,7 @@ function parseRaw(raw: string | null): RawAgent {
 
 function avatarUrl(name: string) {
   const first = name.split(" ")[0] || name;
-  return `/agents/avatars/${encodeURIComponent(first)}`;
+  return `/agents/avatars/${encodeURIComponent(first)}?v=agent-image-v2`;
 }
 
 function localAvatarSrc(agentAvatar: string | null, liveAvatarUrl: string | undefined, name: string) {
@@ -153,7 +160,7 @@ export default async function AgentProfilePage({
   const { agent: slug } = await params;
   const tabParam = (await searchParams)?.tab;
   const requestedTab: AgentTab =
-    tabParam === "operations" ? "operations" : tabParam === "activity" ? "activity" : "controls";
+    tabParam === "images" ? "images" : tabParam === "operations" ? "operations" : tabParam === "activity" ? "activity" : "controls";
   const session = await auth();
   const [agent, snapshot, allAgents] = await Promise.all([
     db.agent.findUnique({ where: { slug }, include: { user: true } }),
@@ -162,11 +169,16 @@ export default async function AgentProfilePage({
   ]);
   if (!agent) notFound();
 
-  const [profileResult, imageState] = await Promise.all([
+  const [profileResult, imageState, settings] = await Promise.all([
     readProfileForPage(slug),
     readAgentImagesState(slug),
+    getSystemSettings(),
   ]);
   const canEdit = await canEditProfile({ name: session?.user?.name, kind: session?.user?.kind }, slug);
+  // Deletion is admin-only (matches the /api/agents/remove guard) and never
+  // offered for protected accounts.
+  const canRemove = session?.user?.name === "zeh" && !PROTECTED_AGENTS.has(slug);
+  const deletionSummary = canRemove ? await summarizeAgentDeletion(slug) : null;
   const [audit, activity, modelSettings] = await Promise.all([
     db.activityLog.findMany({
       where: { kind: "agent.profile.update", targetAgent: slug },
@@ -238,10 +250,6 @@ export default async function AgentProfilePage({
         controls={(
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
             <div className="space-y-4">
-              <Panel title="Profile images">
-                <AgentImagesPanel agent={slug} state={imageState} canEdit={canEdit} />
-              </Panel>
-
               <Panel title="Identity files">
                 {profileResult.profile ? (
                   <ProfileEditor agent={slug} files={profileResult.profile.files} canEdit={canEdit} />
@@ -288,12 +296,20 @@ export default async function AgentProfilePage({
             </aside>
           </div>
         )}
+        images={(
+          <Panel title="Profile images">
+            <AgentImagesPanel agent={slug} state={imageState} canEdit={canEdit} defaultPrompt={settings.profileImagePrompt} />
+          </Panel>
+        )}
         operations={(
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="space-y-4">
               <Panel title="Models Settings">
                 <ModelsSettings agent={slug} canEdit={canEdit} settings={modelSettings} liveModel={live?.model_primary} />
               </Panel>
+              {canRemove && deletionSummary ? (
+                <AgentDangerZone agent={slug} name={agent.name} summary={deletionSummary} />
+              ) : null}
             </div>
 
             <div className="space-y-4">

@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(sudo -n journalctl -u openclaw-agent-runner.service --since \"-3 hours\" --no-pager)"
+      "Bash(sudo -n journalctl -u openclaw-agent-runner.service --since \"-3 hours\" --no-pager)",
+      "Bash(sudo sed *)",
+      "Bash(sudo sqlite3 -header -column \"file:/srv/Data/pm/wt-main.db?mode=ro\" \"SELECT slug, name, role, deactivatedAt FROM Agent WHERE slug='drauzio';\")",
+      "Read(//srv/agents/**)"
     ]
   }
 }

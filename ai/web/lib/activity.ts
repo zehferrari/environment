@@ -439,6 +439,10 @@ export function describeActivity(row: ActivityRow): string {
       return `${actor(row.actorName)} uploaded ${targetAgent(row)} image${row.targetFile ? ` (${row.targetFile})` : ""}`;
     case "agent.profile.image_remove":
       return `${actor(row.actorName)} removed ${targetAgent(row)} image${row.targetFile ? ` (${row.targetFile})` : ""}`;
+    case "agent.profile.image_theme_update": {
+      const p = parsePayload<{ theme?: string }>(row.payload);
+      return `${actor(row.actorName)} changed ${targetAgent(row)} image theme${p?.theme ? ` to ${p.theme}` : ""}`;
+    }
     case "agent.profile.image_request": {
       const p = parsePayload<{ generatorAgent?: string; theme?: string }>(row.payload);
       return `${actor(row.actorName)} requested profile images for ${targetAgent(row)}${p?.generatorAgent ? ` from @${p.generatorAgent}` : ""}${p?.theme ? ` (${p.theme})` : ""}`;

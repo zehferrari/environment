@@ -28,9 +28,21 @@ import {
 } from "@/lib/agents/providers";
 import {
   AGENT_PROFILE_IMAGE_THEMES,
+  GENERATED_IMAGE_THEME,
   MANUAL_IMAGE_THEME,
   normalizeProfileImageTheme,
 } from "@/lib/agents/profile-image-themes";
+import {
+  DEFAULT_PROFILE_IMAGE_AGE_GROUP,
+  DEFAULT_PROFILE_IMAGE_CUSTOMIZATION_MODE,
+  DEFAULT_PROFILE_IMAGE_ETHNICITY,
+  DEFAULT_PROFILE_IMAGE_GENDER,
+  DEFAULT_PROFILE_IMAGE_PROMPT,
+  PROFILE_IMAGE_AGE_GROUPS,
+  PROFILE_IMAGE_CUSTOMIZATION_MODES,
+  PROFILE_IMAGE_ETHNICITIES,
+  PROFILE_IMAGE_GENDERS,
+} from "@/lib/agents/profile-image-options";
 
 type SelectedModel = { provider: string; id: string; name?: string };
 
@@ -48,6 +60,14 @@ export type AgentFormData = {
   telegram: { enabled: boolean; bot: string; token: string };
   integrations: { gmail: boolean; jira: boolean; bitbucket: boolean; maildir: boolean };
   image_theme: string;
+  image_gender: string;
+  image_age_group: string;
+  image_ethnicity: string;
+  image_customization_mode: string;
+  image_prompt: string;
+  image_username: string;
+  image_full_name: string;
+  image_bio: string;
 };
 
 type AgentRow = {
@@ -59,16 +79,24 @@ type AgentRow = {
   integrations?: { gmail: boolean; jira: boolean; bitbucket: boolean; maildir?: boolean } | null;
   model_config?: ModelConfig;
   image_theme?: string | null;
+  image_gender?: string | null;
+  image_age_group?: string | null;
+  image_ethnicity?: string | null;
+  image_customization_mode?: string | null;
+  image_prompt?: string | null;
+  image_username?: string | null;
+  image_full_name?: string | null;
+  image_bio?: string | null;
 };
 
-type AgentManagementControlsProps = { agents: AgentRow[] };
+type AgentManagementControlsProps = { agents: AgentRow[]; defaultPrompt: string };
 
 const refOf = (m: SelectedModel) => `${m.provider}/${m.id}`;
 
 const DEFAULT_PROVIDER: ProviderId = "anthropic";
 const DEFAULT_MODEL_REF = "anthropic/claude-sonnet-4-6";
 
-function blankForm(): AgentFormData {
+function blankForm(defaultPrompt = DEFAULT_PROFILE_IMAGE_PROMPT): AgentFormData {
   return {
     user: "",
     name: "",
@@ -76,18 +104,46 @@ function blankForm(): AgentFormData {
     email: "",
     telegram: { enabled: false, bot: "", token: "" },
     integrations: { gmail: false, jira: false, bitbucket: false, maildir: false },
-    image_theme: MANUAL_IMAGE_THEME,
+    image_theme: GENERATED_IMAGE_THEME,
+    image_gender: DEFAULT_PROFILE_IMAGE_GENDER,
+    image_age_group: DEFAULT_PROFILE_IMAGE_AGE_GROUP,
+    image_ethnicity: DEFAULT_PROFILE_IMAGE_ETHNICITY,
+    image_customization_mode: DEFAULT_PROFILE_IMAGE_CUSTOMIZATION_MODE,
+    image_prompt: defaultPrompt,
+    image_username: "",
+    image_full_name: "",
+    image_bio: "",
   };
 }
 
-export default function AgentManagementControls({ agents }: AgentManagementControlsProps) {
+const KAREN_NAMES = ["Mildred", "Basil", "Daphne", "Percival", "Gwendolyn", "Rupert", "Beatrix", "Nigel", "Prudence", "Milton"];
+const KAREN_SURNAMES = ["Wobbleworth", "Pickleford", "Spreadsheet", "Fuzzbutton", "Ticklebank", "Puddington", "Quibbleton", "Snickerdash", "Bumblewick", "Noodleman"];
+const BIO_BITS = [
+  "keeps meeting notes alphabetized by emotional temperature",
+  "claims every problem can be solved with a tidy checklist and a tiny biscuit",
+  "once optimized a calendar invite until it achieved inner peace",
+  "has strong opinions about labels, lighting, and the moral value of tidy folders",
+  "quietly turns chaos into status updates before anyone notices",
+];
+
+function pick<T>(items: T[]): T {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function suggestKarenProfile(user: string) {
+  const fullName = `${pick(KAREN_NAMES)} ${pick(KAREN_SURNAMES)}`;
+  const bio = `${fullName} is @${user || "agent"}'s corporate alter ego: a fictional AI agent who ${pick(BIO_BITS)}.`;
+  return { fullName, bio };
+}
+
+export default function AgentManagementControls({ agents, defaultPrompt }: AgentManagementControlsProps) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [isEdit, setIsEdit] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [form, setForm] = useState<AgentFormData>(blankForm());
+  const [form, setForm] = useState<AgentFormData>(() => blankForm(defaultPrompt));
 
   // Model selection state.
   const [enabled, setEnabled] = useState<Set<ProviderId>>(new Set([DEFAULT_PROVIDER]));
@@ -100,7 +156,7 @@ export default function AgentManagementControls({ agents }: AgentManagementContr
   const seedFor = (p: ProviderId): ProviderModel[] => getProvider(p)?.seedModels ?? [];
 
   const handleOpenAdd = () => {
-    setForm(blankForm());
+    setForm(blankForm(defaultPrompt));
     const seed = seedFor(DEFAULT_PROVIDER);
     setEnabled(new Set([DEFAULT_PROVIDER]));
     setAvailable({ [DEFAULT_PROVIDER]: seed });
@@ -132,6 +188,14 @@ export default function AgentManagementControls({ agents }: AgentManagementContr
         maildir: agent.integrations?.maildir ?? false,
       },
       image_theme: normalizeProfileImageTheme(agent.image_theme),
+      image_gender: agent.image_gender ?? DEFAULT_PROFILE_IMAGE_GENDER,
+      image_age_group: agent.image_age_group ?? DEFAULT_PROFILE_IMAGE_AGE_GROUP,
+      image_ethnicity: agent.image_ethnicity ?? DEFAULT_PROFILE_IMAGE_ETHNICITY,
+      image_customization_mode: agent.image_customization_mode ?? DEFAULT_PROFILE_IMAGE_CUSTOMIZATION_MODE,
+      image_prompt: agent.image_prompt ?? defaultPrompt,
+      image_username: agent.image_username ?? agent.slug,
+      image_full_name: agent.image_full_name ?? agent.name,
+      image_bio: agent.image_bio ?? "",
     });
 
     // Prefill model selection from the agent's openclaw.json, dropping any
@@ -387,26 +451,120 @@ export default function AgentManagementControls({ agents }: AgentManagementContr
                 </div>
               </div>
 
-              <div>
-                <label className={labelCls}>Character theme / inspiration</label>
-                <input
-                  list="agent-profile-image-themes"
-                  required
-                  disabled={busy}
-                  value={form.image_theme}
-                  onChange={(e) => setForm({ ...form, image_theme: e.target.value })}
-                  className={inputCls}
-                />
-                <datalist id="agent-profile-image-themes">
-                  {AGENT_PROFILE_IMAGE_THEMES.map((theme) => (
-                    <option key={theme} value={theme} />
-                  ))}
-                </datalist>
-                <p className="mt-1 text-[10px] text-[var(--color-text-muted)]">
-                  Pick <span className="font-medium">{MANUAL_IMAGE_THEME}</span> to upload profile/avatar images yourself from the agent profile page.
-                  Any other inspiration queues a ChatGPT-capable agent to generate the image files.
-                </p>
-              </div>
+              {!isEdit ? (
+                <div>
+                  <label className={labelCls}>Image source</label>
+                  <select
+                    disabled={busy}
+                    value={form.image_theme}
+                    onChange={(e) => setForm({ ...form, image_theme: e.target.value })}
+                    className={inputCls}
+                  >
+                    {AGENT_PROFILE_IMAGE_THEMES.map((theme) => (
+                      <option key={theme} value={theme}>{theme}</option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[10px] text-[var(--color-text-muted)]">
+                    Pick <span className="font-medium">{MANUAL_IMAGE_THEME}</span> to upload profile/avatar images yourself from the agent profile page.
+                    Generated images use Confy with the selected demographic options.
+                  </p>
+                </div>
+              ) : null}
+
+              {!isEdit && form.image_theme !== MANUAL_IMAGE_THEME ? (
+                <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
+                  <span className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Image customization</span>
+                  <div className="flex flex-wrap gap-3 text-sm">
+                    {PROFILE_IMAGE_CUSTOMIZATION_MODES.map((mode) => (
+                      <label key={mode} className="flex items-center gap-2">
+                        <input
+                          type="radio"
+                          disabled={busy}
+                          checked={form.image_customization_mode === mode}
+                          onChange={() => {
+                            const suggestion =
+                              mode === "Custom" && !form.image_full_name.trim() && !form.image_bio.trim()
+                                ? suggestKarenProfile(form.user)
+                                : null;
+                            setForm({
+                              ...form,
+                              image_customization_mode: mode,
+                              image_full_name: suggestion?.fullName ?? form.image_full_name,
+                              image_bio: suggestion?.bio ?? form.image_bio,
+                              ...(mode === "Random" ? {
+                                image_gender: DEFAULT_PROFILE_IMAGE_GENDER,
+                                image_age_group: DEFAULT_PROFILE_IMAGE_AGE_GROUP,
+                                image_ethnicity: DEFAULT_PROFILE_IMAGE_ETHNICITY,
+                              } : {}),
+                            });
+                          }}
+                          className="h-4 w-4 accent-[var(--color-accent)]"
+                        />
+                        <span>{mode}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {form.image_customization_mode === "Custom" ? (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-3 gap-4">
+                        <div>
+                          <label className={labelCls}>Gender</label>
+                          <select disabled={busy} value={form.image_gender} onChange={(e) => setForm({ ...form, image_gender: e.target.value })} className={inputCls}>
+                            {PROFILE_IMAGE_GENDERS.map((option) => <option key={option} value={option}>{option}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className={labelCls}>Age group</label>
+                          <select disabled={busy} value={form.image_age_group} onChange={(e) => setForm({ ...form, image_age_group: e.target.value })} className={inputCls}>
+                            {PROFILE_IMAGE_AGE_GROUPS.map((option) => <option key={option} value={option}>{option}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label className={labelCls}>Ethnicity</label>
+                          <select disabled={busy} value={form.image_ethnicity} onChange={(e) => setForm({ ...form, image_ethnicity: e.target.value })} className={inputCls}>
+                            {PROFILE_IMAGE_ETHNICITIES.map((option) => <option key={option} value={option}>{option}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className={labelCls}>Username for image prompt</label>
+                          <input disabled={busy} value={form.image_username || form.user} onChange={(e) => setForm({ ...form, image_username: e.target.value })} className={inputCls} />
+                        </div>
+                        <div>
+                          <label className={labelCls}>Full name for image prompt</label>
+                          <div className="flex gap-2">
+                            <input disabled={busy} value={form.image_full_name || form.name} onChange={(e) => setForm({ ...form, image_full_name: e.target.value })} className={inputCls} />
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => {
+                                const suggestion = suggestKarenProfile(form.user);
+                                setForm({
+                                  ...form,
+                                  image_full_name: suggestion.fullName,
+                                  image_bio: suggestion.bio,
+                                });
+                              }}
+                              className="shrink-0 rounded-xl border border-[var(--color-line)] px-3 py-2 text-xs font-medium hover:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Karen suggest
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <div>
+                        <label className={labelCls}>Bio</label>
+                        <textarea disabled={busy} value={form.image_bio} onChange={(e) => setForm({ ...form, image_bio: e.target.value })} rows={2} className={inputCls} />
+                      </div>
+                      <div>
+                        <label className={labelCls}>Confy prompt</label>
+                        <textarea disabled={busy} value={form.image_prompt} onChange={(e) => setForm({ ...form, image_prompt: e.target.value })} rows={4} className={inputCls} />
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
 
               {/* ---- Model providers + models ---- */}
               <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">

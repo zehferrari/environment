@@ -29,7 +29,7 @@ async function readSnapshot(): Promise<Snapshot | null> {
 
 function avatarUrl(name: string) {
   const first = name.split(" ")[0] || name;
-  return `/agents/avatars/${encodeURIComponent(first)}`;
+  return `/agents/avatars/${encodeURIComponent(first)}?v=agent-image-v2`;
 }
 
 function statusFor(

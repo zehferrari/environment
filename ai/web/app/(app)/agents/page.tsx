@@ -7,7 +7,8 @@ import { MessageAvatar, MessageTimestamp, type MessageActor } from "@/components
 import AgentServiceControls, { type AgentService } from "./agent-service-controls";
 import fs from "fs/promises";
 import path from "path";
-import AgentManagementControls, { EditAgentButton } from "./agent-management-controls";
+import AgentManagementControls from "./agent-management-controls";
+import { getSystemSettings } from "@/lib/settings/system";
 
 export const dynamic = "force-dynamic";
 
@@ -122,7 +123,7 @@ async function readSnapshot(): Promise<Snapshot | null> {
 
 function avatarUrl(name: string) {
   const first = name.split(" ")[0] || name;
-  return `/agents/avatars/${encodeURIComponent(first)}`;
+  return `/agents/avatars/${encodeURIComponent(first)}?v=agent-image-v2`;
 }
 
 function localAvatarSrc(agentAvatar: string | null, liveAvatarUrl: string | undefined, name: string) {
@@ -219,7 +220,17 @@ function parseAgentRaw(rawJson: string | null) {
     return JSON.parse(rawJson) as {
       telegram?: { enabled: boolean; bot: string } | null;
       integrations?: { gmail: boolean; jira: boolean; bitbucket: boolean; maildir?: boolean } | null;
-      profileImages?: { theme?: unknown };
+      profileImages?: {
+        theme?: unknown;
+        customizationMode?: unknown;
+        gender?: unknown;
+        ageGroup?: unknown;
+        ethnicity?: unknown;
+        prompt?: unknown;
+        username?: unknown;
+        fullName?: unknown;
+        bio?: unknown;
+      };
     };
   } catch {
     return {};
@@ -248,7 +259,7 @@ async function getModelConfig(slug: string): Promise<AgentModelConfig> {
 }
 
 export default async function AgentsPage() {
-  const [agents, recentActivity, snapshot, totalOpenTasks, totalActivityLogs, recentPmRuns] = await Promise.all([
+  const [agents, recentActivity, snapshot, totalOpenTasks, totalActivityLogs, recentPmRuns, settings] = await Promise.all([
     db.agent.findMany({
       orderBy: { slug: "asc" },
       include: {
@@ -298,6 +309,7 @@ export default async function AgentsPage() {
         messageId: true,
       },
     }),
+    getSystemSettings(),
   ]);
 
   const liveAgents = snapshot?.agents ?? {};
@@ -317,6 +329,14 @@ export default async function AgentsPage() {
         integrations: raw.integrations || null,
         model_config: modelConfig,
         image_theme: typeof raw.profileImages?.theme === "string" ? raw.profileImages.theme : null,
+        image_customization_mode: typeof raw.profileImages?.customizationMode === "string" ? raw.profileImages.customizationMode : null,
+        image_gender: typeof raw.profileImages?.gender === "string" ? raw.profileImages.gender : null,
+        image_age_group: typeof raw.profileImages?.ageGroup === "string" ? raw.profileImages.ageGroup : null,
+        image_ethnicity: typeof raw.profileImages?.ethnicity === "string" ? raw.profileImages.ethnicity : null,
+        image_prompt: typeof raw.profileImages?.prompt === "string" ? raw.profileImages.prompt : null,
+        image_username: typeof raw.profileImages?.username === "string" ? raw.profileImages.username : null,
+        image_full_name: typeof raw.profileImages?.fullName === "string" ? raw.profileImages.fullName : null,
+        image_bio: typeof raw.profileImages?.bio === "string" ? raw.profileImages.bio : null,
       };
     })
   );
@@ -365,7 +385,7 @@ export default async function AgentsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <h1 className="text-3xl font-semibold tracking-tight">Agents</h1>
-          <AgentManagementControls agents={clientAgents} />
+          <AgentManagementControls agents={clientAgents} defaultPrompt={settings.profileImagePrompt} />
         </div>
         <Link
           href="/system/activity"
@@ -450,7 +470,6 @@ export default async function AgentsPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h2 className="truncate text-lg font-semibold tracking-tight">{a.name}</h2>
-                      <EditAgentButton slug={a.slug} />
                     </div>
                     <p className="font-mono text-xs text-[var(--color-text-muted)]">@{a.slug} · {a.role}</p>
                     <div className="mt-2 grid grid-cols-3 gap-2">
@@ -470,7 +489,7 @@ export default async function AgentsPage() {
                 <div className="relative mt-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-2.5">
                   <div className="mb-1.5 flex items-center justify-between gap-2">
                     <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Services</span>
-                    <Link href={`/agents/${a.slug}`} className="text-[10px] font-medium text-[var(--color-accent)] hover:underline">Deck →</Link>
+                    <Link href={`/agents/${a.slug}`} className="text-[10px] font-medium text-[var(--color-accent)] hover:underline">Profile →</Link>
                   </div>
                   <AgentServiceControls agent={a.slug} services={agentServices} />
                 </div>

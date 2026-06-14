@@ -44,7 +44,7 @@ function formatArchivePeriod(startedAt: Date, endedAt: Date) {
 
 function avatarUrl(name: string) {
   const first = name.split(" ")[0] || name;
-  return `/agents/avatars/${encodeURIComponent(first)}`;
+  return `/agents/avatars/${encodeURIComponent(first)}?v=agent-image-v2`;
 }
 
 function TypingDots() {
