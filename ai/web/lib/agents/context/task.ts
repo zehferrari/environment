@@ -4,11 +4,11 @@ import {
   type AttachmentContext,
   type AttachmentForContext,
 } from "./attachment-extracts";
-import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
+import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/ops/pm-silence";
 import {
   renderDirectedSilenceRule,
   type DirectedDescriptor,
-} from "@/lib/agents/directed-targets";
+} from "@/lib/agents/ops/directed-targets";
 import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 
@@ -276,7 +276,7 @@ export interface LiveContextAccess {
   /** Project id, for proposing work items. */
   projectId: string;
   /** Inlined "recent exchange" block — pre-rendered by the dispatcher
-   *  (lib/agents/context-api/recent.ts:formatRecentBlock). When set, this
+   *  (lib/agents/context/api/recent.ts:formatRecentBlock). When set, this
    *  is the conversational hot path the agent MUST treat as primary
    *  context. Empty string when there is no prior exchange yet. */
   inlineRecentBlock?: string;

@@ -2,7 +2,7 @@ import "./lib/next-als-polyfill";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { db } from "@/lib/db";
-import { createContextGrant } from "@/lib/agents/context-grants";
+import { createContextGrant } from "@/lib/agents/context/grants";
 import {
   callPmChannelReply,
   seedDirectAgentMessage,

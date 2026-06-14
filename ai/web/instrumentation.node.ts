@@ -1,5 +1,5 @@
-import { seedZehUser } from "@/lib/agents/seed-zeh";
-import { syncAgents } from "@/lib/agents/sync";
+import { seedZehUser } from "@/lib/agents/auth/seed-zeh";
+import { syncAgents } from "@/lib/agents/management/sync";
 import { purgeBin } from "@/lib/bin/purge";
 import { purgeProjectBin } from "@/lib/bin/purge-projects";
 import { purgeDirectAgentChatBin } from "@/lib/bin/purge-chats";
@@ -8,8 +8,8 @@ import { pollDeploymentPullRequests } from "@/lib/deploy/monitor";
 import {
   pmAsyncDispatchEnabled,
   runPmChannelWorkerDrain,
-} from "@/lib/agents/pm-channel-jobs";
-import { startPmChannelLocalStreamTransports } from "@/lib/agents/pm-channel-stream-local";
+} from "@/lib/agents/pm-channel/jobs";
+import { startPmChannelLocalStreamTransports } from "@/lib/agents/pm-channel/stream-local";
 
 declare global {
   var __pmChannelWorkerPollStarted: boolean | undefined;

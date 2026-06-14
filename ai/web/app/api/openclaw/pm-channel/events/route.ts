@@ -3,14 +3,14 @@ import { db } from "@/lib/db";
 import {
   parsePmChannelReplyTarget,
   type PmChannelReplyTarget,
-} from "@/lib/agents/openclaw-pm-channel";
+} from "@/lib/agents/pm-channel/openclaw";
 import {
   createPmChannelEventStream,
   pmChannelStreamKey,
   type PmChannelStreamState,
-} from "@/lib/agents/pm-channel-stream";
-import { getPmChannelRunSnapshot } from "@/lib/agents/pm-channel-runs";
-import { replayPmChannelStreamFrames } from "@/lib/agents/pm-channel-stream-log";
+} from "@/lib/agents/pm-channel/stream";
+import { getPmChannelRunSnapshot } from "@/lib/agents/pm-channel/runs";
+import { replayPmChannelStreamFrames } from "@/lib/agents/pm-channel/stream-log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

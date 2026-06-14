@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
+import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { ACTIVE_TASK_ASSIGNMENT_STATUSES } from "@/lib/epics/assignment";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 

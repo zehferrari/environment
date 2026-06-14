@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
-import { isValidClientMessageId } from "@/lib/agents/client-message-id";
+import { isValidClientMessageId } from "@/lib/agents/ops/client-message-id";
 import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -15,16 +15,16 @@ import { mkdir, rename, rm, stat, writeFile, readdir, readFile, chmod, chown } f
 import {
   getOrCreateAgentSessionBinding,
   type AgentSessionBinding,
-} from "@/lib/agents/session-bindings";
+} from "@/lib/agents/auth/session-bindings";
 import { wakeAgent as wakeGatewayAgent } from "@/lib/pm-consumer/gateway-client";
-import { pmAsyncDispatchEnabled, sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
-import { recordPmChannelRunEvent, recordPmChannelRunQueued } from "@/lib/agents/pm-channel-runs";
+import { pmAsyncDispatchEnabled, sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
+import { recordPmChannelRunEvent, recordPmChannelRunQueued } from "@/lib/agents/pm-channel/runs";
 import {
   buildProjectEnvContext,
   buildWorkItemPlanningPrompt,
 } from "@/lib/agents/context/project";
-import { createContextGrantUrl } from "@/lib/agents/context-grants";
-import { createWorkItemGrantToken } from "@/lib/agents/work-item-token";
+import { createContextGrantUrl } from "@/lib/agents/context/grants";
+import { createWorkItemGrantToken } from "@/lib/agents/workflow/token/work-item";
 import { publicOriginFromHeaders } from "@/lib/http/public-origin";
 
 const execFileAsync = promisify(execFile);

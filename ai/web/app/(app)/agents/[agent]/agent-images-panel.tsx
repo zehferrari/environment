@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import type { AgentImagesState, AgentImageKind, AgentImageMeta } from "@/lib/agents/profile-images";
+import type { AgentImagesState, AgentImageKind, AgentImageMeta } from "@/lib/agents/management/profile-images";
 import {
   PROFILE_IMAGE_AGE_GROUPS,
   PROFILE_IMAGE_CUSTOMIZATION_MODES,
@@ -14,8 +14,8 @@ import {
   normalizeProfileImageEthnicity,
   normalizeProfileImageGender,
   normalizeProfileImagePrompt,
-} from "@/lib/agents/profile-image-options";
-import { AGENT_PROFILE_IMAGE_THEMES, GENERATED_IMAGE_THEME, MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/profile-image-themes";
+} from "@/lib/agents/management/profile-image-options";
+import { AGENT_PROFILE_IMAGE_THEMES, GENERATED_IMAGE_THEME, MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/management/profile-image-themes";
 
 type SaveState =
   | { kind: "idle" }

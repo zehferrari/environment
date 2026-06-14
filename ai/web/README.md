@@ -125,33 +125,33 @@ user.
 | `lib/auth.ts`, `lib/auth-handlers.ts` | NextAuth credentials + JWT callbacks. |
 | `lib/auth/password.ts` | argon2id hashing helpers. |
 | `lib/auth/rate-limit.ts` | in-process login rate limit (per-IP + per-username). |
-| `lib/agents/sync.ts` | the canonical agent sync — boot + periodic interval. |
-| `lib/agents/index-loader.ts` | `/etc/openclaw/agents.json` reader (`AGENT_INDEX_PATH` overrideable). |
-| `lib/agents/provisioning.ts` | unprivileged half of agent provisioning — renders per-agent file content (`SOUL`/`IDENTITY`/`openclaw.json`…), allocates UID + a verified gateway/browser-sidecar port pair, builds the registry entry. `openclaw.json` is rendered from the providers + models selected in the form. |
-| `lib/agents/providers.ts` | model-provider catalog (Codex, Claude CLI/`anthropic`, Ollama, OpenRouter) — the single source for each provider's openclaw.json connection block, auth profile, refresh strategy, and seed models. Shared by the form, the model-refresh route, and the renderer. |
-| `lib/agents/manage-user.ts` | provisioning hand-off. pm.service is `NoNewPrivileges` and can't sudo, so this spools a request into `/var/lib/pm/agent-provision/` and polls for the result; `openclaw-agent-runner` (monitor's system identity) runs the privileged `openclaw-manage-user` step. Synchronous from the route's view. |
-| `lib/agents/credentials.ts` | per-agent host-private credential seeding. |
-| `lib/agents/profile.ts` | shared agent profile read/write + ACL. |
-| `lib/agents/profile-images.ts` | profile/avatar image metadata, upload conversion, delete, and ACL enforcement for `/srv/agents/Pictures/<Agent>/`. |
-| `lib/agents/profile-image-generation.ts` | sends non-manual image-generation requests to the Confy/ComfyUI service (`PM_PROFILE_IMAGE_CONFY_URL`, default `http://10.0.0.17:8188`). Profiles use FLUX.1-dev FP8; Avatars use the Profile as a PuLID-FLUX identity reference. Default saved generations use 20 steps (`PM_PROFILE_IMAGE_STEPS`); staged previews use 18 steps (`PM_PROFILE_IMAGE_PREVIEW_STEPS`). |
-| `lib/agents/profile-image-themes.ts` | Add Agent character-theme combobox options; first option is `Manually Uploaded`. |
-| `lib/agents/model-settings.ts` | shared model-config store (HOMELAB-52). |
-| `lib/agents/restart.ts` | systemd restart fan-out via Atlas gateway. |
-| `lib/agents/seed-zeh.ts` | idempotent seeder for the `zeh` human user. |
+| `lib/agents/management/sync.ts` | the canonical agent sync — boot + periodic interval. |
+| `lib/agents/management/index-loader.ts` | `/etc/openclaw/agents.json` reader (`AGENT_INDEX_PATH` overrideable). |
+| `lib/agents/management/provisioning.ts` | unprivileged half of agent provisioning — renders per-agent file content (`SOUL`/`IDENTITY`/`openclaw.json`…), allocates UID + a verified gateway/browser-sidecar port pair, builds the registry entry. `openclaw.json` is rendered from the providers + models selected in the form. |
+| `lib/agents/management/providers.ts` | model-provider catalog (Codex, Claude CLI/`anthropic`, Ollama, OpenRouter) — the single source for each provider's openclaw.json connection block, auth profile, refresh strategy, and seed models. Shared by the form, the model-refresh route, and the renderer. |
+| `lib/agents/management/manage-user.ts` | provisioning hand-off. pm.service is `NoNewPrivileges` and can't sudo, so this spools a request into `/var/lib/pm/agent-provision/` and polls for the result; `openclaw-agent-runner` (monitor's system identity) runs the privileged `openclaw-manage-user` step. Synchronous from the route's view. |
+| `lib/agents/auth/credentials.ts` | per-agent host-private credential seeding. |
+| `lib/agents/management/profile.ts` | shared agent profile read/write + ACL. |
+| `lib/agents/management/profile-images.ts` | profile/avatar image metadata, upload conversion, delete, and ACL enforcement for `/srv/agents/Pictures/<Agent>/`. |
+| `lib/agents/management/profile-image-generation.ts` | sends non-manual image-generation requests to the Confy/ComfyUI service (`PM_PROFILE_IMAGE_CONFY_URL`, default `http://10.0.0.17:8188`). Profiles use FLUX.1-dev FP8; Avatars use the Profile as a PuLID-FLUX identity reference. Default saved generations use 20 steps (`PM_PROFILE_IMAGE_STEPS`); staged previews use 18 steps (`PM_PROFILE_IMAGE_PREVIEW_STEPS`). |
+| `lib/agents/management/profile-image-themes.ts` | Add Agent character-theme combobox options; first option is `Manually Uploaded`. |
+| `lib/agents/management/model-settings.ts` | shared model-config store (HOMELAB-52). |
+| `lib/agents/ops/restart.ts` | systemd restart fan-out via Atlas gateway. |
+| `lib/agents/auth/seed-zeh.ts` | idempotent seeder for the `zeh` human user. |
 | `lib/workflow.ts` | HOMELAB-44 rule library (transition / assignment / hierarchy / acting-manager). |
 | `lib/principals.ts` | assignable-principal resolver — active humans + agents with `Agent.role='coding'`. Used by every Task/Epic picker. |
-| `lib/agents/chat-targets.ts` | broader chat-only resolver — all active agents regardless of role (includes monitors). |
-| `lib/agents/chat-actions.ts` | `sendAgentChatMessage` — persists the message, fires dispatch for task-scoped chats. |
+| `lib/agents/chat/targets.ts` | broader chat-only resolver — all active agents regardless of role (includes monitors). |
+| `lib/agents/chat/actions.ts` | `sendAgentChatMessage` — persists the message, fires dispatch for task-scoped chats. |
 | `lib/agents/context/` | PM-owned context packet builders for agent turns, including task/Epic snapshots, related activity, and cached attachment text extraction. |
-| `lib/agents/context-grants.ts` | short-lived scoped grant URLs for loopback live-context reads; stores token hashes only. |
-| `lib/agents/session-bindings.ts` | PM-owned conversation-to-OpenClaw session bindings for task/comment and direct chats. |
-| `lib/agents/pm-channel-stream.ts` | native PM channel stream reducer and SSE framing for live + replayed partial replies. |
-| `lib/agents/pm-channel-stream-log.ts` | durable append-only stream event log used to replay browser SSE after reconnect. |
-| `lib/agents/pm-channel-runs.ts` | durable native PM channel run state (`queued`/`accepted`/`streaming`/`retryable`/`complete`/`failed`) used when the browser reconnects. |
-| `lib/agents/pm-channel-jobs.ts` | durable PM-channel dispatch queue, retry worker, and queue health rollups. |
-| `lib/agents/direct-chat-actions.ts` | direct agent chat actions for sidebar-launched conversations (send, archive, restart-from-archive). |
-| `lib/agents/openclaw-pm-channel.ts` | native `pm` channel client — posts turns to `/pm-channel/ingest`, resolves per-agent Bearer tokens, types the reply-target envelope. |
-| `lib/agents/effective-config.ts` | merges `/etc/openclaw/agent-defaults.json` (core → byRole → byIntegration → per-agent) into the effective capability/service view shown on the agent deck. |
+| `lib/agents/context/grants.ts` | short-lived scoped grant URLs for loopback live-context reads; stores token hashes only. |
+| `lib/agents/auth/session-bindings.ts` | PM-owned conversation-to-OpenClaw session bindings for task/comment and direct chats. |
+| `lib/agents/pm-channel/stream.ts` | native PM channel stream reducer and SSE framing for live + replayed partial replies. |
+| `lib/agents/pm-channel/stream-log.ts` | durable append-only stream event log used to replay browser SSE after reconnect. |
+| `lib/agents/pm-channel/runs.ts` | durable native PM channel run state (`queued`/`accepted`/`streaming`/`retryable`/`complete`/`failed`) used when the browser reconnects. |
+| `lib/agents/pm-channel/jobs.ts` | durable PM-channel dispatch queue, retry worker, and queue health rollups. |
+| `lib/agents/chat/direct/actions.ts` | direct agent chat actions for sidebar-launched conversations (send, archive, restart-from-archive). |
+| `lib/agents/pm-channel/openclaw.ts` | native `pm` channel client — posts turns to `/pm-channel/ingest`, resolves per-agent Bearer tokens, types the reply-target envelope. |
+| `lib/agents/management/effective-config.ts` | merges `/etc/openclaw/agent-defaults.json` (core → byRole → byIntegration → per-agent) into the effective capability/service view shown on the agent deck. |
 | `lib/bin/actions.ts` | soft-delete + restore server actions for Task and Epic with cascade. |
 | `lib/bin/purge.ts` | hourly hard-delete job for Task/Epic rows past the 7-day TTL; reclaims orphaned attachment blobs. |
 | `lib/bin/purge-projects.ts` | hourly hard-delete job for Project rows past the 30-day TTL (`PM_PROJECT_BIN_TTL_DAYS`). |
@@ -161,7 +161,7 @@ user.
 | `lib/work-items/proposal.ts` | agent work-item proposal change-set validator (create/update epics·tasks·sub-tasks·comments; `tmp:` temp-refs; validates project scope, active principals, hierarchy, and task-status transitions under human-triggered grant semantics). |
 | `lib/work-items/apply.ts` | transactional commit core for an approved proposal (auth-free; topo-orders temp-refs, mirrors createTask/createEpic, attributes mutations to the agent). |
 | `lib/work-items/actions.ts` | human apply/reject server actions wrapping the commit core (auth + revalidate). |
-| `lib/agents/work-item-token.ts` | one-shot HMAC grant token for the proposal endpoint (mirrors `task-chat-token.ts`). |
+| `lib/agents/workflow/token/work-item.ts` | one-shot HMAC grant token for the proposal endpoint (mirrors `task-chat-token.ts`). |
 | `lib/agents/context/project.ts` | project-environment context packet (repo path, git identity, defaults, existing epics/open tasks) + the planning prompt handed to the agent. |
 | `lib/attachments/storage.ts` | filesystem write/read/delete under `/srv/Data/projects/<id>/attachments/<sha256>` (dev fallback `./.data/attachments`). |
 | `lib/attachments/actions.ts` | upload/delete server actions; enforces XOR(taskId, epicId) target. |
@@ -200,7 +200,7 @@ graph TD
     User([zeh · human]) --> PM[PM webapp<br/>agents.vixi.au]
 
     PM -->|principal pool — coding only<br/>lib/principals.ts| Coders
-    PM -->|chat targets — any active agent<br/>lib/agents/chat-targets.ts| Coders
+    PM -->|chat targets — any active agent<br/>lib/agents/chat/targets.ts| Coders
     PM -->|chat targets| Karen
 
     subgraph Coders["Coders · role=coding · can_modify_code"]
@@ -233,7 +233,7 @@ alerting to Telegram; she runs the inbound Jira + Bitbucket webhook
 receivers (ports 3014 / 3015) and triages `ai-monitor` incidents, waking
 or restarting coders as needed. Karen never modifies code, so she is
 **excluded from the principal pool** — but she is reachable through the
-broader chat-target resolver (`lib/agents/chat-targets.ts`), and her
+broader chat-target resolver (`lib/agents/chat/targets.ts`), and her
 `openclaw-control wake-agent` bridge is the degraded fallback PM uses
 when a coder's gateway hooks are unavailable.
 
@@ -244,8 +244,8 @@ per-card `Edit`, and `Delete` (`agent-management-controls.tsx`). These post to
 `/api/agents/{add,edit,remove}`, which are **route-centric**: the web app
 (running as the monitor user) validates input, allocates the next free UID
 (≥ 1001) and gateway/sidecar ports, and renders the agent's file content in
-`lib/agents/provisioning.ts` — but performs no privileged I/O itself (pm.service
-is `NoNewPrivileges` and cannot sudo). `lib/agents/manage-user.ts` spools the job
+`lib/agents/management/provisioning.ts` — but performs no privileged I/O itself (pm.service
+is `NoNewPrivileges` and cannot sudo). `lib/agents/management/manage-user.ts` spools the job
 into `/var/lib/pm/agent-provision/` and polls for a result; **`openclaw-agent-runner`**
 (the monitor's system identity, `NoNewPrivileges=no`) runs the single privileged
 boundary `/usr/local/sbin/openclaw-manage-user`: the system user, Samba/sudoers,
@@ -266,7 +266,7 @@ route then reconciles the PM DB with `syncAgents()` and writes an
   `port_allocation_failed` rather than provisioning an agent onto a busy port.
 - **Edit.** Re-renders files + registry; a role change reallocates listeners and
   reinstalls the gateway without destroying the agent's home directory.
-- **Models.** The form ticks one or more providers (`lib/agents/providers.ts`),
+- **Models.** The form ticks one or more providers (`lib/agents/management/providers.ts`),
   refreshes each provider's live model list (`/api/agents/models`), marks which
   models the agent may use, picks a default, and orders fallbacks by drag. Only
   the chosen providers/models are written into the agent's `openclaw.json`.
@@ -399,7 +399,7 @@ hard-purges the aged ones.
 
 **Agent chat (HOMELAB-48).** Task and Epic editors mount a chat
 sidebar (`components/agent-chat.tsx`). The agent picker uses
-`lib/agents/chat-targets.ts` — broader than the principal pool so
+`lib/agents/chat/targets.ts` — broader than the principal pool so
 monitors are reachable. Messages persist as `AgentChatMessage` rows
 keyed by (taskId|epicId, agentSlug); message bodies render as full
 markdown (`lib/markdown.tsx::renderFullMarkdown`). Human-authored task
@@ -507,9 +507,9 @@ model/profile/restart rows) plus live signals/sensors from the Atlas
 monitor snapshot. `/agents/[slug]` mounts the Atlas controls deck (service
 toggle/restart, registry toggle), the model settings editor, and the
 profile editor. Profile + model writes go through
-`lib/agents/profile.ts` / `lib/agents/model-settings.ts`, are
+`lib/agents/management/profile.ts` / `lib/agents/management/model-settings.ts`, are
 audit-logged on `ActivityLog` with `targetAgent` + `targetFile`, and
-trigger a restart via `lib/agents/restart.ts` so live agents pick up
+trigger a restart via `lib/agents/ops/restart.ts` so live agents pick up
 changes.
 
 **PM → agent dispatch seam (HOMELAB-46).** Workflow rules run first; a

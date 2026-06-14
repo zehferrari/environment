@@ -1,4 +1,4 @@
-import { runPmChannelWorkerOnce } from "@/lib/agents/pm-channel-jobs";
+import { runPmChannelWorkerOnce } from "@/lib/agents/pm-channel/jobs";
 
 const POLL_MS = Number.parseInt(process.env.PM_CHANNEL_WORKER_POLL_MS ?? "1000", 10);
 const WORKER_ID = process.env.PM_CHANNEL_WORKER_ID ?? `pm-channel-worker:${process.pid}`;

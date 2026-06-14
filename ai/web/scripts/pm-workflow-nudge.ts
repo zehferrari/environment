@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import {
   sendTaskWorkflowNotification,
   type TaskWorkflowNotificationReason,
-} from "@/lib/agents/task-workflow-notifications";
+} from "@/lib/agents/workflow/notifications/task";
 
 type Args = {
   taskId?: string;

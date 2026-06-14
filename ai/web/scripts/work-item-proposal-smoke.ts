@@ -1,7 +1,7 @@
 // Work-item proposal validator smoke (agent planning, Slice 1).
 //
 // Exercises lib/work-items/proposal.ts::validateProposal,
-// lib/agents/work-item-token.ts, and task-comment proposal grant
+// lib/agents/workflow/token/work-item.ts, and task-comment proposal grant
 // injection against a hermetic throwaway sqlite DB, mirroring
 // scripts/pm-dispatch-integration.ts. The full Next request / auth path
 // on POST /api/agent/projects/[id]/proposals is not in scope here; this
@@ -31,7 +31,7 @@ import { promisify } from "util";
 import {
   createWorkItemGrantToken,
   verifyWorkItemGrantToken,
-} from "../lib/agents/work-item-token";
+} from "../lib/agents/workflow/token/work-item";
 import type { ProposalValidation } from "../lib/work-items/proposal";
 
 const execFileP = promisify(execFile);
@@ -105,7 +105,7 @@ async function main(): Promise<void> {
     process.env.DATABASE_URL = dbUrl;
     const dbMod = await import("../lib/db");
     const { validateProposal } = await import("../lib/work-items/proposal");
-    const { sendTaskCommentNotifications } = await import("../lib/agents/task-workflow-notifications");
+    const { sendTaskCommentNotifications } = await import("../lib/agents/workflow/notifications/task");
     db = dbMod.db as unknown as { $disconnect: () => Promise<void> };
     const prisma = dbMod.db;
 

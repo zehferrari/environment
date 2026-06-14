@@ -3,8 +3,8 @@ import type {
   PmChannelReplyTarget,
   PmChannelTurnKind,
   SendPmChannelTurnResult,
-} from "@/lib/agents/openclaw-pm-channel";
-import type { PmChannelStreamEventKind } from "@/lib/agents/pm-channel-stream";
+} from "@/lib/agents/pm-channel/openclaw";
+import type { PmChannelStreamEventKind } from "@/lib/agents/pm-channel/stream";
 
 export type PmChannelRunStatus =
   | "queued"

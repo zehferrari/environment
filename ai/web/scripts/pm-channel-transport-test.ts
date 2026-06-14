@@ -3,11 +3,11 @@ import {
   buildPmChannelIngressPayload,
   resolvePmChannelTransportMode,
   type PmChannelReplyTarget,
-} from "@/lib/agents/openclaw-pm-channel";
+} from "@/lib/agents/pm-channel/openclaw";
 import {
   pmChannelLatencyTransport,
   summarizePmLatencyByTransport,
-} from "@/lib/agents/pm-channel-latency";
+} from "@/lib/agents/pm-channel/latency";
 
 const target: PmChannelReplyTarget = {
   kind: "direct",

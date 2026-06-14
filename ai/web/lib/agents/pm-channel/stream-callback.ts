@@ -2,23 +2,23 @@ import { db } from "@/lib/db";
 import {
   parsePmChannelReplyTarget,
   type PmChannelReplyTarget,
-} from "@/lib/agents/openclaw-pm-channel";
+} from "@/lib/agents/pm-channel/openclaw";
 import {
   publishPmChannelStreamEvent,
   type PmChannelLifecycleStatus,
   type PmChannelStreamEventKind,
   type PmChannelToolStatus,
-} from "@/lib/agents/pm-channel-stream";
+} from "@/lib/agents/pm-channel/stream";
 import {
   pmChannelRunTargetKey,
   pmChannelTargetIsCanceled,
   pmChannelTargetHasDurableReply,
   recordPmChannelRunEvent,
-} from "@/lib/agents/pm-channel-runs";
-import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel-jobs";
-import { appendPmChannelStreamEventForTarget } from "@/lib/agents/pm-channel-stream-log";
-import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel-rate-limit";
-import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
+} from "@/lib/agents/pm-channel/runs";
+import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel/jobs";
+import { appendPmChannelStreamEventForTarget } from "@/lib/agents/pm-channel/stream-log";
+import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel/rate-limit";
+import { isSilentPmReplyText } from "@/lib/agents/ops/pm-silence";
 
 export type PmChannelStreamTransportMode = "http" | "inproc" | "uds";
 

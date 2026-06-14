@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
-import { readAgentIndex, gatewayPortFor, type IndexAgent } from "@/lib/agents/index-loader";
-import { ensureAgentCredential, type SeededAgentCredential } from "@/lib/agents/credentials";
+import { readAgentIndex, gatewayPortFor, type IndexAgent } from "@/lib/agents/management/index-loader";
+import { ensureAgentCredential, type SeededAgentCredential } from "@/lib/agents/auth/credentials";
 import { hashPassword } from "@/lib/auth/password";
 
 export type SyncResult = {

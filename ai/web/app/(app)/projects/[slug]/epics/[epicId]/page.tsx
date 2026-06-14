@@ -45,7 +45,7 @@ import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-c
 import AddEpicTaskFab from "./add-epic-task-fab";
 import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
 import EpicTasksClient from "./epic-tasks-client";
-import { sendAgentChatMessage } from "@/lib/agents/chat/chat-actions";
+import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, type DeploymentPrRow } from "@/components/deployment-tab";
 

@@ -8,7 +8,7 @@ import {
   deleteAgentImage,
   readAgentImage,
   writeAgentImage,
-} from "@/lib/agents/profile-images";
+} from "@/lib/agents/management/profile-images";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

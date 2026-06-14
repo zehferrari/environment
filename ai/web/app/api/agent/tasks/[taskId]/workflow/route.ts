@@ -2,9 +2,9 @@ import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { randomUUID } from "crypto";
 import { db } from "@/lib/db";
-import { sendTaskCommentNotifications, sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
-import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel-runs";
-import { verifyTaskWorkflowToken } from "@/lib/agents/task-workflow-token";
+import { sendTaskCommentNotifications, sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
+import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel/runs";
+import { verifyTaskWorkflowToken } from "@/lib/agents/workflow/token/task";
 import {
   canApproveActionPlanForActor,
   epicAllowsAgentAction,

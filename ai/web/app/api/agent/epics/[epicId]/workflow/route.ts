@@ -1,10 +1,10 @@
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel-runs";
-import { verifyEpicWorkflowToken } from "@/lib/agents/epic-workflow-token";
+import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel/runs";
+import { verifyEpicWorkflowToken } from "@/lib/agents/workflow/token/epic";
 import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
-import { sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
+import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { publishBoardTouch } from "@/lib/pm/board-events";

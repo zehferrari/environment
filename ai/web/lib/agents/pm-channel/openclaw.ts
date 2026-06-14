@@ -2,11 +2,11 @@ import { readFile } from "fs/promises";
 import {
   recordPmChannelRunDispatch,
   recordPmChannelRunQueued,
-} from "@/lib/agents/pm-channel-runs";
+} from "@/lib/agents/pm-channel/runs";
 import {
   pmChannelHttpFallbackEnabled,
   publishPmChannelTurnToBus,
-} from "@/lib/agents/pm-channel-bus";
+} from "@/lib/agents/pm-channel/bus";
 
 export type PmChannelReplyTarget =
   | {

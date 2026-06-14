@@ -1,4 +1,4 @@
-import type { PmChannelReplyTarget } from "@/lib/agents/openclaw-pm-channel";
+import type { PmChannelReplyTarget } from "@/lib/agents/pm-channel/openclaw";
 
 export type PmChannelStreamEventKind =
   | "status"

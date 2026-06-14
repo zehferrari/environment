@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { directChatCursorWhere, parseDirectChatCursor } from "@/lib/agents/chat/direct-chat-cursor";
+import { directChatCursorWhere, parseDirectChatCursor } from "@/lib/agents/chat/direct/cursor";
 import { isTaskScopedDelivery } from "@/lib/pm-consumer/delivery-log";
 
 const createdAt = "2026-06-11T15:08:15.312Z";

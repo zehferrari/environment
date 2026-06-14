@@ -2,11 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { readAgentIndex } from "@/lib/agents/index-loader";
-import { syncAgents } from "@/lib/agents/sync";
-import { runManageUser } from "@/lib/agents/manage-user";
+import { readAgentIndex } from "@/lib/agents/management/index-loader";
+import { syncAgents } from "@/lib/agents/management/sync";
+import { runManageUser } from "@/lib/agents/management/manage-user";
 import { getSystemSettings } from "@/lib/settings/system";
-import { queueProfileImageGenerationRequest } from "@/lib/agents/profile-image-generation";
+import { queueProfileImageGenerationRequest } from "@/lib/agents/management/profile-image-generation";
 import {
   normalizeProfileImageAgeGroup,
   normalizeProfileImageContextText,
@@ -14,15 +14,15 @@ import {
   normalizeProfileImageEthnicity,
   normalizeProfileImageGender,
   normalizeProfileImagePrompt,
-} from "@/lib/agents/profile-image-options";
-import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/profile-image-themes";
+} from "@/lib/agents/management/profile-image-options";
+import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/management/profile-image-themes";
 import {
   allocatePorts,
   allocateUid,
   buildAgentEntry,
   renderAgentFiles,
   type ProvisionListener,
-} from "@/lib/agents/provisioning";
+} from "@/lib/agents/management/provisioning";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

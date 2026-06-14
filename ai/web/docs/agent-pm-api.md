@@ -52,7 +52,7 @@ public reverse proxy handles browser traffic, but those proxy-stamped
 headers cause the agent endpoints to refuse. Agents call PM **directly**
 at `http://127.0.0.1:<pm-port>`, not through the public site.
 
-Implementation: [`lib/agents/context-api/auth.ts:isLoopbackRequest`](../lib/agents/context-api/auth.ts).
+Implementation: [`lib/agents/context/api/auth.ts:isLoopbackRequest`](../lib/agents/context/api/auth.ts).
 
 ## Authentication
 
@@ -81,8 +81,8 @@ operator-smoke fallback while `PM_CONTEXT_GRANTS_REQUIRED=0`:
 
 When `PM_CONTEXT_GRANTS_REQUIRED=1`, context endpoints reject bearer-only
 requests. Validation lives in
-[`lib/agents/context-api/auth.ts`](../lib/agents/context-api/auth.ts) and
-[`lib/agents/context-grants.ts`](../lib/agents/context-grants.ts).
+[`lib/agents/context/api/auth.ts`](../lib/agents/context/api/auth.ts) and
+[`lib/agents/context/grants.ts`](../lib/agents/context/grants.ts).
 
 Unauthorised request → **401 Unauthorized**.
 
@@ -339,7 +339,7 @@ the contract documented in `agent-interaction.md` §Soft-deleted content.
 ## Limits
 
 Per-call caps in the JSON serializer
-([`lib/agents/context-api/serialize.ts`](../lib/agents/context-api/serialize.ts)):
+([`lib/agents/context/api/serialize.ts`](../lib/agents/context/api/serialize.ts)):
 
 | Field      | Limit                         |
 |------------|-------------------------------|
@@ -411,15 +411,15 @@ Two operational notes surfaced during this pass:
 
 | Concern                       | File                                                     |
 |-------------------------------|----------------------------------------------------------|
-| Auth + loopback gate          | [`lib/agents/context-api/auth.ts`](../lib/agents/context-api/auth.ts)        |
-| JSON serializers              | [`lib/agents/context-api/serialize.ts`](../lib/agents/context-api/serialize.ts) |
+| Auth + loopback gate          | [`lib/agents/context/api/auth.ts`](../lib/agents/context/api/auth.ts)        |
+| JSON serializers              | [`lib/agents/context/api/serialize.ts`](../lib/agents/context/api/serialize.ts) |
 | Route — task                  | [`app/api/agents/context/task/[id]/route.ts`](../app/api/agents/context/task/[id]/route.ts) |
 | Route — epic                  | [`app/api/agents/context/epic/[id]/route.ts`](../app/api/agents/context/epic/[id]/route.ts) |
 | Route — project               | [`app/api/agents/context/project/[id]/route.ts`](../app/api/agents/context/project/[id]/route.ts) |
 | Middleware allowlist          | [`middleware.ts`](../middleware.ts)                       |
 | Per-turn system prompt block  | [`lib/agents/context/task.ts:buildTaskNativeChannelPrompt`](../lib/agents/context/task.ts) and [`lib/agents/context/epic.ts:buildEpicNativeChannelPrompt`](../lib/agents/context/epic.ts) |
-| Recent-exchange helpers       | [`lib/agents/context-api/recent.ts`](../lib/agents/context-api/recent.ts) |
-| Dispatcher (thin envelope)    | [`lib/agents/chat-actions.ts`](../lib/agents/chat-actions.ts) |
+| Recent-exchange helpers       | [`lib/agents/context/api/recent.ts`](../lib/agents/context/api/recent.ts) |
+| Dispatcher (thin envelope)    | [`lib/agents/chat/actions.ts`](../lib/agents/chat/actions.ts) |
 | Acceptance baseline suite     | [`scripts/pm-acceptance-baseline-test.ts`](../scripts/pm-acceptance-baseline-test.ts) |
 
 

@@ -1,14 +1,14 @@
 import { db } from "@/lib/db";
-import { buildTaskNativeChannelPrompt } from "@/lib/agents/task-chat-context";
-import { buildEpicNativeChannelPrompt } from "@/lib/agents/epic-chat-context";
-import { createContextGrantUrl } from "@/lib/agents/context-grants";
+import { buildTaskNativeChannelPrompt } from "@/lib/agents/workflow/chat/task/context";
+import { buildEpicNativeChannelPrompt } from "@/lib/agents/workflow/chat/epic/context";
+import { createContextGrantUrl } from "@/lib/agents/context/grants";
 import { extractMentions } from "@/lib/markdown";
-import { resolveDirectedFromDiscussionRow } from "@/lib/agents/directed-targets";
+import { resolveDirectedFromDiscussionRow } from "@/lib/agents/ops/directed-targets";
 import {
   formatRecentBlock,
   recentComments,
   recentDiscussion,
-} from "@/lib/agents/context-api/recent";
+} from "@/lib/agents/context/api/recent";
 
 const CACHE_TTL_MS = Number.parseInt(process.env.PM_SPECULATIVE_CONTEXT_TTL_MS ?? "120000", 10);
 const MAX_CACHE_ENTRIES = Number.parseInt(process.env.PM_SPECULATIVE_CONTEXT_MAX_ENTRIES ?? "256", 10);

@@ -7,7 +7,7 @@ import {
   restoreDirectAgentArchive,
   emptyDirectAgentChatBin,
   updateDirectAgentArchiveTitle,
-} from "@/lib/agents/chat/direct-chat-actions";
+} from "@/lib/agents/chat/direct/actions";
 import ConfirmPopup from "@/components/confirm-popup";
 
 type PendingPrompt =

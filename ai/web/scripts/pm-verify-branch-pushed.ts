@@ -21,7 +21,7 @@ import {
 import path from "node:path";
 import { promisify } from "node:util";
 import { db } from "@/lib/db";
-import { sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
+import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { BRANCH_VERIFY_DIR, type BranchVerifyJob } from "@/lib/deploy/branch-verify";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 

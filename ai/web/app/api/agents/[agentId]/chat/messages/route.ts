@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { messageSenderSelect, serializeSender } from "@/lib/agents/chat/chat-message-sender";
-import { directChatCursorWhere, parseDirectChatCursor } from "@/lib/agents/chat/direct-chat-cursor";
+import { messageSenderSelect, serializeSender } from "@/lib/agents/chat/message-sender";
+import { directChatCursorWhere, parseDirectChatCursor } from "@/lib/agents/chat/direct/cursor";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

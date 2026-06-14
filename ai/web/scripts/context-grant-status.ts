@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { summarizeContextGrants } from "@/lib/agents/context-grants";
+import { summarizeContextGrants } from "@/lib/agents/context/grants";
 
 // Read-only token age/rotation visibility for context grants (ENV-28 item 5).
 // Usage: pnpm tsx scripts/context-grant-status.ts [--json]

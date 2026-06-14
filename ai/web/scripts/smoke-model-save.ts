@@ -1,4 +1,4 @@
-import { readAgentModelSettings, updateAgentModelSettings } from "../lib/agents/model-settings";
+import { readAgentModelSettings, updateAgentModelSettings } from "../lib/agents/management/model-settings";
 
 async function main() {
   const agent = process.argv[2] ?? "karen";

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {
   compactNativePmNotificationBody,
   shouldSendNativePmNotification,
-} from "../lib/agents/native-pm-notifications";
+} from "../lib/agents/pm-channel/native-pm-notifications";
 
 const base = {
   supported: true,

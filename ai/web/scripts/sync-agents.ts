@@ -1,4 +1,4 @@
-import { syncAgents } from "@/lib/agents/sync";
+import { syncAgents } from "@/lib/agents/management/sync";
 
 async function main() {
   const result = await syncAgents();

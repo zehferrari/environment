@@ -39,7 +39,7 @@ async function main() {
   const {
     runPmChannelWorkerOnce,
     sendOrQueueOpenClawPmChannelTurn,
-  } = await import("@/lib/agents/pm-channel-jobs");
+  } = await import("@/lib/agents/pm-channel/jobs");
 
   const nonce = `bus-${Date.now()}`;
   const target = { kind: "direct" as const, agentSlug: "asdrubal", messageId: nonce };

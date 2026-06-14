@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { canEditProfile } from "@/lib/agents/profile";
+import { canEditProfile } from "@/lib/agents/management/profile";
 import { db } from "@/lib/db";
 
 export const runtime = "nodejs";

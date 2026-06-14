@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { archiveDirectAgentChat } from "@/lib/agents/chat/direct-chat-actions";
+import { archiveDirectAgentChat } from "@/lib/agents/chat/direct/actions";
 
 export default function NewChatButton({
   agentSlug,

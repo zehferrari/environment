@@ -7,7 +7,7 @@ import {
   readNativePmNotificationsEnabled,
   writeNativePmNotificationsEnabled,
   type NativePmNotificationPermission,
-} from "@/lib/agents/native-pm-notifications";
+} from "@/lib/agents/pm-channel/native-pm-notifications";
 import { registerPushSubscription, unregisterPushSubscription } from "@/lib/push/client";
 
 type ToggleState = {

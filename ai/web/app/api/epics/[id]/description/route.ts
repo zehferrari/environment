@@ -5,7 +5,7 @@
 // target agent. The activity row uses kind="epic.description.agent_write".
 
 import { NextResponse, type NextRequest } from "next/server";
-import { verifyEpicDescriptionWriteToken } from "@/lib/agents/epic-chat-token";
+import { verifyEpicDescriptionWriteToken } from "@/lib/agents/workflow/chat/epic/token";
 import { db } from "@/lib/db";
 
 export const runtime = "nodejs";

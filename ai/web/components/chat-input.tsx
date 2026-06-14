@@ -1,9 +1,9 @@
 "use client";
 
-import { sendDirectAgentMessage } from "@/lib/agents/chat/direct-chat-actions";
+import { sendDirectAgentMessage } from "@/lib/agents/chat/direct/actions";
 import MaximizableTextarea from "@/components/maximizable-textarea";
 import { useDirectChatOptimistic } from "@/components/direct-chat-optimistic-provider";
-import { generateClientMessageId } from "@/lib/agents/client-message-id";
+import { generateClientMessageId } from "@/lib/agents/ops/client-message-id";
 import React, { useEffect, useRef, useState } from "react";
 
 function isNextRedirectError(err: unknown) {

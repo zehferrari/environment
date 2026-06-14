@@ -12,12 +12,12 @@
 
 import { parsePmEvent, type PmEvent } from "@/lib/pm-events";
 import { handleDeploymentApproved } from "@/lib/deploy/monitor";
-import { PM_CHANNEL_BUS_SCHEMA_VERSION } from "@/lib/agents/pm-channel-bus";
+import { PM_CHANNEL_BUS_SCHEMA_VERSION } from "@/lib/agents/pm-channel/bus";
 import {
   dispatchOpenClawPmChannelTurnViaHttp,
   parsePmChannelReplyTarget,
   type SendPmChannelTurnArgs,
-} from "@/lib/agents/openclaw-pm-channel";
+} from "@/lib/agents/pm-channel/openclaw";
 import { dedupeKeyFor } from "./dedupe-key";
 import { createTargetResolver, type TargetResolver } from "./target";
 import {

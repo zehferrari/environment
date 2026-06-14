@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { canEditProfile } from "@/lib/agents/profile";
-import { readAgentModelSettings, updateAgentModelSettings } from "@/lib/agents/model-settings";
+import { canEditProfile } from "@/lib/agents/management/profile";
+import { readAgentModelSettings, updateAgentModelSettings } from "@/lib/agents/management/model-settings";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {
   checkPmChannelCallbackRateLimit,
   resetPmChannelCallbackRateLimitsForTest,
-} from "@/lib/agents/pm-channel-rate-limit";
+} from "@/lib/agents/pm-channel/rate-limit";
 
 const limits = { agent: 3, target: 2, windowMs: 1_000 };
 

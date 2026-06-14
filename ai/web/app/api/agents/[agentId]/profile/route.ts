@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { ProfileError, readAgentProfile } from "@/lib/agents/profile";
+import { ProfileError, readAgentProfile } from "@/lib/agents/management/profile";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

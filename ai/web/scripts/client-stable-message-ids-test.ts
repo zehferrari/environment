@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { generateClientMessageId, isValidClientMessageId } from "../lib/agents/client-message-id";
+import { generateClientMessageId, isValidClientMessageId } from "../lib/agents/ops/client-message-id";
 
 const first = generateClientMessageId();
 const second = generateClientMessageId();

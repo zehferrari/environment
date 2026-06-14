@@ -5,24 +5,24 @@ import {
   parsePmChannelReplyTarget,
   resolvePmChannelToken,
   type PmChannelReplyTarget,
-} from "@/lib/agents/openclaw-pm-channel";
-import { authorizePmChannelCallback } from "@/lib/agents/pm-channel-callback-auth";
+} from "@/lib/agents/pm-channel/openclaw";
+import { authorizePmChannelCallback } from "@/lib/agents/pm-channel/callback-auth";
 
 import {
   pmChannelRunTargetKey,
   pmChannelTargetIsCanceled,
   pmChannelTargetHasDurableReply,
   recordPmChannelRunEvent,
-} from "@/lib/agents/pm-channel-runs";
-import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel-jobs";
-import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel-stream-log";
-import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel-rate-limit";
+} from "@/lib/agents/pm-channel/runs";
+import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel/jobs";
+import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel/stream-log";
+import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel/rate-limit";
 import { normalizeDiscussionReplySections } from "@/lib/agents/chat/discussion-reply-format";
 import {
   sendTaskCommentNotifications,
   sendTaskWorkflowNotification,
-} from "@/lib/agents/task-workflow-notifications";
-import { isSilentPmReplyText } from "@/lib/agents/pm-silence";
+} from "@/lib/agents/workflow/notifications/task";
+import { isSilentPmReplyText } from "@/lib/agents/ops/pm-silence";
 import { notifyHumanOfAgentReply } from "@/lib/push/notify-reply";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { revalidateEpicReplyScope } from "@/lib/epics/cache";

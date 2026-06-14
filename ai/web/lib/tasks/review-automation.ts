@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
+import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { resolveDoneOwnerId, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
 

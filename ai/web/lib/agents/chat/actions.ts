@@ -23,38 +23,38 @@ import {
   buildTaskNativeChannelPrompt,
   buildTaskNativeEditGrantPrompt,
   buildTaskNativeIncrementalChannelPrompt,
-} from "@/lib/agents/task-chat-context";
+} from "@/lib/agents/workflow/chat/task/context";
 import {
   buildEpicNativeChannelPrompt,
   buildEpicNativeEditGrantPrompt,
   buildEpicNativeIncrementalChannelPrompt,
-} from "@/lib/agents/epic-chat-context";
+} from "@/lib/agents/workflow/chat/epic/context";
 import { extractMentions } from "@/lib/markdown";
-import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
-import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
-import { createContextGrantUrl } from "@/lib/agents/context-grants";
+import { getOrCreateAgentSessionBinding } from "@/lib/agents/auth/session-bindings";
+import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
+import { createContextGrantUrl } from "@/lib/agents/context/grants";
 import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/chat/discussion-reply-format";
-import { createTaskDescriptionWriteToken } from "@/lib/agents/task-chat-token";
-import { createEpicDescriptionWriteToken } from "@/lib/agents/epic-chat-token";
-import { createWorkItemGrantToken } from "@/lib/agents/work-item-token";
+import { createTaskDescriptionWriteToken } from "@/lib/agents/workflow/chat/task/token";
+import { createEpicDescriptionWriteToken } from "@/lib/agents/workflow/chat/epic/token";
+import { createWorkItemGrantToken } from "@/lib/agents/workflow/token/work-item";
 import { buildWorkItemPlanningPrompt } from "@/lib/agents/context/project";
 import {
   attachmentMaxBytes,
   writeAttachment,
 } from "@/lib/attachments/storage";
-import { resolveDirectedFromDiscussionRow } from "@/lib/agents/directed-targets";
+import { resolveDirectedFromDiscussionRow } from "@/lib/agents/ops/directed-targets";
 import {
   formatRecentBlock,
   recentComments,
   recentDiscussion,
-} from "@/lib/agents/context-api/recent";
-import { isValidClientMessageId } from "@/lib/agents/client-message-id";
+} from "@/lib/agents/context/api/recent";
+import { isValidClientMessageId } from "@/lib/agents/ops/client-message-id";
 import {
   chatContextRevision,
   consumeSpeculativeAgentChatContext,
   directedTargetKey,
   scheduleSpeculativeAgentChatContext,
-} from "@/lib/agents/speculative-context";
+} from "@/lib/agents/context/speculative";
 import { stripChatMarkdown as compactText, truncateSummary } from "@/lib/text";
 import { publicOriginFromHeaders } from "@/lib/http/public-origin";
 

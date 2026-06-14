@@ -12,7 +12,7 @@ import {
   readAgentIndex,
   gatewayPortFor,
   type AgentIndex,
-} from "@/lib/agents/index-loader";
+} from "@/lib/agents/management/index-loader";
 import type { PmEvent } from "@/lib/pm-events";
 
 export interface ResolvedTarget {

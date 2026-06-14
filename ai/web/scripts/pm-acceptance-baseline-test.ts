@@ -88,12 +88,12 @@ async function main(): Promise<void> {
     await dbPush(dbUrl);
 
     const { db } = await import("@/lib/db");
-    const { createContextGrant, authenticateContextGrant } = await import("@/lib/agents/context-grants");
+    const { createContextGrant, authenticateContextGrant } = await import("@/lib/agents/context/grants");
     const { appendPmChannelStreamEvent, replayPmChannelStreamFrames, ensurePmChannelRunForTarget } =
-      await import("@/lib/agents/pm-channel-stream-log");
-    const { pmChannelTargetHasDurableReply } = await import("@/lib/agents/pm-channel-runs");
+      await import("@/lib/agents/pm-channel/stream-log");
+    const { pmChannelTargetHasDurableReply } = await import("@/lib/agents/pm-channel/runs");
     const { enqueueOpenClawPmChannelTurn, runPmChannelWorkerOnce } =
-      await import("@/lib/agents/pm-channel-jobs");
+      await import("@/lib/agents/pm-channel/jobs");
 
     // Shared fixtures.
     const project = await db.project.create({ data: { slug: "accept-proj", name: "Acceptance Project" } });

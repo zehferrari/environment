@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { CrossTabStreamCoordinator } from "../lib/agents/cross-tab-stream-coordinator";
+import { CrossTabStreamCoordinator } from "../lib/agents/pm-channel/cross-tab-stream-coordinator";
 
 type Listener = (event: MessageEvent<any>) => void;
 

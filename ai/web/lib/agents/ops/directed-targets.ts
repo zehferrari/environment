@@ -20,9 +20,9 @@
 // Used by: lib/agents/context/task.ts (buildTaskNativeChannelPrompt),
 // lib/agents/context/epic.ts (buildEpicNativeChannelPrompt), the dispatch
 // sites in lib/agents/chat-actions.ts (discussion) and
-// lib/agents/task-workflow-notifications.ts (sendTaskCommentNotifications).
+// lib/agents/workflow/notifications/task.ts (sendTaskCommentNotifications).
 
-import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
+import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/ops/pm-silence";
 
 export type DirectedDescriptor = {
   directedAgentSlugs: string[];
