@@ -2,7 +2,7 @@
 // every dispatch prompt so the agent can't miss the immediate ask.
 //
 // The full task / epic history still lives behind the loopback read API
-// (lib/agents/context-api/serialize.ts), but the latest N rows are
+// (lib/agents/context/api/serialize.ts), but the latest N rows are
 // cheap enough to send on every turn AND are what the agent needs to
 // understand the current conversational turn. This bridges the gap
 // where (a) the agent might not curl the API, and (b) even if they do,

@@ -26,7 +26,7 @@ import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { verifyWorkItemGrantToken } from "@/lib/agents/work-item-token";
+import { verifyWorkItemGrantToken } from "@/lib/agents/workflow/token/work-item";
 import { validateProposal } from "@/lib/work-items/proposal";
 import { commitProposal } from "@/lib/work-items/apply";
 import {

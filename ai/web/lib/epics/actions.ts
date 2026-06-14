@@ -15,8 +15,8 @@ import { Prisma } from "@prisma/client";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { randomUUID } from "crypto";
-import { sendAgentChatMessage } from "@/lib/agents/chat/chat-actions";
-import { sendTaskWorkflowNotification } from "@/lib/agents/task-workflow-notifications";
+import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
+import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import {
   checkActingManager,
   type ActorKind,

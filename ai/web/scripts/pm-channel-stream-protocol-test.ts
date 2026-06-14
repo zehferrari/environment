@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { db } from "@/lib/db";
-import { applyPmChannelStreamCallback } from "@/lib/agents/pm-channel-stream-callback";
-import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
+import { applyPmChannelStreamCallback } from "@/lib/agents/pm-channel/stream-callback";
+import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/ops/pm-silence";
 import {
   applyPmChannelStreamInput,
   emptyPmChannelStreamState,
   type PmChannelStreamInput,
-} from "@/lib/agents/pm-channel-stream";
-import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel-runs";
-import { replayPmChannelStreamFrames } from "@/lib/agents/pm-channel-stream-log";
+} from "@/lib/agents/pm-channel/stream";
+import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/runs";
+import { replayPmChannelStreamFrames } from "@/lib/agents/pm-channel/stream-log";
 
 const target = {
   kind: "direct" as const,

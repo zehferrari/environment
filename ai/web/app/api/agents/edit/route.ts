@@ -2,12 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { readAgentIndex, gatewayPortFor } from "@/lib/agents/index-loader";
-import { syncAgents } from "@/lib/agents/sync";
-import { runManageUser } from "@/lib/agents/manage-user";
+import { readAgentIndex, gatewayPortFor } from "@/lib/agents/management/index-loader";
+import { syncAgents } from "@/lib/agents/management/sync";
+import { runManageUser } from "@/lib/agents/management/manage-user";
 import { getSystemSettings } from "@/lib/settings/system";
-import { queueProfileImageGenerationRequest } from "@/lib/agents/profile-image-generation";
-import { readAgentImagesState } from "@/lib/agents/profile-images";
+import { queueProfileImageGenerationRequest } from "@/lib/agents/management/profile-image-generation";
+import { readAgentImagesState } from "@/lib/agents/management/profile-images";
 import {
   normalizeProfileImageAgeGroup,
   normalizeProfileImageContextText,
@@ -15,14 +15,14 @@ import {
   normalizeProfileImageEthnicity,
   normalizeProfileImageGender,
   normalizeProfileImagePrompt,
-} from "@/lib/agents/profile-image-options";
-import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/profile-image-themes";
+} from "@/lib/agents/management/profile-image-options";
+import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/management/profile-image-themes";
 import {
   allocatePorts,
   buildAgentEntry,
   renderAgentFiles,
   type ProvisionListener,
-} from "@/lib/agents/provisioning";
+} from "@/lib/agents/management/provisioning";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

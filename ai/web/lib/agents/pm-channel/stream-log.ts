@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import type { PmChannelReplyTarget } from "@/lib/agents/openclaw-pm-channel";
+import type { PmChannelReplyTarget } from "@/lib/agents/pm-channel/openclaw";
 import {
   acknowledgePmChannelStreamSeq,
   applyPmChannelStreamInput,
@@ -10,11 +10,11 @@ import {
   type PmChannelStreamEventKind,
   type PmChannelStreamInput,
   type PmChannelStreamState,
-} from "@/lib/agents/pm-channel-stream";
+} from "@/lib/agents/pm-channel/stream";
 import {
   pmChannelRunTargetKey,
   recordPmChannelRunQueued,
-} from "@/lib/agents/pm-channel-runs";
+} from "@/lib/agents/pm-channel/runs";
 
 export type PersistedStreamInput = Omit<PmChannelStreamInput, "target">;
 

@@ -5,7 +5,7 @@ import { usePersistentPmStream } from "@/components/persistent-pm-stream-provide
 import { MessageAvatar, type MessageActor } from "@/components/message-avatar";
 import { extractDiscussionSectionA } from "@/lib/agents/chat/discussion-reply-format";
 import { renderFullMarkdown } from "@/lib/markdown";
-import { sendNativePmReplyNotification } from "@/lib/agents/native-pm-notifications";
+import { sendNativePmReplyNotification } from "@/lib/agents/pm-channel/native-pm-notifications";
 import {
   reconnectingCopy,
   waitingCopy,

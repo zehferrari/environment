@@ -5,13 +5,13 @@ import {
   sendOpenClawPmChannelTurn,
   type SendPmChannelTurnArgs,
   type SendPmChannelTurnResult,
-} from "@/lib/agents/openclaw-pm-channel";
+} from "@/lib/agents/pm-channel/openclaw";
 import {
   pmChannelRunTargetKey,
   recordPmChannelRunQueued,
-} from "@/lib/agents/pm-channel-runs";
-import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel-stream-log";
-import { rollbackDispatchedMessageId } from "@/lib/agents/session-bindings";
+} from "@/lib/agents/pm-channel/runs";
+import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel/stream-log";
+import { rollbackDispatchedMessageId } from "@/lib/agents/auth/session-bindings";
 
 type DispatchJobPayload = Omit<SendPmChannelTurnArgs, "fetchImpl">;
 

@@ -14,7 +14,7 @@ import {
   authenticateAgentBearer,
   authenticateAgentContextRequest,
   isLoopbackRequest,
-} from "@/lib/agents/context-api/auth";
+} from "@/lib/agents/context/api/auth";
 import { checkAgentAttachmentReadAccess } from "@/lib/attachments/agent-access";
 import { attachmentAbsolutePath } from "@/lib/attachments/storage";
 import { normalizeAttachmentMimeType } from "@/lib/attachments/mime";

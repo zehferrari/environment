@@ -25,13 +25,13 @@ import {
   providerOfModelRef,
   type ProviderId,
   type ProviderModel,
-} from "@/lib/agents/providers";
+} from "@/lib/agents/management/providers";
 import {
   AGENT_PROFILE_IMAGE_THEMES,
   GENERATED_IMAGE_THEME,
   MANUAL_IMAGE_THEME,
   normalizeProfileImageTheme,
-} from "@/lib/agents/profile-image-themes";
+} from "@/lib/agents/management/profile-image-themes";
 import {
   DEFAULT_PROFILE_IMAGE_AGE_GROUP,
   DEFAULT_PROFILE_IMAGE_CUSTOMIZATION_MODE,
@@ -42,7 +42,7 @@ import {
   PROFILE_IMAGE_CUSTOMIZATION_MODES,
   PROFILE_IMAGE_ETHNICITIES,
   PROFILE_IMAGE_GENDERS,
-} from "@/lib/agents/profile-image-options";
+} from "@/lib/agents/management/profile-image-options";
 
 type SelectedModel = { provider: string; id: string; name?: string };
 

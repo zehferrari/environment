@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { deleteDirectAgentMessage, restoreDirectAgentMessage } from "@/lib/agents/chat/direct-chat-actions";
+import { deleteDirectAgentMessage, restoreDirectAgentMessage } from "@/lib/agents/chat/direct/actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";

@@ -17,7 +17,7 @@ import { db } from "@/lib/db";
 import {
   authenticateContextGrant,
   type ContextScopeType,
-} from "@/lib/agents/context-grants";
+} from "@/lib/agents/context/grants";
 
 const LOOPBACK_HOSTS = new Set([
   "127.0.0.1",

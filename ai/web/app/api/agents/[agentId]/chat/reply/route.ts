@@ -1,7 +1,7 @@
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { verifyDirectChatReplyToken } from "@/lib/agents/chat/direct-chat-token";
+import { verifyDirectChatReplyToken } from "@/lib/agents/chat/direct/token";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

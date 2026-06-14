@@ -5,12 +5,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { canEditProfile } from "@/lib/agents/profile";
-import { readAgentIndex } from "@/lib/agents/index-loader";
-import { runManageUser } from "@/lib/agents/manage-user";
-import { syncAgents } from "@/lib/agents/sync";
-import { queueProfileImageGenerationRequest } from "@/lib/agents/profile-image-generation";
-import { commitStagedAgentImages, linkAvatarToProfile, readAgentImagesState } from "@/lib/agents/profile-images";
+import { canEditProfile } from "@/lib/agents/management/profile";
+import { readAgentIndex } from "@/lib/agents/management/index-loader";
+import { runManageUser } from "@/lib/agents/management/manage-user";
+import { syncAgents } from "@/lib/agents/management/sync";
+import { queueProfileImageGenerationRequest } from "@/lib/agents/management/profile-image-generation";
+import { commitStagedAgentImages, linkAvatarToProfile, readAgentImagesState } from "@/lib/agents/management/profile-images";
 import {
   normalizeProfileImageAgeGroup,
   normalizeProfileImageContextText,
@@ -18,8 +18,8 @@ import {
   normalizeProfileImageEthnicity,
   normalizeProfileImageGender,
   normalizeProfileImagePrompt,
-} from "@/lib/agents/profile-image-options";
-import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/profile-image-themes";
+} from "@/lib/agents/management/profile-image-options";
+import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/management/profile-image-themes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

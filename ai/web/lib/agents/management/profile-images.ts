@@ -6,15 +6,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { db } from "@/lib/db";
-import { canEditProfile } from "@/lib/agents/profile";
+import { canEditProfile } from "@/lib/agents/management/profile";
 import {
   normalizeProfileImageAgeGroup,
   normalizeProfileImageCustomizationMode,
   normalizeProfileImageContextText,
   normalizeProfileImageEthnicity,
   normalizeProfileImageGender,
-} from "@/lib/agents/profile-image-options";
-import { GENERATED_IMAGE_THEME, isManualProfileImageTheme, MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/profile-image-themes";
+} from "@/lib/agents/management/profile-image-options";
+import { GENERATED_IMAGE_THEME, isManualProfileImageTheme, MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/management/profile-image-themes";
 
 const execFileAsync = promisify(execFile);
 

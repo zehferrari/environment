@@ -1,5 +1,5 @@
-import { formatLatency, pmChannelLatencySpans, summarizePmLatency } from "@/lib/agents/pm-channel-latency";
-import { pmChannelQueueStats } from "@/lib/agents/pm-channel-jobs";
+import { formatLatency, pmChannelLatencySpans, summarizePmLatency } from "@/lib/agents/pm-channel/latency";
+import { pmChannelQueueStats } from "@/lib/agents/pm-channel/jobs";
 import { compactDbPath, formatFreelistRatio, getSqliteDbHealth } from "@/lib/db-health";
 import { getDbBusyStats } from "@/lib/db-busy-counter";
 import { db } from "@/lib/db";

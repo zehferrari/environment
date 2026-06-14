@@ -5,7 +5,7 @@
 // review pickers stay restricted to coding agents.) An agent is a
 // valid chat target if its Agent row is not deactivated AND it has a
 // seeded User row that is active. Monitors are seeded by the same
-// instrumentation boot sync (lib/agents/sync.ts) so they appear here
+// instrumentation boot sync (lib/agents/management/sync.ts) so they appear here
 // without code changes.
 
 import { db } from "@/lib/db";

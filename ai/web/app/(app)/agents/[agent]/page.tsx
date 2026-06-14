@@ -2,9 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { canEditProfile, ProfileError, readAgentProfile } from "@/lib/agents/profile";
-import { readAgentModelSettings } from "@/lib/agents/model-settings";
-import { resolveEffectiveAgentConfig } from "@/lib/agents/effective-config";
+import { canEditProfile, ProfileError, readAgentProfile } from "@/lib/agents/management/profile";
+import { readAgentModelSettings } from "@/lib/agents/management/model-settings";
+import { resolveEffectiveAgentConfig } from "@/lib/agents/management/effective-config";
 import {
   actorDisplayName,
   MessageAvatar,
@@ -17,8 +17,8 @@ import AgentTabs, { type AgentTab } from "./agent-tabs";
 import ModelsSettings from "./models-settings";
 import AgentImagesPanel from "./agent-images-panel";
 import AgentDangerZone from "./agent-danger-zone";
-import { readAgentImagesState } from "@/lib/agents/profile-images";
-import { summarizeAgentDeletion } from "@/lib/agents/deletion-summary";
+import { readAgentImagesState } from "@/lib/agents/management/profile-images";
+import { summarizeAgentDeletion } from "@/lib/agents/management/deletion-summary";
 import { getSystemSettings } from "@/lib/settings/system";
 
 export const dynamic = "force-dynamic";

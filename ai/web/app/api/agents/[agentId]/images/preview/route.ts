@@ -2,16 +2,16 @@ import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
-import { canEditProfile } from "@/lib/agents/profile";
-import { readAgentIndex } from "@/lib/agents/index-loader";
-import { queuePlushImageGenerationRequest, queueProfileImageGenerationRequest } from "@/lib/agents/profile-image-generation";
+import { canEditProfile } from "@/lib/agents/management/profile";
+import { readAgentIndex } from "@/lib/agents/management/index-loader";
+import { queuePlushImageGenerationRequest, queueProfileImageGenerationRequest } from "@/lib/agents/management/profile-image-generation";
 import {
   AgentImageError,
   readAgentImage,
   readStagedAgentImage,
   readStagedAgentImagesState,
   writeStagedGeneratedAgentImage,
-} from "@/lib/agents/profile-images";
+} from "@/lib/agents/management/profile-images";
 import {
   normalizeProfileImageAgeGroup,
   normalizeProfileImageContextText,
@@ -19,8 +19,8 @@ import {
   normalizeProfileImageEthnicity,
   normalizeProfileImageGender,
   normalizeProfileImagePrompt,
-} from "@/lib/agents/profile-image-options";
-import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/profile-image-themes";
+} from "@/lib/agents/management/profile-image-options";
+import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/management/profile-image-themes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

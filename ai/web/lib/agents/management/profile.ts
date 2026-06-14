@@ -3,7 +3,7 @@ import { constants } from "fs";
 import { access, copyFile, lstat, mkdir, open, readdir, readFile, rename, stat, unlink } from "fs/promises";
 import path from "path";
 import { db } from "@/lib/db";
-import { readAgentIndex } from "@/lib/agents/index-loader";
+import { readAgentIndex } from "@/lib/agents/management/index-loader";
 
 export const PROFILE_FILES = [
   "SOUL.md",

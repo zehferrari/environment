@@ -6,8 +6,8 @@ import {
   ProfileError,
   readProfileFile,
   writeProfileFile,
-} from "@/lib/agents/profile";
-import { queueAgentRestart } from "@/lib/agents/restart";
+} from "@/lib/agents/management/profile";
+import { queueAgentRestart } from "@/lib/agents/ops/restart";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

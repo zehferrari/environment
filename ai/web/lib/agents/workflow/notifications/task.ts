@@ -3,23 +3,23 @@ import { extractMentions } from "@/lib/markdown";
 import {
   buildTaskAgentUserMessage,
   buildTaskNativeChannelPrompt,
-} from "@/lib/agents/task-chat-context";
-import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
+} from "@/lib/agents/workflow/chat/task/context";
+import { getOrCreateAgentSessionBinding } from "@/lib/agents/auth/session-bindings";
 import {
   buildPmTurnSessionKey,
-} from "@/lib/agents/openclaw-pm-channel";
-import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel-jobs";
-import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
-import { createTaskWorkflowToken } from "@/lib/agents/task-workflow-token";
-import { resolveDirectedFromComment } from "@/lib/agents/directed-targets";
-import { createContextGrantUrl } from "@/lib/agents/context-grants";
-import { createWorkItemGrantToken } from "@/lib/agents/work-item-token";
+} from "@/lib/agents/pm-channel/openclaw";
+import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
+import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/ops/pm-silence";
+import { createTaskWorkflowToken } from "@/lib/agents/workflow/token/task";
+import { resolveDirectedFromComment } from "@/lib/agents/ops/directed-targets";
+import { createContextGrantUrl } from "@/lib/agents/context/grants";
+import { createWorkItemGrantToken } from "@/lib/agents/workflow/token/work-item";
 import { buildWorkItemPlanningPrompt } from "@/lib/agents/context/project";
 import {
   formatRecentBlock,
   recentComments,
   recentDiscussion,
-} from "@/lib/agents/context-api/recent";
+} from "@/lib/agents/context/api/recent";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { resolveGitIdentity } from "@/lib/settings/system";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";

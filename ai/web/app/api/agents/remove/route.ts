@@ -2,10 +2,10 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { readAgentIndex } from "@/lib/agents/index-loader";
-import { syncAgents } from "@/lib/agents/sync";
-import { runManageUser } from "@/lib/agents/manage-user";
-import { summarizeAgentDeletion } from "@/lib/agents/deletion-summary";
+import { readAgentIndex } from "@/lib/agents/management/index-loader";
+import { syncAgents } from "@/lib/agents/management/sync";
+import { runManageUser } from "@/lib/agents/management/manage-user";
+import { summarizeAgentDeletion } from "@/lib/agents/management/deletion-summary";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

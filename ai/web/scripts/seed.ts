@@ -1,5 +1,5 @@
-import { seedZehUser } from "@/lib/agents/seed-zeh";
-import { syncAgents } from "@/lib/agents/sync";
+import { seedZehUser } from "@/lib/agents/auth/seed-zeh";
+import { syncAgents } from "@/lib/agents/management/sync";
 
 async function main() {
   const zeh = await seedZehUser();

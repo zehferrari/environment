@@ -1,10 +1,10 @@
 import { db } from "@/lib/db";
-import { getOrCreateAgentSessionBinding } from "@/lib/agents/session-bindings";
+import { getOrCreateAgentSessionBinding } from "@/lib/agents/auth/session-bindings";
 import {
   buildPmTurnSessionKey,
   sendOpenClawPmChannelTurn,
-} from "@/lib/agents/openclaw-pm-channel";
-import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
+} from "@/lib/agents/pm-channel/openclaw";
+import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/ops/pm-silence";
 
 const POLICY_UPDATE_ID = "2026-06-01-action-plan-approval-feedback";
 

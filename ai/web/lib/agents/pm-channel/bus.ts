@@ -1,7 +1,7 @@
 import { mkdir, rename, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import { connect } from "net";
-import type { SendPmChannelTurnArgs } from "@/lib/agents/openclaw-pm-channel";
+import type { SendPmChannelTurnArgs } from "@/lib/agents/pm-channel/openclaw";
 
 export const PM_CHANNEL_BUS_SCHEMA_VERSION = 1 as const;
 

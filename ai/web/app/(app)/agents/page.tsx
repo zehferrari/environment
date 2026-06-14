@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
-import { resolveEffectiveAgentConfig } from "@/lib/agents/effective-config";
+import { resolveEffectiveAgentConfig } from "@/lib/agents/management/effective-config";
 import { describeActivity } from "@/lib/activity";
-import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel-latency";
+import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel/latency";
 import { MessageAvatar, MessageTimestamp, type MessageActor } from "@/components/message-avatar";
 import AgentServiceControls, { type AgentService } from "./agent-service-controls";
 import fs from "fs/promises";

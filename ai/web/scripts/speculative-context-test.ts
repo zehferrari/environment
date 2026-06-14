@@ -6,7 +6,7 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 const root = process.cwd();
-const cacheSource = readFileSync(join(root, "lib/agents/speculative-context.ts"), "utf8");
+const cacheSource = readFileSync(join(root, "lib/agents/context/speculative.ts"), "utf8");
 const actionsSource = readFileSync(join(root, "lib/agents/chat-actions.ts"), "utf8");
 const decomposedComposer = readFileSync(join(root, "components/chat-room-decomposed.tsx"), "utf8");
 const legacyComposer = readFileSync(join(root, "components/legacy-chat-room.tsx"), "utf8");

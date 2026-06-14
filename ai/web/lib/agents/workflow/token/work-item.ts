@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 
 // One-shot capability token for the agent work-item proposal grant.
 //
-// Mirrors lib/agents/task-chat-token.ts: an HMAC over the grant's
+// Mirrors lib/agents/workflow/chat/task/token.ts: an HMAC over the grant's
 // identifying tuple, keyed by AUTH_SECRET. PM hands the token to the
 // agent in the planning turn; the agent presents it when POSTing a
 // proposal to /api/agent/projects/[projectId]/proposals. The grant

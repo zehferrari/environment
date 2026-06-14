@@ -1,7 +1,7 @@
 import { mkdir, unlink } from "fs/promises";
 import { dirname } from "path";
 import { createServer, type Server } from "net";
-import { applyPmChannelStreamCallback } from "@/lib/agents/pm-channel-stream-callback";
+import { applyPmChannelStreamCallback } from "@/lib/agents/pm-channel/stream-callback";
 
 const GLOBAL_CALLBACK = "__vixiPmChannelStreamCallback";
 const GLOBAL_UDS_SERVER = "__vixiPmChannelStreamUdsServer";

@@ -14,7 +14,7 @@
 // ActivityLog. Re-using the same messageId returns 410.
 
 import { NextResponse, type NextRequest } from "next/server";
-import { verifyTaskDescriptionWriteToken } from "@/lib/agents/task-chat-token";
+import { verifyTaskDescriptionWriteToken } from "@/lib/agents/workflow/chat/task/token";
 import { db } from "@/lib/db";
 
 export const runtime = "nodejs";

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { AgentDeletionSummary } from "@/lib/agents/deletion-summary";
+import type { AgentDeletionSummary } from "@/lib/agents/management/deletion-summary";
 
 /**
  * Admin-only "remove agent" control. Deletion is irreversible — it deprovisions

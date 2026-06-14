@@ -1,11 +1,11 @@
 import "./lib/next-als-polyfill";
 import assert from "node:assert/strict";
 import { db } from "@/lib/db";
-import { authorizePmChannelCallback } from "@/lib/agents/pm-channel-callback-auth";
+import { authorizePmChannelCallback } from "@/lib/agents/pm-channel/callback-auth";
 import {
   pmChannelTargetHasDurableReply,
   pmChannelRunTargetKey,
-} from "@/lib/agents/pm-channel-runs";
+} from "@/lib/agents/pm-channel/runs";
 import {
   callPmChannelReply,
   seedDirectAgentMessage,

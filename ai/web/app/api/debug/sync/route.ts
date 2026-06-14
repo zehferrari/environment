@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { syncAgents } from "@/lib/agents/sync";
-import { seedZehUser } from "@/lib/agents/seed-zeh";
+import { syncAgents } from "@/lib/agents/management/sync";
+import { seedZehUser } from "@/lib/agents/auth/seed-zeh";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

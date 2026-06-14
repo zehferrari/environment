@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 import type { PmOption } from "@/lib/pm-options";
-import { submitPmOptionDecision } from "@/lib/agents/pm-options-actions";
+import { submitPmOptionDecision } from "@/lib/agents/ops/pm-options-actions";
 
 export default function PmOptions({
   projectSlug,

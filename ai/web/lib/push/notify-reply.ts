@@ -4,7 +4,7 @@
 // push for agent-authored origin messages (agent-to-agent turns).
 
 import { db } from "@/lib/db";
-import type { PmChannelReplyTarget } from "@/lib/agents/openclaw-pm-channel";
+import type { PmChannelReplyTarget } from "@/lib/agents/pm-channel/openclaw";
 import { sendWebPushToUser, webPushConfigured, type WebPushPayload } from "@/lib/push/web-push";
 import { stripChatMarkdown } from "@/lib/text";
 

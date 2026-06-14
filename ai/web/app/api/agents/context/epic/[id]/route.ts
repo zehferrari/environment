@@ -5,8 +5,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import {
   authenticateAgentContextRequest,
   isLoopbackRequest,
-} from "@/lib/agents/context-api/auth";
-import { buildEpicContextJson } from "@/lib/agents/context-api/serialize";
+} from "@/lib/agents/context/api/auth";
+import { buildEpicContextJson } from "@/lib/agents/context/api/serialize";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

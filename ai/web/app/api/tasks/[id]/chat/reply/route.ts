@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { verifyTaskChatReplyToken } from "@/lib/agents/task-chat-token";
-import { sendTaskCommentNotifications } from "@/lib/agents/task-workflow-notifications";
+import { verifyTaskChatReplyToken } from "@/lib/agents/workflow/chat/task/token";
+import { sendTaskCommentNotifications } from "@/lib/agents/workflow/notifications/task";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { tryCompleteTaskFromReviewerComment } from "@/lib/tasks/review-automation";
 

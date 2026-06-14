@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { AgentModelSettings } from "@/lib/agents/model-settings";
+import type { AgentModelSettings } from "@/lib/agents/management/model-settings";
 
 export default function ModelsSettings({ agent, canEdit, settings }: { agent: string; canEdit: boolean; settings: AgentModelSettings; liveModel?: string | null }) {
   const [active, setActive] = useState(settings.active ?? "");

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { ControlValue } from "@/lib/agents/effective-config";
+import type { ControlValue } from "@/lib/agents/management/effective-config";
 import ConfirmPopup from "@/components/confirm-popup";
 
 type ServiceRow = { name: string; status?: string };

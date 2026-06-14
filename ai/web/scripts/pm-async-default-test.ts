@@ -4,7 +4,7 @@ import {
   pmAsyncDispatchEnabled,
   runPmChannelWorkerOnce,
   sendOrQueueOpenClawPmChannelTurn,
-} from "@/lib/agents/pm-channel-jobs";
+} from "@/lib/agents/pm-channel/jobs";
 
 // ZL-002 acceptance: async dispatch must be the default send path. With no
 // PM_ASYNC_DISPATCH env var set, sendOrQueue must persist + enqueue and return

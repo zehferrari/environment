@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import {
   createContextGrant,
   summarizeContextGrants,
-} from "@/lib/agents/context-grants";
+} from "@/lib/agents/context/grants";
 
 // Verifies the read-only context-grant inventory buckets each grant exactly
 // once in priority order revoked > expired > exhausted > active, and surfaces

@@ -4,13 +4,13 @@ import {
   type AttachmentContext,
   type AttachmentForContext,
 } from "./attachment-extracts";
-import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/pm-silence";
+import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/ops/pm-silence";
 import {
   renderDirectedSilenceRule,
   type DirectedDescriptor,
-} from "@/lib/agents/directed-targets";
+} from "@/lib/agents/ops/directed-targets";
 import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
-import { createEpicWorkflowToken } from "@/lib/agents/epic-workflow-token";
+import { createEpicWorkflowToken } from "@/lib/agents/workflow/token/epic";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
 // from agent.role. Coding agents (can_modify_code=true) get the 1M-token

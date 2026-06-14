@@ -1,7 +1,7 @@
 import path from "node:path";
 import { rename, readFile, writeFile } from "node:fs/promises";
 import { db } from "@/lib/db";
-import { queueAgentRestart } from "@/lib/agents/restart";
+import { queueAgentRestart } from "@/lib/agents/ops/restart";
 
 const AGENT_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 

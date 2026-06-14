@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
-import { getProvider, type ProviderModel } from "@/lib/agents/providers";
+import { getProvider, type ProviderModel } from "@/lib/agents/management/providers";
 import { getSystemSettings } from "@/lib/settings/system";
 
 export const runtime = "nodejs";

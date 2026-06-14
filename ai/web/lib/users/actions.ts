@@ -1,7 +1,7 @@
 "use server";
 
 // Human-user profile editing (display name + avatar). Admin-only: gated to
-// the code owner (zeh), mirroring lib/agents/profile.ts::canEditProfile.
+// the code owner (zeh), mirroring lib/agents/management/profile.ts::canEditProfile.
 // The avatar is resized to a square PNG via ImageMagick (same binary the
 // agent-avatar route uses) and stored inline on the User row — small, and
 // there are only a handful of human users.

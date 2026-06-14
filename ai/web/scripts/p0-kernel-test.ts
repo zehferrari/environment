@@ -3,15 +3,15 @@ import { db } from "@/lib/db";
 import {
   createContextGrant,
   authenticateContextGrant,
-} from "@/lib/agents/context-grants";
+} from "@/lib/agents/context/grants";
 import {
   replayPmChannelStreamFrames,
-} from "@/lib/agents/pm-channel-stream-log";
+} from "@/lib/agents/pm-channel/stream-log";
 import {
   runPmChannelWorkerDrain,
   runPmChannelWorkerOnce,
   sendOrQueueOpenClawPmChannelTurn,
-} from "@/lib/agents/pm-channel-jobs";
+} from "@/lib/agents/pm-channel/jobs";
 import { extractActionPlanSteps } from "@/lib/tasks/action-plan-subtasks";
 
 process.env.PM_ASYNC_DISPATCH = "1";

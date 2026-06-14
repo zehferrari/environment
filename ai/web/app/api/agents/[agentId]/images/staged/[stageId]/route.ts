@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { AgentImageError, readStagedAgentImagesState } from "@/lib/agents/profile-images";
+import { AgentImageError, readStagedAgentImagesState } from "@/lib/agents/management/profile-images";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

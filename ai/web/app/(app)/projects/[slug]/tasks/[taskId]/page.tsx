@@ -26,7 +26,7 @@ import { notifyDispatch } from "@/lib/pm-dispatch";
 import {
   sendTaskCommentNotifications,
   sendTaskWorkflowNotification,
-} from "@/lib/agents/task-workflow-notifications";
+} from "@/lib/agents/workflow/notifications/task";
 import {
   listAssignablePrincipals,
 } from "@/lib/principals";

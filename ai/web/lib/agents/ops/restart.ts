@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { resolveEffectiveAgentConfig } from "@/lib/agents/effective-config";
+import { resolveEffectiveAgentConfig } from "@/lib/agents/management/effective-config";
 
 async function snapshotServices(agent: string) {
   try {

@@ -5,7 +5,7 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
-import { isLoopbackRequest } from "@/lib/agents/context-api/auth";
+import { isLoopbackRequest } from "@/lib/agents/context/api/auth";
 import { runDbMaintenance } from "@/lib/db-maintenance";
 import { db } from "@/lib/db";
 

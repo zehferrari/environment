@@ -15,7 +15,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { sendDirectAgentMessage } from "@/lib/agents/chat/direct-chat-actions";
+import { sendDirectAgentMessage } from "@/lib/agents/chat/direct/actions";
 
 export interface OptimisticDirectMessage {
   clientId: string;

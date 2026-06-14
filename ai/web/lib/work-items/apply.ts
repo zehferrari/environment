@@ -22,7 +22,7 @@ import {
   sendTaskCommentNotifications,
   sendTaskWorkflowNotification,
   type TaskWorkflowNotificationReason,
-} from "@/lib/agents/task-workflow-notifications";
+} from "@/lib/agents/workflow/notifications/task";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { validateProposal } from "@/lib/work-items/proposal";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";

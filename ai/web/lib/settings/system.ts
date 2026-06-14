@@ -11,7 +11,7 @@
 // purge jobs can import it directly. Writes go through lib/settings/actions.ts.
 
 import { db } from "@/lib/db";
-import { DEFAULT_PROFILE_IMAGE_PROMPT, normalizeProfileImagePrompt } from "@/lib/agents/profile-image-options";
+import { DEFAULT_PROFILE_IMAGE_PROMPT, normalizeProfileImagePrompt } from "@/lib/agents/management/profile-image-options";
 
 export const DONE_TTL_FALLBACK_DAYS = 5;
 

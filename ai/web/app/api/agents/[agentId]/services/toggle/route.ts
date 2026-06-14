@@ -2,9 +2,9 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { canEditProfile } from "@/lib/agents/profile";
+import { canEditProfile } from "@/lib/agents/management/profile";
 import { db } from "@/lib/db";
-import { resolveEffectiveAgentConfig } from "@/lib/agents/effective-config";
+import { resolveEffectiveAgentConfig } from "@/lib/agents/management/effective-config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

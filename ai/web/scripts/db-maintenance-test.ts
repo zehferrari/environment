@@ -3,7 +3,7 @@ import { pragmaStatements, SQLITE_RUNTIME_PRAGMAS } from "../lib/db-pragmas";
 import { shouldVacuum, VACUUM_FREELIST_RATIO_THRESHOLD } from "../lib/db-maintenance";
 import { deriveDbHealthWarnings } from "../lib/db-health";
 import { isLockError, recordDbError, getDbBusyStats } from "../lib/db-busy-counter";
-import { summarizePmLatency, percentile, type PmChannelLatencySource } from "../lib/agents/pm-channel-latency";
+import { summarizePmLatency, percentile, type PmChannelLatencySource } from "../lib/agents/pm-channel/latency";
 
 // --- Pragma enforcement set ---------------------------------------------------
 const statements = pragmaStatements();

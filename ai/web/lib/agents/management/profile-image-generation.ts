@@ -4,7 +4,7 @@ import {
   writeGeneratedAgentImage,
   writeStagedGeneratedAgentImage,
   type AgentImageKind,
-} from "@/lib/agents/profile-images";
+} from "@/lib/agents/management/profile-images";
 import {
   normalizeProfileImageAgeGroup,
   normalizeProfileImageContextText,
@@ -12,8 +12,8 @@ import {
   normalizeProfileImageEthnicity,
   normalizeProfileImageGender,
   normalizeProfileImagePrompt,
-} from "@/lib/agents/profile-image-options";
-import { MANUAL_IMAGE_THEME } from "@/lib/agents/profile-image-themes";
+} from "@/lib/agents/management/profile-image-options";
+import { MANUAL_IMAGE_THEME } from "@/lib/agents/management/profile-image-themes";
 
 const CONFY_BASE_URL = (process.env.PM_PROFILE_IMAGE_CONFY_URL ?? "http://10.0.0.17:8188").replace(/\/+$/, "");
 const CONFY_MODEL = process.env.PM_PROFILE_IMAGE_CONFY_MODEL ?? "flux1-dev-fp8.safetensors";

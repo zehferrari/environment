@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { resolvePmChannelToken } from "@/lib/agents/openclaw-pm-channel";
-import { authorizePmChannelCallback } from "@/lib/agents/pm-channel-callback-auth";
-import { applyPmChannelStreamCallback } from "@/lib/agents/pm-channel-stream-callback";
+import { resolvePmChannelToken } from "@/lib/agents/pm-channel/openclaw";
+import { authorizePmChannelCallback } from "@/lib/agents/pm-channel/callback-auth";
+import { applyPmChannelStreamCallback } from "@/lib/agents/pm-channel/stream-callback";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

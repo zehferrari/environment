@@ -4,11 +4,11 @@ import {
   parsePmChannelReplyTarget,
   resolvePmChannelToken,
   type PmChannelReplyTarget,
-} from "@/lib/agents/openclaw-pm-channel";
+} from "@/lib/agents/pm-channel/openclaw";
 import { db } from "@/lib/db";
-import { cancelPmChannelRunForTarget, pmChannelRunTargetKey } from "@/lib/agents/pm-channel-runs";
-import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel-stream";
-import { enqueuePmChannelStreamDurability } from "@/lib/agents/pm-channel-stream-log";
+import { cancelPmChannelRunForTarget, pmChannelRunTargetKey } from "@/lib/agents/pm-channel/runs";
+import { publishPmChannelStreamEvent } from "@/lib/agents/pm-channel/stream";
+import { enqueuePmChannelStreamDurability } from "@/lib/agents/pm-channel/stream-log";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
