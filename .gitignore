@@ -85,3 +85,6 @@ __pycache__/
 
 # Local OpenClaw multi-agent scratch workspaces (not part of the repo)
 .agents/
+
+# Claude Code local (per-user) settings — not shared
+.claude/settings.local.json
