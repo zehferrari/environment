@@ -843,6 +843,31 @@ function busyStateForUser(user) {
 }
 
 
+function timestampMs(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value < 1000000000000 ? value * 1000 : value;
+  }
+  if (typeof value === 'string') {
+    const asNumber = Number(value);
+    if (Number.isFinite(asNumber)) return timestampMs(asNumber);
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function openClawConfigMtime(user) {
+  for (const file of [
+    `/home/${user}/.openclaw/openclaw.json`,
+    `/srv/agents/openclaw/${user}/openclaw.json`,
+  ]) {
+    try {
+      return fs.statSync(file).mtimeMs;
+    } catch (_e) { /* try next location */ }
+  }
+  return 0;
+}
+
 // Resolve the model the user is *actually running right now* by reading
 // sessions.json — the most-recent agent:main:* entry's modelProvider/model
 // is the source of truth (covers fallbacks, post-restart state, and
@@ -856,9 +881,11 @@ function currentModelFromSessions(user) {
       if (!k.startsWith('agent:main:')) continue;
       if (!e || typeof e !== 'object') continue;
       if (!e.model || !e.modelProvider) continue;
-      const upd = e.updatedAt || 0;
+      const upd = timestampMs(e.updatedAt);
       if (!best || upd > best.upd) best = { upd, model: `${e.modelProvider}/${e.model}` };
     }
+    const configMtime = openClawConfigMtime(user);
+    if (best && configMtime && best.upd && best.upd < configMtime) return null;
     return best ? best.model : null;
   } catch (_e) { return null; }
 }
@@ -872,18 +899,36 @@ function configuredDefaultModel(user) {
   if (cached && now - cached.ts < 60000) return cached.model;
 
   let model = null;
-  try {
-    const out = execFileSync('sudo', ['-iu', user, 'openclaw', 'models', 'list'], {
-      encoding: 'utf8',
-      timeout: 15000,
-      maxBuffer: 1024 * 1024,
-    });
-    for (const line of out.split(/\r?\n/)) {
-      if (!/\bdefault\b/.test(line)) continue;
-      const first = line.trim().split(/\s+/)[0];
-      if (/^[a-z0-9_.-]+\/\S+$/i.test(first)) {
-        model = first;
+  for (const file of [
+    `/home/${user}/.openclaw/openclaw.json`,
+    `/srv/agents/openclaw/${user}/openclaw.json`,
+  ]) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const primary = cfg.agents && cfg.agents.defaults && cfg.agents.defaults.model
+        ? cfg.agents.defaults.model.primary || (typeof cfg.agents.defaults.model === 'string' ? cfg.agents.defaults.model : null)
+        : null;
+      if (typeof primary === 'string' && /^[a-z0-9_.-]+\/\S+$/i.test(primary)) {
+        model = primary;
         break;
+      }
+    } catch (_e) { /* try next config source */ }
+  }
+
+  try {
+    if (!model) {
+      const out = execFileSync('sudo', ['-iu', user, 'openclaw', 'models', 'list'], {
+        encoding: 'utf8',
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+      });
+      for (const line of out.split(/\r?\n/)) {
+        if (!/\bdefault\b/.test(line)) continue;
+        const first = line.trim().split(/\s+/)[0];
+        if (/^[a-z0-9_.-]+\/\S+$/i.test(first)) {
+          model = first;
+          break;
+        }
       }
     }
   } catch (e) {
@@ -904,11 +949,11 @@ function pollSessionIdle() {
       if (!agentState[a.user]) agentState[a.user] = {};
       agentState[a.user].session_idle_s = idle_s;
     }
-    // Refresh model from sessions.json — covers initial paint, fallbacks,
-    // and claude-cli sessions where stream events don't reach us via openclaw jsonl.
-    // Falls back to `openclaw models list` (cached 60 s) for agents that haven't
-    // run a turn yet — keeps the chip populated on fresh installs.
-    const m = currentModelFromSessions(a.user) || configuredDefaultModel(a.user);
+    // Refresh model from the configured default first. sessions.json can retain
+    // stale modelProvider/model data after an operator changes the default and
+    // restarts the gateway, so use sessions only as a fallback when config read
+    // fails on fresh/partial installs.
+    const m = configuredDefaultModel(a.user) || currentModelFromSessions(a.user);
     if (m) {
       if (!agentState[a.user]) agentState[a.user] = {};
       const prev = agentState[a.user].model_primary;

@@ -82,6 +82,7 @@ export const PROVIDERS: ProviderDef[] = [
     },
     refresh: "ollama",
     seedModels: [
+      { id: "kimi-k2.7-code:cloud", name: "kimi-k2.7-code:cloud" },
       { id: "gemma4:31b-cloud", name: "gemma4:31b-cloud" },
       { id: "nemotron-3-ultra:cloud", name: "nemotron-3-ultra:cloud" },
       { id: "qwen2.5:3b-instruct", name: "qwen2.5:3b-instruct (offline fallback)" },
