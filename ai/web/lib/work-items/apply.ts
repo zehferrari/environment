@@ -27,6 +27,7 @@ import { listAssignablePrincipals } from "@/lib/principals";
 import { validateProposal } from "@/lib/work-items/proposal";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
+import { MAX_SUBTASK_TEXT } from "@/lib/tasks/subtasks";
 
 type RawOp = Record<string, unknown>;
 
@@ -294,24 +295,46 @@ export async function commitProposal(
                 payload: JSON.stringify({ epicId: epic.id, title: epic.title, proposalId: proposal.id }),
               },
             });
+          } else if (op.op === "create_subtask") {
+            // A proposed "sub-task" is now a lightweight checklist item on the
+            // parent task (text + completion), NOT a child Task. Fold any
+            // description into the single goal line.
+            const parentTaskId = resolveRef(op.parent);
+            if (!parentTaskId) {
+              throw new Error("create_subtask parent did not resolve to a task");
+            }
+            const description = optionalText(op.description);
+            const text = (description ? `${String(op.title)} — ${description}` : String(op.title)).slice(0, MAX_SUBTASK_TEXT);
+            const agg = await tx.subTask.aggregate({
+              where: { taskId: parentTaskId },
+              _max: { rank: true },
+            });
+            const sub = await tx.subTask.create({
+              data: { taskId: parentTaskId, text, rank: (agg._max.rank ?? 0) + 1 },
+              select: { id: true },
+            });
+            counts.subtasks++;
+            createdItems.push({
+              kind: "subtask",
+              id: sub.id,
+              title: String(op.title),
+              url: `/projects/${projectSlug}/tasks/${parentTaskId}`,
+            });
+            const parent = await tx.task.findUnique({ where: { id: parentTaskId }, select: { title: true } });
+            await tx.activityLog.create({
+              data: {
+                projectId,
+                taskId: parentTaskId,
+                userId: agentId,
+                kind: "task.subtask.add",
+                payload: JSON.stringify({ subTaskId: sub.id, text, parentTitle: parent?.title ?? null, proposalId: proposal.id }),
+              },
+            });
           } else {
-            const isSub = op.op === "create_subtask";
-            const epicId = isSub ? null : op.epic !== undefined ? resolveRef(op.epic) : null;
-            const parentTaskId = isSub ? resolveRef(op.parent) : null;
+            const epicId = op.epic !== undefined ? resolveRef(op.epic) : null;
             let inheritedBranchName: string | null = null;
             let inheritedCommitPrefix: string | null = null;
-            if (parentTaskId) {
-              const parent = await tx.task.findUnique({
-                where: { id: parentTaskId },
-                select: {
-                  branchName: true,
-                  commitPrefix: true,
-                  epic: { select: { branchName: true, commitPrefix: true } },
-                },
-              });
-              inheritedBranchName = parent?.branchName ?? parent?.epic?.branchName ?? null;
-              inheritedCommitPrefix = parent?.commitPrefix ?? parent?.epic?.commitPrefix ?? null;
-            } else if (epicId) {
+            if (epicId) {
               const epic = await tx.epic.findUnique({
                 where: { id: epicId },
                 select: { branchName: true, commitPrefix: true },
@@ -319,7 +342,7 @@ export async function commitProposal(
               inheritedBranchName = epic?.branchName ?? null;
               inheritedCommitPrefix = epic?.commitPrefix ?? null;
             }
-            const title = !isSub && epicId
+            const title = epicId
               ? await nextEpicTaskTitle(epicId, String(op.title), tx)
               : String(op.title);
             const task = await tx.task.create({
@@ -327,7 +350,6 @@ export async function commitProposal(
                 projectId,
                 workItemKey: await allocateWorkItemKey(projectId, tx),
                 epicId,
-                parentTaskId,
                 title,
                 description: optionalText(op.description),
                 status: "Backlog",
@@ -342,26 +364,20 @@ export async function commitProposal(
               select: { id: true, title: true, assigneeId: true },
             });
             refToId.set(ref, task.id);
-            if (isSub) counts.subtasks++;
-            else counts.tasks++;
+            counts.tasks++;
             createdItems.push({
-              kind: isSub ? "subtask" : "task",
+              kind: "task",
               id: task.id,
               title: task.title,
               url: `/projects/${projectSlug}/tasks/${task.id}`,
             });
-            let parentTitle: string | null = null;
-            if (parentTaskId) {
-              const parent = await tx.task.findUnique({ where: { id: parentTaskId }, select: { title: true } });
-              parentTitle = parent?.title ?? null;
-            }
             await tx.activityLog.create({
               data: {
                 projectId,
                 taskId: task.id,
                 userId: agentId,
                 kind: "task.create",
-                payload: JSON.stringify({ title: task.title, epicId, parentTaskId, parentTitle, proposalId: proposal.id }),
+                payload: JSON.stringify({ title: task.title, epicId, proposalId: proposal.id }),
               },
             });
           }

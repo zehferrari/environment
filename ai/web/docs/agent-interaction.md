@@ -282,6 +282,10 @@ Operations: `create_epic`, `create_task`, `create_subtask`,
 that must start with `tmp:` and that later ops reference (epic / parent);
 existing items are addressed by their real id from the project-environment
 block. `assignee` / `actingManager` are usernames (or `null` to unset).
+**`create_subtask` no longer creates a child Task** — it appends a
+lightweight checklist item (text + completion) to its `parent` Task for
+progress tracking. It carries no assignee/reviewer/status/key; `title`
+(and any `description`) become the item's single goal line.
 
 PM validates the grant (single-use, bound to project + agent + message),
 then dry-run-validates every op under human-triggered grant semantics:
@@ -378,11 +382,23 @@ consolidated feedback when the plan needs adjustment, or approve with a
 concise note explaining why the plan is acceptable or naming any
 constraints. When a Task Action Plan has an explicit `Deliverables`,
 `Implementation steps`, `Checklist`, `Subtasks`, or `Milestones` section
-and the Task has no subtasks yet, PM creates those entries as ordered
-task-local subtasks for progress tracking. Bullets under `Inputs`, `Rule
-logic`, context, risks, or open questions are not subtasks. Subtasks can
-be created only by the task assignee, only after the Task Action Plan is
-approved, and only when the Task has no existing child subtasks. Epic
+and the Task has no sub-tasks yet, PM seeds those entries as the Task's
+**progress checklist** (lightweight sub-tasks: text + done state, not
+child Tasks). Bullets under `Inputs`, `Rule logic`, context, risks, or
+open questions are not sub-tasks. The assignee keeps the checklist current
+as work proceeds so the board card shows how close the Task is to done.
+Break the work into **independent, parallelizable** steps and dispatch
+parallel sub-agents to tackle the independent ones at once whenever the work
+allows — don't serialize work that could run on multiple fronts. POST
+`action=add_subtask` (`{subtaskText}`) to add a step and
+`action=complete_subtask` (`{subtaskId, completed, minutesSpent}`) as each
+lands — `minutesSpent` is the optional self-reported minutes that step took,
+which the Task sums into a cost roll-up. Ids appear in the SUB-TASKS block of
+the task context. Do not create child Tasks for steps inside a single Task.
+When a task returns from Review with feedback, add a sub-task per feedback item
+before resuming so the bar reflects the remaining work. The task context also
+shows **Blocked by** when the task has an open hard-dependency; the workflow
+`start` action refuses such a task until its blocker reaches Done. Epic
 implementation tasks can be created only by the Epic acting manager, only
 after the Epic Action Plan is approved, and only when the Epic has no
 existing child tasks. `Review` is only for completed

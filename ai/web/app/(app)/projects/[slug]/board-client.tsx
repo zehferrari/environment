@@ -53,9 +53,78 @@ type Task = {
   createdBy: BoardActor | null;
   updatedBy: BoardActor | null;
   epicTitle: string | null;
+  subtaskTotal: number;
+  subtaskDone: number;
+  subtaskMinutes: number;
+  blockedByKey: string | null;
   activeWorking: boolean;
 };
 type Column = { id: string; label: string; description?: string };
+
+// Bottom-right lock badge (ENV-62): shown when the task is blocked by another
+// task that isn't Done yet. The key is the blocker's work-item id.
+function BlockedBadge({ task }: { task: Task }) {
+  if (!task.blockedByKey) return null;
+  return (
+    <span
+      className="ml-auto inline-flex items-center gap-1 text-[10px] font-semibold text-[var(--color-crit)]"
+      title={`Blocked by ${task.blockedByKey} — it must be Done first`}
+    >
+      <LockGlyph />
+      {task.blockedByKey}
+    </span>
+  );
+}
+
+function LockGlyph() {
+  return (
+    <svg aria-hidden="true" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="11" width="16" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </svg>
+  );
+}
+
+function formatMinutes(total: number): string {
+  if (!Number.isFinite(total) || total <= 0) return "0m";
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (h && m) return `${h}h ${m}m`;
+  if (h) return `${h}h`;
+  return `${m}m`;
+}
+
+// Sub-task progress for a board card (ENV-60/61): a segmented bar with one node
+// per sub-task. Completed nodes fill on an orange→green gradient driven by
+// overall completion (greener nearer 100%); unfinished nodes are a solid dark
+// node, so a not-yet-started (To Do) task reads as a row of dark nodes. Hidden
+// when the task has no checklist. Numeric count + rolled-up time live in the
+// tooltip.
+function SubtaskProgress({ task }: { task: Task }) {
+  const n = task.subtaskTotal;
+  if (!n) return null;
+  const d = task.subtaskDone;
+  const ratio = d / n;
+  // hue 28 (orange) → 135 (green) as completion rises.
+  const fill = `hsl(${Math.round(28 + 107 * ratio)} 85% 45%)`;
+  const time = task.subtaskMinutes > 0 ? ` · ${formatMinutes(task.subtaskMinutes)}` : "";
+  return (
+    <span
+      role="img"
+      aria-label={`${d} of ${n} sub-tasks done`}
+      title={`${d}/${n} sub-tasks done${time}`}
+      className="inline-flex h-1.5 w-16 shrink-0 items-center gap-[2px]"
+    >
+      {Array.from({ length: n }, (_, i) => (
+        <span
+          key={i}
+          className="h-full min-w-0 flex-1 rounded-[1px]"
+          style={{ backgroundColor: i < d ? fill : "var(--color-text-muted)" }}
+        />
+      ))}
+    </span>
+  );
+}
 
 type BoardProps = {
   projectSlug: string;
@@ -892,6 +961,7 @@ function TaskCard({
             <div className="truncate">{task.title}</div>
             <div className="mt-1 flex items-center gap-2 text-[10px] text-[var(--color-text-muted)]">
               <ElapsedClock task={task} now={now} />
+              <SubtaskProgress task={task} />
               <time
                 dateTime={task.updatedAt}
                 title={task.updatedAt}
@@ -903,6 +973,7 @@ function TaskCard({
               >
                 {relativeUpdated(task.updatedAt)}
               </time>
+              <BlockedBadge task={task} />
             </div>
           </div>
         </div>
@@ -970,6 +1041,7 @@ function WorkflowFocusCard({
             <div className="mt-0.5 truncate text-sm">{task.title}</div>
             <div className="mt-1 flex items-center gap-2 text-[10px] text-[var(--color-text-muted)]">
               <ElapsedClock task={task} now={now} />
+              <SubtaskProgress task={task} />
               <time
                 dateTime={task.updatedAt}
                 title={task.updatedAt}
@@ -978,6 +1050,7 @@ function WorkflowFocusCard({
               >
                 {relativeUpdated(task.updatedAt)}
               </time>
+              <BlockedBadge task={task} />
             </div>
           </div>
         </div>
@@ -1083,6 +1156,8 @@ function BacklogRow({
           ) : null}
           {task.title}
         </span>
+        <SubtaskProgress task={task} />
+        <BlockedBadge task={task} />
       </div>
       <span className="truncate text-xs text-[var(--color-text-muted)]">
         {task.epicTitle ?? "—"}

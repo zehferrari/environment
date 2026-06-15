@@ -100,8 +100,7 @@ export interface TaskContextResponse {
     workers: Array<ReturnType<typeof actor>>;
     actingManager: ReturnType<typeof actor>;
   };
-  parentTask: null | { id: string; title: string; status: string };
-  subtasks: Array<{ id: string; title: string; status: string; assignee: ReturnType<typeof actor> }>;
+  checklist: Array<{ id: string; text: string; done: boolean; minutes: number | null }>;
   comments: Array<{
     id: string;
     createdAt: string;
@@ -196,14 +195,9 @@ export async function buildTaskContextJson(
           actingManager: { select: { username: true, kind: true } },
         },
       },
-      parent: { select: { id: true, title: true, status: true } },
-      subtasks: {
-        where: { archivedAt: null, deletedAt: null },
-        orderBy: [{ status: "asc" }, { rank: "asc" }, { createdAt: "asc" }],
-        select: {
-          id: true, title: true, status: true,
-          assignee: { select: { username: true, kind: true } },
-        },
+      checklist: {
+        orderBy: { rank: "asc" },
+        select: { id: true, text: true, completedAt: true, minutesSpent: true },
       },
       assignee: { select: { username: true, kind: true } },
       actingManager: { select: { username: true, kind: true } },
@@ -361,12 +355,11 @@ export async function buildTaskContextJson(
           actingManager: actor(task.epic.actingManager),
         }
       : null,
-    parentTask: task.parent ? { id: task.parent.id, title: task.parent.title, status: task.parent.status } : null,
-    subtasks: task.subtasks.map((s) => ({
+    checklist: task.checklist.map((s) => ({
       id: s.id,
-      title: s.title,
-      status: s.status,
-      assignee: actor(s.assignee),
+      text: s.text,
+      done: s.completedAt !== null,
+      minutes: s.minutesSpent ?? null,
     })),
     comments: comments.map((c) => ({
       id: c.id,

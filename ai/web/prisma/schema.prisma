@@ -286,13 +286,21 @@ model Task {
   project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   epicId          String?
   epic            Epic?    @relation(fields: [epicId], references: [id])
-  // Sub-task hierarchy: a sub-task is a Task with parentTaskId set. Stage 2
-  // keeps a single self-referential Task model (no parallel SubTask) per
-  // HOMELAB-44 manager guardrail. epic > task > subtask is expressed as
-  // epicId + parentTaskId.
+  // DEPRECATED (ENV-60): the former self-referential child-Task "sub-task"
+  // hierarchy. Sub-tasks are now lightweight checklist rows (see model SubTask
+  // / Task.checklist), not child Tasks. This column + self-relation are kept
+  // dormant — no live row sets parentTaskId and no code path writes it — to
+  // avoid a SQLite table rebuild on the production DB. Drop in a later
+  // maintenance migration once a downtime window is acceptable.
   parentTaskId    String?
   parent          Task?    @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
   subtasks        Task[]   @relation("TaskSubtasks")
+  // Optional hard dependency (ENV-62): this task requires blockedBy to be Done
+  // first. Cycle-guarded on write (lib/tasks/blocking.ts). SetNull so deleting
+  // the blocker clears the dependency rather than orphaning it.
+  blockedById     String?
+  blockedBy       Task?    @relation("TaskBlockedBy", fields: [blockedById], references: [id], onDelete: SetNull)
+  blocking        Task[]   @relation("TaskBlockedBy")
   title           String
   workItemKey     String?  @unique @map("work_item_key")
   description     String?
@@ -345,6 +353,9 @@ model Task {
   attachments Attachment[]
   chats       AgentChatMessage[] @relation("TaskChat")
   chatRoomArchives AgentChatRoomArchive[] @relation("TaskChatRoomArchive")
+  // Lightweight sub-task checklist (ENV-60). NOT the legacy self-referential
+  // child-Task hierarchy above (parentTaskId) — that is now dormant. See SubTask.
+  checklist   SubTask[] @relation("TaskChecklist")
 
   @@index([projectId])
   @@index([workItemKey])
@@ -352,6 +363,7 @@ model Task {
   @@index([epicId])
   @@index([assigneeId])
   @@index([parentTaskId])
+  @@index([blockedById])
   @@index([actingManagerId])
   @@index([reporterId])
   @@index([approvedById])
@@ -359,6 +371,33 @@ model Task {
   @@index([archivedById])
   @@index([deletedAt])
   @@index([alertReporter])
+}
+
+// Lightweight sub-task checklist (ENV-60). A SubTask is NOT a Task: it has no
+// assignee, reviewer, status, work-item key, or board presence. It is a single
+// goal line plus an optional completion timestamp. The point is progress: a
+// task broken into checklist items shows "done/total" on its board card so you
+// can see how close an in-flight task is to finished. Replaces the former
+// self-referential child-Task hierarchy (Task.parentTaskId, now dormant).
+// Humans tick items in the task editor; the assignee agent ticks them through
+// the native workflow endpoint (action=add_subtask / complete_subtask).
+model SubTask {
+  id          String    @id @default(cuid())
+  taskId      String
+  task        Task      @relation("TaskChecklist", fields: [taskId], references: [id], onDelete: Cascade)
+  text        String
+  // null = open; a timestamp = done. This is the "hidden field with the
+  // timestamp when it was complete" — surfaced only as a checkbox + progress.
+  completedAt DateTime?
+  // Self-reported effort for this step, captured when the assignee ticks it
+  // done (ENV-61). Summed across a task's checklist for a rough cost view.
+  minutesSpent Int?
+  // Ordering within the task's checklist.
+  rank        Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([taskId])
 }
 
 // ------------------------------------------------------------------

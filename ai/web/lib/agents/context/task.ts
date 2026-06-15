@@ -66,6 +66,7 @@ export type AgentContextPacket = {
       updatedAt: string;
       assignee: string;
       reviewer: string;
+      blockedBy: string | null;
     } | null;
     epic: {
       id: string;
@@ -75,16 +76,11 @@ export type AgentContextPacket = {
       workers: string[];
       actingManager: string;
     } | null;
-    parentTask: {
+    checklist: Array<{
       id: string;
-      title: string;
-      status: string;
-    } | null;
-    subtasks: Array<{
-      id: string;
-      title: string;
-      status: string;
-      assignee: string;
+      text: string;
+      done: boolean;
+      minutes: number | null;
     }>;
   };
   timeline: Array<{
@@ -467,19 +463,13 @@ export async function buildTaskAgentContextPacket(args: {
           },
         },
       },
-      parent: { select: { id: true, title: true, status: true } },
       assignee: { select: { username: true, kind: true } },
       actingManager: { select: { username: true, kind: true } },
-      subtasks: {
-        where: { archivedAt: null, deletedAt: null },
-        orderBy: [{ status: "asc" }, { rank: "asc" }, { createdAt: "asc" }],
-        take: 25,
-        select: {
-          id: true,
-          title: true,
-          status: true,
-          assignee: { select: { username: true, kind: true } },
-        },
+      blockedBy: { select: { workItemKey: true, status: true } },
+      checklist: {
+        orderBy: { rank: "asc" },
+        take: 50,
+        select: { id: true, text: true, completedAt: true, minutesSpent: true },
       },
       attachments: {
         orderBy: { createdAt: "asc" },
@@ -580,6 +570,9 @@ export async function buildTaskAgentContextPacket(args: {
             updatedAt: formatDate(task.updatedAt)!,
             assignee: actorLabel(task.assignee),
             reviewer: actorLabel(task.actingManager),
+            blockedBy: task.blockedBy
+              ? `${task.blockedBy.workItemKey ?? "another task"} (${task.blockedBy.status})`
+              : null,
           }
         : null,
       epic: task?.epic
@@ -592,12 +585,11 @@ export async function buildTaskAgentContextPacket(args: {
             actingManager: actorLabel(task.epic.actingManager),
           }
         : null,
-      parentTask: task?.parent ?? null,
-      subtasks: task?.subtasks.map((subtask) => ({
-        id: subtask.id,
-        title: subtask.title,
-        status: subtask.status,
-        assignee: actorLabel(subtask.assignee),
+      checklist: task?.checklist.map((item) => ({
+        id: item.id,
+        text: item.text,
+        done: item.completedAt !== null,
+        minutes: item.minutesSpent ?? null,
       })) ?? [],
     },
     timeline: [],
@@ -805,7 +797,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     return lines.join("\n");
   }
 
-  const { project, task, epic, parentTask, subtasks } = packet.snapshot;
+  const { project, task, epic, checklist } = packet.snapshot;
   lines.push(...renderHotPath(packet.timeline, packet.caps), "");
 
   lines.push(
@@ -823,10 +815,10 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     `Status: ${task.status}`,
     `Assignee: ${task.assignee}`,
     `Reviewer: ${task.reviewer}`,
+    `Blocked by: ${task.blockedBy ?? "(none)"}`,
     `Action Plan approved_on: ${task.approvedOn || "(not approved)"}`,
     `Branch: ${task.branchName || "(not set)"}`,
     `Commit prefix: ${task.commitPrefix || "(not set)"}`,
-    `Parent: ${parentTask ? `${parentTask.title} (${parentTask.status}, ${parentTask.id})` : "(none)"}`,
     `Created: ${task.createdAt}`,
     `Updated: ${task.updatedAt}`,
     "",
@@ -845,12 +837,15 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     lines.push("(none)");
   }
 
-  lines.push("", "SUBTASKS (task-local checklist; not Epic implementation sequence):");
-  if (subtasks.length === 0) {
+  lines.push("", "SUB-TASKS (lightweight progress checklist — text + done state only; not child tasks, not the Epic sequence):");
+  if (checklist.length === 0) {
     lines.push("(none)");
   } else {
-    for (const subtask of subtasks) {
-      lines.push(`- ${subtask.title} [${subtask.status}] assignee: ${subtask.assignee} (${subtask.id})`);
+    const checklistDone = checklist.filter((item) => item.done).length;
+    const checklistMinutes = checklist.reduce((sum, item) => sum + (item.minutes ?? 0), 0);
+    lines.push(`Progress: ${checklistDone}/${checklist.length} done${checklistMinutes > 0 ? ` · ${checklistMinutes}m logged` : ""}`);
+    for (const item of checklist) {
+      lines.push(`- [${item.done ? "x" : " "}] ${item.text} (id: ${item.id}${item.minutes != null ? `, ${item.minutes}m` : ""})`);
     }
   }
 
@@ -911,7 +906,9 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     "Do not repeat a blocker or decision already present in the recent hot path unless the current turn adds new information or asks for a status update.",
     "If you are the assignee: before starting a To Do task, make sure your technical Action Plan is posted and approved_on is set. Then move To Do work to In Progress when you start. When implementation is complete, or when you are waiting for reviewer/manager/reporter feedback or response, use the workflow endpoint to move the task to Review with one concise note.",
     "If your task is in Review because it was waiting for feedback or an external response, and that response has arrived, resume it with workflow action=start, complete the follow-up, then call ready_for_review again. Keep one concise visible note.",
-    "Create task-local subtasks only when you are the assignee, the Task Action Plan is approved, and the Task has no existing child subtasks. Never create subtasks under newly created tasks or under another subtask.",
+    "Sub-tasks are a lightweight progress checklist (text + done + minutes), NOT child tasks. As the assignee, break the task into INDEPENDENT, PARALLELIZABLE steps so you can work multiple fronts at once — dispatch parallel sub-agents to tackle the independent steps concurrently whenever the work allows, instead of doing them one at a time. Keep the checklist current so the board shows how close the task is to done: POST action=add_subtask {subtaskText} to add a step, and action=complete_subtask {subtaskId, completed, minutesSpent} as each step lands (include minutesSpent = the minutes that step took, so the task's total cost rolls up). Use the SUB-TASKS list above for ids. Do not create child Tasks for steps within a single task.",
+    "When a task comes back from Review with reviewer feedback, add a new sub-task (add_subtask) for each concrete feedback item BEFORE resuming — your earlier checklist items are already ticked, so without this the progress bar wrongly reads as finished. Tick each new item off (with minutesSpent) as you address it.",
+    "If the TASK SNAPSHOT shows this task is Blocked by another task that is not yet Done, do not start it — the workflow start action will refuse until the blocker is Done.",
     `If the current turn requires no visible contribution from you, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
   );
 

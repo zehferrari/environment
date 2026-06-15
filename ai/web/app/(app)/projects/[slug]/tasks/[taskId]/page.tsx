@@ -13,7 +13,6 @@ import {
 import {
   checkAssignment,
   checkActingManager,
-  checkHierarchy,
   checkStatusTransition,
   type ActorKind,
 } from "@/lib/workflow";
@@ -35,7 +34,13 @@ import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteTask } from "@/lib/bin/actions";
 import { archiveTask, unarchiveTask } from "@/lib/archive/actions";
 import { approveAndMergeDeploymentPullRequest, approveDeploymentLocalChanges } from "@/lib/deploy/actions";
-import { reorderTasks } from "@/lib/tasks/reorder";
+import {
+  createSubTaskItem,
+  setSubTaskCompletion,
+  deleteSubTaskItem,
+  reorderSubTaskItems,
+} from "@/lib/tasks/subtasks";
+import { validateBlockedBy } from "@/lib/tasks/blocking";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import {
   canApproveActionPlanForActor,
@@ -44,7 +49,7 @@ import {
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
-import { allocateWorkItemKey, effectiveCommitPrefix } from "@/lib/work-items/keys";
+import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 import {
   getCachedLatestRepoVerifyActivity,
   getCachedPendingTaskProposals,
@@ -60,7 +65,7 @@ import {
   revalidateTaskReplyScope,
   revalidateTaskShell,
 } from "@/lib/tasks/cache";
-import SortableTaskList from "@/components/sortable-task-list";
+import TaskChecklist from "@/components/task-checklist";
 import AttachmentList from "@/components/attachment-list";
 import AttachmentUploadFab from "@/components/attachment-upload-fab";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
@@ -157,6 +162,8 @@ async function updateTask(formData: FormData) {
   const newActingManagerId = reviewerRaw === "" ? null : reviewerRaw;
   const reporterRaw = String(formData.get("reporterId") ?? "");
   const newReporterId = reporterRaw === "" ? null : reporterRaw;
+  const blockedRaw = String(formData.get("blockedById") ?? "");
+  const newBlockedById = blockedRaw === "" ? null : blockedRaw;
   const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
 
   if (newStatus !== "" && !COLUMN_IDS.includes(newStatus)) return;
@@ -180,6 +187,8 @@ async function updateTask(formData: FormData) {
       reporterId: true,
       deploymentStatus: true,
       parentTaskId: true,
+      blockedById: true,
+      blockedBy: { select: { workItemKey: true } },
       approvedOn: true,
       workItemKey: true,
       project: {
@@ -287,6 +296,30 @@ async function updateTask(formData: FormData) {
         from: task.epic?.title ?? null,
         to: newEpicTitle,
       }),
+    });
+  }
+
+  // Blocked-by dependency (ENV-62): same-project, cycle-guarded.
+  if (newBlockedById !== task.blockedById) {
+    let toKey: string | null = null;
+    if (newBlockedById !== null) {
+      const check = await validateBlockedBy({
+        taskId: task.id,
+        projectId: task.projectId,
+        blockerId: newBlockedById,
+      });
+      if (!check.ok) throw new Error(check.message);
+      const blocker = await db.task.findUnique({
+        where: { id: newBlockedById },
+        select: { workItemKey: true },
+      });
+      toKey = blocker?.workItemKey ?? null;
+    }
+    data.blockedBy =
+      newBlockedById === null ? { disconnect: true } : { connect: { id: newBlockedById } };
+    activity.push({
+      kind: "task.blocked_by",
+      payload: JSON.stringify({ from: task.blockedBy?.workItemKey ?? null, to: toKey }),
     });
   }
 
@@ -884,99 +917,79 @@ async function restoreComment(formData: FormData) {
   revalidateTaskReplyScope(taskId, "comment");
 }
 
-async function createSubtask(formData: FormData) {
-  "use server";
+// Checklist (lightweight sub-task) management. A checklist item is text + a
+// completion timestamp — not a child Task. The same actor model as comments
+// applies: humans always; the assigned agent may add/tick/remove items so the
+// board progress reflects how far it is from done (agents normally do this
+// through the native workflow endpoint, but a browser-session agent may too).
+async function resolveChecklistContext(taskId: string, slug: string) {
   const actor = await requireActor();
-  const parentTaskId = String(formData.get("parentTaskId") ?? "");
-  const slug = String(formData.get("projectSlug") ?? "");
-  const title = String(formData.get("title") ?? "").trim();
-  if (!parentTaskId || !slug || !title) return;
-  if (title.length > 200) return;
-
-  const parent = await db.task.findUnique({
-    where: { id: parentTaskId },
-    select: {
-      id: true,
-      title: true,
-      projectId: true,
-      epicId: true,
-      branchName: true,
-      commitPrefix: true,
-      parentTaskId: true,
-      assigneeId: true,
-      approvedOn: true,
-      subtasks: { where: { deletedAt: null }, select: { id: true }, take: 1 },
-      project: {
-        select: {
-          slug: true,
-        },
-      },
-      epic: { select: { branchName: true, commitPrefix: true } },
-    },
+  const task = await db.task.findUnique({
+    where: { id: taskId },
+    select: { id: true, projectId: true, assigneeId: true, project: { select: { slug: true } } },
   });
-  if (!parent || parent.project.slug !== slug) return;
+  if (!task || task.project.slug !== slug) return null;
+  if (actor.kind !== "human" && actor.id !== task.assigneeId) return null;
+  return { actor, task };
+}
 
-  if (parent.parentTaskId !== null) {
-    throw new Error("Cannot create sub-task under another sub-task");
-  }
-  if (actor.kind !== "human" && actor.id !== parent.assigneeId) {
-    throw new Error("Only the task assignee can create task-local subtasks.");
-  }
-  if (actor.kind !== "human" && !parent.approvedOn) {
-    throw new Error("Task Action Plan must be approved before subtasks can be created.");
-  }
-  if (actor.kind !== "human" && parent.subtasks.length > 0) {
-    throw new Error("Task-local subtasks can only be created when the task has no child subtasks yet.");
-  }
-
-  const check = checkHierarchy({ level: "subtask", parentTaskId });
-  if (!check.ok) throw new Error(check.message);
-
-  const maxRank = await db.task.aggregate({
-    where: { projectId: parent.projectId, status: "Backlog", archivedAt: null, deletedAt: null },
-    _max: { rank: true },
-  });
-
-  const child = await db.task.create({
-    data: {
-      projectId: parent.projectId,
-      workItemKey: await allocateWorkItemKey(parent.projectId),
-      epicId: parent.epicId,
-      parentTaskId,
-      title,
-      status: "Backlog",
-      rank: (maxRank._max.rank ?? 0) + 1,
-      statusChangedAt: new Date(),
-      assigneeId: null,
-      actingManagerId: null,
-      reporterId: actor.id,
-      branchName: parent.branchName ?? parent.epic?.branchName ?? null,
-      commitPrefix: parent.commitPrefix ?? parent.epic?.commitPrefix ?? null,
-    },
-    select: { id: true, title: true },
-  });
-
-  await db.activityLog.create({
-    data: {
-      projectId: parent.projectId,
-      taskId: child.id,
-      userId: actor.id,
-      kind: "task.create",
-      payload: JSON.stringify({
-        title: child.title,
-        parentTaskId,
-        parentTitle: parent.title,
-      }),
-    },
-  });
-
-  revalidatePath(`/projects/${slug}/tasks/${parentTaskId}`);
-  revalidateTaskShell(parentTaskId);
-  revalidatePath(`/projects/${slug}/tasks/${child.id}`);
+function revalidateChecklist(slug: string, taskId: string, projectId: string) {
+  revalidateTaskShell(taskId);
+  revalidatePath(`/projects/${slug}/tasks/${taskId}`);
   revalidatePath(`/projects/${slug}`);
+  publishBoardTouch(projectId);
+}
+
+async function addSubTaskItem(formData: FormData) {
+  "use server";
+  const taskId = String(formData.get("taskId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  const text = String(formData.get("text") ?? "").trim();
+  if (!taskId || !slug || !text) return;
+  const ctx = await resolveChecklistContext(taskId, slug);
+  if (!ctx) return;
+  await createSubTaskItem({ taskId, text, actorUserId: ctx.actor.id });
+  revalidateChecklist(slug, taskId, ctx.task.projectId);
+}
+
+async function toggleSubTaskItem(formData: FormData) {
+  "use server";
+  const taskId = String(formData.get("taskId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  const subTaskId = String(formData.get("subTaskId") ?? "");
+  const completed = String(formData.get("completed") ?? "") === "1";
+  // "" = leave minutes unchanged; a number sets the self-reported effort.
+  const minutesRaw = String(formData.get("minutesSpent") ?? "");
+  const minutesSpent = minutesRaw === "" ? undefined : Number(minutesRaw);
+  if (!taskId || !slug || !subTaskId) return;
+  const ctx = await resolveChecklistContext(taskId, slug);
+  if (!ctx) return;
+  await setSubTaskCompletion({ subTaskId, completed, minutesSpent, actorUserId: ctx.actor.id, expectTaskId: taskId });
+  revalidateChecklist(slug, taskId, ctx.task.projectId);
+}
+
+async function removeSubTaskItem(formData: FormData) {
+  "use server";
+  const taskId = String(formData.get("taskId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  const subTaskId = String(formData.get("subTaskId") ?? "");
+  if (!taskId || !slug || !subTaskId) return;
+  const ctx = await resolveChecklistContext(taskId, slug);
+  if (!ctx) return;
+  await deleteSubTaskItem({ subTaskId, actorUserId: ctx.actor.id, expectTaskId: taskId });
+  revalidateChecklist(slug, taskId, ctx.task.projectId);
 }
 
 // ---- Helpers --------------------------------------------------------
+
+function LockIcon() {
+  return (
+    <svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="11" width="16" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </svg>
+  );
+}
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -1296,6 +1309,14 @@ export default async function TaskDetailPage({
       },
     }) as Promise<ActivityTimelineRow[]>,
   ]);
+
+  // Candidate blockers for the "Blocked by" picker: other live tasks in this
+  // project. Cycles are rejected server-side on save (lib/tasks/blocking.ts).
+  const blockerCandidates = await db.task.findMany({
+    where: { projectId: task.project.id, deletedAt: null, archivedAt: null, id: { not: task.id } },
+    orderBy: [{ status: "asc" }, { workItemKey: "asc" }],
+    select: { id: true, workItemKey: true, title: true, status: true },
+  });
   const mentionables = mentionableUsers.map((u) => ({ username: u.username }));
   const settledMessageIds = activityMessageIds(recentReplyActivity);
   const recentCommentMessages = recentTaskChatMessages.filter((message) => (
@@ -1628,12 +1649,12 @@ export default async function TaskDetailPage({
       })
     : null;
 
-  async function reorderSubtasks(orderedIds: string[]): Promise<void> {
+  async function reorderChecklist(orderedIds: string[]): Promise<void> {
     "use server";
-    await reorderTasks(orderedIds);
-    revalidateTaskShell(taskId);
-    revalidatePath(`/projects/${slug}/tasks/${taskId}`);
-    revalidatePath(`/projects/${slug}`);
+    const ctx = await resolveChecklistContext(taskId, slug);
+    if (!ctx) return;
+    await reorderSubTaskItems({ taskId, orderedIds });
+    revalidateChecklist(slug, taskId, ctx.task.projectId);
   }
 
   return (
@@ -1975,19 +1996,32 @@ export default async function TaskDetailPage({
                       </label>
                     </div>
 
-                    {task.parent ? (
-                      <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
-                        <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-                          Parent task
-                        </div>
-                        <Link
-                          href={`/projects/${slug}/tasks/${task.parent.id}`}
-                          className="mt-2 block text-sm hover:underline"
+                    {/* Blocked by — hard dependency on another task (ENV-62). */}
+                    <div className="space-y-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
+                      <label className="block">
+                        <span className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                          <LockIcon />
+                          Blocked by
+                        </span>
+                        <select
+                          form="taskMain"
+                          name="blockedById"
+                          defaultValue={task.blockedById ?? ""}
+                          aria-label="Blocked by"
+                          className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
                         >
-                          {task.parent.title}
-                        </Link>
-                      </div>
-                    ) : null}
+                          <option value="">Not blocked</option>
+                          {blockerCandidates.map((candidate) => (
+                            <option key={candidate.id} value={candidate.id}>
+                              {(candidate.workItemKey ? `${candidate.workItemKey} — ` : "") + candidate.title} ({candidate.status})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <p className="text-[10px] text-[var(--color-text-muted)]">
+                        This task waits until the chosen task is Done. Circular blocks are rejected.
+                      </p>
+                    </div>
 
                     <form
                       action={task.archivedAt ? unarchiveTask : archiveTask}
@@ -2024,8 +2058,9 @@ export default async function TaskDetailPage({
                         Danger zone
                       </div>
                       <p className="text-xs text-[var(--color-text-muted)]">
-                        Move this task to the bin. Sub-tasks ({task.subtasks.length}) go
-                        with it. Auto-purged after 7 days.
+                        Move this task to the bin. Its {task.checklist.length} checklist
+                        item{task.checklist.length === 1 ? "" : "s"} go with it.
+                        Auto-purged after 7 days.
                       </p>
                       <button
                         type="submit"
@@ -2076,62 +2111,22 @@ export default async function TaskDetailPage({
               </TabPanel>
 
               <TabPanel name="Sub-Tasks">
-                <div>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold tracking-wide text-[var(--color-text)]">
-              Sub-tasks
-            </h2>
-            <span className="text-xs text-[var(--color-text-muted)]">
-              {task.subtasks.length} total
-            </span>
-          </div>
-          {task.subtasks.length === 0 ? (
-            <p className="text-xs text-[var(--color-text-muted)]">
-              No sub-tasks yet.
-            </p>
-          ) : (
-            <SortableTaskList
-              ariaLabel="Sub-tasks"
-              reorderAction={reorderSubtasks}
-              showAssignee
-              showStatusBadge
-              items={task.subtasks.map((st) => ({
-                id: st.id,
-                workItemKey: st.workItemKey,
-                title: st.title,
-                status: st.status,
-                alertReporter: st.alertReporter,
-                href: `/projects/${slug}/tasks/${st.id}`,
-                assigneeName: st.assignee?.username ?? null,
-              }))}
-            />
-          )}
-
-          {task.parentTaskId === null ? (
-            <form action={createSubtask} className="mt-4 flex gap-2">
-              <input type="hidden" name="parentTaskId" value={task.id} />
-              <input type="hidden" name="projectSlug" value={slug} />
-              <input
-                name="title"
-                required
-                maxLength={200}
-                placeholder="New sub-task title"
-                className="flex-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
-              />
-              <button
-                type="submit"
-                className="rounded-lg bg-[var(--color-accent)] px-3 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
-              >
-                Add
-              </button>
-            </form>
-          ) : (
-            <p className="mt-4 text-xs text-[var(--color-text-muted)]">
-              Sub-tasks of sub-tasks are not allowed. Add sub-tasks on the
-              parent task.
-            </p>
-          )}
-                </div>
+                <TaskChecklist
+                  taskId={task.id}
+                  projectSlug={slug}
+                  items={task.checklist.map((item) => ({
+                    id: item.id,
+                    text: item.text,
+                    // task shell comes through unstable_cache, which JSON-revives
+                    // completedAt as an ISO string; dateIso handles Date|string.
+                    completedAt: dateIso(item.completedAt),
+                    minutesSpent: item.minutesSpent ?? null,
+                  }))}
+                  addAction={addSubTaskItem}
+                  toggleAction={toggleSubTaskItem}
+                  removeAction={removeSubTaskItem}
+                  reorderAction={reorderChecklist}
+                />
               </TabPanel>
 
               <TabPanel name="Attachments">

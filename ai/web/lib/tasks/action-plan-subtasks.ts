@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { allocateWorkItemKey } from "@/lib/work-items/keys";
+import { createSubTaskItem } from "@/lib/tasks/subtasks";
 
 const MAX_AUTO_SUBTASKS = 8;
 const STEP_LINE_RE = /^\s*(?:[-*]\s+|\d+[.)]\s+|\[[ xX]\]\s+)(.+)$/;
@@ -56,6 +56,11 @@ export function extractActionPlanSteps(body: string) {
   return steps;
 }
 
+// On Action Plan approval, seed the task's progress checklist (SubTask rows)
+// from the assignee's posted plan — so the board immediately shows how many
+// steps remain. These are lightweight checklist items (text only), NOT child
+// tasks. No-op if the task already has a checklist, has no assignee, or its
+// plan has no parseable steps.
 export async function createActionPlanSubtasksForTask(args: {
   taskId: string;
   approvedAt: Date;
@@ -65,20 +70,12 @@ export async function createActionPlanSubtasksForTask(args: {
     where: { id: args.taskId },
     select: {
       id: true,
-      title: true,
-      projectId: true,
-      epicId: true,
-      parentTaskId: true,
       assigneeId: true,
-      actingManagerId: true,
-      reporterId: true,
       approvedOn: true,
-      branchName: true,
-      commitPrefix: true,
-      subtasks: { where: { deletedAt: null }, select: { id: true }, take: 1 },
+      checklist: { select: { id: true }, take: 1 },
     },
   });
-  if (!task || task.parentTaskId !== null || task.subtasks.length > 0 || !task.assigneeId || !task.approvedOn) {
+  if (!task || task.checklist.length > 0 || !task.assigneeId || !task.approvedOn) {
     return { created: 0, reason: "not_applicable" as const };
   }
 
@@ -99,54 +96,13 @@ export async function createActionPlanSubtasksForTask(args: {
   const steps = extractActionPlanSteps(latestPlan.body);
   if (steps.length === 0) return { created: 0, reason: "no_steps" as const };
 
-  const maxRank = await db.task.aggregate({
-    where: { projectId: task.projectId, status: "Backlog", archivedAt: null, deletedAt: null },
-    _max: { rank: true },
-  });
-  const baseRank = maxRank._max.rank ?? 0;
-
-  await db.$transaction(async (tx) => {
-    for (let index = 0; index < steps.length; index += 1) {
-      const title = `${index + 1}. ${steps[index]}`;
-      const child = await tx.task.create({
-        data: {
-          projectId: task.projectId,
-          workItemKey: await allocateWorkItemKey(task.projectId, tx),
-          epicId: task.epicId,
-          parentTaskId: task.id,
-          title,
-          status: "Backlog",
-          rank: baseRank + index + 1,
-          statusChangedAt: args.approvedAt,
-          assigneeId: null,
-          actingManagerId: null,
-          reporterId: task.reporterId,
-          approvedOn: args.approvedAt,
-          approvedById: args.approvedById,
-          branchName: task.branchName,
-          commitPrefix: task.commitPrefix,
-        },
-        select: { id: true },
-      });
-      await tx.activityLog.create({
-        data: {
-          projectId: task.projectId,
-          taskId: child.id,
-          userId: task.assigneeId,
-          kind: "task.create",
-          payload: JSON.stringify({
-            title,
-            parentTaskId: task.id,
-            parentTitle: task.title,
-            source: "approved_action_plan",
-            createdFromAssigneePlan: true,
-            workflowSuppressed: true,
-            planMessageId: latestPlan.id,
-          }),
-        },
-      });
-    }
-  });
+  for (const step of steps) {
+    await createSubTaskItem({
+      taskId: task.id,
+      text: step,
+      actorUserId: task.assigneeId,
+    });
+  }
 
   return { created: steps.length, reason: "created" as const };
 }

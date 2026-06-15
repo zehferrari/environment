@@ -71,7 +71,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/(app)/projects` | projects list + inline create. |
 | `app/(app)/projects/bin` | project-level soft-delete bin — restores whole projects within the 30-day TTL. |
 | `app/(app)/projects/[slug]` | kanban board (four workflow columns + a separate Backlog table, drag-and-drop, Backlog show/hide toggle); per-project tab bar (`project-tabs.tsx` in `layout.tsx`: Board · Epics · Library · Settings · Bin). Done cards older than `doneTtlDays` drop off the board. Task cards show the current workflow actor + `updated` time; Done cards show the reporter. |
-| `app/(app)/projects/[slug]/tasks/[taskId]` | task editor — two-column. Main: inline title, description editor, sub-tasks, attachments, comments. Sidebar: status, assignee, reviewer, epic picker, parent, dates. |
+| `app/(app)/projects/[slug]/tasks/[taskId]` | task editor — two-column. Main: inline title, description editor, sub-tasks (progress checklist), attachments, comments. Sidebar: status, assignee, reviewer, epic picker, dates. |
 | `app/(app)/projects/[slug]/epics` | epic list with status filter (open/done/archived) + inline create (title + description + Acting Manager picker, then redirects into detail for attachments). |
 | `app/(app)/projects/[slug]/epics/[epicId]` | epic detail — assignee + acting manager (Epic keeps that label), status, attachments, tasks grouped by their own status, chat sidebar, Delete. |
 | `app/(app)/projects/[slug]/library` | project library — every attachment under the project (task- + epic-anchored) in one list; excludes files whose parent is in the bin. |
@@ -169,7 +169,9 @@ user.
 | `components/chat-input.tsx` | direct-chat composer — message + Samba file uploads + project picker; human project-scoped messages automatically carry a one-shot proposal grant. |
 | `app/(app)/agents/[agent]/chat/proposal-review.tsx` | review card for pending agent work-item proposals — per-op validation badges + Apply/Reject. |
 | `components/streaming-agent-reply.tsx` | client SSE subscriber that renders the live reply bubble while OpenClaw is still generating. |
-| `components/sortable-task-list.tsx` | `@dnd-kit` drag-reorder list used for sub-tasks / grouped task views, backed by `lib/tasks/reorder.ts`. |
+| `components/sortable-task-list.tsx` | `@dnd-kit` drag-reorder list used for grouped task views, backed by `lib/tasks/reorder.ts`. |
+| `components/task-checklist.tsx` | task **sub-tasks** progress checklist (ENV-60): add/tick/remove/drag-reorder lightweight items; optimistic, server-authoritative. |
+| `lib/tasks/subtasks.ts` | `SubTask` checklist core (create/complete/delete/reorder + `stripStepNumber`); shared by the task editor server actions and the agent workflow endpoint (`add_subtask` / `complete_subtask`). |
 | `components/activity-agenda.tsx` | compact recent-activity feed rendered on the project settings page. |
 | `components/worktree-switcher.tsx` | admin live-preview switcher (shown in a git/worktree-exposed project's Settings via `lib/projects/worktree.ts::isWorktreeExposedRepo`): lists worktrees, polls switch state, requests a build+flip. |
 | `lib/deploy/worktrees.ts` · `lib/deploy/actions.ts` | read the runner's switch `state.json` / write a switch `request.json`. The web app stays unprivileged; the build + restart happen in `pm-switch-runner` (as the monitor). See [deploy/MULTI_AGENT_WORKTREES.md](./deploy/MULTI_AGENT_WORKTREES.md). |
@@ -346,14 +348,28 @@ alike, since `Attachment.projectId` is a direct FK), skipping files
 whose parent is in the bin. Projects are created inline from the
 projects list (`createProject`).
 
-**Tasks (HOMELAB-44 + HOMELAB-47).** Self-referential `Task` model (no
-parallel `SubTask`) — a sub-task is a `Task` with `parentTaskId` set.
-The editor is two-column: main pane has inline title, markdown
-description, sub-tasks, attachments, and comments (`@mention` resolved
+**Tasks (HOMELAB-44 + HOMELAB-47; sub-tasks reworked in ENV-60/61).**
+Sub-tasks are a **lightweight progress checklist** (`SubTask` model: text +
+`completedAt` + optional `minutesSpent`), not child Tasks — they have no
+assignee, reviewer, status, key, or board presence. A task's board card shows a
+**segmented progress bar** (one node per sub-task, filling on an orange→green
+gradient as completion rises; To Do reads as an empty bar), and the per-step
+minutes sum into a cost roll-up shown on the task. Agent guidance pushes
+decomposing a Plan of Action into **independent, parallelizable** steps so the
+assignee can dispatch parallel sub-agents across multiple fronts and tick each
+off (with minutes) as it lands; when a task bounces back from Review, the
+assignee adds a sub-task per feedback item so the bar stays honest. (The legacy
+self-referential `Task.parentTaskId` hierarchy is removed/dormant.) A task may
+also declare one **`blockedBy`** dependency (ENV-62) — another task that must
+reach Done first; writes are cycle-guarded (`lib/tasks/blocking.ts`), the board
+card shows a bottom-right lock + the blocker's key while it's still open, and the
+agent workflow `start` action refuses a task whose blocker isn't Done. The editor is two-column: main pane has inline title,
+markdown description, the sub-tasks checklist (add/tick/remove/drag-reorder),
+attachments, and comments (`@mention` resolved
 through `lib/markdown.tsx`); sidebar has status, assignee, **Reviewer**
 (UI label only — the schema column stays `actingManagerId` and the
 audit kind stays `task.acting_manager` so the activity feed is
-unchanged), epic picker (with "No epic"), parent task link, and a
+unchanged), epic picker (with "No epic"), and a
 created/updated dates panel. Tasks may live without an Epic; an Epic
 and its tasks can be assigned to different principals and the task
 keeps its own kanban status independent of the Epic's
@@ -383,7 +399,9 @@ agents that aren't seeded as PM users are intentionally excluded.
 
 **Soft delete + bin (HOMELAB-48).** `deleteTask` / `deleteEpic` stamp
 `deletedAt` + `deletedById` and cascade to non-deleted children (Epic
-→ tasks → sub-tasks; Task → sub-tasks). Every active-view query
+→ tasks). A task's `SubTask` checklist rows are plain children that ride
+along with the task (and hard-delete via FK cascade when the task is
+purged). Every active-view query
 filters `deletedAt: null`. `/projects/<slug>/bin` lists everything in
 the bin with per-row Restore plus an optional "Restore + N children"
 button that restores rows that share the parent's exact `deletedAt`
@@ -689,8 +707,14 @@ the consumer service when the PM checkout is present.
 - `Agent` — system-managed mirror of `/etc/openclaw/agents.json`. Carries
   slug, role, `codeOwner`, `gatewayPort`, last-seen `rawJson`, and a
   `deactivatedAt` tombstone.
-- `Project` / `ProjectMember` / `Epic` / `Task` / `Comment` — board
-  data. `Task` is self-referential for sub-tasks; status uses verbatim
+- `Project` / `ProjectMember` / `Epic` / `Task` / `Comment` / `SubTask` —
+  board data. `SubTask` (ENV-60/61) is a task's lightweight progress checklist
+  (`taskId` + `text` + `completedAt` + `minutesSpent` + `rank`); it replaced the
+  old self-referential `Task.parentTaskId` sub-task hierarchy (column kept
+  dormant). `minutesSpent` is optional self-reported effort, summed per task for
+  a rough cost view. `Task.blockedById` (ENV-62) is an optional self-FK to a
+  blocking task (cycle-guarded on write; `onDelete: SetNull`).
+  Status uses verbatim
   labels (no Jira aliases); `Project.readmePath` points at
   `/srv/Data/projects/<id>/README.md` on the host filesystem. `Project`
   also carries settings columns (`repositoryPath`,

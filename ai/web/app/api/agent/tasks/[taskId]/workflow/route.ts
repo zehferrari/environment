@@ -15,6 +15,7 @@ import { enqueueBranchVerifyJob } from "@/lib/deploy/branch-verify";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
+import { createSubTaskItem, setSubTaskCompletion } from "@/lib/tasks/subtasks";
 import { resolveGitIdentity } from "@/lib/settings/system";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 import { publishBoardTouch } from "@/lib/pm/board-events";
@@ -32,6 +33,8 @@ const ACTIONS = [
   "triage_to_todo",
   "approve_plan",
   "assign_after_plan_approval",
+  "add_subtask",
+  "complete_subtask",
 ] as const;
 
 type WorkflowAction = (typeof ACTIONS)[number];
@@ -127,6 +130,10 @@ export async function POST(
     action?: unknown;
     comment?: unknown;
     repoTouched?: unknown;
+    subtaskText?: unknown;
+    subtaskId?: unknown;
+    completed?: unknown;
+    minutesSpent?: unknown;
   };
   try {
     payload = (await req.json()) as typeof payload;
@@ -197,6 +204,8 @@ export async function POST(
         commitPrefix: true,
         workItemKey: true,
         deletedAt: true,
+        blockedById: true,
+        blockedBy: { select: { workItemKey: true, status: true } },
         project: {
           select: {
             slug: true,
@@ -234,6 +243,13 @@ export async function POST(
     if (!isAssignee) return NextResponse.json({ error: "Only the assignee can start this task" }, { status: 403 });
     if (task.status !== "To Do" && task.status !== "Review") {
       return NextResponse.json({ error: "Task must be in To Do or Review before start/resume" }, { status: 409 });
+    }
+    // Hard dependency (ENV-62): can't start while a blocker is still open.
+    if (task.blockedById && task.blockedBy && task.blockedBy.status !== "Done") {
+      return NextResponse.json({
+        error: `Task is blocked by ${task.blockedBy.workItemKey ?? "another task"}, which must reach Done first.`,
+        blockedBy: task.blockedBy.workItemKey ?? null,
+      }, { status: 409 });
     }
     if (task.status === "Review") {
       const reason = await workflowNotificationReason(task.id, messageId);
@@ -648,7 +664,8 @@ export async function POST(
         reason: "review_feedback",
         body: [
           `Review feedback for "${task.title}" moved the task back to To Do.`,
-          "Read the reviewer comment, keep the approved Action Plan unless a material plan change is required, then start/resume work through the workflow endpoint.",
+          "Add a sub-task (action=add_subtask) for each concrete item in the reviewer's feedback BEFORE resuming, so the progress checklist reflects the remaining work and the board bar stays honest (your earlier items are already ticked). Tick each new item off (with minutesSpent) as you address it.",
+          "Keep the approved Action Plan unless a material plan change is required, then start/resume work through the workflow endpoint.",
           "Do not post an acknowledgement-only response.",
         ].join("\n"),
       });
@@ -730,6 +747,50 @@ export async function POST(
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     return NextResponse.json({ ok: true, taskId: task.id, status: "To Do" });
+  }
+
+  // Progress checklist (ENV-60). The assignee maintains a lightweight sub-task
+  // checklist (text + done) so the board card shows how close the task is to
+  // finished. These are NOT child tasks.
+  if (action === "add_subtask") {
+    if (!isAssignee) return NextResponse.json({ error: "Only the assignee can add sub-tasks" }, { status: 403 });
+    const text = typeof payload.subtaskText === "string" ? payload.subtaskText.trim() : "";
+    if (!text) return NextResponse.json({ error: "subtaskText is required" }, { status: 400 });
+    let created: { id: string } | null = null;
+    try {
+      created = await createSubTaskItem({ taskId: task.id, text, actorUserId: agent.user.id });
+    } catch (err) {
+      return NextResponse.json({ error: err instanceof Error ? err.message : "Could not add sub-task" }, { status: 409 });
+    }
+    if (!created) return NextResponse.json({ error: "subtaskText is required" }, { status: 400 });
+    revalidateTaskShell(task.id);
+    revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    revalidatePath(`/projects/${task.project.slug}`);
+    publishBoardTouch(task.projectId);
+    return NextResponse.json({ ok: true, taskId: task.id, subtaskId: created.id });
+  }
+
+  if (action === "complete_subtask") {
+    if (!isAssignee) return NextResponse.json({ error: "Only the assignee can update sub-tasks" }, { status: 403 });
+    const subtaskId = typeof payload.subtaskId === "string" ? payload.subtaskId : "";
+    if (!subtaskId) return NextResponse.json({ error: "subtaskId is required" }, { status: 400 });
+    // Default to marking complete; pass completed:false to reopen.
+    const completed = payload.completed === undefined ? true : payload.completed === true;
+    // Optional self-reported effort for this step.
+    const minutesSpent = typeof payload.minutesSpent === "number" ? payload.minutesSpent : undefined;
+    const result = await setSubTaskCompletion({
+      subTaskId: subtaskId,
+      completed,
+      minutesSpent,
+      actorUserId: agent.user.id,
+      expectTaskId: task.id,
+    });
+    if (!result) return NextResponse.json({ error: "Sub-task not found on this task" }, { status: 404 });
+    revalidateTaskShell(task.id);
+    revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    revalidatePath(`/projects/${task.project.slug}`);
+    publishBoardTouch(task.projectId);
+    return NextResponse.json({ ok: true, taskId: task.id, subtaskId, completed: result.completedAt !== null, minutesSpent: result.minutesSpent });
   }
 
   return NextResponse.json({ error: "Unsupported action" }, { status: 400 });

@@ -383,6 +383,8 @@ export default async function ProjectBoardPage({
               actingManager: { select: actorSelect },
             },
           },
+          checklist: { select: { completedAt: true, minutesSpent: true } },
+          blockedBy: { select: { workItemKey: true, status: true } },
         },
       },
     },
@@ -447,11 +449,22 @@ export default async function ProjectBoardPage({
           createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter),
           updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter),
           epicTitle: t.epic?.title ?? null,
-          // An agent is actively working on this task when it is In Progress
-          // and its assignee is a currently-busy agent (live snapshot).
+          // Progress checklist (ENV-60/61): how far the task is from done +
+          // rolled-up self-reported effort.
+          subtaskTotal: t.checklist.length,
+          subtaskDone: t.checklist.filter((c) => c.completedAt !== null).length,
+          subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
+          // Show the lock only while the blocker is still open (not yet Done).
+          blockedByKey:
+            t.blockedBy && t.blockedBy.status !== "Done" ? t.blockedBy.workItemKey ?? null : null,
+          // An agent is "working" on a task when it is In Progress and its
+          // assignee is a busy agent, OR in Review and its reviewer is a busy
+          // agent (live snapshot) — both pulse the shown avatar (ENV-61).
           activeWorking:
-            t.status === "In Progress" &&
-            Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug)),
+            (t.status === "In Progress" &&
+              Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||
+            (t.status === "Review" &&
+              Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug))),
         }))}
         moveTaskAction={moveTask}
         reorderTasksAction={reorderBoardTasks}

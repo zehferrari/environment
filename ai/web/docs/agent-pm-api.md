@@ -114,7 +114,7 @@ deployment/verifier flows, but they are not normal implementation owners.
 ### `GET /api/agents/context/task/<taskId>`
 
 Returns the live JSON for a task: descriptions, the assignee / reviewer /
-reporter triple, the full subtask list, every comment (oldest-first),
+reporter triple, the progress checklist (sub-tasks), every comment (oldest-first),
 every discussion message live + the chained archived rooms (oldest-first),
 the activity log (newest-first, last 500 events), and attachment metadata.
 Task attachments are the primary attachment scope; parent Epic
@@ -151,9 +151,8 @@ Shape:
     "repositoryPath": "/srv/Code/environment.worktrees/…"
   },
   "epic": null,                // or { id, title, status, description, branchName, commitPrefix, assignee, actingManager }
-  "parentTask": null,          // or { id, title, status }
-  "subtasks": [
-    { "id": "…", "title": "…", "status": "To Do", "assignee": { … } }
+  "checklist": [               // lightweight sub-tasks (progress only; not child Tasks)
+    { "id": "…", "text": "…", "done": false, "minutes": null }  // minutes = self-reported effort
   ],
   "comments": [
     { "id": "…", "createdAt": "…", "author": { "username": "coding-agent", "kind": "agent" }, "body": "…" }
@@ -227,7 +226,7 @@ task is missing or soft-deleted.
 
 ### `GET /api/agents/context/epic/<epicId>`
 
-Same shape minus `parentTask`, plus `epic.actingManager`,
+Same shape minus the task `checklist`, plus `epic.actingManager`,
 `epic.workers`, and a `tasks` array of every live task under the epic.
 Use when the agent's turn is on an epic discussion, or when you need to
 enumerate the epic's tasks without per-task detail.
