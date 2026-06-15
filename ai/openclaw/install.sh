@@ -195,7 +195,14 @@ fi
 # loaded by the user-units (openclaw-{jira,bitbucket}-receiver.service).
 # The monitor agent runs them; coding agents don't need the scripts at
 # all. Discovered from the registry (role=monitor); no hardcoding.
-log "[4b/7] webhook scripts → monitor agent home"
+#
+# Symlinked back to the canonical repo copy (like agent-self.js in 4c) so
+# the deployed tree and source can't drift — a stale on-disk copy is how
+# the receivers ended up serving an out-of-date routing list. NOTE: node
+# loads the script once at process start, so a *code* change still needs a
+# receiver restart to take effect (step 7 reconcile / manual restart);
+# the live registry reload is handled in common.js, not by these links.
+log "[4b/7] webhook scripts → monitor agent home (symlinks)"
 if [ -d "$REPO_ROOT/webhooks" ] && [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     MONITOR_LINE=$(jq -r '.agents[] | select(.role == "monitor" and .enabled == true) | "\(.user)\t\(.home // "/home/\(.user)")"' "$REGISTRY" | head -1)
     if [ -n "$MONITOR_LINE" ]; then
@@ -203,13 +210,14 @@ if [ -d "$REPO_ROOT/webhooks" ] && [ -r "$REGISTRY" ] && command -v jq >/dev/nul
         m_home=$(echo "$MONITOR_LINE" | cut -f2)
         dst="$m_home/webhooks"
         if [ "$DRY" -eq 1 ]; then
-            log "  would install webhooks/*.js → $dst/ (owner=$m_user)"
+            log "  would symlink webhooks/*.js → $dst/ (owner=$m_user)"
         else
+            # Mkdir as the agent (avoid a root-owned webhooks dir).
+            sudo -u "$m_user" mkdir -p "$dst" 2>/dev/null
             for src in "$REPO_ROOT"/webhooks/*.js; do
                 [ -e "$src" ] || continue
-                mode=755; [ "$(basename "$src")" = "common.js" ] && mode=644
-                install -o "$m_user" -g "$m_user" -m "$mode" "$src" "$dst/$(basename "$src")"
-                ok "$dst/$(basename "$src")"
+                lnk="$dst/$(basename "$src")"
+                sudo -u "$m_user" ln -snf "$src" "$lnk" && ok "$lnk → $src"
             done
         fi
     else

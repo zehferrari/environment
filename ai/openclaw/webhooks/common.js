@@ -35,7 +35,22 @@ try { fs.mkdirSync(PENDING_MENTIONS_DIR, { recursive: true }); } catch (_e) {}
 try { fs.mkdirSync(PENDING_ASSIGNEE_COMMENTS_DIR, { recursive: true }); } catch (_e) {}
 try { fs.mkdirSync(PENDING_EPIC_COMMENTS_DIR, { recursive: true }); } catch (_e) {}
 
-// ─── config + registry ──────────────────────────────────────────────────────
+// ─── config + registry (live-reloading) ──────────────────────────────────────
+//
+// The registry is the single source of truth for which agents are routed.
+// It is mutated out-of-band (openclaw-manage-user rewrites it via atomic
+// `mv`, and an operator can hand-edit it) while these receivers run as
+// long-lived systemd services. Reading it once at startup let routing —
+// and the /health user list the integrity check compares against — drift
+// stale whenever an agent's integrations changed without a receiver
+// restart.
+//
+// Instead, every registry-dependent structure is derived in buildState()
+// and rebuilt lazily whenever the registry file's mtime changes. mtime
+// polling (not fs.watch) is deliberate: the registry is replaced by
+// rename, which swaps the inode and would silence an fs.watch bound to the
+// old path. Webhook + /health traffic is low-volume, so a stat() per
+// access is negligible.
 
 function loadRegistry() {
   try {
@@ -45,27 +60,6 @@ function loadRegistry() {
     return { agents: [] };
   }
 }
-
-const registry = loadRegistry();
-const registryAgents = registry.agents || [];
-
-function loadRegistryByUser() {
-  try {
-    return Object.fromEntries(registryAgents.filter(a => a.user).map(a => [a.user, a]));
-  } catch (_e) {
-    return {};
-  }
-}
-
-const registryByUser = loadRegistryByUser();
-
-// CONTROL_ALLOWED_USERS is derived from the registry — any agent with
-// role=coding may be woken/restarted by this receiver. Previously hardcoded.
-const CONTROL_ALLOWED_USERS = new Set(
-  Object.values(registryByUser)
-    .filter(a => a.role === 'coding' && a.enabled !== false)
-    .map(a => a.user)
-);
 
 function hasIntegration(agent, integration) {
   return Boolean((agent.integrations || {})[integration]);
@@ -102,49 +96,104 @@ function routeConfigForAgent(agent) {
   };
 }
 
-const routedByIntegration = {
-  jira: registryAgents.filter(a => isRoutableAgent(a, 'jira')).map(routeConfigForAgent),
-  bitbucket: registryAgents.filter(a => isRoutableAgent(a, 'bitbucket')).map(routeConfigForAgent),
-};
+// Derive every registry-dependent structure from one registry object. Pure:
+// no I/O, no module state — so it is safe to call on each reload.
+function buildState(registry) {
+  const registryAgents = registry.agents || [];
+  const registryByUser = Object.fromEntries(
+    registryAgents.filter(a => a.user).map(a => [a.user, a])
+  );
+
+  // controlAllowedUsers is derived from the registry — any agent with
+  // role=coding may be woken/restarted by this receiver. Previously hardcoded.
+  const controlAllowedUsers = new Set(
+    Object.values(registryByUser)
+      .filter(a => a.role === 'coding' && a.enabled !== false)
+      .map(a => a.user)
+  );
+
+  const routedByIntegration = {
+    jira: registryAgents.filter(a => isRoutableAgent(a, 'jira')).map(routeConfigForAgent),
+    bitbucket: registryAgents.filter(a => isRoutableAgent(a, 'bitbucket')).map(routeConfigForAgent),
+  };
+
+  const allUserEntries = new Map();
+  for (const userCfg of [...routedByIntegration.jira, ...routedByIntegration.bitbucket]) {
+    allUserEntries.set(userCfg.username, userCfg);
+  }
+  const allUsers = Object.fromEntries(allUserEntries.entries());
+
+  // Compatibility shape for older receiver code and health output callers.
+  const config = {
+    users: allUsers,
+    jiraHost: registry.jiraHost || registry.jira_host || '',
+    bitbucketWorkspace: registry.bitbucketWorkspace || registry.bitbucket_workspace || '',
+    bitbucketRepo: registry.bitbucketRepo || registry.bitbucket_repo || '',
+  };
+
+  const jiraNameToUser = {};
+  const jiraAccountIdToUser = {};
+  for (const userCfg of routedByIntegration.jira) {
+    if (userCfg.jiraDisplayName) jiraNameToUser[userCfg.jiraDisplayName] = userCfg;
+    if (userCfg.jiraAccountId) jiraAccountIdToUser[userCfg.jiraAccountId] = userCfg;
+  }
+
+  const bitbucketIdentityToUser = {};
+  const addBitbucketIdentity = (value, userCfg) => {
+    const key = String(value || '').trim().toLowerCase();
+    if (key && !bitbucketIdentityToUser[key]) bitbucketIdentityToUser[key] = userCfg;
+  };
+  for (const userCfg of routedByIntegration.bitbucket) {
+    addBitbucketIdentity(userCfg.username, userCfg);
+    addBitbucketIdentity(userCfg.jiraDisplayName, userCfg);
+    addBitbucketIdentity(userCfg.bitbucketEmail, userCfg);
+  }
+
+  return {
+    registryByUser, controlAllowedUsers, routedByIntegration,
+    allUsers, config, jiraNameToUser, jiraAccountIdToUser, bitbucketIdentityToUser,
+  };
+}
+
+let cachedState = null;
+let cachedRegistryMtimeMs = null;
+
+function registryMtimeMs() {
+  try {
+    return fs.statSync(REGISTRY_PATH).mtimeMs;
+  } catch (_e) {
+    return null;
+  }
+}
+
+// Return the current derived state, rebuilding only when the registry file's
+// mtime has changed since the last build. On a transient stat failure we keep
+// serving the last good state rather than dropping every routed user.
+function getState() {
+  const mtime = registryMtimeMs();
+  if (cachedState && (mtime === null || mtime === cachedRegistryMtimeMs)) {
+    return cachedState;
+  }
+  const nextState = buildState(loadRegistry());
+  const isReload = cachedState !== null;
+  cachedState = nextState;
+  cachedRegistryMtimeMs = mtime;
+  if (isReload) {
+    sharedLog(
+      `webhook common: registry reloaded — ` +
+      `jira=[${nextState.routedByIntegration.jira.map(u => u.username).join(',')}] ` +
+      `bitbucket=[${nextState.routedByIntegration.bitbucket.map(u => u.username).join(',')}]`
+    );
+  }
+  return cachedState;
+}
 
 function routedUsersFor(integration) {
-  return routedByIntegration[integration] || [];
+  return getState().routedByIntegration[integration] || [];
 }
 
 function routedUsernamesFor(integration) {
   return routedUsersFor(integration).map(u => u.username);
-}
-
-const allUserEntries = new Map();
-for (const userCfg of [...routedUsersFor('jira'), ...routedUsersFor('bitbucket')]) {
-  allUserEntries.set(userCfg.username, userCfg);
-}
-const allUsers = Object.fromEntries(allUserEntries.entries());
-
-// Compatibility shape for older receiver code and health output callers.
-const config = {
-  users: allUsers,
-  jiraHost: registry.jiraHost || registry.jira_host || '',
-  bitbucketWorkspace: registry.bitbucketWorkspace || registry.bitbucket_workspace || '',
-  bitbucketRepo: registry.bitbucketRepo || registry.bitbucket_repo || '',
-};
-
-const jiraNameToUser = {};
-const jiraAccountIdToUser = {};
-for (const userCfg of routedUsersFor('jira')) {
-  if (userCfg.jiraDisplayName) jiraNameToUser[userCfg.jiraDisplayName] = userCfg;
-  if (userCfg.jiraAccountId) jiraAccountIdToUser[userCfg.jiraAccountId] = userCfg;
-}
-
-const bitbucketIdentityToUser = {};
-function addBitbucketIdentity(value, userCfg) {
-  const key = String(value || '').trim().toLowerCase();
-  if (key && !bitbucketIdentityToUser[key]) bitbucketIdentityToUser[key] = userCfg;
-}
-for (const userCfg of routedUsersFor('bitbucket')) {
-  addBitbucketIdentity(userCfg.username, userCfg);
-  addBitbucketIdentity(userCfg.jiraDisplayName, userCfg);
-  addBitbucketIdentity(userCfg.bitbucketEmail, userCfg);
 }
 
 // ─── logging ────────────────────────────────────────────────────────────────
@@ -220,6 +269,7 @@ function resolveJiraMentionedAgents(event) {
   if (!body) return [];
   const authorAccountId = event.comment?.author?.accountId;
   const mentions = (typeof body === 'string') ? extractWikiMentions(body) : extractAdfMentions(body);
+  const { jiraAccountIdToUser } = getState();
   const seen = new Set();
   const out = [];
   for (const m of mentions) {
@@ -296,7 +346,7 @@ function recordPendingEpicComment(event) {
     const commentId = event.comment?.id;
     const authorAccountId = event.comment?.author?.accountId || event.user?.accountId;
     if (!issueKey || !commentId || !authorAccountId) return;
-    const authorCfg = jiraAccountIdToUser[authorAccountId];
+    const authorCfg = getState().jiraAccountIdToUser[authorAccountId];
     if (!authorCfg) return;
     const fname = `${issueKey}-${commentId}-${authorCfg.username}.json`;
     const fpath = path.join(PENDING_EPIC_COMMENTS_DIR, fname);
@@ -321,6 +371,7 @@ function recordPendingEpicComment(event) {
 // ─── user resolution ────────────────────────────────────────────────────────
 
 function resolveJiraUsers(event) {
+  const { jiraNameToUser } = getState();
   const matches = [];
   const seen = new Set();
   const addByName = (name) => {
@@ -338,6 +389,7 @@ function resolveJiraUsers(event) {
 }
 
 function resolveBitbucketUsers(event) {
+  const { bitbucketIdentityToUser } = getState();
   const matches = [];
   const seen = new Set();
   const addByName = (name) => {
@@ -517,7 +569,7 @@ function runOpenClawControl(args) {
 }
 
 function wakeAgent(userCfg, reason = 'webhook-event', extraContext = '') {
-  if (!CONTROL_ALLOWED_USERS.has(userCfg.username)) {
+  if (!getState().controlAllowedUsers.has(userCfg.username)) {
     userLog(userCfg, `Skipping agent wake for unsupported user: ${userCfg.username}`);
     return false;
   }
@@ -588,7 +640,7 @@ const KNOWN_RECEIVERS = {
 function isReceiverEnabled(name) {
   const spec = KNOWN_RECEIVERS[name];
   if (!spec) return false;
-  const me = registryByUser[require('os').userInfo().username] || {};
+  const me = getState().registryByUser[require('os').userInfo().username] || {};
   const integrations = me.integrations || {};
   return Boolean(
     integrations.monitor &&
@@ -601,7 +653,12 @@ function isReceiverEnabled(name) {
 
 module.exports = {
   http, sharedLog, userLog, verifySignature,
-  config, allUsers, jiraNameToUser, jiraAccountIdToUser,
+  // Live views of the registry-derived state — getters so callers always
+  // observe the current registry, even after an out-of-band reload.
+  get config() { return getState().config; },
+  get allUsers() { return getState().allUsers; },
+  get jiraNameToUser() { return getState().jiraNameToUser; },
+  get jiraAccountIdToUser() { return getState().jiraAccountIdToUser; },
   routedUsersFor, routedUsernamesFor,
   resolveJiraUsers, resolveBitbucketUsers, resolveJiraMentionedAgents,
   recordPendingMention, recordPendingAssigneeComment, recordPendingEpicComment, queueJiraTask, queueBitbucketTask,
