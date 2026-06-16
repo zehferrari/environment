@@ -134,6 +134,41 @@ Implementation: [`lib/agents/context/api/auth.ts:isLoopbackRequest`](../lib/agen
 
 ## Authentication
 
+Implementation: [`lib/agents/context/api/auth.ts:isLoopbackRequest`](../lib/agents/context/api/auth.ts).
+
+## Grant URL contract
+
+All PM surfaces (task chat, epic chat, direct chat, workflow notifications,
+and speculative prebuilds) mint grant URLs through a single shared helper:
+
+```ts
+createContextGrantUrlMap({ baseUrl, agentSlug, turnId, projectId, taskId?, epicId?, runId? })
+```
+
+This returns a `ContextGrantUrlMap`:
+
+```ts
+type ContextGrantUrlMap = {
+  project: string;   // always present
+  task?: string | null;   // present when taskId provided
+  epic?: string | null;   // present when epicId provided
+};
+```
+
+Each URL includes a short-lived, scope-bound `?grant=` token. The map is
+consumed by `LiveContextAccess` (task surface) and `LiveContextAccessEpic`
+(epic surface), both of which accept `grantUrls: ContextGrantUrlMap`. The
+direct-chat surface mints dynamic per-link task/epic grants inline (because
+the set of linked items varies per message body) but uses the same
+`createContextGrant` / `createContextGrantUrl` primitives and the same
+auth + scope-filtering contract.
+
+**Invariant:** every PM surface emits grant URLs with identical scope
+binding, expiry, and use-count semantics. No surface may weaken server-side
+scope filtering or mint a grant without `agentSlug` + `turnId` binding.
+
+### Grant auth model
+
 PM-channel turns should use prompt-safe context grant URLs. A grant is an
 opaque `?grant=...` query token minted by PM for one addressed agent and
 one scope (`task`, `epic`, or `project`). PM stores only the token hash,
@@ -499,6 +534,7 @@ Two operational notes surfaced during this pass:
 
 | Concern                       | File                                                     |
 |-------------------------------|----------------------------------------------------------|
+| Grant URL contract            | [`lib/agents/context/grants.ts:createContextGrantUrlMap`](../lib/agents/context/grants.ts) |
 | Auth + loopback gate          | [`lib/agents/context/api/auth.ts`](../lib/agents/context/api/auth.ts)        |
 | JSON serializers              | [`lib/agents/context/api/serialize.ts`](../lib/agents/context/api/serialize.ts) |
 | Route — task                  | [`app/api/agents/context/task/[id]/route.ts`](../app/api/agents/context/task/[id]/route.ts) |

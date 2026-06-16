@@ -73,6 +73,17 @@ OpenClaw owns inbound recording, model dispatch, and final reply delivery
 from there; those are channel behavior, not instructions shown to the
 model.
 
+All PM surfaces mint grant URLs through the shared `createContextGrantUrlMap`
+helper (see `lib/agents/context/grants.ts`), ensuring consistent scope
+binding, expiry, and format across task chat, epic chat, direct chat,
+workflow notifications, and speculative prebuilds. The `LiveContextAccess`
+(task surface) and `LiveContextAccessEpic` (epic surface) interfaces both
+consume the same `ContextGrantUrlMap` type so every prompt variant uses the
+unified contract. Direct chat mints dynamic per-link grants inline (the
+set of referenced items varies per message body) but uses the same
+`createContextGrant` / `createContextGrantUrl` primitives and the same
+auth + scope-filtering contract.
+
 Task-comment workflow turns still use per-message keys because they are
 discrete workflow notifications. PM is the source of truth for task,
 Epic, comments, activity, and attachment extracts; OpenClaw is the owner

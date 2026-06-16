@@ -39,6 +39,7 @@
     "test:chat-composer-keyboard": "tsx scripts/chat-composer-keyboard-test.ts",
     "test:mobile-chat-interface": "tsx scripts/mobile-chat-interface-test.ts",
     "test:breakpoint-alignment": "tsx scripts/breakpoint-alignment-test.ts",
+    "test:context-grant-url-map": "tsx scripts/context-grant-url-map-test.ts",
     "test:direct-chat-cursor": "tsx scripts/direct-chat-cursor-test.ts",
     "test:speculative-context": "tsx scripts/speculative-context-test.ts",
     "test:cross-tab-stream-coordinator": "tsx scripts/cross-tab-stream-coordinator-test.ts",

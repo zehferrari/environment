@@ -25,7 +25,7 @@ import {
   buildProjectEnvContext,
   buildWorkItemPlanningPrompt,
 } from "@/lib/agents/context/project";
-import { createContextGrantUrl } from "@/lib/agents/context/grants";
+import { createContextGrantUrl, createContextGrantUrlMap } from "@/lib/agents/context/grants";
 import { createWorkItemGrantToken } from "@/lib/agents/workflow/token/work-item";
 import { publicOriginFromHeaders } from "@/lib/http/public-origin";
 
@@ -533,14 +533,6 @@ async function buildDirectLiveContextAccess(args: {
   body: string;
 }) {
   const baseUrl = agentCallbackBaseUrl();
-  const projectUrl = await createContextGrantUrl({
-    baseUrl,
-    agentSlug: args.agentSlug,
-    scopeType: "project",
-    scopeId: args.projectId,
-    turnId: args.messageId,
-  });
-
   const refs = extractPmWorkItemRefs(args.body);
   const taskIds = unique(
     refs.filter((ref) => ref.kind === "task").map((ref) => ref.id),
@@ -579,6 +571,16 @@ async function buildDirectLiveContextAccess(args: {
       })
     : [];
 
+  // Project grant always issued for direct chat.
+  const projectUrl = await createContextGrantUrl({
+    baseUrl,
+    agentSlug: args.agentSlug,
+    scopeType: "project",
+    scopeId: args.projectId,
+    turnId: args.messageId,
+  });
+
+  // Task and epic grants issued only for same-project items explicitly linked in this turn.
   const [taskGrantRows, epicGrantRows] = await Promise.all([
     Promise.all(tasks.map(async (task) => ({
       id: task.id,
