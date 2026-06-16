@@ -277,29 +277,29 @@ export default function DescriptionField({
   };
 
   return (
-    <div className="relative rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-4 py-3">
+    <div className="relative rounded-lg border border-line bg-panel-soft px-4 py-3">
       {aiRunning ? (
-        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center rounded-lg bg-[var(--color-panel)]/95 p-6 space-y-4 overflow-y-auto">
+        <div className="absolute inset-0 z-40 flex flex-col items-center justify-center rounded-lg bg-panel/95 p-6 space-y-4 overflow-y-auto">
           <div className="relative flex items-center justify-center shrink-0">
-            <div className="h-10 w-10 rounded-full border-4 border-[var(--color-accent)]/20 border-t-[var(--color-accent)] animate-spin" />
-            <span className="absolute text-[10px] font-bold text-[var(--color-accent)] uppercase">z</span>
+            <div className="h-10 w-10 rounded-full border-4 border-accent/20 border-t-text-accent animate-spin" />
+            <span className="absolute text-[10px] font-bold text-accent uppercase">z</span>
           </div>
           <div className="text-center space-y-1 shrink-0">
-            <p className="text-xs font-semibold text-[var(--color-text)]">Agent is updating description...</p>
-            <p className="text-[10px] text-[var(--color-text-muted)]">Please wait while the description is being improved.</p>
+            <p className="text-xs font-semibold text-text">Agent is updating description...</p>
+            <p className="text-[10px] text-text-muted">Please wait while the description is being improved.</p>
           </div>
           {(streamReasoning || streamText) ? (
-            <div className="w-full max-w-lg mt-2 space-y-2 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3 text-left">
+            <div className="w-full max-w-lg mt-2 space-y-2 rounded-lg border border-line bg-panel-soft p-3 text-left">
               {streamReasoning ? (
                 <div className="space-y-1">
-                  <div className="text-[9px] font-bold uppercase tracking-wider text-[var(--color-text-muted)]">Thought Process</div>
-                  <div className="max-h-24 overflow-y-auto font-mono text-[11px] leading-relaxed text-[var(--color-text-muted)] whitespace-pre-wrap">{streamReasoning}</div>
+                  <div className="text-[9px] font-bold uppercase tracking-wider text-text-muted">Thought Process</div>
+                  <div className="max-h-24 overflow-y-auto font-mono text-[11px] leading-relaxed text-text-muted whitespace-pre-wrap">{streamReasoning}</div>
                 </div>
               ) : null}
               {streamText ? (
-                <div className="space-y-1 border-t border-[var(--color-line)] pt-2">
-                  <div className="text-[9px] font-bold uppercase tracking-wider text-[var(--color-text-muted)]">Output Response</div>
-                  <div className="max-h-32 overflow-y-auto font-mono text-[11px] leading-relaxed text-[var(--color-text)] whitespace-pre-wrap">{streamText}</div>
+                <div className="space-y-1 border-t border-line pt-2">
+                  <div className="text-[9px] font-bold uppercase tracking-wider text-text-muted">Output Response</div>
+                  <div className="max-h-32 overflow-y-auto font-mono text-[11px] leading-relaxed text-text whitespace-pre-wrap">{streamText}</div>
                 </div>
               ) : null}
             </div>
@@ -307,7 +307,7 @@ export default function DescriptionField({
         </div>
       ) : null}
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
           {editing ? "Edit" : "Preview"}
         </span>
         <div className="flex items-center gap-1">
@@ -317,7 +317,7 @@ export default function DescriptionField({
               onClick={() => setAiOpen(true)}
               aria-label="Ask AI to update description"
               title="Ask AI to update description"
-              className="rounded p-1 text-[var(--color-text-muted)] transition hover:text-[var(--color-accent)]"
+              className="rounded p-1 text-text-muted transition hover:text-accent"
             >
               <svg
                 className="h-4 w-4"
@@ -343,7 +343,7 @@ export default function DescriptionField({
               onClick={handleRollback}
               aria-label="Rollback description edits"
               title="Rollback description edits"
-              className="rounded p-1 text-[var(--color-text-muted)] transition hover:text-[var(--color-text)]"
+              className="rounded p-1 text-text-muted transition hover:text-text"
             >
               <svg
                 className="h-4 w-4"
@@ -366,7 +366,7 @@ export default function DescriptionField({
             aria-pressed={editing}
             aria-label={editing ? "Show preview" : "Edit description"}
             title={editing ? "Show preview" : "Edit description"}
-            className="rounded p-1 text-[var(--color-text-muted)] transition hover:text-[var(--color-text)]"
+            className="rounded p-1 text-text-muted transition hover:text-text"
           >
             {editing ? (
               // eye — back to preview
@@ -418,7 +418,7 @@ export default function DescriptionField({
         onChange={(event) => setValue(event.currentTarget.value)}
         rows={rows}
         placeholder="Add a description — markdown supported (headings, lists, code fences, tables)"
-        className={`w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 font-mono text-[13px] leading-relaxed outline-none focus:border-[var(--color-accent)] ${
+        className={`w-full rounded-lg border border-line bg-bg px-3 py-2 font-mono text-[13px] leading-relaxed outline-none focus:border-accent ${
           editing ? "" : "hidden"
         }`}
       />
@@ -432,17 +432,17 @@ export default function DescriptionField({
             id={aiFormId}
             action={submitAiPrompt}
             onClick={(event) => event.stopPropagation()}
-            className="relative w-full max-w-xl space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-2xl"
+            className="relative w-full max-w-xl space-y-4 rounded-2xl border border-line bg-panel p-5 shadow-2xl"
           >
             {aiSubmitting ? (
-              <div className="absolute inset-0 z-40 flex flex-col items-center justify-center rounded-2xl bg-[var(--color-panel)]/95 p-6 space-y-4">
+              <div className="absolute inset-0 z-40 flex flex-col items-center justify-center rounded-2xl bg-panel/95 p-6 space-y-4">
                 <div className="relative flex items-center justify-center">
-                  <div className="h-10 w-10 rounded-full border-4 border-[var(--color-accent)]/20 border-t-[var(--color-accent)] animate-spin" />
-                  <span className="absolute text-[10px] font-bold text-[var(--color-accent)] uppercase">z</span>
+                  <div className="h-10 w-10 rounded-full border-4 border-accent/20 border-t-text-accent animate-spin" />
+                  <span className="absolute text-[10px] font-bold text-accent uppercase">z</span>
                 </div>
                 <div className="text-center space-y-1">
-                  <p className="text-xs font-semibold text-[var(--color-text)]">Agent is thinking...</p>
-                  <p className="text-[10px] text-[var(--color-text-muted)]">Updating description, please wait.</p>
+                  <p className="text-xs font-semibold text-text">Agent is thinking...</p>
+                  <p className="text-[10px] text-text-muted">Updating description, please wait.</p>
                 </div>
               </div>
             ) : null}
@@ -453,10 +453,10 @@ export default function DescriptionField({
             <input type="hidden" name="originChannel" value="description" />
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                   Description update
                 </div>
-                <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+                <p className="mt-1 text-xs text-text-muted">
                   Sends a discussion message with a one-shot description edit grant.
                 </p>
               </div>
@@ -465,28 +465,28 @@ export default function DescriptionField({
                 disabled={aiSubmitting}
                 onClick={() => setAiOpen(false)}
                 aria-label="Close AI description prompt"
-                className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-[var(--color-text-muted)] transition hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)] disabled:opacity-50"
+                className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-text-muted transition hover:bg-panel-soft hover:text-text disabled:opacity-50"
               >
                 &times;
               </button>
             </div>
             <input type="hidden" name="body" value={aiInstruction} />
             <div className="grid grid-cols-2 gap-3 relative">
-              <label className="block space-y-1.5 text-xs font-medium text-[var(--color-text-muted)] relative">
+              <label className="block space-y-1.5 text-xs font-medium text-text-muted relative">
                 <span>Action</span>
                 <div className="relative">
                   <button
                     type="button"
                     onClick={() => setModeOpen((current) => !current)}
-                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 text-left text-xs text-[var(--color-text)] outline-none transition hover:border-[var(--color-accent)]"
+                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-line bg-bg px-3 text-left text-xs text-text outline-none transition hover:border-accent"
                   >
                     <span>{aiMode === "both" ? "Improve Description" : "Improve Only Formatting"}</span>
-                    <span className="shrink-0 text-[var(--color-text-muted)]" aria-hidden="true">
+                    <span className="shrink-0 text-text-muted" aria-hidden="true">
                       {modeOpen ? "▴" : "▾"}
                     </span>
                   </button>
                   {modeOpen ? (
-                    <div className="absolute left-0 right-0 top-full z-30 mt-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-1.5 shadow-2xl">
+                    <div className="absolute left-0 right-0 top-full z-30 mt-1 rounded-xl border border-line bg-panel p-1.5 shadow-2xl">
                       <button
                         type="button"
                         onClick={() => {
@@ -495,8 +495,8 @@ export default function DescriptionField({
                         }}
                         className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition ${
                           aiMode === "both"
-                            ? "bg-[var(--color-accent)]/[0.12] text-[var(--color-text)]"
-                            : "text-[var(--color-text-muted)] hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+                            ? "bg-accent/[0.12] text-text"
+                            : "text-text-muted hover:bg-panel-soft hover:text-text"
                         }`}
                       >
                         Improve Description
@@ -509,8 +509,8 @@ export default function DescriptionField({
                         }}
                         className={`mt-1 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition ${
                           aiMode === "format"
-                            ? "bg-[var(--color-accent)]/[0.12] text-[var(--color-text)]"
-                            : "text-[var(--color-text-muted)] hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+                            ? "bg-accent/[0.12] text-text"
+                            : "text-text-muted hover:bg-panel-soft hover:text-text"
                         }`}
                       >
                         Improve Only Formatting
@@ -519,7 +519,7 @@ export default function DescriptionField({
                   ) : null}
                 </div>
               </label>
-              <label className="block space-y-1.5 text-xs font-medium text-[var(--color-text-muted)]">
+              <label className="block space-y-1.5 text-xs font-medium text-text-muted">
                 <span>Select Agent</span>
                 <AvatarCombobox
                   formId={aiFormId}
@@ -536,14 +536,14 @@ export default function DescriptionField({
                 type="button"
                 disabled={aiSubmitting}
                 onClick={() => setAiOpen(false)}
-                className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-50"
+                className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-sm font-medium text-text-muted transition hover:border-accent hover:text-accent disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={aiSubmitting || aiInstruction.length === 0 || selectedAiTarget.length === 0}
-                className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+                className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-bg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 {aiSubmitting ? "Running..." : "Run"}
               </button>

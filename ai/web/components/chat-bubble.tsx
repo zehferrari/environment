@@ -154,7 +154,7 @@ export default function ChatBubble({
         className={`w-fit min-w-0 max-w-[min(44rem,82%)] rounded-[1.15rem] ${connectedCornerClass} border px-3.5 ${showGroupHeader ? "py-2.5" : "py-2"} ring-1 ring-black/[0.02]`}
       >
         {showGroupHeader ? (
-          <div className={`mb-2 flex min-w-0 flex-wrap items-center gap-2 text-xs text-[var(--color-text-muted)] ${fromCurrentUser ? "justify-end" : "justify-between"}`}>
+          <div className={`mb-2 flex min-w-0 flex-wrap items-center gap-2 text-xs text-text-muted ${fromCurrentUser ? "justify-end" : "justify-between"}`}>
             <span className="flex min-w-0 flex-wrap items-center gap-2">
               <strong className="truncate font-semibold" style={{ color: senderAccent }}>
                 {displayName}
@@ -168,7 +168,7 @@ export default function ChatBubble({
                 </span>
               ) : null}
               {!fromAgent && message.targetLabel ? (
-                <span className="rounded-full border border-[var(--color-line)] bg-[var(--color-bg)]/70 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                <span className="rounded-full border border-line bg-bg/70 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-text-muted">
                   to {message.targetLabel}
                 </span>
               ) : null}
@@ -181,7 +181,7 @@ export default function ChatBubble({
                   onClick={() => setShowFullSection((current) => !current)}
                   aria-label={showFullSection ? "Show summary" : "Show full message"}
                   title={showFullSection ? "Show summary" : "Show full message"}
-                  className="grid h-6 w-6 place-items-center rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                  className="grid h-6 w-6 place-items-center rounded-md border border-line bg-bg text-text-muted transition hover:border-accent hover:text-accent"
                 >
                   {showFullSection ? (
                     <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -202,17 +202,17 @@ export default function ChatBubble({
             </span>
           </div>
         ) : (
-          <div className={`mb-1 flex min-w-0 items-center gap-2 text-[10px] text-[var(--color-text-muted)]/80 ${compactMetaClass}`}>
+          <div className={`mb-1 flex min-w-0 items-center gap-2 text-[10px] text-text-muted/80 ${compactMetaClass}`}>
             <MessageTimestamp value={message.createdAt} />
             {actions}
           </div>
         )}
         <div
-          className="md md-compact break-words text-sm leading-relaxed text-[var(--color-text)] [overflow-wrap:anywhere]"
+          className="md md-compact break-words text-sm leading-relaxed text-text [overflow-wrap:anywhere]"
           dangerouslySetInnerHTML={renderChatMarkdown(displayBody)}
         />
         {deliveryStatus ? (
-          <div className={`mt-2 text-[10px] font-semibold uppercase tracking-wider ${deliveryStatus === "failed" ? "text-[var(--color-crit)]" : "text-[var(--color-text-muted)]"}`}>
+          <div className={`mt-2 text-[10px] font-semibold uppercase tracking-wider ${deliveryStatus === "failed" ? "text-crit" : "text-text-muted"}`}>
             {deliveryStatus === "failed" ? "Failed to send" : "Sending..."}
           </div>
         ) : null}

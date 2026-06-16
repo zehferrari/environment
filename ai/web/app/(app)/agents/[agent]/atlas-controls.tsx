@@ -147,19 +147,19 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
 
   return (
     <div className="space-y-4">
-      {message ? <p className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-2 text-xs text-[var(--color-text-muted)]">{message}</p> : null}
+      {message ? <p className="rounded-xl border border-line bg-panel-soft p-2 text-xs text-text-muted">{message}</p> : null}
       <ToggleSection title="Integrations" entries={localIntegrations} busy={busy} canEdit={canEdit} onToggle={(key, value) => toggle("integrations", key, value)} onCredentials={openCredentials} />
       <ToggleSection title="Capabilities" entries={localCapabilities} busy={busy} canEdit={canEdit} onToggle={(key, value) => toggle("capabilities", key, value)} />
 
-      <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-        <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">🛠 Services</h2>
-        {localServices.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No services reported for this agent.</p> : (
+      <section className="rounded-2xl border border-line bg-panel p-4 shadow-sm">
+        <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">🛠 Services</h2>
+        {localServices.length === 0 ? <p className="text-sm text-text-muted">No services reported for this agent.</p> : (
           <div className="grid gap-2 text-xs">
             {localServices.map((svc) => {
               const enabled = svc.status === "active";
               const busyToggle = busy === `service-toggle:${svc.name}`;
               return (
-                <span key={svc.name} className={`inline-flex items-center justify-between overflow-hidden rounded-lg border ${enabled ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10 text-[var(--color-ok)]" : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]"}`} title={`${svc.name}: ${svc.status ?? "unknown"}`}>
+                <span key={svc.name} className={`inline-flex items-center justify-between overflow-hidden rounded-lg border ${enabled ? "border-ok/40 bg-ok/10 text-ok" : "border-line bg-panel-soft text-text-muted"}`} title={`${svc.name}: ${svc.status ?? "unknown"}`}>
                   <button type="button" disabled={!canEdit || busyToggle} onClick={() => setPending({ kind: "toggle", service: svc, enabled: !enabled })} className="px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50">{serviceLabel(svc.name)}: {enabled ? "enabled" : "disabled"}</button>
                   <button type="button" disabled={!canEdit || busy === `service:${svc.name}`} onClick={() => setPending({ kind: "restart", serviceName: svc.name })} className="border-l border-current/20 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50" title={`Restart ${svc.name}`}>↻</button>
                 </span>
@@ -171,23 +171,23 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
 
       {credIntegration ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-xl">
+          <div className="w-full max-w-lg rounded-2xl border border-line bg-panel p-5 shadow-xl">
             <div className="mb-4 flex items-center justify-between gap-3">
               <h2 className="text-lg font-semibold">{credIntegration} credentials</h2>
-              <button type="button" onClick={() => setCredIntegration(null)} className="text-xl text-[var(--color-text-muted)] hover:text-[var(--color-text)]">×</button>
+              <button type="button" onClick={() => setCredIntegration(null)} className="text-xl text-text-muted hover:text-text">×</button>
             </div>
             <div className="space-y-3">
               {(CREDENTIAL_FIELDS[credIntegration] ?? []).map((field) => (
                 <label key={field.name} className="block text-sm">
-                  <span className="mb-1 block text-xs text-[var(--color-text-muted)]">{field.label}</span>
-                  <input type={field.type ?? "text"} value={fields[field.name] ?? ""} onChange={(event) => setFields((cur) => ({ ...cur, [field.name]: event.target.value }))} className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 outline-none focus:border-[var(--color-accent)]" />
+                  <span className="mb-1 block text-xs text-text-muted">{field.label}</span>
+                  <input type={field.type ?? "text"} value={fields[field.name] ?? ""} onChange={(event) => setFields((cur) => ({ ...cur, [field.name]: event.target.value }))} className="w-full rounded-lg border border-line bg-bg px-3 py-2 outline-none focus:border-accent" />
                 </label>
               ))}
             </div>
-            <p className="mt-3 text-xs text-[var(--color-text-muted)]">Saved through the Atlas credentials endpoint under the agent’s credential store.</p>
+            <p className="mt-3 text-xs text-text-muted">Saved through the Atlas credentials endpoint under the agent’s credential store.</p>
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setCredIntegration(null)} className="rounded-lg border border-[var(--color-line)] px-3 py-1.5 text-sm">Cancel</button>
-              <button type="button" disabled={busy === `cred:${credIntegration}`} onClick={saveCredentials} className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40">Save</button>
+              <button type="button" onClick={() => setCredIntegration(null)} className="rounded-lg border border-line px-3 py-1.5 text-sm">Cancel</button>
+              <button type="button" disabled={busy === `cred:${credIntegration}`} onClick={saveCredentials} className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40">Save</button>
             </div>
           </div>
         </div>
@@ -235,15 +235,15 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
 function ToggleSection({ title, entries, busy, canEdit, onToggle, onCredentials }: { title: string; entries: Record<string, ControlValue>; busy: string | null; canEdit: boolean; onToggle: (key: string, value: boolean) => void; onCredentials?: (key: string) => void }) {
   const pairs = Object.entries(entries);
   return (
-    <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-      <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">{title}</h2>
-      {pairs.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">None reported.</p> : (
+    <section className="rounded-2xl border border-line bg-panel p-4 shadow-sm">
+      <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">{title}</h2>
+      {pairs.length === 0 ? <p className="text-sm text-text-muted">None reported.</p> : (
         <div className="grid gap-2 text-xs">
           {pairs.map(([key, value]) => {
             const enabled = value === true;
             const toggleable = typeof value === "boolean";
             return (
-              <span key={key} className={`inline-flex items-center justify-between overflow-hidden rounded-lg border ${enabled ? "border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10 text-[var(--color-ok)]" : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]"}`}>
+              <span key={key} className={`inline-flex items-center justify-between overflow-hidden rounded-lg border ${enabled ? "border-ok/40 bg-ok/10 text-ok" : "border-line bg-panel-soft text-text-muted"}`}>
                 {toggleable ? (
                   <button type="button" disabled={!canEdit || busy === `${title.toLowerCase()}:${key}`} onClick={() => onToggle(key, !enabled)} className="px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50">{key}: {enabled ? "enabled" : "disabled"}</button>
                 ) : (

@@ -45,14 +45,14 @@ export default function EpicTasksAiPrompt({
 
   return (
     <>
-      <div className="mt-3 rounded-xl border border-dashed border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4 text-sm">
-        <div className="font-semibold text-[var(--color-text)]">Plan tasks with AI</div>
-        <p className="mt-1 text-xs leading-relaxed text-[var(--color-text-muted)]">
+      <div className="mt-3 rounded-xl border border-dashed border-line bg-panel-soft p-4 text-sm">
+        <div className="font-semibold text-text">Plan tasks with AI</div>
+        <p className="mt-1 text-xs leading-relaxed text-text-muted">
           Ask an agent to use the Epic context and propose the first task breakdown.
         </p>
         {isAiRunning ? (
-          <div className="mt-3 flex items-center gap-2 text-xs font-medium text-[var(--color-accent)]">
-            <div className="h-4 w-4 rounded-full border-2 border-[var(--color-accent)]/20 border-t-[var(--color-accent)] animate-spin" />
+          <div className="mt-3 flex items-center gap-2 text-xs font-medium text-accent">
+            <div className="h-4 w-4 rounded-full border-2 border-accent/20 border-t-accent animate-spin" />
             <span>Agent is planning tasks, please wait...</span>
           </div>
         ) : (
@@ -60,7 +60,7 @@ export default function EpicTasksAiPrompt({
             type="button"
             disabled={aiTargets.length === 0}
             onClick={() => setOpen(true)}
-            className="mt-3 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45"
+            className="mt-3 rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-text-muted transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-45"
           >
             Ask AI to generate tasks
           </button>
@@ -76,16 +76,16 @@ export default function EpicTasksAiPrompt({
             id={formId}
             action={submitPrompt}
             onClick={(event) => event.stopPropagation()}
-            className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-xl space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-2xl sm:right-6"
+            className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-xl space-y-4 rounded-2xl border border-line bg-panel p-4 shadow-2xl sm:right-6"
           >
             <input type="hidden" name="projectSlug" value={projectSlug} />
             <input type="hidden" name="epicId" value={epicId} />
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                   Generate Epic tasks
                 </div>
-                <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+                <p className="mt-1 text-xs text-text-muted">
                   The agent receives work-item proposal capability for this request.
                 </p>
               </div>
@@ -94,12 +94,12 @@ export default function EpicTasksAiPrompt({
                 disabled={isSubmitting}
                 onClick={() => setOpen(false)}
                 aria-label="Close AI task prompt"
-                className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-[var(--color-text-muted)] transition hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)] disabled:opacity-50"
+                className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-text-muted transition hover:bg-panel-soft hover:text-text disabled:opacity-50"
               >
                 &times;
               </button>
             </div>
-            <label className="block space-y-1.5 text-xs font-medium text-[var(--color-text-muted)]">
+            <label className="block space-y-1.5 text-xs font-medium text-text-muted">
               <span>Agent</span>
               <AvatarCombobox
                 formId={formId}
@@ -110,7 +110,7 @@ export default function EpicTasksAiPrompt({
                 ariaLabel="Task planning agent"
               />
             </label>
-            <label className="block space-y-1.5 text-xs font-medium text-[var(--color-text-muted)]">
+            <label className="block space-y-1.5 text-xs font-medium text-text-muted">
               <span>Instruction</span>
               <textarea
                 name="body"
@@ -119,7 +119,7 @@ export default function EpicTasksAiPrompt({
                 maxLength={8000}
                 value={prompt}
                 onChange={(event) => setPrompt(event.currentTarget.value)}
-                className="w-full resize-none rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm leading-relaxed text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+                className="w-full resize-none rounded-lg border border-line bg-bg px-3 py-2 text-sm leading-relaxed text-text outline-none focus:border-accent"
               />
             </label>
             <div className="flex justify-end gap-2">
@@ -127,14 +127,14 @@ export default function EpicTasksAiPrompt({
                 type="button"
                 disabled={isSubmitting}
                 onClick={() => setOpen(false)}
-                className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-50"
+                className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-sm font-medium text-text-muted transition hover:border-accent hover:text-accent disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={isSubmitting || prompt.trim().length === 0}
-                className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+                className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-bg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 {isSubmitting ? "Sending..." : "Ask AI"}
               </button>

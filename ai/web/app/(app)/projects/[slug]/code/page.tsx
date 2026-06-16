@@ -100,13 +100,13 @@ export default async function ProjectCodePage({
   return (
     <div className="space-y-4">
       {!canRead ? (
-        <p className="rounded-lg border border-[var(--color-crit)]/40 bg-[var(--color-crit)]/10 px-3 py-2 text-sm text-[var(--color-crit)]">
+        <p className="rounded-lg border border-crit/40 bg-crit/10 px-3 py-2 text-sm text-crit">
           This service cannot read the selected repository folder.
         </p>
       ) : null}
 
       {kind === "missing" && relPath ? (
-        <p className="rounded-lg border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 px-3 py-2 text-sm text-[var(--color-warn)]">
+        <p className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
           The selected path no longer exists in this source.
         </p>
       ) : null}

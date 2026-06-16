@@ -60,7 +60,7 @@ export default async function ProjectActivityPage({
 
   return (
     <div className="mx-auto max-w-2xl">
-      <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
+      <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
         Recent activity
       </h2>
       <ActivityAgenda feed={feed} />

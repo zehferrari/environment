@@ -65,7 +65,7 @@ export function MessageAvatar({
 }) {
   const busyRing = busy && actor.kind === "agent" ? (
     <span
-      className="absolute -inset-1 animate-ping rounded-full bg-[var(--color-accent)] opacity-30"
+      className="absolute -inset-1 animate-ping rounded-full bg-accent opacity-30"
       aria-hidden="true"
     />
   ) : null;
@@ -73,7 +73,7 @@ export function MessageAvatar({
   if (actor.kind === "system") {
     return (
       <div
-        className={`${size === "sm" ? "h-7 w-7 text-[11px]" : "h-9 w-9 text-xs"} grid shrink-0 place-items-center overflow-hidden rounded-lg bg-[var(--color-accent)] font-bold text-white shadow-sm`}
+        className={`${size === "sm" ? "h-7 w-7 text-[11px]" : "h-9 w-9 text-xs"} grid shrink-0 place-items-center overflow-hidden rounded-lg bg-accent font-bold text-white shadow-sm`}
         title={actorDisplayName(actor)}
         aria-label={`${actorDisplayName(actor)} avatar`}
       >
@@ -90,7 +90,7 @@ export function MessageAvatar({
     <span className="relative inline-grid shrink-0">
       {busyRing}
       <span
-        className={`${sizeClass} relative grid shrink-0 place-items-center overflow-hidden rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] font-semibold text-[var(--color-text-muted)] shadow-sm`}
+        className={`${sizeClass} relative grid shrink-0 place-items-center overflow-hidden rounded-full border border-line bg-panel font-semibold text-text-muted shadow-sm`}
         title={label}
         aria-label={`${label} avatar`}
       >
@@ -150,12 +150,12 @@ export function MessageTimestamp({ value }: { value: Date | string }) {
     <time
       dateTime={iso}
       title={Number.isFinite(date.getTime()) ? absoluteTime(date) : undefined}
-      className="inline-flex items-center gap-1 rounded-full border border-[var(--color-line)] bg-[var(--color-bg)]/80 px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal text-[var(--color-text-muted)] tabular-nums"
+      className="inline-flex items-center gap-1 rounded-full border border-line bg-bg/80 px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal text-text-muted tabular-nums"
     >
       <span>{Number.isFinite(date.getTime()) ? relativeTime(date) : "unknown"}</span>
       {Number.isFinite(date.getTime()) ? (
         <>
-          <span className="hidden text-[var(--color-line)] sm:inline" aria-hidden="true">
+          <span className="hidden text-line sm:inline" aria-hidden="true">
             /
           </span>
           <span className="hidden sm:inline">{shortClock(date)}</span>

@@ -29,17 +29,17 @@ export default function AttachmentUploadFab({
             encType="multipart/form-data"
             onSubmit={() => setOpen(false)}
             onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-md space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-2xl"
+            className="w-full max-w-md space-y-4 rounded-2xl border border-line bg-panel p-5 shadow-2xl"
           >
             <input type="hidden" name="projectSlug" value={projectSlug} />
             {taskId ? <input type="hidden" name="taskId" value={taskId} /> : null}
             {epicId ? <input type="hidden" name="epicId" value={epicId} /> : null}
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                   Add attachments
                 </div>
-                <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+                <p className="mt-1 text-xs text-text-muted">
                   Max {maxLabel} per file. You can select multiple files.
                 </p>
               </div>
@@ -47,7 +47,7 @@ export default function AttachmentUploadFab({
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close"
-                className="text-lg leading-none text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                className="text-lg leading-none text-text-muted hover:text-text"
               >
                 ×
               </button>
@@ -57,19 +57,19 @@ export default function AttachmentUploadFab({
               name="files"
               multiple
               required
-              className="w-full rounded-lg border border-dashed border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-6 text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--color-accent)] file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-[var(--color-bg)] hover:file:opacity-90"
+              className="w-full rounded-lg border border-dashed border-line bg-bg px-3 py-6 text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-accent file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-bg hover:file:opacity-90"
             />
             <div className="flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-sm font-medium hover:border-[var(--color-accent)]"
+                className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-sm font-medium hover:border-accent"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
+                className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-bg hover:opacity-90"
               >
                 Upload files
               </button>
@@ -82,7 +82,7 @@ export default function AttachmentUploadFab({
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Add attachment"
-        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-accent)] text-3xl leading-none text-[var(--color-bg)] shadow-lg transition hover:opacity-90"
+        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90"
       >
         <span className="-mt-0.5">+</span>
       </button>

@@ -44,28 +44,28 @@ export default async function ProjectBinPage() {
       <nav className="mb-3 text-sm">
         <Link
           href="/projects"
-          className="text-[var(--color-text-muted)] hover:underline"
+          className="text-text-muted hover:underline"
         >
           ← Projects
         </Link>
       </nav>
       <h1 className="mb-1 text-2xl font-semibold tracking-tight">Project bin</h1>
-      <p className="mb-6 text-xs text-[var(--color-text-muted)]">
+      <p className="mb-6 text-xs text-text-muted">
         Projects in the bin are hard-deleted (along with all their epics,
         tasks, and attachments) {PROJECT_BIN_TTL_DAYS} days after the delete.
       </p>
 
       {projects.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-[var(--color-line)] p-6 text-center text-sm text-[var(--color-text-muted)]">
+        <p className="rounded-xl border border-dashed border-line p-6 text-center text-sm text-text-muted">
           The bin is empty.
         </p>
       ) : (
-        <ul className="divide-y divide-[var(--color-line)] rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)]">
+        <ul className="divide-y divide-line rounded-2xl border border-line bg-panel">
           {projects.map((p) => (
             <li key={p.id} className="flex items-center justify-between gap-4 px-4 py-3">
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium">{p.name}</div>
-                <div className="text-xs text-[var(--color-text-muted)]">
+                <div className="text-xs text-text-muted">
                   /{p.slug} · {p._count.epics} epic
                   {p._count.epics === 1 ? "" : "s"} · {p._count.tasks} task
                   {p._count.tasks === 1 ? "" : "s"} · {p._count.attachments} file
@@ -79,7 +79,7 @@ export default async function ProjectBinPage() {
                 <input type="hidden" name="projectSlug" value={p.slug} />
                 <button
                   type="submit"
-                  className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium hover:border-[var(--color-accent)]"
+                  className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-xs font-medium hover:border-accent"
                 >
                   Restore
                 </button>

@@ -1661,14 +1661,14 @@ export default async function TaskDetailPage({
     <div className="mx-auto w-full max-w-none">
       {/* ----- Main column ------------------------------------------- */}
       <div className="min-w-0">
-        <section className="space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm">
+        <section className="space-y-4 rounded-2xl border border-line bg-panel p-5 shadow-sm">
           {/* Sticky one-row editor header: title, epic, status and save stay visible. */}
-          <div className="sticky top-0 z-10 -mx-5 -mt-5 flex flex-wrap items-end gap-3 rounded-t-2xl border-b border-[var(--color-line)] bg-[var(--color-panel)] px-5 py-2 shadow-sm xl:flex-nowrap">
+          <div className="sticky top-0 z-10 -mx-5 -mt-5 flex flex-wrap items-end gap-3 rounded-t-2xl border-b border-line bg-panel px-5 py-2 shadow-sm xl:flex-nowrap">
             <label className="min-w-[18rem] flex-1">
-              <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
                 Task title
                 {task.workItemKey ? (
-                  <span className="ml-2 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-text-muted)]">
+                  <span className="ml-2 rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-[10px] text-text-muted">
                     {task.workItemKey}
                   </span>
                 ) : null}
@@ -1679,12 +1679,12 @@ export default async function TaskDetailPage({
                 defaultValue={task.title}
                 required
                 maxLength={200}
-                className="h-9 w-full rounded-lg border border-transparent bg-transparent px-2 text-xl font-semibold tracking-tight outline-none transition focus:border-[var(--color-line)] focus:bg-[var(--color-bg)]"
+                className="h-9 w-full rounded-lg border border-transparent bg-transparent px-2 text-xl font-semibold tracking-tight outline-none transition focus:border-line focus:bg-bg"
                 aria-label="Task title"
               />
             </label>
             <div className="min-w-[12rem] flex-[0_1_16rem]">
-              <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
                 Epic
               </span>
               <TaskEpicPicker
@@ -1696,14 +1696,14 @@ export default async function TaskDetailPage({
               />
             </div>
             <label className="w-32 shrink-0">
-              <span className="mb-0.5 block text-left text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              <span className="mb-0.5 block text-left text-[10px] font-semibold uppercase tracking-wider text-text-muted">
                 Status
               </span>
               <select
                 form="taskMain"
                 name="status"
                 defaultValue={task.status}
-                className="h-9 w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 text-xs outline-none focus:border-[var(--color-accent)]"
+                className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-xs outline-none focus:border-accent"
                 aria-label="Status"
               >
                 {COLUMN_IDS.map((id) => (
@@ -1714,7 +1714,7 @@ export default async function TaskDetailPage({
               </select>
             </label>
             <div className="flex shrink-0 flex-col items-end gap-0.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
                 Updated{" "}
                 <time dateTime={dateIso(task.updatedAt) ?? undefined} title={dateIso(task.updatedAt) ?? undefined}>
                   {timeAgo(task.updatedAt)}
@@ -1723,7 +1723,7 @@ export default async function TaskDetailPage({
               <button
                 form="taskMain"
                 type="submit"
-                className="h-9 rounded-lg bg-[var(--color-accent)] px-3 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
+                className="h-9 rounded-lg bg-accent px-3 text-sm font-medium text-bg hover:opacity-90"
               >
                 Save changes
               </button>
@@ -1764,26 +1764,26 @@ export default async function TaskDetailPage({
               >
                 <div className="flex items-center gap-2">
                   <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: palette.dot }} aria-hidden="true" />
-                  <strong className="text-[var(--color-text)]">{palette.title}</strong>
-                  <span className="ml-auto text-xs text-[var(--color-text-muted)]">
-                    branch <code className="text-[var(--color-text)]">{branchName}</code>
-                    {commitPrefix ? <> · prefix <code className="text-[var(--color-text)]">{commitPrefix}</code></> : null}
+                  <strong className="text-text">{palette.title}</strong>
+                  <span className="ml-auto text-xs text-text-muted">
+                    branch <code className="text-text">{branchName}</code>
+                    {commitPrefix ? <> · prefix <code className="text-text">{commitPrefix}</code></> : null}
                   </span>
                 </div>
-                <div className="mt-1 text-xs text-[var(--color-text-muted)]">
+                <div className="mt-1 text-xs text-text-muted">
                   {tone === "ok" && payload.headSha
-                    ? <>HEAD <code className="text-[var(--color-text)]">{payload.headSha.slice(0, 10)}</code> matches the COMMIT_PREFIX — safe to review.</>
+                    ? <>HEAD <code className="text-text">{payload.headSha.slice(0, 10)}</code> matches the COMMIT_PREFIX — safe to review.</>
                     : null}
                   {tone === "fail"
                     ? fetchAuthError
-                      ? <>{payload.fetchError ? <>fetch failed: <code className="text-[var(--color-text)]">{payload.fetchError}</code>.</> : null} This is a monitor verifier repository-access problem. Fix the verifier credentials and retry; do not ask the assignee to repush solely for this error.</>
-                      : <>{payload.fetchError ? <>fetch failed: <code className="text-[var(--color-text)]">{payload.fetchError}</code>.</> : null} See the latest <code className="text-[var(--color-text)]">pm.repo.verify.fail</code> comment below. Ask the assignee to push or fix the commit prefix before reviewing.</>
+                      ? <>{payload.fetchError ? <>fetch failed: <code className="text-text">{payload.fetchError}</code>.</> : null} This is a monitor verifier repository-access problem. Fix the verifier credentials and retry; do not ask the assignee to repush solely for this error.</>
+                      : <>{payload.fetchError ? <>fetch failed: <code className="text-text">{payload.fetchError}</code>.</> : null} See the latest <code className="text-text">pm.repo.verify.fail</code> comment below. Ask the assignee to push or fix the commit prefix before reviewing.</>
                     : null}
                   {tone === "pending"
-                    ? <>The monitor verifier has been asked to verify <code className="text-[var(--color-text)]">origin/{branchName}</code>. The result will appear as a new task comment.</>
+                    ? <>The monitor verifier has been asked to verify <code className="text-text">origin/{branchName}</code>. The result will appear as a new task comment.</>
                     : null}
                   {tone === "missing"
-                    ? <>No <code className="text-[var(--color-text)]">pm.repo.verify.*</code> activity yet — either the task pre-dates the verifier, or the assignee declared <code className="text-[var(--color-text)]">repoTouched: false</code> on ready_for_review.</>
+                    ? <>No <code className="text-text">pm.repo.verify.*</code> activity yet — either the task pre-dates the verifier, or the assignee declared <code className="text-text">repoTouched: false</code> on ready_for_review.</>
                     : null}
                 </div>
               </div>
@@ -1831,13 +1831,13 @@ export default async function TaskDetailPage({
 
                   <aside className="space-y-4 xl:sticky xl:top-16 xl:self-start">
                     {/* Dates */}
-                    <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                    <div className="rounded-xl border border-line bg-panel-soft p-4">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                         Dates
                       </div>
                       <dl className="mt-2 space-y-1 text-xs">
                         <div className="flex items-center justify-between gap-3">
-                          <dt className="text-[var(--color-text-muted)]">Created</dt>
+                          <dt className="text-text-muted">Created</dt>
                           <dd className="flex items-center gap-2">
                             <time
                               dateTime={dateIso(task.createdAt) ?? undefined}
@@ -1854,7 +1854,7 @@ export default async function TaskDetailPage({
                           </dd>
                         </div>
                         <div className="flex items-center justify-between gap-3">
-                          <dt className="text-[var(--color-text-muted)]">Updated</dt>
+                          <dt className="text-text-muted">Updated</dt>
                           <dd className="flex items-center gap-2">
                             <time
                               dateTime={dateIso(task.updatedAt) ?? undefined}
@@ -1870,7 +1870,7 @@ export default async function TaskDetailPage({
                         </div>
                         {task.approvedOn ? (
                           <div className="flex items-center justify-between gap-3">
-                            <dt className="text-[var(--color-text-muted)]">Approved</dt>
+                            <dt className="text-text-muted">Approved</dt>
                             <dd className="flex items-center gap-2">
                               <time
                                 dateTime={dateIso(task.approvedOn) ?? undefined}
@@ -1885,7 +1885,7 @@ export default async function TaskDetailPage({
                         ) : null}
                         {task.status === "Done" && task.statusChangedAt ? (
                           <div className="flex items-center justify-between gap-3">
-                            <dt className="text-[var(--color-text-muted)]">Done</dt>
+                            <dt className="text-text-muted">Done</dt>
                             <dd className="flex items-center gap-2">
                               <time
                                 dateTime={dateIso(task.statusChangedAt) ?? undefined}
@@ -1900,7 +1900,7 @@ export default async function TaskDetailPage({
                         ) : null}
                         {task.archivedAt ? (
                           <div className="flex items-center justify-between gap-3">
-                            <dt className="text-[var(--color-text-muted)]">Archived</dt>
+                            <dt className="text-text-muted">Archived</dt>
                             <dd className="flex items-center gap-2">
                               <time
                                 dateTime={dateIso(task.archivedAt) ?? undefined}
@@ -1916,9 +1916,9 @@ export default async function TaskDetailPage({
                       </dl>
                     </div>
 
-                    <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
+                    <div className="space-y-3 rounded-xl border border-line bg-panel-soft p-4">
                       <label className="block">
-                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                           Report by
                         </span>
                         <AvatarCombobox
@@ -1931,7 +1931,7 @@ export default async function TaskDetailPage({
                         />
                       </label>
                       <label className="block">
-                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                           Assignee
                         </span>
                         <AvatarCombobox
@@ -1944,7 +1944,7 @@ export default async function TaskDetailPage({
                         />
                       </label>
                       <label className="block">
-                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                           Reviewer
                         </span>
                         <AvatarCombobox
@@ -1959,15 +1959,15 @@ export default async function TaskDetailPage({
                     </div>
 
                     {showDeploymentTab ? (
-                      <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
+                      <div className="space-y-3 rounded-xl border border-line bg-panel-soft p-4">
                         <DeploymentStatusSelect formId="taskMain" defaultValue={task.deploymentStatus} />
                       </div>
                     ) : null}
 
                     {/* Branch + Commit prefix — persisted by the card's single Save. */}
-                    <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
+                    <div className="space-y-3 rounded-xl border border-line bg-panel-soft p-4">
                       <label className="block">
-                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                           Branch
                         </span>
                         <input
@@ -1976,12 +1976,12 @@ export default async function TaskDetailPage({
                           defaultValue={task.branchName ?? task.epic?.branchName ?? ""}
                           maxLength={200}
                           placeholder="e.g. feature/HOMELAB-99"
-                          className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs font-mono outline-none focus:border-[var(--color-accent)]"
+                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-xs font-mono outline-none focus:border-accent"
                           aria-label="Branch name"
                         />
                       </label>
                       <label className="block">
-                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                           Commit prefix
                         </span>
                         <input
@@ -1990,16 +1990,16 @@ export default async function TaskDetailPage({
                           defaultValue={task.commitPrefix ?? task.epic?.commitPrefix ?? ""}
                           maxLength={200}
                           placeholder={task.workItemKey ? `defaults to ${task.workItemKey}` : "e.g. HOMELAB-99"}
-                          className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs font-mono outline-none focus:border-[var(--color-accent)]"
+                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-xs font-mono outline-none focus:border-accent"
                           aria-label="Commit prefix"
                         />
                       </label>
                     </div>
 
                     {/* Blocked by — hard dependency on another task (ENV-62). */}
-                    <div className="space-y-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4">
+                    <div className="space-y-1 rounded-xl border border-line bg-panel-soft p-4">
                       <label className="block">
-                        <span className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                        <span className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                           <LockIcon />
                           Blocked by
                         </span>
@@ -2008,7 +2008,7 @@ export default async function TaskDetailPage({
                           name="blockedById"
                           defaultValue={task.blockedById ?? ""}
                           aria-label="Blocked by"
-                          className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs outline-none focus:border-[var(--color-accent)]"
+                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-xs outline-none focus:border-accent"
                         >
                           <option value="">Not blocked</option>
                           {blockerCandidates.map((candidate) => (
@@ -2018,28 +2018,28 @@ export default async function TaskDetailPage({
                           ))}
                         </select>
                       </label>
-                      <p className="text-[10px] text-[var(--color-text-muted)]">
+                      <p className="text-[10px] text-text-muted">
                         This task waits until the chosen task is Done. Circular blocks are rejected.
                       </p>
                     </div>
 
                     <form
                       action={task.archivedAt ? unarchiveTask : archiveTask}
-                      className="space-y-2 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4"
+                      className="space-y-2 rounded-xl border border-line bg-panel-soft p-4"
                     >
                       <input type="hidden" name="taskId" value={task.id} />
                       <input type="hidden" name="projectSlug" value={slug} />
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
                         Archive
                       </div>
-                      <p className="text-xs text-[var(--color-text-muted)]">
+                      <p className="text-xs text-text-muted">
                         {task.archivedAt
                           ? "Restore this task to active project views without changing its status."
                           : "Hide this task from active boards and grids without changing its status."}
                       </p>
                       <button
                         type="submit"
-                        className="w-full rounded-lg border border-[var(--color-line)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                        className="w-full rounded-lg border border-line bg-transparent px-3 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent"
                       >
                         {task.archivedAt ? "Restore from archive" : "Archive task"}
                       </button>
@@ -2050,21 +2050,21 @@ export default async function TaskDetailPage({
                         from the main edit form. Restore from /projects/<slug>/bin. */}
                     <form
                       action={deleteTask}
-                      className="space-y-2 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-4"
+                      className="space-y-2 rounded-xl border border-line bg-panel-soft p-4"
                     >
                       <input type="hidden" name="taskId" value={task.id} />
                       <input type="hidden" name="projectSlug" value={slug} />
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-crit)]">
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-crit">
                         Danger zone
                       </div>
-                      <p className="text-xs text-[var(--color-text-muted)]">
+                      <p className="text-xs text-text-muted">
                         Move this task to the bin. Its {task.checklist.length} checklist
                         item{task.checklist.length === 1 ? "" : "s"} go with it.
                         Auto-purged after 7 days.
                       </p>
                       <button
                         type="submit"
-                        className="w-full rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-medium text-[var(--color-crit)] hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+                        className="w-full rounded-lg border border-crit bg-transparent px-3 py-1.5 text-xs font-medium text-crit hover:bg-crit hover:text-bg"
                       >
                         Delete task
                       </button>
@@ -2082,7 +2082,7 @@ export default async function TaskDetailPage({
                       <input type="hidden" name="projectSlug" value={slug} />
                       <button
                         type="submit"
-                        className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-bg)] hover:opacity-90"
+                        className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-bg hover:opacity-90"
                       >
                         Approve Plan
                       </button>
@@ -2132,10 +2132,10 @@ export default async function TaskDetailPage({
               <TabPanel name="Attachments">
                 <div>
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold tracking-wide text-[var(--color-text)]">
+            <h2 className="text-sm font-semibold tracking-wide text-text">
               Attachments
             </h2>
-            <span className="text-xs text-[var(--color-text-muted)]">
+            <span className="text-xs text-text-muted">
               Max {formatBytes(attachmentMaxBytes())} per file
             </span>
           </div>
@@ -2156,12 +2156,12 @@ export default async function TaskDetailPage({
 
               <TabPanel name="Comments">
                 <div className="flex h-[calc(100dvh-14rem)] min-h-[560px] flex-col">
-                  <h2 className="mb-3 text-sm font-semibold tracking-wide text-[var(--color-text)]">
+                  <h2 className="mb-3 text-sm font-semibold tracking-wide text-text">
                     Comments
                   </h2>
                   <div className="min-h-0 flex-1 overflow-y-auto pr-1">
           {task.comments.length === 0 ? (
-            <p className="text-xs text-[var(--color-text-muted)]">
+            <p className="text-xs text-text-muted">
               No comments yet.
             </p>
           ) : (
@@ -2200,10 +2200,10 @@ export default async function TaskDetailPage({
                     className="flex items-start gap-3 text-sm"
                   >
                     <MessageAvatar actor={c.user} size="sm" />
-                    <div className={`min-w-0 flex-1 rounded-xl border border-[var(--color-line)] px-3 py-2 ${mentionedCurrentUser ? "bg-yellow-400/[0.12]" : "bg-[var(--color-panel-soft)]"}`}>
-                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
+                    <div className={`min-w-0 flex-1 rounded-xl border border-line px-3 py-2 ${mentionedCurrentUser ? "bg-yellow-400/[0.12]" : "bg-panel-soft"}`}>
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
                         <div className="flex min-w-0 flex-wrap items-center gap-2">
-                          <strong className="truncate font-medium text-[var(--color-text)]">
+                          <strong className="truncate font-medium text-text">
                             {actorDisplayName(c.user)}
                           </strong>
                           <MessageTimestamp value={c.createdAt} />

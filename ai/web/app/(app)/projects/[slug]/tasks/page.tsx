@@ -216,15 +216,15 @@ export default async function ProjectTasksPage({
     return (
       <li
         key={task.id}
-        className={`grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-[var(--color-panel)] xl:min-w-0 ${statusRowClass(task.status)}`}
+        className={`grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-panel xl:min-w-0 ${statusRowClass(task.status)}`}
       >
         <Link href={`/projects/${slug}/tasks/${task.id}`} className="min-w-0 hover:underline">
           <span className="mb-0.5 flex min-w-0 items-center gap-2">
-            <span className="inline-flex shrink-0 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
+            <span className="inline-flex shrink-0 rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-[10px] font-semibold text-text-muted">
               {task.workItemKey ?? task.id.slice(0, 8)}
             </span>
             {task.epic ? (
-              <span className="truncate text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              <span className="truncate text-[10px] font-semibold uppercase tracking-wider text-text-muted">
                 {task.epic.title}
               </span>
             ) : null}
@@ -303,7 +303,7 @@ export default async function ProjectTasksPage({
   }
 
   const TASK_HEADER_GRID = (
-    <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] xl:min-w-0">
+    <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 border-b border-line px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted xl:min-w-0">
       <span>Task</span>
       <span>Status</span>
       <span>Deploy</span>
@@ -321,17 +321,17 @@ export default async function ProjectTasksPage({
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Tasks</h2>
-          <p className="mt-1 text-sm text-[var(--color-text-muted)]">
+          <p className="mt-1 text-sm text-text-muted">
             {tasks.length} shown of {totalCount} matching task{totalCount === 1 ? "" : "s"}.
           </p>
         </div>
-        <div className="flex items-center gap-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-1 text-xs">
+        <div className="flex items-center gap-1 rounded-xl border border-line bg-panel p-1 text-xs">
           <Link
             href={`/projects/${slug}/tasks?view=board`}
             className={
               view === "board"
-                ? "rounded-lg bg-[var(--color-accent)] px-3 py-1 font-medium text-[var(--color-bg)]"
-                : "rounded-lg px-3 py-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                ? "rounded-lg bg-accent px-3 py-1 font-medium text-bg"
+                : "rounded-lg px-3 py-1 text-text-muted hover:text-text"
             }
           >
             Board
@@ -341,8 +341,8 @@ export default async function ProjectTasksPage({
               href={`/projects/${slug}/tasks?view=archive`}
               className={
                 view === "archive"
-                  ? "rounded-lg bg-[var(--color-accent)] px-3 py-1 font-medium text-[var(--color-bg)]"
-                  : "rounded-lg px-3 py-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                  ? "rounded-lg bg-accent px-3 py-1 font-medium text-bg"
+                  : "rounded-lg px-3 py-1 text-text-muted hover:text-text"
               }
             >
               Archive
@@ -353,7 +353,7 @@ export default async function ProjectTasksPage({
 
       <form
         id="taskFilters"
-        className="grid gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-3 text-sm md:grid-cols-3 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto]"
+        className="grid gap-3 rounded-xl border border-line bg-panel p-3 text-sm md:grid-cols-3 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto]"
       >
         <input type="hidden" name="view" value={view} />
         <FilterField label="Reporter">
@@ -407,13 +407,13 @@ export default async function ProjectTasksPage({
         <div className="flex items-end gap-2">
           <button
             type="submit"
-            className="h-9 rounded-lg bg-[var(--color-accent)] px-3 text-xs font-semibold text-[var(--color-bg)] hover:opacity-90"
+            className="h-9 rounded-lg bg-accent px-3 text-xs font-semibold text-bg hover:opacity-90"
           >
             Apply
           </button>
           <Link
             href={`/projects/${slug}/tasks?view=${view}`}
-            className="grid h-9 place-items-center rounded-lg border border-[var(--color-line)] px-3 text-xs font-semibold text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            className="grid h-9 place-items-center rounded-lg border border-line px-3 text-xs font-semibold text-text-muted hover:text-text"
           >
             Clear
           </Link>
@@ -421,7 +421,7 @@ export default async function ProjectTasksPage({
       </form>
 
       {tasks.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-[var(--color-line)] p-6 text-center text-sm text-[var(--color-text-muted)]">
+        <p className="rounded-xl border border-dashed border-line p-6 text-center text-sm text-text-muted">
           No tasks match these filters.
         </p>
       ) : (
@@ -442,19 +442,19 @@ export default async function ProjectTasksPage({
             <details
               key={group.id}
               open={view === "board" || group.id === DIRECT_REQUEST_KEY}
-              className="group overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]"
+              className="group overflow-hidden rounded-lg border border-line bg-panel-soft"
             >
-              <summary className="cursor-pointer list-none border-b border-[var(--color-line)] bg-[var(--color-panel)] [&::-webkit-details-marker]:hidden">
+              <summary className="cursor-pointer list-none border-b border-line bg-panel [&::-webkit-details-marker]:hidden">
                 <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2.5 text-sm xl:min-w-0">
                   <span className="flex min-w-0 items-center gap-2 font-semibold">
                     <ChevronIcon />
                     <span className="truncate">{group.title}</span>
-                    <span className="shrink-0 text-xs font-normal tabular-nums text-[var(--color-text-muted)]">
+                    <span className="shrink-0 text-xs font-normal tabular-nums text-text-muted">
                       ({group.tasks.length})
                     </span>
                   </span>
                   {group.epic ? (
-                    <span className="w-fit rounded-full border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider">
+                    <span className="w-fit rounded-full border border-line bg-panel-soft px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider">
                       {group.epic.status}
                     </span>
                   ) : (
@@ -472,7 +472,7 @@ export default async function ProjectTasksPage({
                     actor={serializeActor(group.epic?.actingManager ?? group.epic?.reporter ?? null)}
                     emptyLabel="—"
                   />
-                  <span className="flex items-center justify-end gap-1.5 text-xs tabular-nums text-[var(--color-text-muted)]">
+                  <span className="flex items-center justify-end gap-1.5 text-xs tabular-nums text-text-muted">
                     <TimerIcon />
                     <span>{formatElapsed(elapsedMs)}</span>
                   </span>
@@ -482,7 +482,7 @@ export default async function ProjectTasksPage({
               </summary>
               <div className="overflow-x-auto">
                 {TASK_HEADER_GRID}
-                <ul className="divide-y divide-[var(--color-line)]">
+                <ul className="divide-y divide-line">
                   {group.tasks.map(renderTaskRow)}
                 </ul>
               </div>
@@ -507,7 +507,7 @@ function ChevronIcon() {
       strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className="shrink-0 text-[var(--color-text-muted)] transition-transform group-open:rotate-90"
+      className="shrink-0 text-text-muted transition-transform group-open:rotate-90"
     >
       <path d="m9 18 6-6-6-6" />
     </svg>
@@ -519,7 +519,7 @@ function DeploymentIndicator({ status }: { status: string }) {
   if (icon === "—") {
     return (
       <span
-        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-[var(--color-line)] text-[9px] text-[var(--color-text-muted)] transition hover:scale-110 hover:border-[var(--color-accent)]"
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-line text-[9px] text-text-muted transition hover:scale-110 hover:border-accent"
         title="Deployment: Not Required"
         aria-label="Deployment: Not Required"
       >
@@ -551,13 +551,13 @@ function FilterSelect({
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
         {label}
       </span>
       <select
         name={name}
         defaultValue={value}
-        className="h-9 w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 text-xs outline-none focus:border-[var(--color-accent)]"
+        className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-xs outline-none focus:border-accent"
       >
         {children}
       </select>
@@ -568,7 +568,7 @@ function FilterSelect({
 function FilterField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="block">
-      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
         {label}
       </span>
       {children}
@@ -578,7 +578,7 @@ function FilterField({ label, children }: { label: string; children: React.React
 
 function PersonCell({ actor, emptyLabel, busy = false }: { actor: MessageActor | null; emptyLabel: string; busy?: boolean }) {
   return (
-    <span className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-muted)]">
+    <span className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
       {actor ? <MessageAvatar actor={actor} size="sm" busy={busy} /> : null}
       <span className="truncate">{actor ? actorDisplayName(actor) : emptyLabel}</span>
     </span>
@@ -603,7 +603,7 @@ function DateActorCell({
   dateOnly?: boolean;
 }) {
   return (
-    <span className="flex min-w-0 items-center justify-end gap-1.5 text-xs text-[var(--color-text-muted)]">
+    <span className="flex min-w-0 items-center justify-end gap-1.5 text-xs text-text-muted">
       <time dateTime={iso} title={iso} className="min-w-0 truncate text-right tabular-nums" suppressHydrationWarning>
         {dateOnly ? formatGridDate(iso) : relativeUpdated(iso)}
       </time>
@@ -643,7 +643,7 @@ function ElapsedCell({
   approvedOn: Date | null;
 }) {
   return (
-    <span className="flex items-center justify-end gap-1.5 text-xs tabular-nums text-[var(--color-text-muted)]">
+    <span className="flex items-center justify-end gap-1.5 text-xs tabular-nums text-text-muted">
       <TimerIcon />
       <span>{formatElapsed(computeElapsedMs({ status, createdAt, updatedAt, statusChangedAt, approvedOn }))}</span>
     </span>
@@ -675,7 +675,7 @@ function statusRowClass(status: string) {
   if (status === "In Progress") return "border-l-4 border-l-emerald-400 bg-emerald-500/[0.11]";
   if (status === "Review") return "border-l-4 border-l-amber-400 bg-amber-500/[0.13]";
   if (status === "Done") return "border-l-4 border-l-lime-400 bg-lime-500/[0.10]";
-  return "border-l-4 border-l-slate-400 bg-[var(--color-panel-soft)]";
+  return "border-l-4 border-l-slate-400 bg-panel-soft";
 }
 
 function statusPillClass(status: string) {

@@ -43,7 +43,7 @@ export default function ProjectTabs({
     return sub === href || sub.startsWith(href + "/");
   }
   return (
-    <nav className="mb-4 flex items-center gap-1 border-b border-[var(--color-line)] text-sm">
+    <nav className="mb-4 flex items-center gap-1 border-b border-line text-sm">
       {tabs.map((t) => {
         const active = isActive(t.href);
         return (
@@ -52,8 +52,8 @@ export default function ProjectTabs({
             href={`${base}${t.href}`}
             className={
               active
-                ? "border-b-2 border-[var(--color-accent)] px-3 py-2 -mb-px font-medium text-[var(--color-text)]"
-                : "border-b-2 border-transparent px-3 py-2 -mb-px text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                ? "border-b-2 border-accent px-3 py-2 -mb-px font-medium text-text"
+                : "border-b-2 border-transparent px-3 py-2 -mb-px text-text-muted hover:text-text"
             }
           >
             {t.label}

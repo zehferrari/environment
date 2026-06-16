@@ -62,8 +62,8 @@ export default function ConfirmPopup({
   if (!open) return null;
 
   const confirmClass = danger
-    ? "bg-[var(--color-crit)] text-white"
-    : "bg-[var(--color-accent)] text-[var(--color-bg)]";
+    ? "bg-crit text-white"
+    : "bg-accent text-bg";
 
   return (
     <div
@@ -75,12 +75,12 @@ export default function ConfirmPopup({
     >
       <div
         onClick={(event) => event.stopPropagation()}
-        className="w-full max-w-md space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+        className="w-full max-w-md space-y-4 rounded-2xl border border-line bg-panel p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
       >
         <div className="flex items-center justify-between">
           <h3
             id="confirm-popup-title"
-            className={`text-sm font-semibold uppercase tracking-wider ${danger ? "text-[var(--color-crit)]" : "text-[var(--color-text-muted)]"}`}
+            className={`text-sm font-semibold uppercase tracking-wider ${danger ? "text-crit" : "text-text-muted"}`}
           >
             {title}
           </h3>
@@ -89,13 +89,13 @@ export default function ConfirmPopup({
             disabled={busy}
             onClick={onCancel}
             aria-label="Close"
-            className="text-lg leading-none text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer disabled:opacity-50"
+            className="text-lg leading-none text-text-muted hover:text-text cursor-pointer disabled:opacity-50"
           >
             &times;
           </button>
         </div>
         {description ? (
-          <div className="text-sm text-[var(--color-text-muted)] leading-relaxed">
+          <div className="text-sm text-text-muted leading-relaxed">
             {description}
           </div>
         ) : null}
@@ -104,7 +104,7 @@ export default function ConfirmPopup({
             type="button"
             disabled={busy}
             onClick={onCancel}
-            className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition disabled:opacity-50 cursor-pointer"
+            className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-xs font-medium text-text-muted hover:border-accent hover:text-accent transition disabled:opacity-50 cursor-pointer"
           >
             {cancelLabel}
           </button>

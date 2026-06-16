@@ -100,7 +100,7 @@ function ArchiveTree({
   depth?: number;
 }) {
   return (
-    <div className={`relative ${depth === 0 ? "space-y-3" : "ml-4 mt-2.5 space-y-3 border-l-2 border-[var(--color-accent)]/20 pl-4"}`}>
+    <div className={`relative ${depth === 0 ? "space-y-3" : "ml-4 mt-2.5 space-y-3 border-l-2 border-accent/20 pl-4"}`}>
       {nodes.map((archive) => {
         const period = formatArchivePeriod(archive.startedAt, archive.endedAt);
         const selected = selectedArchiveId === archive.id;
@@ -111,19 +111,19 @@ function ArchiveTree({
             {/* Horizontal branch line connecting nested children */}
             {depth > 0 ? (
               <div 
-                className="absolute -left-4 top-[1.35rem] h-px w-4 bg-[var(--color-accent)]/20" 
+                className="absolute -left-4 top-[1.35rem] h-px w-4 bg-accent/20" 
                 aria-hidden="true" 
               />
             ) : null}
 
             {/* Tree node dot indicator */}
             <div 
-              className={`absolute top-[1rem] z-10 h-3 w-3 rounded-full border-2 bg-[var(--color-panel)] transition-all ${
+              className={`absolute top-[1rem] z-10 h-3 w-3 rounded-full border-2 bg-panel transition-all ${
                 depth > 0 ? "-left-[22px]" : "-left-1.5"
               } ${
                 selected 
-                  ? "border-[var(--color-accent)] scale-110 shadow-sm shadow-[var(--color-accent)]/20" 
-                  : "border-[var(--color-line)] group-hover/node:border-[var(--color-accent)]/40"
+                  ? "border-accent scale-110 shadow-sm shadow-accent/20" 
+                  : "border-line group-hover/node:border-accent/40"
               }`}
               aria-hidden="true"
             />
@@ -131,41 +131,41 @@ function ArchiveTree({
             <div
               className={`rounded-xl border p-3 transition-all duration-200 shadow-sm ${
                 selected
-                  ? "border-[var(--color-accent)] bg-[var(--color-accent)]/[0.04] shadow-[var(--color-accent)]/[0.02]"
-                  : "border-[var(--color-line)] bg-[var(--color-panel-soft)] hover:border-[var(--color-accent)]/30 hover:bg-[var(--color-panel)]"
+                  ? "border-accent bg-accent/[0.04] shadow-accent/[0.02]"
+                  : "border-line bg-panel-soft hover:border-accent/30 hover:bg-panel"
               }`}
             >
               <Link href={`/agents/${slug}/chat?archive=${archive.id}`} className="block">
                 <div className="flex items-center justify-between gap-1.5">
-                  <span className="text-[10px] font-semibold text-[var(--color-text-muted)] tracking-wider">
+                  <span className="text-[10px] font-semibold text-text-muted tracking-wider">
                     {period}
                   </span>
                   
                   {/* Relationship Badges */}
                   {archive.parentArchiveId ? (
-                    <span className="inline-flex items-center gap-1 rounded bg-[var(--color-panel-soft)] border border-[var(--color-line)] px-1 py-0.5 text-[8px] font-medium text-[var(--color-text-muted)]">
+                    <span className="inline-flex items-center gap-1 rounded bg-panel-soft border border-line px-1 py-0.5 text-[8px] font-medium text-text-muted">
                       <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                       Continuation
                     </span>
                   ) : hasChildren ? (
-                    <span className="inline-flex items-center gap-1 rounded bg-[var(--color-accent-soft)] border border-[var(--color-accent)]/20 px-1 py-0.5 text-[8px] font-medium text-[var(--color-accent)]">
+                    <span className="inline-flex items-center gap-1 rounded bg-accent-soft border border-accent/20 px-1 py-0.5 text-[8px] font-medium text-accent">
                       <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12 2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/></svg>
                       Root
                     </span>
                   ) : null}
                 </div>
 
-                <p className="mt-1.5 line-clamp-2 text-xs font-semibold text-[var(--color-text)] leading-relaxed">
+                <p className="mt-1.5 line-clamp-2 text-xs font-semibold text-text leading-relaxed">
                   {archive.summary}
                 </p>
 
-                <div className="mt-2 flex items-center justify-between text-[10px] text-[var(--color-text-muted)] border-t border-[var(--color-line)]/40 pt-2">
+                <div className="mt-2 flex items-center justify-between text-[10px] text-text-muted border-t border-line/40 pt-2">
                   <span>
                     {archive.messageCount} msg{archive.messageCount === 1 ? "" : "s"}
                   </span>
                   
                   {hasChildren && (
-                    <span className="text-[9px] text-[var(--color-text-muted)] opacity-80 flex items-center gap-0.5">
+                    <span className="text-[9px] text-text-muted opacity-80 flex items-center gap-0.5">
                       <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
                       {archive.children.length} child{archive.children.length === 1 ? "" : "ren"}
                     </span>
@@ -184,8 +184,8 @@ function ArchiveTree({
                     title={hasChildren ? "Cannot delete: this archive has active continuation children" : "Delete archived chat"}
                     className={`rounded px-1.5 py-0.5 text-[9px] font-medium transition-all ${
                       hasChildren 
-                        ? "bg-[var(--color-line)]/20 text-[var(--color-text-muted)]/40 border border-transparent cursor-not-allowed" 
-                        : "border border-[var(--color-line)] text-[var(--color-text-muted)] hover:border-[var(--color-crit)] hover:bg-[var(--color-crit)]/[0.04] hover:text-[var(--color-crit)] cursor-pointer"
+                        ? "bg-line/20 text-text-muted/40 border border-transparent cursor-not-allowed" 
+                        : "border border-line text-text-muted hover:border-crit hover:bg-crit/4 hover:text-crit cursor-pointer"
                     }`}
                   >
                     {hasChildren ? "Locked" : "Delete"}
@@ -542,9 +542,9 @@ export default async function DirectAgentChatPage({
   return (
     <div className="mx-auto flex h-[calc(100vh-2.5rem)] max-w-7xl flex-col gap-4 overflow-hidden">
       {/* Sticky Header Banner */}
-      <header className="sticky top-[-1.25rem] z-10 -mx-6 bg-[var(--color-bg)] pt-[1.25rem] pb-3 px-6 lg:-mx-8 lg:px-8 border-b border-[var(--color-line)] flex items-center justify-between gap-4 shrink-0">
+      <header className="sticky top-[-1.25rem] z-10 -mx-6 bg-bg pt-[1.25rem] pb-3 px-6 lg:-mx-8 lg:px-8 border-b border-line flex items-center justify-between gap-4 shrink-0">
         <Link href={`/agents/${slug}`} className="flex items-center gap-3 hover:opacity-80 transition shrink-min min-w-0">
-          <div className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-sm font-semibold">
+          <div className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl border border-line bg-panel-soft text-sm font-semibold">
             {avatarSrc ? (
               <img src={avatarSrc} alt={`${agent.name} avatar`} decoding="async" className="h-full w-full object-cover" />
             ) : (
@@ -555,7 +555,7 @@ export default async function DirectAgentChatPage({
             <h1 className="truncate text-base font-semibold tracking-tight">
               {agent.name}
             </h1>
-            <p className="font-mono text-[10px] text-[var(--color-text-muted)]">@{slug} · {agent.role}</p>
+            <p className="font-mono text-[10px] text-text-muted">@{slug} · {agent.role}</p>
           </div>
         </Link>
         
@@ -564,7 +564,7 @@ export default async function DirectAgentChatPage({
           {viewingArchive ? (
             <Link
               href={`/agents/${slug}/chat`}
-              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+              className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-medium text-text-muted hover:border-accent hover:text-accent"
             >
               Current chat
             </Link>
@@ -580,10 +580,10 @@ export default async function DirectAgentChatPage({
       <ChatLayoutClient
         chatSection={
           <DirectChatOptimisticProvider agentSlug={slug} baseArchiveId={activeBaseArchiveId}>
-          <section className="flex min-h-0 h-full flex-col rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] shadow-sm">
-            <div className="border-b border-[var(--color-line)] px-4 py-3 shrink-0">
+          <section className="flex min-h-0 h-full flex-col rounded-2xl border border-line bg-panel shadow-sm">
+            <div className="border-b border-line px-4 py-3 shrink-0">
               <p className="text-sm font-medium">{viewingArchive ? "Archived chat" : "Current chat"}</p>
-              <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+              <p className="mt-1 text-xs text-text-muted">
                 {viewingArchive && selectedArchive
                   ? `${formatArchivePeriod(selectedArchive.startedAt, selectedArchive.endedAt)} · ${selectedArchive.messageCount} messages`
                   : activeBaseArchive
@@ -610,20 +610,20 @@ export default async function DirectAgentChatPage({
 
             {/* Attached Context Files List */}
             {contextFiles.length > 0 && (
-              <div className="border-t border-[var(--color-line)] bg-[var(--color-panel-soft)] px-4 py-2 flex flex-wrap gap-2 items-center shrink-0">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--color-text-muted)] select-none">
+              <div className="border-t border-line bg-panel-soft px-4 py-2 flex flex-wrap gap-2 items-center shrink-0">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted select-none">
                   Context Files ({contextFiles.length}):
                 </span>
                 {contextFiles.map((file) => (
                   <div
                     key={`${file.folderId}-${file.name}`}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-2 py-0.5 text-xs font-semibold text-[var(--color-text)] shadow-sm"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-2 py-0.5 text-xs font-semibold text-text shadow-sm"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
                     <span className="truncate max-w-[150px]" title={file.name}>
                       {file.name}
                     </span>
-                    <span className="text-[9px] text-[var(--color-text-muted)] font-normal">
+                    <span className="text-[9px] text-text-muted font-normal">
                       ({(file.size / 1024).toFixed(1)} KB)
                     </span>
                   </div>
@@ -645,11 +645,11 @@ export default async function DirectAgentChatPage({
             />
 
             {viewingArchive && !canStartChildFromArchive ? (
-              <div className="border-t border-[var(--color-line)] p-4 text-sm text-[var(--color-text-muted)] shrink-0 bg-[var(--color-panel)]">
+              <div className="border-t border-line p-4 text-sm text-text-muted shrink-0 bg-panel">
                 {activeChildAlreadyOpen
                   ? "A child continuation from this archive is already active."
                   : "Archive the current active chat before starting a child continuation from this archive."}{" "}
-                <Link href={`/agents/${slug}/chat`} className="font-medium text-[var(--color-accent)] hover:underline">
+                <Link href={`/agents/${slug}/chat`} className="font-medium text-accent hover:underline">
                   Open current chat
                 </Link>
               </div>

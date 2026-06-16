@@ -155,7 +155,7 @@ function NavItem({
     <Link
       href={href}
       title={collapsed ? label : undefined}
-      className={`flex items-center gap-3 rounded-lg py-1.5 font-medium text-[var(--color-text-muted)] hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)] ${
+      className={`flex items-center gap-3 rounded-lg py-1.5 font-medium text-text-muted hover:bg-accent-soft hover:text-accent ${
         collapsed ? "justify-center px-0" : "px-3"
       }`}
     >
@@ -195,11 +195,11 @@ export default function SidebarNav({
 
   return (
     <aside
-      className={`sticky top-0 flex h-screen shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-panel)] transition-[width] duration-200 ${
+      className={`sticky top-0 flex h-screen shrink-0 flex-col border-r border-line bg-panel transition-[width] duration-200 ${
         collapsed ? "w-16" : "w-64"
       }`}
     >
-      <div className="border-b border-[var(--color-line)] px-3 py-4">
+      <div className="border-b border-line px-3 py-4">
         <div
           className={
             collapsed
@@ -208,7 +208,7 @@ export default function SidebarNav({
           }
         >
           <div className="flex min-w-0 items-center gap-2">
-            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--color-accent)] text-sm font-bold text-white shadow-sm">
+            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent text-sm font-bold text-white shadow-sm">
               Z
             </div>
             {!collapsed ? (
@@ -216,7 +216,7 @@ export default function SidebarNav({
                 <div className="truncate text-sm font-semibold tracking-tight">
                   Zero Latency
                 </div>
-                <div className="truncate text-xs text-[var(--color-text-muted)]">
+                <div className="truncate text-xs text-text-muted">
                   Mission Control
                 </div>
               </div>
@@ -228,7 +228,7 @@ export default function SidebarNav({
             title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             aria-pressed={collapsed}
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-[var(--color-text-muted)] hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)]"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-text-muted hover:bg-accent-soft hover:text-accent"
           >
             <Icon>{collapsed ? icons.expand : icons.collapse}</Icon>
           </button>
@@ -238,11 +238,11 @@ export default function SidebarNav({
           className={
             collapsed
               ? "mt-4 flex justify-center"
-              : "mt-4 flex items-center gap-2 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2"
+              : "mt-4 flex items-center gap-2 rounded-lg border border-line bg-panel-soft px-3 py-2"
           }
         >
           <div
-            className="grid h-7 w-7 shrink-0 place-items-center overflow-hidden rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] text-[11px] font-semibold text-[var(--color-text)]"
+            className="grid h-7 w-7 shrink-0 place-items-center overflow-hidden rounded-full border border-line bg-panel text-[11px] font-semibold text-text"
             title={collapsed ? meName : undefined}
           >
             {userAvatarVersion != null && userId ? (
@@ -257,8 +257,8 @@ export default function SidebarNav({
             )}
           </div>
           {!collapsed ? (
-            <div className="min-w-0 text-xs text-[var(--color-text-muted)]">
-              <div className="truncate text-[var(--color-text)]">{meName}</div>
+            <div className="min-w-0 text-xs text-text-muted">
+              <div className="truncate text-text">{meName}</div>
               {meKind ? <div className="truncate">{meKind}</div> : null}
             </div>
           ) : null}
@@ -282,14 +282,14 @@ export default function SidebarNav({
                 key={project.slug}
                 href={href}
                 title={collapsed ? project.name : undefined}
-                className={`flex items-center gap-3 rounded-lg py-1.5 hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)] ${
+                className={`flex items-center gap-3 rounded-lg py-1.5 hover:bg-accent-soft hover:text-accent ${
                   active
-                    ? "text-[var(--color-accent)]"
-                    : "text-[var(--color-text-muted)]"
+                    ? "text-accent"
+                    : "text-text-muted"
                 } ${collapsed ? "justify-center px-0" : "px-3"}`}
               >
                 <span
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[11px] font-semibold uppercase text-[var(--color-text)]"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-line bg-panel-soft text-[11px] font-semibold uppercase text-text"
                   aria-hidden="true"
                 >
                   {project.name.slice(0, 1)}
@@ -302,7 +302,7 @@ export default function SidebarNav({
           })}
         </div>
 
-        <div className="my-4 border-t border-[var(--color-line)]" />
+        <div className="my-4 border-t border-line" />
 
         <div className="space-y-1">
           <NavItem
@@ -320,8 +320,8 @@ export default function SidebarNav({
                 key={agent.slug}
                 href={href}
                 title={collapsed ? `${agent.name} · ${agent.status}` : undefined}
-                className={`flex items-center gap-3 rounded-lg py-1.5 hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)] ${
-                  active ? "text-[var(--color-accent)]" : "text-[var(--color-text-muted)]"
+                className={`flex items-center gap-3 rounded-lg py-1.5 hover:bg-accent-soft hover:text-accent ${
+                  active ? "text-accent" : "text-text-muted"
                 } ${collapsed ? "justify-center px-0" : "px-3"}`}
               >
                 {/* Avatar: busy → discreet pulsing ring (opacity only, kept
@@ -330,11 +330,11 @@ export default function SidebarNav({
                 <div className="relative h-8 w-8 shrink-0">
                   {agent.pulse ? (
                     <span
-                      className="pointer-events-none absolute -inset-1 animate-ping rounded-lg bg-[var(--color-accent)] opacity-30"
+                      className="pointer-events-none absolute -inset-1 animate-ping rounded-lg bg-accent opacity-30"
                       aria-hidden="true"
                     />
                   ) : null}
-                  <div className="relative grid h-8 w-8 place-items-center overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-xs font-semibold text-[var(--color-text)]">
+                  <div className="relative grid h-8 w-8 place-items-center overflow-hidden rounded-lg border border-line bg-panel-soft text-xs font-semibold text-text">
                     {agent.avatarSrc ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
@@ -351,7 +351,7 @@ export default function SidebarNav({
                   </div>
                   {agent.unread ? (
                     <span
-                      className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-[var(--color-panel)] bg-red-500"
+                      className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-panel bg-red-500"
                       title="Unread messages"
                       aria-label="Unread messages"
                     />
@@ -360,13 +360,13 @@ export default function SidebarNav({
 
                 {!collapsed ? (
                   <div className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1.5 truncate text-xs font-semibold text-[var(--color-text)]">
+                    <span className="flex items-center gap-1.5 truncate text-xs font-semibold text-text">
                       {agent.name}
                       {agent.unread ? (
                         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" aria-hidden="true" />
                       ) : null}
                     </span>
-                    <span className="block truncate text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+                    <span className="block truncate text-[10px] uppercase tracking-wider text-text-muted">
                       {agent.role}
                     </span>
                   </div>
@@ -377,7 +377,7 @@ export default function SidebarNav({
         </div>
       </nav>
 
-      <div className="space-y-1 border-t border-[var(--color-line)] px-3 py-3 text-sm">
+      <div className="space-y-1 border-t border-line px-3 py-3 text-sm">
         <NavItem
           href="/system/settings"
           icon={icons.settings}
@@ -403,11 +403,11 @@ export default function SidebarNav({
         ) : null}
       </div>
 
-      <form action={signOutAction} className="border-t border-[var(--color-line)] px-3 py-3">
+      <form action={signOutAction} className="border-t border-line px-3 py-3">
         <button
           type="submit"
           title={collapsed ? "Sign out" : undefined}
-          className={`flex w-full items-center gap-3 rounded-lg py-1.5 text-sm font-medium text-[var(--color-text-muted)] hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)] ${
+          className={`flex w-full items-center gap-3 rounded-lg py-1.5 text-sm font-medium text-text-muted hover:bg-accent-soft hover:text-accent ${
             collapsed ? "justify-center px-0" : "px-3"
           }`}
         >

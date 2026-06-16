@@ -171,28 +171,28 @@ export default function EpicTasksClient({
   return (
     <div className="space-y-4">
       {error && (
-        <div role="alert" className="rounded-xl border border-[var(--color-crit)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm text-[var(--color-crit)]">
+        <div role="alert" className="rounded-xl border border-crit bg-panel-soft px-3 py-2 text-sm text-crit">
           {error}
         </div>
       )}
 
       {selectedCount > 0 && (
-        <div className="flex items-center justify-between gap-3 rounded-2xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.08] px-4 py-3 text-sm shadow-sm">
-          <span className="font-semibold text-[var(--color-text)]">
+        <div className="flex items-center justify-between gap-3 rounded-2xl border border-accent/30 bg-accent/[0.08] px-4 py-3 text-sm shadow-sm">
+          <span className="font-semibold text-text">
             {selectedCount} selected
           </span>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={bulkDeleteSelected}
-              className="rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--color-crit)] transition hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+              className="rounded-lg border border-crit bg-transparent px-3 py-1.5 text-xs font-semibold text-crit transition hover:bg-crit hover:text-bg"
             >
               Delete selected
             </button>
             <button
               type="button"
               onClick={() => setSelectedIds(new Set())}
-              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+              className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-text-muted transition hover:border-accent hover:text-accent"
             >
               Clear
             </button>
@@ -212,13 +212,13 @@ export default function EpicTasksClient({
       />
 
       <div className="space-y-1">
-        <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+        <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-text-muted">
           <div className="flex items-center gap-2">
             <input
               type="checkbox"
               checked={allSelected}
               onChange={(e) => toggleSelectAll(e.target.checked)}
-              className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+              className="h-3.5 w-3.5 accent-accent"
               aria-label="Select all tasks"
             />
             <span>Implementation order ({tasks.length})</span>

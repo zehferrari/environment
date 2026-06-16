@@ -131,7 +131,7 @@ export default function SortableTaskList({
       >
         <ul
           aria-label={ariaLabel}
-          className={tableLayout ? "divide-y divide-[var(--color-line)]" : "divide-y divide-[var(--color-line)] rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]"}
+          className={tableLayout ? "divide-y divide-line" : "divide-y divide-line rounded-lg border border-line bg-panel-soft"}
         >
           {order.map((t) => (
             <SortableRow
@@ -159,8 +159,8 @@ export default function SortableTaskList({
   if (!tableLayout) return rows;
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]">
-      <div className="grid min-w-[72rem] grid-cols-[minmax(16rem,1fr)_8rem_10rem_10rem_7rem_7rem_7rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+    <div className="overflow-x-auto rounded-lg border border-line bg-panel-soft">
+      <div className="grid min-w-[72rem] grid-cols-[minmax(16rem,1fr)_8rem_10rem_10rem_7rem_7rem_7rem_2rem] items-center gap-3 border-b border-line px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
         <span>Task</span>
         <span>Status</span>
         <span>Assignee</span>
@@ -225,7 +225,7 @@ function SortableRow({
             router.push(item.href);
           }
         }}
-        className={`grid min-w-[72rem] cursor-pointer grid-cols-[minmax(16rem,1fr)_8rem_10rem_10rem_7rem_7rem_7rem_2rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-[var(--color-panel)] ${item.alertReporter ? "bg-red-500/[0.08]" : statusRowClass(item.status)} ${
+        className={`grid min-w-[72rem] cursor-pointer grid-cols-[minmax(16rem,1fr)_8rem_10rem_10rem_7rem_7rem_7rem_2rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-panel ${item.alertReporter ? "bg-red-500/[0.08]" : statusRowClass(item.status)} ${
           isDragging ? "opacity-50" : ""
         }`}
       >
@@ -236,7 +236,7 @@ function SortableRow({
             {...attributes}
             {...listeners}
             onClick={(event) => event.stopPropagation()}
-            className="cursor-grab select-none rounded px-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)] active:cursor-grabbing"
+            className="cursor-grab select-none rounded px-1 text-text-muted hover:text-text active:cursor-grabbing"
           >
             ⋮⋮
           </button>
@@ -250,14 +250,14 @@ function SortableRow({
               }}
               onChange={() => {}}
               onPointerDown={(event) => event.stopPropagation()}
-              className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+              className="h-4 w-4 shrink-0 accent-text-accent"
               aria-label={`Select ${item.title}`}
             />
           )}
           {showReporterAvatar && item.reporter ? <MessageAvatar actor={item.reporter} size="sm" /> : null}
           <span className="min-w-0 flex-1 truncate">
             {item.workItemKey ? (
-              <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
+              <span className="mr-1 font-mono text-[10px] font-semibold text-text-muted">
                 {item.workItemKey}
               </span>
             ) : null}
@@ -285,7 +285,7 @@ function SortableRow({
             <input type="hidden" name="taskId" value={item.id} />
             <button
               type="submit"
-              className="rounded-md px-1.5 py-1 text-[var(--color-text-muted)] hover:bg-[var(--color-crit)]/10 hover:text-[var(--color-crit)]"
+              className="rounded-md px-1.5 py-1 text-text-muted hover:bg-crit/10 hover:text-crit"
               aria-label={`Move ${item.title} to bin`}
               title="Move to bin"
             >
@@ -310,7 +310,7 @@ function SortableRow({
         aria-label="Drag to reorder"
         {...attributes}
         {...listeners}
-        className="cursor-grab select-none rounded px-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)] active:cursor-grabbing"
+        className="cursor-grab select-none rounded px-1 text-text-muted hover:text-text active:cursor-grabbing"
       >
         ⋮⋮
       </button>
@@ -324,24 +324,24 @@ function SortableRow({
           }}
           onChange={() => {}}
           onPointerDown={(event) => event.stopPropagation()}
-          className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+          className="h-4 w-4 shrink-0 accent-text-accent"
           aria-label={`Select ${item.title}`}
         />
       )}
       <Link href={item.href} className="min-w-0 flex-1 truncate hover:underline">
         {item.workItemKey ? (
-          <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
+          <span className="mr-1 font-mono text-[10px] font-semibold text-text-muted">
             {item.workItemKey}
           </span>
         ) : null}
         {item.title}
       </Link>
-      <div className="flex shrink-0 items-center gap-3 text-xs text-[var(--color-text-muted)]">
+      <div className="flex shrink-0 items-center gap-3 text-xs text-text-muted">
         {showAssignee && item.assigneeName ? (
           <span>@{item.assigneeName}</span>
         ) : null}
         {showStatusBadge && item.status ? (
-          <span className="rounded border border-[var(--color-line)] px-1.5 py-0.5">
+          <span className="rounded border border-line px-1.5 py-0.5">
             {item.status}
           </span>
         ) : null}
@@ -367,7 +367,7 @@ function PersonCell({
   busy?: boolean;
 }) {
   return (
-    <span className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-muted)]">
+    <span className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
       {actor ? (
         <MessageAvatar actor={actor} size="sm" busy={busy} />
       ) : (
@@ -387,10 +387,10 @@ function TimeCell({
   dateOnly?: boolean;
 }) {
   if (!iso) {
-    return <span className="text-right text-xs text-[var(--color-text-muted)]">—</span>;
+    return <span className="text-right text-xs text-text-muted">—</span>;
   }
   return (
-    <span className="flex min-w-0 items-center justify-end gap-1.5 text-xs text-[var(--color-text-muted)]">
+    <span className="flex min-w-0 items-center justify-end gap-1.5 text-xs text-text-muted">
       <time
         dateTime={iso}
         title={iso}
@@ -426,10 +426,10 @@ function StatusCell({ status, archivedAt }: { status: string | null; archivedAt?
 function ElapsedCell({ item, now }: { item: SortableTaskItem; now: number | null }) {
   const elapsed = elapsedMsForTask(item, now);
   if (elapsed === null) {
-    return <span className="text-right text-xs text-[var(--color-text-muted)]">—</span>;
+    return <span className="text-right text-xs text-text-muted">—</span>;
   }
   return (
-    <span className="flex items-center justify-end gap-1.5 text-xs tabular-nums text-[var(--color-text-muted)]">
+    <span className="flex items-center justify-end gap-1.5 text-xs tabular-nums text-text-muted">
       <TimerIcon />
       <span>{formatElapsed(elapsed)}</span>
     </span>
@@ -474,7 +474,7 @@ function statusRowClass(status: string | null | undefined) {
   if (status === "In Progress") return "border-l-4 border-l-emerald-400 bg-emerald-500/[0.11]";
   if (status === "Review") return "border-l-4 border-l-amber-400 bg-amber-500/[0.13]";
   if (status === "Done") return "border-l-4 border-l-lime-400 bg-lime-500/[0.10]";
-  if (status === "Backlog") return "border-l-4 border-l-slate-400 bg-[var(--color-panel-soft)]";
+  if (status === "Backlog") return "border-l-4 border-l-slate-400 bg-panel-soft";
   return "";
 }
 

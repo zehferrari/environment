@@ -70,15 +70,15 @@ export default async function ProjectChangesPage({
 
   return (
     <div className="space-y-4">
-      <form className="flex flex-wrap items-end gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-3 text-sm">
+      <form className="flex flex-wrap items-end gap-3 rounded-xl border border-line bg-panel p-3 text-sm">
         <label className="block">
-          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+          <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
             Branch
           </span>
           <select
             name="branch"
             defaultValue={selectedBranch}
-            className="h-9 min-w-[16rem] rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 text-xs outline-none focus:border-[var(--color-accent)]"
+            className="h-9 min-w-[16rem] rounded-lg border border-line bg-bg px-2 text-xs outline-none focus:border-accent"
           >
             <option value="">All branches</option>
             {branches.map((b) => (
@@ -91,24 +91,24 @@ export default async function ProjectChangesPage({
         </label>
         <button
           type="submit"
-          className="h-9 rounded-lg bg-[var(--color-accent)] px-3 text-xs font-semibold text-[var(--color-bg)] hover:opacity-90"
+          className="h-9 rounded-lg bg-accent px-3 text-xs font-semibold text-bg hover:opacity-90"
         >
           Apply
         </button>
-        <span className="ml-auto self-center text-xs text-[var(--color-text-muted)]">
+        <span className="ml-auto self-center text-xs text-text-muted">
           {commits.length} commit{commits.length === 1 ? "" : "s"}
           {selectedBranch ? "" : " across all branches"}
         </span>
       </form>
 
       {error ? (
-        <p className="rounded-xl border border-[var(--color-warn)]/30 bg-[var(--color-warn)]/[0.06] px-4 py-3 text-sm text-[var(--color-text-muted)]">
+        <p className="rounded-xl border border-warn/30 bg-warn/[0.06] px-4 py-3 text-sm text-text-muted">
           {error}
         </p>
       ) : null}
 
       {!error && commits.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-[var(--color-line)] bg-[var(--color-panel-soft)]/30 px-4 py-6 text-center text-sm text-[var(--color-text-muted)]">
+        <p className="rounded-xl border border-dashed border-line bg-panel-soft/30 px-4 py-6 text-center text-sm text-text-muted">
           No commits found.
         </p>
       ) : null}
@@ -117,37 +117,37 @@ export default async function ProjectChangesPage({
 
       <ol className="space-y-3">
         {commits.map((commit) => (
-          <li key={commit.hash} className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-4 py-3">
+          <li key={commit.hash} className="rounded-xl border border-line bg-panel-soft px-4 py-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-muted)]">
-                  <span className="font-mono text-[var(--color-accent)]">{commit.shortHash}</span>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-text-muted">
+                  <span className="font-mono text-accent">{commit.shortHash}</span>
                   <span>{commit.authorName}</span>
                   <MessageTimestamp value={commit.authoredAt} />
                 </div>
-                <h4 className="mt-1 break-words text-sm font-semibold text-[var(--color-text)]">
+                <h4 className="mt-1 break-words text-sm font-semibold text-text">
                   {commit.subject}
                 </h4>
               </div>
-              <span className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1 text-[11px] text-[var(--color-text-muted)]">
+              <span className="rounded-md border border-line bg-bg px-2 py-1 text-[11px] text-text-muted">
                 {commit.files.length} {commit.files.length === 1 ? "file" : "files"}
               </span>
             </div>
             {commit.files.length > 0 ? (
-              <ul className="mt-3 max-h-56 space-y-1 overflow-auto border-t border-[var(--color-line)] pt-3 text-xs">
+              <ul className="mt-3 max-h-56 space-y-1 overflow-auto border-t border-line pt-3 text-xs">
                 {commit.files.map((file, index) => (
                   <li
                     key={`${commit.hash}:${index}`}
                     className={`grid grid-cols-[5rem_minmax(0,1fr)] gap-2 rounded-md px-1 py-0.5 ${
                       selectedKey === `${commit.hash}:${file.path}`
-                        ? "bg-[var(--color-accent)]/[0.10]"
+                        ? "bg-accent/[0.10]"
                         : ""
                     }`}
                   >
-                    <span className="text-[var(--color-text-muted)]">{changeLabel(file.status)}</span>
+                    <span className="text-text-muted">{changeLabel(file.status)}</span>
                     <Link
                       href={fileHref(commit.hash, file.path)}
-                      className="min-w-0 break-all font-mono text-[var(--color-text)] transition hover:text-[var(--color-accent)]"
+                      className="min-w-0 break-all font-mono text-text transition hover:text-accent"
                     >
                       {file.path}
                     </Link>

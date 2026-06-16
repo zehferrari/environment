@@ -95,9 +95,9 @@ export default function NativePmNotificationToggle({ compact = false }: { compac
       title={title}
       className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition ${
         state.enabled
-          ? "border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
-          : "border-[var(--color-line)] bg-[var(--color-panel)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
-      } ${disabled ? "cursor-not-allowed opacity-60 hover:border-[var(--color-line)] hover:text-[var(--color-text-muted)]" : "cursor-pointer"}`}
+          ? "border-accent bg-accent/10 text-accent"
+          : "border-line bg-panel text-text-muted hover:border-accent hover:text-accent"
+      } ${disabled ? "cursor-not-allowed opacity-60 hover:border-line hover:text-text-muted" : "cursor-pointer"}`}
     >
       <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />

@@ -213,13 +213,13 @@ export default async function AgentProfilePage({
   return (
     <div className="space-y-6">
       <nav className="text-sm">
-        <Link href="/agents" className="text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:underline">← Agents</Link>
+        <Link href="/agents" className="text-text-muted hover:text-text hover:underline">← Agents</Link>
       </nav>
 
-      <header className="rounded-[28px] border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm">
+      <header className="rounded-[28px] border border-line bg-panel p-5 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-4">
-            <div className="grid h-20 w-20 shrink-0 place-items-center overflow-hidden rounded-3xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-3xl font-semibold">
+            <div className="grid h-20 w-20 shrink-0 place-items-center overflow-hidden rounded-3xl border border-line bg-panel-soft text-3xl font-semibold">
               {avatarSrc ? (
                 <img src={avatarSrc} alt={`${agent.name} avatar`} decoding="async" className="h-full w-full object-cover" />
               ) : live?.avatar_url ? (
@@ -227,18 +227,18 @@ export default async function AgentProfilePage({
               ) : (live?.avatar ?? agent.name.slice(0, 1))}
             </div>
             <div className="min-w-0">
-              <p className="font-mono text-xs text-[var(--color-text-muted)]">@{agent.slug}</p>
+              <p className="font-mono text-xs text-text-muted">@{agent.slug}</p>
               <h1 className="truncate text-3xl font-semibold tracking-tight">{agent.name}</h1>
               <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                <span className="rounded-full bg-[var(--color-accent-soft)] px-2 py-0.5 text-[var(--color-accent)]">{status}</span>
-                <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">{agent.role}</span>
-                <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">gateway {(live?.gateway_listeners ?? [agent.gatewayPort]).filter(Boolean).join(", ") || "—"}</span>
-                <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">idle {formatIdle(live?.session_idle_s)}</span>
-                <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5">{agent.user ? `PM user: ${agent.user.username}` : "No PM user"}</span>
+                <span className="rounded-full bg-accent-soft px-2 py-0.5 text-accent">{status}</span>
+                <span className="rounded-full border border-line px-2 py-0.5">{agent.role}</span>
+                <span className="rounded-full border border-line px-2 py-0.5">gateway {(live?.gateway_listeners ?? [agent.gatewayPort]).filter(Boolean).join(", ") || "—"}</span>
+                <span className="rounded-full border border-line px-2 py-0.5">idle {formatIdle(live?.session_idle_s)}</span>
+                <span className="rounded-full border border-line px-2 py-0.5">{agent.user ? `PM user: ${agent.user.username}` : "No PM user"}</span>
               </div>
             </div>
           </div>
-          <div className={`rounded-full px-3 py-1 text-xs ${canEdit ? "bg-[var(--color-ok)]/10 text-[var(--color-ok)]" : "bg-[var(--color-warn)]/10 text-[var(--color-warn)]"}`}>
+          <div className={`rounded-full px-3 py-1 text-xs ${canEdit ? "bg-ok/10 text-ok" : "bg-warn/10 text-warn"}`}>
             {canEdit ? "Editable by you" : "Read-only for you"}
           </div>
         </div>
@@ -260,9 +260,9 @@ export default async function AgentProfilePage({
 
               <Panel title="Profile audit history">
                 {audit.length === 0 ? (
-                  <p className="text-sm text-[var(--color-text-muted)]">No profile edits recorded yet.</p>
+                  <p className="text-sm text-text-muted">No profile edits recorded yet.</p>
                 ) : (
-                  <ul className="divide-y divide-[var(--color-line)] text-sm">
+                  <ul className="divide-y divide-line text-sm">
                     {audit.map((row) => {
                       const payload = row.payload ? JSON.parse(row.payload) as { file?: string; shaBefore?: string; shaAfter?: string; byteDelta?: number; diff?: string } : {};
                       const actor = serializeActivityActor(row.user) ?? systemActor;
@@ -275,8 +275,8 @@ export default async function AgentProfilePage({
                               <strong>{actorDisplayName(actor)}</strong> edited <span className="font-mono">{payload.file ?? row.targetFile}</span>
                             </span>
                           </div>
-                          <div className="mt-1 font-mono text-xs text-[var(--color-text-muted)]">{payload.shaBefore?.slice(0, 8)} → {payload.shaAfter?.slice(0, 8)} · Δ {payload.byteDelta ?? 0} bytes</div>
-                          {payload.diff ? <details className="mt-2"><summary className="cursor-pointer text-xs text-[var(--color-accent)]">View diff</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--color-bg)] p-3 text-xs">{payload.diff}</pre></details> : null}
+                          <div className="mt-1 font-mono text-xs text-text-muted">{payload.shaBefore?.slice(0, 8)} → {payload.shaAfter?.slice(0, 8)} · Δ {payload.byteDelta ?? 0} bytes</div>
+                          {payload.diff ? <details className="mt-2"><summary className="cursor-pointer text-xs text-accent">View diff</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-bg p-3 text-xs">{payload.diff}</pre></details> : null}
                         </li>
                       );
                     })}
@@ -314,9 +314,9 @@ export default async function AgentProfilePage({
 
             <div className="space-y-4">
               <Panel title="Open tickets">
-                {tickets.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No open assigned tickets.</p> : (
+                {tickets.length === 0 ? <p className="text-sm text-text-muted">No open assigned tickets.</p> : (
                   <ul className="space-y-2 text-sm">
-                    {tickets.map((t) => <li key={t.key} className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-2"><div className="font-mono text-xs text-[var(--color-text-muted)]">{t.key}</div><div className="font-medium">{t.summary}</div><div className="text-xs text-[var(--color-text-muted)]">{t.status}</div></li>)}
+                    {tickets.map((t) => <li key={t.key} className="rounded-xl border border-line bg-panel-soft p-2"><div className="font-mono text-xs text-text-muted">{t.key}</div><div className="font-medium">{t.summary}</div><div className="text-xs text-text-muted">{t.status}</div></li>)}
                   </ul>
                 )}
               </Panel>
@@ -325,15 +325,15 @@ export default async function AgentProfilePage({
                 {live?.current_task ? (
                   <div className="space-y-1 text-sm">
                     <div className="font-semibold">{live.current_task.ticket ?? live.current_task.heading}</div>
-                    <div className="text-[var(--color-text-muted)]">{live.current_task.heading}</div>
-                    <div className="text-xs text-[var(--color-text-muted)]">status: {live.current_task.status ?? "—"}</div>
+                    <div className="text-text-muted">{live.current_task.heading}</div>
+                    <div className="text-xs text-text-muted">status: {live.current_task.status ?? "—"}</div>
                   </div>
-                ) : <p className="text-sm text-[var(--color-text-muted)]">No active task pinned.</p>}
+                ) : <p className="text-sm text-text-muted">No active task pinned.</p>}
               </Panel>
 
               <Panel title="Lifecycle">
                 <div className="grid gap-2 text-sm">
-                  {services.length === 0 ? <p className="text-[var(--color-text-muted)]">No live agent services reported.</p> : services.map(([name, svc]) => <div key={name} className="flex justify-between gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2"><code className="truncate text-xs">{name.replace(`${slug}/`, "")}</code><span className={svc.is_active === "active" ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.is_active ?? "unknown"}</span></div>)}
+                  {services.length === 0 ? <p className="text-text-muted">No live agent services reported.</p> : services.map(([name, svc]) => <div key={name} className="flex justify-between gap-3 rounded-xl border border-line bg-panel-soft px-3 py-2"><code className="truncate text-xs">{name.replace(`${slug}/`, "")}</code><span className={svc.is_active === "active" ? "text-ok" : "text-crit"}>{svc.is_active ?? "unknown"}</span></div>)}
                 </div>
               </Panel>
 
@@ -345,8 +345,8 @@ export default async function AgentProfilePage({
         )}
         activity={(
           <Panel title="Recent activity">
-            {activity.length === 0 ? <p className="text-sm text-[var(--color-text-muted)]">No activity recorded.</p> : (
-              <ul className="divide-y divide-[var(--color-line)] text-sm">
+            {activity.length === 0 ? <p className="text-sm text-text-muted">No activity recorded.</p> : (
+              <ul className="divide-y divide-line text-sm">
                 {activity.map((row) => {
                   const actor = serializeActivityActor(row.user) ?? systemActor;
                   return (
@@ -356,7 +356,7 @@ export default async function AgentProfilePage({
                         <MessageAvatar actor={actor} size="sm" />
                         <span className="font-medium">{row.kind}</span>
                       </div>
-                      <div className="mt-1 text-xs text-[var(--color-text-muted)]">
+                      <div className="mt-1 text-xs text-text-muted">
                         {actorDisplayName(actor)}
                         {row.task ? ` · ${row.task.title}` : ""}
                       </div>
@@ -373,12 +373,12 @@ export default async function AgentProfilePage({
 }
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
-  return <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm"><h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">{title}</h2>{children}</section>;
+  return <section className="rounded-2xl border border-line bg-panel p-4 shadow-sm"><h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">{title}</h2>{children}</section>;
 }
 
 function ProfileUnavailable({ agent, error }: { agent: string; error: string | null }) {
   return (
-    <div className="rounded-xl border border-[var(--color-warn)]/40 bg-[var(--color-warn)]/10 p-3 text-sm text-[var(--color-warn)]">
+    <div className="rounded-xl border border-warn/40 bg-warn/10 p-3 text-sm text-warn">
       <div className="font-medium">Profile files are not readable by PM.</div>
       <p className="mt-1 text-xs">
         Check read/traverse permissions for <code>/srv/agents/openclaw/{agent}</code>.
@@ -389,10 +389,10 @@ function ProfileUnavailable({ agent, error }: { agent: string; error: string | n
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
-  return <div className="mb-3"><div className="text-[11px] uppercase tracking-wider text-[var(--color-text-muted)]">{label}</div><div className="break-words text-sm font-medium">{value}</div></div>;
+  return <div className="mb-3"><div className="text-[11px] uppercase tracking-wider text-text-muted">{label}</div><div className="break-words text-sm font-medium">{value}</div></div>;
 }
 
 function ChipGrid({ items, empty }: { items: string[]; empty: string }) {
-  if (items.length === 0) return <p className="text-sm text-[var(--color-text-muted)]">{empty}</p>;
-  return <div className="flex flex-wrap gap-2 text-xs">{items.map((item) => <span key={item} className="rounded-full border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-2 py-1">{item}</span>)}</div>;
+  if (items.length === 0) return <p className="text-sm text-text-muted">{empty}</p>;
+  return <div className="flex flex-wrap gap-2 text-xs">{items.map((item) => <span key={item} className="rounded-full border border-line bg-panel-soft px-2 py-1">{item}</span>)}</div>;
 }

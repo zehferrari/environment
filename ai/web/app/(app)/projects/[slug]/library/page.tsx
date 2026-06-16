@@ -45,7 +45,7 @@ export default async function ProjectLibraryPage({
         </h2>
       </div>
       {attachments.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-[var(--color-line)] p-6 text-center text-sm text-[var(--color-text-muted)]">
+        <p className="rounded-xl border border-dashed border-line p-6 text-center text-sm text-text-muted">
           No attachments anywhere on this project yet.
         </p>
       ) : (

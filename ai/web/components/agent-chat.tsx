@@ -78,15 +78,15 @@ export default async function AgentChatSidebar(props: TargetProps) {
     : null;
 
   return (
-    <section className="space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+    <section className="space-y-3 rounded-2xl border border-line bg-panel p-4 shadow-sm">
       <div className="flex items-center justify-between gap-2">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
           Agent chat
         </div>
         <div className="flex items-center gap-2">
           <NativePmNotificationToggle compact />
           {dispatchIsDisabled() ? (
-          <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+          <span className="rounded-full border border-line px-2 py-0.5 text-[10px] uppercase tracking-wider text-text-muted">
             Stored
           </span>
           ) : null}
@@ -94,7 +94,7 @@ export default async function AgentChatSidebar(props: TargetProps) {
       </div>
 
       {targets.length === 0 ? (
-        <p className="text-xs text-[var(--color-text-muted)]">No active agents.</p>
+        <p className="text-xs text-text-muted">No active agents.</p>
       ) : (
         <nav className="flex flex-wrap gap-1.5">
           {targets.map((t) => {
@@ -105,8 +105,8 @@ export default async function AgentChatSidebar(props: TargetProps) {
                 href={`${props.parentPath}?chat=${t.agentSlug}`}
                 className={
                   isSelected
-                    ? "rounded-full bg-[var(--color-accent)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-bg)]"
-                    : "rounded-full border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-2.5 py-1 text-[11px] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
+                    ? "rounded-full bg-accent px-2.5 py-1 text-[11px] font-medium text-bg"
+                    : "rounded-full border border-line bg-panel-soft px-2.5 py-1 text-[11px] text-text-muted hover:border-accent hover:text-text"
                 }
               >
                 {t.username}
@@ -120,7 +120,7 @@ export default async function AgentChatSidebar(props: TargetProps) {
         <>
           <div className="max-h-[630px] space-y-2 overflow-y-auto pr-1">
             {messages.length === 0 ? (
-              <p className="text-xs text-[var(--color-text-muted)]">
+              <p className="text-xs text-text-muted">
                 No messages for @{selected.username}.
               </p>
             ) : (
@@ -145,10 +145,10 @@ export default async function AgentChatSidebar(props: TargetProps) {
                 const fromAgent = m.sender.kind === "agent";
                 const fromCurrentUser = Boolean(currentUserId && m.sender.id === currentUserId);
                 const bubbleTone = fromCurrentUser
-                  ? "border-[var(--color-accent)]/35 bg-[var(--color-accent)]/[0.09]"
+                  ? "border-accent/35 bg-accent/[0.09]"
                   : fromAgent
-                    ? "border-[var(--color-accent)]/25 bg-[var(--color-panel-soft)]"
-                    : "border-[var(--color-line)] bg-[var(--color-panel-soft)]";
+                    ? "border-accent/25 bg-panel-soft"
+                    : "border-line bg-panel-soft";
                 return (
                   <div
                     key={m.id}
@@ -164,8 +164,8 @@ export default async function AgentChatSidebar(props: TargetProps) {
                           fromCurrentUser ? "-right-1.5 border-r border-t" : "-left-1.5 border-b border-l"
                         }`}
                       />
-                      <div className="relative mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--color-text-muted)]">
-                        <span className="truncate font-semibold text-[var(--color-text)]">
+                      <div className="relative mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
+                        <span className="truncate font-semibold text-text">
                           {actorDisplayName(m.sender)}
                           {fromAgent ? " / agent" : ""}
                         </span>
@@ -180,7 +180,7 @@ export default async function AgentChatSidebar(props: TargetProps) {
                             confirmLabel="Delete message"
                             buttonTitle="Delete message"
                             ariaLabel="Delete message"
-                            className="text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 hover:text-[var(--color-crit)] cursor-pointer"
+                            className="text-text-muted opacity-0 transition group-hover:opacity-100 hover:text-crit cursor-pointer"
                           />
                         </div>
                       </div>
@@ -211,7 +211,7 @@ export default async function AgentChatSidebar(props: TargetProps) {
           />
         </>
       ) : (
-        <p className="text-xs text-[var(--color-text-muted)]">
+        <p className="text-xs text-text-muted">
           Select an agent to open the task chat.
         </p>
       )}

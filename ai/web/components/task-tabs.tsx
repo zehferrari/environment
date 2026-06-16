@@ -73,9 +73,9 @@ export function TabsNav({
   return (
     <div
       role="tablist"
-      className={`flex flex-wrap gap-1 border-b border-[var(--color-line)] ${
+      className={`flex flex-wrap gap-1 border-b border-line ${
         sticky
-          ? "sticky top-[70px] z-20 -mx-5 bg-[var(--color-panel)] px-5 shadow-sm"
+          ? "sticky top-[70px] z-20 -mx-5 bg-panel px-5 shadow-sm"
           : ""
       }`}
     >
@@ -91,14 +91,14 @@ export function TabsNav({
             onClick={() => selectTab(tab)}
             className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition ${
               selected
-                ? "border-[var(--color-accent)] text-[var(--color-text)]"
-                : "border-transparent text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                ? "border-accent text-text"
+                : "border-transparent text-text-muted hover:text-text"
             }`}
           >
             <span className="inline-flex items-center gap-1.5">
               <span>{tab}</span>
               {badge > 0 ? (
-                <span className="rounded-full bg-[var(--color-crit)] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                <span className="rounded-full bg-crit px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
                   {badge > 99 ? "99+" : badge}
                 </span>
               ) : null}

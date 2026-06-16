@@ -37,7 +37,7 @@ export default function ChatLayoutClient({
         {mounted && (
           <button
             onClick={toggleSidebar}
-            className="absolute right-4 top-[14px] z-20 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] p-1.5 text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors cursor-pointer"
+            className="absolute right-4 top-[14px] z-20 rounded-lg border border-line bg-panel p-1.5 text-text-muted hover:border-accent hover:text-accent transition-colors cursor-pointer"
             title={showSidebar ? "Hide Archive Sidebar" : "Show Archive Sidebar"}
           >
             {showSidebar ? (

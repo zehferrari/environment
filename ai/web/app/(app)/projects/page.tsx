@@ -91,13 +91,13 @@ export default async function ProjectsPage() {
         <div className="flex items-center gap-2">
           <Link
             href="/projects/archive"
-            className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+            className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-medium text-text-muted hover:border-accent hover:text-accent"
           >
             Archive{archivedCount > 0 ? ` (${archivedCount})` : ""}
           </Link>
           <Link
             href="/projects/bin"
-            className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+            className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-medium text-text-muted hover:border-accent hover:text-accent"
           >
             Bin{deletedCount > 0 ? ` (${deletedCount})` : ""}
           </Link>
@@ -105,7 +105,7 @@ export default async function ProjectsPage() {
       </div>
 
       {projects.length === 0 ? (
-        <p className="text-sm text-[var(--color-text-muted)]">
+        <p className="text-sm text-text-muted">
           No projects yet. Use the + button to create one.
         </p>
       ) : (
@@ -114,22 +114,22 @@ export default async function ProjectsPage() {
             <Link
               key={p.id}
               href={`/projects/${p.slug}`}
-              className="flex flex-col gap-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm transition hover:border-[var(--color-accent)] hover:shadow-md"
+              className="flex flex-col gap-2 rounded-2xl border border-line bg-panel p-4 shadow-sm transition hover:border-accent hover:shadow-md"
             >
               <div>
                 <div className="text-base font-semibold tracking-tight">
                   {p.name}
                 </div>
-                <div className="text-xs text-[var(--color-text-muted)]">
+                <div className="text-xs text-text-muted">
                   /{p.slug}
                 </div>
               </div>
               {p.description ? (
-                <p className="line-clamp-2 text-xs text-[var(--color-text-muted)]">
+                <p className="line-clamp-2 text-xs text-text-muted">
                   {p.description}
                 </p>
               ) : null}
-              <dl className="mt-auto space-y-1 text-[11px] text-[var(--color-text-muted)]">
+              <dl className="mt-auto space-y-1 text-[11px] text-text-muted">
                 {p.repositoryPath ? (
                   <div className="flex gap-2">
                     <dt className="shrink-0 uppercase tracking-wider">Repo</dt>

@@ -43,10 +43,10 @@ export default async function ProjectLayout({
             {project.name}
           </Link>
         </h1>
-        <div className="flex items-center gap-1 text-xs text-[var(--color-text-muted)]">
+        <div className="flex items-center gap-1 text-xs text-text-muted">
           <Link
             href="/projects"
-            className="hover:text-[var(--color-text)] hover:underline"
+            className="hover:text-text hover:underline"
           >
             projects
           </Link>

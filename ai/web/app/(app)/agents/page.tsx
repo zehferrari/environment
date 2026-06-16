@@ -389,7 +389,7 @@ export default async function AgentsPage() {
         </div>
         <Link
           href="/system/activity"
-          className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-4 py-2 text-sm font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+          className="rounded-xl border border-line bg-panel px-4 py-2 text-sm font-medium text-text-muted hover:border-accent hover:text-accent"
         >
           System activity →
         </Link>
@@ -405,7 +405,7 @@ export default async function AgentsPage() {
       </section>
 
       {agents.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-[var(--color-line)] p-4 text-sm text-[var(--color-text-muted)]">
+        <p className="rounded-xl border border-dashed border-line p-4 text-sm text-text-muted">
           No agents have been synced yet. Trigger {`/api/debug/sync`} or wait for the next cycle.
         </p>
       ) : (
@@ -445,7 +445,7 @@ export default async function AgentsPage() {
             return (
               <article
                 key={a.id}
-                className="group relative overflow-hidden rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm transition hover:border-[var(--color-accent)] hover:shadow-md"
+                className="group relative overflow-hidden rounded-2xl border border-line bg-panel p-4 shadow-sm transition hover:border-accent hover:shadow-md"
                 style={{ "--agent-hue": accentFor(a.slug) } as React.CSSProperties}
               >
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_0%_0%,color-mix(in_srgb,var(--agent-hue)_14%,transparent),transparent_42%)]" />
@@ -456,7 +456,7 @@ export default async function AgentsPage() {
                       <span className="absolute -inset-1 animate-pulse rounded-[20px] border-2" style={{ borderColor: ring.ring }} aria-hidden="true" />
                     )}
                     <div
-                      className={`relative grid h-14 w-14 place-items-center overflow-hidden rounded-2xl border bg-[var(--color-panel-soft)] text-xl font-semibold ${tone.grayscale ? "opacity-80 grayscale" : ""}`}
+                      className={`relative grid h-14 w-14 place-items-center overflow-hidden rounded-2xl border bg-panel-soft text-xl font-semibold ${tone.grayscale ? "opacity-80 grayscale" : ""}`}
                       style={{ borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))" }}
                     >
                       {avatarSrc ? (
@@ -465,13 +465,13 @@ export default async function AgentsPage() {
                         <img src={live.avatar_url} alt={`${a.name} avatar`} className="h-full w-full object-cover" />
                       ) : (live?.avatar ?? a.name.slice(0, 1))}
                     </div>
-                    <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide" style={{ color: ring.ring }}>{status}</span>
+                    <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-line bg-panel px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide" style={{ color: ring.ring }}>{status}</span>
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h2 className="truncate text-lg font-semibold tracking-tight">{a.name}</h2>
                     </div>
-                    <p className="font-mono text-xs text-[var(--color-text-muted)]">@{a.slug} · {a.role}</p>
+                    <p className="font-mono text-xs text-text-muted">@{a.slug} · {a.role}</p>
                     <div className="mt-2 grid grid-cols-3 gap-2">
                       <CockpitStat label="Idle" value={formatIdle(live?.session_idle_s)} />
                       <CockpitStat label="Model" value={shortModel(live?.model_primary)} tone={live?.busy_state?.is_busy ? "warn" : undefined} />
@@ -486,27 +486,27 @@ export default async function AgentsPage() {
                   <Metric label="Last action" value={lastActivityLabel(live)} />
                 </div>
 
-                <div className="relative mt-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-2.5">
+                <div className="relative mt-3 rounded-xl border border-line bg-panel-soft p-2.5">
                   <div className="mb-1.5 flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Services</span>
-                    <Link href={`/agents/${a.slug}`} className="text-[10px] font-medium text-[var(--color-accent)] hover:underline">Profile →</Link>
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Services</span>
+                    <Link href={`/agents/${a.slug}`} className="text-[10px] font-medium text-accent hover:underline">Profile →</Link>
                   </div>
                   <AgentServiceControls agent={a.slug} services={agentServices} />
                 </div>
 
                 <div className="relative mt-3 flex flex-wrap items-center gap-2 text-xs">
-                  <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5 text-[var(--color-text-muted)]">{tickets.length} tickets</span>
-                  <span className="rounded-full border border-[var(--color-line)] px-2 py-0.5 text-[var(--color-text-muted)]">{pendingRuns.length} PM turns</span>
+                  <span className="rounded-full border border-line px-2 py-0.5 text-text-muted">{tickets.length} tickets</span>
+                  <span className="rounded-full border border-line px-2 py-0.5 text-text-muted">{pendingRuns.length} PM turns</span>
                   {newestPmRun ? (
                     <span
-                      className="rounded-full border border-[var(--color-line)] px-2 py-0.5 text-[var(--color-text-muted)]"
+                      className="rounded-full border border-line px-2 py-0.5 text-text-muted"
                       title={newestPmLatency ? `send→accepted ${formatLatency(newestPmLatency.sendToAcceptedMs)} · accepted→first ${formatLatency(newestPmLatency.acceptedToFirstTokenMs)} · first→final ${formatLatency(newestPmLatency.firstTokenToFinalMs)}` : undefined}
                     >
                       pm {newestPmRun.status} · {formatAge(newestPmRun.updatedAt)}
                     </span>
                   ) : null}
                   <span className="flex-1" />
-                  <Link href={`/agents/${a.slug}/chat`} className="font-medium text-[var(--color-text-muted)] hover:text-[var(--color-accent)] hover:underline">Chat →</Link>
+                  <Link href={`/agents/${a.slug}/chat`} className="font-medium text-text-muted hover:text-accent hover:underline">Chat →</Link>
                 </div>
               </article>
             );
@@ -515,24 +515,24 @@ export default async function AgentsPage() {
       )}
 
       <section className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-        <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+        <div className="rounded-2xl border border-line bg-panel p-4 shadow-sm">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-sm font-semibold text-[var(--color-text)]">Mission Control Actions</h2>
-              <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+              <h2 className="text-sm font-semibold text-text">Mission Control Actions</h2>
+              <p className="mt-1 text-xs text-text-muted">
                 Agent control changes recorded by PM
               </p>
             </div>
-            <Link href="/system/activity" className="text-xs font-medium text-[var(--color-accent)] hover:underline">
+            <Link href="/system/activity" className="text-xs font-medium text-accent hover:underline">
               Full stream
             </Link>
           </div>
           {recentActions.length === 0 ? (
-            <p className="rounded-xl border border-dashed border-[var(--color-line)] p-4 text-sm text-[var(--color-text-muted)]">
+            <p className="rounded-xl border border-dashed border-line p-4 text-sm text-text-muted">
               No agent actions recorded yet.
             </p>
           ) : (
-            <ul className="divide-y divide-[var(--color-line)] text-sm">
+            <ul className="divide-y divide-line text-sm">
               {recentActions.map((action) => (
                 <li key={action.id} className="py-2.5">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -540,7 +540,7 @@ export default async function AgentsPage() {
                     <MessageAvatar actor={action.actor ?? systemActor} size="sm" />
                     <span className="min-w-0 flex-1 font-medium">{action.label}</span>
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+                  <div className="mt-1 flex flex-wrap gap-2 text-[10px] uppercase tracking-wider text-text-muted">
                     <span>{action.kind}</span>
                     {action.targetAgent ? <span>@{action.targetAgent}</span> : null}
                   </div>
@@ -548,51 +548,51 @@ export default async function AgentsPage() {
               ))}
             </ul>
           )}
-          <p className="mt-3 text-[11px] text-[var(--color-text-muted)]">
+          <p className="mt-3 text-[11px] text-text-muted">
             Total PM audit rows: {totalActivityLogs}
           </p>
         </div>
 
-        <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+        <div className="rounded-2xl border border-line bg-panel p-4 shadow-sm">
           <div className="mb-3">
-            <h2 className="text-sm font-semibold text-[var(--color-text)]">Signals & Sensors</h2>
-            <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+            <h2 className="text-sm font-semibold text-text">Signals & Sensors</h2>
+            <p className="mt-1 text-xs text-text-muted">
               Busy probes and open monitor events from the live Atlas snapshot
             </p>
           </div>
           <div className="space-y-3">
-            <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
+            <div className="rounded-xl border border-line bg-panel-soft p-3">
               <div className="flex items-center justify-between gap-3">
-                <span className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Monitor tick</span>
-                <span className={monitor?.last_tick?.healthy === false ? "text-xs font-semibold text-[var(--color-crit)]" : "text-xs font-semibold text-[var(--color-ok)]"}>
+                <span className="text-xs font-semibold uppercase tracking-wider text-text-muted">Monitor tick</span>
+                <span className={monitor?.last_tick?.healthy === false ? "text-xs font-semibold text-crit" : "text-xs font-semibold text-ok"}>
                   {monitor?.last_tick ? (monitor.last_tick.healthy === false ? "attention" : "healthy") : "unknown"}
                 </span>
               </div>
-              <p className="mt-2 line-clamp-2 text-sm text-[var(--color-text-muted)]">
+              <p className="mt-2 line-clamp-2 text-sm text-text-muted">
                 {monitor?.last_tick?.summary ?? "No monitor tick reported."}
               </p>
               {monitor?.last_tick?.actions?.length ? (
-                <p className="mt-2 font-mono text-[11px] text-[var(--color-text-muted)]">
+                <p className="mt-2 font-mono text-[11px] text-text-muted">
                   actions: {monitor.last_tick.actions.join(", ")}
                 </p>
               ) : null}
             </div>
 
             {openSensorEvents.length === 0 ? (
-              <p className="rounded-xl border border-dashed border-[var(--color-line)] p-4 text-sm text-[var(--color-text-muted)]">
+              <p className="rounded-xl border border-dashed border-line p-4 text-sm text-text-muted">
                 No open sensor events.
               </p>
             ) : (
               <ul className="space-y-2">
                 {openSensorEvents.slice(0, 8).map((event) => (
-                  <li key={event.key ?? `${event.unit}:${event.kind}`} className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm">
+                  <li key={event.key ?? `${event.unit}:${event.kind}`} className="rounded-xl border border-line bg-panel-soft px-3 py-2 text-sm">
                     <div className="flex items-center justify-between gap-3">
                       <span className="truncate font-medium">{event.unit ?? "unknown unit"}</span>
-                      <span className={event.severity === "crit" ? "text-xs font-semibold text-[var(--color-crit)]" : "text-xs font-semibold text-[var(--color-warn)]"}>
+                      <span className={event.severity === "crit" ? "text-xs font-semibold text-crit" : "text-xs font-semibold text-warn"}>
                         {event.severity ?? "warn"}
                       </span>
                     </div>
-                    <div className="mt-1 text-xs text-[var(--color-text-muted)]">
+                    <div className="mt-1 text-xs text-text-muted">
                       {event.kind ?? "sensor"}{typeof event.missed_runs === "number" ? ` · missed ${event.missed_runs}` : ""}
                     </div>
                   </li>
@@ -608,10 +608,10 @@ export default async function AgentsPage() {
 
 function Kpi({ label, value, foot }: { label: string; value: string; foot: string }) {
   return (
-    <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-      <div className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">{label}</div>
+    <div className="rounded-2xl border border-line bg-panel p-4 shadow-sm">
+      <div className="text-xs uppercase tracking-wider text-text-muted">{label}</div>
       <div className="mt-3 text-4xl font-semibold tracking-tight">{value}</div>
-      <div className="mt-2 text-xs text-[var(--color-text-muted)]">{foot}</div>
+      <div className="mt-2 text-xs text-text-muted">{foot}</div>
     </div>
   );
 }
@@ -619,17 +619,17 @@ function Kpi({ label, value, foot }: { label: string; value: string; foot: strin
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[11px] uppercase tracking-wider text-[var(--color-text-muted)]">{label}</div>
+      <div className="text-[11px] uppercase tracking-wider text-text-muted">{label}</div>
       <div className="truncate font-medium" title={value}>{value}</div>
     </div>
   );
 }
 
 function CockpitStat({ label, value, tone }: { label: string; value: string; tone?: "ok" | "warn" }) {
-  const color = tone === "ok" ? "text-[var(--color-ok)]" : tone === "warn" ? "text-[var(--color-warn)]" : "text-[var(--color-text)]";
+  const color = tone === "ok" ? "text-ok" : tone === "warn" ? "text-warn" : "text-text";
   return (
-    <div className="rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-2">
-      <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">{label}</div>
+    <div className="rounded-lg border border-line bg-bg px-2 py-2">
+      <div className="text-[10px] uppercase tracking-wider text-text-muted">{label}</div>
       <div className={`mt-1 truncate font-mono text-xs font-semibold ${color}`} title={value}>{value}</div>
     </div>
   );

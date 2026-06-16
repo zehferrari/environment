@@ -67,7 +67,7 @@ function BlockedBadge({ task }: { task: Task }) {
   if (!task.blockedByKey) return null;
   return (
     <span
-      className="ml-auto inline-flex items-center gap-1 text-[10px] font-semibold text-[var(--color-crit)]"
+      className="ml-auto inline-flex items-center gap-1 text-[10px] font-semibold text-crit"
       title={`Blocked by ${task.blockedByKey} — it must be Done first`}
     >
       <LockGlyph />
@@ -604,13 +604,13 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       {moveError ? (
         <div
           role="alert"
-          className="mb-3 flex items-start justify-between gap-3 rounded border border-[var(--color-danger,#ff5d5d)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm"
+          className="mb-3 flex items-start justify-between gap-3 rounded border border-danger bg-panel-soft px-3 py-2 text-sm"
         >
           <span>{moveError}</span>
           <button
             type="button"
             onClick={() => setMoveError(null)}
-            className="text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            className="text-xs uppercase tracking-wider text-text-muted hover:text-text"
           >
             dismiss
           </button>
@@ -618,17 +618,17 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       ) : null}
 
       {selectedCount > 0 ? (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.08] px-4 py-3 text-sm shadow-sm">
-          <span className="font-semibold text-[var(--color-text)]">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-accent/30 bg-accent/[0.08] px-4 py-3 text-sm shadow-sm">
+          <span className="font-semibold text-text">
             {selectedCount} selected
           </span>
           <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+            <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-text-muted">
               <span>Move to</span>
               <select
                 value={bulkTarget}
                 onChange={(event) => setBulkTarget(event.currentTarget.value)}
-                className="rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+                className="rounded-lg border border-line bg-bg px-2 py-1.5 text-xs text-text outline-none focus:border-accent"
               >
                 {columns.map((column) => (
                   <option key={column.id} value={column.id}>
@@ -640,21 +640,21 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
             <button
               type="button"
               onClick={bulkMoveSelected}
-              className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-bg)] transition hover:opacity-90"
+              className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-bg transition hover:opacity-90"
             >
               Move selected
             </button>
             <button
               type="button"
               onClick={bulkDeleteSelected}
-              className="rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--color-crit)] transition hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+              className="rounded-lg border border-crit bg-transparent px-3 py-1.5 text-xs font-semibold text-crit transition hover:bg-crit hover:text-bg"
             >
               Delete selected
             </button>
             <button
               type="button"
               onClick={() => setSelectedIds(new Set())}
-              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+              className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-text-muted transition hover:border-accent hover:text-accent"
             >
               Clear
             </button>
@@ -663,21 +663,21 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       ) : null}
 
       {focusVisible && workflowFocus.length > 0 ? (
-        <section className="mb-5 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] p-3">
+        <section className="mb-5 rounded-lg border border-line bg-panel p-3">
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <button
                 type="button"
                 onClick={() => setFocusVisible(false)}
-                className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                className="rounded-xl border border-line bg-panel px-3 py-1 text-xs uppercase tracking-wider text-text-muted hover:text-text"
               >
                 Hide Focus
               </button>
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-text-muted">
                 Workflow focus
               </h2>
             </div>
-            <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+            <span className="text-[10px] uppercase tracking-wider text-text-muted">
               feedback → review → start
             </span>
           </div>
@@ -704,7 +704,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
               type="button"
               onClick={() => setFocusVisible(true)}
               aria-pressed={focusVisible}
-              className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              className="rounded-xl border border-line bg-panel px-3 py-1 text-xs uppercase tracking-wider text-text-muted hover:text-text"
             >
               Show Workflow Focus
             </button>
@@ -719,13 +719,13 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                 type="button"
                 onClick={() => setFocusVisible(true)}
                 aria-pressed={focusVisible}
-                className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                className="rounded-xl border border-line bg-panel px-3 py-1 text-xs uppercase tracking-wider text-text-muted hover:text-text"
               >
                 Show Workflow Focus
               </button>
             ) : null}
             {backlogVisible ? (
-              <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
+              <h2 className="text-xs uppercase tracking-wider text-text-muted">
                 Backlog{backlogCount ? ` (${backlogCount})` : ""} · planning/opinions
               </h2>
             ) : null}
@@ -734,7 +734,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
             type="button"
             onClick={() => setBacklogVisible((v) => !v)}
             aria-pressed={backlogVisible}
-            className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            className="rounded-xl border border-line bg-panel px-3 py-1 text-xs uppercase tracking-wider text-text-muted hover:text-text"
           >
             {backlogVisible ? "Hide Backlog" : "Show Backlog"}
           </button>
@@ -743,12 +743,12 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
         {backlogVisible ? (
           <BacklogDroppable>
             {backlogTasks.length === 0 ? (
-              <p className="px-1 py-6 text-center text-xs text-[var(--color-text-muted)]">
+              <p className="px-1 py-6 text-center text-xs text-text-muted">
                 Backlog is empty. Drag a row here or add a task.
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
                   <div className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -756,7 +756,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                       onChange={(e) => toggleSelectAllBacklog(e.target.checked)}
                       onClick={(e) => e.stopPropagation()}
                       onPointerDown={(e) => e.stopPropagation()}
-                      className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                      className="h-3.5 w-3.5 accent-accent"
                       aria-label="Select all backlog tasks"
                     />
                     <span>Task</span>
@@ -830,7 +830,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
 
       <DragOverlay>
         {active ? (
-          <div className="rounded border border-[var(--color-accent)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm shadow-lg cursor-grabbing">
+          <div className="rounded border border-accent bg-panel-soft px-3 py-2 text-sm shadow-lg cursor-grabbing">
             {active.title}
           </div>
         ) : null}
@@ -862,11 +862,11 @@ function ColumnDroppable({
       ref={setNodeRef}
       className={`min-h-[60vh] rounded-lg border p-2 shadow-sm transition-colors ${columnSurfaceClass(id)} ${
         isOver
-          ? "ring-2 ring-[var(--color-accent)]/50"
+          ? "ring-2 ring-accent/50"
           : ""
       }`}
     >
-      <div className="px-1 pb-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)] flex justify-between items-center">
+      <div className="px-1 pb-2 text-[10px] uppercase tracking-wider text-text-muted flex justify-between items-center">
         <div className="flex items-center gap-1.5 min-w-0">
           {onSelectAll && (
             <input
@@ -875,7 +875,7 @@ function ColumnDroppable({
               onChange={(e) => onSelectAll(e.target.checked)}
               onClick={(e) => e.stopPropagation()}
               onPointerDown={(e) => e.stopPropagation()}
-              className="h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]"
+              className="h-3.5 w-3.5 shrink-0 accent-accent"
               aria-label={`Select all in ${label}`}
             />
           )}
@@ -883,7 +883,7 @@ function ColumnDroppable({
             {label}
           </span>
           {description ? (
-            <span className="hidden truncate normal-case tracking-normal text-[var(--color-text-muted)] xl:inline">
+            <span className="hidden truncate normal-case tracking-normal text-text-muted xl:inline">
               · {description}
             </span>
           ) : null}
@@ -941,17 +941,17 @@ function TaskCard({
             onChange={() => {}}
             onPointerDown={(event) => event.stopPropagation()}
             aria-label={`Select ${task.title}`}
-            className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+            className="h-4 w-4 shrink-0 accent-accent"
           />
           {task.status === "Done" ? (
             <BoardReporterMarker task={task} />
           ) : actor ? (
             <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
           ) : (
-            <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
+            <span className="text-[10px] text-text-muted">unassigned</span>
           )}
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
+            <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-text-muted">
               {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
               <span className="truncate font-mono uppercase tracking-wider">
                 {task.workItemKey ?? "—"}
@@ -959,7 +959,7 @@ function TaskCard({
               {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
             </div>
             <div className="truncate">{task.title}</div>
-            <div className="mt-1 flex items-center gap-2 text-[10px] text-[var(--color-text-muted)]">
+            <div className="mt-1 flex items-center gap-2 text-[10px] text-text-muted">
               <ElapsedClock task={task} now={now} />
               <SubtaskProgress task={task} />
               <time
@@ -988,7 +988,7 @@ function TaskCard({
           <input type="hidden" name="taskId" value={task.id} />
           <button
             type="submit"
-            className="shrink-0 rounded-md p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-crit)]/10 hover:text-[var(--color-crit)]"
+            className="shrink-0 rounded-md p-1 text-text-muted hover:bg-crit/10 hover:text-crit"
             aria-label={`Move ${task.title} to bin`}
             title="Move to bin"
           >
@@ -1025,10 +1025,10 @@ function WorkflowFocusCard({
           ) : actor ? (
             <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
           ) : (
-            <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
+            <span className="text-[10px] text-text-muted">unassigned</span>
           )}
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
+            <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-text-muted">
               <span className={`shrink-0 rounded border px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${columnHeaderPillClass(task.status)}`}>
                 {task.status}
               </span>
@@ -1039,7 +1039,7 @@ function WorkflowFocusCard({
               {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
             </div>
             <div className="mt-0.5 truncate text-sm">{task.title}</div>
-            <div className="mt-1 flex items-center gap-2 text-[10px] text-[var(--color-text-muted)]">
+            <div className="mt-1 flex items-center gap-2 text-[10px] text-text-muted">
               <ElapsedClock task={task} now={now} />
               <SubtaskProgress task={task} />
               <time
@@ -1069,8 +1069,8 @@ function BacklogDroppable({ children }: { children: React.ReactNode }) {
       ref={setNodeRef}
       className={`rounded-lg border py-2 transition-colors ${
         isOver
-          ? "border-[var(--color-accent)] bg-[var(--color-panel-soft)]"
-          : "border-[var(--color-line)] bg-[var(--color-panel)]"
+          ? "border-accent bg-panel-soft"
+          : "border-line bg-panel"
       }`}
     >
       {children}
@@ -1118,9 +1118,9 @@ function BacklogRow({
           router.push(`/projects/${projectSlug}/tasks/${task.id}`);
         }
       }}
-      className={`grid min-w-[68rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-sm transition last:border-b-0 hover:bg-[var(--color-panel-soft)] ${
+      className={`grid min-w-[68rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 py-2 text-sm transition last:border-b-0 hover:bg-panel-soft ${
         isPlanningAssigned(task) ? "bg-yellow-300/[0.08]" : statusRowClass(task.status)
-      } ${isDragging ? "bg-[var(--color-panel-soft)] opacity-40" : ""}`}
+      } ${isDragging ? "bg-panel-soft opacity-40" : ""}`}
     >
       <div className="flex min-w-0 items-center gap-2">
         <input
@@ -1133,7 +1133,7 @@ function BacklogRow({
           onChange={() => {}}
           onPointerDown={(event) => event.stopPropagation()}
           aria-label={`Select ${task.title}`}
-          className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+          className="h-4 w-4 shrink-0 accent-accent"
         />
         <button
           type="button"
@@ -1141,7 +1141,7 @@ function BacklogRow({
           {...listeners}
           onClick={(event) => event.stopPropagation()}
           aria-label="Drag to reorder or move"
-          className="shrink-0 cursor-grab touch-none select-none px-0.5 text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          className="shrink-0 cursor-grab touch-none select-none px-0.5 text-text-muted hover:text-text"
           title="Drag"
         >
           ⠿
@@ -1150,7 +1150,7 @@ function BacklogRow({
         {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
         <span className="min-w-0 truncate">
           {task.workItemKey ? (
-            <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
+            <span className="mr-1 font-mono text-[10px] font-semibold text-text-muted">
               {task.workItemKey}
             </span>
           ) : null}
@@ -1159,7 +1159,7 @@ function BacklogRow({
         <SubtaskProgress task={task} />
         <BlockedBadge task={task} />
       </div>
-      <span className="truncate text-xs text-[var(--color-text-muted)]">
+      <span className="truncate text-xs text-text-muted">
         {task.epicTitle ?? "—"}
       </span>
       <PersonCell actor={task.assignee} emptyLabel="unassigned" />
@@ -1177,7 +1177,7 @@ function BacklogRow({
         <input type="hidden" name="taskId" value={task.id} />
         <button
           type="submit"
-          className="rounded-md px-1.5 py-1 text-[var(--color-text-muted)] hover:bg-[var(--color-crit)]/10 hover:text-[var(--color-crit)]"
+          className="rounded-md px-1.5 py-1 text-text-muted hover:bg-crit/10 hover:text-crit"
           aria-label={`Move ${task.title} to bin`}
           title="Move to bin"
         >
@@ -1193,7 +1193,7 @@ function DeploymentIndicator({ status }: { status: string }) {
   if (icon === "—") {
     return (
       <span
-        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-[var(--color-line)] text-[9px] text-[var(--color-text-muted)] transition hover:scale-110 hover:border-[var(--color-accent)]"
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-line text-[9px] text-text-muted transition hover:scale-110 hover:border-accent"
         title="Deployment: Not Required"
         aria-label="Deployment: Not Required"
       >
@@ -1240,7 +1240,7 @@ function PersonCell({
   emptyLabel: string;
 }) {
   return (
-    <span className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-muted)]">
+    <span className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
       {actor ? (
         <MessageAvatar actor={actor} size="sm" />
       ) : (
@@ -1286,14 +1286,14 @@ function ElapsedClock({
   const elapsed = elapsedMsForTask(task, now);
   if (elapsed === null) {
     if (align === "right") {
-      return <span className="text-right text-xs text-[var(--color-text-muted)]">—</span>;
+      return <span className="text-right text-xs text-text-muted">—</span>;
     }
     return null;
   }
   return (
     <span
       title={elapsedTitle(task)}
-      className={`shrink-0 items-center gap-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-[var(--color-text-muted)] ${
+      className={`shrink-0 items-center gap-1 rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-text-muted ${
         align === "right" ? "ml-auto flex justify-end" : "inline-flex"
       }`}
     >
@@ -1342,7 +1342,7 @@ function DateActorCell({
   dateOnly?: boolean;
 }) {
   return (
-    <span className="flex min-w-0 items-center justify-end gap-1.5 text-xs text-[var(--color-text-muted)]">
+    <span className="flex min-w-0 items-center justify-end gap-1.5 text-xs text-text-muted">
       <time
         dateTime={iso}
         title={iso}
@@ -1371,7 +1371,7 @@ function statusRowClass(status: string) {
   if (status === "In Progress") return "bg-emerald-400/[0.07]";
   if (status === "Review") return "bg-amber-400/[0.09]";
   if (status === "Done") return "bg-lime-400/[0.06]";
-  if (status === "Backlog") return "bg-[var(--color-panel-soft)]";
+  if (status === "Backlog") return "bg-panel-soft";
   return "";
 }
 
@@ -1388,7 +1388,7 @@ function columnSurfaceClass(status: string) {
   if (status === "In Progress") return "border-sky-300/35 bg-sky-500/[0.11]";
   if (status === "Review") return "border-amber-300/40 bg-amber-500/[0.14]";
   if (status === "Done") return "border-lime-300/35 bg-lime-500/[0.10]";
-  return "border-[var(--color-line)] bg-[var(--color-panel)]";
+  return "border-line bg-panel";
 }
 
 function columnHeaderPillClass(status: string) {
