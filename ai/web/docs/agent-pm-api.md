@@ -57,6 +57,14 @@ The bounded packet should include, in a surface-neutral shape:
   rules, expressed as instructions from PM rather than as user-authored
   discussion.
 
+Implementation invariant: PM dispatchers render this packet through
+`buildUnifiedPmTurnSystemPrompt(...)` and send `contextText: null` via
+`nullPmContextText()`. The legacy `contextText` field remains accepted by
+OpenClaw for compatibility, but PM must not use it as hidden supplemental
+state. All context needed to recognize the current PM turn is visible in
+the per-turn system prompt or fetchable through the grant URLs in that
+prompt.
+
 The packet is intentionally bounded: it is not required to inline every
 comment, archive row, attachment body, or activity entry. When detail is
 missing or truncated, the packet must say so and provide the grant URL that
@@ -69,6 +77,63 @@ OpenClaw session memory plus per-turn deltas regressed when session keys
 changed or a workflow/comment surface used a different key. A fresh,
 bounded packet on every turn makes the current PM state recoverable even
 when session continuity is cold, rotated, summarized, or unavailable.
+
+### Surface expectations
+
+- **Direct PM chat (`direct`)**: the trusted prompt names the direct PM
+  chat, session key, reply routing, optional monitor guidance, optional
+  live project/item grant URLs, and optional work-item proposal capability.
+  The primary context packet includes the active transcript, base archive
+  excerpts for continued chats, selected attachment/file context, and
+  project environment context when a project is attached.
+- **Task chat room (`task-chat`)**: the trusted prompt names the task room,
+  current routing, reply formatting, edit/proposal capabilities when
+  granted, a recent discussion/comment hot path, and task/epic/project
+  grant URLs. The current chat message is included as quarantined primary
+  context.
+- **Epic chat room (`epic-chat`)**: the trusted prompt mirrors task chat for
+  the epic room: epic routing, recent hot path, epic/project grant URLs,
+  reply formatting, and any granted edit/proposal capability. The current
+  chat message is included as quarantined primary context.
+- **Task comments and workflow notifications (`task-comment`)**: the
+  trusted prompt includes task routing, workflow capability/rules, commit
+  hygiene, status/action-plan/review constraints, recent hot path, and
+  task/epic/project grant URLs. The current comment or workflow
+  notification is included as the primary PM context packet.
+
+All four surfaces must label `Surface: <kind>` in the unified prompt and
+must be understandable on the first turn of a fresh OpenClaw session.
+
+### Clipping, summarization, and archives
+
+PM context packets use role-based caps from `lib/agents/context/caps.ts`.
+Recent hot-path rows are kept verbatim where possible, older timeline rows
+may be replaced by an attributed `OLDER TIMELINE SUMMARY`, and long bodies
+must include explicit `[truncated: ...]` or `[partial context: ...]` notes.
+Direct chats may include a bounded base-archive chain when a conversation
+continues from an archived room; task/epic context JSON includes live and
+archived discussion in oldest-first order with deleted rows filtered.
+Attachment inline text is budgeted separately and may be omitted with an
+explicit note; attachment metadata and download URLs remain available in
+the scoped read JSON when authorized.
+
+### Verification signals
+
+Acceptance checks should verify both prompt shape and delivery evidence:
+
+- source-level checks that every PM dispatcher uses
+  `buildUnifiedPmTurnSystemPrompt(...)` plus `nullPmContextText()`;
+- dispatch metrics with `sizes.systemPromptChars > 0`,
+  `sizes.contextTextChars: null`, `sizes.textChars`, and a
+  `transcriptMessageCount`/hot-path count where the surface has inline
+  discussion evidence;
+- durable PM-channel run/job rows showing the turn was queued/accepted or
+  failed with a bounded error instead of being silently dropped;
+- stream replay evidence for callback/final frames when the agent produces
+  a visible response; and
+- context grant/auth tests proving agents can fetch full task, epic, or
+  project state without bearer leakage into persisted run, stream, or
+  activity surfaces.
 
 ## Trust boundary and prompt-injection policy
 

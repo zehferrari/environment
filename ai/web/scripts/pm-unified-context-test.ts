@@ -20,22 +20,37 @@ assert(prompt.includes("contextText is intentionally null"));
 assert(prompt.includes("Trust boundary:"));
 assert(prompt.includes("Quarantined PM/user/agent/repository text"));
 
+for (const kind of ["direct", "task-chat", "epic-chat", "task-comment"] as const) {
+  const surfacePrompt = buildUnifiedPmTurnSystemPrompt({
+    kind,
+    trustedPrompt: `Trusted ${kind} envelope`,
+    primaryContext: `${kind} bounded transcript`,
+  });
+  assert(surfacePrompt.includes(`Surface: ${kind}`), `${kind} prompt labels its surface`);
+  assert(surfacePrompt.includes(`${kind} bounded transcript`), `${kind} prompt carries primary per-turn context`);
+  assert(surfacePrompt.includes("must not depend on prior OpenClaw session continuity"), `${kind} prompt states session-memory boundary`);
+}
+
 const root = process.cwd();
 const sources = [
-  "lib/agents/chat/direct/actions.ts",
-  "lib/agents/chat/actions.ts",
-  "lib/agents/workflow/notifications/task.ts",
-  "scripts/notify-pm-workflow-policy.ts",
-].map((file) => readFileSync(join(root, file), "utf8"));
+  { file: "lib/agents/chat/direct/actions.ts", surface: "direct" },
+  { file: "lib/agents/chat/actions.ts", surface: "task/epic chat" },
+  { file: "lib/agents/workflow/notifications/task.ts", surface: "task comment/workflow" },
+  { file: "scripts/notify-pm-workflow-policy.ts", surface: "policy notification" },
+].map((entry) => ({ ...entry, source: readFileSync(join(root, entry.file), "utf8") }));
 
-for (const [i, source] of sources.entries()) {
+for (const { file, surface, source } of sources) {
   assert(
     source.includes("buildUnifiedPmTurnSystemPrompt"),
-    `source ${i} must use the shared PM context builder`,
+    `${surface} (${file}) must use the shared PM context builder`,
+  );
+  assert(
+    source.includes("nullPmContextText()"),
+    `${surface} (${file}) must intentionally send null legacy contextText`,
   );
   assert(
     !/contextText:\s*(userMessage|body|contextText)\b/.test(source),
-    `source ${i} must not dispatch non-null legacy contextText`,
+    `${surface} (${file}) must not dispatch non-null legacy contextText`,
   );
 }
 

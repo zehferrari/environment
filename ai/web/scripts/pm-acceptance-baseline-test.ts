@@ -8,8 +8,8 @@
 //      revoked grants are all rejected; a valid grant authenticates once
 //      and never leaks the bearer back to the caller.
 //   2. Stream replay: persisted stream events rebuild full state after a
-//      "restart", and a reconnect window (afterSeq > 0) still yields the
-//      fully-accumulated final frame.
+//      "restart". Replace+full-text finals may compact older partial rows,
+//      while reconnect replay still yields the fully-accumulated final frame.
 //   3. Agent-down dispatch: a job whose gateway is unreachable retries
 //      under the bounded attempt cap and then lands in `failed` (run +
 //      job), never silently dropped.
@@ -18,6 +18,9 @@
 //      circuits instead of double-posting.
 //   5. No bearer leakage: a grant token never appears in any persisted
 //      streaming surface (run row, stream events, activity payloads).
+//   6. Task-1 dispatch evidence: the first task-comment turn records a
+//      queued run/job with the unified prompt, null legacy contextText, and
+//      dispatch metrics proving the context packet was received by dispatch.
 //
 // Exit 0 on success, non-zero on the first failed assertion.
 
@@ -94,6 +97,9 @@ async function main(): Promise<void> {
     const { pmChannelTargetHasDurableReply } = await import("@/lib/agents/pm-channel/runs");
     const { enqueueOpenClawPmChannelTurn, runPmChannelWorkerOnce } =
       await import("@/lib/agents/pm-channel/jobs");
+    const { buildUnifiedPmTurnSystemPrompt, nullPmContextText } = await import("@/lib/agents/pm-channel/context");
+    const { buildPmChannelDispatchMetrics } = await import("@/lib/agents/pm-channel/openclaw");
+    const { recordPmChannelRunQueued } = await import("@/lib/agents/pm-channel/runs");
 
     // Shared fixtures.
     const project = await db.project.create({ data: { slug: "accept-proj", name: "Acceptance Project" } });
@@ -177,17 +183,22 @@ async function main(): Promise<void> {
       assert(e1.seq < e2.seq && e2.seq < e3.seq && e3.seq < e4.seq, "stream seqs are strictly increasing");
 
       // Cold replay (simulated restart): rebuild from persisted rows only.
+      // Replace+full-text finals are self-contained, so persistence compacts
+      // earlier partial rows and replay still reconstructs the complete reply.
+      const persistedRows = await db.pmChannelStreamEvent.findMany({ where: { runId: run.id }, orderBy: { seq: "asc" } });
+      assertEqual(persistedRows.length, 1, "replace final compacts older partial stream rows");
+      assertEqual(persistedRows[0].seq, e4.seq, "persisted row is the terminal final frame");
       const full = await replayPmChannelStreamFrames({ runId: run.id, target: streamTarget, afterSeq: 0 });
-      assertEqual(full.length, 4, "full replay yields every persisted frame");
+      assertEqual(full.length, 1, "full replay yields every persisted frame after compaction");
       const last = full[full.length - 1];
       assertEqual(last.state.text, "Hello world", "replayed final text is fully reconstructed");
       assertEqual(last.state.status, "done", "replayed final frame is done");
       assertEqual(last.state.runStatus, "complete", "replayed final frame run status complete");
 
-      // Reconnect window: client already saw through e2; only later frames
-      // are emitted, but accumulated state is still correct.
+      // Reconnect window: client already saw through e2; the compacted final
+      // is still after that cursor and carries the full accumulated text.
       const resumed = await replayPmChannelStreamFrames({ runId: run.id, target: streamTarget, afterSeq: e2.seq });
-      assertEqual(resumed.length, 2, "reconnect replay only emits frames after the cursor");
+      assertEqual(resumed.length, 1, "reconnect replay emits the compacted final frame after the cursor");
       assert(resumed.every((f) => (f.state.seq ?? 0) > e2.seq), "reconnect frames are all past the cursor");
       assertEqual(resumed[resumed.length - 1].state.text, "Hello world", "reconnect final frame still fully accumulated");
 
@@ -294,6 +305,66 @@ async function main(): Promise<void> {
       assert(!haystack.includes(secret), "grant token must never appear in any persisted streaming surface");
       assert(!haystack.toLowerCase().includes("bearer "), "no bearer header leaks into persisted streaming surfaces");
       console.log("[pm-acceptance] section 5 (no bearer leakage) OK");
+    }
+
+    // ---- Section 6: first task-comment turn context-received evidence ----
+    {
+      const firstTurnTarget = {
+        kind: "task-comment" as const,
+        agentSlug,
+        taskId: task.id,
+        messageId: `task-1-${randomUUID()}`,
+        projectSlug: project.slug,
+      };
+      const systemPrompt = buildUnifiedPmTurnSystemPrompt({
+        kind: "task-comment",
+        trustedPrompt: "Trusted task workflow envelope with grant URLs",
+        primaryContext: "CURRENT TURN:\nfirst task-comment context packet",
+      });
+      const dispatchArgs = {
+        gatewayPort: 0,
+        agentSlug,
+        sessionKey: "accept-session:task-1",
+        kind: "task-comment" as const,
+        text: "first task comment",
+        contextText: nullPmContextText(),
+        systemPrompt,
+        actor: { id: "actor-x", kind: "agent" as const },
+        replyTarget: firstTurnTarget,
+        projectId: project.id,
+        timeoutMs: 1_000,
+      };
+      const metrics = buildPmChannelDispatchMetrics(dispatchArgs, 1);
+      assert(metrics.sizes.systemPromptChars > 0, "task-1 metrics record prompt/context size");
+      assertEqual(metrics.sizes.contextTextChars, null, "task-1 metrics record null legacy contextText");
+      assertEqual(metrics.sizes.transcriptMessageCount, 1, "task-1 metrics record context-received hot-path evidence");
+
+      const queued = await recordPmChannelRunQueued({
+        target: firstTurnTarget,
+        kind: dispatchArgs.kind,
+        projectId: project.id,
+        gatewayPort: dispatchArgs.gatewayPort,
+        sessionKey: dispatchArgs.sessionKey,
+      });
+      assert(queued != null, "task-1 context turn has durable queued run evidence");
+      await db.pmChannelJob.create({
+        data: {
+          runId: queued!.id,
+          agentSlug,
+          kind: dispatchArgs.kind,
+          payload: JSON.stringify(dispatchArgs),
+          status: "queued",
+        },
+      });
+      const targetKey = `task-comment:${agentSlug}:${task.id}:${firstTurnTarget.messageId}`;
+      const run = await db.pmChannelRun.findUniqueOrThrow({ where: { targetKey } });
+      assertEqual(run.status, "queued", "task-1 context turn has durable queued run evidence");
+      const job = await db.pmChannelJob.findFirstOrThrow({ where: { runId: run.id } });
+      const payload = JSON.parse(job.payload) as { systemPrompt?: string; contextText?: string | null };
+      assert(payload.systemPrompt?.includes("PM PER-TURN CONTEXT CONTRACT"), "task-1 job payload includes unified context contract");
+      assert(payload.systemPrompt?.includes("first task-comment context packet"), "task-1 job payload includes current context packet");
+      assertEqual(payload.contextText, null, "task-1 job payload has null legacy contextText");
+      console.log("[pm-acceptance] section 6 (task-1 context evidence) OK");
     }
 
     await db.$disconnect();

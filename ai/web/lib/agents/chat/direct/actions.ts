@@ -18,6 +18,8 @@ import {
 } from "@/lib/agents/auth/session-bindings";
 import { wakeAgent as wakeGatewayAgent } from "@/lib/pm-consumer/gateway-client";
 import { pmAsyncDispatchEnabled, sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
+import { buildUnifiedPmTurnSystemPrompt, nullPmContextText } from "@/lib/agents/pm-channel/context";
+import { buildPmChannelDispatchMetrics } from "@/lib/agents/pm-channel/openclaw";
 import { recordPmChannelRunEvent, recordPmChannelRunQueued } from "@/lib/agents/pm-channel/runs";
 import {
   buildProjectEnvContext,
@@ -828,32 +830,38 @@ async function handleDirectAgentMessage(args: {
   mark("projectContextMs", stepStartedAt);
   sizes.projectContextChars = projectContextText.length;
 
-  const contextText = [sessionContext, filesContext, projectContextText]
+  const primaryContext = [sessionContext, filesContext, projectContextText]
     .filter(Boolean)
     .join("\n\n");
-  sizes.contextTextChars = contextText.length;
+  sizes.primaryContextChars = primaryContext.length;
 
   stepStartedAt = Date.now();
-  const delivery = await sendOrQueueOpenClawPmChannelTurn({
+  const dispatchArgs = {
     gatewayPort: args.gatewayPort,
     agentSlug: args.agentSlug,
     sessionKey: args.sessionBinding.openclawSessionKey,
-    kind: "direct",
+    kind: "direct" as const,
     text: args.body,
-    contextText,
-    systemPrompt: systemPromptParts.join("\n"),
+    contextText: nullPmContextText(),
+    systemPrompt: buildUnifiedPmTurnSystemPrompt({
+      kind: "direct",
+      trustedPrompt: systemPromptParts.join("\n"),
+      primaryContext,
+    }),
     projectId: args.projectId,
     actor: {
       id: args.userId,
       username: args.actorName,
-      kind: "human",
+      kind: "human" as const,
     },
     replyTarget: {
-      kind: "direct",
+      kind: "direct" as const,
       agentSlug: args.agentSlug,
       messageId: args.messageId,
     },
-  });
+  };
+  const dispatchMetrics = buildPmChannelDispatchMetrics(dispatchArgs);
+  const delivery = await sendOrQueueOpenClawPmChannelTurn(dispatchArgs);
   mark("queueOrDispatchMs", stepStartedAt);
   timings.totalBeforeActivityLogMs = Date.now() - timingStartedAt;
 
@@ -873,6 +881,7 @@ async function handleDirectAgentMessage(args: {
         error: delivery.error ?? null,
         timings,
         sizes,
+        dispatchMetrics,
         includeFilesContext,
         parentFolderCount: parentFolders.length,
       }),
