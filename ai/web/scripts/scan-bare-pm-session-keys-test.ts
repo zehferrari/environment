@@ -10,7 +10,7 @@ import {
   recordCreatedAt,
   scanStore,
   type SessionStore,
-} from "./scan-bare-pm-session-keys.ts";
+} from "./scan-bare-pm-session-keys.js";
 
 // --- key classification ----------------------------------------------------
 assert.ok(isBarePmKey("pm:direct:asdrubal:agent:barekbaal"), "bare pm key detected");

@@ -11,7 +11,7 @@ import {
   rekeyRecord,
   inferAgentIdFromStorePath,
   type SessionStore,
-} from "./repair-pm-session-bindings.ts";
+} from "./repair-pm-session-bindings.js";
 
 function makeRecord(
   sessionKey: string,
