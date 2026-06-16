@@ -32,12 +32,20 @@ type StreamPayload = {
   updatedAt?: number;
 };
 
-type StreamKeyParts = {
+export type ChatStreamTarget = {
   targetKind: TargetKind;
   agentSlug: string;
   messageId: string;
   taskId?: string;
   epicId?: string;
+};
+
+type StreamKeyParts = ChatStreamTarget & {
+  // Optional stable room key for surfaces that should keep one active stream
+  // connection as the active message changes. Direct chat uses this first;
+  // task/epic surfaces continue to key by message target until they are moved
+  // onto the shared manager.
+  roomId?: string;
 };
 
 type SSEEvent = {
@@ -49,6 +57,7 @@ type SSEEvent = {
 type StreamRecord = {
   key: string;
   url: string;
+  activeTargetKey: string;
   state: PersistentPmStreamState;
   listeners: Set<() => void>;
   controller: AbortController | null;
@@ -85,11 +94,37 @@ const stateEventTypes = new Set([
   "token",
   "partial",
   "reasoning",
+  "reasoning.delta",
+  "reasoning.start",
+  "reasoning.end",
+  "content.delta",
+  "content.start",
+  "content.end",
+  "status.typing",
+  "status.idle",
   "final",
   "done",
 ]);
 
 const PersistentPmStreamContext = createContext<PersistentPmStreamStore | null>(null);
+
+export class ChatStreamManager {
+  static roomId(parts: Pick<StreamKeyParts, "targetKind" | "agentSlug" | "taskId" | "epicId">) {
+    return chatStreamRoomId(parts);
+  }
+
+  static targetKey(parts: ChatStreamTarget) {
+    return [parts.targetKind, parts.agentSlug, parts.messageId, parts.taskId ?? "", parts.epicId ?? ""].join(":");
+  }
+
+  static key(parts: StreamKeyParts) {
+    return streamKey(parts);
+  }
+
+  static url(parts: ChatStreamTarget) {
+    return streamUrl(parts);
+  }
+}
 
 function randomJitter(): number {
   return Math.floor(Math.random() * RECONNECT_JITTER_MS * 2) - RECONNECT_JITTER_MS;
@@ -99,11 +134,17 @@ function nextBackoff(attempt: number): number {
   return Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * Math.pow(2, attempt)) + randomJitter();
 }
 
-function streamKey(parts: StreamKeyParts) {
-  return [parts.targetKind, parts.agentSlug, parts.messageId, parts.taskId ?? "", parts.epicId ?? ""].join(":");
+export function chatStreamRoomId(parts: Pick<StreamKeyParts, "targetKind" | "agentSlug" | "taskId" | "epicId">) {
+  if (parts.targetKind === "direct") return `direct:${parts.agentSlug}`;
+  if (parts.targetKind === "epic-chat") return `epic-chat:${parts.agentSlug}:${parts.epicId ?? ""}`;
+  return `${parts.targetKind}:${parts.agentSlug}:${parts.taskId ?? ""}`;
 }
 
-function streamUrl(parts: StreamKeyParts) {
+function streamKey(parts: StreamKeyParts) {
+  return parts.roomId ?? [parts.targetKind, parts.agentSlug, parts.messageId, parts.taskId ?? "", parts.epicId ?? ""].join(":");
+}
+
+function streamUrl(parts: ChatStreamTarget) {
   const params = new URLSearchParams({
     kind: parts.targetKind,
     agentSlug: parts.agentSlug,
@@ -388,7 +429,8 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
       if (!record) {
         record = {
           key,
-          url: streamUrl(parts),
+          url: ChatStreamManager.url(parts),
+          activeTargetKey: ChatStreamManager.targetKey(parts),
           state: initialStreamState(initialStatus),
           listeners: new Set(),
           controller: null,
@@ -402,9 +444,21 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
           coordinatorUnsubscribePeerJoin: null,
         };
         recordsRef.current.set(key, record);
-      } else if (record.cleanupTimer) {
-        clearTimeout(record.cleanupTimer);
-        record.cleanupTimer = null;
+      } else {
+        const nextTargetKey = ChatStreamManager.targetKey(parts);
+        const nextUrl = ChatStreamManager.url(parts);
+        if (record.activeTargetKey !== nextTargetKey) {
+          stopConnection(record);
+          record.activeTargetKey = nextTargetKey;
+          record.url = nextUrl;
+          record.state = initialStreamState(initialStatus);
+          record.lastEventId = "";
+          record.reconnectAttempt = 0;
+        }
+        if (record.cleanupTimer) {
+          clearTimeout(record.cleanupTimer);
+          record.cleanupTimer = null;
+        }
       }
       attachCoordinator(record);
       startConnection(record);
@@ -431,7 +485,7 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
         scheduleCleanup(record);
       }
     },
-  }), [attachCoordinator, scheduleCleanup, startConnection]);
+  }), [attachCoordinator, scheduleCleanup, startConnection, stopConnection]);
 
   useEffect(() => {
     const records = recordsRef.current;

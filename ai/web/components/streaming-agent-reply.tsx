@@ -34,6 +34,7 @@ interface StreamingAgentReplyProps {
   messageId: string;
   taskId?: string;
   epicId?: string;
+  roomId?: string;
   label: string;
   className?: string;
   anonymizeTyping?: boolean;
@@ -66,6 +67,7 @@ export default function StreamingAgentReply({
   messageId,
   taskId,
   epicId,
+  roomId,
   label,
   className = "",
   anonymizeTyping = false,
@@ -73,7 +75,7 @@ export default function StreamingAgentReply({
   onFinal,
   onCanceled,
 }: StreamingAgentReplyProps) {
-  const stream = usePersistentPmStream({ targetKind, agentSlug, messageId, taskId, epicId }, initialStatus);
+  const stream = usePersistentPmStream({ targetKind, agentSlug, messageId, taskId, epicId, roomId }, initialStatus);
   const {
     text,
     reasoning,
@@ -112,7 +114,7 @@ export default function StreamingAgentReply({
 
   useEffect(() => {
     finalNotifiedRef.current = false;
-  }, [targetKind, agentSlug, messageId, taskId, epicId]);
+  }, [targetKind, agentSlug, messageId, taskId, epicId, roomId]);
 
   const notifyFinal = useCallback((payload: StreamState | null, finalStatus: "done" | "error") => {
     if (finalNotifiedRef.current) return;

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { deleteDirectAgentMessage, restoreDirectAgentMessage } from "@/lib/agents/chat/direct/actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
+import { ChatStreamManager } from "@/lib/agents/chat/chat-stream-manager";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
 import {
@@ -186,6 +187,10 @@ export default function ChatMessagesContainer({
 
   const latest = liveMessages.at(-1) ?? null;
   const latestMessageId = latest?.id ?? null;
+  const directChatRoomId = useMemo(
+    () => ChatStreamManager.roomId({ targetKind: "direct", agentSlug }),
+    [agentSlug],
+  );
   const replySettled = settledReplyFor !== null && settledReplyFor === latestMessageId;
   const liveShowAgentProcessing = showAgentProcessing
     && !viewingArchive
@@ -423,6 +428,7 @@ export default function ChatMessagesContainer({
             targetKind="direct"
             agentSlug={agentSlug}
             messageId={latest.id}
+            roomId={directChatRoomId}
             label={agentUsername}
             onFinal={() => {
               // Terminal reply (including silent no-contribution): settle so the

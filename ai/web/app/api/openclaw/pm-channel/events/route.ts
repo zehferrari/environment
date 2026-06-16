@@ -89,8 +89,8 @@ function streamStateFromRun(
   };
 }
 
-function lastEventSeq(req: Request) {
-  const raw = req.headers.get("last-event-id") ?? "";
+function lastEventSeq(req: Request, params: URLSearchParams) {
+  const raw = req.headers.get("last-event-id") ?? params.get("lastSequence") ?? "";
   const seq = Number.parseInt(raw, 10);
   return Number.isFinite(seq) && seq > 0 ? seq : 0;
 }
@@ -99,7 +99,8 @@ export async function GET(req: Request) {
   const session = await auth();
   if (!session?.user?.id) return new Response("Unauthorized", { status: 401 });
 
-  const target = targetFromSearch(new URL(req.url).searchParams);
+  const params = new URL(req.url).searchParams;
+  const target = targetFromSearch(params);
   if (!target) return new Response("Bad request", { status: 400 });
   if (!(await targetExists(target))) return new Response("Not found", { status: 404 });
 
@@ -108,7 +109,7 @@ export async function GET(req: Request) {
     ? await replayPmChannelStreamFrames({
         runId: run.id,
         target,
-        afterSeq: lastEventSeq(req),
+        afterSeq: lastEventSeq(req, params),
       })
     : [];
 
