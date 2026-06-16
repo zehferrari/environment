@@ -43,7 +43,10 @@
     "test:cross-tab-stream-coordinator": "tsx scripts/cross-tab-stream-coordinator-test.ts",
     "test:pm-session-key-canonicalization": "tsx scripts/pm-session-key-canonicalization-test.ts",
     "test:repair-pm-session-bindings": "tsx scripts/repair-pm-session-bindings-test.ts",
-    "repair-pm-session-bindings": "tsx scripts/repair-pm-session-bindings.ts"
+    "repair-pm-session-bindings": "tsx scripts/repair-pm-session-bindings.ts",
+    "test:pm-session-key-restart-continuity": "tsx scripts/pm-session-key-restart-continuity-test.ts",
+    "test:scan-bare-pm-session-keys": "tsx scripts/scan-bare-pm-session-keys-test.ts",
+    "scan-bare-pm-session-keys": "tsx scripts/scan-bare-pm-session-keys.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",
