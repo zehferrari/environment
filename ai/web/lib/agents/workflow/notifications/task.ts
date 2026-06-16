@@ -14,7 +14,7 @@ import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
 import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/ops/pm-silence";
 import { createTaskWorkflowToken } from "@/lib/agents/workflow/token/task";
 import { resolveDirectedFromComment } from "@/lib/agents/ops/directed-targets";
-import { createContextGrantUrl } from "@/lib/agents/context/grants";
+import { createContextGrantUrl, createContextGrantUrlMap } from "@/lib/agents/context/grants";
 import { createWorkItemGrantToken } from "@/lib/agents/workflow/token/work-item";
 import { buildWorkItemPlanningPrompt } from "@/lib/agents/context/project";
 import {
@@ -377,31 +377,14 @@ export async function sendTaskWorkflowNotification(args: {
     currentMessageId: msg.id,
   });
   const fetchBaseUrl = agentCallbackBaseUrl();
-  const [taskGrantUrl, epicGrantUrl, projectGrantUrl] = await Promise.all([
-    createContextGrantUrl({
-      baseUrl: fetchBaseUrl,
-      agentSlug: targetUser.agent.slug,
-      scopeType: "task",
-      scopeId: task.id,
-      turnId: msg.id,
-    }),
-    task.epic?.id
-      ? createContextGrantUrl({
-          baseUrl: fetchBaseUrl,
-          agentSlug: targetUser.agent.slug,
-          scopeType: "epic",
-          scopeId: task.epic.id,
-          turnId: msg.id,
-        })
-      : Promise.resolve(null),
-    createContextGrantUrl({
-      baseUrl: fetchBaseUrl,
-      agentSlug: targetUser.agent.slug,
-      scopeType: "project",
-      scopeId: task.projectId,
-      turnId: msg.id,
-    }),
-  ]);
+  const grantUrls = await createContextGrantUrlMap({
+    baseUrl: fetchBaseUrl,
+    agentSlug: targetUser.agent.slug,
+    projectId: task.projectId,
+    taskId: task.id,
+    epicId: task.epic?.id ?? null,
+    turnId: msg.id,
+  });
   const sessionBinding = await getOrCreateAgentSessionBinding({
     scopeType: "task",
     scopeId: task.id,
@@ -433,9 +416,9 @@ export async function sendTaskWorkflowNotification(args: {
           epicId: task.epic?.id ?? null,
           inlineRecentBlock,
           grantUrls: {
-            task: taskGrantUrl,
-            epic: epicGrantUrl,
-            project: projectGrantUrl,
+            task: grantUrls.task!,
+            epic: grantUrls.epic,
+            project: grantUrls.project,
           },
         }),
         workflowPrompt({
@@ -761,31 +744,14 @@ export async function sendTaskCommentNotifications(args: {
               : (task.status === "Backlog" || task.status === "To Do") && target?.userId === reviewOwnerId
                 ? "action_plan_review_requested"
                 : "monitor_recovery";
-    const [taskGrantUrl, epicGrantUrl, projectGrantUrl] = await Promise.all([
-      createContextGrantUrl({
-        baseUrl: fetchBaseUrl,
-        agentSlug: msg.agentSlug,
-        scopeType: "task",
-        scopeId: task.id,
-        turnId: msg.id,
-      }),
-      task.epic?.id
-        ? createContextGrantUrl({
-            baseUrl: fetchBaseUrl,
-            agentSlug: msg.agentSlug,
-            scopeType: "epic",
-            scopeId: task.epic.id,
-            turnId: msg.id,
-          })
-        : Promise.resolve(null),
-      createContextGrantUrl({
-        baseUrl: fetchBaseUrl,
-        agentSlug: msg.agentSlug,
-        scopeType: "project",
-        scopeId: task.projectId,
-        turnId: msg.id,
-      }),
-    ]);
+    const grantUrls = await createContextGrantUrlMap({
+      baseUrl: fetchBaseUrl,
+      agentSlug: msg.agentSlug,
+      projectId: task.projectId,
+      taskId: task.id,
+      epicId: task.epic?.id ?? null,
+      turnId: msg.id,
+    });
     const workItemPrompt = allowWorkItemManagement
       ? buildWorkItemPlanningPrompt({
           agentSlug: msg.agentSlug,
@@ -816,9 +782,9 @@ export async function sendTaskCommentNotifications(args: {
             epicId: task.epic?.id ?? null,
             inlineRecentBlock,
             grantUrls: {
-              task: taskGrantUrl,
-              epic: epicGrantUrl,
-              project: projectGrantUrl,
+              task: grantUrls.task!,
+              epic: grantUrls.epic,
+              project: grantUrls.project,
             },
           }),
           workflowPrompt({

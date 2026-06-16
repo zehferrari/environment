@@ -9,6 +9,7 @@ import {
   renderDirectedSilenceRule,
   type DirectedDescriptor,
 } from "@/lib/agents/ops/directed-targets";
+import { type ContextGrantUrlMap } from "@/lib/agents/context/grants";
 import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
 import { createEpicWorkflowToken } from "@/lib/agents/workflow/token/epic";
 
@@ -241,10 +242,7 @@ export function buildEpicPlainChatPrompt(epicTitle: string, slug: string): strin
 
 export interface LiveContextAccessEpic {
   baseUrl: string;
-  grantUrls?: {
-    epic: string;
-    project: string;
-  };
+  grantUrls?: ContextGrantUrlMap;
   epicId: string;
   projectId: string;
   workflowMessageId?: string | null;
@@ -281,7 +279,9 @@ function liveContextFetchBlockEpic(args: LiveContextAccessEpic) {
       : missingGrant,
     "",
     "  # Per-task detail when you need to dive into a specific task under this epic:",
-    "  # No arbitrary-task grant is issued. Use the epic/project overview or ask for a task-scoped turn if deep task detail is required.",
+    args.grantUrls?.task
+      ? `  curl -s '${args.grantUrls.task}'`
+      : "  # No arbitrary-task grant is issued. Use the epic/project overview or ask for a task-scoped turn if deep task detail is required.",
     "",
     "Soft-deleted comments / chats are filtered server-side. Full contract: ai/web/docs/agent-pm-api.md.",
   );

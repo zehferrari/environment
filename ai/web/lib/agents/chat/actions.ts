@@ -34,7 +34,7 @@ import { getOrCreateAgentSessionBinding } from "@/lib/agents/auth/session-bindin
 import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
 import { buildUnifiedPmTurnSystemPrompt, nullPmContextText } from "@/lib/agents/pm-channel/context";
 import { buildPmChannelDispatchMetrics } from "@/lib/agents/pm-channel/openclaw";
-import { createContextGrantUrl } from "@/lib/agents/context/grants";
+import { createContextGrantUrlMap } from "@/lib/agents/context/grants";
 import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/chat/discussion-reply-format";
 import { createTaskDescriptionWriteToken } from "@/lib/agents/workflow/chat/task/token";
 import { createEpicDescriptionWriteToken } from "@/lib/agents/workflow/chat/epic/token";
@@ -578,13 +578,16 @@ export async function sendAgentChatMessage(formData: FormData) {
     const gatewayPort = target.gatewayPort;
 
     // Live-fetch envelope: hand the model short-lived scoped grant URLs
-    // instead of a reusable PM-channel bearer token.
+    // instead of a reusable PM-channel bearer token. All PM surfaces mint
+    // this bundle through the shared helper so task/Epic/direct chat use the
+    // same endpoint + scope-binding contract.
     const fetchBaseUrl = agentCallbackBaseUrl();
-    const projectGrantUrl = await createContextGrantUrl({
+    const grantUrls = await createContextGrantUrlMap({
       baseUrl: fetchBaseUrl,
       agentSlug,
-      scopeType: "project",
-      scopeId: project.id,
+      projectId: project.id,
+      taskId: taskId ? task.id : null,
+      epicId: taskId ? task.epicId : epic.id,
       turnId: msg.id,
     });
 
@@ -595,32 +598,6 @@ export async function sendAgentChatMessage(formData: FormData) {
     });
     const previousDispatchedMessageId = sessionBinding.lastDispatchedMessageId;
     const isIncrementalTurn = !!previousDispatchedMessageId;
-    const taskGrantUrl = taskId
-      ? await createContextGrantUrl({
-          baseUrl: fetchBaseUrl,
-          agentSlug,
-          scopeType: "task",
-          scopeId: task.id,
-          turnId: msg.id,
-        })
-      : null;
-    const epicGrantUrl = taskId
-      ? task.epicId
-        ? await createContextGrantUrl({
-            baseUrl: fetchBaseUrl,
-            agentSlug,
-            scopeType: "epic",
-            scopeId: task.epicId,
-            turnId: msg.id,
-          })
-        : null
-      : await createContextGrantUrl({
-          baseUrl: fetchBaseUrl,
-          agentSlug,
-          scopeType: "epic",
-          scopeId: epic.id,
-          turnId: msg.id,
-        });
 
     const prebuiltContext = isIncrementalTurn
       ? null
@@ -642,9 +619,9 @@ export async function sendAgentChatMessage(formData: FormData) {
             taskId: task.id,
             epicId: task.epicId ?? null,
             grantUrls: {
-              task: taskGrantUrl!,
-              epic: epicGrantUrl,
-              project: projectGrantUrl,
+              task: grantUrls.task!,
+              epic: grantUrls.epic,
+              project: grantUrls.project,
             },
           })
         : buildTaskNativeChannelPrompt(task.title, agentSlug, directedDescriptor, {
@@ -654,9 +631,9 @@ export async function sendAgentChatMessage(formData: FormData) {
             taskId: task.id,
             epicId: task.epicId ?? null,
             grantUrls: {
-              task: taskGrantUrl!,
-              epic: epicGrantUrl,
-              project: projectGrantUrl,
+              task: grantUrls.task!,
+              epic: grantUrls.epic,
+              project: grantUrls.project,
             },
           })
       : isIncrementalTurn
@@ -667,8 +644,8 @@ export async function sendAgentChatMessage(formData: FormData) {
             epicId: epic.id,
             workflowMessageId: msg.id,
             grantUrls: {
-              epic: epicGrantUrl!,
-              project: projectGrantUrl,
+              epic: grantUrls.epic!,
+              project: grantUrls.project,
             },
           })
         : buildEpicNativeChannelPrompt(epic.title, agentSlug, directedDescriptor, {
@@ -678,8 +655,8 @@ export async function sendAgentChatMessage(formData: FormData) {
             epicId: epic.id,
             workflowMessageId: msg.id,
             grantUrls: {
-              epic: epicGrantUrl!,
-              project: projectGrantUrl,
+              epic: grantUrls.epic!,
+              project: grantUrls.project,
             },
           }));
 

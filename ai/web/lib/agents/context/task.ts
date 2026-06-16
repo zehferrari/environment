@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { type ContextGrantUrlMap } from "@/lib/agents/context/grants";
 import {
   getAttachmentContext,
   type AttachmentContext,
@@ -259,12 +260,11 @@ export function buildTaskPlainChatPrompt(taskTitle: string, slug: string): strin
 export interface LiveContextAccess {
   /** Absolute base URL where PM is reachable from this host — loopback only. */
   baseUrl: string;
-  /** Prompt-safe, short-lived context grant URLs. Preferred over bearer auth. */
-  grantUrls?: {
-    task: string;
-    epic?: string | null;
-    project: string;
-  };
+  /** Prompt-safe, short-lived context grant URLs. Preferred over bearer auth.
+   * Uses the standardized ContextGrantUrlMap contract so every PM surface
+   * (task chat, epic chat, direct chat, workflow notifications, speculative)
+   * emits consistent grant URL keys. */
+  grantUrls?: ContextGrantUrlMap;
   /** Current task id, embedded into a ready-to-curl URL for convenience. */
   taskId: string;
   /** Optional epic id, when the task lives under an Epic — agent should fetch the Epic too. */

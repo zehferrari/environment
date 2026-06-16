@@ -3,6 +3,12 @@ import { db } from "@/lib/db";
 
 export type ContextScopeType = "task" | "epic" | "project";
 
+export type ContextGrantUrlMap = {
+  project: string;
+  task?: string | null;
+  epic?: string | null;
+};
+
 const DEFAULT_TTL_MS = Number.parseInt(process.env.PM_CONTEXT_GRANT_TTL_MS ?? "900000", 10);
 const DEFAULT_MAX_BYTES = Number.parseInt(process.env.PM_CONTEXT_GRANT_MAX_BYTES ?? "2000000", 10);
 const DEFAULT_MAX_USES = Number.parseInt(process.env.PM_CONTEXT_GRANT_MAX_USES ?? "20", 10);
@@ -67,6 +73,66 @@ export async function createContextGrantUrl(args: {
   const url = new URL(`/api/agents/context/${args.scopeType}/${args.scopeId}`, args.baseUrl);
   url.searchParams.set("grant", token);
   return url.toString();
+}
+
+/**
+ * Mint the standard per-turn live-context URL bundle for every PM surface.
+ *
+ * The contract is intentionally small and consistent across direct chat,
+ * task chat/comment, Epic chat/comment, workflow notifications, and
+ * speculative prebuilds:
+ * - project is always included for same-project state / valid principals;
+ * - task is included only for the current or explicitly linked same-project task;
+ * - epic is included only for the current Epic, parent Epic, or explicitly linked
+ *   same-project Epic;
+ * - every URL carries its own short-lived grant bound to exactly one
+ *   (agentSlug, turnId, scopeType, scopeId) tuple.
+ */
+export async function createContextGrantUrlMap(args: {
+  baseUrl: string;
+  agentSlug: string;
+  turnId: string;
+  projectId: string;
+  taskId?: string | null;
+  epicId?: string | null;
+  runId?: string | null;
+  includes?: string[];
+}): Promise<ContextGrantUrlMap> {
+  const [project, task, epic] = await Promise.all([
+    createContextGrantUrl({
+      baseUrl: args.baseUrl,
+      agentSlug: args.agentSlug,
+      scopeType: "project",
+      scopeId: args.projectId,
+      turnId: args.turnId,
+      runId: args.runId,
+      includes: args.includes,
+    }),
+    args.taskId
+      ? createContextGrantUrl({
+          baseUrl: args.baseUrl,
+          agentSlug: args.agentSlug,
+          scopeType: "task",
+          scopeId: args.taskId,
+          turnId: args.turnId,
+          runId: args.runId,
+          includes: args.includes,
+        })
+      : Promise.resolve(null),
+    args.epicId
+      ? createContextGrantUrl({
+          baseUrl: args.baseUrl,
+          agentSlug: args.agentSlug,
+          scopeType: "epic",
+          scopeId: args.epicId,
+          turnId: args.turnId,
+          runId: args.runId,
+          includes: args.includes,
+        })
+      : Promise.resolve(null),
+  ]);
+
+  return { project, task, epic };
 }
 
 export async function authenticateContextGrant(args: {
