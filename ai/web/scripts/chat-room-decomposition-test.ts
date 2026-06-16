@@ -45,6 +45,20 @@ assert(
 );
 
 assert(
+  decomposed.includes('roomId={ChatStreamManager.roomId({')
+    && decomposed.includes('targetKind: taskId ? "task-chat" : "epic-chat"'),
+  "task/epic action-plan streams must use ChatStreamManager room ids instead of per-message stream keys",
+);
+
+const taskCommentStreams = readFileSync(join(root, "components/task-comment-streams.tsx"), "utf8");
+assert(
+  taskCommentStreams.includes('targetKind="task-comment"')
+    && taskCommentStreams.includes('roomId={ChatStreamManager.roomId({')
+    && taskCommentStreams.includes('router.refresh()'),
+  "task comment streams must use ChatStreamManager room ids and refresh when terminal replies land",
+);
+
+assert(
   decomposed.includes('const VIRTUAL_MESSAGE_ESTIMATED_HEIGHT')
     && decomposed.includes('const VIRTUAL_MESSAGE_OVERSCAN')
     && decomposed.includes('function useVirtualizedMessageRows'),

@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { archiveChatRoom, getAgentChatRoomMessages, sendAgentChatMessage, deleteChatMessage, restoreChatMessage, prebuildAgentChatContext } from "@/lib/agents/chat/actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
+import { ChatStreamManager } from "@/lib/agents/chat/chat-stream-manager";
 import MaximizableTextarea from "@/components/maximizable-textarea";
 import NativePmNotificationToggle from "@/components/native-pm-notification-toggle";
 import { useActiveTab } from "@/components/task-tabs";
@@ -1575,6 +1576,12 @@ const StreamController = React.memo(function StreamController(props: any) {
       taskId={taskId}
       epicId={epicId}
       label={agent.username}
+      roomId={ChatStreamManager.roomId({
+        targetKind: taskId ? "task-chat" : "epic-chat",
+        agentSlug: agent.slug,
+        taskId,
+        epicId,
+      })}
       anonymizeTyping
       onFinal={async ({ text, status }: { text: string; status: string }) => {
         // Clear this agent's typing indicator on ANY terminal status. The old

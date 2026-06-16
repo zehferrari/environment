@@ -42,9 +42,9 @@ export type ChatStreamTarget = {
 
 type StreamKeyParts = ChatStreamTarget & {
   // Optional stable room key for surfaces that should keep one active stream
-  // connection as the active message changes. Direct chat uses this first;
-  // task/epic surfaces continue to key by message target until they are moved
-  // onto the shared manager.
+  // connection as the active message changes. Direct chat, task/epic action
+  // plan rooms, and task-comment rooms use this to preserve one manager-owned
+  // stream per logical room while retargeting to the newest message.
   roomId?: string;
 };
 

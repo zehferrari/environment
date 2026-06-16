@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { archiveChatRoom, getAgentChatRoomMessages, sendAgentChatMessage, deleteChatMessage, restoreChatMessage, prebuildAgentChatContext } from "@/lib/agents/chat/actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
+import { ChatStreamManager } from "@/lib/agents/chat/chat-stream-manager";
 import MaximizableTextarea from "@/components/maximizable-textarea";
 import { useActiveTab } from "@/components/task-tabs";
 import {
@@ -1207,6 +1208,12 @@ export default function ChatRoom({
             taskId={taskId}
             epicId={epicId}
             label={agent.username}
+            roomId={ChatStreamManager.roomId({
+              targetKind: taskId ? "task-chat" : "epic-chat",
+              agentSlug: agent.slug,
+              taskId,
+              epicId,
+            })}
             anonymizeTyping
             onFinal={async ({ text, status }) => {
               if (status !== "done") return;

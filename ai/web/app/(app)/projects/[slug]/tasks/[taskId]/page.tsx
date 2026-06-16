@@ -69,7 +69,7 @@ import TaskChecklist from "@/components/task-checklist";
 import AttachmentList from "@/components/attachment-list";
 import AttachmentUploadFab from "@/components/attachment-upload-fab";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
-import StreamingAgentReply from "@/components/streaming-agent-reply";
+import TaskCommentStreams from "@/components/task-comment-streams";
 import ChatRoom from "@/components/chat-room";
 import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activity-timeline";
 import TaskChangesPanel from "@/components/task-changes-panel";
@@ -2238,21 +2238,13 @@ export default async function TaskDetailPage({
             </ul>
           )}
 
-          {pendingCommentMessages.length > 0 ? (
-            <div className="mt-3 space-y-2">
-              {pendingCommentMessages.map((message) => (
-                <StreamingAgentReply
-                  key={message.id}
-                  targetKind="task-comment"
-                  agentSlug={message.agentSlug}
-                  taskId={task.id}
-                  messageId={message.id}
-                  label={`@${message.agentSlug}`}
-                  anonymizeTyping
-                />
-              ))}
-            </div>
-          ) : null}
+          <TaskCommentStreams
+            taskId={task.id}
+            messages={pendingCommentMessages.map((message) => ({
+              id: message.id,
+              agentSlug: message.agentSlug,
+            }))}
+          />
           {task.comments.length > 0 || pendingCommentMessages.length > 0 ? (
             <AutoScrollToLatest
               whenTab="Comments"
