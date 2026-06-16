@@ -9,8 +9,8 @@ import {
   renderDirectedSilenceRule,
   type DirectedDescriptor,
 } from "@/lib/agents/ops/directed-targets";
-import { type ContextGrantUrlMap } from "@/lib/agents/context/grants";
 import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
+import { clip, clipWithMeta, renderBudgetedTimeline } from "@/lib/agents/context/budget";
 import { createEpicWorkflowToken } from "@/lib/agents/workflow/token/epic";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
@@ -83,23 +83,6 @@ export type EpicAgentContextPacket = {
 };
 
 type UserLabel = { username: string | null; kind?: string | null } | null | undefined;
-
-type ClipResult = { text: string; truncated: boolean; omittedChars: number };
-
-function clipWithMeta(value: string | null | undefined, max = 4000): ClipResult {
-  const text = (value ?? "").trim();
-  if (text.length <= max) return { text, truncated: false, omittedChars: 0 };
-  const omittedChars = text.length - max;
-  return {
-    text: `${text.slice(0, max).trimEnd()}\n[truncated: ${omittedChars} more chars]`,
-    truncated: true,
-    omittedChars,
-  };
-}
-
-function clip(value: string | null | undefined, max = 4000) {
-  return clipWithMeta(value, max).text;
-}
 
 function formatDate(value: Date | string | null | undefined) {
   if (!value) return null;
@@ -242,7 +225,10 @@ export function buildEpicPlainChatPrompt(epicTitle: string, slug: string): strin
 
 export interface LiveContextAccessEpic {
   baseUrl: string;
-  grantUrls?: ContextGrantUrlMap;
+  grantUrls?: {
+    epic?: string | null;
+    project?: string | null;
+  };
   epicId: string;
   projectId: string;
   workflowMessageId?: string | null;
@@ -279,9 +265,7 @@ function liveContextFetchBlockEpic(args: LiveContextAccessEpic) {
       : missingGrant,
     "",
     "  # Per-task detail when you need to dive into a specific task under this epic:",
-    args.grantUrls?.task
-      ? `  curl -s '${args.grantUrls.task}'`
-      : "  # No arbitrary-task grant is issued. Use the epic/project overview or ask for a task-scoped turn if deep task detail is required.",
+    "  # No arbitrary-task grant is issued. Use the epic/project overview or ask for a task-scoped turn if deep task detail is required.",
     "",
     "Soft-deleted comments / chats are filtered server-side. Full contract: ai/web/docs/agent-pm-api.md.",
   );
@@ -826,26 +810,18 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
     }
   }
 
-  let truncatedBodies = 0;
   lines.push("", "RELATED TIMELINE (oldest to newest):");
-  if (packet.timeline.length === 0) {
-    lines.push("(none)");
-  } else {
-    for (const item of packet.timeline) {
-      const kind = item.kind ? ` ${item.kind}` : "";
-      const clipped = clipWithMeta(item.body, item.type === "activity" ? packet.caps.maxActivityBody : packet.caps.maxTimelineBody);
-      if (clipped.truncated) truncatedBodies += 1;
-      lines.push(
-        `[${item.createdAt}] ${item.type}${kind} ${item.actor} (${item.id}):`,
-        clipped.text,
-        "",
-      );
+  const budgetedTimeline = renderBudgetedTimeline(packet.timeline, packet.caps);
+  lines.push(...budgetedTimeline.lines);
+  if (budgetedTimeline.truncatedBodies > 0 || budgetedTimeline.summarizedItems > 0) {
+    const parts = [];
+    if (budgetedTimeline.truncatedBodies > 0) {
+      parts.push(`${budgetedTimeline.truncatedBodies} timeline bodies were clipped above; each clip annotates how many characters were omitted`);
     }
-  }
-  if (truncatedBodies > 0) {
-    lines.push(
-      `[partial context: ${truncatedBodies} timeline bodies were clipped above; each clip annotates how many characters were omitted]`,
-    );
+    if (budgetedTimeline.summarizedItems > 0) {
+      parts.push(`${budgetedTimeline.summarizedItems} older timeline rows were summarized with attribution/timestamps; recent rows remain verbatim`);
+    }
+    lines.push(`[partial context: ${parts.join("; ")}]`);
   }
 
   lines.push(

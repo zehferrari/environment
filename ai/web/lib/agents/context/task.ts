@@ -1,5 +1,4 @@
 import { db } from "@/lib/db";
-import { type ContextGrantUrlMap } from "@/lib/agents/context/grants";
 import {
   getAttachmentContext,
   type AttachmentContext,
@@ -11,6 +10,7 @@ import {
   type DirectedDescriptor,
 } from "@/lib/agents/ops/directed-targets";
 import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
+import { clip, clipWithMeta, renderBudgetedTimeline } from "@/lib/agents/context/budget";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
@@ -97,23 +97,6 @@ export type AgentContextPacket = {
 };
 
 type UserLabel = { username: string | null; kind?: string | null } | null | undefined;
-
-type ClipResult = { text: string; truncated: boolean; omittedChars: number };
-
-function clipWithMeta(value: string | null | undefined, max = 4000): ClipResult {
-  const text = (value ?? "").trim();
-  if (text.length <= max) return { text, truncated: false, omittedChars: 0 };
-  const omittedChars = text.length - max;
-  return {
-    text: `${text.slice(0, max).trimEnd()}\n[truncated: ${omittedChars} more chars]`,
-    truncated: true,
-    omittedChars,
-  };
-}
-
-function clip(value: string | null | undefined, max = 4000) {
-  return clipWithMeta(value, max).text;
-}
 
 function formatDate(value: Date | string | null | undefined) {
   if (!value) return null;
@@ -260,11 +243,12 @@ export function buildTaskPlainChatPrompt(taskTitle: string, slug: string): strin
 export interface LiveContextAccess {
   /** Absolute base URL where PM is reachable from this host — loopback only. */
   baseUrl: string;
-  /** Prompt-safe, short-lived context grant URLs. Preferred over bearer auth.
-   * Uses the standardized ContextGrantUrlMap contract so every PM surface
-   * (task chat, epic chat, direct chat, workflow notifications, speculative)
-   * emits consistent grant URL keys. */
-  grantUrls?: ContextGrantUrlMap;
+  /** Prompt-safe, short-lived context grant URLs. Preferred over bearer auth. */
+  grantUrls?: {
+    task?: string | null;
+    epic?: string | null;
+    project?: string | null;
+  };
   /** Current task id, embedded into a ready-to-curl URL for convenience. */
   taskId: string;
   /** Optional epic id, when the task lives under an Epic — agent should fetch the Epic too. */
@@ -874,27 +858,19 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     }
   }
 
-  let truncatedBodies = 0;
   lines.push("", "RELATED TIMELINE (oldest to newest):");
-  if (packet.timeline.length === 0) {
-    lines.push("(none)");
-  } else {
-    for (const item of packet.timeline) {
-      const kind = item.kind ? ` ${item.kind}` : "";
-      const clipped = clipWithMeta(item.body, item.type === "activity" ? packet.caps.maxActivityBody : packet.caps.maxTimelineBody);
-      if (clipped.truncated) truncatedBodies += 1;
-      lines.push(
-        `[${item.createdAt}] ${item.type}${kind} ${item.actor} (${item.id}):`,
-        clipped.text,
-        "",
-      );
-    }
-  }
+  const budgetedTimeline = renderBudgetedTimeline(packet.timeline, packet.caps);
+  lines.push(...budgetedTimeline.lines);
 
-  if (truncatedBodies > 0) {
-    lines.push(
-      `[partial context: ${truncatedBodies} timeline bodies were clipped above; each clip annotates how many characters were omitted]`,
-    );
+  if (budgetedTimeline.truncatedBodies > 0 || budgetedTimeline.summarizedItems > 0) {
+    const parts = [];
+    if (budgetedTimeline.truncatedBodies > 0) {
+      parts.push(`${budgetedTimeline.truncatedBodies} timeline bodies were clipped above; each clip annotates how many characters were omitted`);
+    }
+    if (budgetedTimeline.summarizedItems > 0) {
+      parts.push(`${budgetedTimeline.summarizedItems} older timeline rows were summarized with attribution/timestamps; recent rows remain verbatim`);
+    }
+    lines.push(`[partial context: ${parts.join("; ")}]`);
   }
 
   lines.push(

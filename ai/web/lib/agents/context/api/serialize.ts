@@ -1,8 +1,10 @@
 // JSON serializers for the agent-facing PM read API.
 //
-// These are intentionally data-only — no markdown rendering, no clipping,
-// no manifest preamble. Agents fetch JSON they can parse and quote from
-// directly. The output shape is documented in
+// These are intentionally data-only — no markdown rendering and no
+// manifest preamble. Agents fetch JSON they can parse and quote from
+// directly. Large text fields are clipped with explicit markers so the
+// live-fetch endpoints obey the same budget discipline as rendered
+// native context packets. The output shape is documented in
 // ai/web/docs/agent-pm-api.md and is the contract agents code against.
 //
 // Soft-delete (HOMELAB-41 / item 2) is enforced HERE the same way the
@@ -11,9 +13,9 @@
 // regardless of which path serves it.
 //
 // Sized for 1M-token-window callers (Claude Opus 4.7 / OpenAI gpt-5.5).
-// No per-body clipping — full bodies returned. Older content beyond the
-// row caps below will be omitted; if you need history older than the
-// caps, page via ?before=<isoTimestamp> (Phase 2 — not yet implemented).
+// Older content beyond the row caps below will be omitted; if you need
+// history older than the caps, page via ?before=<isoTimestamp> (Phase 2
+// — not yet implemented).
 
 import { db } from "@/lib/db";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
@@ -26,8 +28,17 @@ const MAX_ARCHIVED_CHATS = 2000;
 const MAX_ACTIVITY = 500;
 const MAX_ATTACHMENTS = 200;
 const ARCHIVE_CHAIN_DEPTH = 8;
+const API_TIMELINE_BODY_MAX = 24000;
+const API_ACTIVITY_PAYLOAD_MAX = 12000;
+const API_DESCRIPTION_MAX = 60000;
 
 type ActorLite = { username: string | null; kind: string | null } | null;
+
+function clipApi(value: string | null | undefined, max: number) {
+  const text = (value ?? "").trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, max).trimEnd()}\n[truncated: ${text.length - max} more chars]`;
+}
 
 function actor(u: ActorLite) {
   if (!u || !u.username) return null;
@@ -319,7 +330,7 @@ export async function buildTaskContextJson(
       approved_on: task.approvedOn?.toISOString() ?? null,
       approvedOn: task.approvedOn?.toISOString() ?? null,
       alert_reporter: task.alertReporter,
-      description: task.description,
+      description: clipApi(task.description, API_DESCRIPTION_MAX),
       branchName: task.branchName,
       commitPrefix: effectiveCommitPrefix({
         commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
@@ -335,7 +346,7 @@ export async function buildTaskContextJson(
       id: task.project.id,
       slug: task.project.slug,
       name: task.project.name,
-      description: task.project.description,
+      description: clipApi(task.project.description, API_DESCRIPTION_MAX),
       readmePath: task.project.readmePath,
       repositoryPath: task.project.repositoryPath,
     },
@@ -345,7 +356,7 @@ export async function buildTaskContextJson(
           workItemKey: task.epic.workItemKey,
           title: task.epic.title,
           status: task.epic.status,
-          description: task.epic.description,
+          description: clipApi(task.epic.description, API_DESCRIPTION_MAX),
           branchName: task.epic.branchName,
           commitPrefix: effectiveCommitPrefix({
             commitPrefix: task.epic.commitPrefix,
@@ -365,14 +376,14 @@ export async function buildTaskContextJson(
       id: c.id,
       createdAt: c.createdAt.toISOString(),
       author: actor(c.user),
-      body: c.body,
+      body: clipApi(c.body, API_TIMELINE_BODY_MAX),
     })),
     discussion: [
       ...archivedChats.map((m) => ({
         id: m.id,
         createdAt: m.createdAt.toISOString(),
         sender: actor(m.sender),
-        body: m.body,
+        body: clipApi(m.body, API_TIMELINE_BODY_MAX),
         targetType: m.targetType,
         targetLabel: m.targetLabel,
         archived: true,
@@ -382,7 +393,7 @@ export async function buildTaskContextJson(
         id: m.id,
         createdAt: m.createdAt.toISOString(),
         sender: actor(m.sender),
-        body: m.body,
+        body: clipApi(m.body, API_TIMELINE_BODY_MAX),
         targetType: m.targetType,
         targetLabel: m.targetLabel,
         archived: false,
@@ -395,7 +406,7 @@ export async function buildTaskContextJson(
       kind: a.kind,
       actor: actor(a.user),
       targetAgent: a.targetAgent,
-      payload: parseActivityPayload(a.payload),
+      payload: parseActivityPayload(clipApi(a.payload, API_ACTIVITY_PAYLOAD_MAX)),
     })),
     attachments: [
       ...taskAttachments.map((a) => ({
@@ -429,7 +440,7 @@ export async function buildTaskContextJson(
       id: m.id,
       createdAt: m.createdAt.toISOString(),
       sender: actor(m.sender),
-      body: m.body,
+      body: clipApi(m.body, API_TIMELINE_BODY_MAX),
       targetType: m.targetType,
       targetLabel: m.targetLabel,
     })),
@@ -437,7 +448,7 @@ export async function buildTaskContextJson(
       id: c.id,
       createdAt: c.createdAt.toISOString(),
       author: actor(c.user),
-      body: c.body,
+      body: clipApi(c.body, API_TIMELINE_BODY_MAX),
     })),
     meta: {
       fetchedAt: new Date().toISOString(),
@@ -547,13 +558,65 @@ export async function buildEpicContextJson(
     }),
   ]);
 
+
+  // Archive chain (active room's ancestors), walked by baseArchiveId from
+  // the most recent live message. Keep Epic live-fetch parity with the
+  // rendered Epic context builder so archived discussion is not bypassed.
+  let archivedChats: Array<{
+    id: string;
+    createdAt: Date;
+    body: string;
+    targetType: string | null;
+    targetLabel: string | null;
+    archiveId: string | null;
+    sender: { username: string | null; kind: string | null } | null;
+  }> = [];
+  const lastLive = liveChats.at(-1);
+  if (lastLive) {
+    const seed = await db.agentChatMessage.findUnique({
+      where: { id: lastLive.id },
+      select: { baseArchiveId: true },
+    });
+    if (seed?.baseArchiveId) {
+      const archiveIds: string[] = [];
+      const seen = new Set<string>();
+      let cursor: string | null = seed.baseArchiveId;
+      while (cursor && !seen.has(cursor) && archiveIds.length < ARCHIVE_CHAIN_DEPTH) {
+        seen.add(cursor);
+        const archive: { id: string; parentArchiveId: string | null } | null = await db.agentChatRoomArchive.findFirst({
+          where: { id: cursor, epicId, deletedAt: null },
+          select: { id: true, parentArchiveId: true },
+        });
+        if (!archive) break;
+        archiveIds.unshift(archive.id);
+        cursor = archive.parentArchiveId;
+      }
+      if (archiveIds.length > 0) {
+        archivedChats = await db.agentChatMessage.findMany({
+          where: {
+            epicId,
+            archiveId: { in: archiveIds },
+            deletedAt: null,
+          },
+          orderBy: { createdAt: "asc" },
+          take: MAX_ARCHIVED_CHATS,
+          select: {
+            id: true, createdAt: true, body: true,
+            targetType: true, targetLabel: true, archiveId: true,
+            sender: { select: { username: true, kind: true } },
+          },
+        });
+      }
+    }
+  }
+
   return {
     epic: {
       id: epic.id,
       workItemKey: epic.workItemKey,
       title: epic.title,
       status: epic.status,
-      description: epic.description,
+      description: clipApi(epic.description, API_DESCRIPTION_MAX),
       branchName: epic.branchName,
       commitPrefix: effectiveCommitPrefix({
         commitPrefix: epic.commitPrefix,
@@ -569,7 +632,7 @@ export async function buildEpicContextJson(
       id: epic.project.id,
       slug: epic.project.slug,
       name: epic.project.name,
-      description: epic.project.description,
+      description: clipApi(epic.project.description, API_DESCRIPTION_MAX),
       readmePath: epic.project.readmePath,
       repositoryPath: epic.project.repositoryPath,
     },
@@ -584,18 +647,30 @@ export async function buildEpicContextJson(
       id: c.id,
       createdAt: c.createdAt.toISOString(),
       author: actor(c.user),
-      body: c.body,
+      body: clipApi(c.body, API_TIMELINE_BODY_MAX),
     })),
-    discussion: liveChats.map((m) => ({
-      id: m.id,
-      createdAt: m.createdAt.toISOString(),
-      sender: actor(m.sender),
-      body: m.body,
-      targetType: m.targetType,
-      targetLabel: m.targetLabel,
-      archived: false,
-      archiveId: null,
-    })),
+    discussion: [
+      ...archivedChats.map((m) => ({
+        id: m.id,
+        createdAt: m.createdAt.toISOString(),
+        sender: actor(m.sender),
+        body: clipApi(m.body, API_TIMELINE_BODY_MAX),
+        targetType: m.targetType,
+        targetLabel: m.targetLabel,
+        archived: true,
+        archiveId: m.archiveId,
+      })),
+      ...liveChats.map((m) => ({
+        id: m.id,
+        createdAt: m.createdAt.toISOString(),
+        sender: actor(m.sender),
+        body: clipApi(m.body, API_TIMELINE_BODY_MAX),
+        targetType: m.targetType,
+        targetLabel: m.targetLabel,
+        archived: false,
+        archiveId: null,
+      })),
+    ],
     attachments: attachments.map((a) => ({
       id: a.id,
       filename: a.filename,
@@ -613,7 +688,7 @@ export async function buildEpicContextJson(
       id: m.id,
       createdAt: m.createdAt.toISOString(),
       sender: actor(m.sender),
-      body: m.body,
+      body: clipApi(m.body, API_TIMELINE_BODY_MAX),
       targetType: m.targetType,
       targetLabel: m.targetLabel,
     })),
@@ -621,7 +696,7 @@ export async function buildEpicContextJson(
       id: c.id,
       createdAt: c.createdAt.toISOString(),
       author: actor(c.user),
-      body: c.body,
+      body: clipApi(c.body, API_TIMELINE_BODY_MAX),
     })),
     meta: {
       fetchedAt: new Date().toISOString(),
@@ -713,7 +788,7 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
       id: project.id,
       slug: project.slug,
       name: project.name,
-      description: project.description,
+      description: clipApi(project.description, API_DESCRIPTION_MAX),
       readmePath: project.readmePath,
       repositoryPath: project.repositoryPath,
     },
@@ -727,7 +802,7 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
       workItemKey: e.workItemKey,
       title: e.title,
       status: e.status,
-      description: e.description,
+      description: clipApi(e.description, API_DESCRIPTION_MAX),
       branchName: e.branchName,
       commitPrefix: effectiveCommitPrefix({ commitPrefix: e.commitPrefix, workItemKey: e.workItemKey }),
       workers: e.workers.map((worker) => actor(worker.user)),

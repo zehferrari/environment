@@ -18,22 +18,22 @@ import {
 } from "@/lib/agents/auth/session-bindings";
 import { wakeAgent as wakeGatewayAgent } from "@/lib/pm-consumer/gateway-client";
 import { pmAsyncDispatchEnabled, sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
-import { buildUnifiedPmTurnSystemPrompt, nullPmContextText } from "@/lib/agents/pm-channel/context";
-import { buildPmChannelDispatchMetrics } from "@/lib/agents/pm-channel/openclaw";
 import { recordPmChannelRunEvent, recordPmChannelRunQueued } from "@/lib/agents/pm-channel/runs";
 import {
   buildProjectEnvContext,
   buildWorkItemPlanningPrompt,
 } from "@/lib/agents/context/project";
-import { createContextGrantUrl, createContextGrantUrlMap } from "@/lib/agents/context/grants";
+import { createContextGrantUrl } from "@/lib/agents/context/grants";
 import { createWorkItemGrantToken } from "@/lib/agents/workflow/token/work-item";
 import { publicOriginFromHeaders } from "@/lib/http/public-origin";
+import {
+  directChatArchiveChainLimit,
+  directChatArchiveContextMessages,
+  directChatContextMessages,
+  intEnv,
+} from "@/lib/agents/context/caps";
 
 const execFileAsync = promisify(execFile);
-
-const DEFAULT_ACTIVE_CONTEXT_MESSAGES = 14;
-const DEFAULT_ARCHIVE_CONTEXT_MESSAGES = 12;
-const DEFAULT_ARCHIVE_CHAIN_LIMIT = 2;
 const MONITOR_DIRECT_CHAT_CONTEXT = [
   "MONITOR ROLE HOST-FLEET CONTEXT:",
   "You are the local monitor agent for the x1 OpenClaw fleet, not just your own OpenClaw session.",
@@ -71,22 +71,16 @@ function clip(value: string, max = 3000) {
   return `${value.slice(0, max).trimEnd()}\n[truncated]`;
 }
 
-function intEnv(name: string, fallback: number, min: number, max: number) {
-  const raw = Number(process.env[name]);
-  if (!Number.isFinite(raw)) return fallback;
-  return Math.min(max, Math.max(min, Math.floor(raw)));
-}
-
 function activeContextMessages() {
-  return intEnv("PM_DIRECT_CHAT_CONTEXT_MESSAGES", DEFAULT_ACTIVE_CONTEXT_MESSAGES, 6, 40);
+  return directChatContextMessages();
 }
 
 function archiveContextMessages() {
-  return intEnv("PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES", DEFAULT_ARCHIVE_CONTEXT_MESSAGES, 4, 40);
+  return directChatArchiveContextMessages();
 }
 
 function archiveChainLimit() {
-  return intEnv("PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT", DEFAULT_ARCHIVE_CHAIN_LIMIT, 1, 6);
+  return directChatArchiveChainLimit();
 }
 
 function shouldIncludeDirectFilesContext(args: {
@@ -533,6 +527,14 @@ async function buildDirectLiveContextAccess(args: {
   body: string;
 }) {
   const baseUrl = agentCallbackBaseUrl();
+  const projectUrl = await createContextGrantUrl({
+    baseUrl,
+    agentSlug: args.agentSlug,
+    scopeType: "project",
+    scopeId: args.projectId,
+    turnId: args.messageId,
+  });
+
   const refs = extractPmWorkItemRefs(args.body);
   const taskIds = unique(
     refs.filter((ref) => ref.kind === "task").map((ref) => ref.id),
@@ -571,16 +573,6 @@ async function buildDirectLiveContextAccess(args: {
       })
     : [];
 
-  // Project grant always issued for direct chat.
-  const projectUrl = await createContextGrantUrl({
-    baseUrl,
-    agentSlug: args.agentSlug,
-    scopeType: "project",
-    scopeId: args.projectId,
-    turnId: args.messageId,
-  });
-
-  // Task and epic grants issued only for same-project items explicitly linked in this turn.
   const [taskGrantRows, epicGrantRows] = await Promise.all([
     Promise.all(tasks.map(async (task) => ({
       id: task.id,
@@ -756,7 +748,7 @@ async function handleDirectAgentMessage(args: {
 }) {
   const timingStartedAt = Date.now();
   const timings: Record<string, number> = {};
-  const sizes: Record<string, number | null> = {};
+  const sizes: Record<string, number> = {};
   const mark = (name: string, startedAt: number) => {
     timings[name] = Date.now() - startedAt;
   };
@@ -839,41 +831,29 @@ async function handleDirectAgentMessage(args: {
   const contextText = [sessionContext, filesContext, projectContextText]
     .filter(Boolean)
     .join("\n\n");
-  sizes.contextTextChars = null;
-  const directTranscriptMessageCount =
-    sessionContext.match(/^\[[^\]]+\] @/gm)?.length ??
-    (sessionContext.includes("[CURRENT]") ? 1 : 0);
-  const kind = "direct" as const;
-  const dispatchArgs = {
+  sizes.contextTextChars = contextText.length;
+
+  stepStartedAt = Date.now();
+  const delivery = await sendOrQueueOpenClawPmChannelTurn({
     gatewayPort: args.gatewayPort,
     agentSlug: args.agentSlug,
     sessionKey: args.sessionBinding.openclawSessionKey,
-    kind,
+    kind: "direct",
     text: args.body,
-    contextText: nullPmContextText(),
-    systemPrompt: buildUnifiedPmTurnSystemPrompt({
-      kind,
-      trustedPrompt: systemPromptParts.join("\n"),
-      primaryContext: contextText,
-    }),
+    contextText,
+    systemPrompt: systemPromptParts.join("\n"),
     projectId: args.projectId,
     actor: {
       id: args.userId,
       username: args.actorName,
-      kind: "human" as const,
+      kind: "human",
     },
     replyTarget: {
-      kind: "direct" as const,
+      kind: "direct",
       agentSlug: args.agentSlug,
       messageId: args.messageId,
     },
-  };
-  const dispatchMetrics = buildPmChannelDispatchMetrics(dispatchArgs, directTranscriptMessageCount);
-  sizes.systemPromptChars = dispatchMetrics.sizes.systemPromptChars;
-  sizes.transcriptMessageCount = directTranscriptMessageCount;
-
-  stepStartedAt = Date.now();
-  const delivery = await sendOrQueueOpenClawPmChannelTurn(dispatchArgs);
+  });
   mark("queueOrDispatchMs", stepStartedAt);
   timings.totalBeforeActivityLogMs = Date.now() - timingStartedAt;
 
@@ -893,7 +873,6 @@ async function handleDirectAgentMessage(args: {
         error: delivery.error ?? null,
         timings,
         sizes,
-        dispatchMetrics,
         includeFilesContext,
         parentFolderCount: parentFolders.length,
       }),
