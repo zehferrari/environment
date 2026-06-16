@@ -177,13 +177,13 @@ export default function TaskChecklist({
   return (
     <div>
       <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold tracking-wide text-text">
+        <h2 className="text-body font-semibold tracking-wide text-text">
           Sub-tasks
         </h2>
         <div className="flex items-center gap-3">
           {totalMinutes > 0 ? (
             <span
-              className="inline-flex items-center gap-1 text-xs text-text-muted"
+              className="inline-flex items-center gap-1 text-caption text-text-muted"
               title="Total self-reported time across completed sub-tasks"
             >
               <ClockIcon />
@@ -198,7 +198,7 @@ export default function TaskChecklist({
                   style={{ width: `${pct}%` }}
                 />
               </div>
-              <span className="tabular-nums text-xs text-text-muted">
+              <span className="tabular-nums text-caption text-text-muted">
                 {done}/{total}
               </span>
             </div>
@@ -206,14 +206,14 @@ export default function TaskChecklist({
         </div>
       </div>
 
-      <p className="mb-3 text-[11px] text-text-muted">
+      <p className="mb-3 text-micro text-text-muted">
         Break this task into independent, parallelizable steps. Tick each off as
         it lands and record the minutes it took — the board shows how many remain
         and the total time rolls up here.
       </p>
 
       {total === 0 ? (
-        <p className="text-xs text-text-muted">No sub-tasks yet.</p>
+        <p className="text-caption text-text-muted">No sub-tasks yet.</p>
       ) : (
         <DndContext
           sensors={sensors}
@@ -255,12 +255,12 @@ export default function TaskChecklist({
           }}
           maxLength={500}
           placeholder="Add a step…"
-          className="flex-1 rounded-lg border border-line bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
+          className="flex-1 rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
         />
         <button
           type="button"
           onClick={add}
-          className="rounded-lg bg-accent px-3 text-sm font-medium text-bg hover:opacity-90"
+          className="rounded-lg bg-accent px-3 text-body font-medium text-bg hover:opacity-90"
         >
           Add
         </button>
@@ -287,7 +287,7 @@ function ChecklistRow({
     <li
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`flex items-center gap-2 px-3 py-2 text-sm ${isDragging ? "opacity-50" : ""}`}
+      className={`flex items-center gap-2 px-3 py-2 text-body ${isDragging ? "opacity-50" : ""}`}
     >
       <button
         type="button"
@@ -345,7 +345,7 @@ function MinutesInput({
     onCommit(trimmed === "" ? null : Number(trimmed));
   };
   return (
-    <label className="flex shrink-0 items-center gap-1 text-[10px] text-text-muted" title="Minutes spent on this step">
+    <label className="flex shrink-0 items-center gap-1 text-nano text-text-muted" title="Minutes spent on this step">
       <ClockIcon />
       <input
         type="number"

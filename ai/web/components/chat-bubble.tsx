@@ -151,24 +151,24 @@ export default function ChatBubble({
       {!fromCurrentUser && !showGroupHeader ? <div className="w-9 shrink-0" aria-hidden="true" /> : null}
       <article
         style={articleStyle}
-        className={`w-fit min-w-0 max-w-[min(44rem,82%)] rounded-[1.15rem] ${connectedCornerClass} border px-3.5 ${showGroupHeader ? "py-2.5" : "py-2"} ring-1 ring-black/[0.02]`}
+        className={`w-fit min-w-0 max-w-[min(44rem,82%)] rounded-bubble ${connectedCornerClass} border px-3.5 ${showGroupHeader ? "py-2.5" : "py-2"} ring-1 ring-black/[0.02]`}
       >
         {showGroupHeader ? (
-          <div className={`mb-2 flex min-w-0 flex-wrap items-center gap-2 text-xs text-text-muted ${fromCurrentUser ? "justify-end" : "justify-between"}`}>
+          <div className={`mb-2 flex min-w-0 flex-wrap items-center gap-2 text-caption text-text-muted ${fromCurrentUser ? "justify-end" : "justify-between"}`}>
             <span className="flex min-w-0 flex-wrap items-center gap-2">
               <strong className="truncate font-semibold" style={{ color: senderAccent }}>
                 {displayName}
               </strong>
               {fromAgent ? (
                 <span
-                  className="rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider"
+                  className="rounded-full border px-1.5 py-0.5 text-pico font-semibold uppercase tracking-wider"
                   style={{ borderColor: `color-mix(in srgb, ${senderAccent} 28%, transparent)`, color: senderAccent }}
                 >
                   agent
                 </span>
               ) : null}
               {!fromAgent && message.targetLabel ? (
-                <span className="rounded-full border border-line bg-bg/70 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-text-muted">
+                <span className="rounded-full border border-line bg-bg/70 px-1.5 py-0.5 text-pico font-semibold uppercase tracking-wider text-text-muted">
                   to {message.targetLabel}
                 </span>
               ) : null}
@@ -202,17 +202,17 @@ export default function ChatBubble({
             </span>
           </div>
         ) : (
-          <div className={`mb-1 flex min-w-0 items-center gap-2 text-[10px] text-text-muted/80 ${compactMetaClass}`}>
+          <div className={`mb-1 flex min-w-0 items-center gap-2 text-nano text-text-muted/80 ${compactMetaClass}`}>
             <MessageTimestamp value={message.createdAt} />
             {actions}
           </div>
         )}
         <div
-          className="md md-compact break-words text-sm leading-relaxed text-text [overflow-wrap:anywhere]"
+          className="md md-compact break-words text-body leading-relaxed text-text [overflow-wrap:anywhere]"
           dangerouslySetInnerHTML={renderChatMarkdown(displayBody)}
         />
         {deliveryStatus ? (
-          <div className={`mt-2 text-[10px] font-semibold uppercase tracking-wider ${deliveryStatus === "failed" ? "text-crit" : "text-text-muted"}`}>
+          <div className={`mt-2 text-nano font-semibold uppercase tracking-wider ${deliveryStatus === "failed" ? "text-crit" : "text-text-muted"}`}>
             {deliveryStatus === "failed" ? "Failed to send" : "Sending..."}
           </div>
         ) : null}

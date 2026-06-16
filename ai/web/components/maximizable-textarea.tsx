@@ -83,27 +83,27 @@ function MaximizableTextarea({
 
       {open ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-card backdrop-blur-sm"
           onClick={() => setOpen(false)}
         >
           <div
-            className="flex h-[min(44rem,90vh)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl"
+            className="flex h-[min(44rem,90vh)] w-full max-w-5xl flex-col overflow-hidden rounded-panel border border-line bg-panel shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
-              <h3 className="text-sm font-semibold text-text">
+              <h3 className="text-body font-semibold text-text">
                 {expandedTitle}
               </h3>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close expanded text input"
-                className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-text-muted transition hover:bg-panel-soft hover:text-text"
+                className="grid h-8 w-8 place-items-center rounded-lg text-heading leading-none text-text-muted transition hover:bg-panel-soft hover:text-text"
               >
                 &times;
               </button>
             </div>
-            <div className="flex min-h-0 flex-1 p-4">
+            <div className="flex min-h-0 flex-1 p-card">
               <textarea
                 ref={expandedRef}
                 value={text}
@@ -112,14 +112,14 @@ function MaximizableTextarea({
                 rows={expandedRows}
                 maxLength={props.maxLength}
                 placeholder={props.placeholder}
-                className="min-h-0 flex-1 resize-none rounded-xl border border-line bg-bg px-4 py-3 text-sm leading-relaxed text-text outline-none focus:border-accent"
+                className="min-h-0 flex-1 resize-none rounded-card border border-line bg-bg px-4 py-3 text-body leading-relaxed text-text outline-none focus:border-accent"
               />
             </div>
             <div className="flex justify-end border-t border-line px-4 py-3">
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-bg transition hover:opacity-90"
+                className="rounded-lg bg-accent px-card py-control-y text-body font-semibold text-bg transition hover:opacity-90"
               >
                 Done
               </button>

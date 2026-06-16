@@ -104,7 +104,7 @@ export default function AvatarCombobox({
         aria-label={ariaLabel}
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
-        className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-line bg-bg px-2 text-left text-xs outline-none transition hover:border-accent"
+        className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-line bg-bg px-2 text-left text-caption outline-none transition hover:border-accent"
       >
         <span className="flex min-w-0 items-center gap-1.5">
           {multiple ? (
@@ -142,12 +142,12 @@ export default function AvatarCombobox({
         </span>
       </button>
       {open ? (
-        <div className="absolute left-0 right-0 top-full z-30 mt-1 rounded-xl border border-line bg-panel p-2 shadow-2xl">
+        <div className="absolute left-0 right-0 top-full z-30 mt-1 rounded-card border border-line bg-panel p-2 shadow-2xl">
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search..."
-            className="mb-2 h-8 w-full rounded-lg border border-line bg-bg px-2 text-xs outline-none focus:border-accent"
+            className="mb-2 h-8 w-full rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
           />
           <div className="max-h-64 overflow-y-auto">
             {multiple ? (
@@ -159,7 +159,7 @@ export default function AvatarCombobox({
                       setValues([]);
                       onChangeMultiple?.([]);
                     }}
-                    className="mb-1 w-full rounded-lg px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-wider text-text-muted hover:bg-panel-soft hover:text-text"
+                    className="mb-1 w-full rounded-lg px-2 py-1 text-left text-nano font-semibold uppercase tracking-wider text-text-muted hover:bg-panel-soft hover:text-text"
                   >
                     {emptyLabel}
                   </button>
@@ -169,7 +169,7 @@ export default function AvatarCombobox({
                   return (
                     <label
                       key={option.value}
-                      className={`mt-1 flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition ${
+                      className={`mt-1 flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition ${
                         checked
                           ? "bg-accent/[0.12] text-text"
                           : "text-text-muted hover:bg-panel-soft hover:text-text"
@@ -198,7 +198,7 @@ export default function AvatarCombobox({
                     setOpen(false);
                     setQuery("");
                   }}
-                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition ${
+                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition ${
                     value === "" ? "bg-accent/[0.12] text-text" : "text-text-muted hover:bg-panel-soft hover:text-text"
                   }`}
                 >
@@ -214,7 +214,7 @@ export default function AvatarCombobox({
                       setOpen(false);
                       setQuery("");
                     }}
-                    className={`mt-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition ${
+                    className={`mt-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition ${
                       value === option.value ? "bg-accent/[0.12] text-text" : "text-text-muted hover:bg-panel-soft hover:text-text"
                     }`}
                   >

@@ -52,7 +52,7 @@ export default function ActivityAgenda({
 }) {
   if (feed.length === 0) {
     return (
-      <div className="rounded border border-dashed border-line px-3 py-4 text-xs text-text-muted">
+      <div className="rounded border border-dashed border-line px-3 py-4 text-caption text-text-muted">
         {emptyMessage}
       </div>
     );
@@ -72,7 +72,7 @@ export default function ActivityAgenda({
     <div className="space-y-5">
       {groups.map((group) => (
         <div key={group.day}>
-          <h3 className="mb-2 border-b border-line pb-1 text-xs font-semibold uppercase tracking-wider text-text">
+          <h3 className="mb-2 border-b border-line pb-1 text-caption font-semibold uppercase tracking-wider text-text">
             {formatDay(group.day)}
           </h3>
           <ul className="space-y-1.5">
@@ -80,12 +80,12 @@ export default function ActivityAgenda({
               <li key={item.id} className="flex items-center gap-3">
                 <time
                   dateTime={item.createdAt}
-                  className="w-12 shrink-0 text-right text-xs font-medium tabular-nums text-accent"
+                  className="w-12 shrink-0 text-right text-caption font-medium tabular-nums text-accent"
                 >
                   {item.createdAt.slice(11, 16)}
                 </time>
                 <MessageAvatar actor={item.actor ?? systemActor} size="sm" />
-                <span className="text-sm leading-snug">{item.label}</span>
+                <span className="text-body leading-snug">{item.label}</span>
               </li>
             ))}
           </ul>

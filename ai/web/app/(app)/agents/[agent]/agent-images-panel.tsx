@@ -623,7 +623,7 @@ export default function AgentImagesPanel({
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[592px_minmax(0,1fr)] lg:items-start">
+    <div className="grid gap-card lg:grid-cols-[592px_minmax(0,1fr)] lg:items-start">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-2 lg:content-start">
         {KINDS.map((kind) => (
           <ImageSlot
@@ -654,22 +654,22 @@ export default function AgentImagesPanel({
         ))}
 
         {!canEdit ? (
-          <p className="text-xs text-warn sm:col-span-2">Read-only: agents can edit only themselves; zeh can edit all.</p>
+          <p className="text-caption text-warn sm:col-span-2">Read-only: agents can edit only themselves; zeh can edit all.</p>
         ) : draftManual ? (
-          <p className="text-xs text-text-muted sm:col-span-2">
+          <p className="text-caption text-text-muted sm:col-span-2">
             Manual uploads are staged locally until Save. Saved files are normalized to 256x256 PNGs.
           </p>
         ) : (
-          <p className="text-xs text-text-muted sm:col-span-2">
+          <p className="text-caption text-text-muted sm:col-span-2">
             Generated images replace files after Save. Confy creates 256x256 close-up profile portraits; Avatar is optional.
           </p>
         )}
       </div>
 
-      <div className="space-y-3 rounded-xl border border-line bg-panel-soft p-3">
+      <div className="space-y-3 rounded-card border border-line bg-panel-soft p-3">
         <div className="grid gap-3 lg:grid-cols-[minmax(11rem,0.4fr)_minmax(0,1fr)_auto]">
           <div>
-            <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+            <label className="mb-1 block text-caption font-semibold uppercase tracking-wider text-text-muted">
               Image source
             </label>
             <select
@@ -679,7 +679,7 @@ export default function AgentImagesPanel({
                 setCandidateSource(normalizeProfileImageTheme(event.target.value));
                 setStatus({ kind: "idle" });
               }}
-              className="w-full rounded-xl border border-line bg-bg px-3 py-2 text-sm outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+              className="w-full rounded-card border border-line bg-bg px-3 py-2 text-body outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
               {AGENT_PROFILE_IMAGE_THEMES.map((option) => (
                 <option key={option} value={option}>{option}</option>
@@ -689,10 +689,10 @@ export default function AgentImagesPanel({
 
           {!isManual(candidateSource) ? (
             <div>
-              <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-text-muted">
+              <span className="mb-1 block text-caption font-semibold uppercase tracking-wider text-text-muted">
                 Customization
               </span>
-              <div className="flex flex-wrap gap-3 rounded-xl border border-line bg-bg px-3 py-2 text-sm">
+              <div className="flex flex-wrap gap-3 rounded-card border border-line bg-bg px-3 py-2 text-body">
                 {PROFILE_IMAGE_CUSTOMIZATION_MODES.map((mode) => (
                   <label key={mode} className="flex items-center gap-2">
                     <input
@@ -723,7 +723,7 @@ export default function AgentImagesPanel({
               type="button"
               disabled={!canEdit || pending || !candidateChanged}
               onClick={applySelection}
-              className="rounded-xl border border-line bg-bg px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-card border border-line bg-bg px-card py-control-y text-body font-medium disabled:cursor-not-allowed disabled:opacity-40"
             >
               Select
             </button>
@@ -731,7 +731,7 @@ export default function AgentImagesPanel({
               type="button"
               disabled={!canEdit || pending || !dirty || waitingForStagedImages}
               onClick={save}
-              className="rounded-xl bg-accent px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-card bg-accent px-card py-control-y text-body font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
             >
               {pending ? "Saving..." : "Save"}
             </button>
@@ -739,7 +739,7 @@ export default function AgentImagesPanel({
               type="button"
               disabled={pending || !dirty}
               onClick={revert}
-              className="rounded-xl border border-line bg-bg px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-card border border-line bg-bg px-card py-control-y text-body font-medium disabled:cursor-not-allowed disabled:opacity-40"
             >
               Revert
             </button>
@@ -754,26 +754,26 @@ export default function AgentImagesPanel({
               <OptionSelect label="Ethnicity" value={candidateEthnicity} options={PROFILE_IMAGE_ETHNICITIES} disabled={!canEdit || pending} onChange={(value) => setCandidateEthnicity(normalizeProfileImageEthnicity(value))} />
             </div>
             <label className="block">
-              <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-text-muted">Bio</span>
+              <span className="mb-1 block text-caption font-semibold uppercase tracking-wider text-text-muted">Bio</span>
               <textarea
                 disabled={!canEdit || pending}
                 value={candidateBio}
                 onChange={(event) => setCandidateBio(event.target.value)}
                 rows={2}
-                className="w-full resize-y rounded-xl border border-line bg-bg px-3 py-2 text-sm leading-5 outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="w-full resize-y rounded-card border border-line bg-bg px-3 py-2 text-body leading-5 outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
               />
             </label>
             <label className="block">
-              <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-text-muted">Confy prompt</span>
+              <span className="mb-1 block text-caption font-semibold uppercase tracking-wider text-text-muted">Confy prompt</span>
               <textarea
                 disabled={!canEdit || pending}
                 value={candidatePrompt}
                 onChange={(event) => setCandidatePrompt(event.target.value)}
                 rows={4}
-                className="w-full resize-y rounded-xl border border-line bg-bg px-3 py-2 text-sm leading-5 outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="w-full resize-y rounded-card border border-line bg-bg px-3 py-2 text-body leading-5 outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
               />
             </label>
-            <label className="flex items-center gap-2 text-xs text-text-muted">
+            <label className="flex items-center gap-2 text-caption text-text-muted">
               <input
                 type="checkbox"
                 disabled={!canEdit || pending}
@@ -787,7 +787,7 @@ export default function AgentImagesPanel({
         ) : null}
 
         {status.kind !== "idle" ? (
-          <p className={`text-xs ${status.kind === "error" ? "text-crit" : "text-text-muted"}`}>
+          <p className={`text-caption ${status.kind === "error" ? "text-crit" : "text-text-muted"}`}>
             {status.message}
           </p>
         ) : null}
@@ -811,12 +811,12 @@ function OptionSelect({
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-text-muted">{label}</span>
+      <span className="mb-1 block text-caption font-semibold uppercase tracking-wider text-text-muted">{label}</span>
       <select
         disabled={disabled}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-xl border border-line bg-bg px-3 py-2 text-sm outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+        className="w-full rounded-card border border-line bg-bg px-3 py-2 text-body outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
       >
         {options.map((option) => (
           <option key={option} value={option}>{option}</option>
@@ -877,7 +877,7 @@ function ImageSlot({
       : "Generate Avatar from the current Profile";
 
   return (
-    <div className="w-full max-w-[280px] rounded-xl border border-line bg-panel p-3">
+    <div className="w-full max-w-[280px] rounded-card border border-line bg-panel p-3">
       <div className="relative aspect-square w-full overflow-hidden rounded-lg border border-line bg-panel-soft">
         {onRegenerate && canRegenerate ? (
           <button
@@ -928,19 +928,19 @@ function ImageSlot({
             </svg>
           </div>
         ) : loading ? (
-          <div className="grid h-full place-items-center text-xs text-text-muted">
+          <div className="grid h-full place-items-center text-caption text-text-muted">
             <span className="h-7 w-7 animate-spin rounded-full border-2 border-line border-t-accent" />
           </div>
         ) : (
-          <div className="grid h-full place-items-center px-3 text-center text-xs text-text-muted">
+          <div className="grid h-full place-items-center px-3 text-center text-caption text-text-muted">
             No {LABELS[kind].toLowerCase()} image
           </div>
         )}
       </div>
       <div className="mt-3 flex items-center justify-between gap-2">
         <div>
-          <div className="text-sm font-medium">{LABELS[kind]}</div>
-          <div className="text-xs text-text-muted">
+          <div className="text-body font-medium">{LABELS[kind]}</div>
+          <div className="text-caption text-text-muted">
             {previewUrl || stagedImage?.exists ? "Staged" : removed ? "Removed on save" : image.exists && image.bytes ? `${Math.round(image.bytes / 1024)} KiB` : "256 PNG"}
           </div>
         </div>
@@ -961,7 +961,7 @@ function ImageSlot({
               type="button"
               disabled={disabled}
               onClick={() => inputRef.current?.click()}
-              className="rounded-lg border border-line px-2 py-1 text-xs hover:border-accent disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-lg border border-line px-2 py-1 text-caption hover:border-accent disabled:cursor-not-allowed disabled:opacity-40"
             >
               Upload
             </button>
@@ -969,7 +969,7 @@ function ImageSlot({
               type="button"
               disabled={disabled || (!image.exists && !previewUrl)}
               onClick={() => onRemove(kind)}
-              className="rounded-lg border border-line px-2 py-1 text-xs text-crit hover:border-crit disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-lg border border-line px-2 py-1 text-caption text-crit hover:border-crit disabled:cursor-not-allowed disabled:opacity-40"
             >
               Remove
             </button>

@@ -60,18 +60,18 @@ export default async function RotatePasswordPage({
     <main className="min-h-screen flex items-center justify-center px-4">
       <form
         action={rotateAction}
-        className="w-full max-w-sm rounded-2xl border border-line bg-panel p-6 shadow-sm"
+        className="w-full max-w-sm rounded-panel border border-line bg-panel p-6 shadow-sm"
       >
-        <h1 className="text-lg font-semibold mb-1">Set a new password</h1>
-        <p className="text-sm text-text-muted mb-4">
+        <h1 className="text-heading font-semibold mb-1">Set a new password</h1>
+        <p className="text-body text-text-muted mb-4">
           Your seeded password must be rotated before you can use PM.
         </p>
 
         {error && errors[error] && (
-          <p className="text-sm text-crit mb-3">{errors[error]}</p>
+          <p className="text-body text-crit mb-3">{errors[error]}</p>
         )}
 
-        <label className="block text-sm mb-1">Current password</label>
+        <label className="block text-body mb-1">Current password</label>
         <input
           name="current"
           type="password"
@@ -80,7 +80,7 @@ export default async function RotatePasswordPage({
           className="w-full rounded-lg border border-line bg-panel px-3 py-2 mb-3 outline-none focus:border-accent"
         />
 
-        <label className="block text-sm mb-1">New password (min 12 chars)</label>
+        <label className="block text-body mb-1">New password (min 12 chars)</label>
         <input
           name="next"
           type="password"
@@ -90,7 +90,7 @@ export default async function RotatePasswordPage({
           className="w-full rounded-lg border border-line bg-panel px-3 py-2 mb-3 outline-none focus:border-accent"
         />
 
-        <label className="block text-sm mb-1">Confirm new password</label>
+        <label className="block text-body mb-1">Confirm new password</label>
         <input
           name="confirm"
           type="password"

@@ -27,7 +27,7 @@ export default function AttachmentRemoveForm({
         type="submit"
         aria-label={`Remove ${filename}`}
         title="Remove"
-        className="grid h-6 w-6 place-items-center rounded-full border border-crit/60 bg-panel text-[10px] font-bold text-crit shadow-sm hover:bg-crit hover:text-bg"
+        className="grid h-6 w-6 place-items-center rounded-full border border-crit/60 bg-panel text-nano font-bold text-crit shadow-sm hover:bg-crit hover:text-bg"
       >
         <span aria-hidden="true">X</span>
       </button>

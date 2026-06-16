@@ -29,7 +29,7 @@ export default function ChatLayoutClient({
   };
 
   return (
-    <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
+    <div className="grid min-h-0 flex-1 gap-card lg:grid-cols-[minmax(0,1fr)_auto]">
       <div className="flex min-h-0 flex-1 flex-col relative">
         {chatSection}
         

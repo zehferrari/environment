@@ -89,7 +89,7 @@ export function TabsNav({
             role="tab"
             aria-selected={selected}
             onClick={() => selectTab(tab)}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium transition ${
+            className={`-mb-px border-b-2 px-3 py-2 text-body font-medium transition ${
               selected
                 ? "border-accent text-text"
                 : "border-transparent text-text-muted hover:text-text"
@@ -98,7 +98,7 @@ export function TabsNav({
             <span className="inline-flex items-center gap-1.5">
               <span>{tab}</span>
               {badge > 0 ? (
-                <span className="rounded-full bg-crit px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                <span className="rounded-full bg-crit px-1.5 py-0.5 text-nano font-semibold leading-none text-white">
                   {badge > 99 ? "99+" : badge}
                 </span>
               ) : null}

@@ -78,15 +78,15 @@ export default async function AgentChatSidebar(props: TargetProps) {
     : null;
 
   return (
-    <section className="space-y-3 rounded-2xl border border-line bg-panel p-4 shadow-sm">
+    <section className="space-y-3 rounded-panel border border-line bg-panel p-card shadow-sm">
       <div className="flex items-center justify-between gap-2">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+        <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
           Agent chat
         </div>
         <div className="flex items-center gap-2">
           <NativePmNotificationToggle compact />
           {dispatchIsDisabled() ? (
-          <span className="rounded-full border border-line px-2 py-0.5 text-[10px] uppercase tracking-wider text-text-muted">
+          <span className="rounded-full border border-line px-2 py-0.5 text-nano uppercase tracking-wider text-text-muted">
             Stored
           </span>
           ) : null}
@@ -94,7 +94,7 @@ export default async function AgentChatSidebar(props: TargetProps) {
       </div>
 
       {targets.length === 0 ? (
-        <p className="text-xs text-text-muted">No active agents.</p>
+        <p className="text-caption text-text-muted">No active agents.</p>
       ) : (
         <nav className="flex flex-wrap gap-1.5">
           {targets.map((t) => {
@@ -105,8 +105,8 @@ export default async function AgentChatSidebar(props: TargetProps) {
                 href={`${props.parentPath}?chat=${t.agentSlug}`}
                 className={
                   isSelected
-                    ? "rounded-full bg-accent px-2.5 py-1 text-[11px] font-medium text-bg"
-                    : "rounded-full border border-line bg-panel-soft px-2.5 py-1 text-[11px] text-text-muted hover:border-accent hover:text-text"
+                    ? "rounded-full bg-accent px-2.5 py-1 text-micro font-medium text-bg"
+                    : "rounded-full border border-line bg-panel-soft px-2.5 py-1 text-micro text-text-muted hover:border-accent hover:text-text"
                 }
               >
                 {t.username}
@@ -120,7 +120,7 @@ export default async function AgentChatSidebar(props: TargetProps) {
         <>
           <div className="max-h-[630px] space-y-2 overflow-y-auto pr-1">
             {messages.length === 0 ? (
-              <p className="text-xs text-text-muted">
+              <p className="text-caption text-text-muted">
                 No messages for @{selected.username}.
               </p>
             ) : (
@@ -156,15 +156,15 @@ export default async function AgentChatSidebar(props: TargetProps) {
                   >
                     {!fromCurrentUser ? <MessageAvatar actor={m.sender as MessageActor} size="sm" /> : null}
                     <article
-                      className={`group relative w-fit min-w-[10rem] max-w-[min(30rem,82%)] rounded-2xl border px-3.5 py-2.5 shadow-sm ${bubbleTone}`}
+                      className={`group relative w-fit min-w-[10rem] max-w-[min(30rem,82%)] rounded-panel border px-3.5 py-2.5 shadow-sm ${bubbleTone}`}
                     >
                       <span
                         aria-hidden="true"
-                        className={`absolute top-4 h-3 w-3 rotate-45 ${bubbleTone} ${
+                        className={`absolute top-card h-3 w-3 rotate-45 ${bubbleTone} ${
                           fromCurrentUser ? "-right-1.5 border-r border-t" : "-left-1.5 border-b border-l"
                         }`}
                       />
-                      <div className="relative mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
+                      <div className="relative mb-2 flex flex-wrap items-center justify-between gap-2 text-caption text-text-muted">
                         <span className="truncate font-semibold text-text">
                           {actorDisplayName(m.sender)}
                           {fromAgent ? " / agent" : ""}
@@ -211,7 +211,7 @@ export default async function AgentChatSidebar(props: TargetProps) {
           />
         </>
       ) : (
-        <p className="text-xs text-text-muted">
+        <p className="text-caption text-text-muted">
           Select an agent to open the task chat.
         </p>
       )}

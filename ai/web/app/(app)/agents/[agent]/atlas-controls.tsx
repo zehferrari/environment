@@ -146,15 +146,15 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
   }
 
   return (
-    <div className="space-y-4">
-      {message ? <p className="rounded-xl border border-line bg-panel-soft p-2 text-xs text-text-muted">{message}</p> : null}
+    <div className="space-y-section-gap">
+      {message ? <p className="rounded-card border border-line bg-panel-soft p-2 text-caption text-text-muted">{message}</p> : null}
       <ToggleSection title="Integrations" entries={localIntegrations} busy={busy} canEdit={canEdit} onToggle={(key, value) => toggle("integrations", key, value)} onCredentials={openCredentials} />
       <ToggleSection title="Capabilities" entries={localCapabilities} busy={busy} canEdit={canEdit} onToggle={(key, value) => toggle("capabilities", key, value)} />
 
-      <section className="rounded-2xl border border-line bg-panel p-4 shadow-sm">
-        <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">🛠 Services</h2>
-        {localServices.length === 0 ? <p className="text-sm text-text-muted">No services reported for this agent.</p> : (
-          <div className="grid gap-2 text-xs">
+      <section className="rounded-panel border border-line bg-panel p-card shadow-sm">
+        <h2 className="mb-3 text-caption uppercase tracking-wider text-text-muted">🛠 Services</h2>
+        {localServices.length === 0 ? <p className="text-body text-text-muted">No services reported for this agent.</p> : (
+          <div className="grid gap-2 text-caption">
             {localServices.map((svc) => {
               const enabled = svc.status === "active";
               const busyToggle = busy === `service-toggle:${svc.name}`;
@@ -170,24 +170,24 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
       </section>
 
       {credIntegration ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-2xl border border-line bg-panel p-5 shadow-xl">
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 p-card">
+          <div className="w-full max-w-lg rounded-panel border border-line bg-panel p-card-lg shadow-xl">
             <div className="mb-4 flex items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold">{credIntegration} credentials</h2>
-              <button type="button" onClick={() => setCredIntegration(null)} className="text-xl text-text-muted hover:text-text">×</button>
+              <h2 className="text-heading font-semibold">{credIntegration} credentials</h2>
+              <button type="button" onClick={() => setCredIntegration(null)} className="text-heading text-text-muted hover:text-text">×</button>
             </div>
             <div className="space-y-3">
               {(CREDENTIAL_FIELDS[credIntegration] ?? []).map((field) => (
-                <label key={field.name} className="block text-sm">
-                  <span className="mb-1 block text-xs text-text-muted">{field.label}</span>
+                <label key={field.name} className="block text-body">
+                  <span className="mb-1 block text-caption text-text-muted">{field.label}</span>
                   <input type={field.type ?? "text"} value={fields[field.name] ?? ""} onChange={(event) => setFields((cur) => ({ ...cur, [field.name]: event.target.value }))} className="w-full rounded-lg border border-line bg-bg px-3 py-2 outline-none focus:border-accent" />
                 </label>
               ))}
             </div>
-            <p className="mt-3 text-xs text-text-muted">Saved through the Atlas credentials endpoint under the agent’s credential store.</p>
+            <p className="mt-3 text-caption text-text-muted">Saved through the Atlas credentials endpoint under the agent’s credential store.</p>
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setCredIntegration(null)} className="rounded-lg border border-line px-3 py-1.5 text-sm">Cancel</button>
-              <button type="button" disabled={busy === `cred:${credIntegration}`} onClick={saveCredentials} className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40">Save</button>
+              <button type="button" onClick={() => setCredIntegration(null)} className="rounded-lg border border-line px-control-x py-control-y text-body">Cancel</button>
+              <button type="button" disabled={busy === `cred:${credIntegration}`} onClick={saveCredentials} className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-white disabled:cursor-not-allowed disabled:opacity-40">Save</button>
             </div>
           </div>
         </div>
@@ -235,10 +235,10 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
 function ToggleSection({ title, entries, busy, canEdit, onToggle, onCredentials }: { title: string; entries: Record<string, ControlValue>; busy: string | null; canEdit: boolean; onToggle: (key: string, value: boolean) => void; onCredentials?: (key: string) => void }) {
   const pairs = Object.entries(entries);
   return (
-    <section className="rounded-2xl border border-line bg-panel p-4 shadow-sm">
-      <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">{title}</h2>
-      {pairs.length === 0 ? <p className="text-sm text-text-muted">None reported.</p> : (
-        <div className="grid gap-2 text-xs">
+    <section className="rounded-panel border border-line bg-panel p-card shadow-sm">
+      <h2 className="mb-3 text-caption uppercase tracking-wider text-text-muted">{title}</h2>
+      {pairs.length === 0 ? <p className="text-body text-text-muted">None reported.</p> : (
+        <div className="grid gap-2 text-caption">
           {pairs.map(([key, value]) => {
             const enabled = value === true;
             const toggleable = typeof value === "boolean";

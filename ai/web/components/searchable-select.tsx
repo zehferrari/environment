@@ -95,25 +95,25 @@ export default function SearchableSelect({
           setOpen((current) => !current);
           setQuery("");
         }}
-        className={`flex w-full items-center justify-between gap-3 rounded-xl border border-line bg-panel-soft px-3 py-2 text-left text-sm text-text outline-none transition hover:border-accent focus:border-accent disabled:cursor-not-allowed disabled:opacity-50 ${buttonClassName}`}
+        className={`flex w-full items-center justify-between gap-3 rounded-card border border-line bg-panel-soft px-3 py-2 text-left text-body text-text outline-none transition hover:border-accent focus:border-accent disabled:cursor-not-allowed disabled:opacity-50 ${buttonClassName}`}
       >
         <span className={selected || value ? "min-w-0 truncate" : "min-w-0 truncate text-text-muted"}>
           {selected?.label ?? (value || placeholder)}
         </span>
-        <span className="shrink-0 text-xs text-text-muted" aria-hidden="true">
+        <span className="shrink-0 text-caption text-text-muted" aria-hidden="true">
           v
         </span>
       </button>
 
       {open ? (
-        <div className="absolute left-0 right-0 top-full z-40 mt-1 rounded-xl border border-line bg-panel p-2 shadow-2xl">
+        <div className="absolute left-0 right-0 top-full z-40 mt-1 rounded-card border border-line bg-panel p-2 shadow-2xl">
           <input
             ref={searchRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onSearchKeyDown}
             placeholder={searchPlaceholder}
-            className="mb-2 h-9 w-full rounded-lg border border-line bg-bg px-2 text-sm outline-none focus:border-accent"
+            className="mb-2 h-9 w-full rounded-lg border border-line bg-bg px-2 text-body outline-none focus:border-accent"
           />
           <div role="listbox" className="max-h-64 overflow-y-auto">
             {customAllowed ? (
@@ -122,10 +122,10 @@ export default function SearchableSelect({
                 role="option"
                 aria-selected={value === trimmedQuery}
                 onClick={() => choose(trimmedQuery)}
-                className="mb-1 flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-text transition hover:bg-panel-soft"
+                className="mb-1 flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-body text-text transition hover:bg-panel-soft"
               >
                 <span className="min-w-0 truncate">{trimmedQuery}</span>
-                <span className="shrink-0 text-xs text-text-muted">{customLabel}</span>
+                <span className="shrink-0 text-caption text-text-muted">{customLabel}</span>
               </button>
             ) : null}
             {filtered.length > 0 ? (
@@ -136,7 +136,7 @@ export default function SearchableSelect({
                   role="option"
                   aria-selected={value === option.value}
                   onClick={() => choose(option.value)}
-                  className={`mt-1 flex w-full items-center rounded-lg px-2 py-1.5 text-left text-sm transition ${
+                  className={`mt-1 flex w-full items-center rounded-lg px-2 py-1.5 text-left text-body transition ${
                     value === option.value
                       ? "bg-accent/[0.12] text-text"
                       : "text-text-muted hover:bg-panel-soft hover:text-text"
@@ -146,7 +146,7 @@ export default function SearchableSelect({
                 </button>
               ))
             ) : !customAllowed ? (
-              <div className="px-2 py-3 text-sm text-text-muted">No matching themes</div>
+              <div className="px-2 py-3 text-body text-text-muted">No matching themes</div>
             ) : null}
           </div>
         </div>

@@ -73,7 +73,7 @@ export function MessageAvatar({
   if (actor.kind === "system") {
     return (
       <div
-        className={`${size === "sm" ? "h-7 w-7 text-[11px]" : "h-9 w-9 text-xs"} grid shrink-0 place-items-center overflow-hidden rounded-lg bg-accent font-bold text-white shadow-sm`}
+        className={`${size === "sm" ? "h-7 w-7 text-micro" : "h-9 w-9 text-caption"} grid shrink-0 place-items-center overflow-hidden rounded-lg bg-accent font-bold text-white shadow-sm`}
         title={actorDisplayName(actor)}
         aria-label={`${actorDisplayName(actor)} avatar`}
       >
@@ -84,7 +84,7 @@ export function MessageAvatar({
 
   const src = actorAvatarSrc(actor);
   const label = actorDisplayName(actor);
-  const sizeClass = size === "sm" ? "h-7 w-7 text-[11px]" : "h-9 w-9 text-xs";
+  const sizeClass = size === "sm" ? "h-7 w-7 text-micro" : "h-9 w-9 text-caption";
 
   return (
     <span className="relative inline-grid shrink-0">
@@ -150,7 +150,7 @@ export function MessageTimestamp({ value }: { value: Date | string }) {
     <time
       dateTime={iso}
       title={Number.isFinite(date.getTime()) ? absoluteTime(date) : undefined}
-      className="inline-flex items-center gap-1 rounded-full border border-line bg-bg/80 px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal text-text-muted tabular-nums"
+      className="inline-flex items-center gap-1 rounded-full border border-line bg-bg/80 px-2 py-0.5 text-nano font-medium normal-case tracking-normal text-text-muted tabular-nums"
     >
       <span>{Number.isFinite(date.getTime()) ? relativeTime(date) : "unknown"}</span>
       {Number.isFinite(date.getTime()) ? (

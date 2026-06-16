@@ -93,7 +93,7 @@ export default function NativePmNotificationToggle({ compact = false }: { compac
       disabled={disabled}
       aria-pressed={state.enabled}
       title={title}
-      className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition ${
+      className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-micro font-semibold transition ${
         state.enabled
           ? "border-accent bg-accent/10 text-accent"
           : "border-line bg-panel text-text-muted hover:border-accent hover:text-accent"

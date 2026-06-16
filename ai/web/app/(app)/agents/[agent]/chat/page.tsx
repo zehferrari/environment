@@ -129,7 +129,7 @@ function ArchiveTree({
             />
 
             <div
-              className={`rounded-xl border p-3 transition-all duration-200 shadow-sm ${
+              className={`rounded-card border p-3 transition-all duration-200 shadow-sm ${
                 selected
                   ? "border-accent bg-accent/[0.04] shadow-accent/[0.02]"
                   : "border-line bg-panel-soft hover:border-accent/30 hover:bg-panel"
@@ -137,35 +137,35 @@ function ArchiveTree({
             >
               <Link href={`/agents/${slug}/chat?archive=${archive.id}`} className="block">
                 <div className="flex items-center justify-between gap-1.5">
-                  <span className="text-[10px] font-semibold text-text-muted tracking-wider">
+                  <span className="text-nano font-semibold text-text-muted tracking-wider">
                     {period}
                   </span>
                   
                   {/* Relationship Badges */}
                   {archive.parentArchiveId ? (
-                    <span className="inline-flex items-center gap-1 rounded bg-panel-soft border border-line px-1 py-0.5 text-[8px] font-medium text-text-muted">
+                    <span className="inline-flex items-center gap-1 rounded bg-panel-soft border border-line px-1 py-0.5 text-atom font-medium text-text-muted">
                       <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                       Continuation
                     </span>
                   ) : hasChildren ? (
-                    <span className="inline-flex items-center gap-1 rounded bg-accent-soft border border-accent/20 px-1 py-0.5 text-[8px] font-medium text-accent">
+                    <span className="inline-flex items-center gap-1 rounded bg-accent-soft border border-accent/20 px-1 py-0.5 text-atom font-medium text-accent">
                       <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12 2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/></svg>
                       Root
                     </span>
                   ) : null}
                 </div>
 
-                <p className="mt-1.5 line-clamp-2 text-xs font-semibold text-text leading-relaxed">
+                <p className="mt-1.5 line-clamp-2 text-caption font-semibold text-text leading-relaxed">
                   {archive.summary}
                 </p>
 
-                <div className="mt-2 flex items-center justify-between text-[10px] text-text-muted border-t border-line/40 pt-2">
+                <div className="mt-2 flex items-center justify-between text-nano text-text-muted border-t border-line/40 pt-2">
                   <span>
                     {archive.messageCount} msg{archive.messageCount === 1 ? "" : "s"}
                   </span>
                   
                   {hasChildren && (
-                    <span className="text-[9px] text-text-muted opacity-80 flex items-center gap-0.5">
+                    <span className="text-pico text-text-muted opacity-80 flex items-center gap-0.5">
                       <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
                       {archive.children.length} child{archive.children.length === 1 ? "" : "ren"}
                     </span>
@@ -182,7 +182,7 @@ function ArchiveTree({
                     disabled={hasChildren}
                     aria-label={hasChildren ? "Cannot delete parent of a continuation" : "Delete archived chat"}
                     title={hasChildren ? "Cannot delete: this archive has active continuation children" : "Delete archived chat"}
-                    className={`rounded px-1.5 py-0.5 text-[9px] font-medium transition-all ${
+                    className={`rounded px-1.5 py-0.5 text-pico font-medium transition-all ${
                       hasChildren 
                         ? "bg-line/20 text-text-muted/40 border border-transparent cursor-not-allowed" 
                         : "border border-line text-text-muted hover:border-crit hover:bg-crit/4 hover:text-crit cursor-pointer"
@@ -540,11 +540,11 @@ export default async function DirectAgentChatPage({
   const finalBinArchives = buildFinalArchives(binArchives);
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-2.5rem)] max-w-7xl flex-col gap-4 overflow-hidden">
+    <div className="mx-auto flex h-[calc(100vh-2.5rem)] max-w-7xl flex-col gap-card overflow-hidden">
       {/* Sticky Header Banner */}
-      <header className="sticky top-[-1.25rem] z-10 -mx-6 bg-bg pt-[1.25rem] pb-3 px-6 lg:-mx-8 lg:px-8 border-b border-line flex items-center justify-between gap-4 shrink-0">
+      <header className="sticky top-[-1.25rem] z-10 -mx-6 bg-bg pt-[1.25rem] pb-3 px-page-x lg:-mx-8 lg:px-page-x-lg border-b border-line flex items-center justify-between gap-card shrink-0">
         <Link href={`/agents/${slug}`} className="flex items-center gap-3 hover:opacity-80 transition shrink-min min-w-0">
-          <div className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl border border-line bg-panel-soft text-sm font-semibold">
+          <div className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-card border border-line bg-panel-soft text-body font-semibold">
             {avatarSrc ? (
               <img src={avatarSrc} alt={`${agent.name} avatar`} decoding="async" className="h-full w-full object-cover" />
             ) : (
@@ -555,7 +555,7 @@ export default async function DirectAgentChatPage({
             <h1 className="truncate text-base font-semibold tracking-tight">
               {agent.name}
             </h1>
-            <p className="font-mono text-[10px] text-text-muted">@{slug} · {agent.role}</p>
+            <p className="font-mono text-nano text-text-muted">@{slug} · {agent.role}</p>
           </div>
         </Link>
         
@@ -564,7 +564,7 @@ export default async function DirectAgentChatPage({
           {viewingArchive ? (
             <Link
               href={`/agents/${slug}/chat`}
-              className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-medium text-text-muted hover:border-accent hover:text-accent"
+              className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent"
             >
               Current chat
             </Link>
@@ -580,10 +580,10 @@ export default async function DirectAgentChatPage({
       <ChatLayoutClient
         chatSection={
           <DirectChatOptimisticProvider agentSlug={slug} baseArchiveId={activeBaseArchiveId}>
-          <section className="flex min-h-0 h-full flex-col rounded-2xl border border-line bg-panel shadow-sm">
+          <section className="flex min-h-0 h-full flex-col rounded-panel border border-line bg-panel shadow-sm">
             <div className="border-b border-line px-4 py-3 shrink-0">
-              <p className="text-sm font-medium">{viewingArchive ? "Archived chat" : "Current chat"}</p>
-              <p className="mt-1 text-xs text-text-muted">
+              <p className="text-body font-medium">{viewingArchive ? "Archived chat" : "Current chat"}</p>
+              <p className="mt-1 text-caption text-text-muted">
                 {viewingArchive && selectedArchive
                   ? `${formatArchivePeriod(selectedArchive.startedAt, selectedArchive.endedAt)} · ${selectedArchive.messageCount} messages`
                   : activeBaseArchive
@@ -610,20 +610,20 @@ export default async function DirectAgentChatPage({
 
             {/* Attached Context Files List */}
             {contextFiles.length > 0 && (
-              <div className="border-t border-line bg-panel-soft px-4 py-2 flex flex-wrap gap-2 items-center shrink-0">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-text-muted select-none">
+              <div className="border-t border-line bg-panel-soft px-card py-control-y flex flex-wrap gap-2 items-center shrink-0">
+                <span className="text-nano font-bold uppercase tracking-wider text-text-muted select-none">
                   Context Files ({contextFiles.length}):
                 </span>
                 {contextFiles.map((file) => (
                   <div
                     key={`${file.folderId}-${file.name}`}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-2 py-0.5 text-xs font-semibold text-text shadow-sm"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-panel px-2 py-0.5 text-caption font-semibold text-text shadow-sm"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
                     <span className="truncate max-w-[150px]" title={file.name}>
                       {file.name}
                     </span>
-                    <span className="text-[9px] text-text-muted font-normal">
+                    <span className="text-pico text-text-muted font-normal">
                       ({(file.size / 1024).toFixed(1)} KB)
                     </span>
                   </div>
@@ -645,7 +645,7 @@ export default async function DirectAgentChatPage({
             />
 
             {viewingArchive && !canStartChildFromArchive ? (
-              <div className="border-t border-line p-4 text-sm text-text-muted shrink-0 bg-panel">
+              <div className="border-t border-line p-card text-body text-text-muted shrink-0 bg-panel">
                 {activeChildAlreadyOpen
                   ? "A child continuation from this archive is already active."
                   : "Archive the current active chat before starting a child continuation from this archive."}{" "}

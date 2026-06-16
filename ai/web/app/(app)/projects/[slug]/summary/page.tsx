@@ -69,12 +69,12 @@ export default async function ProjectSummaryPage({
 
   return (
     <div className="grid gap-6 lg:grid-cols-3">
-      <section className="rounded-2xl border border-line bg-panel p-6 shadow-sm lg:col-span-2">
+      <section className="rounded-panel border border-line bg-panel p-6 shadow-sm lg:col-span-2">
         <div className="md" dangerouslySetInnerHTML={renderFullMarkdown(readme)} />
       </section>
       <aside className="lg:col-span-1">
-        <div className="lg:sticky lg:top-4 lg:h-[calc(100vh-2rem)] lg:overflow-y-auto lg:pr-1">
-          <h2 className="mb-3 text-xs uppercase tracking-wider text-text-muted">
+        <div className="lg:sticky lg:top-card lg:h-[calc(100vh-2rem)] lg:overflow-y-auto lg:pr-1">
+          <h2 className="mb-3 text-caption uppercase tracking-wider text-text-muted">
             Recent activity
           </h2>
           <ActivityAgenda feed={feed} />

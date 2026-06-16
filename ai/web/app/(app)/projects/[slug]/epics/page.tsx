@@ -88,7 +88,7 @@ export default async function EpicsListPage({
     <div className="space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <nav className="text-sm">
+          <nav className="text-body">
             <Link
               href={`/projects/${slug}`}
               className="text-text-muted hover:text-text hover:underline"
@@ -96,9 +96,9 @@ export default async function EpicsListPage({
               ← {project.name}
             </Link>
           </nav>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">Epics</h1>
+          <h1 className="mt-1 text-display font-semibold tracking-tight">Epics</h1>
         </div>
-        <div className="flex items-center gap-1 rounded-xl border border-line bg-panel p-1 text-xs">
+        <div className="flex items-center gap-1 rounded-card border border-line bg-panel p-1 text-caption">
           <Link
             href={`/projects/${slug}/epics?view=board`}
             className={
@@ -130,7 +130,7 @@ export default async function EpicsListPage({
           selectedStatuses={selectedStatuses}
           disabled={view === "archive"}
         />
-        <p className="text-xs text-text-muted">
+        <p className="text-caption text-text-muted">
           {view === "archive"
             ? "Showing archived epics."
             : "Board defaults to Backlog and Open epics; add Done from the status filter."}
@@ -138,12 +138,12 @@ export default async function EpicsListPage({
       </div>
 
       {visibleEpics.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-line p-6 text-center text-sm text-text-muted">
+        <p className="rounded-card border border-dashed border-line p-6 text-center text-body text-text-muted">
           No epics match the current filter.
         </p>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
-          <div className="grid grid-cols-[minmax(0,1fr)_6rem_4rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3 border-b border-line px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+        <div className="overflow-hidden rounded-panel border border-line bg-panel shadow-sm">
+          <div className="grid grid-cols-[minmax(0,1fr)_6rem_4rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3 border-b border-line px-card py-control-y text-nano font-semibold uppercase tracking-wider text-text-muted">
             <span>Epic</span>
             <span>Status</span>
             <span>Deploy</span>
@@ -161,41 +161,41 @@ export default async function EpicsListPage({
                   className="absolute inset-0 z-0"
                   aria-label={`Open ${e.title}`}
                 />
-                <div className="grid grid-cols-[minmax(0,1fr)_6rem_4rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3 px-4 py-2.5 text-sm">
+                <div className="grid grid-cols-[minmax(0,1fr)_6rem_4rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3 px-card py-control-y.5 text-body">
                   <span className="min-w-0">
                     {e.workItemKey ? (
-                      <span className="mb-0.5 inline-flex rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-[10px] font-semibold text-text-muted">
+                      <span className="mb-0.5 inline-flex rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-nano font-semibold text-text-muted">
                         {e.workItemKey}
                       </span>
                     ) : null}
                     <span className="block truncate font-medium">{e.title}</span>
                     {e.description ? (
-                      <span className="block truncate text-xs text-text-muted">
+                      <span className="block truncate text-caption text-text-muted">
                         {e.description}
                       </span>
                     ) : null}
                   </span>
                   <span>
-                    <span className="rounded-full border border-line bg-panel-soft px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider">
+                    <span className="rounded-full border border-line bg-panel-soft px-2 py-0.5 text-nano font-medium uppercase tracking-wider">
                       {e.status}
                     </span>
                   </span>
                   <DeploymentIndicator status={e.deploymentStatus} />
-                  <span className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
+                  <span className="flex min-w-0 items-center gap-2 text-caption text-text-muted">
                     {e.reporter ? <MessageAvatar actor={e.reporter} size="sm" /> : null}
                     <span className="truncate">{e.reporter ? actorDisplayName(e.reporter) : "—"}</span>
                   </span>
-                  <span className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
+                  <span className="flex min-w-0 items-center gap-2 text-caption text-text-muted">
                     {e.actingManager ? <MessageAvatar actor={e.actingManager} size="sm" /> : null}
                     <span className="truncate">{e.actingManager ? actorDisplayName(e.actingManager) : "—"}</span>
                   </span>
-                  <span className="text-right text-xs tabular-nums">
+                  <span className="text-right text-caption tabular-nums">
                     {e._count.tasks}
                   </span>
                   <time
                     dateTime={e.createdAt.toISOString()}
                     title={e.createdAt.toISOString()}
-                    className="text-right text-xs tabular-nums text-text-muted"
+                    className="text-right text-caption tabular-nums text-text-muted"
                   >
                     {formatGridDate(e.createdAt)}
                   </time>
@@ -240,7 +240,7 @@ function DeploymentIndicator({ status }: { status: string }) {
   if (icon === "—") {
     return (
       <span
-        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-line text-[9px] text-text-muted transition hover:scale-110 hover:border-accent"
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-line text-pico text-text-muted transition hover:scale-110 hover:border-accent"
         title="Deployment: Not Required"
         aria-label="Deployment: Not Required"
       >
@@ -250,7 +250,7 @@ function DeploymentIndicator({ status }: { status: string }) {
   }
   return (
     <span
-      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-[10px] leading-none transition hover:scale-110"
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-nano leading-none transition hover:scale-110"
       title={`Deployment: ${status}`}
       aria-label={`Deployment: ${status}`}
     >

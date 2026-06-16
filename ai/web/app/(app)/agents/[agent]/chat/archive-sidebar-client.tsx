@@ -251,29 +251,29 @@ export default function ArchiveSidebarClient({
   );
 
   return (
-    <aside className="rounded-2xl border border-line bg-panel p-4 shadow-sm flex flex-col h-full min-h-0 select-none">
+    <aside className="rounded-panel border border-line bg-panel p-card shadow-sm flex flex-col h-full min-h-0 select-none">
       {/* Header */}
       <div className="mb-4 flex items-center justify-between gap-2 shrink-0">
         <div>
           <div className="flex items-center gap-1.5">
-            <p className="text-sm font-semibold">
+            <p className="text-body font-semibold">
               {viewMode === "archives" ? "Recent Chats" : "Trash Bin"}
             </p>
             {viewMode === "archives" ? (
               archives.length > 0 && (
-                <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-[10px] font-bold text-ok">
+                <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-nano font-bold text-ok">
                   {archives.length}
                 </span>
               )
             ) : (
               binArchives.length > 0 && (
-                <span className="rounded-full bg-crit/10 px-1.5 py-0.5 text-[10px] font-bold text-crit">
+                <span className="rounded-full bg-crit/10 px-1.5 py-0.5 text-nano font-bold text-crit">
                   {binArchives.length}
                 </span>
               )
             )}
           </div>
-          <p className="text-xs text-text-muted">
+          <p className="text-caption text-text-muted">
             {viewMode === "archives" ? "Recent conversations" : "Deleted conversations"}
           </p>
         </div>
@@ -302,7 +302,7 @@ export default function ArchiveSidebarClient({
 
           <Link
             href={`/agents/${slug}/chat`}
-            className={`rounded-md border px-2 py-1 text-xs font-medium transition-all ${
+            className={`rounded-md border px-2 py-1 text-caption font-medium transition-all ${
               selectedArchiveId === null && !selectedDateStr && viewMode === "archives"
                 ? "border-accent/30 bg-accent-soft text-accent"
                 : "border-line text-text-muted hover:border-accent hover:text-accent"
@@ -313,7 +313,7 @@ export default function ArchiveSidebarClient({
         </div>
       </div>
 
-      <div className="mb-3 grid grid-cols-2 gap-1 rounded-xl border border-line bg-panel-soft p-1 text-xs font-semibold shrink-0">
+      <div className="mb-3 grid grid-cols-2 gap-1 rounded-card border border-line bg-panel-soft p-1 text-caption font-semibold shrink-0">
         <button
           type="button"
           onClick={() => {
@@ -326,7 +326,7 @@ export default function ArchiveSidebarClient({
               : "text-text-muted hover:text-text"
           }`}
         >
-          Recent <span className="text-[10px] text-text-muted">({archives.length})</span>
+          Recent <span className="text-nano text-text-muted">({archives.length})</span>
         </button>
         <button
           type="button"
@@ -340,7 +340,7 @@ export default function ArchiveSidebarClient({
               : "text-text-muted hover:text-text"
           }`}
         >
-          Bin <span className="text-[10px] text-text-muted">({binArchives.length})</span>
+          Bin <span className="text-nano text-text-muted">({binArchives.length})</span>
         </button>
       </div>
 
@@ -355,7 +355,7 @@ export default function ArchiveSidebarClient({
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
             </button>
-            <span className="text-[11px] font-bold text-text">
+            <span className="text-micro font-bold text-text">
               {monthName} {currentYear}
             </span>
             <button
@@ -367,7 +367,7 @@ export default function ArchiveSidebarClient({
           </div>
 
           {/* Days Header */}
-          <div className="grid grid-cols-7 gap-0.5 text-center text-[9px] font-bold text-text-muted mb-0.5">
+          <div className="grid grid-cols-7 gap-0.5 text-center text-pico font-bold text-text-muted mb-0.5">
             <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
           </div>
 
@@ -390,7 +390,7 @@ export default function ArchiveSidebarClient({
                   onMouseEnter={() => hasChat && setHoveredDateStr(cell.dateStr)}
                   onMouseLeave={() => setHoveredDateStr(null)}
                   onClick={() => hasChat && setSelectedDateStr(isSelected ? null : cell.dateStr)}
-                  className={`relative h-5.5 w-5.5 rounded-md flex items-center justify-center text-[10px] font-medium transition-all ${
+                  className={`relative h-5.5 w-5.5 rounded-md flex items-center justify-center text-nano font-medium transition-all ${
                     hasChat
                       ? isSelected
                         ? "bg-accent text-white font-bold"
@@ -416,7 +416,7 @@ export default function ArchiveSidebarClient({
 
       {/* Date Filter Selected Banner */}
       {viewMode === "archives" && selectedDateStr && (
-        <div className="mb-3 rounded-lg border border-accent/20 bg-accent/10 px-3 py-1.5 flex items-center justify-between text-xs text-accent font-semibold shrink-0">
+        <div className="mb-3 rounded-lg border border-accent/20 bg-accent/10 px-control-x py-control-y flex items-center justify-between text-caption text-accent font-semibold shrink-0">
           <span>Active on: {selectedDateStr}</span>
           <button
             onClick={() => setSelectedDateStr(null)}
@@ -431,7 +431,7 @@ export default function ArchiveSidebarClient({
       <div className="flex-1 overflow-y-auto min-h-0 pr-1 space-y-3 scrollbar-thin">
         {viewMode === "archives" ? (
           filteredArchives.length === 0 ? (
-            <p className="text-sm text-text-muted">No recent chats match.</p>
+            <p className="text-body text-text-muted">No recent chats match.</p>
           ) : (
             filteredArchives.map((archive) => {
               const selected = selectedArchiveId === archive.id;
@@ -448,7 +448,7 @@ export default function ArchiveSidebarClient({
                   key={archive.id}
                   onMouseEnter={() => setHoveredArchiveId(archive.id)}
                   onMouseLeave={() => setHoveredArchiveId(null)}
-                  className={`rounded-xl border p-2 transition-all duration-200 shadow-sm relative group ${
+                  className={`rounded-card border p-2 transition-all duration-200 shadow-sm relative group ${
                     selected
                       ? "border-accent bg-accent/[0.04] shadow-accent/[0.02]"
                       : "border-line bg-panel-soft hover:border-accent/30 hover:bg-panel"
@@ -465,7 +465,7 @@ export default function ArchiveSidebarClient({
                         disabled={isPending}
                         value={editTitleValue}
                         onChange={(e) => setEditTitleValue(e.target.value)}
-                        className="w-full rounded-md border border-line bg-bg px-2 py-1 text-xs outline-none focus:border-accent disabled:opacity-50"
+                        className="w-full rounded-md border border-line bg-bg px-2 py-1 text-caption outline-none focus:border-accent disabled:opacity-50"
                         onKeyDown={(e) => {
                           if (e.key === "Enter") handleSaveTitle(archive.id);
                           if (e.key === "Escape") setEditingArchiveId(null);
@@ -477,7 +477,7 @@ export default function ArchiveSidebarClient({
                           type="button"
                           disabled={isPending}
                           onClick={() => setEditingArchiveId(null)}
-                          className="rounded border border-line bg-panel-soft px-2 py-0.5 text-[9px] font-medium text-text-muted hover:border-accent transition cursor-pointer"
+                          className="rounded border border-line bg-panel-soft px-2 py-0.5 text-pico font-medium text-text-muted hover:border-accent transition cursor-pointer"
                         >
                           Cancel
                         </button>
@@ -485,7 +485,7 @@ export default function ArchiveSidebarClient({
                           type="button"
                           disabled={isPending}
                           onClick={() => handleSaveTitle(archive.id)}
-                          className="rounded bg-accent px-2.5 py-0.5 text-[9px] font-medium text-bg hover:opacity-90 transition cursor-pointer"
+                          className="rounded bg-accent px-2.5 py-0.5 text-pico font-medium text-bg hover:opacity-90 transition cursor-pointer"
                         >
                           Save
                         </button>
@@ -494,12 +494,12 @@ export default function ArchiveSidebarClient({
                   ) : (
                     <>
                       <Link href={`/agents/${slug}/chat?archive=${archive.id}`} className="block">
-                        <span className="text-[9px] font-semibold text-text-muted tracking-wider block mb-0.5">
+                        <span className="text-pico font-semibold text-text-muted tracking-wider block mb-0.5">
                           {formatModernDate(archive.startedAt)}
                         </span>
                         
                         <div className="flex items-start justify-between gap-1.5 mb-1.5">
-                          <p className="line-clamp-2 text-[11px] font-semibold text-text leading-relaxed flex-1">
+                          <p className="line-clamp-2 text-micro font-semibold text-text leading-relaxed flex-1">
                             {archive.summary}
                           </p>
                           <button
@@ -520,7 +520,7 @@ export default function ArchiveSidebarClient({
                         </div>
                       </Link>
 
-                      <div className="flex items-center justify-between text-[9px] text-text-muted border-t border-line/40 pt-1.5 shrink-0">
+                      <div className="flex items-center justify-between text-pico text-text-muted border-t border-line/40 pt-1.5 shrink-0">
                         <span className="flex items-center gap-1.5">
                           <span>
                             {archive.messageCount} msg{archive.messageCount === 1 ? "" : "s"}
@@ -533,7 +533,7 @@ export default function ArchiveSidebarClient({
                             </span>
                           )}
                           {archive.totalSizeKB !== undefined && (
-                            <span className="bg-panel border border-line px-1 rounded text-[8px] font-mono font-semibold" title="Total memory size including attachments">
+                            <span className="bg-panel border border-line px-1 rounded text-atom font-mono font-semibold" title="Total memory size including attachments">
                               {archive.totalSizeKB} KB
                             </span>
                           )}
@@ -545,7 +545,7 @@ export default function ArchiveSidebarClient({
                           onClick={() => setPending({ kind: "delete-archive", archiveId: archive.id })}
                           aria-label={hasChildren ? "Cannot delete parent of a continuation" : "Delete archived chat"}
                           title={hasChildren ? "Cannot delete: this archive has active continuation children" : "Delete archived chat"}
-                          className={`rounded px-1.5 py-0.5 text-[8px] font-medium transition-all ${
+                          className={`rounded px-1.5 py-0.5 text-atom font-medium transition-all ${
                             hasChildren
                               ? "bg-line/20 text-text-muted/40 border border-transparent cursor-not-allowed"
                               : "border border-line text-text-muted hover:border-crit hover:bg-crit/4 hover:text-crit cursor-pointer"
@@ -562,29 +562,29 @@ export default function ArchiveSidebarClient({
           )
         ) : (
           binArchives.length === 0 ? (
-            <p className="text-sm text-text-muted py-4 text-center">Trash bin is empty.</p>
+            <p className="text-body text-text-muted py-4 text-center">Trash bin is empty.</p>
           ) : (
             binArchives.map((archive) => {
               const selected = selectedArchiveId === archive.id;
               return (
                 <div
                   key={archive.id}
-                  className={`rounded-xl border p-2 transition-all duration-200 shadow-sm relative ${
+                  className={`rounded-card border p-2 transition-all duration-200 shadow-sm relative ${
                     selected
                       ? "border-accent bg-accent/[0.04] shadow-accent/[0.02]"
                       : "border-line bg-panel-soft hover:border-accent/30"
                   }`}
                 >
                   <Link href={`/agents/${slug}/chat?archive=${archive.id}`} className="block">
-                    <span className="text-[9px] font-semibold text-text-muted tracking-wider block mb-0.5">
+                    <span className="text-pico font-semibold text-text-muted tracking-wider block mb-0.5">
                       {formatModernDate(archive.startedAt)}
                     </span>
-                    <p className="line-clamp-2 text-[11px] font-semibold text-text leading-relaxed mb-1.5">
+                    <p className="line-clamp-2 text-micro font-semibold text-text leading-relaxed mb-1.5">
                       {archive.summary}
                     </p>
                   </Link>
 
-                  <div className="flex items-center justify-between text-[9px] text-text-muted border-t border-line/40 pt-1.5 shrink-0">
+                  <div className="flex items-center justify-between text-pico text-text-muted border-t border-line/40 pt-1.5 shrink-0">
                     <span className="flex flex-wrap items-center gap-1.5">
                       <span>
                         {archive.messageCount} msg{archive.messageCount === 1 ? "" : "s"}
@@ -597,7 +597,7 @@ export default function ArchiveSidebarClient({
                         </span>
                       )}
                       {archive.totalSizeKB !== undefined && (
-                        <span className="bg-panel border border-line px-1 rounded text-[8px] font-mono font-semibold" title="Total memory size including attachments">
+                        <span className="bg-panel border border-line px-1 rounded text-atom font-mono font-semibold" title="Total memory size including attachments">
                           {archive.totalSizeKB} KB
                         </span>
                       )}
@@ -610,7 +610,7 @@ export default function ArchiveSidebarClient({
                       type="button"
                       disabled={isPending}
                       onClick={() => handleRestore(archive.id)}
-                      className="rounded border border-accent/30 text-accent hover:bg-accent/[0.04] px-1.5 py-0.5 text-[8px] font-semibold cursor-pointer disabled:opacity-50"
+                      className="rounded border border-accent/30 text-accent hover:bg-accent/[0.04] px-1.5 py-0.5 text-atom font-semibold cursor-pointer disabled:opacity-50"
                     >
                       Restore
                     </button>
@@ -629,7 +629,7 @@ export default function ArchiveSidebarClient({
             type="button"
             disabled={isPending}
             onClick={handleEmptyBin}
-            className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-crit/30 bg-crit/4 py-2 text-xs font-semibold text-crit hover:bg-crit/8 transition cursor-pointer disabled:opacity-50"
+            className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-crit/30 bg-crit/4 py-2 text-caption font-semibold text-crit hover:bg-crit/8 transition cursor-pointer disabled:opacity-50"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>

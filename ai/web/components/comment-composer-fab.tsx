@@ -32,23 +32,23 @@ export default function CommentComposerFab({
     <>
       {open ? (
         <div
-          className="fixed inset-0 z-50 bg-black/10 p-4 backdrop-blur-[1px]"
+          className="fixed inset-0 z-50 bg-black/10 p-card backdrop-blur-[1px]"
           onClick={() => setOpen(false)}
         >
           <form
             action={submit}
             onClick={(event) => event.stopPropagation()}
-            className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-xl space-y-3 rounded-2xl border border-line bg-panel p-4 shadow-2xl sm:right-6"
+            className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-xl space-y-3 rounded-panel border border-line bg-panel p-card shadow-2xl sm:right-6"
           >
             {taskId ? <input type="hidden" name="taskId" value={taskId} /> : null}
             {epicId ? <input type="hidden" name="epicId" value={epicId} /> : null}
             <input type="hidden" name="projectSlug" value={projectSlug} />
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
                   {title}
                 </div>
-                <p className="mt-1 text-xs text-text-muted">
+                <p className="mt-1 text-caption text-text-muted">
                   Markdown and mentions are supported.
                 </p>
               </div>
@@ -56,7 +56,7 @@ export default function CommentComposerFab({
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close comment composer"
-                className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-text-muted transition hover:bg-panel-soft hover:text-text"
+                className="grid h-8 w-8 place-items-center rounded-lg text-heading leading-none text-text-muted transition hover:bg-panel-soft hover:text-text"
               >
                 &times;
               </button>
@@ -75,20 +75,20 @@ export default function CommentComposerFab({
               }}
               placeholder={placeholder}
               expandedTitle={title}
-              className="w-full resize-none rounded-lg border border-line bg-bg px-3 py-2 text-sm outline-none focus:border-accent"
+              className="w-full resize-none rounded-lg border border-line bg-bg px-3 py-2 text-body outline-none focus:border-accent"
             />
             <div className="flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-sm font-medium text-text-muted transition hover:border-accent hover:text-accent"
+                className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-body font-medium text-text-muted transition hover:border-accent hover:text-accent"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={!canSubmit}
-                className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-bg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+                className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-bg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 Add comment
               </button>

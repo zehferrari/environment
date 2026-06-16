@@ -71,7 +71,7 @@ export default function ConfirmedDeleteButton({
         disabled={isPending}
         className={
           className
-            ?? "shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-text-muted hover:bg-crit hover:text-bg disabled:opacity-50 cursor-pointer"
+            ?? "shrink-0 rounded px-1.5 py-0.5 text-micro font-medium text-text-muted hover:bg-crit hover:text-bg disabled:opacity-50 cursor-pointer"
         }
         title={buttonTitle ?? "Delete"}
         aria-label={ariaLabel ?? "Delete"}

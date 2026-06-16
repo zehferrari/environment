@@ -55,7 +55,7 @@ export default function AddTaskFab({
     <>
       {open ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-card"
           onClick={() => setOpen(false)}
         >
           <form
@@ -63,19 +63,19 @@ export default function AddTaskFab({
             action={createTaskAction}
             onSubmit={() => setOpen(false)}
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-lg space-y-3 rounded-2xl border border-line bg-panel p-5 shadow-2xl"
+            className="w-full max-w-lg space-y-3 rounded-panel border border-line bg-panel p-card-lg shadow-2xl"
           >
             <input type="hidden" name="projectId" value={projectId} />
             <input type="hidden" name="projectSlug" value={projectSlug} />
             <div className="flex items-center justify-between">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+              <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
                 New task
               </div>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close"
-                className="text-lg leading-none text-text-muted hover:text-text"
+                className="text-heading leading-none text-text-muted hover:text-text"
               >
                 ×
               </button>
@@ -87,23 +87,23 @@ export default function AddTaskFab({
               autoFocus
               maxLength={200}
               placeholder="Task title"
-              className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm outline-none focus:border-accent"
+              className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body outline-none focus:border-accent"
             />
             <textarea
               name="description"
               rows={6}
               placeholder="Description (optional) — markdown supported"
-              className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm leading-relaxed outline-none focus:border-accent"
+              className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body leading-relaxed outline-none focus:border-accent"
             />
 
-            <label className="block text-xs">
+            <label className="block text-caption">
               <span className="mb-1 block text-text-muted">
                 Epic
               </span>
               <select
                 name="epicId"
                 defaultValue=""
-                className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-xs outline-none focus:border-accent"
+                className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-caption outline-none focus:border-accent"
               >
                 <option value="">No epic</option>
                 {epics.map((e) => (
@@ -115,7 +115,7 @@ export default function AddTaskFab({
             </label>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <label className="text-xs">
+              <label className="text-caption">
                 <span className="mb-1 block text-text-muted">
                   Assignee
                 </span>
@@ -128,7 +128,7 @@ export default function AddTaskFab({
                   ariaLabel="Assignee"
                 />
               </label>
-              <label className="text-xs">
+              <label className="text-caption">
                 <span className="mb-1 block text-text-muted">
                   Reviewer
                 </span>
@@ -147,13 +147,13 @@ export default function AddTaskFab({
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-sm font-medium hover:border-accent"
+                className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-body font-medium hover:border-accent"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-bg hover:opacity-90"
+                className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-bg hover:opacity-90"
               >
                 Add task
               </button>

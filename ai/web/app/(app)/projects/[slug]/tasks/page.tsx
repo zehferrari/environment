@@ -216,22 +216,22 @@ export default async function ProjectTasksPage({
     return (
       <li
         key={task.id}
-        className={`grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2 text-sm transition hover:bg-panel xl:min-w-0 ${statusRowClass(task.status)}`}
+        className={`grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2 text-body transition hover:bg-panel xl:min-w-0 ${statusRowClass(task.status)}`}
       >
         <Link href={`/projects/${slug}/tasks/${task.id}`} className="min-w-0 hover:underline">
           <span className="mb-0.5 flex min-w-0 items-center gap-2">
-            <span className="inline-flex shrink-0 rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-[10px] font-semibold text-text-muted">
+            <span className="inline-flex shrink-0 rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-nano font-semibold text-text-muted">
               {task.workItemKey ?? task.id.slice(0, 8)}
             </span>
             {task.epic ? (
-              <span className="truncate text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+              <span className="truncate text-nano font-semibold uppercase tracking-wider text-text-muted">
                 {task.epic.title}
               </span>
             ) : null}
           </span>
           <span className="block truncate font-medium">{task.title}</span>
           {task.archivedAt ? (
-            <span className="mt-0.5 inline-flex rounded-full border border-zinc-500/60 bg-zinc-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-900">
+            <span className="mt-0.5 inline-flex rounded-full border border-zinc-500/60 bg-zinc-200 px-1.5 py-0.5 text-nano font-semibold uppercase tracking-wider text-zinc-900">
               Archived
             </span>
           ) : null}
@@ -303,7 +303,7 @@ export default async function ProjectTasksPage({
   }
 
   const TASK_HEADER_GRID = (
-    <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 border-b border-line px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted xl:min-w-0">
+    <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 border-b border-line px-3 py-2 text-nano font-semibold uppercase tracking-wider text-text-muted xl:min-w-0">
       <span>Task</span>
       <span>Status</span>
       <span>Deploy</span>
@@ -317,15 +317,15 @@ export default async function ProjectTasksPage({
   );
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-section-gap">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold tracking-tight">Tasks</h2>
-          <p className="mt-1 text-sm text-text-muted">
+          <h2 className="text-heading font-semibold tracking-tight">Tasks</h2>
+          <p className="mt-1 text-body text-text-muted">
             {tasks.length} shown of {totalCount} matching task{totalCount === 1 ? "" : "s"}.
           </p>
         </div>
-        <div className="flex items-center gap-1 rounded-xl border border-line bg-panel p-1 text-xs">
+        <div className="flex items-center gap-1 rounded-card border border-line bg-panel p-1 text-caption">
           <Link
             href={`/projects/${slug}/tasks?view=board`}
             className={
@@ -353,7 +353,7 @@ export default async function ProjectTasksPage({
 
       <form
         id="taskFilters"
-        className="grid gap-3 rounded-xl border border-line bg-panel p-3 text-sm md:grid-cols-3 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto]"
+        className="grid gap-3 rounded-card border border-line bg-panel p-3 text-body md:grid-cols-3 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto]"
       >
         <input type="hidden" name="view" value={view} />
         <FilterField label="Reporter">
@@ -407,13 +407,13 @@ export default async function ProjectTasksPage({
         <div className="flex items-end gap-2">
           <button
             type="submit"
-            className="h-9 rounded-lg bg-accent px-3 text-xs font-semibold text-bg hover:opacity-90"
+            className="h-9 rounded-lg bg-accent px-3 text-caption font-semibold text-bg hover:opacity-90"
           >
             Apply
           </button>
           <Link
             href={`/projects/${slug}/tasks?view=${view}`}
-            className="grid h-9 place-items-center rounded-lg border border-line px-3 text-xs font-semibold text-text-muted hover:text-text"
+            className="grid h-9 place-items-center rounded-lg border border-line px-3 text-caption font-semibold text-text-muted hover:text-text"
           >
             Clear
           </Link>
@@ -421,7 +421,7 @@ export default async function ProjectTasksPage({
       </form>
 
       {tasks.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-line p-6 text-center text-sm text-text-muted">
+        <p className="rounded-card border border-dashed border-line p-6 text-center text-body text-text-muted">
           No tasks match these filters.
         </p>
       ) : (
@@ -445,16 +445,16 @@ export default async function ProjectTasksPage({
               className="group overflow-hidden rounded-lg border border-line bg-panel-soft"
             >
               <summary className="cursor-pointer list-none border-b border-line bg-panel [&::-webkit-details-marker]:hidden">
-                <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2.5 text-sm xl:min-w-0">
+                <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2.5 text-body xl:min-w-0">
                   <span className="flex min-w-0 items-center gap-2 font-semibold">
                     <ChevronIcon />
                     <span className="truncate">{group.title}</span>
-                    <span className="shrink-0 text-xs font-normal tabular-nums text-text-muted">
+                    <span className="shrink-0 text-caption font-normal tabular-nums text-text-muted">
                       ({group.tasks.length})
                     </span>
                   </span>
                   {group.epic ? (
-                    <span className="w-fit rounded-full border border-line bg-panel-soft px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider">
+                    <span className="w-fit rounded-full border border-line bg-panel-soft px-2 py-0.5 text-nano font-medium uppercase tracking-wider">
                       {group.epic.status}
                     </span>
                   ) : (
@@ -472,7 +472,7 @@ export default async function ProjectTasksPage({
                     actor={serializeActor(group.epic?.actingManager ?? group.epic?.reporter ?? null)}
                     emptyLabel="—"
                   />
-                  <span className="flex items-center justify-end gap-1.5 text-xs tabular-nums text-text-muted">
+                  <span className="flex items-center justify-end gap-1.5 text-caption tabular-nums text-text-muted">
                     <TimerIcon />
                     <span>{formatElapsed(elapsedMs)}</span>
                   </span>
@@ -519,7 +519,7 @@ function DeploymentIndicator({ status }: { status: string }) {
   if (icon === "—") {
     return (
       <span
-        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-line text-[9px] text-text-muted transition hover:scale-110 hover:border-accent"
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-line text-pico text-text-muted transition hover:scale-110 hover:border-accent"
         title="Deployment: Not Required"
         aria-label="Deployment: Not Required"
       >
@@ -529,7 +529,7 @@ function DeploymentIndicator({ status }: { status: string }) {
   }
   return (
     <span
-      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-[10px] leading-none transition hover:scale-110"
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-nano leading-none transition hover:scale-110"
       title={`Deployment: ${status}`}
       aria-label={`Deployment: ${status}`}
     >
@@ -551,13 +551,13 @@ function FilterSelect({
 }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+      <span className="mb-1 block text-nano font-semibold uppercase tracking-wider text-text-muted">
         {label}
       </span>
       <select
         name={name}
         defaultValue={value}
-        className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-xs outline-none focus:border-accent"
+        className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
       >
         {children}
       </select>
@@ -568,7 +568,7 @@ function FilterSelect({
 function FilterField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="block">
-      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+      <span className="mb-1 block text-nano font-semibold uppercase tracking-wider text-text-muted">
         {label}
       </span>
       {children}
@@ -578,7 +578,7 @@ function FilterField({ label, children }: { label: string; children: React.React
 
 function PersonCell({ actor, emptyLabel, busy = false }: { actor: MessageActor | null; emptyLabel: string; busy?: boolean }) {
   return (
-    <span className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
+    <span className="flex min-w-0 items-center gap-2 text-caption text-text-muted">
       {actor ? <MessageAvatar actor={actor} size="sm" busy={busy} /> : null}
       <span className="truncate">{actor ? actorDisplayName(actor) : emptyLabel}</span>
     </span>
@@ -587,7 +587,7 @@ function PersonCell({ actor, emptyLabel, busy = false }: { actor: MessageActor |
 
 function StatusPill({ status }: { status: string }) {
   return (
-    <span className={`w-fit rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusPillClass(status)}`}>
+    <span className={`w-fit rounded-full border px-2 py-0.5 text-nano font-semibold uppercase tracking-wider ${statusPillClass(status)}`}>
       {status}
     </span>
   );
@@ -603,7 +603,7 @@ function DateActorCell({
   dateOnly?: boolean;
 }) {
   return (
-    <span className="flex min-w-0 items-center justify-end gap-1.5 text-xs text-text-muted">
+    <span className="flex min-w-0 items-center justify-end gap-1.5 text-caption text-text-muted">
       <time dateTime={iso} title={iso} className="min-w-0 truncate text-right tabular-nums" suppressHydrationWarning>
         {dateOnly ? formatGridDate(iso) : relativeUpdated(iso)}
       </time>
@@ -643,7 +643,7 @@ function ElapsedCell({
   approvedOn: Date | null;
 }) {
   return (
-    <span className="flex items-center justify-end gap-1.5 text-xs tabular-nums text-text-muted">
+    <span className="flex items-center justify-end gap-1.5 text-caption tabular-nums text-text-muted">
       <TimerIcon />
       <span>{formatElapsed(computeElapsedMs({ status, createdAt, updatedAt, statusChangedAt, approvedOn }))}</span>
     </span>

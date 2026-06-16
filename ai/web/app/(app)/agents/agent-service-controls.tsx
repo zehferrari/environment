@@ -83,7 +83,7 @@ export default function AgentServiceControls({
   }
 
   if (rows.length === 0) {
-    return <p className="text-xs text-text-muted">No agent services.</p>;
+    return <p className="text-caption text-text-muted">No agent services.</p>;
   }
 
   return (
@@ -96,11 +96,11 @@ export default function AgentServiceControls({
           return (
             <div
               key={service.name}
-              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-line bg-bg px-3 py-2 transition-all hover:bg-panel-soft"
+              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-card border border-line bg-bg px-3 py-2 transition-all hover:bg-panel-soft"
             >
               <div className="min-w-0">
-                <div className="truncate text-xs font-semibold text-text">{labelFor(service.name)}</div>
-                <div className="mt-1 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-text-muted">
+                <div className="truncate text-caption font-semibold text-text">{labelFor(service.name)}</div>
+                <div className="mt-1 flex items-center gap-1.5 text-nano font-bold uppercase tracking-wider text-text-muted">
                   <span
                     className={`h-2 w-2 rounded-full transition-all duration-300 ${
                       active
@@ -144,7 +144,7 @@ export default function AgentServiceControls({
         })}
       </div>
       {message ? (
-        <p className="line-clamp-2 rounded-lg border border-line bg-panel-soft px-2 py-1 text-[11px] text-text-muted">
+        <p className="line-clamp-2 rounded-lg border border-line bg-panel-soft px-2 py-1 text-micro text-text-muted">
           {message}
         </p>
       ) : null}

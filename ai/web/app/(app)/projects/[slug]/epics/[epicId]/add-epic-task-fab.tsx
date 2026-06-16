@@ -44,32 +44,32 @@ export default function AddEpicTaskFab({
     <>
       {open ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-card backdrop-blur-sm"
           onClick={() => setOpen(false)}
         >
           <form
             ref={formRef}
             action={formAction}
             onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-lg space-y-3 rounded-2xl border border-line bg-panel p-5 shadow-2xl"
+            className="w-full max-w-lg space-y-3 rounded-panel border border-line bg-panel p-card-lg shadow-2xl"
           >
             <input type="hidden" name="projectSlug" value={projectSlug} />
             <input type="hidden" name="epicId" value={epicId} />
             <div className="flex items-center justify-between">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+              <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
                 New epic task
               </div>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close"
-                className="text-lg leading-none text-text-muted hover:text-text"
+                className="text-heading leading-none text-text-muted hover:text-text"
               >
                 ×
               </button>
             </div>
             {state.error ? (
-              <p role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+              <p role="alert" className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-body text-red-300">
                 {state.error}
               </p>
             ) : null}
@@ -80,16 +80,16 @@ export default function AddEpicTaskFab({
               maxLength={200}
               placeholder="Task title"
               disabled={isPending}
-              className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm outline-none focus:border-accent disabled:cursor-wait disabled:opacity-70"
+              className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body outline-none focus:border-accent disabled:cursor-wait disabled:opacity-70"
             />
             <textarea
               name="description"
               rows={6}
               placeholder="Description (optional) — markdown supported"
               disabled={isPending}
-              className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm leading-relaxed outline-none focus:border-accent disabled:cursor-wait disabled:opacity-70"
+              className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body leading-relaxed outline-none focus:border-accent disabled:cursor-wait disabled:opacity-70"
             />
-            <p className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-xs text-text-muted">
+            <p className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-caption text-text-muted">
               This task will be linked to the current Epic and inherit the Epic branch / commit prefix defaults.
             </p>
             <div className="flex justify-end gap-2 pt-1">
@@ -97,14 +97,14 @@ export default function AddEpicTaskFab({
                 type="button"
                 onClick={() => setOpen(false)}
                 disabled={isPending}
-                className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-sm font-medium hover:border-accent disabled:cursor-wait disabled:opacity-70"
+                className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-body font-medium hover:border-accent disabled:cursor-wait disabled:opacity-70"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={isPending}
-                className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-bg hover:opacity-90 disabled:cursor-wait disabled:opacity-70"
+                className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-bg hover:opacity-90 disabled:cursor-wait disabled:opacity-70"
               >
                 {isPending ? "Adding…" : "Add task"}
               </button>

@@ -31,22 +31,22 @@ export default async function LoginPage({
     <main className="min-h-screen flex items-center justify-center px-4">
       <form
         action={loginAction}
-        className="w-full max-w-sm rounded-2xl border border-line bg-panel p-6 shadow-sm"
+        className="w-full max-w-sm rounded-panel border border-line bg-panel p-6 shadow-sm"
       >
-        <h1 className="text-lg font-semibold mb-1">Sign in</h1>
-        <p className="text-sm text-text-muted mb-4">
+        <h1 className="text-heading font-semibold mb-1">Sign in</h1>
+        <p className="text-body text-text-muted mb-4">
           Zero Latency workspace for zehferrari/environment
         </p>
 
         {error === "invalid" && (
-          <p className="text-sm text-crit mb-3">
+          <p className="text-body text-crit mb-3">
             Invalid username or password.
           </p>
         )}
 
         <input type="hidden" name="next" value={next ?? "/projects"} />
 
-        <label className="block text-sm mb-1">Username or email</label>
+        <label className="block text-body mb-1">Username or email</label>
         <input
           name="username"
           required
@@ -54,7 +54,7 @@ export default async function LoginPage({
           className="w-full rounded-lg border border-line bg-panel px-3 py-2 mb-3 outline-none focus:border-accent"
         />
 
-        <label className="block text-sm mb-1">Password</label>
+        <label className="block text-body mb-1">Password</label>
         <input
           name="password"
           type="password"

@@ -40,12 +40,12 @@ export default async function ProjectLibraryPage({
   return (
     <section>
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold tracking-wide">
+        <h2 className="text-body font-semibold tracking-wide">
           Library ({attachments.length})
         </h2>
       </div>
       {attachments.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-line p-6 text-center text-sm text-text-muted">
+        <p className="rounded-card border border-dashed border-line p-6 text-center text-body text-text-muted">
           No attachments anywhere on this project yet.
         </p>
       ) : (

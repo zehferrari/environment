@@ -926,14 +926,14 @@ export default async function EpicDetailPage({
     <div className="mx-auto w-full max-w-none">
       {/* ----- Main -------------------------------------------------- */}
       <div className="min-w-0">
-        <section className="space-y-4 rounded-2xl border border-line bg-panel p-5 shadow-sm">
+        <section className="space-y-section-gap rounded-panel border border-line bg-panel p-card-lg shadow-sm">
           {/* Sticky one-row editor header: title, status and save stay visible. */}
           <div className="sticky top-0 z-30 -mx-5 -mt-5 flex flex-wrap items-end gap-3 rounded-t-2xl border-b border-line bg-panel px-5 py-2 shadow-sm xl:flex-nowrap">
             <label className="min-w-[18rem] flex-1">
-              <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+              <span className="mb-0.5 block text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Epic title
                 {epic.workItemKey ? (
-                  <span className="ml-2 rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-[10px] text-text-muted">
+                  <span className="ml-2 rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-nano text-text-muted">
                     {epic.workItemKey}
                   </span>
                 ) : null}
@@ -944,19 +944,19 @@ export default async function EpicDetailPage({
                 defaultValue={epic.title}
                 required
                 maxLength={200}
-                className="h-9 w-full rounded-lg border border-transparent bg-transparent px-2 text-xl font-semibold tracking-tight outline-none transition focus:border-line focus:bg-bg"
+                className="h-9 w-full rounded-lg border border-transparent bg-transparent px-2 text-heading font-semibold tracking-tight outline-none transition focus:border-line focus:bg-bg"
                 aria-label="Epic title"
               />
             </label>
             <label className="w-32 shrink-0">
-              <span className="mb-0.5 block text-left text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+              <span className="mb-0.5 block text-left text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Status
               </span>
               <select
                 form="epicMain"
                 name="status"
                 defaultValue={epic.status}
-                className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-xs outline-none focus:border-accent"
+                className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
                 aria-label="Status"
               >
                 <option value="Backlog">Backlog</option>
@@ -965,7 +965,7 @@ export default async function EpicDetailPage({
               </select>
             </label>
             <div className="flex shrink-0 flex-col items-end gap-0.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+              <span className="text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Updated{" "}
                 <time
                   dateTime={epic.updatedAt.toISOString()}
@@ -977,7 +977,7 @@ export default async function EpicDetailPage({
               <button
                 form="epicMain"
                 type="submit"
-                className="h-9 rounded-lg bg-accent px-3 text-sm font-medium text-bg hover:opacity-90"
+                className="h-9 rounded-lg bg-accent px-3 text-body font-medium text-bg hover:opacity-90"
               >
                 Save changes
               </button>
@@ -1000,7 +1000,7 @@ export default async function EpicDetailPage({
             />
             <div className="pt-4">
               <TabPanel name="Description">
-                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+                <div className="grid gap-card xl:grid-cols-[minmax(0,1fr)_20rem]">
                   <DescriptionField
                     formId="epicMain"
                     previewHtml={renderFullMarkdown(epic.description ?? "").__html}
@@ -1017,13 +1017,13 @@ export default async function EpicDetailPage({
                     rows={12}
                   />
 
-                  <aside className="space-y-4 xl:sticky xl:top-32 xl:self-start">
+                  <aside className="space-y-section-gap xl:sticky xl:top-32 xl:self-start">
                     {/* Dates */}
-                    <div className="rounded-xl border border-line bg-panel-soft p-4">
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                    <div className="rounded-card border border-line bg-panel-soft p-card">
+                      <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
                         Dates
                       </div>
-                      <dl className="mt-2 space-y-1 text-xs">
+                      <dl className="mt-2 space-y-1 text-caption">
                         <div className="flex items-center justify-between gap-3">
                           <dt className="text-text-muted">Created</dt>
                           <dd className="flex items-center gap-2">
@@ -1104,9 +1104,9 @@ export default async function EpicDetailPage({
                       </dl>
                     </div>
 
-                    <div className="space-y-3 rounded-xl border border-line bg-panel-soft p-4">
+                    <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                       <label className="block">
-                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
                           Report by
                         </span>
                         <AvatarCombobox
@@ -1119,7 +1119,7 @@ export default async function EpicDetailPage({
                         />
                       </label>
                       <label className="block">
-                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
                           Worker pool
                         </span>
                         <AvatarCombobox
@@ -1133,7 +1133,7 @@ export default async function EpicDetailPage({
                         />
                       </label>
                       <label className="block">
-                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
                           Acting manager
                         </span>
                         <AvatarCombobox
@@ -1147,13 +1147,13 @@ export default async function EpicDetailPage({
                       </label>
                     </div>
 
-                    <div className="space-y-3 rounded-xl border border-line bg-panel-soft p-4">
+                    <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                       <DeploymentStatusSelect formId="epicMain" defaultValue={epic.deploymentStatus} />
                     </div>
 
-                    <div className="space-y-3 rounded-xl border border-line bg-panel-soft p-4">
+                    <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                       <label className="block">
-                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
                           Branch
                         </span>
                         <input
@@ -1162,12 +1162,12 @@ export default async function EpicDetailPage({
                           defaultValue={epic.branchName ?? ""}
                           maxLength={200}
                           placeholder="feature/HOMELAB-99"
-                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 font-mono text-caption outline-none focus:border-accent"
                           aria-label="Branch"
                         />
                       </label>
                       <label className="block">
-                        <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
                           Commit prefix
                         </span>
                         <input
@@ -1176,7 +1176,7 @@ export default async function EpicDetailPage({
                           defaultValue={epic.commitPrefix ?? ""}
                           maxLength={200}
                           placeholder={epic.workItemKey ? `defaults to ${epic.workItemKey}` : "HOMELAB-99"}
-                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 font-mono text-xs outline-none focus:border-accent"
+                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 font-mono text-caption outline-none focus:border-accent"
                           aria-label="Commit prefix"
                         />
                       </label>
@@ -1184,21 +1184,21 @@ export default async function EpicDetailPage({
 
                     <form
                       action={epic.archivedAt ? unarchiveEpic : archiveEpic}
-                      className="space-y-2 rounded-xl border border-line bg-panel-soft p-4"
+                      className="space-y-2 rounded-card border border-line bg-panel-soft p-card"
                     >
                       <input type="hidden" name="epicId" value={epic.id} />
                       <input type="hidden" name="projectSlug" value={slug} />
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                      <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
                         Archive
                       </div>
-                      <p className="text-xs text-text-muted">
+                      <p className="text-caption text-text-muted">
                         {epic.archivedAt
                           ? "Restore this epic to active project views without changing its status."
                           : "Hide this epic from active grids without changing its status."}
                       </p>
                       <button
                         type="submit"
-                        className="w-full rounded-lg border border-line bg-transparent px-3 py-1.5 text-xs font-medium text-text hover:border-accent hover:text-accent"
+                        className="w-full rounded-lg border border-line bg-transparent px-control-x py-control-y text-caption font-medium text-text hover:border-accent hover:text-accent"
                       >
                         {epic.archivedAt ? "Restore from archive" : "Archive epic"}
                       </button>
@@ -1209,21 +1209,21 @@ export default async function EpicDetailPage({
                         7 days. */}
                     <form
                       action={deleteEpic}
-                      className="space-y-2 rounded-xl border border-line bg-panel-soft p-4"
+                      className="space-y-2 rounded-card border border-line bg-panel-soft p-card"
                     >
                       <input type="hidden" name="epicId" value={epic.id} />
                       <input type="hidden" name="projectSlug" value={slug} />
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-crit">
+                      <div className="text-micro font-semibold uppercase tracking-wider text-crit">
                         Danger zone
                       </div>
-                      <p className="text-xs text-text-muted">
+                      <p className="text-caption text-text-muted">
                         Move this epic to the bin. The {epic.tasks.length} task
                         {epic.tasks.length === 1 ? "" : "s"} under it (plus sub-tasks) go
                         with it. Auto-purged after 7 days.
                       </p>
                       <button
                         type="submit"
-                        className="w-full rounded-lg border border-crit bg-transparent px-3 py-1.5 text-xs font-medium text-crit hover:bg-crit hover:text-bg"
+                        className="w-full rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-medium text-crit hover:bg-crit hover:text-bg"
                       >
                         Delete epic
                       </button>
@@ -1240,7 +1240,7 @@ export default async function EpicDetailPage({
                       <input type="hidden" name="projectSlug" value={slug} />
                       <button
                         type="submit"
-                        className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-bg hover:opacity-90"
+                        className="rounded-lg bg-accent px-control-x py-control-y text-caption font-medium text-bg hover:opacity-90"
                       >
                         Approve Plan
                       </button>
@@ -1271,19 +1271,19 @@ export default async function EpicDetailPage({
               <TabPanel name="Tasks">
                 <div>
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold tracking-wide text-text">
+            <h2 className="text-body font-semibold tracking-wide text-text">
               Tasks ({epic.tasks.length})
             </h2>
             <Link
               href={`/projects/${slug}`}
-              className="text-xs text-text-muted hover:text-accent"
+              className="text-caption text-text-muted hover:text-accent"
             >
               Open board →
             </Link>
           </div>
           {epic.tasks.length === 0 ? (
             <>
-              <p className="text-xs text-text-muted">
+              <p className="text-caption text-text-muted">
                 No tasks linked to this epic yet. Add one manually or ask AI to propose the first task breakdown.
               </p>
               <EpicTasksAiPrompt
@@ -1340,10 +1340,10 @@ export default async function EpicDetailPage({
               <TabPanel name="Attachments">
                 <div>
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold tracking-wide text-text">
+            <h2 className="text-body font-semibold tracking-wide text-text">
               Attachments
             </h2>
-            <span className="text-xs text-text-muted">
+            <span className="text-caption text-text-muted">
               Max {formatBytes(attachmentMaxBytes())} per file
             </span>
           </div>
@@ -1366,7 +1366,7 @@ export default async function EpicDetailPage({
                 <div className="flex h-[calc(100dvh-14rem)] min-h-[560px] flex-col">
                   <div className="min-h-0 flex-1 overflow-y-auto pr-1">
                     {epic.comments.length === 0 ? (
-                      <p className="text-xs text-text-muted">
+                      <p className="text-caption text-text-muted">
                         No comments yet.
                       </p>
                     ) : (
@@ -1398,11 +1398,11 @@ export default async function EpicDetailPage({
                           return (
                             <li
                               key={c.id}
-                              className="flex items-start gap-3 text-sm"
+                              className="flex items-start gap-3 text-body"
                             >
                               <MessageAvatar actor={c.user} size="sm" />
-                              <div className="min-w-0 flex-1 rounded-xl border border-line bg-panel-soft px-3 py-2">
-                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted">
+                              <div className="min-w-0 flex-1 rounded-card border border-line bg-panel-soft px-3 py-2">
+                                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-caption text-text-muted">
                                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                                     <strong className="truncate font-medium text-text">
                                       {actorDisplayName(c.user)}

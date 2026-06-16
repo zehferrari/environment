@@ -154,7 +154,7 @@ export default function ProposalReview({
 
   return (
     <div className="border-t border-line bg-panel-soft px-4 py-3 shrink-0 space-y-3">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-accent">
+      <div className="text-micro font-semibold uppercase tracking-wider text-accent">
         Work-item proposals awaiting your review ({proposals.length})
       </div>
 
@@ -167,14 +167,14 @@ export default function ProposalReview({
         return (
           <div
             key={proposal.id}
-            className="rounded-xl border border-line bg-panel p-3 shadow-sm"
+            className="rounded-card border border-line bg-panel p-3 shadow-sm"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-sm font-semibold text-text">
+                <p className="text-body font-semibold text-text">
                   {proposal.summary || `${ops.length} change${ops.length === 1 ? "" : "s"}`}
                 </p>
-                <p className="mt-0.5 text-[10px] text-text-muted">
+                <p className="mt-0.5 text-nano text-text-muted">
                   {proposal.projectName} · {ops.length} operation{ops.length === 1 ? "" : "s"}
                   {errorCount > 0 ? ` · ${errorCount} need attention` : ""}
                 </p>
@@ -185,7 +185,7 @@ export default function ProposalReview({
                   {resolvedAgentSlug ? <input type="hidden" name="agentSlug" value={resolvedAgentSlug} /> : null}
                   <button
                     type="submit"
-                    className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-bg hover:opacity-90"
+                    className="rounded-lg bg-accent px-control-x py-control-y text-caption font-medium text-bg hover:opacity-90"
                   >
                     Apply
                   </button>
@@ -195,7 +195,7 @@ export default function ProposalReview({
                   {resolvedAgentSlug ? <input type="hidden" name="agentSlug" value={resolvedAgentSlug} /> : null}
                   <button
                     type="submit"
-                    className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-xs font-medium text-text-muted hover:border-crit hover:text-crit"
+                    className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium text-text-muted hover:border-crit hover:text-crit"
                   >
                     Reject
                   </button>
@@ -204,9 +204,9 @@ export default function ProposalReview({
             </div>
 
             <details className="mt-3 rounded-lg border border-line bg-panel-soft">
-              <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-3 py-2 text-xs font-medium text-text marker:text-text-muted">
+              <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-3 py-2 text-caption font-medium text-text marker:text-text-muted">
                 <span>Preview changes</span>
-                <span className="text-[10px] font-normal text-text-muted">
+                <span className="text-nano font-normal text-text-muted">
                   {ops.length} operation{ops.length === 1 ? "" : "s"}
                 </span>
               </summary>
@@ -218,7 +218,7 @@ export default function ProposalReview({
                     const ok = result ? result.ok : true;
                     const rows = fieldRows(op);
                     return (
-                      <li key={i} className="rounded-lg border border-line bg-panel p-2.5 text-xs">
+                      <li key={i} className="rounded-lg border border-line bg-panel p-2.5 text-caption">
                         <div className="flex items-start gap-2">
                           <span
                             className={`mt-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full ${

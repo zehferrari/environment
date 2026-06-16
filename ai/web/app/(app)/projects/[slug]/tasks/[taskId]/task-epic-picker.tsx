@@ -54,7 +54,7 @@ export default function TaskEpicPicker({
         name={name}
         value={selectedEpicId}
         onChange={(event) => setSelectedEpicId(event.currentTarget.value)}
-        className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-bg px-2 text-xs outline-none focus:border-accent"
+        className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
         aria-label="Epic"
       >
         <option value="">No epic</option>

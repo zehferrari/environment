@@ -67,7 +67,7 @@ function BlockedBadge({ task }: { task: Task }) {
   if (!task.blockedByKey) return null;
   return (
     <span
-      className="ml-auto inline-flex items-center gap-1 text-[10px] font-semibold text-crit"
+      className="ml-auto inline-flex items-center gap-1 text-nano font-semibold text-crit"
       title={`Blocked by ${task.blockedByKey} — it must be Done first`}
     >
       <LockGlyph />
@@ -118,7 +118,7 @@ function SubtaskProgress({ task }: { task: Task }) {
       {Array.from({ length: n }, (_, i) => (
         <span
           key={i}
-          className="h-full min-w-0 flex-1 rounded-[1px]"
+          className="h-full min-w-0 flex-1 rounded-pixel"
           style={{ backgroundColor: i < d ? fill : "var(--color-text-muted)" }}
         />
       ))}
@@ -604,13 +604,13 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       {moveError ? (
         <div
           role="alert"
-          className="mb-3 flex items-start justify-between gap-3 rounded border border-danger bg-panel-soft px-3 py-2 text-sm"
+          className="mb-3 flex items-start justify-between gap-3 rounded border border-danger bg-panel-soft px-3 py-2 text-body"
         >
           <span>{moveError}</span>
           <button
             type="button"
             onClick={() => setMoveError(null)}
-            className="text-xs uppercase tracking-wider text-text-muted hover:text-text"
+            className="text-caption uppercase tracking-wider text-text-muted hover:text-text"
           >
             dismiss
           </button>
@@ -618,17 +618,17 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       ) : null}
 
       {selectedCount > 0 ? (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-accent/30 bg-accent/[0.08] px-4 py-3 text-sm shadow-sm">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-panel border border-accent/30 bg-accent/[0.08] px-4 py-3 text-body shadow-sm">
           <span className="font-semibold text-text">
             {selectedCount} selected
           </span>
           <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-text-muted">
+            <label className="flex items-center gap-2 text-caption font-semibold uppercase tracking-wider text-text-muted">
               <span>Move to</span>
               <select
                 value={bulkTarget}
                 onChange={(event) => setBulkTarget(event.currentTarget.value)}
-                className="rounded-lg border border-line bg-bg px-2 py-1.5 text-xs text-text outline-none focus:border-accent"
+                className="rounded-lg border border-line bg-bg px-2 py-1.5 text-caption text-text outline-none focus:border-accent"
               >
                 {columns.map((column) => (
                   <option key={column.id} value={column.id}>
@@ -640,21 +640,21 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
             <button
               type="button"
               onClick={bulkMoveSelected}
-              className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-bg transition hover:opacity-90"
+              className="rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-bg transition hover:opacity-90"
             >
               Move selected
             </button>
             <button
               type="button"
               onClick={bulkDeleteSelected}
-              className="rounded-lg border border-crit bg-transparent px-3 py-1.5 text-xs font-semibold text-crit transition hover:bg-crit hover:text-bg"
+              className="rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-semibold text-crit transition hover:bg-crit hover:text-bg"
             >
               Delete selected
             </button>
             <button
               type="button"
               onClick={() => setSelectedIds(new Set())}
-              className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-text-muted transition hover:border-accent hover:text-accent"
+              className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-semibold text-text-muted transition hover:border-accent hover:text-accent"
             >
               Clear
             </button>
@@ -669,15 +669,15 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
               <button
                 type="button"
                 onClick={() => setFocusVisible(false)}
-                className="rounded-xl border border-line bg-panel px-3 py-1 text-xs uppercase tracking-wider text-text-muted hover:text-text"
+                className="rounded-card border border-line bg-panel px-3 py-1 text-caption uppercase tracking-wider text-text-muted hover:text-text"
               >
                 Hide Focus
               </button>
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+              <h2 className="text-caption font-semibold uppercase tracking-wider text-text-muted">
                 Workflow focus
               </h2>
             </div>
-            <span className="text-[10px] uppercase tracking-wider text-text-muted">
+            <span className="text-nano uppercase tracking-wider text-text-muted">
               feedback → review → start
             </span>
           </div>
@@ -704,7 +704,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
               type="button"
               onClick={() => setFocusVisible(true)}
               aria-pressed={focusVisible}
-              className="rounded-xl border border-line bg-panel px-3 py-1 text-xs uppercase tracking-wider text-text-muted hover:text-text"
+              className="rounded-card border border-line bg-panel px-3 py-1 text-caption uppercase tracking-wider text-text-muted hover:text-text"
             >
               Show Workflow Focus
             </button>
@@ -719,13 +719,13 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                 type="button"
                 onClick={() => setFocusVisible(true)}
                 aria-pressed={focusVisible}
-                className="rounded-xl border border-line bg-panel px-3 py-1 text-xs uppercase tracking-wider text-text-muted hover:text-text"
+                className="rounded-card border border-line bg-panel px-3 py-1 text-caption uppercase tracking-wider text-text-muted hover:text-text"
               >
                 Show Workflow Focus
               </button>
             ) : null}
             {backlogVisible ? (
-              <h2 className="text-xs uppercase tracking-wider text-text-muted">
+              <h2 className="text-caption uppercase tracking-wider text-text-muted">
                 Backlog{backlogCount ? ` (${backlogCount})` : ""} · planning/opinions
               </h2>
             ) : null}
@@ -734,7 +734,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
             type="button"
             onClick={() => setBacklogVisible((v) => !v)}
             aria-pressed={backlogVisible}
-            className="rounded-xl border border-line bg-panel px-3 py-1 text-xs uppercase tracking-wider text-text-muted hover:text-text"
+            className="rounded-card border border-line bg-panel px-3 py-1 text-caption uppercase tracking-wider text-text-muted hover:text-text"
           >
             {backlogVisible ? "Hide Backlog" : "Show Backlog"}
           </button>
@@ -743,12 +743,12 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
         {backlogVisible ? (
           <BacklogDroppable>
             {backlogTasks.length === 0 ? (
-              <p className="px-1 py-6 text-center text-xs text-text-muted">
+              <p className="px-1 py-6 text-center text-caption text-text-muted">
                 Backlog is empty. Drag a row here or add a task.
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 pb-2 text-nano font-semibold uppercase tracking-wider text-text-muted">
                   <div className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -830,7 +830,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
 
       <DragOverlay>
         {active ? (
-          <div className="rounded border border-accent bg-panel-soft px-3 py-2 text-sm shadow-lg cursor-grabbing">
+          <div className="rounded border border-accent bg-panel-soft px-3 py-2 text-body shadow-lg cursor-grabbing">
             {active.title}
           </div>
         ) : null}
@@ -866,7 +866,7 @@ function ColumnDroppable({
           : ""
       }`}
     >
-      <div className="px-1 pb-2 text-[10px] uppercase tracking-wider text-text-muted flex justify-between items-center">
+      <div className="px-1 pb-2 text-nano uppercase tracking-wider text-text-muted flex justify-between items-center">
         <div className="flex items-center gap-1.5 min-w-0">
           {onSelectAll && (
             <input
@@ -879,7 +879,7 @@ function ColumnDroppable({
               aria-label={`Select all in ${label}`}
             />
           )}
-          <span className={`w-fit rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${columnHeaderPillClass(id)}`}>
+          <span className={`w-fit rounded border px-1.5 py-0.5 text-nano font-semibold uppercase tracking-wider ${columnHeaderPillClass(id)}`}>
             {label}
           </span>
           {description ? (
@@ -948,10 +948,10 @@ function TaskCard({
           ) : actor ? (
             <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
           ) : (
-            <span className="text-[10px] text-text-muted">unassigned</span>
+            <span className="text-nano text-text-muted">unassigned</span>
           )}
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-text-muted">
+            <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
               {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
               <span className="truncate font-mono uppercase tracking-wider">
                 {task.workItemKey ?? "—"}
@@ -959,7 +959,7 @@ function TaskCard({
               {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
             </div>
             <div className="truncate">{task.title}</div>
-            <div className="mt-1 flex items-center gap-2 text-[10px] text-text-muted">
+            <div className="mt-1 flex items-center gap-2 text-nano text-text-muted">
               <ElapsedClock task={task} now={now} />
               <SubtaskProgress task={task} />
               <time
@@ -1025,11 +1025,11 @@ function WorkflowFocusCard({
           ) : actor ? (
             <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
           ) : (
-            <span className="text-[10px] text-text-muted">unassigned</span>
+            <span className="text-nano text-text-muted">unassigned</span>
           )}
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-text-muted">
-              <span className={`shrink-0 rounded border px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${columnHeaderPillClass(task.status)}`}>
+            <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
+              <span className={`shrink-0 rounded border px-1 py-0.5 text-pico font-semibold uppercase tracking-wider ${columnHeaderPillClass(task.status)}`}>
                 {task.status}
               </span>
               {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
@@ -1038,8 +1038,8 @@ function WorkflowFocusCard({
               </span>
               {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
             </div>
-            <div className="mt-0.5 truncate text-sm">{task.title}</div>
-            <div className="mt-1 flex items-center gap-2 text-[10px] text-text-muted">
+            <div className="mt-0.5 truncate text-body">{task.title}</div>
+            <div className="mt-1 flex items-center gap-2 text-nano text-text-muted">
               <ElapsedClock task={task} now={now} />
               <SubtaskProgress task={task} />
               <time
@@ -1118,7 +1118,7 @@ function BacklogRow({
           router.push(`/projects/${projectSlug}/tasks/${task.id}`);
         }
       }}
-      className={`grid min-w-[68rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 py-2 text-sm transition last:border-b-0 hover:bg-panel-soft ${
+      className={`grid min-w-[68rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 py-2 text-body transition last:border-b-0 hover:bg-panel-soft ${
         isPlanningAssigned(task) ? "bg-yellow-300/[0.08]" : statusRowClass(task.status)
       } ${isDragging ? "bg-panel-soft opacity-40" : ""}`}
     >
@@ -1150,7 +1150,7 @@ function BacklogRow({
         {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
         <span className="min-w-0 truncate">
           {task.workItemKey ? (
-            <span className="mr-1 font-mono text-[10px] font-semibold text-text-muted">
+            <span className="mr-1 font-mono text-nano font-semibold text-text-muted">
               {task.workItemKey}
             </span>
           ) : null}
@@ -1159,7 +1159,7 @@ function BacklogRow({
         <SubtaskProgress task={task} />
         <BlockedBadge task={task} />
       </div>
-      <span className="truncate text-xs text-text-muted">
+      <span className="truncate text-caption text-text-muted">
         {task.epicTitle ?? "—"}
       </span>
       <PersonCell actor={task.assignee} emptyLabel="unassigned" />
@@ -1193,7 +1193,7 @@ function DeploymentIndicator({ status }: { status: string }) {
   if (icon === "—") {
     return (
       <span
-        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-line text-[9px] text-text-muted transition hover:scale-110 hover:border-accent"
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-line text-pico text-text-muted transition hover:scale-110 hover:border-accent"
         title="Deployment: Not Required"
         aria-label="Deployment: Not Required"
       >
@@ -1203,7 +1203,7 @@ function DeploymentIndicator({ status }: { status: string }) {
   }
   return (
     <span
-      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-[10px] leading-none transition hover:scale-110"
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-nano leading-none transition hover:scale-110"
       title={`Deployment: ${status}`}
       aria-label={`Deployment: ${status}`}
     >
@@ -1240,7 +1240,7 @@ function PersonCell({
   emptyLabel: string;
 }) {
   return (
-    <span className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
+    <span className="flex min-w-0 items-center gap-2 text-caption text-text-muted">
       {actor ? (
         <MessageAvatar actor={actor} size="sm" />
       ) : (
@@ -1286,14 +1286,14 @@ function ElapsedClock({
   const elapsed = elapsedMsForTask(task, now);
   if (elapsed === null) {
     if (align === "right") {
-      return <span className="text-right text-xs text-text-muted">—</span>;
+      return <span className="text-right text-caption text-text-muted">—</span>;
     }
     return null;
   }
   return (
     <span
       title={elapsedTitle(task)}
-      className={`shrink-0 items-center gap-1 rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-text-muted ${
+      className={`shrink-0 items-center gap-1 rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-nano tabular-nums text-text-muted ${
         align === "right" ? "ml-auto flex justify-end" : "inline-flex"
       }`}
     >
@@ -1342,7 +1342,7 @@ function DateActorCell({
   dateOnly?: boolean;
 }) {
   return (
-    <span className="flex min-w-0 items-center justify-end gap-1.5 text-xs text-text-muted">
+    <span className="flex min-w-0 items-center justify-end gap-1.5 text-caption text-text-muted">
       <time
         dateTime={iso}
         title={iso}
@@ -1376,7 +1376,7 @@ function statusRowClass(status: string) {
 }
 
 function taskCardClass(task: Task, isDragging = false) {
-  return `group/card relative block w-full overflow-hidden rounded-lg border px-3 py-2 text-sm cursor-pointer select-none shadow-[0_14px_34px_rgba(15,23,42,0.12)] ring-1 ring-white/10 backdrop-blur-xl transition-all before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/80 before:to-transparent after:pointer-events-none after:absolute after:inset-0 after:-translate-x-full after:bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.16),transparent)] after:opacity-0 after:transition-all after:duration-700 hover:-translate-y-0.5 hover:border-white/55 hover:shadow-[0_18px_46px_rgba(15,23,42,0.18)] hover:after:translate-x-full hover:after:opacity-100 ${
+  return `group/card relative block w-full overflow-hidden rounded-lg border px-3 py-2 text-body cursor-pointer select-none shadow-[0_14px_34px_rgba(15,23,42,0.12)] ring-1 ring-white/10 backdrop-blur-xl transition-all before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/80 before:to-transparent after:pointer-events-none after:absolute after:inset-0 after:-translate-x-full after:bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.16),transparent)] after:opacity-0 after:transition-all after:duration-700 hover:-translate-y-0.5 hover:border-white/55 hover:shadow-[0_18px_46px_rgba(15,23,42,0.18)] hover:after:translate-x-full hover:after:opacity-100 ${
     isPlanningAssigned(task)
       ? "border-yellow-200/70 bg-[linear-gradient(135deg,rgba(254,240,138,0.22),rgba(255,255,255,0.08))]"
       : "border-white/25 bg-[linear-gradient(135deg,rgba(255,255,255,0.18),rgba(255,255,255,0.06))]"

@@ -126,7 +126,7 @@ function optimisticLocalEchoEnabled() {
 
 function NewMessagesMarker() {
   return (
-    <div className="my-4 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-crit">
+    <div className="my-4 flex items-center gap-3 text-nano font-semibold uppercase tracking-[0.18em] text-crit">
       <span className="h-px flex-1 bg-crit/50" />
       <span>New messages</span>
       <span className="h-px flex-1 bg-crit/50" />
@@ -355,43 +355,43 @@ function RoomArchiveButton({
         onClick={() => {
           runArchive(false);
         }}
-        className="rounded-lg border border-line bg-panel px-3 py-1.5 text-[11px] font-semibold text-text-muted transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
+        className="rounded-lg border border-line bg-panel px-control-x py-control-y text-micro font-semibold text-text-muted transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
       >
         New Discussion
       </button>
 
       {open ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-card backdrop-blur-sm"
           onClick={() => !isPending && setOpen(false)}
         >
           <div
-            className="w-full max-w-md rounded-2xl border border-line bg-panel p-5 shadow-2xl"
+            className="w-full max-w-md rounded-panel border border-line bg-panel p-card-lg shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             {step === "choice" ? (
-              <div className="space-y-4">
+              <div className="space-y-section-gap">
                 <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold text-text">
+                  <h3 className="text-body font-semibold text-text">
                     Start a fresh room
                   </h3>
                   <button
                     type="button"
                     disabled={isPending}
                     onClick={() => setOpen(false)}
-                    className="text-lg leading-none text-text-muted transition hover:text-text cursor-pointer"
+                    className="text-heading leading-none text-text-muted transition hover:text-text cursor-pointer"
                   >
                     &times;
                   </button>
                 </div>
-                <p className="text-sm leading-relaxed text-text-muted">
+                <p className="text-body leading-relaxed text-text-muted">
                   Save the current discussion to Recent Discussions, or move it to the bin and clear this Task/Epic chat.
                 </p>
                 <div className="grid gap-2">
                   <button
                     type="button"
                     onClick={() => setStep("archive")}
-                    className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-left text-sm font-medium text-text transition hover:border-accent cursor-pointer"
+                    className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-left text-body font-medium text-text transition hover:border-accent cursor-pointer"
                   >
                     Save current discussion
                   </button>
@@ -399,7 +399,7 @@ function RoomArchiveButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => runArchive(true)}
-                    className="rounded-lg border border-crit/30 bg-crit/[0.04] px-3 py-2 text-left text-sm font-medium text-crit transition hover:bg-crit/[0.08] cursor-pointer"
+                    className="rounded-lg border border-crit/30 bg-crit/[0.04] px-3 py-2 text-left text-body font-medium text-crit transition hover:bg-crit/[0.08] cursor-pointer"
                   >
                     {isPending ? "Moving to bin..." : "Move current room to bin"}
                   </button>
@@ -408,21 +408,21 @@ function RoomArchiveButton({
             ) : null}
 
             {step === "archive" ? (
-              <div className="space-y-4">
+              <div className="space-y-section-gap">
                 <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold text-text">
+                  <h3 className="text-body font-semibold text-text">
                     Save discussion
                   </h3>
                   <button
                     type="button"
                     disabled={isPending}
                     onClick={() => setOpen(false)}
-                    className="text-lg leading-none text-text-muted transition hover:text-text cursor-pointer"
+                    className="text-heading leading-none text-text-muted transition hover:text-text cursor-pointer"
                   >
                     &times;
                   </button>
                 </div>
-                <label className="block space-y-1.5 text-xs font-medium text-text-muted">
+                <label className="block space-y-1.5 text-caption font-medium text-text-muted">
                   <span>Discussion title</span>
                   <input
                     type="text"
@@ -433,7 +433,7 @@ function RoomArchiveButton({
                       if (event.key === "Enter") runArchive(false);
                     }}
                     placeholder="Optional title"
-                    className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-sm text-text outline-none transition focus:border-accent disabled:opacity-50"
+                    className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body text-text outline-none transition focus:border-accent disabled:opacity-50"
                   />
                 </label>
                 <div className="flex items-center justify-between gap-2">
@@ -441,7 +441,7 @@ function RoomArchiveButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => setStep("choice")}
-                    className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-xs font-medium text-text-muted transition hover:border-accent hover:text-accent disabled:opacity-50 cursor-pointer"
+                    className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium text-text-muted transition hover:border-accent hover:text-accent disabled:opacity-50 cursor-pointer"
                   >
                     Back
                   </button>
@@ -449,7 +449,7 @@ function RoomArchiveButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => runArchive(false)}
-                    className="rounded-lg bg-accent px-4 py-1.5 text-xs font-semibold text-bg transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                    className="rounded-lg bg-accent px-4 py-1.5 text-caption font-semibold text-bg transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
                   >
                     {isPending ? "Saving..." : "Save discussion"}
                   </button>
@@ -458,21 +458,21 @@ function RoomArchiveButton({
             ) : null}
 
             {step === "delete" ? (
-              <div className="space-y-4">
+              <div className="space-y-section-gap">
                 <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold text-crit">
+                  <h3 className="text-body font-semibold text-crit">
                     Move room to bin
                   </h3>
                   <button
                     type="button"
                     disabled={isPending}
                     onClick={() => setOpen(false)}
-                    className="text-lg leading-none text-text-muted transition hover:text-text cursor-pointer"
+                    className="text-heading leading-none text-text-muted transition hover:text-text cursor-pointer"
                   >
                     &times;
                   </button>
                 </div>
-                <p className="text-sm leading-relaxed text-text-muted">
+                <p className="text-body leading-relaxed text-text-muted">
                   This clears the active room and keeps the deleted transcript until the retention purge runs.
                 </p>
                 <div className="flex items-center justify-between gap-2">
@@ -480,7 +480,7 @@ function RoomArchiveButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => setStep("choice")}
-                    className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-xs font-medium text-text-muted transition hover:border-accent hover:text-accent disabled:opacity-50 cursor-pointer"
+                    className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium text-text-muted transition hover:border-accent hover:text-accent disabled:opacity-50 cursor-pointer"
                   >
                     Back
                   </button>
@@ -488,7 +488,7 @@ function RoomArchiveButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => runArchive(true)}
-                    className="rounded-lg bg-crit px-4 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                    className="rounded-lg bg-crit px-4 py-1.5 text-caption font-semibold text-white transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
                   >
                     {isPending ? "Deleting..." : "Move to bin"}
                   </button>
@@ -1025,12 +1025,12 @@ export default function DecomposedChatRoom({
   };
 
   return (
-    <div className="relative flex h-[calc(100dvh-14rem)] min-h-[620px] flex-col overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
+    <div className="relative flex h-[calc(100dvh-14rem)] min-h-[620px] flex-col overflow-hidden rounded-panel border border-line bg-panel shadow-sm">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-line bg-panel-soft px-4 py-2.5">
+      <div className="flex items-center justify-between border-b border-line bg-panel-soft px-card py-control-y.5">
         <div className="flex items-center gap-2">
           <span className="h-2.5 w-2.5 rounded-full bg-accent animate-pulse" />
-          <span className="text-xs font-semibold uppercase tracking-wider text-text">
+          <span className="text-caption font-semibold uppercase tracking-wider text-text">
             {taskId ? "Task Chat Room" : "Epic Chat Room"}
           </span>
         </div>
@@ -1058,14 +1058,14 @@ export default function DecomposedChatRoom({
             )}
           </button>
           {viewingArchive ? (
-            <span className="hidden text-[10px] text-text-muted uppercase tracking-wider font-semibold sm:inline">
+            <span className="hidden text-nano text-text-muted uppercase tracking-wider font-semibold sm:inline">
               Archived Discussion
             </span>
           ) : null}
           {viewingArchive ? (
             <Link
               href={`${pathname}?chatRoom=current`}
-              className="rounded-lg border border-line bg-panel px-3 py-1.5 text-[11px] font-semibold text-text-muted transition hover:border-accent hover:text-accent"
+              className="rounded-lg border border-line bg-panel px-control-x py-control-y text-micro font-semibold text-text-muted transition hover:border-accent hover:text-accent"
             >
               Current Room
             </Link>
@@ -1087,10 +1087,10 @@ export default function DecomposedChatRoom({
           <div className="flex items-center justify-between border-b border-line px-3 py-2">
             <div>
               <div className="flex items-center gap-1.5">
-                <p className="text-xs font-semibold text-text">
+                <p className="text-caption font-semibold text-text">
                   {archiveViewMode === "archives" ? "Recent Discussions" : "Discussion bin"}
                 </p>
-                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                <span className={`rounded-full px-1.5 py-0.5 text-nano font-bold ${
                   archiveViewMode === "archives"
                     ? "bg-ok/10 text-ok"
                     : "bg-crit/10 text-crit"
@@ -1098,7 +1098,7 @@ export default function DecomposedChatRoom({
                   {archiveViewMode === "archives" ? archives.length : binArchives.length}
                 </span>
               </div>
-              <p className="text-[10px] uppercase tracking-wider text-text-muted">
+              <p className="text-nano uppercase tracking-wider text-text-muted">
                 {archiveViewMode === "archives" ? "Latest rooms" : "Deleted rooms"}
               </p>
             </div>
@@ -1118,7 +1118,7 @@ export default function DecomposedChatRoom({
               </button>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-1 border-b border-line bg-panel-soft p-1.5 text-xs font-semibold">
+          <div className="grid grid-cols-2 gap-1 border-b border-line bg-panel-soft p-1.5 text-caption font-semibold">
             <button
               type="button"
               onClick={() => setArchiveViewMode("archives")}
@@ -1128,7 +1128,7 @@ export default function DecomposedChatRoom({
                   : "text-text-muted hover:text-text"
               }`}
             >
-              Recent <span className="text-[10px] text-text-muted">({archives.length})</span>
+              Recent <span className="text-nano text-text-muted">({archives.length})</span>
             </button>
             <button
               type="button"
@@ -1139,27 +1139,27 @@ export default function DecomposedChatRoom({
                   : "text-text-muted hover:text-text"
               }`}
             >
-              Bin <span className="text-[10px] text-text-muted">({binArchives.length})</span>
+              Bin <span className="text-nano text-text-muted">({binArchives.length})</span>
             </button>
           </div>
-          <div className="flex-1 space-y-4 overflow-y-auto p-3">
+          <div className="flex-1 space-y-section-gap overflow-y-auto p-3">
             <Link
               href={`${pathname}?chatRoom=current`}
-              className={`block rounded-lg border px-3 py-2 text-xs transition ${
+              className={`block rounded-lg border px-3 py-2 text-caption transition ${
                 !viewingArchive
                   ? "border-accent bg-accent/[0.08] text-text"
                   : "border-line bg-panel-soft text-text-muted hover:border-accent hover:text-text"
               }`}
             >
               <span className="font-semibold">Current discussion</span>
-              <span className="mt-1 block text-[10px] uppercase tracking-wider">
+              <span className="mt-1 block text-nano uppercase tracking-wider">
                 {activeCount} message{activeCount === 1 ? "" : "s"}
               </span>
             </Link>
 
             {archiveViewMode === "archives" ? (
               archives.length === 0 ? (
-                <p className="rounded-lg border border-dashed border-line p-3 text-center text-xs text-text-muted">
+                <p className="rounded-lg border border-dashed border-line p-3 text-center text-caption text-text-muted">
                   No recent discussions.
                 </p>
               ) : (
@@ -1170,17 +1170,17 @@ export default function DecomposedChatRoom({
                       <Link
                         key={archive.id}
                         href={`${pathname}?chatArchive=${archive.id}`}
-                        className={`block rounded-xl border p-2 text-xs shadow-sm transition ${
+                        className={`block rounded-card border p-2 text-caption shadow-sm transition ${
                           selected
                             ? "border-accent bg-accent/[0.04] text-text"
                             : "border-line bg-panel-soft text-text-muted hover:border-accent/30 hover:bg-panel hover:text-text"
                         }`}
                       >
-                        <span className="mb-0.5 block text-[9px] font-semibold tracking-wider text-text-muted">
+                        <span className="mb-0.5 block text-pico font-semibold tracking-wider text-text-muted">
                           {formatModernDate(archive.startedAt)}
                         </span>
                         <span className="block truncate font-semibold">{archive.summary}</span>
-                        <span className="mt-1 block border-t border-line/40 pt-1 text-[10px] uppercase tracking-wider">
+                        <span className="mt-1 block border-t border-line/40 pt-1 text-nano uppercase tracking-wider">
                           {archive.messageCount} message{archive.messageCount === 1 ? "" : "s"}
                         </span>
                       </Link>
@@ -1189,7 +1189,7 @@ export default function DecomposedChatRoom({
                 </div>
               )
             ) : binArchives.length === 0 ? (
-                <p className="rounded-lg border border-dashed border-line p-3 text-center text-xs text-text-muted">
+                <p className="rounded-lg border border-dashed border-line p-3 text-center text-caption text-text-muted">
                   No deleted action plans.
                 </p>
               ) : (
@@ -1201,17 +1201,17 @@ export default function DecomposedChatRoom({
                       <Link
                         key={archive.id}
                         href={`${pathname}?chatArchive=${archive.id}`}
-                        className={`block rounded-xl border p-2 text-xs shadow-sm transition ${
+                        className={`block rounded-card border p-2 text-caption shadow-sm transition ${
                           selected
                             ? "border-crit bg-crit/[0.06] text-text"
                             : "border-line bg-panel-soft text-text-muted hover:border-crit/50 hover:bg-panel hover:text-text"
                         }`}
                       >
-                        <span className="mb-0.5 block text-[9px] font-semibold tracking-wider text-text-muted">
+                        <span className="mb-0.5 block text-pico font-semibold tracking-wider text-text-muted">
                           {formatModernDate(archive.startedAt)}
                         </span>
                         <span className="block truncate font-semibold">{archive.summary}</span>
-                        <span className="mt-1 flex items-center justify-between gap-2 border-t border-line/40 pt-1 text-[10px] uppercase tracking-wider">
+                        <span className="mt-1 flex items-center justify-between gap-2 border-t border-line/40 pt-1 text-nano uppercase tracking-wider">
                           <span>
                           {archive.messageCount} message{archive.messageCount === 1 ? "" : "s"}
                           </span>
@@ -1260,7 +1260,7 @@ export default function DecomposedChatRoom({
         <button
           type="button"
           onClick={() => scheduleScrollToLatest(true)}
-          className="fixed bottom-24 right-6 z-40 rounded-full border border-line bg-panel px-3 py-2 text-xs font-semibold text-text shadow-lg transition hover:border-accent hover:text-accent"
+          className="fixed bottom-24 right-6 z-40 rounded-full border border-line bg-panel px-3 py-2 text-caption font-semibold text-text shadow-lg transition hover:border-accent hover:text-accent"
         >
           Jump to latest
         </button>
@@ -1375,16 +1375,16 @@ const MessageList = React.memo(function MessageList(props: any) {
       {/* Messages List */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto p-4 min-h-0 scrollbar-thin"
+        className="flex-1 overflow-y-auto p-card min-h-0 scrollbar-thin"
       >
         <div ref={scrollContentRef}>
         {displayedMessages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center p-6 border border-dashed border-line rounded-xl bg-panel-soft/20">
-            <span className="text-xl">💬</span>
-            <p className="mt-2 text-xs font-semibold text-text">
+          <div className="flex flex-col items-center justify-center h-full text-center p-6 border border-dashed border-line rounded-card bg-panel-soft/20">
+            <span className="text-heading">💬</span>
+            <p className="mt-2 text-caption font-semibold text-text">
               Welcome to the Chat Room!
             </p>
-            <p className="mt-1 text-[11px] text-text-muted max-w-[280px]">
+            <p className="mt-1 text-micro text-text-muted max-w-[280px]">
               Post a message to invoke default assignees/reviewers, or use <code className="px-1 py-0.5 rounded bg-panel-soft font-mono text-accent">@agent</code> to mention specific agents.
             </p>
           </div>
@@ -1448,7 +1448,7 @@ const MessageList = React.memo(function MessageList(props: any) {
                     actions={(
                       <span className="inline-flex items-center gap-1.5">
                         {canceledMessageIds.has(m.id) ? (
-                          <span className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                          <span className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-nano font-semibold uppercase tracking-wider text-text-muted">
                             canceled
                           </span>
                         ) : null}
@@ -1461,7 +1461,7 @@ const MessageList = React.memo(function MessageList(props: any) {
                           <button
                             type="button"
                             onClick={() => cancelAndEdit(m as OptimisticMessage)}
-                            className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted transition hover:border-crit hover:text-crit"
+                            className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-nano font-semibold uppercase tracking-wider text-text-muted transition hover:border-crit hover:text-crit"
                           >
                             Stop and edit
                           </button>
@@ -1470,7 +1470,7 @@ const MessageList = React.memo(function MessageList(props: any) {
                           <button
                             type="button"
                             onClick={() => retryOptimisticMessage(m as OptimisticMessage)}
-                            className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted transition hover:border-accent hover:text-accent"
+                            className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-nano font-semibold uppercase tracking-wider text-text-muted transition hover:border-accent hover:text-accent"
                           >
                             Retry
                           </button>
@@ -1484,7 +1484,7 @@ const MessageList = React.memo(function MessageList(props: any) {
                             confirmLabel="Delete message"
                             buttonTitle="Delete message"
                             ariaLabel="Delete message"
-                            className="text-[12px] font-bold text-text-muted opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-crit cursor-pointer"
+                            className="text-caption font-bold text-text-muted opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-crit cursor-pointer"
                           />
                         ) : null}
                       </span>
@@ -1641,7 +1641,7 @@ const Composer = React.memo(function Composer(props: any) {
     <>
       {/* Input Form */}
       {viewingArchive && !canContinueArchive ? (
-        <div className="border-t border-line bg-panel-soft p-3 text-xs text-text-muted shrink-0">
+        <div className="border-t border-line bg-panel-soft p-3 text-caption text-text-muted shrink-0">
           {selectedArchiveDeleted ? (
             "Deleted action plans are read-only."
           ) : activeCount > 0 ? (
@@ -1658,7 +1658,7 @@ const Composer = React.memo(function Composer(props: any) {
         <>
           {composerOpen ? (
             <div
-              className="fixed inset-0 z-50 bg-black/10 p-4 backdrop-blur-[1px]"
+              className="fixed inset-0 z-50 bg-black/10 p-card backdrop-blur-[1px]"
               onClick={closeComposer}
             >
               <form
@@ -1666,7 +1666,7 @@ const Composer = React.memo(function Composer(props: any) {
                 action={actionHandler}
                 encType="multipart/form-data"
                 onClick={(event) => event.stopPropagation()}
-                className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-2xl space-y-3 rounded-2xl border border-line bg-panel p-4 shadow-2xl sm:right-6"
+                className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-2xl space-y-3 rounded-panel border border-line bg-panel p-card shadow-2xl sm:right-6"
               >
                 <input type="hidden" name="projectSlug" value={projectSlug} />
                 {taskId ? (
@@ -1688,10 +1688,10 @@ const Composer = React.memo(function Composer(props: any) {
 
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+                    <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
                       {canContinueArchive ? "Continue action plan" : "Action plan message"}
                     </div>
-                    <p className="mt-1 text-xs text-text-muted">
+                    <p className="mt-1 text-caption text-text-muted">
                       Choose recipients, attach files, and send the room a message.
                     </p>
                   </div>
@@ -1699,20 +1699,20 @@ const Composer = React.memo(function Composer(props: any) {
                     type="button"
                     onClick={closeComposer}
                     aria-label="Close action plan composer"
-                    className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-text-muted transition hover:bg-panel-soft hover:text-text"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-heading leading-none text-text-muted transition hover:bg-panel-soft hover:text-text"
                   >
                     &times;
                   </button>
                 </div>
 
-                <div className="relative text-xs text-text-muted">
+                <div className="relative text-caption text-text-muted">
                   <div className="mb-1 flex items-center justify-between gap-2">
                     <span className="font-semibold">To</span>
                     {selectedTargets.length > 0 ? (
                       <button
                         type="button"
                         onClick={() => setSelectedTargets([])}
-                        className="text-[10px] font-semibold uppercase tracking-wider text-text-muted hover:text-accent"
+                        className="text-nano font-semibold uppercase tracking-wider text-text-muted hover:text-accent"
                       >
                         Clear
                       </button>
@@ -1721,7 +1721,7 @@ const Composer = React.memo(function Composer(props: any) {
                   <button
                     type="button"
                     onClick={() => setTargetPickerOpen((open: boolean) => !open)}
-                    className="flex min-h-10 w-full items-center justify-between gap-3 rounded-xl border border-line bg-bg px-3 py-2 text-left text-xs text-text outline-none transition hover:border-accent"
+                    className="flex min-h-10 w-full items-center justify-between gap-3 rounded-card border border-line bg-bg px-3 py-2 text-left text-caption text-text outline-none transition hover:border-accent"
                     aria-expanded={targetPickerOpen}
                   >
                     <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
@@ -1732,7 +1732,7 @@ const Composer = React.memo(function Composer(props: any) {
                           key={target.value}
                           className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-line bg-panel px-2 py-1"
                         >
-                          {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-7 w-7 place-items-center rounded-full border border-line text-[10px] font-semibold">G</span>}
+                          {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-7 w-7 place-items-center rounded-full border border-line text-nano font-semibold">G</span>}
                           <span className="max-w-[9rem] truncate">{target.label}</span>
                         </span>
                       ))}
@@ -1743,13 +1743,13 @@ const Composer = React.memo(function Composer(props: any) {
                   </button>
                   <span className="sr-only">{targetButtonLabel}</span>
                   {targetPickerOpen ? (
-                    <div className="absolute bottom-full left-0 z-30 mb-2 max-h-72 w-full overflow-y-auto rounded-xl border border-line bg-panel p-2 shadow-2xl">
+                    <div className="absolute bottom-full left-0 z-30 mb-2 max-h-72 w-full overflow-y-auto rounded-card border border-line bg-panel p-2 shadow-2xl">
                       {["Groups", "Users", "Agents"].map((group) => {
                         const options = targetOptions.filter((target: DiscussionTarget) => target.group === group);
                         if (options.length === 0) return null;
                         return (
                           <div key={group} className="py-1">
-                            <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                            <div className="px-2 pb-1 text-nano font-semibold uppercase tracking-wider text-text-muted">
                               {group}
                             </div>
                             <div className="space-y-1">
@@ -1766,9 +1766,9 @@ const Composer = React.memo(function Composer(props: any) {
                                         : "text-text-muted hover:bg-panel-soft hover:text-text"
                                     }`}
                                   >
-                                    {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-7 w-7 place-items-center rounded-full border border-line text-[10px] font-semibold">G</span>}
+                                    {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-7 w-7 place-items-center rounded-full border border-line text-nano font-semibold">G</span>}
                                     <span className="min-w-0 flex-1 truncate">{target.actor ? actorDisplayName(target.actor) : target.label}</span>
-                                    <span className="text-[10px] font-semibold uppercase tracking-wider">
+                                    <span className="text-nano font-semibold uppercase tracking-wider">
                                       {selected ? "Selected" : target.group}
                                     </span>
                                   </button>
@@ -1792,11 +1792,11 @@ const Composer = React.memo(function Composer(props: any) {
                   placeholder={canContinueArchive ? "Continue this action plan..." : "Message the action plan..."}
                   onKeyDown={handleKeyDown}
                   expandedTitle={canContinueArchive ? "Continue Action Plan" : "Action Plan Message"}
-                  className="w-full resize-none rounded-lg border border-line bg-bg px-3 py-2 text-xs outline-none focus:border-accent"
+                  className="w-full resize-none rounded-lg border border-line bg-bg px-3 py-2 text-caption outline-none focus:border-accent"
                 />
 
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <label className="flex items-center gap-1.5 rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-xs font-semibold text-text-muted transition hover:border-accent hover:text-accent cursor-pointer select-none">
+                  <label className="flex items-center gap-1.5 rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-semibold text-text-muted transition hover:border-accent hover:text-accent cursor-pointer select-none">
                     <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round">
                       <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                     </svg>
@@ -1810,7 +1810,7 @@ const Composer = React.memo(function Composer(props: any) {
                     />
                   </label>
                   {selectedFiles.length > 0 ? (
-                    <div className="min-w-0 flex-1 text-[11px] text-text-muted" aria-live="polite">
+                    <div className="min-w-0 flex-1 text-micro text-text-muted" aria-live="polite">
                       <span className="font-semibold text-text">Ready to attach:</span>{" "}
                       {selectedFiles.map((file: File) => file.name).join(", ")}
                     </div>
@@ -1818,7 +1818,7 @@ const Composer = React.memo(function Composer(props: any) {
                   <button
                     type="submit"
                     disabled={!canSend}
-                    className="rounded-lg bg-accent px-4 py-1.5 text-xs font-semibold text-bg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer select-none"
+                    className="rounded-lg bg-accent px-4 py-1.5 text-caption font-semibold text-bg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer select-none"
                   >
                     {canContinueArchive ? "Continue" : "Send"}
                   </button>

@@ -64,7 +64,7 @@ export default async function ProjectSettingsPage({
   const isAdmin = session?.user?.name === "zeh";
   const isHuman = Boolean(session?.user?.id && session.user.kind !== "agent");
   const canEditDeployment = isHuman || isAdmin || project.members.some((member) => member.role === "owner");
-  const deploymentInputClass = "w-full rounded-lg border border-line bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-70";
+  const deploymentInputClass = "w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-70";
   const repoKey = worktreeRepoKey(project.repositoryPath);
   const eligible = isHuman && isWorktreeExposedRepo(project.repositoryPath) && !!repoKey;
   const switchState = eligible ? await readSwitchState() : null;
@@ -101,11 +101,11 @@ export default async function ProjectSettingsPage({
               defaultValue={project.name}
               required
               placeholder="My Project"
-              className="w-full rounded-lg border border-line bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
+              className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
             />
           </SettingsRow>
 
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[35fr_15fr_50fr]">
+          <div className="grid grid-cols-1 gap-card lg:grid-cols-[35fr_15fr_50fr]">
             <SettingsRow
               label="Project slug"
               hint="URL slug, for example patricia."
@@ -118,7 +118,7 @@ export default async function ProjectSettingsPage({
                 placeholder="my-project"
                 pattern="[a-zA-Z0-9\-_]+"
                 title="Only letters, numbers, hyphens, and underscores are allowed"
-                className="w-full rounded-lg border border-line bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>
 
@@ -134,7 +134,7 @@ export default async function ProjectSettingsPage({
                 placeholder="PH"
                 pattern="[a-zA-Z][a-zA-Z0-9]{1,9}"
                 title="Start with a letter; use 2-10 letters or numbers"
-                className="w-full rounded-lg border border-line bg-bg px-3 py-1.5 font-mono text-sm uppercase outline-none focus:border-accent"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y font-mono text-body uppercase outline-none focus:border-accent"
               />
             </SettingsRow>
 
@@ -148,7 +148,7 @@ export default async function ProjectSettingsPage({
                 defaultValue={project.repositoryPath ?? ""}
                 required
                 placeholder="/srv/Code/environment"
-                className="w-full rounded-lg border border-line bg-bg px-3 py-1.5 font-mono text-sm outline-none focus:border-accent"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y font-mono text-body outline-none focus:border-accent"
               />
             </SettingsRow>
           </div>
@@ -159,7 +159,7 @@ export default async function ProjectSettingsPage({
             hint="Authorship used for commits agents make in this project."
             tone="neutral"
           >
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-card sm:grid-cols-2">
             <SettingsRow
               label="Default git user (name)"
               hint="Author name for agent commits in this project."
@@ -169,7 +169,7 @@ export default async function ProjectSettingsPage({
                 name="defaultGitUserName"
                 defaultValue={project.defaultGitUserName ?? ""}
                 placeholder="Zeh Ferrari"
-                className="w-full rounded-lg border border-line bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>
 
@@ -182,7 +182,7 @@ export default async function ProjectSettingsPage({
                 name="defaultGitUserEmail"
                 defaultValue={project.defaultGitUserEmail ?? ""}
                 placeholder="e@zeh.me"
-                className="w-full rounded-lg border border-line bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>
           </div>
@@ -193,7 +193,7 @@ export default async function ProjectSettingsPage({
             hint="Pre-filled values and lifecycle for new tasks."
             tone="ok"
           >
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-card sm:grid-cols-2 xl:grid-cols-3">
             <SettingsRow
               label="Default assignee"
               hint="Pre-fills new tasks. Pulls from the active principal pool."
@@ -201,7 +201,7 @@ export default async function ProjectSettingsPage({
               <select
                 name="defaultAssigneeId"
                 defaultValue={project.defaultAssigneeId ?? ""}
-                className="w-full rounded-lg border border-line bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               >
                 <option value="">Unassigned</option>
                 {principals.map((p) => (
@@ -220,7 +220,7 @@ export default async function ProjectSettingsPage({
               <select
                 name="defaultReviewerId"
                 defaultValue={project.defaultReviewerId ?? ""}
-                className="w-full rounded-lg border border-line bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               >
                 <option value="">Unassigned</option>
                 {principals.map((p) => (
@@ -243,7 +243,7 @@ export default async function ProjectSettingsPage({
                 max={365}
                 defaultValue={project.doneTtlDays ?? ""}
                 placeholder="System default"
-                className="w-full rounded-lg border border-line bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>
           </div>
@@ -259,7 +259,7 @@ export default async function ProjectSettingsPage({
                 {codingAgentPrincipals.map((p) => (
                   <label
                     key={p.id}
-                    className="flex min-h-10 items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+                    className="flex min-h-10 items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-body"
                   >
                     <input
                       type="checkbox"
@@ -273,7 +273,7 @@ export default async function ProjectSettingsPage({
                 ))}
               </div>
             ) : (
-              <p className="rounded-lg border border-line bg-panel px-3 py-2 text-sm text-text-muted">
+              <p className="rounded-lg border border-line bg-panel px-3 py-2 text-body text-text-muted">
                 No active coding agents are available.
               </p>
             )}
@@ -285,7 +285,7 @@ export default async function ProjectSettingsPage({
             tone="warn"
           >
             <div className="grid gap-3 lg:grid-cols-3">
-              <label className="flex items-start gap-3 text-sm">
+              <label className="flex items-start gap-3 text-body">
                 <input
                   type="checkbox"
                   name="onlyReportersCanApproveActionPlans"
@@ -294,12 +294,12 @@ export default async function ProjectSettingsPage({
                 />
                 <span>
                   <span className="block font-medium">Can Approve Plan of Actions</span>
-                  <span className="block text-xs text-text-muted">
+                  <span className="block text-caption text-text-muted">
                     Agent reviewers and acting managers can comment on plans but cannot approve them.
                   </span>
                 </span>
               </label>
-              <label className="flex items-start gap-3 text-sm">
+              <label className="flex items-start gap-3 text-body">
                 <input
                   type="checkbox"
                   name="onlyReportersCanSetTasksDone"
@@ -308,12 +308,12 @@ export default async function ProjectSettingsPage({
                 />
                 <span>
                   <span className="block font-medium">Can Set Tasks to Done</span>
-                  <span className="block text-xs text-text-muted">
+                  <span className="block text-caption text-text-muted">
                     Agent review can still happen normally; the final Done transition is reserved for the reporter.
                   </span>
                 </span>
               </label>
-              <label className="flex items-start gap-3 text-sm">
+              <label className="flex items-start gap-3 text-body">
                 <input
                   type="checkbox"
                   name="onlyReportersCanApprovePullRequests"
@@ -322,7 +322,7 @@ export default async function ProjectSettingsPage({
                 />
                 <span>
                   <span className="block font-medium">Can Approve Pull Requests</span>
-                  <span className="block text-xs text-text-muted">
+                  <span className="block text-caption text-text-muted">
                     Agent deployment PR approval is reserved for the reporter when this policy is enabled.
                   </span>
                 </span>
@@ -333,7 +333,7 @@ export default async function ProjectSettingsPage({
           <div className="flex justify-end pt-1">
             <button
               type="submit"
-              className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-bg shadow-sm hover:opacity-90"
+              className="rounded-lg bg-accent px-card py-control-y text-body font-medium text-bg shadow-sm hover:opacity-90"
             >
               Save settings
             </button>
@@ -344,19 +344,19 @@ export default async function ProjectSettingsPage({
         {activeTab === "deployment" ? (
           <form
             action={setProjectSettings}
-            className="space-y-4 rounded-2xl border border-l-4 border-warn/40 border-l-warn bg-warn/[0.04] p-5 shadow-sm"
+            className="space-y-section-gap rounded-panel border border-l-4 border-warn/40 border-l-warn bg-warn/[0.04] p-card-lg shadow-sm"
           >
             <input type="hidden" name="projectSlug" value={slug} />
             <input type="hidden" name="settingsScope" value="deployment" />
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h2 className="text-sm font-semibold tracking-tight">Deployment</h2>
-                <p className="mt-1 text-xs text-text-muted">
+                <h2 className="text-body font-semibold tracking-tight">Deployment</h2>
+                <p className="mt-1 text-caption text-text-muted">
                   Project deployment config is visible to everyone.
                 </p>
               </div>
               {!canEditDeployment ? (
-                <span className="rounded-full border border-line px-2 py-0.5 text-[11px] text-text-muted">Read-only</span>
+                <span className="rounded-full border border-line px-2 py-0.5 text-micro text-text-muted">Read-only</span>
               ) : null}
             </div>
             <div className="grid gap-3 md:grid-cols-3">
@@ -406,7 +406,7 @@ export default async function ProjectSettingsPage({
               <button
                 type="submit"
                 disabled={!canEditDeployment}
-                className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-bg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-bg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Save deployment settings
               </button>
@@ -415,10 +415,10 @@ export default async function ProjectSettingsPage({
         ) : null}
 
         {activeTab === "worktrees" ? (
-          <section className="space-y-3 rounded-2xl border border-line bg-panel p-5 shadow-sm">
+          <section className="space-y-3 rounded-panel border border-line bg-panel p-card-lg shadow-sm">
             <div>
-              <h2 className="text-sm font-semibold tracking-tight">Worktree live preview</h2>
-              <p className="mt-1 text-xs leading-5 text-text-muted">
+              <h2 className="text-body font-semibold tracking-tight">Worktree live preview</h2>
+              <p className="mt-1 text-caption leading-5 text-text-muted">
                 Build a git worktree and point the live site at it. One worktree
                 is served at a time; all share the same database and secrets, so
                 only the served code changes.
@@ -428,7 +428,7 @@ export default async function ProjectSettingsPage({
                 solution — a dedicated service per project so each repo can be
                 built + served independently. For now switching routes through
                 the single shared PM app service (pm.service). */}
-            <div className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-xs leading-5 text-warn">
+            <div className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-caption leading-5 text-warn">
               <span className="font-semibold">TODO (later):</span> implement the
               full per-project <code>pm.service</code> serving solution (one
               service per project repo). For now switching routes through the
@@ -437,7 +437,7 @@ export default async function ProjectSettingsPage({
             {showSwitcher && switchState ? (
               <WorktreeSwitcher initial={switchState} repoKey={repoKey ?? ""} />
             ) : (
-              <p className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-sm text-text-muted">
+              <p className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-body text-text-muted">
                 No live-preview worktrees are available for this project repository on this host.
               </p>
             )}
@@ -445,16 +445,16 @@ export default async function ProjectSettingsPage({
         ) : null}
 
         {activeTab === "availability" ? (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="grid grid-cols-1 gap-card md:grid-cols-2">
             {/* Archive — reversible, indefinite. Hides the project from the
                 active lists/sidebar but keeps the board fully intact. */}
-            <section className="space-y-2 rounded-2xl border border-line bg-panel p-4 shadow-sm">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+            <section className="space-y-2 rounded-panel border border-line bg-panel p-card shadow-sm">
+              <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
                 Archive
               </div>
               {project.archivedAt ? (
                 <>
-                  <p className="text-xs text-text-muted">
+                  <p className="text-caption text-text-muted">
                     This project is archived (hidden from the active project
                     lists and the sidebar). Its board, epics, and tasks are
                     untouched. Unarchive to bring it back.
@@ -463,7 +463,7 @@ export default async function ProjectSettingsPage({
                     <input type="hidden" name="projectSlug" value={slug} />
                     <button
                       type="submit"
-                      className="w-full rounded-lg border border-accent bg-transparent px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent hover:text-bg"
+                      className="w-full rounded-lg border border-accent bg-transparent px-control-x py-control-y text-caption font-medium text-accent hover:bg-accent hover:text-bg"
                     >
                       Unarchive project
                     </button>
@@ -471,7 +471,7 @@ export default async function ProjectSettingsPage({
                 </>
               ) : (
                 <>
-                  <p className="text-xs text-text-muted">
+                  <p className="text-caption text-text-muted">
                     Hide this project from the active project lists and the
                     sidebar without deleting anything. Nothing is purged; you
                     can unarchive it any time from the Archive page.
@@ -480,7 +480,7 @@ export default async function ProjectSettingsPage({
                     <input type="hidden" name="projectSlug" value={slug} />
                     <button
                       type="submit"
-                      className="w-full rounded-lg border border-line bg-transparent px-3 py-1.5 text-xs font-medium text-text hover:bg-panel-soft"
+                      className="w-full rounded-lg border border-line bg-transparent px-control-x py-control-y text-caption font-medium text-text hover:bg-panel-soft"
                     >
                       Archive project
                     </button>
@@ -492,19 +492,19 @@ export default async function ProjectSettingsPage({
             {/* Delete — soft-delete to the 30-day bin, cascades to children. */}
             <form
               action={deleteProject}
-              className="space-y-2 rounded-2xl border border-crit bg-panel p-4 shadow-sm"
+              className="space-y-2 rounded-panel border border-crit bg-panel p-card shadow-sm"
             >
               <input type="hidden" name="projectSlug" value={slug} />
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-crit">
+              <div className="text-micro font-semibold uppercase tracking-wider text-crit">
                 Delete
               </div>
-              <p className="text-xs text-text-muted">
+              <p className="text-caption text-text-muted">
                 Move this project to the bin. All its epics, tasks, and
                 attachments go with it. Auto-purged after 30 days.
               </p>
               <button
                 type="submit"
-                className="w-full rounded-lg border border-crit bg-transparent px-3 py-1.5 text-xs font-medium text-crit hover:bg-crit hover:text-bg"
+                className="w-full rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-medium text-crit hover:bg-crit hover:text-bg"
               >
                 Delete project
               </button>
@@ -517,14 +517,14 @@ export default async function ProjectSettingsPage({
 
 function SettingsTabNav({ slug, activeTab }: { slug: string; activeTab: SettingsTab }) {
   return (
-    <nav className="flex flex-wrap gap-2 rounded-2xl border border-line bg-panel p-2 shadow-sm" aria-label="Project settings tabs">
+    <nav className="flex flex-wrap gap-2 rounded-panel border border-line bg-panel p-2 shadow-sm" aria-label="Project settings tabs">
       {SETTINGS_TABS.map((tab) => {
         const active = tab.key === activeTab;
         return (
           <Link
             key={tab.key}
             href={`/projects/${slug}/settings?tab=${tab.key}`}
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+            className={`rounded-lg px-control-x py-control-y text-body font-medium transition ${
               active
                 ? "bg-accent text-bg"
                 : "text-text-muted hover:bg-panel-soft hover:text-text"
@@ -557,13 +557,13 @@ function SettingsCard({
   children: React.ReactNode;
 }) {
   return (
-    <section className={`space-y-4 rounded-2xl border border-l-4 p-5 shadow-sm ${CARD_TONES[tone]}`}>
+    <section className={`space-y-section-gap rounded-panel border border-l-4 p-card-lg shadow-sm ${CARD_TONES[tone]}`}>
       <div>
-        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-text">
+        <h2 className="text-micro font-semibold uppercase tracking-wider text-text">
           {title}
         </h2>
         {hint ? (
-          <p className="mt-0.5 text-xs text-text-muted">{hint}</p>
+          <p className="mt-0.5 text-caption text-text-muted">{hint}</p>
         ) : null}
       </div>
       {children}
@@ -582,12 +582,12 @@ function SettingsRow({
 }) {
   return (
     <label className="block space-y-1">
-      <span className="block text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+      <span className="block text-micro font-semibold uppercase tracking-wider text-text-muted">
         {label}
       </span>
       {children}
       {hint ? (
-        <span className="block text-xs text-text-muted">{hint}</span>
+        <span className="block text-caption text-text-muted">{hint}</span>
       ) : null}
     </label>
   );

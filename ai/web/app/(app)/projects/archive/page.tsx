@@ -29,7 +29,7 @@ export default async function ProjectArchivePage() {
 
   return (
     <div className="max-w-4xl">
-      <nav className="mb-3 text-sm">
+      <nav className="mb-3 text-body">
         <Link
           href="/projects"
           className="text-text-muted hover:underline"
@@ -37,26 +37,26 @@ export default async function ProjectArchivePage() {
           ← Projects
         </Link>
       </nav>
-      <h1 className="mb-1 text-2xl font-semibold tracking-tight">
+      <h1 className="mb-1 text-display font-semibold tracking-tight">
         Archived projects
       </h1>
-      <p className="mb-6 text-xs text-text-muted">
+      <p className="mb-6 text-caption text-text-muted">
         Archived projects are hidden from the active project lists and the
         sidebar. Nothing is deleted or purged — unarchive to bring a project
         back at any time.
       </p>
 
       {projects.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-line p-6 text-center text-sm text-text-muted">
+        <p className="rounded-card border border-dashed border-line p-6 text-center text-body text-text-muted">
           No archived projects.
         </p>
       ) : (
-        <ul className="divide-y divide-line rounded-2xl border border-line bg-panel">
+        <ul className="divide-y divide-line rounded-panel border border-line bg-panel">
           {projects.map((p) => (
-            <li key={p.id} className="flex items-center justify-between gap-4 px-4 py-3">
+            <li key={p.id} className="flex items-center justify-between gap-card px-4 py-3">
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium">{p.name}</div>
-                <div className="text-xs text-text-muted">
+                <div className="text-body font-medium">{p.name}</div>
+                <div className="text-caption text-text-muted">
                   /{p.slug} · {p._count.epics} epic
                   {p._count.epics === 1 ? "" : "s"} · {p._count.tasks} task
                   {p._count.tasks === 1 ? "" : "s"} · {p._count.attachments} file
@@ -68,7 +68,7 @@ export default async function ProjectArchivePage() {
                 <input type="hidden" name="projectSlug" value={p.slug} />
                 <button
                   type="submit"
-                  className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-xs font-medium hover:border-accent"
+                  className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium hover:border-accent"
                 >
                   Unarchive
                 </button>

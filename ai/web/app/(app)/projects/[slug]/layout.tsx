@@ -38,12 +38,12 @@ export default async function ProjectLayout({
   return (
     <div>
       <header className="mb-2">
-        <h1 className="text-2xl font-semibold tracking-tight">
+        <h1 className="text-display font-semibold tracking-tight">
           <Link href={`/projects/${project.slug}`} className="hover:underline">
             {project.name}
           </Link>
         </h1>
-        <div className="flex items-center gap-1 text-xs text-text-muted">
+        <div className="flex items-center gap-1 text-caption text-text-muted">
           <Link
             href="/projects"
             className="hover:text-text hover:underline"

@@ -296,7 +296,7 @@ export default function ChatMessagesContainer({
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto p-4 min-h-0 scrollbar-thin scroll-smooth"
+      className="flex-1 overflow-y-auto p-card min-h-0 scrollbar-thin scroll-smooth"
     >
       {/* Parent lineage expanding button */}
       {parentArchives.length > 0 && (
@@ -304,7 +304,7 @@ export default function ChatMessagesContainer({
           {visibleParentsCount < parentArchives.length ? (
             <button
               onClick={() => setVisibleParentsCount((prev) => prev + 1)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent/20 bg-accent/10 text-xs font-semibold text-accent hover:bg-accent hover:text-white transition cursor-pointer select-none"
+              className="inline-flex items-center gap-1.5 px-control-x py-control-y rounded-lg border border-accent/20 bg-accent/10 text-caption font-semibold text-accent hover:bg-accent hover:text-white transition cursor-pointer select-none"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>
@@ -312,7 +312,7 @@ export default function ChatMessagesContainer({
               Chat Initial Context
             </button>
           ) : (
-            <span className="text-[10px] uppercase font-bold tracking-wider text-text-muted select-none">
+            <span className="text-nano uppercase font-bold tracking-wider text-text-muted select-none">
               Chat Start...
             </span>
           )}
@@ -320,7 +320,7 @@ export default function ChatMessagesContainer({
       )}
 
       {allMessages.length === 0 ? (
-        <p className="text-sm text-text-muted">No messages yet.</p>
+        <p className="text-body text-text-muted">No messages yet.</p>
       ) : (
         allMessages.map((m, index) => {
           const isLast = index === allMessages.length - 1;
@@ -356,7 +356,7 @@ export default function ChatMessagesContainer({
               actions={!viewingArchive ? (
                 <span className="inline-flex items-center gap-1.5">
                   {canceledMessageIds.has(m.id) ? (
-                    <span className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                    <span className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-nano font-semibold uppercase tracking-wider text-text-muted">
                       canceled
                     </span>
                   ) : null}
@@ -364,7 +364,7 @@ export default function ChatMessagesContainer({
                     <button
                       type="button"
                       onClick={() => cancelAndEdit(m)}
-                      className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted transition hover:border-crit hover:text-crit"
+                      className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-nano font-semibold uppercase tracking-wider text-text-muted transition hover:border-crit hover:text-crit"
                     >
                       Stop and edit
                     </button>
@@ -378,7 +378,7 @@ export default function ChatMessagesContainer({
                     confirmLabel="Delete message"
                     buttonTitle="Delete message"
                     ariaLabel="Delete message"
-                    className="cursor-pointer text-[12px] font-bold text-text-muted opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-crit"
+                    className="cursor-pointer text-caption font-bold text-text-muted opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-crit"
                   />
                 </span>
               ) : null}
@@ -399,7 +399,7 @@ export default function ChatMessagesContainer({
               <button
                 type="button"
                 onClick={() => resend(m.clientId)}
-                className="cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-accent transition hover:bg-accent/10"
+                className="cursor-pointer rounded px-1.5 py-0.5 text-nano font-semibold uppercase tracking-wider text-accent transition hover:bg-accent/10"
                 title="Resend message"
               >
                 Resend
@@ -407,7 +407,7 @@ export default function ChatMessagesContainer({
               <button
                 type="button"
                 onClick={() => removeOptimistic(m.clientId)}
-                className="cursor-pointer text-[12px] font-bold text-text-muted transition hover:text-crit"
+                className="cursor-pointer text-caption font-bold text-text-muted transition hover:text-crit"
                 title="Dismiss failed message"
                 aria-label="Dismiss failed message"
               >

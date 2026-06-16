@@ -169,15 +169,15 @@ export default function EpicTasksClient({
   const allSelected = tasks.length > 0 && tasks.every((t) => selectedIds.has(t.id));
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-section-gap">
       {error && (
-        <div role="alert" className="rounded-xl border border-crit bg-panel-soft px-3 py-2 text-sm text-crit">
+        <div role="alert" className="rounded-card border border-crit bg-panel-soft px-3 py-2 text-body text-crit">
           {error}
         </div>
       )}
 
       {selectedCount > 0 && (
-        <div className="flex items-center justify-between gap-3 rounded-2xl border border-accent/30 bg-accent/[0.08] px-4 py-3 text-sm shadow-sm">
+        <div className="flex items-center justify-between gap-3 rounded-panel border border-accent/30 bg-accent/[0.08] px-4 py-3 text-body shadow-sm">
           <span className="font-semibold text-text">
             {selectedCount} selected
           </span>
@@ -185,14 +185,14 @@ export default function EpicTasksClient({
             <button
               type="button"
               onClick={bulkDeleteSelected}
-              className="rounded-lg border border-crit bg-transparent px-3 py-1.5 text-xs font-semibold text-crit transition hover:bg-crit hover:text-bg"
+              className="rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-semibold text-crit transition hover:bg-crit hover:text-bg"
             >
               Delete selected
             </button>
             <button
               type="button"
               onClick={() => setSelectedIds(new Set())}
-              className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-text-muted transition hover:border-accent hover:text-accent"
+              className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-semibold text-text-muted transition hover:border-accent hover:text-accent"
             >
               Clear
             </button>
@@ -212,7 +212,7 @@ export default function EpicTasksClient({
       />
 
       <div className="space-y-1">
-        <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+        <div className="flex items-center justify-between text-micro font-semibold uppercase tracking-wider text-text-muted">
           <div className="flex items-center gap-2">
             <input
               type="checkbox"

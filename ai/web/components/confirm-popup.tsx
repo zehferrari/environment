@@ -67,7 +67,7 @@ export default function ConfirmPopup({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm transition-all duration-300"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-card backdrop-blur-sm transition-all duration-300"
       onClick={() => !busy && onCancel()}
       role="dialog"
       aria-modal="true"
@@ -75,12 +75,12 @@ export default function ConfirmPopup({
     >
       <div
         onClick={(event) => event.stopPropagation()}
-        className="w-full max-w-md space-y-4 rounded-2xl border border-line bg-panel p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+        className="w-full max-w-md space-y-section-gap rounded-panel border border-line bg-panel p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
       >
         <div className="flex items-center justify-between">
           <h3
             id="confirm-popup-title"
-            className={`text-sm font-semibold uppercase tracking-wider ${danger ? "text-crit" : "text-text-muted"}`}
+            className={`text-body font-semibold uppercase tracking-wider ${danger ? "text-crit" : "text-text-muted"}`}
           >
             {title}
           </h3>
@@ -89,13 +89,13 @@ export default function ConfirmPopup({
             disabled={busy}
             onClick={onCancel}
             aria-label="Close"
-            className="text-lg leading-none text-text-muted hover:text-text cursor-pointer disabled:opacity-50"
+            className="text-heading leading-none text-text-muted hover:text-text cursor-pointer disabled:opacity-50"
           >
             &times;
           </button>
         </div>
         {description ? (
-          <div className="text-sm text-text-muted leading-relaxed">
+          <div className="text-body text-text-muted leading-relaxed">
             {description}
           </div>
         ) : null}
@@ -104,7 +104,7 @@ export default function ConfirmPopup({
             type="button"
             disabled={busy}
             onClick={onCancel}
-            className="rounded-lg border border-line bg-panel-soft px-3 py-1.5 text-xs font-medium text-text-muted hover:border-accent hover:text-accent transition disabled:opacity-50 cursor-pointer"
+            className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent transition disabled:opacity-50 cursor-pointer"
           >
             {cancelLabel}
           </button>
@@ -112,7 +112,7 @@ export default function ConfirmPopup({
             type="button"
             disabled={busy}
             onClick={onConfirm}
-            className={`rounded-lg px-4 py-1.5 text-xs font-medium transition disabled:opacity-50 flex items-center gap-1.5 cursor-pointer hover:opacity-90 ${confirmClass}`}
+            className={`rounded-lg px-4 py-1.5 text-caption font-medium transition disabled:opacity-50 flex items-center gap-1.5 cursor-pointer hover:opacity-90 ${confirmClass}`}
           >
             {busy ? (
               <>

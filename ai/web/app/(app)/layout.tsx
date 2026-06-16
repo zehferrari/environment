@@ -6,7 +6,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     <PersistentPmStreamProvider>
       <div className="flex min-h-screen bg-bg text-text">
         <Sidebar />
-        <main className="min-w-0 flex-1 px-6 py-5 lg:px-8">
+        <main className="min-w-0 flex-1 px-page-x py-page-y lg:px-page-x-lg">
           <div className="mx-auto max-w-[1480px]">{children}</div>
         </main>
       </div>

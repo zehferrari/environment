@@ -208,15 +208,15 @@ export default function SidebarNav({
           }
         >
           <div className="flex min-w-0 items-center gap-2">
-            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent text-sm font-bold text-white shadow-sm">
+            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent text-body font-bold text-white shadow-sm">
               Z
             </div>
             {!collapsed ? (
               <div className="min-w-0">
-                <div className="truncate text-sm font-semibold tracking-tight">
+                <div className="truncate text-body font-semibold tracking-tight">
                   Zero Latency
                 </div>
-                <div className="truncate text-xs text-text-muted">
+                <div className="truncate text-caption text-text-muted">
                   Mission Control
                 </div>
               </div>
@@ -242,7 +242,7 @@ export default function SidebarNav({
           }
         >
           <div
-            className="grid h-7 w-7 shrink-0 place-items-center overflow-hidden rounded-full border border-line bg-panel text-[11px] font-semibold text-text"
+            className="grid h-7 w-7 shrink-0 place-items-center overflow-hidden rounded-full border border-line bg-panel text-micro font-semibold text-text"
             title={collapsed ? meName : undefined}
           >
             {userAvatarVersion != null && userId ? (
@@ -257,7 +257,7 @@ export default function SidebarNav({
             )}
           </div>
           {!collapsed ? (
-            <div className="min-w-0 text-xs text-text-muted">
+            <div className="min-w-0 text-caption text-text-muted">
               <div className="truncate text-text">{meName}</div>
               {meKind ? <div className="truncate">{meKind}</div> : null}
             </div>
@@ -265,7 +265,7 @@ export default function SidebarNav({
         </div>
       </div>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 text-sm">
+      <nav className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 text-body">
         <div className="space-y-1">
           <NavItem
             href="/projects"
@@ -289,13 +289,13 @@ export default function SidebarNav({
                 } ${collapsed ? "justify-center px-0" : "px-3"}`}
               >
                 <span
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-line bg-panel-soft text-[11px] font-semibold uppercase text-text"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-line bg-panel-soft text-micro font-semibold uppercase text-text"
                   aria-hidden="true"
                 >
                   {project.name.slice(0, 1)}
                 </span>
                 {!collapsed ? (
-                  <span className="truncate text-xs font-medium">{project.name}</span>
+                  <span className="truncate text-caption font-medium">{project.name}</span>
                 ) : null}
               </Link>
             );
@@ -334,7 +334,7 @@ export default function SidebarNav({
                       aria-hidden="true"
                     />
                   ) : null}
-                  <div className="relative grid h-8 w-8 place-items-center overflow-hidden rounded-lg border border-line bg-panel-soft text-xs font-semibold text-text">
+                  <div className="relative grid h-8 w-8 place-items-center overflow-hidden rounded-lg border border-line bg-panel-soft text-caption font-semibold text-text">
                     {agent.avatarSrc ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
@@ -360,13 +360,13 @@ export default function SidebarNav({
 
                 {!collapsed ? (
                   <div className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1.5 truncate text-xs font-semibold text-text">
+                    <span className="flex items-center gap-1.5 truncate text-caption font-semibold text-text">
                       {agent.name}
                       {agent.unread ? (
                         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" aria-hidden="true" />
                       ) : null}
                     </span>
-                    <span className="block truncate text-[10px] uppercase tracking-wider text-text-muted">
+                    <span className="block truncate text-nano uppercase tracking-wider text-text-muted">
                       {agent.role}
                     </span>
                   </div>
@@ -377,7 +377,7 @@ export default function SidebarNav({
         </div>
       </nav>
 
-      <div className="space-y-1 border-t border-line px-3 py-3 text-sm">
+      <div className="space-y-1 border-t border-line px-3 py-3 text-body">
         <NavItem
           href="/system/settings"
           icon={icons.settings}
@@ -407,7 +407,7 @@ export default function SidebarNav({
         <button
           type="submit"
           title={collapsed ? "Sign out" : undefined}
-          className={`flex w-full items-center gap-3 rounded-lg py-1.5 text-sm font-medium text-text-muted hover:bg-accent-soft hover:text-accent ${
+          className={`flex w-full items-center gap-3 rounded-lg py-1.5 text-body font-medium text-text-muted hover:bg-accent-soft hover:text-accent ${
             collapsed ? "justify-center px-0" : "px-3"
           }`}
         >

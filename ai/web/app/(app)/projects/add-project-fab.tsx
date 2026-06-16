@@ -40,32 +40,32 @@ export default function AddProjectFab({
   const [keyTouched, setKeyTouched] = useState(false);
 
   const labelCls =
-    "mb-1 block text-[11px] font-semibold uppercase tracking-wider text-text-muted";
+    "mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted";
   const inputCls =
-    "w-full rounded-lg border border-line bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent";
+    "w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent";
 
   return (
     <>
       {open ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-card"
           onClick={() => setOpen(false)}
         >
           <form
             action={createProjectAction}
             onSubmit={() => setOpen(false)}
             onClick={(e) => e.stopPropagation()}
-            className="max-h-[85vh] w-full max-w-lg space-y-3 overflow-y-auto rounded-2xl border border-line bg-panel p-5 shadow-2xl"
+            className="max-h-[85vh] w-full max-w-lg space-y-3 overflow-y-auto rounded-panel border border-line bg-panel p-card-lg shadow-2xl"
           >
             <div className="flex items-center justify-between">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+              <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
                 New project
               </div>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close"
-                className="text-lg leading-none text-text-muted hover:text-text"
+                className="text-heading leading-none text-text-muted hover:text-text"
               >
                 ×
               </button>
@@ -205,13 +205,13 @@ export default function AddProjectFab({
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="rounded-lg border border-line px-3 py-1.5 text-sm font-medium text-text-muted hover:text-text"
+                className="rounded-lg border border-line px-control-x py-control-y text-body font-medium text-text-muted hover:text-text"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-bg hover:opacity-90"
+                className="rounded-lg bg-accent px-4 py-1.5 text-body font-medium text-bg hover:opacity-90"
               >
                 Create project
               </button>
