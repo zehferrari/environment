@@ -12,6 +12,7 @@ import {
   defineChannelMessageAdapter,
 } from "openclaw/plugin-sdk/channel-message";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
+import { canonicalizePmStoreSessionKey } from "./session-key.js";
 
 const CHANNEL_ID = "pm";
 const DEFAULT_ACCOUNT_ID = "default";
@@ -498,7 +499,12 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   };
   const encodedTarget = encodeTarget(target);
   const agentId = account.agentId;
-  const sessionKey = payload.sessionKey.trim();
+  // Correlation id used to abort the active turn (the cancel endpoint looks
+  // this up by the raw key the web app sends).
+  const rawSessionKey = payload.sessionKey.trim();
+  // Canonical agent-scoped key for session persistence, routing, and dispatch
+  // so PM sessions land under `agent:<agentId>:pm:*`.
+  const sessionKey = canonicalizePmStoreSessionKey({ agentId, requestKey: rawSessionKey });
   const messageId = typeof payload.messageId === "string" && payload.messageId
     ? payload.messageId
     : payload.replyTarget.messageId ?? randomUUID();
@@ -646,9 +652,9 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
     await stream.error(err);
     throw err;
   } finally {
-    const active = activeTurns.get(sessionKey);
+    const active = activeTurns.get(rawSessionKey);
     if (!active || active.acceptedId === acceptedId) {
-      activeTurns.delete(sessionKey);
+      activeTurns.delete(rawSessionKey);
     }
   }
 }
