@@ -18,6 +18,7 @@ import {
 } from "@/lib/agents/auth/session-bindings";
 import { wakeAgent as wakeGatewayAgent } from "@/lib/pm-consumer/gateway-client";
 import { pmAsyncDispatchEnabled, sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
+import { buildPmChannelDispatchMetrics } from "@/lib/agents/pm-channel/openclaw";
 import { recordPmChannelRunEvent, recordPmChannelRunQueued } from "@/lib/agents/pm-channel/runs";
 import {
   buildProjectEnvContext,
@@ -836,13 +837,14 @@ async function handleDirectAgentMessage(args: {
     .filter(Boolean)
     .join("\n\n");
   sizes.contextTextChars = contextText.length;
-
-  stepStartedAt = Date.now();
-  const delivery = await sendOrQueueOpenClawPmChannelTurn({
+  const directTranscriptMessageCount =
+    sessionContext.match(/^\[[^\]]+\] @/gm)?.length ??
+    (sessionContext.includes("[CURRENT]") ? 1 : 0);
+  const dispatchArgs = {
     gatewayPort: args.gatewayPort,
     agentSlug: args.agentSlug,
     sessionKey: args.sessionBinding.openclawSessionKey,
-    kind: "direct",
+    kind: "direct" as const,
     text: args.body,
     contextText,
     systemPrompt: systemPromptParts.join("\n"),
@@ -850,14 +852,20 @@ async function handleDirectAgentMessage(args: {
     actor: {
       id: args.userId,
       username: args.actorName,
-      kind: "human",
+      kind: "human" as const,
     },
     replyTarget: {
-      kind: "direct",
+      kind: "direct" as const,
       agentSlug: args.agentSlug,
       messageId: args.messageId,
     },
-  });
+  };
+  const dispatchMetrics = buildPmChannelDispatchMetrics(dispatchArgs, directTranscriptMessageCount);
+  sizes.systemPromptChars = dispatchMetrics.sizes.systemPromptChars;
+  sizes.transcriptMessageCount = directTranscriptMessageCount;
+
+  stepStartedAt = Date.now();
+  const delivery = await sendOrQueueOpenClawPmChannelTurn(dispatchArgs);
   mark("queueOrDispatchMs", stepStartedAt);
   timings.totalBeforeActivityLogMs = Date.now() - timingStartedAt;
 
@@ -877,6 +885,7 @@ async function handleDirectAgentMessage(args: {
         error: delivery.error ?? null,
         timings,
         sizes,
+        dispatchMetrics,
         includeFilesContext,
         parentFolderCount: parentFolders.length,
       }),
