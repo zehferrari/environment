@@ -32,6 +32,7 @@ import {
 import { extractMentions } from "@/lib/markdown";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/auth/session-bindings";
 import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
+import { buildPmChannelDispatchMetrics } from "@/lib/agents/pm-channel/openclaw";
 import { createContextGrantUrl } from "@/lib/agents/context/grants";
 import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/chat/discussion-reply-format";
 import { createTaskDescriptionWriteToken } from "@/lib/agents/workflow/chat/task/token";
@@ -720,11 +721,11 @@ export async function sendAgentChatMessage(formData: FormData) {
       workItemPrompt,
     ].filter(Boolean).join("\n\n");
 
-    const delivery = await sendOrQueueOpenClawPmChannelTurn({
+    const dispatchArgs = {
       gatewayPort,
       agentSlug,
       sessionKey: sessionBinding.openclawSessionKey,
-      kind: taskId ? "task-chat" : "epic-chat",
+      kind: taskId ? "task-chat" as const : "epic-chat" as const,
       text: body,
       contextText: null,
       systemPrompt,
@@ -736,20 +737,25 @@ export async function sendAgentChatMessage(formData: FormData) {
       },
       replyTarget: taskId
         ? {
-            kind: "task-chat",
+            kind: "task-chat" as const,
             agentSlug,
             taskId: task.id,
             messageId: msg.id,
             projectSlug: slug,
           }
         : {
-            kind: "epic-chat",
+            kind: "epic-chat" as const,
             agentSlug,
             epicId: epic.id,
             messageId: msg.id,
             projectSlug: slug,
           },
-    });
+    };
+    const dispatchMetrics = buildPmChannelDispatchMetrics(
+      dispatchArgs,
+      recentDisc.filter((m) => m.id !== msg.id).length + recentCmts.filter((m) => m.id !== msg.id).length,
+    );
+    const delivery = await sendOrQueueOpenClawPmChannelTurn(dispatchArgs);
 
     if (delivery.ok) {
       await db.agentSessionBinding.update({
@@ -777,6 +783,7 @@ export async function sendAgentChatMessage(formData: FormData) {
           driver: delivery.driver,
           status: delivery.status ?? null,
           error: delivery.error ?? null,
+          dispatchMetrics,
         }),
       },
     });

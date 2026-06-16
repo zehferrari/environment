@@ -6,6 +6,7 @@ import {
 } from "@/lib/agents/workflow/chat/task/context";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/auth/session-bindings";
 import {
+  buildPmChannelDispatchMetrics,
   buildPmTurnSessionKey,
 } from "@/lib/agents/pm-channel/openclaw";
 import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
@@ -413,11 +414,11 @@ export async function sendTaskWorkflowNotification(args: {
     epicWorkItemKey: task.epic?.workItemKey ?? null,
     epicCommitPrefix: task.epic?.commitPrefix ?? null,
   });
-  const delivery = await sendOrQueueOpenClawPmChannelTurn({
+  const dispatchArgs = {
     gatewayPort: targetUser.agent.gatewayPort,
     agentSlug: targetUser.agent.slug,
     sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
-    kind: planChannelNotification ? "task-chat" : "task-comment",
+    kind: planChannelNotification ? "task-chat" as const : "task-comment" as const,
     text: args.body,
     contextText: userMessage,
     systemPrompt: [
@@ -456,13 +457,18 @@ export async function sendTaskWorkflowNotification(args: {
       kind: args.actor.kind,
     },
     replyTarget: {
-      kind: planChannelNotification ? "task-chat" : "task-comment",
+      kind: planChannelNotification ? "task-chat" as const : "task-comment" as const,
       agentSlug: targetUser.agent.slug,
       taskId: task.id,
       messageId: msg.id,
       projectSlug: task.project.slug,
     },
-  });
+  };
+  const dispatchMetrics = buildPmChannelDispatchMetrics(
+    dispatchArgs,
+    recentDisc.filter((m) => m.id !== msg.id).length + recentCmts.filter((m) => m.id !== msg.id).length,
+  );
+  const delivery = await sendOrQueueOpenClawPmChannelTurn(dispatchArgs);
 
   await db.activityLog.create({
     data: {
@@ -478,6 +484,7 @@ export async function sendTaskWorkflowNotification(args: {
         driver: delivery.driver,
         status: delivery.status ?? null,
         error: delivery.error ?? null,
+        dispatchMetrics,
       }),
     },
   });
@@ -785,11 +792,11 @@ export async function sendTaskCommentNotifications(args: {
           token: createWorkItemGrantToken(task.projectId, msg.agentSlug, msg.id),
         })
       : "";
-    const delivery = await sendOrQueueOpenClawPmChannelTurn({
+    const dispatchArgs = {
       gatewayPort: target?.gatewayPort ?? null,
       agentSlug: msg.agentSlug,
       sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
-      kind: "task-comment",
+      kind: "task-comment" as const,
       text: args.body,
       contextText: userMessage,
       systemPrompt: [
@@ -829,13 +836,18 @@ export async function sendTaskCommentNotifications(args: {
         kind: args.actor.kind,
       },
       replyTarget: {
-        kind: "task-comment",
+        kind: "task-comment" as const,
         agentSlug: msg.agentSlug,
         taskId: task.id,
         messageId: msg.id,
         projectSlug: task.project.slug,
       },
-    });
+    };
+    const dispatchMetrics = buildPmChannelDispatchMetrics(
+      dispatchArgs,
+      recentDisc.filter((m) => m.id !== args.commentId).length + recentCmts.filter((m) => m.id !== args.commentId).length,
+    );
+    const delivery = await sendOrQueueOpenClawPmChannelTurn(dispatchArgs);
     await db.activityLog.create({
       data: {
         projectId: task.projectId,
@@ -851,6 +863,7 @@ export async function sendTaskCommentNotifications(args: {
           driver: delivery.driver,
           status: delivery.status ?? null,
           error: delivery.error ?? null,
+          dispatchMetrics,
         }),
       },
     });
