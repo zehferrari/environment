@@ -110,19 +110,19 @@ function ArchiveTree({
           <div key={archive.id} className="relative group/node">
             {/* Horizontal branch line connecting nested children */}
             {depth > 0 ? (
-              <div 
-                className="absolute -left-4 top-[1.35rem] h-px w-4 bg-accent/20" 
-                aria-hidden="true" 
+              <div
+                className="absolute -left-4 top-[1.35rem] h-px w-4 bg-accent/20"
+                aria-hidden="true"
               />
             ) : null}
 
             {/* Tree node dot indicator */}
-            <div 
+            <div
               className={`absolute top-[1rem] z-10 h-3 w-3 rounded-full border-2 bg-panel transition-all ${
                 depth > 0 ? "-left-[22px]" : "-left-1.5"
               } ${
-                selected 
-                  ? "border-accent scale-110 shadow-sm shadow-accent/20" 
+                selected
+                  ? "border-accent scale-110 shadow-sm shadow-accent/20"
                   : "border-line group-hover/node:border-accent/40"
               }`}
               aria-hidden="true"
@@ -183,8 +183,8 @@ function ArchiveTree({
                     aria-label={hasChildren ? "Cannot delete parent of a continuation" : "Delete archived chat"}
                     title={hasChildren ? "Cannot delete: this archive has active continuation children" : "Delete archived chat"}
                     className={`rounded px-1.5 py-0.5 text-pico font-medium transition-all ${
-                      hasChildren 
-                        ? "bg-line/20 text-text-muted/40 border border-transparent cursor-not-allowed" 
+                      hasChildren
+                        ? "bg-line/20 text-text-muted/40 border border-transparent cursor-not-allowed"
                         : "border border-line text-text-muted hover:border-crit hover:bg-crit/4 hover:text-crit cursor-pointer"
                     }`}
                   >

@@ -159,8 +159,8 @@ function isTerminalStatus(status: PersistentPmStreamState["status"]) {
   return status === "done" || status === "error";
 }
 
-function streamChannelName(key: string) {
-  return `pm-stream:v1:${key}`;
+function streamChannelName(record: Pick<StreamRecord, "key" | "activeTargetKey">) {
+  return `pm-stream:v1:${record.key}:${record.activeTargetKey}`;
 }
 
 function initialStreamState(initialStatus: PersistentPmStreamState["status"] = "pending"): PersistentPmStreamState {
@@ -261,7 +261,7 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
   // the map would orphan its CrossTabStreamCoordinator — leaving the heartbeat
   // and stale-check intervals plus its BroadcastChannel alive for the life of
   // the tab, and a zombie "leader" that prevents a freshly re-ensured stream for
-  // the same key from ever claiming leadership and opening its own connection.
+  // the same stream channel from ever claiming leadership and opening a connection.
   const teardownRecord = useCallback((record: StreamRecord) => {
     record.coordinatorUnsubscribeRole?.();
     record.coordinatorUnsubscribeState?.();
@@ -395,7 +395,7 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
 
   const attachCoordinator = useCallback((record: StreamRecord) => {
     if (record.coordinator) return;
-    const coordinator = new CrossTabStreamCoordinator<PersistentPmStreamState>(streamChannelName(record.key));
+    const coordinator = new CrossTabStreamCoordinator<PersistentPmStreamState>(streamChannelName(record));
     if (!coordinator.enabled) {
       coordinator.close();
       return;
@@ -448,7 +448,7 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
         const nextTargetKey = ChatStreamManager.targetKey(parts);
         const nextUrl = ChatStreamManager.url(parts);
         if (record.activeTargetKey !== nextTargetKey) {
-          stopConnection(record);
+          teardownRecord(record);
           record.activeTargetKey = nextTargetKey;
           record.url = nextUrl;
           record.state = initialStreamState(initialStatus);
@@ -485,7 +485,7 @@ function PersistentPmStreamProviderInner({ children }: { children: React.ReactNo
         scheduleCleanup(record);
       }
     },
-  }), [attachCoordinator, scheduleCleanup, startConnection, stopConnection]);
+  }), [attachCoordinator, scheduleCleanup, startConnection, teardownRecord]);
 
   useEffect(() => {
     const records = recordsRef.current;
