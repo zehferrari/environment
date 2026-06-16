@@ -18,6 +18,7 @@ import {
 } from "@/lib/agents/auth/session-bindings";
 import { wakeAgent as wakeGatewayAgent } from "@/lib/pm-consumer/gateway-client";
 import { pmAsyncDispatchEnabled, sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
+import { buildUnifiedPmTurnSystemPrompt, nullPmContextText } from "@/lib/agents/pm-channel/context";
 import { buildPmChannelDispatchMetrics } from "@/lib/agents/pm-channel/openclaw";
 import { recordPmChannelRunEvent, recordPmChannelRunQueued } from "@/lib/agents/pm-channel/runs";
 import {
@@ -753,7 +754,7 @@ async function handleDirectAgentMessage(args: {
 }) {
   const timingStartedAt = Date.now();
   const timings: Record<string, number> = {};
-  const sizes: Record<string, number> = {};
+  const sizes: Record<string, number | null> = {};
   const mark = (name: string, startedAt: number) => {
     timings[name] = Date.now() - startedAt;
   };
@@ -836,18 +837,23 @@ async function handleDirectAgentMessage(args: {
   const contextText = [sessionContext, filesContext, projectContextText]
     .filter(Boolean)
     .join("\n\n");
-  sizes.contextTextChars = contextText.length;
+  sizes.contextTextChars = null;
   const directTranscriptMessageCount =
     sessionContext.match(/^\[[^\]]+\] @/gm)?.length ??
     (sessionContext.includes("[CURRENT]") ? 1 : 0);
+  const kind = "direct" as const;
   const dispatchArgs = {
     gatewayPort: args.gatewayPort,
     agentSlug: args.agentSlug,
     sessionKey: args.sessionBinding.openclawSessionKey,
-    kind: "direct" as const,
+    kind,
     text: args.body,
-    contextText,
-    systemPrompt: systemPromptParts.join("\n"),
+    contextText: nullPmContextText(),
+    systemPrompt: buildUnifiedPmTurnSystemPrompt({
+      kind,
+      trustedPrompt: systemPromptParts.join("\n"),
+      primaryContext: contextText,
+    }),
     projectId: args.projectId,
     actor: {
       id: args.userId,

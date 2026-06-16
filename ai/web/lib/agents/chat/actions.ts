@@ -32,6 +32,7 @@ import {
 import { extractMentions } from "@/lib/markdown";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/auth/session-bindings";
 import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
+import { buildUnifiedPmTurnSystemPrompt, nullPmContextText } from "@/lib/agents/pm-channel/context";
 import { buildPmChannelDispatchMetrics } from "@/lib/agents/pm-channel/openclaw";
 import { createContextGrantUrl } from "@/lib/agents/context/grants";
 import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/chat/discussion-reply-format";
@@ -714,20 +715,29 @@ export async function sendAgentChatMessage(formData: FormData) {
       });
     }
 
-    const systemPrompt = [
-      baseSystemPrompt,
-      DISCUSSION_REPLY_FORMAT_PROMPT,
-      descriptionPrompt,
-      workItemPrompt,
-    ].filter(Boolean).join("\n\n");
+    const kind = taskId ? "task-chat" as const : "epic-chat" as const;
+    const systemPrompt = buildUnifiedPmTurnSystemPrompt({
+      kind,
+      trustedPrompt: [
+        baseSystemPrompt,
+        DISCUSSION_REPLY_FORMAT_PROMPT,
+        descriptionPrompt,
+        workItemPrompt,
+      ].filter(Boolean).join("\n\n"),
+      primaryBlocks: [{
+        title: "CURRENT CHAT MESSAGE (untrustedContext)",
+        body,
+        trust: "untrusted",
+      }],
+    });
 
     const dispatchArgs = {
       gatewayPort,
       agentSlug,
       sessionKey: sessionBinding.openclawSessionKey,
-      kind: taskId ? "task-chat" as const : "epic-chat" as const,
+      kind,
       text: body,
-      contextText: null,
+      contextText: nullPmContextText(),
       systemPrompt,
       projectId: project.id,
       actor: {

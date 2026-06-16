@@ -4,6 +4,7 @@ import {
   buildPmTurnSessionKey,
   sendOpenClawPmChannelTurn,
 } from "@/lib/agents/pm-channel/openclaw";
+import { buildUnifiedPmTurnSystemPrompt, nullPmContextText } from "@/lib/agents/pm-channel/context";
 import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/ops/pm-silence";
 
 const POLICY_UPDATE_ID = "2026-06-01-action-plan-approval-feedback";
@@ -112,19 +113,24 @@ async function main() {
       scopeId: msg.id,
       agentSlug: agent.slug,
     });
+    const kind = "direct" as const;
     const delivery = await sendOpenClawPmChannelTurn({
       gatewayPort: agent.gatewayPort,
       agentSlug: agent.slug,
       sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
-      kind: "direct",
+      kind,
       text: body,
-      contextText: body,
-      systemPrompt: [
-        `You have a directed PM policy update addressed to @${agent.slug}.`,
-        "Read it carefully and apply it to future Zero Latency / PM tasks.",
-        `If you have no concrete blocker applying the policy, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
-        "Create a visible reply only for a concrete blocker.",
-      ].join("\n"),
+      contextText: nullPmContextText(),
+      systemPrompt: buildUnifiedPmTurnSystemPrompt({
+        kind,
+        trustedPrompt: [
+          `You have a directed PM policy update addressed to @${agent.slug}.`,
+          "Read it carefully and apply it to future Zero Latency / PM tasks.",
+          `If you have no concrete blocker applying the policy, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
+          "Create a visible reply only for a concrete blocker.",
+        ].join("\n"),
+        primaryContext: body,
+      }),
       actor: {
         id: sender.id,
         username: sender.username,

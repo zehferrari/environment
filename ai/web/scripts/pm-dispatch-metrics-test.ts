@@ -12,16 +12,16 @@ const base = {
 const directMetrics = buildPmChannelDispatchMetrics({
   ...base,
   kind: "direct",
-  contextText: "transcript",
-  systemPrompt: "system",
+  contextText: null,
+  systemPrompt: "system transcript",
   replyTarget: { kind: "direct", agentSlug: "asdrubal", messageId: "m1" },
 }, 3);
 
 assert.deepEqual(directMetrics, {
   surface: "direct",
   sizes: {
-    systemPromptChars: 6,
-    contextTextChars: 10,
+    systemPromptChars: 17,
+    contextTextChars: null,
     textChars: 5,
     transcriptMessageCount: 3,
   },
