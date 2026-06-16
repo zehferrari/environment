@@ -1,3 +1,4 @@
+import { Avatar } from "@/components/ui/primitives";
 export type MessageActor = {
   id?: string | null;
   username: string;
@@ -72,25 +73,25 @@ export function MessageAvatar({
 
   if (actor.kind === "system") {
     return (
-      <div
-        className={`${size === "sm" ? "h-7 w-7 text-micro" : "h-9 w-9 text-caption"} grid shrink-0 place-items-center overflow-hidden rounded-lg bg-accent font-bold text-white shadow-sm`}
+      <Avatar
+        size={size}
+        shape="square"
+        className="border-accent bg-accent text-white"
         title={actorDisplayName(actor)}
         aria-label={`${actorDisplayName(actor)} avatar`}
       >
         Z
-      </div>
+      </Avatar>
     );
   }
 
   const src = actorAvatarSrc(actor);
   const label = actorDisplayName(actor);
-  const sizeClass = size === "sm" ? "h-7 w-7 text-micro" : "h-9 w-9 text-caption";
-
   return (
     <span className="relative inline-grid shrink-0">
       {busyRing}
-      <span
-        className={`${sizeClass} relative grid shrink-0 place-items-center overflow-hidden rounded-full border border-line bg-panel font-semibold text-text-muted shadow-sm`}
+      <Avatar
+        size={size}
         title={label}
         aria-label={`${label} avatar`}
       >
@@ -105,7 +106,7 @@ export function MessageAvatar({
         ) : (
           <span>{initialFor(actor)}</span>
         )}
-      </span>
+      </Avatar>
     </span>
   );
 }

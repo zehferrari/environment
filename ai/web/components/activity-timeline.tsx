@@ -4,6 +4,7 @@ import {
   MessageTimestamp,
   type MessageActor,
 } from "@/components/message-avatar";
+import { Card } from "@/components/ui/primitives";
 
 type ActivityActor = {
   id: string;
@@ -70,7 +71,7 @@ export default function ActivityTimeline({ rows }: { rows: ActivityTimelineRow[]
         const summary = payloadSummary(parsed);
         return (
           <li key={row.id} className="text-body">
-            <div className="min-w-0 rounded-card border border-line bg-panel-soft px-3 py-2">
+            <Card tone="soft" padding="sm" className="min-w-0 py-2">
               <div className="mb-1 flex min-w-0 flex-wrap items-center gap-2 text-caption text-text-muted">
                 <MessageTimestamp value={row.createdAt} />
                 <MessageAvatar actor={actor} size="sm" />
@@ -95,7 +96,7 @@ export default function ActivityTimeline({ rows }: { rows: ActivityTimelineRow[]
                   </pre>
                 </details>
               ) : null}
-            </div>
+            </Card>
           </li>
         );
       })}

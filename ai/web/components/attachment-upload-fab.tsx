@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState } from "react";
+import { Button, Surface } from "@/components/ui/primitives";
 
 export default function AttachmentUploadFab({
   projectSlug,
@@ -24,12 +25,15 @@ export default function AttachmentUploadFab({
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-card backdrop-blur-sm"
           onClick={() => setOpen(false)}
         >
-          <form
+          <Surface
+            as="form"
             action={uploadAction}
             encType="multipart/form-data"
             onSubmit={() => setOpen(false)}
-            onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-md space-y-section-gap rounded-panel border border-line bg-panel p-card-lg shadow-2xl"
+            onClick={(event: React.MouseEvent) => event.stopPropagation()}
+            elevated
+            padding="lg"
+            className="w-full max-w-md space-y-section-gap"
           >
             <input type="hidden" name="projectSlug" value={projectSlug} />
             {taskId ? <input type="hidden" name="taskId" value={taskId} /> : null}
@@ -43,14 +47,15 @@ export default function AttachmentUploadFab({
                   Max {maxLabel} per file. You can select multiple files.
                 </p>
               </div>
-              <button
+              <Button
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close"
-                className="text-heading leading-none text-text-muted hover:text-text"
+                variant="icon"
+                size="icon"
               >
                 ×
-              </button>
+              </Button>
             </div>
             <input
               type="file"
@@ -60,32 +65,26 @@ export default function AttachmentUploadFab({
               className="w-full rounded-lg border border-dashed border-line bg-bg px-3 py-6 text-body file:mr-3 file:rounded-lg file:border-0 file:bg-accent file:px-3 file:py-1.5 file:text-caption file:font-medium file:text-bg hover:file:opacity-90"
             />
             <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setOpen(false)}
-                className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-body font-medium hover:border-accent"
-              >
+              <Button type="button" onClick={() => setOpen(false)} variant="ghost">
                 Cancel
-              </button>
-              <button
-                type="submit"
-                className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-bg hover:opacity-90"
-              >
+              </Button>
+              <Button type="submit" variant="primary">
                 Upload files
-              </button>
+              </Button>
             </div>
-          </form>
+          </Surface>
         </div>
       ) : null}
 
-      <button
+      <Button
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Add attachment"
-        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90"
+        variant="primary"
+        className="fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full p-0 text-3xl leading-none shadow-lg"
       >
         <span className="-mt-0.5">+</span>
-      </button>
+      </Button>
     </>
   );
 }

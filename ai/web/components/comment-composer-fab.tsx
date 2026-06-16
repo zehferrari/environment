@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState } from "react";
 import MaximizableTextarea from "@/components/maximizable-textarea";
+import { Button, Surface } from "@/components/ui/primitives";
 
 export default function CommentComposerFab({
   projectSlug,
@@ -35,10 +36,12 @@ export default function CommentComposerFab({
           className="fixed inset-0 z-50 bg-black/10 p-card backdrop-blur-[1px]"
           onClick={() => setOpen(false)}
         >
-          <form
+          <Surface
+            as="form"
             action={submit}
-            onClick={(event) => event.stopPropagation()}
-            className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-xl space-y-3 rounded-panel border border-line bg-panel p-card shadow-2xl sm:right-6"
+            onClick={(event: React.MouseEvent) => event.stopPropagation()}
+            elevated
+            className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-xl space-y-3 sm:right-6"
           >
             {taskId ? <input type="hidden" name="taskId" value={taskId} /> : null}
             {epicId ? <input type="hidden" name="epicId" value={epicId} /> : null}
@@ -52,14 +55,15 @@ export default function CommentComposerFab({
                   Markdown and mentions are supported.
                 </p>
               </div>
-              <button
+              <Button
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close comment composer"
-                className="grid h-8 w-8 place-items-center rounded-lg text-heading leading-none text-text-muted transition hover:bg-panel-soft hover:text-text"
+                variant="icon"
+                size="icon"
               >
                 &times;
-              </button>
+              </Button>
             </div>
             <MaximizableTextarea
               name="body"
@@ -78,33 +82,34 @@ export default function CommentComposerFab({
               className="w-full resize-none rounded-lg border border-line bg-bg px-3 py-2 text-body outline-none focus:border-accent"
             />
             <div className="flex justify-end gap-2">
-              <button
+              <Button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-body font-medium text-text-muted transition hover:border-accent hover:text-accent"
+                variant="ghost"
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="submit"
                 disabled={!canSubmit}
-                className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-bg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+                variant="primary"
               >
                 Add comment
-              </button>
+              </Button>
             </div>
-          </form>
+          </Surface>
         </div>
       ) : null}
 
-      <button
+      <Button
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Add comment"
-        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90"
+        variant="primary"
+        className="fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full p-0 text-3xl leading-none shadow-lg"
       >
         <span className="-mt-0.5">+</span>
-      </button>
+      </Button>
     </>
   );
 }

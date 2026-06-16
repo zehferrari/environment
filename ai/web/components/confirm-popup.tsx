@@ -23,6 +23,7 @@
 //   />
 
 import { useEffect } from "react";
+import { Button, Surface } from "@/components/ui/primitives";
 
 export interface ConfirmPopupProps {
   open: boolean;
@@ -61,10 +62,6 @@ export default function ConfirmPopup({
 
   if (!open) return null;
 
-  const confirmClass = danger
-    ? "bg-crit text-white"
-    : "bg-accent text-bg";
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-card backdrop-blur-sm transition-all duration-300"
@@ -73,9 +70,10 @@ export default function ConfirmPopup({
       aria-modal="true"
       aria-labelledby="confirm-popup-title"
     >
-      <div
-        onClick={(event) => event.stopPropagation()}
-        className="w-full max-w-md space-y-section-gap rounded-panel border border-line bg-panel p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+      <Surface
+        onClick={(event: React.MouseEvent) => event.stopPropagation()}
+        elevated
+        className="w-full max-w-md space-y-section-gap p-6 animate-in fade-in zoom-in-95 duration-200"
       >
         <div className="flex items-center justify-between">
           <h3
@@ -84,15 +82,16 @@ export default function ConfirmPopup({
           >
             {title}
           </h3>
-          <button
+          <Button
             type="button"
             disabled={busy}
             onClick={onCancel}
             aria-label="Close"
-            className="text-heading leading-none text-text-muted hover:text-text cursor-pointer disabled:opacity-50"
+            variant="icon"
+            size="icon"
           >
             &times;
-          </button>
+          </Button>
         </div>
         {description ? (
           <div className="text-body text-text-muted leading-relaxed">
@@ -100,19 +99,22 @@ export default function ConfirmPopup({
           </div>
         ) : null}
         <div className="flex justify-end gap-2 pt-2">
-          <button
+          <Button
             type="button"
             disabled={busy}
             onClick={onCancel}
-            className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent transition disabled:opacity-50 cursor-pointer"
+            variant="ghost"
+            size="sm"
           >
             {cancelLabel}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             disabled={busy}
             onClick={onConfirm}
-            className={`rounded-lg px-4 py-1.5 text-caption font-medium transition disabled:opacity-50 flex items-center gap-1.5 cursor-pointer hover:opacity-90 ${confirmClass}`}
+            variant={danger ? "danger" : "primary"}
+            size="sm"
+            className="px-4 py-1.5"
           >
             {busy ? (
               <>
@@ -134,9 +136,9 @@ export default function ConfirmPopup({
             ) : (
               confirmLabel
             )}
-          </button>
+          </Button>
         </div>
-      </div>
+      </Surface>
     </div>
   );
 }

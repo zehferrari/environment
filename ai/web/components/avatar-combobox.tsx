@@ -6,6 +6,7 @@ import {
   MessageAvatar,
   type MessageActor,
 } from "@/components/message-avatar";
+import { Input } from "@/components/ui/primitives";
 
 export type AvatarComboboxOption = {
   value: string;
@@ -143,11 +144,11 @@ export default function AvatarCombobox({
       </button>
       {open ? (
         <div className="absolute left-0 right-0 top-full z-30 mt-1 rounded-card border border-line bg-panel p-2 shadow-2xl">
-          <input
+          <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search..."
-            className="mb-2 h-8 w-full rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
+            className="mb-2 h-8 px-2 py-0 text-caption"
           />
           <div className="max-h-64 overflow-y-auto">
             {multiple ? (
