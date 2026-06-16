@@ -130,7 +130,7 @@ function Icon({ children }: { children: React.ReactNode }) {
 function NavTile({ icon, color }: { icon: React.ReactNode; color: TileColor }) {
   return (
     <span
-      className="grid h-8 w-8 shrink-0 place-items-center rounded-lg"
+      className="grid h-11 w-11 shrink-0 place-items-center rounded-lg md:h-8 md:w-8"
       style={{ backgroundColor: color.bg, color: color.fg }}
     >
       <Icon>{icon}</Icon>
@@ -502,7 +502,7 @@ export default function SidebarNav({
 
     <nav
       aria-label="Mobile primary navigation"
-      className="fixed inset-x-3 bottom-3 z-40 rounded-3xl border border-line bg-panel/95 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 shadow-2xl shadow-black/20 backdrop-blur md:hidden"
+      className="fixed inset-x-3 bottom-3 z-40 rounded-3xl border border-line bg-panel/95 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 shadow-2xl shadow-black/20 backdrop-blur md:hidden"
     >
       <div className="grid grid-cols-4 gap-1">
         {mobilePrimaryItems.map((item) => (
@@ -515,7 +515,7 @@ export default function SidebarNav({
               item.active ? "text-accent" : "text-text-muted"
             }`}
           >
-            <span className="relative grid h-7 w-7 place-items-center">
+            <span className="relative grid h-8 w-8 place-items-center">
               <Icon>{item.icon}</Icon>
               {item.badge ? (
                 <span className="absolute -right-0.5 top-0 h-2.5 w-2.5 rounded-full border border-panel bg-red-500" aria-label="Unread messages" />
@@ -548,7 +548,7 @@ export default function SidebarNav({
           <div className="mx-auto mt-3 h-1.5 w-12 rounded-full bg-line" aria-hidden="true" />
           <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-4">
             <div className="flex min-w-0 items-center gap-3">
-              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-accent text-body font-bold text-white shadow-sm">Z</div>
+              <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-accent text-body font-bold text-white shadow-sm">Z</div>
               <div className="min-w-0">
                 <h2 id="mobile-nav-title" className="truncate text-body font-semibold tracking-tight">Zero Latency</h2>
                 <p className="truncate text-caption text-text-muted">Full navigation</p>
@@ -557,7 +557,7 @@ export default function SidebarNav({
             <button
               type="button"
               onClick={closeMobileMenu}
-              className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-line text-text-muted hover:bg-accent-soft hover:text-accent"
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-line text-text-muted hover:bg-accent-soft hover:text-accent"
               aria-label="Close navigation"
             >
               ×
@@ -566,7 +566,7 @@ export default function SidebarNav({
 
           <div className="max-h-[calc(85vh-5rem)] overflow-y-auto px-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] pt-4">
             <div className="mb-4 flex items-center gap-3 rounded-2xl border border-line bg-panel-soft px-3 py-3">
-              <div className="grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-full border border-line bg-panel text-caption font-semibold text-text">
+              <div className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-full border border-line bg-panel text-caption font-semibold text-text">
                 {userAvatarVersion != null && userId ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={`/api/users/${userId}/avatar?v=${userAvatarVersion}`} alt="" className="h-full w-full object-cover" />
@@ -592,9 +592,9 @@ export default function SidebarNav({
                     href={href}
                     onClick={closeMobileMenu}
                     aria-current={active ? "page" : undefined}
-                    className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-body hover:bg-accent-soft hover:text-accent ${active ? "text-accent" : "text-text-muted"}`}
+                    className={`flex min-h-11 items-center gap-3 rounded-2xl px-3 py-2.5 text-body hover:bg-accent-soft hover:text-accent ${active ? "text-accent" : "text-text-muted"}`}
                   >
-                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-line bg-panel-soft text-caption font-semibold uppercase text-text" aria-hidden="true">
+                    <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-line bg-panel-soft text-caption font-semibold uppercase text-text" aria-hidden="true">
                       {project.name.slice(0, 1)}
                     </span>
                     <span className="truncate font-medium">{project.name}</span>
@@ -617,11 +617,11 @@ export default function SidebarNav({
                     href={href}
                     onClick={closeMobileMenu}
                     aria-current={active ? "page" : undefined}
-                    className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 hover:bg-accent-soft hover:text-accent ${active ? "text-accent" : "text-text-muted"}`}
+                    className={`flex min-h-11 items-center gap-3 rounded-2xl px-3 py-2.5 hover:bg-accent-soft hover:text-accent ${active ? "text-accent" : "text-text-muted"}`}
                   >
-                    <div className="relative h-9 w-9 shrink-0">
+                    <div className="relative h-11 w-11 shrink-0">
                       {agent.pulse ? <span className="pointer-events-none absolute -inset-1 animate-ping rounded-xl bg-accent opacity-30" aria-hidden="true" /> : null}
-                      <div className="relative grid h-9 w-9 place-items-center overflow-hidden rounded-xl border border-line bg-panel-soft text-caption font-semibold text-text">
+                      <div className="relative grid h-11 w-11 place-items-center overflow-hidden rounded-xl border border-line bg-panel-soft text-caption font-semibold text-text">
                         {agent.avatarSrc ? (
                           // eslint-disable-next-line @next/next/no-img-element
                           <img src={agent.avatarSrc} alt={`${agent.name} avatar`} decoding="async" className={`h-full w-full object-cover ${agent.grayscale ? "grayscale" : ""}`} />
@@ -652,7 +652,7 @@ export default function SidebarNav({
             </section>
 
             <form action={signOutAction} className="mt-4 border-t border-line pt-4">
-              <button type="submit" className="flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-body font-medium text-text-muted hover:bg-accent-soft hover:text-accent">
+              <button type="submit" className="flex min-h-11 w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-body font-medium text-text-muted hover:bg-accent-soft hover:text-accent">
                 <NavTile icon={icons.signOut} color={NAV_COLORS.signOut} />
                 <span className="truncate">Sign out</span>
               </button>
@@ -688,7 +688,7 @@ function NavSheetLink({
       href={href}
       onClick={onNavigate}
       aria-current={active ? "page" : undefined}
-      className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-body font-medium hover:bg-accent-soft hover:text-accent ${active ? "text-accent" : "text-text-muted"}`}
+      className={`flex min-h-11 items-center gap-3 rounded-2xl px-3 py-2.5 text-body font-medium hover:bg-accent-soft hover:text-accent ${active ? "text-accent" : "text-text-muted"}`}
     >
       <span className="relative">
         <NavTile icon={icon} color={color} />

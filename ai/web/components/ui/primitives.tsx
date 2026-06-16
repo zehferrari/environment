@@ -68,16 +68,16 @@ export const Button = React.forwardRef<
       ref={ref}
       type={type}
       className={cn(
-        "inline-flex items-center justify-center gap-1.5 rounded-lg font-medium transition disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer",
+        "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg font-medium transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45 md:min-h-0 md:active:scale-100 cursor-pointer",
         variant === "primary" && "bg-accent text-bg hover:opacity-90",
         variant === "ghost" && "border border-line bg-panel-soft text-text-muted hover:border-accent hover:text-accent",
         variant === "danger" && "bg-crit text-white hover:opacity-90",
         variant === "dangerGhost" && "border border-crit/30 bg-crit/[0.04] text-crit hover:bg-crit/[0.08]",
         variant === "icon" && "text-text-muted hover:bg-panel-soft hover:text-text",
-        size === "sm" && "px-3 py-1 text-caption",
+        size === "sm" && "px-3 py-2 text-caption md:py-1",
         size === "md" && "px-control-x py-control-y text-body",
         size === "lg" && "px-card py-control-y text-body",
-        size === "icon" && "h-8 w-8 p-0 text-heading leading-none",
+        size === "icon" && "h-11 w-11 p-0 text-heading leading-none md:h-8 md:w-8",
         className,
       )}
       {...props}
@@ -93,7 +93,7 @@ export const Input = React.forwardRef<
     <input
       ref={ref}
       className={cn(
-        "w-full rounded-lg border border-line bg-bg px-3 py-2 text-body text-text outline-none transition focus:border-accent disabled:opacity-50",
+        "min-h-11 w-full rounded-lg border border-line bg-bg px-3 py-2 text-body text-text outline-none transition focus:border-accent disabled:opacity-50 md:min-h-0",
         className,
       )}
       {...props}
@@ -109,7 +109,7 @@ export const Textarea = React.forwardRef<
     <textarea
       ref={ref}
       className={cn(
-        "w-full resize-none rounded-lg border border-line bg-bg px-3 py-2 text-body text-text outline-none transition focus:border-accent disabled:opacity-50",
+        "min-h-11 w-full resize-none rounded-lg border border-line bg-bg px-3 py-2 text-body text-text outline-none transition focus:border-accent disabled:opacity-50 md:min-h-0",
         className,
       )}
       {...props}
@@ -129,7 +129,7 @@ export const Avatar = React.forwardRef<
       ref={ref}
       className={cn(
         "relative grid shrink-0 place-items-center overflow-hidden border border-line bg-panel font-semibold text-text-muted shadow-sm",
-        size === "sm" ? "h-7 w-7 text-micro" : "h-9 w-9 text-caption",
+        size === "sm" ? "h-11 w-11 text-micro md:h-7 md:w-7" : "h-11 w-11 text-caption md:h-9 md:w-9",
         shape === "round" ? "rounded-full" : "rounded-lg",
         className,
       )}

@@ -768,7 +768,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                       onChange={(e) => toggleSelectAllBacklog(e.target.checked)}
                       onClick={(e) => e.stopPropagation()}
                       onPointerDown={(e) => e.stopPropagation()}
-                      className="h-3.5 w-3.5 accent-accent"
+                      className="h-6 w-6 accent-accent md:h-3.5 md:w-3.5"
                       aria-label="Select all backlog tasks"
                     />
                     <span>Task</span>
@@ -944,7 +944,7 @@ function MobileStatusGroup({
             onChange={(event) => onSelectAll(event.target.checked)}
             onClick={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
-            className="h-4 w-4 shrink-0 accent-accent"
+            className="h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
             aria-label={`Select all in ${label}`}
           />
           <span className={`rounded border px-2 py-1 text-caption font-semibold uppercase tracking-wider ${columnHeaderPillClass(id)}`}>
@@ -1020,7 +1020,7 @@ function MobileTaskCard({
                   onChange={() => {}}
                   onPointerDown={(event) => event.stopPropagation()}
                   aria-label={`Select ${task.title}`}
-                  className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                  className="mt-0.5 h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
@@ -1045,7 +1045,7 @@ function MobileTaskCard({
                 <input type="hidden" name="taskId" value={task.id} />
                 <button
                   type="submit"
-                  className="rounded-md p-1 text-text-muted hover:bg-crit/10 hover:text-crit"
+                  className="grid h-11 w-11 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:p-1"
                   aria-label={`Move ${task.title} to bin`}
                   title="Move to bin"
                 >
@@ -1067,14 +1067,14 @@ function MobileTaskCard({
           <button
             type="button"
             onClick={() => onMove(task, nextStatus)}
-            className="flex-1 rounded-lg bg-accent px-2 text-caption font-semibold text-bg shadow-sm"
+            className="min-h-11 flex-1 rounded-lg bg-accent px-2 text-caption font-semibold text-bg shadow-sm"
           >
             {nextLabel}
           </button>
           <button
             type="button"
             onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
-            className="flex-1 rounded-lg border border-line bg-panel px-2 text-caption font-semibold text-text"
+            className="min-h-11 flex-1 rounded-lg border border-line bg-panel px-2 text-caption font-semibold text-text"
           >
             Edit
           </button>
@@ -1186,7 +1186,7 @@ function TaskCard({
             onChange={() => {}}
             onPointerDown={(event) => event.stopPropagation()}
             aria-label={`Select ${task.title}`}
-            className="h-4 w-4 shrink-0 accent-accent"
+            className="h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
           />
           {task.status === "Done" ? (
             <BoardReporterMarker task={task} />
@@ -1233,7 +1233,7 @@ function TaskCard({
           <input type="hidden" name="taskId" value={task.id} />
           <button
             type="submit"
-            className="shrink-0 rounded-md p-1 text-text-muted hover:bg-crit/10 hover:text-crit"
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:p-1"
             aria-label={`Move ${task.title} to bin`}
             title="Move to bin"
           >
@@ -1363,7 +1363,7 @@ function BacklogRow({
           router.push(`/projects/${projectSlug}/tasks/${task.id}`);
         }
       }}
-      className={`grid min-w-[68rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 py-2 text-body transition last:border-b-0 hover:bg-panel-soft ${
+      className={`grid min-h-11 min-w-[68rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 py-2 text-body transition last:border-b-0 hover:bg-panel-soft active:scale-[0.98] md:min-h-0 md:active:scale-100 ${
         isPlanningAssigned(task) ? "bg-yellow-300/[0.08]" : statusRowClass(task.status)
       } ${isDragging ? "bg-panel-soft opacity-40" : ""}`}
     >
@@ -1378,7 +1378,7 @@ function BacklogRow({
           onChange={() => {}}
           onPointerDown={(event) => event.stopPropagation()}
           aria-label={`Select ${task.title}`}
-          className="h-4 w-4 shrink-0 accent-accent"
+          className="h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
         />
         <button
           type="button"
@@ -1386,7 +1386,7 @@ function BacklogRow({
           {...listeners}
           onClick={(event) => event.stopPropagation()}
           aria-label="Drag to reorder or move"
-          className="shrink-0 cursor-grab touch-none select-none px-0.5 text-text-muted hover:text-text"
+          className="grid h-11 w-11 shrink-0 cursor-grab touch-none select-none place-items-center text-text-muted hover:text-text md:h-auto md:w-auto md:px-0.5"
           title="Drag"
         >
           ⠿
@@ -1422,7 +1422,7 @@ function BacklogRow({
         <input type="hidden" name="taskId" value={task.id} />
         <button
           type="submit"
-          className="rounded-md px-1.5 py-1 text-text-muted hover:bg-crit/10 hover:text-crit"
+          className="grid h-11 w-11 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:px-1.5 md:py-1"
           aria-label={`Move ${task.title} to bin`}
           title="Move to bin"
         >
@@ -1621,7 +1621,7 @@ function statusRowClass(status: string) {
 }
 
 function taskCardClass(task: Task, isDragging = false) {
-  return `group/card relative block w-full overflow-hidden rounded-lg border px-3 py-2 text-body cursor-pointer select-none shadow-[0_14px_34px_rgba(15,23,42,0.12)] ring-1 ring-white/10 backdrop-blur-xl transition-all before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/80 before:to-transparent after:pointer-events-none after:absolute after:inset-0 after:-translate-x-full after:bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.16),transparent)] after:opacity-0 after:transition-all after:duration-700 hover:-translate-y-0.5 hover:border-white/55 hover:shadow-[0_18px_46px_rgba(15,23,42,0.18)] hover:after:translate-x-full hover:after:opacity-100 ${
+  return `group/card relative block w-full overflow-hidden rounded-lg border px-3 py-2 text-body cursor-pointer select-none shadow-[0_14px_34px_rgba(15,23,42,0.12)] ring-1 ring-white/10 backdrop-blur-xl transition-all active:scale-[0.98] md:active:scale-100 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/80 before:to-transparent after:pointer-events-none after:absolute after:inset-0 after:-translate-x-full after:bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.16),transparent)] after:opacity-0 after:transition-all after:duration-700 hover:-translate-y-0.5 hover:border-white/55 hover:shadow-[0_18px_46px_rgba(15,23,42,0.18)] hover:after:translate-x-full hover:after:opacity-100 ${
     isPlanningAssigned(task)
       ? "border-yellow-200/70 bg-[linear-gradient(135deg,rgba(254,240,138,0.22),rgba(255,255,255,0.08))]"
       : "border-white/25 bg-[linear-gradient(135deg,rgba(255,255,255,0.18),rgba(255,255,255,0.06))]"

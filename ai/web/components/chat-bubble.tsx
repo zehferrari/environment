@@ -178,7 +178,7 @@ export default function ChatBubble({
       onBlur={() => setTouchActionsOpen(false)}
     >
       {!fromCurrentUser && showGroupHeader ? <MessageAvatar actor={message.sender} /> : null}
-      {!fromCurrentUser && !showGroupHeader ? <div className="w-9 shrink-0" aria-hidden="true" /> : null}
+      {!fromCurrentUser && !showGroupHeader ? <div className="w-11 shrink-0 md:w-9" aria-hidden="true" /> : null}
       <article
         style={articleStyle}
         className={`w-fit min-w-0 max-w-[min(44rem,82%)] rounded-bubble ${connectedCornerClass} border px-3.5 ${showGroupHeader ? "py-2.5" : "py-2"} ring-1 ring-black/[0.02] max-sm:max-w-[80%]`}
@@ -211,7 +211,7 @@ export default function ChatBubble({
                   onClick={() => setShowFullSection((current) => !current)}
                   aria-label={showFullSection ? "Show summary" : "Show full message"}
                   title={showFullSection ? "Show summary" : "Show full message"}
-                  className="grid h-6 w-6 place-items-center rounded-md border border-line bg-bg text-text-muted transition hover:border-accent hover:text-accent"
+                  className="grid h-11 w-11 place-items-center rounded-md border border-line bg-bg text-text-muted transition hover:border-accent hover:text-accent md:h-6 md:w-6"
                 >
                   {showFullSection ? (
                     <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -262,7 +262,7 @@ export default function ChatBubble({
         ) : null}
       </article>
       {fromCurrentUser && showGroupHeader ? <MessageAvatar actor={message.sender} /> : null}
-      {fromCurrentUser && !showGroupHeader ? <div className="w-9 shrink-0" aria-hidden="true" /> : null}
+      {fromCurrentUser && !showGroupHeader ? <div className="w-11 shrink-0 md:w-9" aria-hidden="true" /> : null}
     </div>
   );
 }

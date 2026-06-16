@@ -255,12 +255,12 @@ export default function TaskChecklist({
           }}
           maxLength={500}
           placeholder="Add a step…"
-          className="flex-1 rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
+          className="min-h-11 flex-1 rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent md:min-h-0"
         />
         <button
           type="button"
           onClick={add}
-          className="rounded-lg bg-accent px-3 text-body font-medium text-bg hover:opacity-90"
+          className="min-h-11 rounded-lg bg-accent px-4 text-body font-medium text-bg hover:opacity-90 md:min-h-0 md:px-3"
         >
           Add
         </button>
@@ -287,14 +287,14 @@ function ChecklistRow({
     <li
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`flex items-center gap-2 px-3 py-2 text-body ${isDragging ? "opacity-50" : ""}`}
+      className={`flex min-h-11 items-center gap-2 px-3 py-2 text-body ${isDragging ? "opacity-50" : ""}`}
     >
       <button
         type="button"
         aria-label="Drag to reorder"
         {...attributes}
         {...listeners}
-        className="cursor-grab select-none rounded px-1 text-text-muted hover:text-text active:cursor-grabbing"
+        className="grid h-11 w-11 cursor-grab select-none place-items-center rounded text-text-muted hover:text-text active:cursor-grabbing md:h-auto md:w-auto md:px-1"
       >
         ⋮⋮
       </button>
@@ -303,7 +303,7 @@ function ChecklistRow({
         checked={done}
         onChange={onToggle}
         aria-label={done ? `Mark "${item.text}" not done` : `Mark "${item.text}" done`}
-        className="h-4 w-4 shrink-0 accent-text-accent"
+        className="h-6 w-6 shrink-0 accent-text-accent md:h-4 md:w-4"
       />
       <span
         className={`min-w-0 flex-1 ${done ? "text-text-muted line-through" : ""}`}
@@ -317,7 +317,7 @@ function ChecklistRow({
       <button
         type="button"
         onClick={onRemove}
-        className="shrink-0 rounded-md px-1.5 py-1 text-text-muted hover:bg-crit/10 hover:text-crit"
+        className="grid h-11 w-11 shrink-0 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:px-1.5 md:py-1"
         aria-label={`Remove "${item.text}"`}
         title="Remove"
       >

@@ -105,7 +105,7 @@ export default function AvatarCombobox({
         aria-label={ariaLabel}
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
-        className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-line bg-bg px-2 text-left text-caption outline-none transition hover:border-accent"
+        className="flex min-h-11 w-full items-center justify-between gap-2 rounded-lg border border-line bg-bg px-2 text-left text-caption outline-none transition hover:border-accent md:h-9 md:min-h-0"
       >
         <span className="flex min-w-0 items-center gap-1.5">
           {multiple ? (
@@ -160,7 +160,7 @@ export default function AvatarCombobox({
                       setValues([]);
                       onChangeMultiple?.([]);
                     }}
-                    className="mb-1 w-full rounded-lg px-2 py-1 text-left text-nano font-semibold uppercase tracking-wider text-text-muted hover:bg-panel-soft hover:text-text"
+                    className="mb-1 min-h-11 w-full rounded-lg px-2 py-1 text-left text-nano font-semibold uppercase tracking-wider text-text-muted hover:bg-panel-soft hover:text-text md:min-h-0"
                   >
                     {emptyLabel}
                   </button>
@@ -170,7 +170,7 @@ export default function AvatarCombobox({
                   return (
                     <label
                       key={option.value}
-                      className={`mt-1 flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition ${
+                      className={`mt-1 flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition md:min-h-0 ${
                         checked
                           ? "bg-accent/[0.12] text-text"
                           : "text-text-muted hover:bg-panel-soft hover:text-text"
@@ -180,7 +180,7 @@ export default function AvatarCombobox({
                         type="checkbox"
                         checked={checked}
                         onChange={(event) => toggleValue(option.value, event.currentTarget.checked)}
-                        className="h-3.5 w-3.5 accent-text-accent"
+                        className="h-6 w-6 accent-text-accent md:h-3.5 md:w-3.5"
                       />
                       {option.actor ? <MessageAvatar actor={option.actor} size="sm" /> : null}
                       <span className="min-w-0 flex-1 truncate">
@@ -199,11 +199,11 @@ export default function AvatarCombobox({
                     setOpen(false);
                     setQuery("");
                   }}
-                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition ${
+                  className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition md:min-h-0 ${
                     value === "" ? "bg-accent/[0.12] text-text" : "text-text-muted hover:bg-panel-soft hover:text-text"
                   }`}
                 >
-                  <span className="grid h-7 w-7 place-items-center rounded-full border border-dashed border-line">--</span>
+                  <span className="grid h-11 w-11 place-items-center rounded-full border border-dashed border-line md:h-7 md:w-7">--</span>
                   <span>{emptyLabel}</span>
                 </button>
                 {filtered.map((option) => (
@@ -215,7 +215,7 @@ export default function AvatarCombobox({
                       setOpen(false);
                       setQuery("");
                     }}
-                    className={`mt-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition ${
+                    className={`mt-1 flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition md:min-h-0 ${
                       value === option.value ? "bg-accent/[0.12] text-text" : "text-text-muted hover:bg-panel-soft hover:text-text"
                     }`}
                   >

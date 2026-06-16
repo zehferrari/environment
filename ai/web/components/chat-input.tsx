@@ -162,7 +162,7 @@ export default function ChatInput({
                 type="button"
                 onClick={closeComposer}
                 aria-label="Close chat composer"
-                className="grid h-8 w-8 place-items-center rounded-lg text-heading leading-none text-text-muted transition hover:bg-panel-soft hover:text-text"
+                className="grid h-11 w-11 place-items-center rounded-lg text-heading leading-none text-text-muted transition hover:bg-panel-soft hover:text-text md:h-8 md:w-8"
               >
                 &times;
               </button>

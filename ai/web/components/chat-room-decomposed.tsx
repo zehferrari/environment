@@ -1048,7 +1048,7 @@ export default function DecomposedChatRoom({
           <button
             type="button"
             onClick={() => setArchiveSidebarOpen((open) => !open)}
-            className="grid h-8 w-8 place-items-center rounded-lg border border-line bg-panel text-text-muted transition hover:border-accent hover:text-accent cursor-pointer"
+            className="grid h-11 w-11 place-items-center rounded-lg border border-line bg-panel text-text-muted transition hover:border-accent hover:text-accent md:h-8 md:w-8 cursor-pointer"
             aria-label={archiveSidebarOpen ? "Hide recent discussions" : "Show recent discussions"}
             title={archiveSidebarOpen ? "Hide recent discussions" : "Show recent discussions"}
           >
@@ -1122,7 +1122,7 @@ export default function DecomposedChatRoom({
               <button
                 type="button"
                 onClick={() => setArchiveSidebarOpen(false)}
-                className="grid h-7 w-7 place-items-center rounded-md border border-line bg-panel-soft text-text-muted transition hover:border-accent hover:text-accent cursor-pointer"
+                className="grid h-11 w-11 place-items-center rounded-md border border-line bg-panel-soft text-text-muted transition hover:border-accent hover:text-accent md:h-7 md:w-7 cursor-pointer"
                 aria-label="Close action plan archives"
                 title="Hide sidebar"
               >
@@ -1716,7 +1716,7 @@ const Composer = React.memo(function Composer(props: any) {
                     type="button"
                     onClick={closeComposer}
                     aria-label="Close action plan composer"
-                    className="grid h-8 w-8 place-items-center rounded-lg text-heading leading-none text-text-muted transition hover:bg-panel-soft hover:text-text"
+                    className="grid h-11 w-11 place-items-center rounded-lg text-heading leading-none text-text-muted transition hover:bg-panel-soft hover:text-text md:h-8 md:w-8"
                   >
                     &times;
                   </button>
@@ -1749,7 +1749,7 @@ const Composer = React.memo(function Composer(props: any) {
                           key={target.value}
                           className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-line bg-panel px-2 py-1"
                         >
-                          {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-7 w-7 place-items-center rounded-full border border-line text-nano font-semibold">G</span>}
+                          {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-11 w-11 place-items-center rounded-full border border-line text-nano font-semibold md:h-7 md:w-7">G</span>}
                           <span className="max-w-[9rem] truncate">{target.label}</span>
                         </span>
                       ))}
@@ -1783,7 +1783,7 @@ const Composer = React.memo(function Composer(props: any) {
                                         : "text-text-muted hover:bg-panel-soft hover:text-text"
                                     }`}
                                   >
-                                    {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-7 w-7 place-items-center rounded-full border border-line text-nano font-semibold">G</span>}
+                                    {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-11 w-11 place-items-center rounded-full border border-line text-nano font-semibold md:h-7 md:w-7">G</span>}
                                     <span className="min-w-0 flex-1 truncate">{target.actor ? actorDisplayName(target.actor) : target.label}</span>
                                     <span className="text-nano font-semibold uppercase tracking-wider">
                                       {selected ? "Selected" : target.group}

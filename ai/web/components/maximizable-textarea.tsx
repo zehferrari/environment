@@ -63,7 +63,7 @@ function MaximizableTextarea({
         aria-label="Maximize text input"
         title="Maximize"
         variant="ghost"
-        className="absolute right-2 top-2 h-7 w-7 rounded-md bg-panel p-0 shadow-sm"
+        className="absolute right-2 top-2 h-11 w-11 rounded-md bg-panel p-0 shadow-sm md:h-7 md:w-7"
       >
         <svg
           aria-hidden="true"

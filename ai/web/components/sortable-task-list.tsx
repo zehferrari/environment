@@ -225,7 +225,7 @@ function SortableRow({
             router.push(item.href);
           }
         }}
-        className={`grid min-w-[72rem] cursor-pointer grid-cols-[minmax(16rem,1fr)_8rem_10rem_10rem_7rem_7rem_7rem_2rem] items-center gap-3 px-3 py-2 text-body transition hover:bg-panel ${item.alertReporter ? "bg-red-500/[0.08]" : statusRowClass(item.status)} ${
+        className={`grid min-h-11 min-w-[72rem] cursor-pointer grid-cols-[minmax(16rem,1fr)_8rem_10rem_10rem_7rem_7rem_7rem_2rem] items-center gap-3 px-3 py-2 text-body transition hover:bg-panel active:scale-[0.98] md:min-h-0 md:active:scale-100 ${item.alertReporter ? "bg-red-500/[0.08]" : statusRowClass(item.status)} ${
           isDragging ? "opacity-50" : ""
         }`}
       >
@@ -236,7 +236,7 @@ function SortableRow({
             {...attributes}
             {...listeners}
             onClick={(event) => event.stopPropagation()}
-            className="cursor-grab select-none rounded px-1 text-text-muted hover:text-text active:cursor-grabbing"
+            className="grid h-11 w-11 cursor-grab select-none place-items-center rounded text-text-muted hover:text-text active:cursor-grabbing md:h-auto md:w-auto md:px-1"
           >
             ⋮⋮
           </button>
@@ -250,7 +250,7 @@ function SortableRow({
               }}
               onChange={() => {}}
               onPointerDown={(event) => event.stopPropagation()}
-              className="h-4 w-4 shrink-0 accent-text-accent"
+              className="h-6 w-6 shrink-0 accent-text-accent md:h-4 md:w-4"
               aria-label={`Select ${item.title}`}
             />
           )}
@@ -285,7 +285,7 @@ function SortableRow({
             <input type="hidden" name="taskId" value={item.id} />
             <button
               type="submit"
-              className="rounded-md px-1.5 py-1 text-text-muted hover:bg-crit/10 hover:text-crit"
+              className="grid h-11 w-11 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:px-1.5 md:py-1"
               aria-label={`Move ${item.title} to bin`}
               title="Move to bin"
             >
@@ -301,7 +301,7 @@ function SortableRow({
     <li
       ref={setNodeRef}
       style={style}
-      className={`flex items-center gap-2 px-3 py-2 text-body ${item.alertReporter ? "bg-red-500/[0.08]" : ""} ${
+      className={`flex min-h-11 items-center gap-2 px-3 py-2 text-body transition active:scale-[0.98] md:min-h-0 md:active:scale-100 ${item.alertReporter ? "bg-red-500/[0.08]" : ""} ${
         isDragging ? "opacity-50" : ""
       }`}
     >
@@ -310,7 +310,7 @@ function SortableRow({
         aria-label="Drag to reorder"
         {...attributes}
         {...listeners}
-        className="cursor-grab select-none rounded px-1 text-text-muted hover:text-text active:cursor-grabbing"
+        className="grid h-11 w-11 cursor-grab select-none place-items-center rounded text-text-muted hover:text-text active:cursor-grabbing md:h-auto md:w-auto md:px-1"
       >
         ⋮⋮
       </button>
@@ -324,11 +324,11 @@ function SortableRow({
           }}
           onChange={() => {}}
           onPointerDown={(event) => event.stopPropagation()}
-          className="h-4 w-4 shrink-0 accent-text-accent"
+          className="h-6 w-6 shrink-0 accent-text-accent md:h-4 md:w-4"
           aria-label={`Select ${item.title}`}
         />
       )}
-      <Link href={item.href} className="min-w-0 flex-1 truncate hover:underline">
+      <Link href={item.href} className="flex min-h-11 min-w-0 flex-1 items-center truncate hover:underline md:min-h-0">
         {item.workItemKey ? (
           <span className="mr-1 font-mono text-nano font-semibold text-text-muted">
             {item.workItemKey}
