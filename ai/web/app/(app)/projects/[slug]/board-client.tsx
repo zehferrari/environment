@@ -97,10 +97,10 @@ function formatMinutes(total: number): string {
 // Sub-task progress for a board card (ENV-60/61): a segmented bar with one node
 // per sub-task. Completed nodes fill on an orange→green gradient driven by
 // overall completion (greener nearer 100%); unfinished nodes are a solid dark
-// node, so a not-yet-started (To Do) task reads as a row of dark nodes. Hidden
-// when the task has no checklist. Numeric count + rolled-up time live in the
-// tooltip.
+// node. Hidden unless the task is actively in progress and has a checklist.
+// Numeric count + rolled-up time live in the tooltip.
 function SubtaskProgress({ task }: { task: Task }) {
+  if (task.status !== "In Progress") return null;
   const n = task.subtaskTotal;
   if (!n) return null;
   const d = task.subtaskDone;

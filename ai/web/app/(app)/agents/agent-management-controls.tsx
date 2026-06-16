@@ -56,6 +56,7 @@ export type AgentFormData = {
   user: string;
   name: string;
   role: "coding" | "monitor";
+  reasoning: string;
   email: string;
   telegram: { enabled: boolean; bot: string; token: string };
   integrations: { gmail: boolean; jira: boolean; bitbucket: boolean; maildir: boolean };
@@ -74,6 +75,7 @@ type AgentRow = {
   slug: string;
   name: string;
   role: string;
+  reasoning?: string | null;
   email: string | null;
   telegram?: { enabled: boolean; bot: string } | null;
   integrations?: { gmail: boolean; jira: boolean; bitbucket: boolean; maildir?: boolean } | null;
@@ -101,6 +103,7 @@ function blankForm(defaultPrompt = DEFAULT_PROFILE_IMAGE_PROMPT): AgentFormData 
     user: "",
     name: "",
     role: "coding",
+    reasoning: "stream",
     email: "",
     telegram: { enabled: false, bot: "", token: "" },
     integrations: { gmail: false, jira: false, bitbucket: false, maildir: false },
@@ -175,6 +178,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
       user: agent.slug,
       name: agent.name,
       role: agent.role === "monitor" ? "monitor" : "coding",
+      reasoning: agent.reasoning?.trim() || "stream",
       email: agent.email || "",
       telegram: {
         enabled: agent.telegram?.enabled ?? false,
@@ -449,6 +453,20 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                     className={inputCls}
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className={labelCls}>Reasoning</label>
+                <select
+                  disabled={busy}
+                  value={form.reasoning}
+                  onChange={(e) => setForm({ ...form, reasoning: e.target.value })}
+                  className={inputCls}
+                >
+                  <option value="stream">Stream</option>
+                  <option value="on">On</option>
+                  <option value="off">Off</option>
+                </select>
               </div>
 
               {!isEdit ? (

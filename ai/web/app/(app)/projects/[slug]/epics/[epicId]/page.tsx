@@ -1131,6 +1131,7 @@ export default async function EpicDetailPage({
                           ariaLabel="Worker pool"
                           multiple
                         />
+                        <input form="epicMain" type="hidden" name="workerPoolSubmitted" value="1" />
                       </label>
                       <label className="block">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">

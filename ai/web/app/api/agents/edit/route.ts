@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { readAgentIndex, gatewayPortFor } from "@/lib/agents/management/index-loader";
+import { DEFAULT_AGENT_REASONING, normalizeAgentReasoning, readAgentIndex, gatewayPortFor } from "@/lib/agents/management/index-loader";
 import { syncAgents } from "@/lib/agents/management/sync";
 import { runManageUser } from "@/lib/agents/management/manage-user";
 import { getSystemSettings } from "@/lib/settings/system";
@@ -34,6 +34,7 @@ const EditSchema = z.object({
   user: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
   name: z.string().min(1).max(120),
   role: z.enum(["coding", "monitor"]),
+  reasoning: z.string().trim().max(40).optional().default(DEFAULT_AGENT_REASONING),
   email: z.string().email(),
   telegram: z
     .object({ enabled: z.boolean(), bot: z.string(), token: z.string().optional().default("") })
@@ -85,6 +86,7 @@ export async function POST(request: Request) {
   const imageUsername = normalizeProfileImageContextText(data.image_username) || data.user;
   const imageFullName = normalizeProfileImageContextText(data.image_full_name) || data.name;
   const imageBio = normalizeProfileImageContextText(data.image_bio, 500);
+  const reasoning = normalizeAgentReasoning(data.reasoning);
 
   // Protected/system identities are not editable through this surface.
   if (PROTECTED_USERS.includes(data.user)) {
@@ -170,6 +172,7 @@ export async function POST(request: Request) {
     uid: existing.uid,
     name: data.name,
     role: data.role,
+    reasoning,
     email: data.email,
     telegram: data.telegram,
     integrations: data.integrations,
@@ -190,6 +193,7 @@ export async function POST(request: Request) {
     user: data.user,
     role: data.role,
     email: data.email,
+    reasoning,
     primary: data.model_config.default_model,
     fallbacks: data.model_config.fallback_models,
     selectedModels: data.model_config.selected_models,
@@ -227,7 +231,7 @@ export async function POST(request: Request) {
         userId: session.user.id,
         kind: "agent.registry.edit",
         targetAgent: data.user,
-        payload: JSON.stringify({ roleChanged, role: data.role, imageTheme, imageCustomizationMode, imageGender, imageAgeGroup, imageEthnicity, imageUsername, imageFullName, imageBio }),
+        payload: JSON.stringify({ roleChanged, role: data.role, reasoning, imageTheme, imageCustomizationMode, imageGender, imageAgeGroup, imageEthnicity, imageUsername, imageFullName, imageBio }),
       },
     });
   } catch (err) {

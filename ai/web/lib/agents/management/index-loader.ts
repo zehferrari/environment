@@ -17,6 +17,7 @@ export type IndexAgent = {
   name: string;
   enabled?: boolean;
   role: string;
+  reasoning?: string | null;
   email?: string | null;
   avatar?: string | null;
   listeners?: IndexListener[];
@@ -30,6 +31,13 @@ export type AgentIndex = {
 };
 
 const INDEX_PATH = process.env.AGENT_INDEX_PATH ?? "/etc/openclaw/agents.json";
+export const DEFAULT_AGENT_REASONING = "stream";
+const AGENT_REASONING_VALUES = new Set(["on", "off", "stream"]);
+
+export function normalizeAgentReasoning(value: unknown): string {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return AGENT_REASONING_VALUES.has(normalized) ? normalized : DEFAULT_AGENT_REASONING;
+}
 
 export async function readAgentIndex(path: string = INDEX_PATH): Promise<AgentIndex> {
   const raw = await readFile(path, "utf8");

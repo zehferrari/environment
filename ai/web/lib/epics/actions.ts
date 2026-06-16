@@ -357,7 +357,7 @@ export async function updateEpic(formData: FormData) {
   const descriptionRaw = String(formData.get("description") ?? "");
   const newDescription = descriptionRaw.trim() === "" ? null : descriptionRaw;
   const status = String(formData.get("status") ?? "");
-  const hasAssigneeField = formData.has("assigneeId");
+  const hasAssigneeField = formData.has("assigneeId") || formData.has("workerPoolSubmitted");
   const workerIds = getWorkerIds(formData);
   const acmRaw = String(formData.get("actingManagerId") ?? "");
   const newActingManagerId = acmRaw === "" ? null : acmRaw;

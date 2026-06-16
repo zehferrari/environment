@@ -218,6 +218,7 @@ function parseAgentRaw(rawJson: string | null) {
   if (!rawJson) return {};
   try {
     return JSON.parse(rawJson) as {
+      reasoning?: unknown;
       telegram?: { enabled: boolean; bot: string } | null;
       integrations?: { gmail: boolean; jira: boolean; bitbucket: boolean; maildir?: boolean } | null;
       profileImages?: {
@@ -324,6 +325,7 @@ export default async function AgentsPage() {
         slug: a.slug,
         name: a.name,
         role: a.role,
+        reasoning: typeof raw.reasoning === "string" && raw.reasoning.trim() ? raw.reasoning.trim() : "stream",
         email: a.email,
         telegram: raw.telegram || null,
         integrations: raw.integrations || null,
