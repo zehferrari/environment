@@ -36,9 +36,26 @@ For each bare `pm:*` key it computes the canonical sibling and classifies it:
   canonicalized dispatches resume the same session. The embedded self-reference
   (`sessionKey`, `systemPromptReport.sessionKey`) is updated; nothing else in the
   record changes.
-- **conflict** — the bare key **and** its namespaced sibling both exist. Each
-  owns a distinct `sessionId`/transcript, so the histories have diverged. The
-  case is reported and **skipped for manual review** — never auto-merged.
+- **split-pair** — the canonical sibling exists **and** the two conversations do
+  **not overlap in time** (one ended before the other began, compared via
+  `sessionStartedAt`/`lastInteractionAt`). These are the same logical thread that
+  was split at the cutover. The earlier conversation is the *predecessor* and the
+  later one the *successor*. The tool merges them by concatenating the
+  predecessor transcript **ahead of** the successor transcript (chronological
+  order) into the canonical record's `sessionFile`, folds both windows and token
+  counts into the surviving canonical record, then drops the bare key — so the
+  canonical key resumes with the **full, combined history** and both histories
+  are preserved.
+- **conflict** — the canonical sibling exists **and** the timelines **overlap**
+  (interleaved activity), or required timeline / `sessionFile` data is missing.
+  The histories are genuinely divergent and cannot be safely auto-ordered, so the
+  pair is reported with its reason (`overlapping-timelines`,
+  `insufficient-timeline-data`, `missing-session-file`) and **skipped for manual
+  review** — never auto-merged.
+
+The dry-run report and `--json` output count and list each class distinctly
+(`migrations` / `split-pairs` / `conflicts`), and any split-pair skipped at apply
+time (e.g. a transcript file that vanished) is reported separately.
 
 Already-namespaced keys and non-PM keys are ignored.
 
@@ -47,9 +64,13 @@ Already-namespaced keys and non-PM keys are ignored.
 - **Dry-run by default.** Without `--apply` nothing is written.
 - **Backup before mutation.** `--apply` first copies the store to
   `sessions.json.bak-<timestamp>`, then writes via a temp file + atomic rename.
-- **No data loss.** Migration only re-keys an existing record; the transcript
-  `.jsonl` is referenced by `sessionId`/`sessionFile` inside the record and is
-  untouched. Conflicts are never merged.
+  Each split-pair merge also backs up the destination transcript to
+  `<sessionFile>.bak-<timestamp>` before rewriting it.
+- **No data loss.** Migration only re-keys an existing record; its transcript is
+  untouched. A split-pair merge writes the combined transcript to the canonical
+  `sessionFile` (original backed up) and leaves the predecessor's own transcript
+  file intact on disk, so the operation is fully reversible from the backups.
+  Conflicts are never merged.
 - **Idempotent.** Once a key is namespaced it is no longer a candidate, so a
   second run is a clean no-op.
 
