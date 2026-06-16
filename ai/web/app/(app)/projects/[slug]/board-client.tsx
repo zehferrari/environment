@@ -165,6 +165,7 @@ const boardCollisionDetection: CollisionDetection = (args) => {
 
 export default function Board({ projectSlug, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
   const router = useRouter();
+  const isMobileBoard = useIsMobileBoard();
   const [items, setItems] = useState<Task[]>(tasks);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
@@ -320,7 +321,11 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
   }, []);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(PointerSensor, {
+      activationConstraint: isMobileBoard
+        ? { delay: 180, tolerance: 8 }
+        : { distance: 4 },
+    }),
   );
 
   function handleDragStart(e: DragStartEvent) {
@@ -577,6 +582,13 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       })
       .slice(0, 6);
   }, [items]);
+  const mobileBacklogLane = useMemo(
+    () => ({ col: { id: "Backlog", label: "Backlog", description: "planning/opinions" }, tasks: backlogTasks }),
+    [backlogTasks],
+  );
+  const mobileLanes = backlogVisible
+    ? [...columnLanes, mobileBacklogLane]
+    : columnLanes;
 
   return (
     <DndContext
@@ -740,7 +752,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
           </button>
         </div>
 
-        {backlogVisible ? (
+        {backlogVisible && !isMobileBoard ? (
           <BacklogDroppable>
             {backlogTasks.length === 0 ? (
               <p className="px-1 py-6 text-center text-caption text-text-muted">
@@ -793,40 +805,82 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
         ) : null}
       </section>
 
-      <div className="grid grid-cols-4 gap-3">
-        {columnLanes.map(({ col, tasks: colTasks }) => {
-          const colTaskIds = colTasks.map((t) => t.id);
-          const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
-          return (
-            <ColumnDroppable
-              key={col.id}
-              id={col.id}
-              label={col.label}
-              description={col.description}
-              count={colTasks.length}
-              allSelected={allSelected}
-              onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
-            >
-              <SortableContext
-                items={colTasks.map((t) => t.id)}
-                strategy={verticalListSortingStrategy}
+      {isMobileBoard ? (
+        <div className="space-y-3 md:hidden">
+          <div className="rounded-card border border-line bg-panel-soft px-3 py-2 text-caption text-text-muted">
+            Long-press a card to drag or reorder. Swipe a card left for quick Move/Edit actions.
+          </div>
+          {mobileLanes.map(({ col, tasks: colTasks }) => {
+            const colTaskIds = colTasks.map((t) => t.id);
+            const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
+            return (
+              <MobileStatusGroup
+                key={col.id}
+                id={col.id}
+                label={col.label}
+                description={col.description}
+                count={colTasks.length}
+                allSelected={allSelected}
+                onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
               >
-                {colTasks.map((t) => (
-                  <TaskCard
-                    key={t.id}
-                    task={t}
-                    projectSlug={projectSlug}
-                    deleteTaskAction={deleteTaskAction}
-                    now={now}
-                    selected={selectedIds.has(t.id)}
-                    onSelectionChange={toggleTaskSelection}
-                  />
-                ))}
-              </SortableContext>
-            </ColumnDroppable>
-          );
-        })}
-      </div>
+                <SortableContext
+                  items={colTasks.map((t) => t.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {colTasks.map((t) => (
+                    <MobileTaskCard
+                      key={t.id}
+                      task={t}
+                      projectSlug={projectSlug}
+                      deleteTaskAction={deleteTaskAction}
+                      now={now}
+                      selected={selectedIds.has(t.id)}
+                      onSelectionChange={toggleTaskSelection}
+                      onMove={(task, status) => crossColumnMove(task, status)}
+                      nextStatus={nextMobileStatus(t.status, columns)}
+                    />
+                  ))}
+                </SortableContext>
+              </MobileStatusGroup>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="grid grid-cols-4 gap-3">
+          {columnLanes.map(({ col, tasks: colTasks }) => {
+            const colTaskIds = colTasks.map((t) => t.id);
+            const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
+            return (
+              <ColumnDroppable
+                key={col.id}
+                id={col.id}
+                label={col.label}
+                description={col.description}
+                count={colTasks.length}
+                allSelected={allSelected}
+                onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
+              >
+                <SortableContext
+                  items={colTasks.map((t) => t.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {colTasks.map((t) => (
+                    <TaskCard
+                      key={t.id}
+                      task={t}
+                      projectSlug={projectSlug}
+                      deleteTaskAction={deleteTaskAction}
+                      now={now}
+                      selected={selectedIds.has(t.id)}
+                      onSelectionChange={toggleTaskSelection}
+                    />
+                  ))}
+                </SortableContext>
+              </ColumnDroppable>
+            );
+          })}
+        </div>
+      )}
 
       <DragOverlay>
         {active ? (
@@ -836,6 +890,197 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
         ) : null}
       </DragOverlay>
     </DndContext>
+  );
+}
+
+function useIsMobileBoard() {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 767px)");
+    const sync = () => setIsMobile(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
+  return isMobile;
+}
+
+function nextMobileStatus(status: string, columns: ReadonlyArray<Column>) {
+  const visible = columns.filter((column) => column.id !== "Backlog");
+  const index = visible.findIndex((column) => column.id === status);
+  const next = visible[index + 1] ?? visible[0] ?? columns[0];
+  return next?.id ?? status;
+}
+
+function MobileStatusGroup({
+  id,
+  label,
+  description,
+  count,
+  allSelected,
+  onSelectAll,
+  children,
+}: {
+  id: string;
+  label: string;
+  description?: string;
+  count: number;
+  allSelected: boolean;
+  onSelectAll: (checked: boolean) => void;
+  children: React.ReactNode;
+}) {
+  const { isOver, setNodeRef } = useDroppable({ id });
+  return (
+    <details
+      ref={setNodeRef}
+      open
+      className={`rounded-xl border shadow-sm transition-colors ${columnSurfaceClass(id)} ${isOver ? "ring-2 ring-accent/50" : ""}`}
+    >
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-3 [&::-webkit-details-marker]:hidden">
+        <div className="flex min-w-0 items-center gap-2">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            onChange={(event) => onSelectAll(event.target.checked)}
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            className="h-4 w-4 shrink-0 accent-accent"
+            aria-label={`Select all in ${label}`}
+          />
+          <span className={`rounded border px-2 py-1 text-caption font-semibold uppercase tracking-wider ${columnHeaderPillClass(id)}`}>
+            {label}
+          </span>
+          {description ? (
+            <span className="truncate text-caption text-text-muted">{description}</span>
+          ) : null}
+        </div>
+        <span className="rounded-full border border-line bg-bg px-2 py-0.5 text-caption font-semibold text-text-muted">
+          {count}
+        </span>
+      </summary>
+      <div className="space-y-2 px-2 pb-3">{children}</div>
+    </details>
+  );
+}
+
+function MobileTaskCard({
+  task,
+  projectSlug,
+  deleteTaskAction,
+  now,
+  selected,
+  onSelectionChange,
+  onMove,
+  nextStatus,
+}: {
+  task: Task;
+  projectSlug: string;
+  deleteTaskAction: (formData: FormData) => Promise<void>;
+  now: number | null;
+  selected: boolean;
+  onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
+  onMove: (task: Task, status: string) => void;
+  nextStatus: string;
+}) {
+  const router = useRouter();
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: task.id });
+  const actor = boardActorForTask(task);
+  const nextLabel = nextStatus === task.status ? "Move" : `Move → ${nextStatus}`;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`overflow-x-auto rounded-lg ${isDragging ? "opacity-30" : ""}`}
+    >
+      <div className="flex min-w-[calc(100%+9rem)] items-stretch">
+        <div
+          {...attributes}
+          {...listeners}
+          onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
+          className={`${taskCardClass(task)} min-w-[calc(100%-9rem)] touch-pan-y active:cursor-grabbing`}
+        >
+          <div className="relative z-10 space-y-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex min-w-0 items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSelectionChange(task.id, !selected, event.shiftKey);
+                  }}
+                  onChange={() => {}}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  aria-label={`Select ${task.title}`}
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
+                    {actor ? <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} /> : null}
+                    <span className="truncate font-mono uppercase tracking-wider">
+                      {task.workItemKey ?? "—"}
+                    </span>
+                    {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
+                  </div>
+                  <div className="mt-1 line-clamp-2 text-body font-medium leading-snug">{task.title}</div>
+                  {task.epicTitle ? (
+                    <div className="mt-1 truncate text-caption text-text-muted">{task.epicTitle}</div>
+                  ) : null}
+                </div>
+              </div>
+              <form
+                action={deleteTaskAction}
+                onClick={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                <input type="hidden" name="projectSlug" value={projectSlug} />
+                <input type="hidden" name="taskId" value={task.id} />
+                <button
+                  type="submit"
+                  className="rounded-md p-1 text-text-muted hover:bg-crit/10 hover:text-crit"
+                  aria-label={`Move ${task.title} to bin`}
+                  title="Move to bin"
+                >
+                  <TrashIcon />
+                </button>
+              </form>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-nano text-text-muted">
+              <ElapsedClock task={task} now={now} />
+              <SubtaskProgress task={task} />
+              <time dateTime={task.updatedAt} title={task.updatedAt} className="tabular-nums" suppressHydrationWarning>
+                {relativeUpdated(task.updatedAt)}
+              </time>
+              <BlockedBadge task={task} />
+            </div>
+          </div>
+        </div>
+        <div className="ml-2 flex w-36 shrink-0 flex-col gap-2 py-1 pr-1">
+          <button
+            type="button"
+            onClick={() => onMove(task, nextStatus)}
+            className="flex-1 rounded-lg bg-accent px-2 text-caption font-semibold text-bg shadow-sm"
+          >
+            {nextLabel}
+          </button>
+          <button
+            type="button"
+            onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
+            className="flex-1 rounded-lg border border-line bg-panel px-2 text-caption font-semibold text-text"
+          >
+            Edit
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

@@ -55,7 +55,7 @@ export default function AddTaskFab({
     <>
       {open ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-card"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-3 sm:items-center sm:p-card"
           onClick={() => setOpen(false)}
         >
           <form
@@ -63,7 +63,7 @@ export default function AddTaskFab({
             action={createTaskAction}
             onSubmit={() => setOpen(false)}
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-lg space-y-3 rounded-panel border border-line bg-panel p-card-lg shadow-2xl"
+            className="max-h-[calc(100vh-2rem)] w-full max-w-lg space-y-3 overflow-y-auto rounded-panel border border-line bg-panel p-card-lg shadow-2xl"
           >
             <input type="hidden" name="projectId" value={projectId} />
             <input type="hidden" name="projectSlug" value={projectSlug} />
@@ -166,7 +166,7 @@ export default function AddTaskFab({
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Add task"
-        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90"
+        className="fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90 sm:bottom-6 sm:right-6"
       >
         <span className="-mt-0.5">+</span>
       </button>
