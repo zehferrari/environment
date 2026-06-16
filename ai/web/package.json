@@ -47,7 +47,8 @@
     "repair-pm-session-bindings": "tsx scripts/repair-pm-session-bindings.ts",
     "test:pm-session-key-restart-continuity": "tsx scripts/pm-session-key-restart-continuity-test.ts",
     "test:scan-bare-pm-session-keys": "tsx scripts/scan-bare-pm-session-keys-test.ts",
-    "scan-bare-pm-session-keys": "tsx scripts/scan-bare-pm-session-keys.ts"
+    "scan-bare-pm-session-keys": "tsx scripts/scan-bare-pm-session-keys.ts",
+    "test:pm-unified-context": "tsx scripts/pm-unified-context-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",

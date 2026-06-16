@@ -9,6 +9,7 @@ import {
   buildPmChannelDispatchMetrics,
   buildPmTurnSessionKey,
 } from "@/lib/agents/pm-channel/openclaw";
+import { buildUnifiedPmTurnSystemPrompt, nullPmContextText } from "@/lib/agents/pm-channel/context";
 import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
 import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/ops/pm-silence";
 import { createTaskWorkflowToken } from "@/lib/agents/workflow/token/task";
@@ -414,42 +415,47 @@ export async function sendTaskWorkflowNotification(args: {
     epicWorkItemKey: task.epic?.workItemKey ?? null,
     epicCommitPrefix: task.epic?.commitPrefix ?? null,
   });
+  const kind = planChannelNotification ? "task-chat" as const : "task-comment" as const;
   const dispatchArgs = {
     gatewayPort: targetUser.agent.gatewayPort,
     agentSlug: targetUser.agent.slug,
     sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
-    kind: planChannelNotification ? "task-chat" as const : "task-comment" as const,
+    kind,
     text: args.body,
-    contextText: userMessage,
-    systemPrompt: [
-      buildTaskNativeChannelPrompt(task.title, targetUser.agent.slug, null, {
-        baseUrl: fetchBaseUrl,
-        projectId: task.projectId,
-        taskId: task.id,
-        epicId: task.epic?.id ?? null,
-        inlineRecentBlock,
-        grantUrls: {
-          task: taskGrantUrl,
-          epic: epicGrantUrl,
-          project: projectGrantUrl,
-        },
-      }),
-      workflowPrompt({
-        taskTitle: task.title,
-        taskId: task.id,
-        agentSlug: targetUser.agent.slug,
-        messageId: msg.id,
-        reason: args.reason,
-        branchName: task.branchName ?? null,
-        commitPrefix,
-        repositoryPath: task.project.repositoryPath ?? null,
-        expectedGitUserName: gitIdentity.name,
-        expectedGitUserEmail: gitIdentity.email,
-        onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
-        onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
-        onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
-      }),
-    ].join("\n\n"),
+    contextText: nullPmContextText(),
+    systemPrompt: buildUnifiedPmTurnSystemPrompt({
+      kind,
+      trustedPrompt: [
+        buildTaskNativeChannelPrompt(task.title, targetUser.agent.slug, null, {
+          baseUrl: fetchBaseUrl,
+          projectId: task.projectId,
+          taskId: task.id,
+          epicId: task.epic?.id ?? null,
+          inlineRecentBlock,
+          grantUrls: {
+            task: taskGrantUrl,
+            epic: epicGrantUrl,
+            project: projectGrantUrl,
+          },
+        }),
+        workflowPrompt({
+          taskTitle: task.title,
+          taskId: task.id,
+          agentSlug: targetUser.agent.slug,
+          messageId: msg.id,
+          reason: args.reason,
+          branchName: task.branchName ?? null,
+          commitPrefix,
+          repositoryPath: task.project.repositoryPath ?? null,
+          expectedGitUserName: gitIdentity.name,
+          expectedGitUserEmail: gitIdentity.email,
+          onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
+          onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
+          onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
+        }),
+      ].join("\n\n"),
+      primaryContext: userMessage,
+    }),
     projectId: task.projectId,
     actor: {
       id: args.actor.id,
@@ -792,43 +798,48 @@ export async function sendTaskCommentNotifications(args: {
           token: createWorkItemGrantToken(task.projectId, msg.agentSlug, msg.id),
         })
       : "";
+    const kind = "task-comment" as const;
     const dispatchArgs = {
       gatewayPort: target?.gatewayPort ?? null,
       agentSlug: msg.agentSlug,
       sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
-      kind: "task-comment" as const,
+      kind,
       text: args.body,
-      contextText: userMessage,
-      systemPrompt: [
-        buildTaskNativeChannelPrompt(task.title, msg.agentSlug, directedDescriptor, {
-          baseUrl: fetchBaseUrl,
-          projectId: task.projectId,
-          taskId: task.id,
-          epicId: task.epic?.id ?? null,
-          inlineRecentBlock,
-          grantUrls: {
-            task: taskGrantUrl,
-            epic: epicGrantUrl,
-            project: projectGrantUrl,
-          },
-        }),
-        workflowPrompt({
-          taskTitle: task.title,
-          taskId: task.id,
-          agentSlug: msg.agentSlug,
-          messageId: msg.id,
-          reason: workflowReason,
-          branchName: task.branchName ?? null,
-          commitPrefix,
-          repositoryPath: task.project.repositoryPath ?? null,
-          expectedGitUserName: gitIdentity.name,
-          expectedGitUserEmail: gitIdentity.email,
-          onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
-          onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
-          onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
-        }),
-        workItemPrompt,
-      ].join("\n\n"),
+      contextText: nullPmContextText(),
+      systemPrompt: buildUnifiedPmTurnSystemPrompt({
+        kind,
+        trustedPrompt: [
+          buildTaskNativeChannelPrompt(task.title, msg.agentSlug, directedDescriptor, {
+            baseUrl: fetchBaseUrl,
+            projectId: task.projectId,
+            taskId: task.id,
+            epicId: task.epic?.id ?? null,
+            inlineRecentBlock,
+            grantUrls: {
+              task: taskGrantUrl,
+              epic: epicGrantUrl,
+              project: projectGrantUrl,
+            },
+          }),
+          workflowPrompt({
+            taskTitle: task.title,
+            taskId: task.id,
+            agentSlug: msg.agentSlug,
+            messageId: msg.id,
+            reason: workflowReason,
+            branchName: task.branchName ?? null,
+            commitPrefix,
+            repositoryPath: task.project.repositoryPath ?? null,
+            expectedGitUserName: gitIdentity.name,
+            expectedGitUserEmail: gitIdentity.email,
+            onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
+            onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
+            onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
+          }),
+          workItemPrompt,
+        ].filter(Boolean).join("\n\n"),
+        primaryContext: userMessage,
+      }),
       projectId: task.projectId,
       actor: {
         id: args.actor.id,
