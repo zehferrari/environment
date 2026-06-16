@@ -34,16 +34,14 @@
     "test:add-epic-task-fab": "tsx scripts/add-epic-task-fab-test.tsx",
     "test:pm-channel-stream-protocol": "tsx scripts/pm-channel-stream-protocol-test.ts",
     "test:pm-channel-transport": "tsx scripts/pm-channel-transport-test.ts",
-    "test:pm-dispatch-metrics": "tsx scripts/pm-dispatch-metrics-test.ts",
     "test:chat-room-decomposition": "tsx scripts/chat-room-decomposition-test.ts",
     "test:chat-composer-keyboard": "tsx scripts/chat-composer-keyboard-test.ts",
     "test:mobile-chat-interface": "tsx scripts/mobile-chat-interface-test.ts",
     "test:breakpoint-alignment": "tsx scripts/breakpoint-alignment-test.ts",
-    "test:context-grant-url-map": "tsx scripts/context-grant-url-map-test.ts",
     "test:direct-chat-cursor": "tsx scripts/direct-chat-cursor-test.ts",
     "test:speculative-context": "tsx scripts/speculative-context-test.ts",
     "test:cross-tab-stream-coordinator": "tsx scripts/cross-tab-stream-coordinator-test.ts",
-    "test:pm-unified-context": "tsx scripts/pm-unified-context-test.ts"
+    "test:context-budget": "tsx scripts/context-budget-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",
