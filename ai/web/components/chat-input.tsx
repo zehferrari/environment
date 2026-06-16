@@ -130,7 +130,7 @@ export default function ChatInput({
     <>
       {composerOpen ? (
         <div
-          className="fixed inset-0 z-50 bg-black/10 p-4 backdrop-blur-[1px]"
+          className="fixed inset-0 z-50 bg-black/10 p-card backdrop-blur-[1px]"
           onClick={closeComposer}
         >
           <form
@@ -138,7 +138,7 @@ export default function ChatInput({
             action={actionHandler}
             encType="multipart/form-data"
             onClick={(event) => event.stopPropagation()}
-            className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-2xl space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-2xl sm:right-6"
+            className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-2xl space-y-3 rounded-panel border border-line bg-panel p-card shadow-2xl sm:right-6"
           >
             <input type="hidden" name="agentSlug" value={agentSlug} />
             {selectedArchiveId ? (
@@ -151,10 +151,10 @@ export default function ChatInput({
             ) : null}
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
                   {viewingArchive ? "Start child chat" : "New message"}
                 </div>
-                <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+                <p className="mt-1 text-caption text-text-muted">
                   Message @{agentUsername} with optional files and project context.
                 </p>
               </div>
@@ -162,7 +162,7 @@ export default function ChatInput({
                 type="button"
                 onClick={closeComposer}
                 aria-label="Close chat composer"
-                className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-[var(--color-text-muted)] transition hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+                className="grid h-11 w-11 place-items-center rounded-lg text-heading leading-none text-text-muted transition hover:bg-panel-soft hover:text-text md:h-8 md:w-8"
               >
                 &times;
               </button>
@@ -184,26 +184,26 @@ export default function ChatInput({
               }
               onKeyDown={handleKeyDown}
               expandedTitle={`Message @${agentUsername}`}
-              className="w-full resize-none rounded-xl border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)]"
+              className="w-full resize-none rounded-card border border-line bg-bg px-3 py-2 text-body outline-none focus:border-accent"
             />
 
             {errorMessage ? (
               <p
                 role="alert"
-                className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-medium text-red-400"
+                className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-caption font-medium text-red-400"
               >
                 {errorMessage}
               </p>
             ) : null}
 
             {projects.length > 0 ? (
-              <label className="flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-muted)]">
+              <label className="flex flex-wrap items-center gap-2 text-caption text-text-muted">
                 <span className="select-none font-semibold">Project</span>
                 <select
                   name="projectId"
                   value={projectId}
                   onChange={(e) => setProjectId(e.target.value)}
-                  className="rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1 text-xs text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+                  className="rounded-lg border border-line bg-bg px-2 py-1 text-caption text-text outline-none focus:border-accent"
                 >
                   <option value="">No project</option>
                   {projects.map((p) => (
@@ -216,7 +216,7 @@ export default function ChatInput({
             ) : null}
 
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <label className="flex items-center gap-1.5 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer select-none">
+              <label className="flex items-center gap-1.5 rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-semibold text-text-muted transition hover:border-accent hover:text-accent cursor-pointer select-none">
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                 <span>{selectedFilesCount > 0 ? `${selectedFilesCount} selected` : "Attach files"}</span>
                 <input
@@ -232,7 +232,7 @@ export default function ChatInput({
               <button
                 type="submit"
                 disabled={!canSend}
-                className="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
+                className="rounded-lg bg-accent px-card py-control-y text-body font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
               >
                 {viewingArchive ? "Start Child Chat" : "Send"}
               </button>
@@ -248,7 +248,7 @@ export default function ChatInput({
           setComposerOpen(true);
         }}
         aria-label={viewingArchive ? "Start child chat" : `Message @${agentUsername}`}
-        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-accent)] text-3xl leading-none text-[var(--color-bg)] shadow-lg transition hover:opacity-90"
+        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90"
       >
         <span className="-mt-0.5">+</span>
       </button>

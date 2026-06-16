@@ -23,6 +23,7 @@
 //   />
 
 import { useEffect } from "react";
+import { Button, Surface } from "@/components/ui/primitives";
 
 export interface ConfirmPopupProps {
   open: boolean;
@@ -61,58 +62,59 @@ export default function ConfirmPopup({
 
   if (!open) return null;
 
-  const confirmClass = danger
-    ? "bg-[var(--color-crit)] text-white"
-    : "bg-[var(--color-accent)] text-[var(--color-bg)]";
-
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm transition-all duration-300"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-card backdrop-blur-sm transition-all duration-300"
       onClick={() => !busy && onCancel()}
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-popup-title"
     >
-      <div
-        onClick={(event) => event.stopPropagation()}
-        className="w-full max-w-md space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+      <Surface
+        onClick={(event: React.MouseEvent) => event.stopPropagation()}
+        elevated
+        className="w-full max-w-md space-y-section-gap p-6 animate-in fade-in zoom-in-95 duration-200"
       >
         <div className="flex items-center justify-between">
           <h3
             id="confirm-popup-title"
-            className={`text-sm font-semibold uppercase tracking-wider ${danger ? "text-[var(--color-crit)]" : "text-[var(--color-text-muted)]"}`}
+            className={`text-body font-semibold uppercase tracking-wider ${danger ? "text-crit" : "text-text-muted"}`}
           >
             {title}
           </h3>
-          <button
+          <Button
             type="button"
             disabled={busy}
             onClick={onCancel}
             aria-label="Close"
-            className="text-lg leading-none text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer disabled:opacity-50"
+            variant="icon"
+            size="icon"
           >
             &times;
-          </button>
+          </Button>
         </div>
         {description ? (
-          <div className="text-sm text-[var(--color-text-muted)] leading-relaxed">
+          <div className="text-body text-text-muted leading-relaxed">
             {description}
           </div>
         ) : null}
         <div className="flex justify-end gap-2 pt-2">
-          <button
+          <Button
             type="button"
             disabled={busy}
             onClick={onCancel}
-            className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition disabled:opacity-50 cursor-pointer"
+            variant="ghost"
+            size="sm"
           >
             {cancelLabel}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             disabled={busy}
             onClick={onConfirm}
-            className={`rounded-lg px-4 py-1.5 text-xs font-medium transition disabled:opacity-50 flex items-center gap-1.5 cursor-pointer hover:opacity-90 ${confirmClass}`}
+            variant={danger ? "danger" : "primary"}
+            size="sm"
+            className="px-4 py-1.5"
           >
             {busy ? (
               <>
@@ -134,9 +136,9 @@ export default function ConfirmPopup({
             ) : (
               confirmLabel
             )}
-          </button>
+          </Button>
         </div>
-      </div>
+      </Surface>
     </div>
   );
 }

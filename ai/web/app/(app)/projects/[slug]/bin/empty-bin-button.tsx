@@ -32,7 +32,7 @@ export default function EmptyBinButton({
         type="button"
         disabled={disabled || isPending}
         onClick={() => setConfirmOpen(true)}
-        className="rounded-lg border border-[var(--color-crit)]/30 bg-[var(--color-crit)]/[0.04] px-3 py-1.5 text-xs font-semibold text-[var(--color-crit)] transition hover:bg-[var(--color-crit)]/[0.08] disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
+        className="rounded-lg border border-crit/30 bg-crit/4 px-control-x py-control-y text-caption font-semibold text-crit transition hover:bg-crit/8 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
       >
         {isPending ? "Emptying..." : "[Empty Bin]"}
       </button>

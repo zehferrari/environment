@@ -126,18 +126,18 @@ export default function VisualCode({
   }
 
   return (
-    <section className="flex h-[calc(100vh-11rem)] min-h-[40rem] flex-col overflow-hidden rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm">
+    <section className="flex h-[calc(100vh-11rem)] min-h-[40rem] flex-col overflow-hidden rounded-lg border border-line bg-panel text-text shadow-sm">
       <div className="flex h-full min-h-0 flex-col">
-        <div className="flex flex-wrap items-center gap-3 border-b border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2">
+        <div className="flex flex-wrap items-center gap-3 border-b border-line bg-panel-soft px-3 py-2">
           <div className="min-w-0 flex-1">
-            <div className="truncate font-mono text-xs text-[var(--color-text-muted)]">
+            <div className="truncate font-mono text-caption text-text-muted">
               {source.label} / {browserPath || relPath || ""}
             </div>
-            <div className="mt-0.5 flex flex-wrap gap-2 font-mono text-[10px] uppercase tracking-wider text-[var(--color-text-dim)]">
+            <div className="mt-0.5 flex flex-wrap gap-2 font-mono text-nano uppercase tracking-wider text-text-dim">
               <span>{source.branch} · {git.sourceHead}</span>
               {git.sourceDirty ? <span>{git.sourceStatusCount} changed</span> : <span>clean</span>}
               {source.served ? <span>live</span> : null}
-              {git.error ? <span className="text-[var(--color-warn)]">{git.error}</span> : null}
+              {git.error ? <span className="text-warn">{git.error}</span> : null}
             </div>
           </div>
           <GitActions
@@ -164,10 +164,10 @@ export default function VisualCode({
 
         {notice ? (
           <div
-            className={`border-b px-3 py-2 text-sm ${
+            className={`border-b px-3 py-2 text-body ${
               notice.ok
-                ? "border-[var(--color-ok)]/30 bg-[var(--color-ok)]/10 text-[var(--color-ok)]"
-                : "border-[var(--color-crit)]/30 bg-[var(--color-crit)]/10 text-[var(--color-crit)]"
+                ? "border-ok/30 bg-ok/10 text-ok"
+                : "border-crit/30 bg-crit/10 text-crit"
             }`}
           >
             {notice.message}
@@ -175,14 +175,14 @@ export default function VisualCode({
         ) : null}
 
         <div className="grid min-h-0 flex-1 grid-cols-[3rem_minmax(14rem,18rem)_minmax(0,1fr)] overflow-x-auto">
-          <div className="border-r border-[var(--color-line)] bg-[var(--color-bg-elev)]">
-            <div className="flex h-12 items-center justify-center border-l-2 border-[var(--color-accent)] text-[18px] text-[var(--color-text-muted)]">
+          <div className="border-r border-line bg-bg-elev">
+            <div className="flex h-12 items-center justify-center border-l-2 border-accent text-icon-lg text-text-muted">
               ⧉
             </div>
           </div>
 
-          <aside className="flex min-w-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-panel-soft)]">
-            <div className="flex h-9 shrink-0 items-center border-b border-[var(--color-line)] px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+          <aside className="flex min-w-0 flex-col border-r border-line bg-panel-soft">
+            <div className="flex h-9 shrink-0 items-center border-b border-line px-3 text-nano font-semibold uppercase tracking-wider text-text-muted">
               Explorer
             </div>
             <Breadcrumbs slug={slug} source={source} relPath={browserPath} showBlame={showBlame} />
@@ -197,7 +197,7 @@ export default function VisualCode({
                 />
               ) : null}
               {entries.length === 0 ? (
-                <p className="px-3 py-8 text-center text-xs text-[var(--color-text-muted)]">
+                <p className="px-3 py-8 text-center text-caption text-text-muted">
                   No files in this folder.
                 </p>
               ) : (
@@ -227,7 +227,7 @@ export default function VisualCode({
           />
         </div>
 
-        <div className="flex h-6 items-center justify-between bg-[var(--color-accent)] px-3 font-mono text-[10px] text-[var(--color-bg)]">
+        <div className="flex h-6 items-center justify-between bg-accent px-3 font-mono text-nano text-bg">
           <span>{source.served ? "Live" : "Source"}: {source.branch}</span>
           <span>{kind === "file" && file && "size" in file ? formatBytes(file.size) : "Ready"}</span>
         </div>
@@ -287,13 +287,13 @@ function GitActions({
   const mergeBlocked = branchBlocked ?? git.mergeBlockedReason;
 
   return (
-    <div className="flex min-w-[22rem] flex-wrap items-center justify-end gap-2 text-xs">
+    <div className="flex min-w-[22rem] flex-wrap items-center justify-end gap-2 text-caption">
       <select
         value={source.id}
         onChange={(event) => router.push(codeHref(slug, event.target.value, relPath, showBlame))}
         disabled={pending}
         title="Worktree source / branch"
-        className="h-8 max-w-[16rem] rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-2 text-[11px] outline-none focus:border-[var(--color-accent)] disabled:opacity-45"
+        className="h-8 max-w-[16rem] rounded-md border border-line bg-bg px-2 text-micro outline-none focus:border-accent disabled:opacity-45"
       >
         {sources.map((item) => (
           <option key={item.id} value={item.id}>
@@ -306,7 +306,7 @@ function GitActions({
         type="button"
         onClick={save}
         disabled={!editable || !dirty || pending}
-        className="rounded-md border border-[var(--color-line)] bg-[var(--color-panel)] px-2.5 py-1.5 font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45"
+        className="rounded-md border border-line bg-panel px-2.5 py-1.5 font-medium text-text hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-45"
         title={!editable ? (!canEditFile ? (canWriteReason ?? "Open a writable text file to edit.") : (blocked ?? "Open a text file without blame mode to edit.")) : undefined}
       >
         Save
@@ -315,14 +315,14 @@ function GitActions({
         value={commitMessage}
         onChange={(event) => setCommitMessage(event.target.value)}
         disabled={!canWrite || pending}
-        className="h-8 w-56 rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-2 font-mono text-[11px] outline-none focus:border-[var(--color-accent)] disabled:opacity-45"
+        className="h-8 w-56 rounded-md border border-line bg-bg px-2 font-mono text-micro outline-none focus:border-accent disabled:opacity-45"
         placeholder="Commit message"
       />
       <button
         type="button"
         onClick={commit}
         disabled={Boolean(commitBlocked) || pending}
-        className="rounded-md border border-[var(--color-line)] bg-[var(--color-panel)] px-2.5 py-1.5 font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45"
+        className="rounded-md border border-line bg-panel px-2.5 py-1.5 font-medium text-text hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-45"
         title={commitBlocked ?? undefined}
       >
         Commit
@@ -331,7 +331,7 @@ function GitActions({
         type="button"
         onClick={push}
         disabled={Boolean(branchBlocked) || pending}
-        className="rounded-md border border-[var(--color-line)] bg-[var(--color-panel)] px-2.5 py-1.5 font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45"
+        className="rounded-md border border-line bg-panel px-2.5 py-1.5 font-medium text-text hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-45"
         title={branchBlocked ?? undefined}
       >
         Push
@@ -341,7 +341,7 @@ function GitActions({
           href={git.compareUrl}
           target="_blank"
           rel="noreferrer"
-          className="rounded-md border border-[var(--color-line)] bg-[var(--color-panel)] px-2.5 py-1.5 font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+          className="rounded-md border border-line bg-panel px-2.5 py-1.5 font-medium text-text hover:border-accent hover:text-accent"
         >
           Pull request
         </a>
@@ -349,7 +349,7 @@ function GitActions({
         <button
           type="button"
           disabled
-          className="rounded-md border border-[var(--color-line)] bg-[var(--color-panel)] px-2.5 py-1.5 font-medium text-[var(--color-text-muted)] opacity-45"
+          className="rounded-md border border-line bg-panel px-2.5 py-1.5 font-medium text-text-muted opacity-45"
           title={branchBlocked ?? (git.canOpenPullRequest ? undefined : "Pull request is only available from a non-target branch with a supported origin.")}
         >
           Pull request
@@ -359,7 +359,7 @@ function GitActions({
         type="button"
         onClick={merge}
         disabled={Boolean(mergeBlocked) || pending}
-        className="rounded-md border border-[var(--color-line)] bg-[var(--color-panel)] px-2.5 py-1.5 font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45"
+        className="rounded-md border border-line bg-panel px-2.5 py-1.5 font-medium text-text hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-45"
         title={mergeBlocked ?? undefined}
       >
         Merge to {git.targetBranch}
@@ -391,23 +391,23 @@ function EditorPane({
   const isSvg = lowerRelPath.endsWith(".svg");
   const isMarkdown = lowerRelPath.endsWith(".md") || lowerRelPath.endsWith(".markdown");
   return (
-    <main className="flex h-full min-w-[42rem] flex-col bg-[var(--color-panel)]">
-      <div className="flex h-9 shrink-0 items-center border-b border-[var(--color-line)] bg-[var(--color-panel)]">
+    <main className="flex h-full min-w-[42rem] flex-col bg-panel">
+      <div className="flex h-9 shrink-0 items-center border-b border-line bg-panel">
         {kind === "file" && relPath ? (
-          <div className="flex h-full min-w-0 items-center border-r border-[var(--color-line)] bg-[var(--color-panel)] px-3">
-            <span className="min-w-0 truncate font-mono text-xs text-[var(--color-text)]">{relPath}</span>
+          <div className="flex h-full min-w-0 items-center border-r border-line bg-panel px-3">
+            <span className="min-w-0 truncate font-mono text-caption text-text">{relPath}</span>
           </div>
         ) : (
-          <div className="px-3 font-mono text-xs text-[var(--color-text-muted)]">Welcome</div>
+          <div className="px-3 font-mono text-caption text-text-muted">Welcome</div>
         )}
         <div className="flex-1" />
         {file?.kind === "text" ? (
           <Link
             href={codeHref(slug, source.id, relPath, !showBlame)}
-            className={`mr-2 rounded border px-2 py-1 text-[10px] font-semibold uppercase tracking-wider transition ${
+            className={`mr-2 rounded border px-2 py-1 text-nano font-semibold uppercase tracking-wider transition ${
               showBlame
-                ? "border-[var(--color-accent)] text-[var(--color-accent)]"
-                : "border-[var(--color-line)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                ? "border-accent text-accent"
+                : "border-line text-text-muted hover:border-accent hover:text-accent"
             }`}
           >
             {showBlame ? "Hide blame" : "Show blame"}
@@ -446,7 +446,7 @@ function EditorPane({
           <EditorMessage>This path is not a regular file.</EditorMessage>
         )}
         {file?.kind === "text" && file.blameError ? (
-          <p className="border-t border-[var(--color-line)] bg-[var(--color-warn)]/10 px-4 py-2 text-xs text-[var(--color-warn)]">
+          <p className="border-t border-line bg-warn/10 px-card py-control-y text-caption text-warn">
             Blame unavailable: {file.blameError}
           </p>
         ) : null}
@@ -541,8 +541,8 @@ function ImagePreview({
   // The blame param is irrelevant to the bytes; keep it off the raw URL.
   void showBlame;
   return (
-    <div className="flex min-h-full flex-col items-center justify-center gap-3 bg-[var(--color-bg-elev)] p-6">
-      <div className="rounded-lg border border-[var(--color-line)] bg-[repeating-conic-gradient(var(--color-panel-soft)_0_25%,transparent_0_50%)] bg-[length:20px_20px] p-3 shadow-sm">
+    <div className="flex min-h-full flex-col items-center justify-center gap-3 bg-bg-elev p-6">
+      <div className="rounded-lg border border-line bg-[repeating-conic-gradient(var(--color-panel-soft)_0_25%,transparent_0_50%)] bg-[length:20px_20px] p-3 shadow-sm">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={rawImageHref(slug, sourceId, relPath)}
@@ -550,7 +550,7 @@ function ImagePreview({
           className="max-h-[70vh] max-w-full object-contain"
         />
       </div>
-      <div className="font-mono text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+      <div className="font-mono text-nano uppercase tracking-wider text-text-muted">
         {relPath.split("/").at(-1)} · {formatBytes(size)}
       </div>
     </div>
@@ -568,9 +568,9 @@ function MarkdownEditor({
 }) {
   return (
     <div className="grid h-full min-h-[24rem] grid-rows-[minmax(16rem,1fr)_minmax(14rem,0.8fr)] lg:grid-cols-2 lg:grid-rows-1">
-      <div className="overflow-auto border-b border-[var(--color-line)] bg-[var(--color-bg-elev)] p-6 lg:border-b-0 lg:border-r">
-        <div className="mx-auto max-w-3xl rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] px-6 py-5 shadow-sm">
-          <div className="mb-4 border-b border-[var(--color-line)] pb-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+      <div className="overflow-auto border-b border-line bg-bg-elev p-6 lg:border-b-0 lg:border-r">
+        <div className="mx-auto max-w-3xl rounded-panel border border-line bg-panel px-page-x py-page-y shadow-sm">
+          <div className="mb-4 border-b border-line pb-3 text-nano font-semibold uppercase tracking-wider text-text-muted">
             Markdown preview · {relPath.split("/").at(-1)}
           </div>
           <div className="md" dangerouslySetInnerHTML={renderFullMarkdown(content)} />
@@ -597,7 +597,7 @@ function SvgEditor({
   const dataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(content)}`;
   return (
     <div className="flex h-full min-h-[24rem] flex-col">
-      <div className="flex h-56 shrink-0 items-center justify-center border-b border-[var(--color-line)] bg-[repeating-conic-gradient(var(--color-panel-soft)_0_25%,transparent_0_50%)] bg-[length:20px_20px] p-4">
+      <div className="flex h-56 shrink-0 items-center justify-center border-b border-line bg-[repeating-conic-gradient(var(--color-panel-soft)_0_25%,transparent_0_50%)] bg-[length:20px_20px] p-card">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={dataUrl} alt={relPath} className="max-h-full max-w-full object-contain" />
       </div>
@@ -617,14 +617,14 @@ function rawImageHref(slug: string, sourceId: string, relPath: string) {
 
 function EmptyEditor({ kind }: { kind: "dir" | "file" | "other" | "missing" }) {
   return (
-    <div className="flex min-h-[30rem] items-center justify-center px-6 text-sm text-[var(--color-text-muted)]">
+    <div className="flex min-h-[30rem] items-center justify-center px-page-x text-body text-text-muted">
       {kind === "dir" ? "Select a file to view its contents." : "No file selected."}
     </div>
   );
 }
 
 function EditorMessage({ children }: { children: ReactNode }) {
-  return <p className="p-6 text-sm text-[var(--color-text-muted)]">{children}</p>;
+  return <p className="p-6 text-body text-text-muted">{children}</p>;
 }
 
 function EntryLink({
@@ -644,13 +644,13 @@ function EntryLink({
   return (
     <Link
       href={codeHref(slug, source.id, entry.path, showBlame)}
-      className={`grid grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-1 px-3 py-1.5 font-mono text-xs hover:bg-[var(--color-accent-soft)] ${
-        active ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]" : "text-[var(--color-text)]"
+      className={`grid grid-cols-[1.25rem_minmax(0,1fr)_auto] items-center gap-1 px-control-x py-control-y font-mono text-caption hover:bg-accent-soft ${
+        active ? "bg-accent-soft text-accent" : "text-text"
       }`}
     >
-      <span className={entry.type === "dir" ? "text-[var(--color-text-muted)]" : "text-[var(--color-accent)]"}>{icon}</span>
+      <span className={entry.type === "dir" ? "text-text-muted" : "text-accent"}>{icon}</span>
       <span className="min-w-0 truncate">{entry.name}</span>
-      <span className="pl-2 text-[10px] tabular-nums text-[var(--color-text-muted)]">
+      <span className="pl-2 text-nano tabular-nums text-text-muted">
         {entry.size === null ? "" : formatBytes(entry.size)}
       </span>
     </Link>
@@ -671,10 +671,10 @@ function Breadcrumbs({
   const segments = relPath ? relPath.split("/") : [];
   let acc = "";
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1 border-b border-[var(--color-line)] px-3 py-2 text-[11px]">
+    <div className="flex min-w-0 flex-wrap items-center gap-1 border-b border-line px-3 py-2 text-micro">
       <Link
         href={codeHref(slug, source.id, "", showBlame)}
-        className="font-mono text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+        className="font-mono text-text-muted hover:text-text"
       >
         /
       </Link>
@@ -684,7 +684,7 @@ function Breadcrumbs({
           <Link
             key={acc}
             href={codeHref(slug, source.id, acc, showBlame)}
-            className="min-w-0 truncate font-mono text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            className="min-w-0 truncate font-mono text-text-muted hover:text-text"
           >
             {segment}
           </Link>
@@ -696,15 +696,15 @@ function Breadcrumbs({
 
 function BlameEditor({ rows, relPath }: { rows: BlameLine[]; relPath: string }) {
   return (
-    <table className="w-full border-separate border-spacing-0 text-left font-mono text-xs leading-5">
+    <table className="w-full border-separate border-spacing-0 text-left font-mono text-caption leading-5">
       <tbody>
         {rows.map((row) => (
-          <tr key={row.line} className="hover:bg-[var(--color-accent-soft)]">
-            <td className="sticky left-0 w-14 select-none bg-[var(--color-panel)] px-2 text-right text-[10px] tabular-nums text-[var(--color-text-muted)]">
+          <tr key={row.line} className="hover:bg-accent-soft">
+            <td className="sticky left-0 w-14 select-none bg-panel px-2 text-right text-nano tabular-nums text-text-muted">
               {row.line}
             </td>
-            <td className="w-60 max-w-60 border-r border-[var(--color-line)] px-2 text-[10px] text-[var(--color-text-muted)]">
-              <div className="truncate text-[var(--color-text)]" title={row.summary ?? undefined}>
+            <td className="w-60 max-w-60 border-r border-line px-2 text-nano text-text-muted">
+              <div className="truncate text-text" title={row.summary ?? undefined}>
                 {row.author}
               </div>
               <div className="truncate">

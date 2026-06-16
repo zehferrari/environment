@@ -32,7 +32,7 @@ type Segment = {
 
 const TOKEN_CLASS: Record<TokenKind, string> = {
   attr: "text-[#d19a66]",
-  comment: "text-[var(--color-text-muted)] italic",
+  comment: "text-text-muted italic",
   function: "text-[#61afef]",
   keyword: "text-[#c678dd]",
   literal: "text-[#56b6c2]",

@@ -52,52 +52,52 @@ export default function NewChatButton({
         type="button"
         disabled={!hasActiveHistory}
         onClick={handleArchive}
-        className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45 transition-colors cursor-pointer"
+        className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-medium text-text hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-45 transition-colors cursor-pointer"
       >
         New Chat
       </button>
 
       {open && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm transition-all duration-300"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-card backdrop-blur-sm transition-all duration-300"
           onClick={() => !isPending && setOpen(false)}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+            className="w-full max-w-md space-y-section-gap rounded-panel border border-line bg-panel p-6 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
           >
             {step === "choice" && (
               <>
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                  <h3 className="text-body font-semibold uppercase tracking-wider text-text-muted">
                     New Chat Options
                   </h3>
                   <button
                     type="button"
                     disabled={isPending}
                     onClick={() => setOpen(false)}
-                    className="text-lg leading-none text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer"
+                    className="text-heading leading-none text-text-muted hover:text-text cursor-pointer"
                   >
                     &times;
                   </button>
                 </div>
-                <p className="text-sm text-[var(--color-text-muted)] leading-relaxed">
+                <p className="text-body text-text-muted leading-relaxed">
                   What would you like to do with the current active chat before starting a new session?
                 </p>
                 <div className="grid grid-cols-1 gap-2 pt-2">
                   <button
                     type="button"
                     onClick={() => setStep("archive")}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] py-2.5 text-sm font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:bg-[var(--color-panel)] transition cursor-pointer"
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-line bg-panel-soft py-2.5 text-body font-medium text-text hover:border-accent hover:bg-panel transition cursor-pointer"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--color-accent)]"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-accent"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
                     Archive Current Chat
                   </button>
                   <button
                     type="button"
                     disabled={isPending}
                     onClick={handleDelete}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--color-crit)]/30 bg-[var(--color-crit)]/[0.04] py-2.5 text-sm font-medium text-[var(--color-crit)] hover:bg-[var(--color-crit)]/[0.08] transition cursor-pointer"
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-crit/30 bg-crit/[0.04] py-2.5 text-body font-medium text-crit hover:bg-crit/[0.08] transition cursor-pointer"
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
                     {isPending ? "Moving to Bin..." : "Move Current Chat to Bin"}
@@ -107,7 +107,7 @@ export default function NewChatButton({
                   <button
                     type="button"
                     onClick={() => setOpen(false)}
-                    className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-4 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition cursor-pointer"
+                    className="rounded-lg border border-line bg-panel-soft px-4 py-1.5 text-caption font-medium text-text-muted hover:border-accent hover:text-accent transition cursor-pointer"
                   >
                     Cancel
                   </button>
@@ -118,20 +118,20 @@ export default function NewChatButton({
             {step === "archive" && (
               <>
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                  <h3 className="text-body font-semibold uppercase tracking-wider text-text-muted">
                     Archive Active Chat
                   </h3>
                   <button
                     type="button"
                     disabled={isPending}
                     onClick={() => setOpen(false)}
-                    className="text-lg leading-none text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer"
+                    className="text-heading leading-none text-text-muted hover:text-text cursor-pointer"
                   >
                     &times;
                   </button>
                 </div>
                 <div className="space-y-3">
-                  <label className="block text-xs font-medium text-[var(--color-text-muted)]">
+                  <label className="block text-caption font-medium text-text-muted">
                     Archive Title (Optional)
                   </label>
                   <input
@@ -140,7 +140,7 @@ export default function NewChatButton({
                     value={customTitle}
                     onChange={(e) => setCustomTitle(e.target.value)}
                     placeholder="Enter custom title or leave blank to auto-generate"
-                    className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm outline-none focus:border-[var(--color-accent)] disabled:opacity-50"
+                    className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body outline-none focus:border-accent disabled:opacity-50"
                     onKeyDown={(e) => {
                       if (e.key === "Enter") handleArchive();
                     }}
@@ -151,7 +151,7 @@ export default function NewChatButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => setStep("choice")}
-                    className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition disabled:opacity-50 cursor-pointer"
+                    className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent transition disabled:opacity-50 cursor-pointer"
                   >
                     Back
                   </button>
@@ -160,7 +160,7 @@ export default function NewChatButton({
                       type="button"
                       disabled={isPending}
                       onClick={() => setOpen(false)}
-                      className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition disabled:opacity-50 cursor-pointer"
+                      className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent transition disabled:opacity-50 cursor-pointer"
                     >
                       Cancel
                     </button>
@@ -168,7 +168,7 @@ export default function NewChatButton({
                       type="button"
                       disabled={isPending}
                       onClick={handleArchive}
-                      className="rounded-lg bg-[var(--color-accent)] px-4 py-1.5 text-xs font-medium text-[var(--color-bg)] hover:opacity-90 transition disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+                      className="rounded-lg bg-accent px-4 py-1.5 text-caption font-medium text-bg hover:opacity-90 transition disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
                     >
                       {isPending ? (
                         <>
@@ -190,19 +190,19 @@ export default function NewChatButton({
             {step === "delete" && (
               <>
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-[var(--color-crit)]">
+                  <h3 className="text-body font-semibold uppercase tracking-wider text-crit">
                     Move Chat to Trash
                   </h3>
                   <button
                     type="button"
                     disabled={isPending}
                     onClick={() => setOpen(false)}
-                    className="text-lg leading-none text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer"
+                    className="text-heading leading-none text-text-muted hover:text-text cursor-pointer"
                   >
                     &times;
                   </button>
                 </div>
-                <p className="text-sm text-[var(--color-text-muted)] leading-relaxed">
+                <p className="text-body text-text-muted leading-relaxed">
                   Are you sure you want to move this chat to the trash bin? It and its attachments will be permanently deleted after 7 days.
                 </p>
                 <div className="flex justify-between pt-2">
@@ -210,7 +210,7 @@ export default function NewChatButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => setStep("choice")}
-                    className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition disabled:opacity-50 cursor-pointer"
+                    className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent transition disabled:opacity-50 cursor-pointer"
                   >
                     Back
                   </button>
@@ -219,7 +219,7 @@ export default function NewChatButton({
                       type="button"
                       disabled={isPending}
                       onClick={() => setOpen(false)}
-                      className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition disabled:opacity-50 cursor-pointer"
+                      className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent transition disabled:opacity-50 cursor-pointer"
                     >
                       Cancel
                     </button>
@@ -227,7 +227,7 @@ export default function NewChatButton({
                       type="button"
                       disabled={isPending}
                       onClick={handleDelete}
-                      className="rounded-lg bg-[var(--color-crit)] px-4 py-1.5 text-xs font-medium text-white hover:opacity-90 transition disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+                      className="rounded-lg bg-crit px-4 py-1.5 text-caption font-medium text-white hover:opacity-90 transition disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
                     >
                       {isPending ? (
                         <>

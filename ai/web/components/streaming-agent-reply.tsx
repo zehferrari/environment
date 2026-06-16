@@ -34,6 +34,7 @@ interface StreamingAgentReplyProps {
   messageId: string;
   taskId?: string;
   epicId?: string;
+  roomId?: string;
   label: string;
   className?: string;
   anonymizeTyping?: boolean;
@@ -66,6 +67,7 @@ export default function StreamingAgentReply({
   messageId,
   taskId,
   epicId,
+  roomId,
   label,
   className = "",
   anonymizeTyping = false,
@@ -73,7 +75,7 @@ export default function StreamingAgentReply({
   onFinal,
   onCanceled,
 }: StreamingAgentReplyProps) {
-  const stream = usePersistentPmStream({ targetKind, agentSlug, messageId, taskId, epicId }, initialStatus);
+  const stream = usePersistentPmStream({ targetKind, agentSlug, messageId, taskId, epicId, roomId }, initialStatus);
   const {
     text,
     reasoning,
@@ -112,7 +114,7 @@ export default function StreamingAgentReply({
 
   useEffect(() => {
     finalNotifiedRef.current = false;
-  }, [targetKind, agentSlug, messageId, taskId, epicId]);
+  }, [targetKind, agentSlug, messageId, taskId, epicId, roomId]);
 
   const notifyFinal = useCallback((payload: StreamState | null, finalStatus: "done" | "error") => {
     if (finalNotifiedRef.current) return;
@@ -175,7 +177,7 @@ export default function StreamingAgentReply({
       type="button"
       onClick={stopReply}
       disabled={canceling}
-      className="shrink-0 rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] transition hover:border-[var(--color-crit)] hover:text-[var(--color-crit)] disabled:opacity-50"
+      className="shrink-0 rounded-md border border-line bg-bg px-2 py-0.5 text-nano font-semibold uppercase tracking-wider text-text-muted transition hover:border-crit hover:text-crit disabled:opacity-50"
       aria-label={`Stop ${label} response`}
       title={`Stop ${label} response`}
     >
@@ -210,8 +212,8 @@ export default function StreamingAgentReply({
   const reconnectLabel = reconnectingCopy(reconnectingMs);
   const liveStateLabel = status === "error" ? "stream error" : waitLabel;
   const liveTone = status === "error"
-    ? "border-[var(--color-crit)]/30 bg-[var(--color-crit)]/[0.06] text-[var(--color-crit)]"
-    : "border-[var(--color-accent)]/20 bg-[var(--color-panel-soft)] text-[var(--color-text-muted)]";
+    ? "border-crit/30 bg-crit/[0.06] text-crit"
+    : "border-accent/20 bg-panel-soft text-text-muted";
 
   if (!text.trim() && !reasoning.trim()) {
     if (connectionIssueAt !== null && reconnectLabel === null) return null;
@@ -223,9 +225,9 @@ export default function StreamingAgentReply({
     return (
       <div className={`flex items-start gap-2.5 ${className}`}>
         <MessageAvatar actor={actor} />
-        <div className={`w-fit max-w-[min(34rem,82%)] rounded-[1.15rem] rounded-bl-md border px-3.5 py-2.5 text-sm shadow-[0_8px_22px_rgba(15,23,42,0.05)] ring-1 ring-black/[0.02] ${liveTone}`}>
+        <div className={`w-fit max-w-[min(34rem,82%)] rounded-bubble rounded-bl-md border px-3.5 py-2.5 text-body shadow-[0_8px_22px_rgba(15,23,42,0.05)] ring-1 ring-black/[0.02] ${liveTone}`}>
           <div className="flex min-w-0 items-center gap-2">
-            <span className="shrink-0 rounded-full border border-current/20 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider">
+            <span className="shrink-0 rounded-full border border-current/20 px-1.5 py-0.5 text-pico font-semibold uppercase tracking-wider">
               {status === "error" ? "failed" : reconnectLabel ? "sync" : anonymizeTyping ? "typing" : runStatus === "accepted" ? "accepted" : "live"}
             </span>
             <span className="min-w-0 break-words">{typingText}</span>
@@ -233,10 +235,10 @@ export default function StreamingAgentReply({
             {stopButton}
           </div>
           {status === "error" || reconnectLabel ? null : (
-            <div className="mt-2 flex items-center gap-2 text-[11px] text-[var(--color-text-muted)]">
+            <div className="mt-2 flex items-center gap-2 text-micro text-text-muted">
               <span>{waitLabel}</span>
-              <span className="h-1 flex-1 overflow-hidden rounded-full bg-[var(--color-line)]">
-                <span className="block h-full w-1/2 animate-pulse rounded-full bg-[var(--color-accent)]/60" />
+              <span className="h-1 flex-1 overflow-hidden rounded-full bg-line">
+                <span className="block h-full w-1/2 animate-pulse rounded-full bg-accent/60" />
               </span>
             </div>
           )}
@@ -248,8 +250,8 @@ export default function StreamingAgentReply({
   return (
     <div className={`flex items-start gap-2.5 ${className}`}>
       <MessageAvatar actor={actor} />
-      <div className="w-fit min-w-0 max-w-[min(44rem,82%)] rounded-[1.15rem] rounded-bl-md border border-[var(--color-accent)]/20 bg-[var(--color-panel)] px-4 py-3 shadow-[0_8px_22px_rgba(15,23,42,0.05)] ring-1 ring-black/[0.02]">
-        <div className="mb-2 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+      <div className="w-fit min-w-0 max-w-[min(44rem,82%)] rounded-bubble rounded-bl-md border border-accent/20 bg-panel px-4 py-3 shadow-[0_8px_22px_rgba(15,23,42,0.05)] ring-1 ring-black/[0.02]">
+        <div className="mb-2 flex items-center justify-between gap-2 text-nano uppercase tracking-wider text-text-muted">
           <span>{label} / live reply</span>
           <span className="flex items-center gap-2">
             <span>{liveStateLabel}</span>
@@ -260,16 +262,16 @@ export default function StreamingAgentReply({
         {/* Collapsible Reasoning Thought Process Block */}
         {reasoning.trim() ? (
           <details
-            className="mb-3 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3 text-xs text-[var(--color-text-muted)] font-mono group"
+            className="mb-3 rounded-lg border border-line bg-panel-soft p-3 text-caption text-text-muted font-mono group"
             open={showReasoning}
             onToggle={(e) => setShowReasoning(e.currentTarget.open)}
           >
-            <summary className="flex items-center justify-between gap-1.5 font-semibold text-[10px] uppercase tracking-wider mb-2 border-b border-[var(--color-line)] pb-1 cursor-pointer outline-none list-none [&::-webkit-details-marker]:hidden select-none">
+            <summary className="flex items-center justify-between gap-1.5 font-semibold text-nano uppercase tracking-wider mb-2 border-b border-line pb-1 cursor-pointer outline-none list-none [&::-webkit-details-marker]:hidden select-none">
               <span className="flex items-center gap-1.5">
                 <span>Thought Process</span>
                 {shouldShowTypingDots({ status, text, lifecycleStatus }) && <TypingDots />}
               </span>
-              <span className="text-[9px] font-normal normal-case text-[var(--color-text-muted)] opacity-60">
+              <span className="text-pico font-normal normal-case text-text-muted opacity-60">
                 {showReasoning ? "click to hide" : "click to show"}
               </span>
             </summary>
@@ -280,11 +282,11 @@ export default function StreamingAgentReply({
         {/* Main Message Content */}
         {displayText.trim() ? (
           <div
-            className="md md-compact break-words text-sm leading-relaxed text-[var(--color-text)] [overflow-wrap:anywhere]"
+            className="md md-compact break-words text-body leading-relaxed text-text [overflow-wrap:anywhere]"
             dangerouslySetInnerHTML={markdownHtml}
           />
         ) : status !== "error" && !reasoning.trim() ? (
-          <div className="text-xs text-[var(--color-text-muted)] flex items-center gap-1">
+          <div className="text-caption text-text-muted flex items-center gap-1">
             working... <TypingDots />
           </div>
         ) : null}

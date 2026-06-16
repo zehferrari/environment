@@ -153,8 +153,8 @@ export default function ProposalReview({
   if (proposals.length === 0) return null;
 
   return (
-    <div className="border-t border-[var(--color-line)] bg-[var(--color-panel-soft)] px-4 py-3 shrink-0 space-y-3">
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-accent)]">
+    <div className="border-t border-line bg-panel-soft px-4 py-3 shrink-0 space-y-3">
+      <div className="text-micro font-semibold uppercase tracking-wider text-accent">
         Work-item proposals awaiting your review ({proposals.length})
       </div>
 
@@ -167,14 +167,14 @@ export default function ProposalReview({
         return (
           <div
             key={proposal.id}
-            className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-3 shadow-sm"
+            className="rounded-card border border-line bg-panel p-3 shadow-sm"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="text-sm font-semibold text-[var(--color-text)]">
+                <p className="text-body font-semibold text-text">
                   {proposal.summary || `${ops.length} change${ops.length === 1 ? "" : "s"}`}
                 </p>
-                <p className="mt-0.5 text-[10px] text-[var(--color-text-muted)]">
+                <p className="mt-0.5 text-nano text-text-muted">
                   {proposal.projectName} · {ops.length} operation{ops.length === 1 ? "" : "s"}
                   {errorCount > 0 ? ` · ${errorCount} need attention` : ""}
                 </p>
@@ -185,7 +185,7 @@ export default function ProposalReview({
                   {resolvedAgentSlug ? <input type="hidden" name="agentSlug" value={resolvedAgentSlug} /> : null}
                   <button
                     type="submit"
-                    className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-bg)] hover:opacity-90"
+                    className="rounded-lg bg-accent px-control-x py-control-y text-caption font-medium text-bg hover:opacity-90"
                   >
                     Apply
                   </button>
@@ -195,7 +195,7 @@ export default function ProposalReview({
                   {resolvedAgentSlug ? <input type="hidden" name="agentSlug" value={resolvedAgentSlug} /> : null}
                   <button
                     type="submit"
-                    className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] hover:border-[var(--color-crit)] hover:text-[var(--color-crit)]"
+                    className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium text-text-muted hover:border-crit hover:text-crit"
                   >
                     Reject
                   </button>
@@ -203,14 +203,14 @@ export default function ProposalReview({
               </div>
             </div>
 
-            <details className="mt-3 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]">
-              <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-3 py-2 text-xs font-medium text-[var(--color-text)] marker:text-[var(--color-text-muted)]">
+            <details className="mt-3 rounded-lg border border-line bg-panel-soft">
+              <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-3 py-2 text-caption font-medium text-text marker:text-text-muted">
                 <span>Preview changes</span>
-                <span className="text-[10px] font-normal text-[var(--color-text-muted)]">
+                <span className="text-nano font-normal text-text-muted">
                   {ops.length} operation{ops.length === 1 ? "" : "s"}
                 </span>
               </summary>
-              <div className="max-h-[min(24rem,45vh)] overflow-y-auto border-t border-[var(--color-line)] p-3">
+              <div className="max-h-[min(24rem,45vh)] overflow-y-auto border-t border-line p-3">
                 <ul className="space-y-3">
                   {ops.map((op, i) => {
                     const label = opLabel(op);
@@ -218,33 +218,33 @@ export default function ProposalReview({
                     const ok = result ? result.ok : true;
                     const rows = fieldRows(op);
                     return (
-                      <li key={i} className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] p-2.5 text-xs">
+                      <li key={i} className="rounded-lg border border-line bg-panel p-2.5 text-caption">
                         <div className="flex items-start gap-2">
                           <span
                             className={`mt-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
-                              ok ? "bg-[var(--color-accent)]" : "bg-[var(--color-crit)]"
+                              ok ? "bg-accent" : "bg-crit"
                             }`}
                             aria-hidden="true"
                           />
                           <div className="min-w-0">
                             <p>
-                              <span className="font-medium text-[var(--color-text)]">{label.kind}:</span>{" "}
-                              <span className="text-[var(--color-text)]">{label.title}</span>
+                              <span className="font-medium text-text">{label.kind}:</span>{" "}
+                              <span className="text-text">{label.title}</span>
                               {label.detail ? (
-                                <span className="text-[var(--color-text-muted)]"> — {label.detail}</span>
+                                <span className="text-text-muted"> — {label.detail}</span>
                               ) : null}
                             </p>
                             {!ok && result?.errors.length ? (
-                              <p className="mt-1 text-[var(--color-crit)]">⚠ {result.errors.join("; ")}</p>
+                              <p className="mt-1 text-crit">⚠ {result.errors.join("; ")}</p>
                             ) : null}
                           </div>
                         </div>
                         {rows.length > 0 ? (
-                          <dl className="mt-2 grid gap-1.5 border-t border-[var(--color-line)] pt-2">
+                          <dl className="mt-2 grid gap-1.5 border-t border-line pt-2">
                             {rows.map((row) => (
                               <div key={`${i}-${row.label}`} className="grid gap-1 sm:grid-cols-[8rem_minmax(0,1fr)]">
-                                <dt className="font-medium text-[var(--color-text-muted)]">{row.label}</dt>
-                                <dd className="min-w-0 whitespace-pre-wrap break-words text-[var(--color-text)]">
+                                <dt className="font-medium text-text-muted">{row.label}</dt>
+                                <dd className="min-w-0 whitespace-pre-wrap break-words text-text">
                                   {row.value}
                                 </dd>
                               </div>

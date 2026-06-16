@@ -84,9 +84,9 @@ export default function DeletedMessageDivider({
       <div className="flex items-center gap-2">
         <div
           aria-hidden="true"
-          className="flex-1 border-t border-dotted border-[var(--color-text-muted)]/40"
+          className="flex-1 border-t border-dotted text-text-muted/40"
         />
-        <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]/70">
+        <span className="text-nano uppercase tracking-wider text-text-muted/70">
           deleted{authorLabel ? ` by ${authorLabel}` : ""}{stamp ? ` · ${stamp}` : ""}
         </span>
         {restore ? (
@@ -96,7 +96,7 @@ export default function DeletedMessageDivider({
             onClick={() => setConfirmRestoreOpen(true)}
             aria-label="Restore deleted content"
             title="Restore — makes the row visible again and re-includes it in agent context"
-            className="grid h-5 w-5 place-items-center rounded border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[10px] leading-none text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer disabled:opacity-50"
+            className="grid h-5 w-5 place-items-center rounded border border-line bg-panel-soft text-nano leading-none text-text-muted hover:border-accent hover:text-accent cursor-pointer disabled:opacity-50"
           >
             ↺
           </button>
@@ -107,13 +107,13 @@ export default function DeletedMessageDivider({
           aria-expanded={open}
           aria-label={open ? "Hide deleted content" : "Show deleted content"}
           title={open ? "Hide deleted content" : "Show deleted content"}
-          className="grid h-5 w-5 place-items-center rounded border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[10px] font-mono leading-none text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer"
+          className="grid h-5 w-5 place-items-center rounded border border-line bg-panel-soft text-nano font-mono leading-none text-text-muted hover:border-accent hover:text-accent cursor-pointer"
         >
           {open ? "−" : "+"}
         </button>
       </div>
       {open && children ? (
-        <div className="mt-1.5 rounded-lg border border-dotted border-[var(--color-line)] bg-[var(--color-panel-soft)]/60 px-3 py-2 text-xs text-[var(--color-text-muted)] line-through decoration-[var(--color-text-muted)]/40">
+        <div className="mt-1.5 rounded-lg border border-dotted border-line bg-panel-soft/60 px-3 py-2 text-caption text-text-muted line-through text-text-muted/40">
           {children}
         </div>
       ) : null}

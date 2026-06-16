@@ -104,7 +104,7 @@ function renderInline(
         inner = (
           <code
             key={k}
-            className="rounded bg-[var(--color-panel-soft)] px-1 py-0.5 text-[0.875em] font-mono"
+            className="rounded bg-panel-soft px-1 py-0.5 text-[0.875em] font-mono"
           >
             {m[1]}
           </code>
@@ -137,7 +137,7 @@ function renderInline(
           <a
             key={k}
             href={href}
-            className="underline decoration-dotted hover:text-[var(--color-accent)]"
+            className="underline decoration-dotted hover:text-accent"
             rel="noreferrer noopener"
             target={/^https?:\/\//i.test(href) ? "_blank" : undefined}
           >
@@ -155,7 +155,7 @@ function renderInline(
           inner = (
             <span
               key={k}
-              className="rounded bg-[var(--color-panel-soft)] px-1 py-0.5 text-[var(--color-accent)] font-medium"
+              className="rounded bg-panel-soft px-1 py-0.5 text-accent font-medium"
             >
               @{username}
             </span>

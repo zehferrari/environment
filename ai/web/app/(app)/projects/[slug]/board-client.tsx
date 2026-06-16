@@ -67,7 +67,7 @@ function BlockedBadge({ task }: { task: Task }) {
   if (!task.blockedByKey) return null;
   return (
     <span
-      className="ml-auto inline-flex items-center gap-1 text-[10px] font-semibold text-[var(--color-crit)]"
+      className="ml-auto inline-flex items-center gap-1 text-nano font-semibold text-crit"
       title={`Blocked by ${task.blockedByKey} — it must be Done first`}
     >
       <LockGlyph />
@@ -118,7 +118,7 @@ function SubtaskProgress({ task }: { task: Task }) {
       {Array.from({ length: n }, (_, i) => (
         <span
           key={i}
-          className="h-full min-w-0 flex-1 rounded-[1px]"
+          className="h-full min-w-0 flex-1 rounded-pixel"
           style={{ backgroundColor: i < d ? fill : "var(--color-text-muted)" }}
         />
       ))}
@@ -165,6 +165,7 @@ const boardCollisionDetection: CollisionDetection = (args) => {
 
 export default function Board({ projectSlug, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
   const router = useRouter();
+  const isMobileBoard = useIsMobileBoard();
   const [items, setItems] = useState<Task[]>(tasks);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
@@ -320,7 +321,11 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
   }, []);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(PointerSensor, {
+      activationConstraint: isMobileBoard
+        ? { delay: 180, tolerance: 8 }
+        : { distance: 4 },
+    }),
   );
 
   function handleDragStart(e: DragStartEvent) {
@@ -577,6 +582,13 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       })
       .slice(0, 6);
   }, [items]);
+  const mobileBacklogLane = useMemo(
+    () => ({ col: { id: "Backlog", label: "Backlog", description: "planning/opinions" }, tasks: backlogTasks }),
+    [backlogTasks],
+  );
+  const mobileLanes = backlogVisible
+    ? [...columnLanes, mobileBacklogLane]
+    : columnLanes;
 
   return (
     <DndContext
@@ -604,13 +616,13 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       {moveError ? (
         <div
           role="alert"
-          className="mb-3 flex items-start justify-between gap-3 rounded border border-[var(--color-danger,#ff5d5d)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm"
+          className="mb-3 flex items-start justify-between gap-3 rounded border border-danger bg-panel-soft px-3 py-2 text-body"
         >
           <span>{moveError}</span>
           <button
             type="button"
             onClick={() => setMoveError(null)}
-            className="text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            className="text-caption uppercase tracking-wider text-text-muted hover:text-text"
           >
             dismiss
           </button>
@@ -618,17 +630,17 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       ) : null}
 
       {selectedCount > 0 ? (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--color-accent)]/30 bg-[var(--color-accent)]/[0.08] px-4 py-3 text-sm shadow-sm">
-          <span className="font-semibold text-[var(--color-text)]">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-panel border border-accent/30 bg-accent/[0.08] px-4 py-3 text-body shadow-sm">
+          <span className="font-semibold text-text">
             {selectedCount} selected
           </span>
           <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+            <label className="flex items-center gap-2 text-caption font-semibold uppercase tracking-wider text-text-muted">
               <span>Move to</span>
               <select
                 value={bulkTarget}
                 onChange={(event) => setBulkTarget(event.currentTarget.value)}
-                className="rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-xs text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
+                className="rounded-lg border border-line bg-bg px-2 py-1.5 text-caption text-text outline-none focus:border-accent"
               >
                 {columns.map((column) => (
                   <option key={column.id} value={column.id}>
@@ -640,21 +652,21 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
             <button
               type="button"
               onClick={bulkMoveSelected}
-              className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-bg)] transition hover:opacity-90"
+              className="rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-bg transition hover:opacity-90"
             >
               Move selected
             </button>
             <button
               type="button"
               onClick={bulkDeleteSelected}
-              className="rounded-lg border border-[var(--color-crit)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--color-crit)] transition hover:bg-[var(--color-crit)] hover:text-[var(--color-bg)]"
+              className="rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-semibold text-crit transition hover:bg-crit hover:text-bg"
             >
               Delete selected
             </button>
             <button
               type="button"
               onClick={() => setSelectedIds(new Set())}
-              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+              className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-semibold text-text-muted transition hover:border-accent hover:text-accent"
             >
               Clear
             </button>
@@ -663,21 +675,21 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       ) : null}
 
       {focusVisible && workflowFocus.length > 0 ? (
-        <section className="mb-5 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] p-3">
+        <section className="mb-5 rounded-lg border border-line bg-panel p-3">
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <button
                 type="button"
                 onClick={() => setFocusVisible(false)}
-                className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                className="rounded-card border border-line bg-panel px-3 py-1 text-caption uppercase tracking-wider text-text-muted hover:text-text"
               >
                 Hide Focus
               </button>
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              <h2 className="text-caption font-semibold uppercase tracking-wider text-text-muted">
                 Workflow focus
               </h2>
             </div>
-            <span className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+            <span className="text-nano uppercase tracking-wider text-text-muted">
               feedback → review → start
             </span>
           </div>
@@ -704,7 +716,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
               type="button"
               onClick={() => setFocusVisible(true)}
               aria-pressed={focusVisible}
-              className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              className="rounded-card border border-line bg-panel px-3 py-1 text-caption uppercase tracking-wider text-text-muted hover:text-text"
             >
               Show Workflow Focus
             </button>
@@ -719,13 +731,13 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                 type="button"
                 onClick={() => setFocusVisible(true)}
                 aria-pressed={focusVisible}
-                className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                className="rounded-card border border-line bg-panel px-3 py-1 text-caption uppercase tracking-wider text-text-muted hover:text-text"
               >
                 Show Workflow Focus
               </button>
             ) : null}
             {backlogVisible ? (
-              <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">
+              <h2 className="text-caption uppercase tracking-wider text-text-muted">
                 Backlog{backlogCount ? ` (${backlogCount})` : ""} · planning/opinions
               </h2>
             ) : null}
@@ -734,21 +746,21 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
             type="button"
             onClick={() => setBacklogVisible((v) => !v)}
             aria-pressed={backlogVisible}
-            className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-xs uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            className="rounded-card border border-line bg-panel px-3 py-1 text-caption uppercase tracking-wider text-text-muted hover:text-text"
           >
             {backlogVisible ? "Hide Backlog" : "Show Backlog"}
           </button>
         </div>
 
-        {backlogVisible ? (
+        {backlogVisible && !isMobileBoard ? (
           <BacklogDroppable>
             {backlogTasks.length === 0 ? (
-              <p className="px-1 py-6 text-center text-xs text-[var(--color-text-muted)]">
+              <p className="px-1 py-6 text-center text-caption text-text-muted">
                 Backlog is empty. Drag a row here or add a task.
               </p>
             ) : (
               <div className="overflow-x-auto">
-                <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-3 pb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 pb-2 text-nano font-semibold uppercase tracking-wider text-text-muted">
                   <div className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -756,7 +768,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
                       onChange={(e) => toggleSelectAllBacklog(e.target.checked)}
                       onClick={(e) => e.stopPropagation()}
                       onPointerDown={(e) => e.stopPropagation()}
-                      className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                      className="h-6 w-6 accent-accent md:h-3.5 md:w-3.5"
                       aria-label="Select all backlog tasks"
                     />
                     <span>Task</span>
@@ -793,49 +805,282 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
         ) : null}
       </section>
 
-      <div className="grid grid-cols-4 gap-3">
-        {columnLanes.map(({ col, tasks: colTasks }) => {
-          const colTaskIds = colTasks.map((t) => t.id);
-          const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
-          return (
-            <ColumnDroppable
-              key={col.id}
-              id={col.id}
-              label={col.label}
-              description={col.description}
-              count={colTasks.length}
-              allSelected={allSelected}
-              onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
-            >
-              <SortableContext
-                items={colTasks.map((t) => t.id)}
-                strategy={verticalListSortingStrategy}
+      {isMobileBoard ? (
+        <div className="space-y-3 md:hidden">
+          <div className="rounded-card border border-line bg-panel-soft px-3 py-2 text-caption text-text-muted">
+            Long-press a card to drag or reorder. Swipe a card left for quick Move/Edit actions.
+          </div>
+          {mobileLanes.map(({ col, tasks: colTasks }) => {
+            const colTaskIds = colTasks.map((t) => t.id);
+            const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
+            return (
+              <MobileStatusGroup
+                key={col.id}
+                id={col.id}
+                label={col.label}
+                description={col.description}
+                count={colTasks.length}
+                allSelected={allSelected}
+                onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
               >
-                {colTasks.map((t) => (
-                  <TaskCard
-                    key={t.id}
-                    task={t}
-                    projectSlug={projectSlug}
-                    deleteTaskAction={deleteTaskAction}
-                    now={now}
-                    selected={selectedIds.has(t.id)}
-                    onSelectionChange={toggleTaskSelection}
-                  />
-                ))}
-              </SortableContext>
-            </ColumnDroppable>
-          );
-        })}
-      </div>
+                <SortableContext
+                  items={colTasks.map((t) => t.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {colTasks.map((t) => (
+                    <MobileTaskCard
+                      key={t.id}
+                      task={t}
+                      projectSlug={projectSlug}
+                      deleteTaskAction={deleteTaskAction}
+                      now={now}
+                      selected={selectedIds.has(t.id)}
+                      onSelectionChange={toggleTaskSelection}
+                      onMove={(task, status) => crossColumnMove(task, status)}
+                      nextStatus={nextMobileStatus(t.status, columns)}
+                    />
+                  ))}
+                </SortableContext>
+              </MobileStatusGroup>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="grid grid-cols-4 gap-3">
+          {columnLanes.map(({ col, tasks: colTasks }) => {
+            const colTaskIds = colTasks.map((t) => t.id);
+            const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
+            return (
+              <ColumnDroppable
+                key={col.id}
+                id={col.id}
+                label={col.label}
+                description={col.description}
+                count={colTasks.length}
+                allSelected={allSelected}
+                onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
+              >
+                <SortableContext
+                  items={colTasks.map((t) => t.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {colTasks.map((t) => (
+                    <TaskCard
+                      key={t.id}
+                      task={t}
+                      projectSlug={projectSlug}
+                      deleteTaskAction={deleteTaskAction}
+                      now={now}
+                      selected={selectedIds.has(t.id)}
+                      onSelectionChange={toggleTaskSelection}
+                    />
+                  ))}
+                </SortableContext>
+              </ColumnDroppable>
+            );
+          })}
+        </div>
+      )}
 
       <DragOverlay>
         {active ? (
-          <div className="rounded border border-[var(--color-accent)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm shadow-lg cursor-grabbing">
+          <div className="rounded border border-accent bg-panel-soft px-3 py-2 text-body shadow-lg cursor-grabbing">
             {active.title}
           </div>
         ) : null}
       </DragOverlay>
     </DndContext>
+  );
+}
+
+function useIsMobileBoard() {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 767px)");
+    const sync = () => setIsMobile(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
+  return isMobile;
+}
+
+function nextMobileStatus(status: string, columns: ReadonlyArray<Column>) {
+  const visible = columns.filter((column) => column.id !== "Backlog");
+  const index = visible.findIndex((column) => column.id === status);
+  const next = visible[index + 1] ?? visible[0] ?? columns[0];
+  return next?.id ?? status;
+}
+
+function MobileStatusGroup({
+  id,
+  label,
+  description,
+  count,
+  allSelected,
+  onSelectAll,
+  children,
+}: {
+  id: string;
+  label: string;
+  description?: string;
+  count: number;
+  allSelected: boolean;
+  onSelectAll: (checked: boolean) => void;
+  children: React.ReactNode;
+}) {
+  const { isOver, setNodeRef } = useDroppable({ id });
+  return (
+    <details
+      ref={setNodeRef}
+      open
+      className={`rounded-xl border shadow-sm transition-colors ${columnSurfaceClass(id)} ${isOver ? "ring-2 ring-accent/50" : ""}`}
+    >
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-3 [&::-webkit-details-marker]:hidden">
+        <div className="flex min-w-0 items-center gap-2">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            onChange={(event) => onSelectAll(event.target.checked)}
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            className="h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
+            aria-label={`Select all in ${label}`}
+          />
+          <span className={`rounded border px-2 py-1 text-caption font-semibold uppercase tracking-wider ${columnHeaderPillClass(id)}`}>
+            {label}
+          </span>
+          {description ? (
+            <span className="truncate text-caption text-text-muted">{description}</span>
+          ) : null}
+        </div>
+        <span className="rounded-full border border-line bg-bg px-2 py-0.5 text-caption font-semibold text-text-muted">
+          {count}
+        </span>
+      </summary>
+      <div className="space-y-2 px-2 pb-3">{children}</div>
+    </details>
+  );
+}
+
+function MobileTaskCard({
+  task,
+  projectSlug,
+  deleteTaskAction,
+  now,
+  selected,
+  onSelectionChange,
+  onMove,
+  nextStatus,
+}: {
+  task: Task;
+  projectSlug: string;
+  deleteTaskAction: (formData: FormData) => Promise<void>;
+  now: number | null;
+  selected: boolean;
+  onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
+  onMove: (task: Task, status: string) => void;
+  nextStatus: string;
+}) {
+  const router = useRouter();
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: task.id });
+  const actor = boardActorForTask(task);
+  const nextLabel = nextStatus === task.status ? "Move" : `Move → ${nextStatus}`;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`overflow-x-auto rounded-lg ${isDragging ? "opacity-30" : ""}`}
+    >
+      <div className="flex min-w-[calc(100%+9rem)] items-stretch">
+        <div
+          {...attributes}
+          {...listeners}
+          onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
+          className={`${taskCardClass(task)} min-w-[calc(100%-9rem)] touch-pan-y active:cursor-grabbing`}
+        >
+          <div className="relative z-10 space-y-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex min-w-0 items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSelectionChange(task.id, !selected, event.shiftKey);
+                  }}
+                  onChange={() => {}}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  aria-label={`Select ${task.title}`}
+                  className="mt-0.5 h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
+                    {actor ? <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} /> : null}
+                    <span className="truncate font-mono uppercase tracking-wider">
+                      {task.workItemKey ?? "—"}
+                    </span>
+                    {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
+                  </div>
+                  <div className="mt-1 line-clamp-2 text-body font-medium leading-snug">{task.title}</div>
+                  {task.epicTitle ? (
+                    <div className="mt-1 truncate text-caption text-text-muted">{task.epicTitle}</div>
+                  ) : null}
+                </div>
+              </div>
+              <form
+                action={deleteTaskAction}
+                onClick={(event) => event.stopPropagation()}
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                <input type="hidden" name="projectSlug" value={projectSlug} />
+                <input type="hidden" name="taskId" value={task.id} />
+                <button
+                  type="submit"
+                  className="grid h-11 w-11 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:p-1"
+                  aria-label={`Move ${task.title} to bin`}
+                  title="Move to bin"
+                >
+                  <TrashIcon />
+                </button>
+              </form>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-nano text-text-muted">
+              <ElapsedClock task={task} now={now} />
+              <SubtaskProgress task={task} />
+              <time dateTime={task.updatedAt} title={task.updatedAt} className="tabular-nums" suppressHydrationWarning>
+                {relativeUpdated(task.updatedAt)}
+              </time>
+              <BlockedBadge task={task} />
+            </div>
+          </div>
+        </div>
+        <div className="ml-2 flex w-36 shrink-0 flex-col gap-2 py-1 pr-1">
+          <button
+            type="button"
+            onClick={() => onMove(task, nextStatus)}
+            className="min-h-11 flex-1 rounded-lg bg-accent px-2 text-caption font-semibold text-bg shadow-sm"
+          >
+            {nextLabel}
+          </button>
+          <button
+            type="button"
+            onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
+            className="min-h-11 flex-1 rounded-lg border border-line bg-panel px-2 text-caption font-semibold text-text"
+          >
+            Edit
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -862,11 +1107,11 @@ function ColumnDroppable({
       ref={setNodeRef}
       className={`min-h-[60vh] rounded-lg border p-2 shadow-sm transition-colors ${columnSurfaceClass(id)} ${
         isOver
-          ? "ring-2 ring-[var(--color-accent)]/50"
+          ? "ring-2 ring-accent/50"
           : ""
       }`}
     >
-      <div className="px-1 pb-2 text-[10px] uppercase tracking-wider text-[var(--color-text-muted)] flex justify-between items-center">
+      <div className="px-1 pb-2 text-nano uppercase tracking-wider text-text-muted flex justify-between items-center">
         <div className="flex items-center gap-1.5 min-w-0">
           {onSelectAll && (
             <input
@@ -875,15 +1120,15 @@ function ColumnDroppable({
               onChange={(e) => onSelectAll(e.target.checked)}
               onClick={(e) => e.stopPropagation()}
               onPointerDown={(e) => e.stopPropagation()}
-              className="h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]"
+              className="h-3.5 w-3.5 shrink-0 accent-accent"
               aria-label={`Select all in ${label}`}
             />
           )}
-          <span className={`w-fit rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${columnHeaderPillClass(id)}`}>
+          <span className={`w-fit rounded border px-1.5 py-0.5 text-nano font-semibold uppercase tracking-wider ${columnHeaderPillClass(id)}`}>
             {label}
           </span>
           {description ? (
-            <span className="hidden truncate normal-case tracking-normal text-[var(--color-text-muted)] xl:inline">
+            <span className="hidden truncate normal-case tracking-normal text-text-muted xl:inline">
               · {description}
             </span>
           ) : null}
@@ -941,17 +1186,17 @@ function TaskCard({
             onChange={() => {}}
             onPointerDown={(event) => event.stopPropagation()}
             aria-label={`Select ${task.title}`}
-            className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+            className="h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
           />
           {task.status === "Done" ? (
             <BoardReporterMarker task={task} />
           ) : actor ? (
             <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
           ) : (
-            <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
+            <span className="text-nano text-text-muted">unassigned</span>
           )}
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
+            <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
               {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
               <span className="truncate font-mono uppercase tracking-wider">
                 {task.workItemKey ?? "—"}
@@ -959,7 +1204,7 @@ function TaskCard({
               {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
             </div>
             <div className="truncate">{task.title}</div>
-            <div className="mt-1 flex items-center gap-2 text-[10px] text-[var(--color-text-muted)]">
+            <div className="mt-1 flex items-center gap-2 text-nano text-text-muted">
               <ElapsedClock task={task} now={now} />
               <SubtaskProgress task={task} />
               <time
@@ -988,7 +1233,7 @@ function TaskCard({
           <input type="hidden" name="taskId" value={task.id} />
           <button
             type="submit"
-            className="shrink-0 rounded-md p-1 text-[var(--color-text-muted)] hover:bg-[var(--color-crit)]/10 hover:text-[var(--color-crit)]"
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:p-1"
             aria-label={`Move ${task.title} to bin`}
             title="Move to bin"
           >
@@ -1025,11 +1270,11 @@ function WorkflowFocusCard({
           ) : actor ? (
             <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
           ) : (
-            <span className="text-[10px] text-[var(--color-text-muted)]">unassigned</span>
+            <span className="text-nano text-text-muted">unassigned</span>
           )}
           <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-1.5 text-[10px] text-[var(--color-text-muted)]">
-              <span className={`shrink-0 rounded border px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${columnHeaderPillClass(task.status)}`}>
+            <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
+              <span className={`shrink-0 rounded border px-1 py-0.5 text-pico font-semibold uppercase tracking-wider ${columnHeaderPillClass(task.status)}`}>
                 {task.status}
               </span>
               {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
@@ -1038,8 +1283,8 @@ function WorkflowFocusCard({
               </span>
               {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
             </div>
-            <div className="mt-0.5 truncate text-sm">{task.title}</div>
-            <div className="mt-1 flex items-center gap-2 text-[10px] text-[var(--color-text-muted)]">
+            <div className="mt-0.5 truncate text-body">{task.title}</div>
+            <div className="mt-1 flex items-center gap-2 text-nano text-text-muted">
               <ElapsedClock task={task} now={now} />
               <SubtaskProgress task={task} />
               <time
@@ -1069,8 +1314,8 @@ function BacklogDroppable({ children }: { children: React.ReactNode }) {
       ref={setNodeRef}
       className={`rounded-lg border py-2 transition-colors ${
         isOver
-          ? "border-[var(--color-accent)] bg-[var(--color-panel-soft)]"
-          : "border-[var(--color-line)] bg-[var(--color-panel)]"
+          ? "border-accent bg-panel-soft"
+          : "border-line bg-panel"
       }`}
     >
       {children}
@@ -1118,9 +1363,9 @@ function BacklogRow({
           router.push(`/projects/${projectSlug}/tasks/${task.id}`);
         }
       }}
-      className={`grid min-w-[68rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-[var(--color-line)] px-3 py-2 text-sm transition last:border-b-0 hover:bg-[var(--color-panel-soft)] ${
+      className={`grid min-h-11 min-w-[68rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 py-2 text-body transition last:border-b-0 hover:bg-panel-soft active:scale-[0.98] md:min-h-0 md:active:scale-100 ${
         isPlanningAssigned(task) ? "bg-yellow-300/[0.08]" : statusRowClass(task.status)
-      } ${isDragging ? "bg-[var(--color-panel-soft)] opacity-40" : ""}`}
+      } ${isDragging ? "bg-panel-soft opacity-40" : ""}`}
     >
       <div className="flex min-w-0 items-center gap-2">
         <input
@@ -1133,7 +1378,7 @@ function BacklogRow({
           onChange={() => {}}
           onPointerDown={(event) => event.stopPropagation()}
           aria-label={`Select ${task.title}`}
-          className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+          className="h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
         />
         <button
           type="button"
@@ -1141,7 +1386,7 @@ function BacklogRow({
           {...listeners}
           onClick={(event) => event.stopPropagation()}
           aria-label="Drag to reorder or move"
-          className="shrink-0 cursor-grab touch-none select-none px-0.5 text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          className="grid h-11 w-11 shrink-0 cursor-grab touch-none select-none place-items-center text-text-muted hover:text-text md:h-auto md:w-auto md:px-0.5"
           title="Drag"
         >
           ⠿
@@ -1150,7 +1395,7 @@ function BacklogRow({
         {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
         <span className="min-w-0 truncate">
           {task.workItemKey ? (
-            <span className="mr-1 font-mono text-[10px] font-semibold text-[var(--color-text-muted)]">
+            <span className="mr-1 font-mono text-nano font-semibold text-text-muted">
               {task.workItemKey}
             </span>
           ) : null}
@@ -1159,7 +1404,7 @@ function BacklogRow({
         <SubtaskProgress task={task} />
         <BlockedBadge task={task} />
       </div>
-      <span className="truncate text-xs text-[var(--color-text-muted)]">
+      <span className="truncate text-caption text-text-muted">
         {task.epicTitle ?? "—"}
       </span>
       <PersonCell actor={task.assignee} emptyLabel="unassigned" />
@@ -1177,7 +1422,7 @@ function BacklogRow({
         <input type="hidden" name="taskId" value={task.id} />
         <button
           type="submit"
-          className="rounded-md px-1.5 py-1 text-[var(--color-text-muted)] hover:bg-[var(--color-crit)]/10 hover:text-[var(--color-crit)]"
+          className="grid h-11 w-11 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:px-1.5 md:py-1"
           aria-label={`Move ${task.title} to bin`}
           title="Move to bin"
         >
@@ -1193,7 +1438,7 @@ function DeploymentIndicator({ status }: { status: string }) {
   if (icon === "—") {
     return (
       <span
-        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-[var(--color-line)] text-[9px] text-[var(--color-text-muted)] transition hover:scale-110 hover:border-[var(--color-accent)]"
+        className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-line text-pico text-text-muted transition hover:scale-110 hover:border-accent"
         title="Deployment: Not Required"
         aria-label="Deployment: Not Required"
       >
@@ -1203,7 +1448,7 @@ function DeploymentIndicator({ status }: { status: string }) {
   }
   return (
     <span
-      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-[10px] leading-none transition hover:scale-110"
+      className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-nano leading-none transition hover:scale-110"
       title={`Deployment: ${status}`}
       aria-label={`Deployment: ${status}`}
     >
@@ -1240,7 +1485,7 @@ function PersonCell({
   emptyLabel: string;
 }) {
   return (
-    <span className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-muted)]">
+    <span className="flex min-w-0 items-center gap-2 text-caption text-text-muted">
       {actor ? (
         <MessageAvatar actor={actor} size="sm" />
       ) : (
@@ -1286,14 +1531,14 @@ function ElapsedClock({
   const elapsed = elapsedMsForTask(task, now);
   if (elapsed === null) {
     if (align === "right") {
-      return <span className="text-right text-xs text-[var(--color-text-muted)]">—</span>;
+      return <span className="text-right text-caption text-text-muted">—</span>;
     }
     return null;
   }
   return (
     <span
       title={elapsedTitle(task)}
-      className={`shrink-0 items-center gap-1 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-[var(--color-text-muted)] ${
+      className={`shrink-0 items-center gap-1 rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-nano tabular-nums text-text-muted ${
         align === "right" ? "ml-auto flex justify-end" : "inline-flex"
       }`}
     >
@@ -1342,7 +1587,7 @@ function DateActorCell({
   dateOnly?: boolean;
 }) {
   return (
-    <span className="flex min-w-0 items-center justify-end gap-1.5 text-xs text-[var(--color-text-muted)]">
+    <span className="flex min-w-0 items-center justify-end gap-1.5 text-caption text-text-muted">
       <time
         dateTime={iso}
         title={iso}
@@ -1371,12 +1616,12 @@ function statusRowClass(status: string) {
   if (status === "In Progress") return "bg-emerald-400/[0.07]";
   if (status === "Review") return "bg-amber-400/[0.09]";
   if (status === "Done") return "bg-lime-400/[0.06]";
-  if (status === "Backlog") return "bg-[var(--color-panel-soft)]";
+  if (status === "Backlog") return "bg-panel-soft";
   return "";
 }
 
 function taskCardClass(task: Task, isDragging = false) {
-  return `group/card relative block w-full overflow-hidden rounded-lg border px-3 py-2 text-sm cursor-pointer select-none shadow-[0_14px_34px_rgba(15,23,42,0.12)] ring-1 ring-white/10 backdrop-blur-xl transition-all before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/80 before:to-transparent after:pointer-events-none after:absolute after:inset-0 after:-translate-x-full after:bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.16),transparent)] after:opacity-0 after:transition-all after:duration-700 hover:-translate-y-0.5 hover:border-white/55 hover:shadow-[0_18px_46px_rgba(15,23,42,0.18)] hover:after:translate-x-full hover:after:opacity-100 ${
+  return `group/card relative block w-full overflow-hidden rounded-lg border px-3 py-2 text-body cursor-pointer select-none shadow-[0_14px_34px_rgba(15,23,42,0.12)] ring-1 ring-white/10 backdrop-blur-xl transition-all active:scale-[0.98] md:active:scale-100 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/80 before:to-transparent after:pointer-events-none after:absolute after:inset-0 after:-translate-x-full after:bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.16),transparent)] after:opacity-0 after:transition-all after:duration-700 hover:-translate-y-0.5 hover:border-white/55 hover:shadow-[0_18px_46px_rgba(15,23,42,0.18)] hover:after:translate-x-full hover:after:opacity-100 ${
     isPlanningAssigned(task)
       ? "border-yellow-200/70 bg-[linear-gradient(135deg,rgba(254,240,138,0.22),rgba(255,255,255,0.08))]"
       : "border-white/25 bg-[linear-gradient(135deg,rgba(255,255,255,0.18),rgba(255,255,255,0.06))]"
@@ -1388,7 +1633,7 @@ function columnSurfaceClass(status: string) {
   if (status === "In Progress") return "border-sky-300/35 bg-sky-500/[0.11]";
   if (status === "Review") return "border-amber-300/40 bg-amber-500/[0.14]";
   if (status === "Done") return "border-lime-300/35 bg-lime-500/[0.10]";
-  return "border-[var(--color-line)] bg-[var(--color-panel)]";
+  return "border-line bg-panel";
 }
 
 function columnHeaderPillClass(status: string) {

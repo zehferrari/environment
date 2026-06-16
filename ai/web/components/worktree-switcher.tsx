@@ -70,9 +70,9 @@ export default function WorktreeSwitcher({
 
   if (!state.available) {
     return (
-      <p className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm text-[var(--color-text-muted)]">
+      <p className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-body text-text-muted">
         The live-preview switcher isn&apos;t installed on this host. Run{" "}
-        <code className="rounded bg-[var(--color-bg-elev)] px-1.5 py-0.5 text-xs">
+        <code className="rounded bg-bg-elev px-1.5 py-0.5 text-caption">
           ai/web/deploy/install-pm-switch-runner.sh
         </code>{" "}
         to enable it.
@@ -83,49 +83,49 @@ export default function WorktreeSwitcher({
   return (
     <div className="space-y-3">
       {error ? (
-        <div className="rounded-lg border border-[var(--color-crit)]/40 bg-[var(--color-crit)]/10 px-3 py-2 text-sm text-[var(--color-crit)]">
+        <div className="rounded-lg border border-crit/40 bg-crit/10 px-3 py-2 text-body text-crit">
           {error}
         </div>
       ) : null}
 
       {inProgress ? (
-        <div className="flex items-center gap-2 rounded-lg border border-[var(--color-accent)]/40 bg-[var(--color-accent-soft)] px-3 py-2 text-sm text-[var(--color-accent)]">
+        <div className="flex items-center gap-2 rounded-lg border border-accent/40 bg-accent-soft px-3 py-2 text-body text-accent">
           <Spinner />
           <span>{job.message || "Switching…"}</span>
         </div>
       ) : job.state === "error" ? (
-        <details className="rounded-lg border border-[var(--color-crit)]/40 bg-[var(--color-crit)]/10 px-3 py-2 text-sm text-[var(--color-crit)]">
+        <details className="rounded-lg border border-crit/40 bg-crit/10 px-3 py-2 text-body text-crit">
           <summary className="cursor-pointer">{job.message || "Switch failed."}</summary>
           {job.log ? (
-            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-[11px] leading-5 text-[var(--color-text)]">
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-micro leading-5 text-text">
               {job.log}
             </pre>
           ) : null}
         </details>
       ) : job.state === "done" ? (
-        <div className="rounded-lg border border-[var(--color-ok)]/40 bg-[var(--color-ok)]/10 px-3 py-2 text-sm text-[var(--color-ok)]">
+        <div className="rounded-lg border border-ok/40 bg-ok/10 px-3 py-2 text-body text-ok">
           {job.message || "Switch complete."} Hard-refresh to load the new build.
         </div>
       ) : null}
 
-      <ul className="divide-y divide-[var(--color-line)] overflow-hidden rounded-xl border border-[var(--color-line)]">
+      <ul className="divide-y divide-line overflow-hidden rounded-card border border-line">
         {worktrees.map((w) => (
           <li key={w.path} className="flex items-center gap-3 px-3 py-2.5">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <span className="truncate text-sm font-medium text-[var(--color-text)]">{w.name}</span>
+                <span className="truncate text-body font-medium text-text">{w.name}</span>
                 {w.served ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-[var(--color-ok)]/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ok)]">
-                    <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-ok)]" /> Live
+                  <span className="inline-flex items-center gap-1 rounded-full bg-ok/15 px-2 py-0.5 text-nano font-semibold uppercase tracking-wider text-ok">
+                    <span className="h-1.5 w-1.5 rounded-full bg-ok" /> Live
                   </span>
                 ) : null}
                 {!w.ready ? (
-                  <span className="rounded-full bg-[var(--color-warn)]/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-warn)]">
+                  <span className="rounded-full bg-warn/15 px-2 py-0.5 text-nano font-semibold uppercase tracking-wider text-warn">
                     needs install
                   </span>
                 ) : null}
               </div>
-              <div className="truncate text-xs text-[var(--color-text-muted)]">
+              <div className="truncate text-caption text-text-muted">
                 {w.branch} · {w.head}
               </div>
             </div>
@@ -133,14 +133,14 @@ export default function WorktreeSwitcher({
               type="button"
               onClick={() => serve(w.name, w.served)}
               disabled={inProgress || pending || !w.ready}
-              className="shrink-0 rounded-lg border border-[var(--color-line)] px-3 py-1.5 text-sm font-medium text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-[var(--color-line)] disabled:hover:text-[var(--color-text)]"
+              className="shrink-0 rounded-lg border border-line px-control-x py-control-y text-body font-medium text-text hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line disabled:hover:text-text"
             >
               {w.served ? "Rebuild live" : "Serve live"}
             </button>
           </li>
         ))}
       </ul>
-      <p className="text-xs text-[var(--color-text-muted)]">
+      <p className="text-caption text-text-muted">
         Builds the chosen worktree and points the live site at it, or rebuilds
         the current live worktree (≈1–2 min; the site restarts, so it briefly
         blips). All worktrees share the same database and secrets — only the

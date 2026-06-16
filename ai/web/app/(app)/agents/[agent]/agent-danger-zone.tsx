@@ -58,42 +58,42 @@ export default function AgentDangerZone({
   };
 
   return (
-    <div className="rounded-2xl border border-[var(--color-crit)]/40 bg-[var(--color-crit)]/5 p-4">
-      <h3 className="text-sm font-semibold uppercase tracking-wider text-[var(--color-crit)]">Danger Zone</h3>
-      <p className="mt-2 text-sm text-[var(--color-text-muted)]">
-        Permanently remove <span className="font-mono text-[var(--color-text)]">@{agent}</span>. This deletes the
+    <div className="rounded-panel border border-crit/40 bg-crit/5 p-card">
+      <h3 className="text-body font-semibold uppercase tracking-wider text-crit">Danger Zone</h3>
+      <p className="mt-2 text-body text-text-muted">
+        Permanently remove <span className="font-mono text-text">@{agent}</span>. This deletes the
         Linux user, their workspace, and their config. This cannot be undone.
       </p>
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="mt-3 cursor-pointer rounded-lg bg-[var(--color-crit)] px-4 py-2 text-xs font-semibold text-white transition hover:opacity-90"
+        className="mt-3 cursor-pointer rounded-lg bg-crit px-card py-control-y text-caption font-semibold text-white transition hover:opacity-90"
       >
         Remove agent
       </button>
 
       {open && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-card backdrop-blur-sm"
           onClick={close}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-6 shadow-2xl"
+            className="w-full max-w-md rounded-panel border border-line bg-panel p-6 shadow-2xl"
           >
-            <h4 className="text-base font-semibold text-[var(--color-text)]">Remove agent {name}?</h4>
-            <p className="mt-2 text-sm text-[var(--color-text-muted)]">
+            <h4 className="text-base font-semibold text-text">Remove agent {name}?</h4>
+            <p className="mt-2 text-body text-text-muted">
               This is exactly what removing{" "}
-              <span className="font-mono text-[var(--color-text)]">@{agent}</span> does. This cannot be undone.
+              <span className="font-mono text-text">@{agent}</span> does. This cannot be undone.
             </p>
 
-            <div className="mt-3 max-h-[40vh] space-y-3 overflow-y-auto rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3 text-sm">
+            <div className="mt-3 max-h-[40vh] space-y-3 overflow-y-auto rounded-card border border-line bg-panel-soft p-3 text-body">
               <div>
-                <div className="text-xs font-semibold uppercase tracking-wider text-[var(--color-crit)]">Removed</div>
-                <ul className="mt-1 space-y-0.5 text-[var(--color-text-muted)]">
+                <div className="text-caption font-semibold uppercase tracking-wider text-crit">Removed</div>
+                <ul className="mt-1 space-y-0.5 text-text-muted">
                   {summary.removed.map((item) => (
                     <li key={item} className="flex gap-2">
-                      <span className="text-[var(--color-crit)]">✕</span>
+                      <span className="text-crit">✕</span>
                       <span>{item}</span>
                     </li>
                   ))}
@@ -102,22 +102,22 @@ export default function AgentDangerZone({
 
               {summary.account && (
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wider text-[var(--color-warn)]">Login</div>
-                  <p className="mt-1 text-[var(--color-text-muted)]">
-                    <span className="font-mono text-[var(--color-text)]">@{summary.account.username}</span> — {summary.account.note}
+                  <div className="text-caption font-semibold uppercase tracking-wider text-warn">Login</div>
+                  <p className="mt-1 text-text-muted">
+                    <span className="font-mono text-text">@{summary.account.username}</span> — {summary.account.note}
                   </p>
                 </div>
               )}
 
               <div>
-                <div className="text-xs font-semibold uppercase tracking-wider text-[var(--color-ok)]">
+                <div className="text-caption font-semibold uppercase tracking-wider text-ok">
                   Kept (under the deactivated account)
                 </div>
-                <ul className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[var(--color-text-muted)]">
+                <ul className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-text-muted">
                   {summary.preserved.map((row) => (
                     <li key={row.label} className="flex justify-between gap-2">
                       <span>{row.label}</span>
-                      <span className="font-mono text-[var(--color-text)]">{row.count}</span>
+                      <span className="font-mono text-text">{row.count}</span>
                     </li>
                   ))}
                 </ul>
@@ -125,13 +125,13 @@ export default function AgentDangerZone({
             </div>
 
             {error && (
-              <div className="mt-3 rounded-xl border border-[var(--color-crit)] bg-[var(--color-crit)]/10 p-3 text-xs text-[var(--color-crit)]">
+              <div className="mt-3 rounded-card border border-crit bg-crit/10 p-3 text-caption text-crit">
                 {error}
               </div>
             )}
 
-            <label className="mt-4 block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-              Type <span className="font-mono text-[var(--color-text)]">{agent}</span> to confirm
+            <label className="mt-4 block text-caption font-semibold uppercase tracking-wider text-text-muted">
+              Type <span className="font-mono text-text">{agent}</span> to confirm
             </label>
             <input
               type="text"
@@ -140,7 +140,7 @@ export default function AgentDangerZone({
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
               placeholder={agent}
-              className="mt-1 w-full rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 font-mono text-[var(--color-text)] focus:border-[var(--color-crit)] focus:outline-none disabled:opacity-60"
+              className="mt-1 w-full rounded-card border border-line bg-panel-soft px-3 py-2 font-mono text-text focus:border-crit focus:outline-none disabled:opacity-60"
             />
 
             <div className="mt-5 flex justify-end gap-2">
@@ -148,7 +148,7 @@ export default function AgentDangerZone({
                 type="button"
                 disabled={busy}
                 onClick={close}
-                className="cursor-pointer rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-xs font-semibold text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-50"
+                className="cursor-pointer rounded-lg border border-line bg-panel-soft px-3 py-2 text-caption font-semibold text-text-muted hover:border-accent hover:text-accent disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -156,7 +156,7 @@ export default function AgentDangerZone({
                 type="button"
                 disabled={busy || !matches}
                 onClick={remove}
-                className="cursor-pointer rounded-lg bg-[var(--color-crit)] px-4 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                className="cursor-pointer rounded-lg bg-crit px-card py-control-y text-caption font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {busy ? "Removing…" : "Remove agent"}
               </button>

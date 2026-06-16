@@ -40,32 +40,32 @@ export default function AddProjectFab({
   const [keyTouched, setKeyTouched] = useState(false);
 
   const labelCls =
-    "mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]";
+    "mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted";
   const inputCls =
-    "w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]";
+    "w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent";
 
   return (
     <>
       {open ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-card"
           onClick={() => setOpen(false)}
         >
           <form
             action={createProjectAction}
             onSubmit={() => setOpen(false)}
             onClick={(e) => e.stopPropagation()}
-            className="max-h-[85vh] w-full max-w-lg space-y-3 overflow-y-auto rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-2xl"
+            className="max-h-[85vh] w-full max-w-lg space-y-3 overflow-y-auto rounded-panel border border-line bg-panel p-card-lg shadow-2xl"
           >
             <div className="flex items-center justify-between">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
                 New project
               </div>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label="Close"
-                className="text-lg leading-none text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                className="text-heading leading-none text-text-muted hover:text-text"
               >
                 ×
               </button>
@@ -205,13 +205,13 @@ export default function AddProjectFab({
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="rounded-lg border border-[var(--color-line)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                className="rounded-lg border border-line px-control-x py-control-y text-body font-medium text-text-muted hover:text-text"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="rounded-lg bg-[var(--color-accent)] px-4 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
+                className="rounded-lg bg-accent px-4 py-1.5 text-body font-medium text-bg hover:opacity-90"
               >
                 Create project
               </button>
@@ -224,7 +224,7 @@ export default function AddProjectFab({
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Add project"
-        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-accent)] text-3xl leading-none text-[var(--color-bg)] shadow-lg transition hover:opacity-90"
+        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90"
       >
         <span className="-mt-0.5">+</span>
       </button>

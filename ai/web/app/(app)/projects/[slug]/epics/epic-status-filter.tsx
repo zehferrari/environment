@@ -35,36 +35,36 @@ export default function EpicStatusFilter({
   }
 
   return (
-    <div className="relative inline-block text-sm">
+    <div className="relative inline-block text-body">
       <button
         type="button"
         disabled={disabled}
         onClick={() => setOpen((current) => !current)}
-        className="flex min-w-64 items-center justify-between gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-left text-sm text-[var(--color-text)] shadow-sm transition hover:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45"
+        className="flex min-w-64 items-center justify-between gap-3 rounded-card border border-line bg-panel px-3 py-2 text-left text-body text-text shadow-sm transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-45"
         aria-expanded={open}
       >
         <span className="min-w-0">
-          <span className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+          <span className="block text-nano font-semibold uppercase tracking-wider text-text-muted">
             Status filter
           </span>
           <span className="block truncate">{label}</span>
         </span>
-        <span className="shrink-0 text-[var(--color-text-muted)]" aria-hidden="true">
+        <span className="shrink-0 text-text-muted" aria-hidden="true">
           {open ? "▴" : "▾"}
         </span>
       </button>
       {open && !disabled ? (
-        <div className="absolute left-0 z-30 mt-2 w-full rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-2 shadow-2xl">
+        <div className="absolute left-0 z-30 mt-2 w-full rounded-card border border-line bg-panel p-2 shadow-2xl">
           {OPTIONS.map((status) => (
             <label
               key={status}
-              className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-[var(--color-text)] transition hover:bg-[var(--color-panel-soft)]"
+              className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-caption text-text transition hover:bg-panel-soft"
             >
               <input
                 type="checkbox"
                 checked={selected.has(status)}
                 onChange={(event) => updateStatus(status, event.currentTarget.checked)}
-                className="h-4 w-4 accent-[var(--color-accent)]"
+                className="h-4 w-4 accent-accent"
               />
               <span>{status}</span>
             </label>

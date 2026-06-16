@@ -355,49 +355,49 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
   };
 
   const inputCls =
-    "w-full rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-[var(--color-text)] focus:border-[var(--color-accent)] focus:outline-none disabled:opacity-60";
-  const labelCls = "block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)] mb-1";
+    "w-full rounded-card border border-line bg-panel-soft px-3 py-2 text-text focus:border-accent focus:outline-none disabled:opacity-60";
+  const labelCls = "block text-caption font-semibold uppercase tracking-wider text-text-muted mb-1";
 
   return (
     <>
       <button
         onClick={handleOpenAdd}
-        className="rounded-xl border border-[var(--color-line)] bg-[var(--color-accent)] px-4 py-2 text-sm font-medium text-[var(--color-bg)] transition hover:opacity-90 cursor-pointer"
+        className="rounded-card border border-line bg-accent px-card py-control-y text-body font-medium text-bg transition hover:opacity-90 cursor-pointer"
       >
         Add Agent +
       </button>
 
       {open && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-card backdrop-blur-sm"
           onClick={() => !busy && setOpen(false)}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-2xl overflow-y-auto rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-6 shadow-2xl max-h-[92vh]"
+            className="w-full max-w-2xl overflow-y-auto rounded-panel border border-line bg-panel p-6 shadow-2xl max-h-[92vh]"
           >
-            <div className="flex items-center justify-between border-b border-[var(--color-line)] pb-3">
-              <h3 className="text-lg font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+            <div className="flex items-center justify-between border-b border-line pb-3">
+              <h3 className="text-heading font-semibold uppercase tracking-wider text-text-muted">
                 {isEdit ? `Edit Agent @${form.user}` : "Add New Agent"}
               </h3>
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => setOpen(false)}
-                className="cursor-pointer text-2xl leading-none text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-50"
+                className="cursor-pointer text-display leading-none text-text-muted hover:text-text disabled:opacity-50"
               >
                 &times;
               </button>
             </div>
 
-            <form onSubmit={handleSubmit} className="mt-4 space-y-4 text-sm">
+            <form onSubmit={handleSubmit} className="mt-4 space-y-section-gap text-body">
               {error && (
-                <div className="rounded-xl border border-[var(--color-crit)] bg-[var(--color-crit)]/10 p-3 text-xs text-[var(--color-crit)]">
+                <div className="rounded-card border border-crit bg-crit/10 p-3 text-caption text-crit">
                   {error}
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-card">
                 <div>
                   <label className={labelCls}>User slug</label>
                   <input
@@ -424,7 +424,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-card">
                 <div>
                   <label className={labelCls}>Role</label>
                   <select
@@ -464,7 +464,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                       <option key={theme} value={theme}>{theme}</option>
                     ))}
                   </select>
-                  <p className="mt-1 text-[10px] text-[var(--color-text-muted)]">
+                  <p className="mt-1 text-nano text-text-muted">
                     Pick <span className="font-medium">{MANUAL_IMAGE_THEME}</span> to upload profile/avatar images yourself from the agent profile page.
                     Generated images use Confy with the selected demographic options.
                   </p>
@@ -472,9 +472,9 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
               ) : null}
 
               {!isEdit && form.image_theme !== MANUAL_IMAGE_THEME ? (
-                <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
-                  <span className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">Image customization</span>
-                  <div className="flex flex-wrap gap-3 text-sm">
+                <div className="space-y-3 rounded-card border border-line bg-panel-soft p-3">
+                  <span className="block text-caption font-semibold uppercase tracking-wider text-text-muted">Image customization</span>
+                  <div className="flex flex-wrap gap-3 text-body">
                     {PROFILE_IMAGE_CUSTOMIZATION_MODES.map((mode) => (
                       <label key={mode} className="flex items-center gap-2">
                         <input
@@ -498,7 +498,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                               } : {}),
                             });
                           }}
-                          className="h-4 w-4 accent-[var(--color-accent)]"
+                          className="h-4 w-4 accent-accent"
                         />
                         <span>{mode}</span>
                       </label>
@@ -506,7 +506,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                   </div>
                   {form.image_customization_mode === "Custom" ? (
                     <div className="space-y-3">
-                      <div className="grid grid-cols-3 gap-4">
+                      <div className="grid grid-cols-3 gap-card">
                         <div>
                           <label className={labelCls}>Gender</label>
                           <select disabled={busy} value={form.image_gender} onChange={(e) => setForm({ ...form, image_gender: e.target.value })} className={inputCls}>
@@ -526,7 +526,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                           </select>
                         </div>
                       </div>
-                      <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-2 gap-card">
                         <div>
                           <label className={labelCls}>Username for image prompt</label>
                           <input disabled={busy} value={form.image_username || form.user} onChange={(e) => setForm({ ...form, image_username: e.target.value })} className={inputCls} />
@@ -546,7 +546,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                                   image_bio: suggestion.bio,
                                 });
                               }}
-                              className="shrink-0 rounded-xl border border-[var(--color-line)] px-3 py-2 text-xs font-medium hover:border-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-50"
+                              className="shrink-0 rounded-card border border-line px-3 py-2 text-caption font-medium hover:border-accent disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               Karen suggest
                             </button>
@@ -567,19 +567,19 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
               ) : null}
 
               {/* ---- Model providers + models ---- */}
-              <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
-                <span className="block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              <div className="space-y-3 rounded-card border border-line bg-panel-soft p-3">
+                <span className="block text-caption font-semibold uppercase tracking-wider text-text-muted">
                   Providers & models
                 </span>
                 <div className="flex flex-wrap gap-3">
                   {PROVIDERS.map((p) => (
-                    <label key={p.id} className="flex cursor-pointer items-center gap-2 text-xs">
+                    <label key={p.id} className="flex cursor-pointer items-center gap-2 text-caption">
                       <input
                         type="checkbox"
                         disabled={busy}
                         checked={enabled.has(p.id)}
                         onChange={() => toggleProvider(p.id)}
-                        className="h-4 w-4 accent-[var(--color-accent)]"
+                        className="h-4 w-4 accent-accent"
                       />
                       <span>{p.name}</span>
                     </label>
@@ -590,15 +590,15 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                   const def = getProvider(p);
                   const models = available[p] ?? def?.seedModels ?? [];
                   return (
-                    <div key={p} className="rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] p-2.5">
+                    <div key={p} className="rounded-lg border border-line bg-bg p-2.5">
                       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-[11px] font-semibold text-[var(--color-text)]">{def?.name ?? p}</span>
+                        <span className="text-micro font-semibold text-text">{def?.name ?? p}</span>
                         <div className="flex flex-wrap items-center gap-1.5">
                           <button
                             type="button"
                             disabled={busy || refreshing === p}
                             onClick={() => refresh(p)}
-                            className="rounded border border-[var(--color-line)] px-2 py-0.5 text-[10px] font-medium hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-50"
+                            className="rounded border border-line px-2 py-0.5 text-nano font-medium hover:border-accent hover:text-accent disabled:opacity-50"
                           >
                             {refreshing === p ? "Refreshing…" : "Refresh"}
                           </button>
@@ -608,7 +608,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                               type="button"
                               disabled={busy || refreshing === p}
                               onClick={() => refresh(p, f)}
-                              className="rounded border border-[var(--color-line)] px-2 py-0.5 text-[10px] capitalize hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-50"
+                              className="rounded border border-line px-2 py-0.5 text-nano capitalize hover:border-accent hover:text-accent disabled:opacity-50"
                             >
                               {f}
                             </button>
@@ -617,20 +617,20 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                       </div>
                       <div className="grid max-h-40 grid-cols-1 gap-1 overflow-y-auto sm:grid-cols-2">
                         {models.length === 0 ? (
-                          <span className="text-[10px] text-[var(--color-text-muted)]">No models — hit Refresh.</span>
+                          <span className="text-nano text-text-muted">No models — hit Refresh.</span>
                         ) : (
                           models.map((m) => (
-                            <label key={m.id} className="flex cursor-pointer items-center gap-2 truncate text-[11px]">
+                            <label key={m.id} className="flex cursor-pointer items-center gap-2 truncate text-micro">
                               <input
                                 type="checkbox"
                                 disabled={busy}
                                 checked={isSelected(p, m.id)}
                                 onChange={() => toggleModel(p, m)}
-                                className="h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]"
+                                className="h-3.5 w-3.5 shrink-0 accent-accent"
                               />
                               <span className="truncate" title={m.name}>
                                 {m.name}
-                                {m.free ? <span className="ml-1 text-[var(--color-ok)]">free</span> : null}
+                                {m.free ? <span className="ml-1 text-ok">free</span> : null}
                               </span>
                             </label>
                           ))
@@ -691,21 +691,21 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
               </div>
 
               {/* ---- Telegram ---- */}
-              <div className="space-y-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
-                <label className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              <div className="space-y-3 rounded-card border border-line bg-panel-soft p-3">
+                <label className="flex items-center justify-between text-caption font-semibold uppercase tracking-wider text-text-muted">
                   Telegram integration
                   <input
                     type="checkbox"
                     disabled={busy}
                     checked={form.telegram.enabled}
                     onChange={(e) => setForm({ ...form, telegram: { ...form.telegram, enabled: e.target.checked } })}
-                    className="h-4 w-4 accent-[var(--color-accent)]"
+                    className="h-4 w-4 accent-accent"
                   />
                 </label>
                 {form.telegram.enabled && (
                   <div className="grid gap-2 sm:grid-cols-2">
                     <div>
-                      <label className="mb-1 block text-[11px] font-semibold text-[var(--color-text-muted)]">Bot username</label>
+                      <label className="mb-1 block text-micro font-semibold text-text-muted">Bot username</label>
                       <input
                         type="text"
                         disabled={busy}
@@ -716,7 +716,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                       />
                     </div>
                     <div>
-                      <label className="mb-1 block text-[11px] font-semibold text-[var(--color-text-muted)]">
+                      <label className="mb-1 block text-micro font-semibold text-text-muted">
                         Bot token {isEdit ? "(leave blank to keep)" : ""}
                       </label>
                       <input
@@ -728,7 +728,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                         className={inputCls}
                       />
                     </div>
-                    <p className="text-[10px] text-[var(--color-text-muted)] sm:col-span-2">
+                    <p className="text-nano text-text-muted sm:col-span-2">
                       DM policy is <span className="font-mono">pairing</span>: after deploy, DM the bot and it replies
                       with a pair code to authorise your account.
                     </p>
@@ -737,11 +737,11 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
               </div>
 
               {/* ---- Integrations ---- */}
-              <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
-                <span className="mb-2 block text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+              <div className="rounded-card border border-line bg-panel-soft p-3">
+                <span className="mb-2 block text-caption font-semibold uppercase tracking-wider text-text-muted">
                   Integrations
                 </span>
-                <div className="flex flex-wrap gap-4">
+                <div className="flex flex-wrap gap-card">
                   {(["gmail", "jira", "bitbucket", "maildir"] as const).map((k) => (
                     <label key={k} className="flex cursor-pointer items-center gap-2 capitalize">
                       <input
@@ -751,27 +751,27 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                         onChange={(e) =>
                           setForm({ ...form, integrations: { ...form.integrations, [k]: e.target.checked } })
                         }
-                        className="h-4 w-4 accent-[var(--color-accent)]"
+                        className="h-4 w-4 accent-accent"
                       />
                       <span>{k === "maildir" ? "Server email (Maildir)" : k}</span>
                     </label>
                   ))}
                 </div>
                 {form.integrations.maildir && (
-                  <p className="mt-2 text-[10px] text-[var(--color-text-muted)]">
+                  <p className="mt-2 text-nano text-text-muted">
                     Provisions a local <span className="font-mono">~/Maildir</span> + mail listener. Requires an MTA
                     (Postfix/Dovecot) on the host; add the address to the local-mail allowlist.
                   </p>
                 )}
               </div>
 
-              <div className="flex items-center justify-between border-t border-[var(--color-line)] pt-4">
+              <div className="flex items-center justify-between border-t border-line pt-4">
                 {isEdit ? (
                   <button
                     type="button"
                     disabled={busy}
                     onClick={handleDelete}
-                    className="cursor-pointer rounded-lg bg-[var(--color-crit)] px-4 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                    className="cursor-pointer rounded-lg bg-crit px-card py-control-y text-caption font-semibold text-white hover:opacity-90 disabled:opacity-50"
                   >
                     Delete Agent
                   </button>
@@ -783,14 +783,14 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                     type="button"
                     disabled={busy}
                     onClick={() => setOpen(false)}
-                    className="cursor-pointer rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-xs font-semibold text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-50"
+                    className="cursor-pointer rounded-lg border border-line bg-panel-soft px-3 py-2 text-caption font-semibold text-text-muted hover:border-accent hover:text-accent disabled:opacity-50"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
                     disabled={busy}
-                    className="cursor-pointer rounded-lg bg-[var(--color-accent)] px-4 py-2 text-xs font-semibold text-[var(--color-bg)] hover:opacity-90 disabled:opacity-50"
+                    className="cursor-pointer rounded-lg bg-accent px-card py-control-y text-caption font-semibold text-bg hover:opacity-90 disabled:opacity-50"
                   >
                     {busy ? "Deploying…" : isEdit ? "Save Changes" : "Create Agent"}
                   </button>
@@ -835,7 +835,7 @@ function FallbackList({
   };
 
   if (refs.length === 0) {
-    return <p className="text-[10px] text-[var(--color-text-muted)]">No fallbacks. Add one below.</p>;
+    return <p className="text-nano text-text-muted">No fallbacks. Add one below.</p>;
   }
 
   return (
@@ -869,7 +869,7 @@ function FallbackRow({
     <li
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`flex items-center gap-2 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1.5 text-[11px] ${
+      className={`flex items-center gap-2 rounded-lg border border-line bg-bg px-2 py-1.5 text-micro ${
         isDragging ? "opacity-50" : ""
       }`}
     >
@@ -878,19 +878,19 @@ function FallbackRow({
         aria-label="Drag to reorder"
         {...attributes}
         {...listeners}
-        className="cursor-grab select-none px-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)] active:cursor-grabbing"
+        className="cursor-grab select-none px-1 text-text-muted hover:text-text active:cursor-grabbing"
       >
         ⋮⋮
       </button>
-      <span className="w-4 text-center font-mono text-[10px] text-[var(--color-text-muted)]">{index + 1}</span>
+      <span className="w-4 text-center font-mono text-nano text-text-muted">{index + 1}</span>
       <span className="min-w-0 flex-1 truncate" title={id}>
-        {label} <span className="text-[var(--color-text-muted)]">({providerOfModelRef(id)})</span>
+        {label} <span className="text-text-muted">({providerOfModelRef(id)})</span>
       </span>
       <button
         type="button"
         disabled={disabled}
         onClick={onRemove}
-        className="rounded px-1 text-[var(--color-text-muted)] hover:text-[var(--color-crit)] disabled:opacity-50"
+        className="rounded px-1 text-text-muted hover:text-crit disabled:opacity-50"
         aria-label="Remove fallback"
       >
         ×
@@ -903,7 +903,7 @@ export function EditAgentButton({ slug }: { slug: string }) {
   return (
     <button
       onClick={() => (window as any).openEditAgentModal?.(slug)}
-      className="ml-2 cursor-pointer text-[11px] font-medium text-[var(--color-accent)] hover:underline"
+      className="ml-2 cursor-pointer text-micro font-medium text-accent hover:underline"
     >
       Edit
     </button>

@@ -91,26 +91,26 @@ export default function ProfileEditor({ agent, files, canEdit }: { agent: string
 
   if (!current) return null;
   return (
-    <div className="grid gap-4 lg:grid-cols-[180px_minmax(0,1fr)]">
-      <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-2">
+    <div className="grid gap-card lg:grid-cols-[180px_minmax(0,1fr)]">
+      <div className="rounded-card border border-line bg-panel p-2">
         {items.map((f) => (
           <button
             key={f.file}
             type="button"
             onClick={() => switchFile(f.file)}
-            className={`block w-full rounded-lg px-3 py-2 text-left font-mono text-xs ${f.file === active ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]" : "text-[var(--color-text-muted)] hover:bg-[var(--color-panel-soft)]"}`}
+            className={`block w-full rounded-lg px-3 py-2 text-left font-mono text-caption ${f.file === active ? "bg-accent-soft text-accent" : "text-text-muted hover:bg-panel-soft"}`}
           >
             {f.file}
           </button>
         ))}
       </div>
       <div className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-xs text-[var(--color-text-muted)]">
-          <span><strong className="text-[var(--color-text)]">{current.file}</strong> · {current.bytes} bytes · sha {current.sha.slice(0, 12)}</span>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-line bg-panel px-3 py-2 text-caption text-text-muted">
+          <span><strong className="text-text">{current.file}</strong> · {current.bytes} bytes · sha {current.sha.slice(0, 12)}</span>
           <span>{current.modifiedAt ? new Date(current.modifiedAt).toLocaleString() : "not on disk yet"}</span>
         </div>
         {current.symlinkTarget ? (
-          <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-xs text-[var(--color-text-muted)]">
+          <div className="rounded-card border border-line bg-panel-soft px-3 py-2 text-caption text-text-muted">
             Shared file: <code>{current.symlinkTarget}</code>
           </div>
         ) : null}
@@ -119,17 +119,17 @@ export default function ProfileEditor({ agent, files, canEdit }: { agent: string
           onChange={(e) => setDraft(e.target.value)}
           readOnly={!canEdit}
           rows={24}
-          className="w-full rounded-xl border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--color-accent)] disabled:opacity-70"
+          className="w-full rounded-card border border-line bg-bg px-3 py-2 font-mono text-caption outline-none focus:border-accent disabled:opacity-70"
         />
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={save} disabled={!canEdit || !changed || pending} className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40">Save</button>
-          <button type="button" onClick={reload} disabled={pending} className="rounded-lg border border-[var(--color-line)] px-3 py-1.5 text-sm hover:border-[var(--color-accent)]">Reload</button>
-          {!canEdit ? <span className="text-xs text-[var(--color-warn)]">Read-only: agents can edit only themselves; zeh can edit all.</span> : null}
-          {state.kind !== "idle" ? <span className={`text-xs ${state.kind === "error" ? "text-[var(--color-crit)]" : "text-[var(--color-text-muted)]"}`}>{state.kind === "saving" ? "Saving…" : state.message}</span> : null}
+          <button type="button" onClick={save} disabled={!canEdit || !changed || pending} className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-white disabled:cursor-not-allowed disabled:opacity-40">Save</button>
+          <button type="button" onClick={reload} disabled={pending} className="rounded-lg border border-line px-control-x py-control-y text-body hover:border-accent">Reload</button>
+          {!canEdit ? <span className="text-caption text-warn">Read-only: agents can edit only themselves; zeh can edit all.</span> : null}
+          {state.kind !== "idle" ? <span className={`text-caption ${state.kind === "error" ? "text-crit" : "text-text-muted"}`}>{state.kind === "saving" ? "Saving…" : state.message}</span> : null}
         </div>
-        <details className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-3" open={changed}>
-          <summary className="cursor-pointer text-xs uppercase tracking-wider text-[var(--color-text-muted)]">Diff preview</summary>
-          <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--color-bg)] p-3 text-xs">{preview || "No changes"}</pre>
+        <details className="rounded-card border border-line bg-panel p-3" open={changed}>
+          <summary className="cursor-pointer text-caption uppercase tracking-wider text-text-muted">Diff preview</summary>
+          <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg bg-bg p-3 text-caption">{preview || "No changes"}</pre>
         </details>
       </div>
     </div>

@@ -31,41 +31,41 @@ export default async function LoginPage({
     <main className="min-h-screen flex items-center justify-center px-4">
       <form
         action={loginAction}
-        className="w-full max-w-sm rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-6 shadow-sm"
+        className="w-full max-w-sm rounded-panel border border-line bg-panel p-6 shadow-sm"
       >
-        <h1 className="text-lg font-semibold mb-1">Sign in</h1>
-        <p className="text-sm text-[var(--color-text-muted)] mb-4">
+        <h1 className="text-heading font-semibold mb-1">Sign in</h1>
+        <p className="text-body text-text-muted mb-4">
           Zero Latency workspace for zehferrari/environment
         </p>
 
         {error === "invalid" && (
-          <p className="text-sm text-[var(--color-crit)] mb-3">
+          <p className="text-body text-crit mb-3">
             Invalid username or password.
           </p>
         )}
 
         <input type="hidden" name="next" value={next ?? "/projects"} />
 
-        <label className="block text-sm mb-1">Username or email</label>
+        <label className="block text-body mb-1">Username or email</label>
         <input
           name="username"
           required
           autoComplete="username"
-          className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 mb-3 outline-none focus:border-[var(--color-accent)]"
+          className="w-full rounded-lg border border-line bg-panel px-3 py-2 mb-3 outline-none focus:border-accent"
         />
 
-        <label className="block text-sm mb-1">Password</label>
+        <label className="block text-body mb-1">Password</label>
         <input
           name="password"
           type="password"
           required
           autoComplete="current-password"
-          className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 mb-4 outline-none focus:border-[var(--color-accent)]"
+          className="w-full rounded-lg border border-line bg-panel px-3 py-2 mb-4 outline-none focus:border-accent"
         />
 
         <button
           type="submit"
-          className="w-full rounded-lg bg-[var(--color-accent)] text-white font-medium py-2 shadow-sm hover:opacity-95"
+          className="w-full rounded-lg bg-accent text-white font-medium py-2 shadow-sm hover:opacity-95"
         >
           Sign in
         </button>

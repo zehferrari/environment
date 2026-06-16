@@ -54,7 +54,7 @@ export default function TaskEpicPicker({
         name={name}
         value={selectedEpicId}
         onChange={(event) => setSelectedEpicId(event.currentTarget.value)}
-        className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 text-xs outline-none focus:border-[var(--color-accent)]"
+        className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
         aria-label="Epic"
       >
         <option value="">No epic</option>
@@ -70,7 +70,7 @@ export default function TaskEpicPicker({
           href={`/projects/${projectSlug}/epics/${selectedEpic.id}`}
           aria-label={`Open Epic ${selectedEpic.title}`}
           title={`Open Epic: ${selectedEpic.title}`}
-          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-panel-soft text-text-muted transition hover:border-accent hover:text-accent"
         >
           <SearchIcon />
         </Link>

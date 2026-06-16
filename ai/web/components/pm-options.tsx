@@ -25,7 +25,7 @@ export default function PmOptions({
 
   if (resolvedOption) {
     return (
-      <div className="mt-2 inline-flex rounded-full border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-2.5 py-1 text-xs font-semibold text-[var(--color-text-muted)]">
+      <div className="mt-2 inline-flex rounded-full border border-line bg-panel-soft px-2.5 py-1 text-caption font-semibold text-text-muted">
         Decision: {resolvedOption.label}
       </div>
     );
@@ -50,8 +50,8 @@ export default function PmOptions({
             });
           }}
           className={interactive
-            ? "rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-semibold text-[var(--color-bg)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
-            : "rounded-lg border border-[var(--color-line)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] opacity-65 disabled:cursor-not-allowed"}
+            ? "min-h-11 rounded-lg border border-accent bg-accent px-control-x py-control-y text-caption font-semibold text-bg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55 md:min-h-0"
+            : "min-h-11 rounded-lg border border-line bg-transparent px-control-x py-control-y text-caption font-semibold text-text-muted opacity-65 disabled:cursor-not-allowed md:min-h-0"}
           title={interactive ? `Choose ${option.label}` : "Decision option visible to the addressed human recipient"}
         >
           {option.label}

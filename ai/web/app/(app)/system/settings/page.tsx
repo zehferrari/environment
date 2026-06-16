@@ -33,10 +33,10 @@ export default async function SystemSettingsPage({
 
   return (
     <div className="space-y-6">
-      <header className="rounded-[28px] border border-[var(--color-line)] bg-[var(--color-panel)] p-6 shadow-sm">
-        <p className="text-xs uppercase tracking-[0.28em] text-[var(--color-text-muted)]">System</p>
+      <header className="rounded-hero border border-line bg-panel p-6 shadow-sm">
+        <p className="text-caption uppercase tracking-[0.28em] text-text-muted">System</p>
         <h1 className="mt-2 text-4xl font-semibold tracking-[-0.04em]">Settings.</h1>
-        <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--color-text-muted)]">
+        <p className="mt-3 max-w-2xl text-body leading-6 text-text-muted">
           Global defaults for the whole workspace. A project uses these
           whenever its own matching field is left blank.
         </p>
@@ -47,7 +47,7 @@ export default async function SystemSettingsPage({
       {activeTab === "general" ? (
         <form
           action={setSystemSettings}
-          className="max-w-2xl space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm"
+          className="max-w-2xl space-y-section-gap rounded-panel border border-line bg-panel p-card-lg shadow-sm"
         >
           <input type="hidden" name="settingsScope" value="general" />
           <SettingsRow
@@ -57,14 +57,14 @@ export default async function SystemSettingsPage({
             <select
               name="theme"
               defaultValue={settings.theme}
-              className="w-48 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+              className="w-48 rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
             >
               <option value="light">Light</option>
               <option value="dark">Dark</option>
             </select>
           </SettingsRow>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-card sm:grid-cols-2">
             <SettingsRow
               label="Default git user (name)"
               hint="Author name for agent commits when a project doesn't set its own."
@@ -74,7 +74,7 @@ export default async function SystemSettingsPage({
                 name="defaultGitUserName"
                 defaultValue={settings.defaultGitUserName ?? ""}
                 placeholder="Zeh Ferrari"
-                className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>
 
@@ -87,7 +87,7 @@ export default async function SystemSettingsPage({
                 name="defaultGitUserEmail"
                 defaultValue={settings.defaultGitUserEmail ?? ""}
                 placeholder="e@zeh.me"
-                className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>
           </div>
@@ -103,7 +103,7 @@ export default async function SystemSettingsPage({
               max={365}
               defaultValue={settings.doneTtlDays ?? ""}
               placeholder="5"
-              className="w-40 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+              className="w-40 rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
             />
           </SettingsRow>
 
@@ -118,14 +118,14 @@ export default async function SystemSettingsPage({
               max={3650}
               defaultValue={settings.binTtlDays ?? ""}
               placeholder="Built-in defaults"
-              className="w-40 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+              className="w-40 rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
             />
           </SettingsRow>
 
           <div className="flex justify-end pt-1">
             <button
               type="submit"
-              className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
+              className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-bg hover:opacity-90"
             >
               Save settings
             </button>
@@ -134,15 +134,15 @@ export default async function SystemSettingsPage({
       ) : null}
 
       {activeTab === "models" ? (
-        <div className="max-w-3xl space-y-4">
+        <div className="max-w-3xl space-y-section-gap">
           <form
             action={setSystemSettings}
-            className="space-y-4 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm"
+            className="space-y-section-gap rounded-panel border border-line bg-panel p-card-lg shadow-sm"
           >
             <input type="hidden" name="settingsScope" value="models" />
             <div>
-              <h2 className="text-sm font-semibold tracking-tight">OpenRouter</h2>
-              <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
+              <h2 className="text-body font-semibold tracking-tight">OpenRouter</h2>
+              <p className="mt-1 text-caption leading-5 text-text-muted">
                 OpenRouter models are available in the agent model picker. Store the API key here before assigning OpenRouter models to an agent.
               </p>
             </div>
@@ -155,20 +155,20 @@ export default async function SystemSettingsPage({
                 name="openRouterApiKey"
                 autoComplete="off"
                 placeholder={settings.hasOpenRouterApiKey ? "Stored; leave blank to keep" : "sk-or-v1-..."}
-                className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>
             {settings.hasOpenRouterApiKey ? (
-              <label className="flex items-center gap-2 text-sm">
+              <label className="flex items-center gap-2 text-body">
                 <input
                   type="checkbox"
                   name="clearOpenRouterApiKey"
-                  className="h-4 w-4 rounded border-[var(--color-line)] accent-[var(--color-accent)]"
+                  className="h-4 w-4 rounded border-line accent-accent"
                 />
                 <span>Clear stored OpenRouter key</span>
               </label>
             ) : null}
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-card sm:grid-cols-2">
               <SettingsRow
                 label="HTTP referer"
                 hint="Optional OpenRouter attribution value."
@@ -178,7 +178,7 @@ export default async function SystemSettingsPage({
                   name="openRouterReferer"
                   defaultValue={settings.openRouterReferer ?? ""}
                   placeholder="Current site origin"
-                  className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+                  className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
                 />
               </SettingsRow>
               <SettingsRow
@@ -190,28 +190,28 @@ export default async function SystemSettingsPage({
                   name="openRouterTitle"
                   defaultValue={settings.openRouterTitle ?? ""}
                   placeholder="Vixi Agents"
-                  className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+                  className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
                 />
               </SettingsRow>
             </div>
             <div className="flex justify-end pt-1">
               <button
                 type="submit"
-                className="rounded-lg bg-[var(--color-accent)] px-3 py-1.5 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
+                className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-bg hover:opacity-90"
               >
                 Save model settings
               </button>
             </div>
           </form>
 
-          <section className="space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-sm">
+          <section className="space-y-3 rounded-panel border border-line bg-panel p-card-lg shadow-sm">
             <div>
-              <h2 className="text-sm font-semibold tracking-tight">OAuth provider re-authentication</h2>
-              <p className="mt-1 text-xs leading-5 text-[var(--color-text-muted)]">
+              <h2 className="text-body font-semibold tracking-tight">OAuth provider re-authentication</h2>
+              <p className="mt-1 text-caption leading-5 text-text-muted">
                 OAuth providers are re-authenticated through the OpenClaw CLI because the browser cannot complete the agent-local credential flow safely.
               </p>
             </div>
-            <pre className="overflow-x-auto rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] p-3 text-xs leading-5 text-[var(--color-text)]"><code>{`sudo -u <agent> openclaw models auth list
+            <pre className="overflow-x-auto rounded-lg border border-line bg-bg p-3 text-caption leading-5 text-text"><code>{`sudo -u <agent> openclaw models auth list
 sudo -u <agent> openclaw models auth login --provider <provider-id> --device-code
 sudo -u <agent> openclaw models status --probe`}</code></pre>
           </section>
@@ -223,17 +223,17 @@ sudo -u <agent> openclaw models status --probe`}</code></pre>
 
 function SettingsTabNav({ activeTab }: { activeTab: SettingsTab }) {
   return (
-    <nav className="flex flex-wrap gap-2 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-2 shadow-sm" aria-label="System settings tabs">
+    <nav className="flex flex-wrap gap-2 rounded-panel border border-line bg-panel p-2 shadow-sm" aria-label="System settings tabs">
       {SETTINGS_TABS.map((tab) => {
         const active = tab.key === activeTab;
         return (
           <Link
             key={tab.key}
             href={`/system/settings?tab=${tab.key}`}
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+            className={`rounded-lg px-control-x py-control-y text-body font-medium transition ${
               active
-                ? "bg-[var(--color-accent)] text-[var(--color-bg)]"
-                : "text-[var(--color-text-muted)] hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+                ? "bg-accent text-bg"
+                : "text-text-muted hover:bg-panel-soft hover:text-text"
             }`}
           >
             {tab.label}
@@ -255,12 +255,12 @@ function SettingsRow({
 }) {
   return (
     <label className="block space-y-1">
-      <span className="block text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+      <span className="block text-micro font-semibold uppercase tracking-wider text-text-muted">
         {label}
       </span>
       {children}
       {hint ? (
-        <span className="block text-xs text-[var(--color-text-muted)]">{hint}</span>
+        <span className="block text-caption text-text-muted">{hint}</span>
       ) : null}
     </label>
   );

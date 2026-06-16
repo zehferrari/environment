@@ -45,6 +45,28 @@ assert(
 );
 
 assert(
+  decomposed.includes('roomId={ChatStreamManager.roomId({')
+    && decomposed.includes('targetKind: taskId ? "task-chat" : "epic-chat"'),
+  "task/epic action-plan streams must use ChatStreamManager room ids instead of per-message stream keys",
+);
+
+const taskCommentStreams = readFileSync(join(root, "components/task-comment-streams.tsx"), "utf8");
+assert(
+  taskCommentStreams.includes('targetKind="task-comment"')
+    && taskCommentStreams.includes('roomId={ChatStreamManager.roomId({')
+    && taskCommentStreams.includes('router.refresh()'),
+  "task comment streams must use ChatStreamManager room ids and refresh when terminal replies land",
+);
+
+const persistentStreamProvider = readFileSync(join(root, "components/persistent-pm-stream-provider.tsx"), "utf8");
+assert(
+  persistentStreamProvider.includes('return `pm-stream:v1:${record.key}:${record.activeTargetKey}`;')
+    && persistentStreamProvider.includes("if (record.activeTargetKey !== nextTargetKey)")
+    && persistentStreamProvider.includes("teardownRecord(record);"),
+  "room streams must isolate cross-tab coordination by active target and reset the coordinator when retargeting",
+);
+
+assert(
   decomposed.includes('const VIRTUAL_MESSAGE_ESTIMATED_HEIGHT')
     && decomposed.includes('const VIRTUAL_MESSAGE_OVERSCAN')
     && decomposed.includes('function useVirtualizedMessageRows'),

@@ -88,11 +88,11 @@ function AttachmentPreviewTile({
     );
   } else {
     preview = (
-      <div className="flex h-full w-full flex-col items-center justify-center gap-1 bg-gradient-to-br from-[var(--color-panel-soft)] to-[var(--color-bg)] text-[var(--color-text-muted)]">
-        <span className="text-xl font-semibold text-[var(--color-text)]">
+      <div className="flex h-full w-full flex-col items-center justify-center gap-1 bg-gradient-to-br from-panel-soft to-bg text-text-muted">
+        <span className="text-heading font-semibold text-text">
           {fileKind(mimeType)}
         </span>
-        <span className="max-w-full truncate px-2 text-[9px] uppercase tracking-wider">
+        <span className="max-w-full truncate px-2 text-pico uppercase tracking-wider">
           {mimeType || "unknown"}
         </span>
       </div>
@@ -100,7 +100,7 @@ function AttachmentPreviewTile({
   }
 
   return (
-    <div className="relative aspect-[4/3] overflow-hidden rounded-md border border-[var(--color-line)] bg-[var(--color-bg)]">
+    <div className="relative aspect-[4/3] overflow-hidden rounded-md border border-line bg-bg">
       {preview}
       <div className="absolute bottom-1 right-1 flex items-center gap-1">
         {previewable ? (
@@ -110,7 +110,7 @@ function AttachmentPreviewTile({
             rel="noreferrer"
             aria-label={`Preview ${attachment.filename}`}
             title="Preview"
-            className="grid h-7 w-7 place-items-center rounded-full border border-white/30 bg-black/55 text-sm font-semibold text-white shadow-sm backdrop-blur hover:bg-[var(--color-accent)] hover:text-[var(--color-bg)]"
+            className="grid h-7 w-7 place-items-center rounded-full border border-white/30 bg-black/55 text-body font-semibold text-white shadow-sm backdrop-blur hover:bg-accent hover:text-bg"
           >
             <span aria-hidden="true">↗</span>
           </a>
@@ -120,7 +120,7 @@ function AttachmentPreviewTile({
           download={attachment.filename}
           aria-label={`Download ${attachment.filename}`}
           title="Download"
-          className="grid h-7 w-7 place-items-center rounded-full border border-white/30 bg-black/55 text-sm font-semibold text-white shadow-sm backdrop-blur hover:bg-[var(--color-accent)] hover:text-[var(--color-bg)]"
+          className="grid h-7 w-7 place-items-center rounded-full border border-white/30 bg-black/55 text-body font-semibold text-white shadow-sm backdrop-blur hover:bg-accent hover:text-bg"
         >
           <span aria-hidden="true">↓</span>
         </a>
@@ -142,7 +142,7 @@ export default function AttachmentList({
 }) {
   if (attachments.length === 0) {
     return (
-      <p className="rounded-xl border border-dashed border-[var(--color-line)] p-6 text-center text-sm text-[var(--color-text-muted)]">
+      <p className="rounded-card border border-dashed border-line p-6 text-center text-body text-text-muted">
         {emptyMessage}
       </p>
     );
@@ -162,7 +162,7 @@ export default function AttachmentList({
         return (
           <li
             key={attachment.id}
-            className="relative min-w-0 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] p-2 text-xs shadow-sm transition hover:-translate-y-0.5 hover:border-[var(--color-accent)]/60 hover:shadow-md"
+            className="relative min-w-0 rounded-lg border border-line bg-panel p-2 text-caption shadow-sm transition hover:-translate-y-0.5 hover:border-accent/60 hover:shadow-md"
           >
             <AttachmentRemoveForm
               attachmentId={attachment.id}
@@ -179,16 +179,16 @@ export default function AttachmentList({
 
             <div className="mt-2 min-w-0 space-y-1">
               <div
-                className="truncate font-medium text-[var(--color-text)]"
+                className="truncate font-medium text-text"
                 title={attachment.filename}
               >
                 {attachment.filename}
               </div>
-              <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] text-[var(--color-text-muted)]">
+              <div className="flex min-w-0 items-center justify-between gap-2 text-nano text-text-muted">
                 <span className="truncate">{fileKind(mimeType)}</span>
                 <span className="shrink-0">{formatBytes(attachment.sizeBytes)}</span>
               </div>
-              <div className="truncate text-[10px] text-[var(--color-text-muted)]">
+              <div className="truncate text-nano text-text-muted">
                 @{attachment.uploader?.username ?? "unknown"} ·{" "}
                 <time
                   dateTime={createdAt.toISOString()}
@@ -200,7 +200,7 @@ export default function AttachmentList({
               {attachment.contextHref && attachment.contextLabel ? (
                 <Link
                   href={attachment.contextHref}
-                  className="block truncate text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-accent)]"
+                  className="block truncate text-nano text-text-muted hover:text-accent"
                   title={attachment.contextLabel}
                 >
                   {attachment.contextLabel}

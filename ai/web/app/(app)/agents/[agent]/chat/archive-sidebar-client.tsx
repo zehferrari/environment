@@ -251,29 +251,29 @@ export default function ArchiveSidebarClient({
   );
 
   return (
-    <aside className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm flex flex-col h-full min-h-0 select-none">
+    <aside className="rounded-panel border border-line bg-panel p-card shadow-sm flex flex-col h-full min-h-0 select-none">
       {/* Header */}
       <div className="mb-4 flex items-center justify-between gap-2 shrink-0">
         <div>
           <div className="flex items-center gap-1.5">
-            <p className="text-sm font-semibold">
+            <p className="text-body font-semibold">
               {viewMode === "archives" ? "Recent Chats" : "Trash Bin"}
             </p>
             {viewMode === "archives" ? (
               archives.length > 0 && (
-                <span className="rounded-full bg-[var(--color-ok)]/10 px-1.5 py-0.5 text-[10px] font-bold text-[var(--color-ok)]">
+                <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-nano font-bold text-ok">
                   {archives.length}
                 </span>
               )
             ) : (
               binArchives.length > 0 && (
-                <span className="rounded-full bg-[var(--color-crit)]/10 px-1.5 py-0.5 text-[10px] font-bold text-[var(--color-crit)]">
+                <span className="rounded-full bg-crit/10 px-1.5 py-0.5 text-nano font-bold text-crit">
                   {binArchives.length}
                 </span>
               )
             )}
           </div>
-          <p className="text-xs text-[var(--color-text-muted)]">
+          <p className="text-caption text-text-muted">
             {viewMode === "archives" ? "Recent conversations" : "Deleted conversations"}
           </p>
         </div>
@@ -281,10 +281,10 @@ export default function ArchiveSidebarClient({
           {viewMode === "archives" && (
             <button
               onClick={() => setShowCalendar(!showCalendar)}
-              className={`rounded-md border p-1 text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors cursor-pointer ${
+              className={`rounded-md border p-1 text-text-muted hover:border-accent hover:text-accent transition-colors cursor-pointer ${
                 showCalendar
-                  ? "border-[var(--color-accent)]/30 bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-                  : "border-[var(--color-line)] bg-[var(--color-panel-soft)]"
+                  ? "border-accent/30 bg-accent-soft text-accent"
+                  : "border-line bg-panel-soft"
               }`}
               title={showCalendar ? "Hide Calendar" : "Show Calendar"}
             >
@@ -302,10 +302,10 @@ export default function ArchiveSidebarClient({
 
           <Link
             href={`/agents/${slug}/chat`}
-            className={`rounded-md border px-2 py-1 text-xs font-medium transition-all ${
+            className={`rounded-md border px-2 py-1 text-caption font-medium transition-all ${
               selectedArchiveId === null && !selectedDateStr && viewMode === "archives"
-                ? "border-[var(--color-accent)]/30 bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
-                : "border-[var(--color-line)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                ? "border-accent/30 bg-accent-soft text-accent"
+                : "border-line text-text-muted hover:border-accent hover:text-accent"
             }`}
           >
             Active
@@ -313,7 +313,7 @@ export default function ArchiveSidebarClient({
         </div>
       </div>
 
-      <div className="mb-3 grid grid-cols-2 gap-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-1 text-xs font-semibold shrink-0">
+      <div className="mb-3 grid grid-cols-2 gap-1 rounded-card border border-line bg-panel-soft p-1 text-caption font-semibold shrink-0">
         <button
           type="button"
           onClick={() => {
@@ -322,11 +322,11 @@ export default function ArchiveSidebarClient({
           }}
           className={`rounded-lg px-2 py-1.5 transition ${
             viewMode === "archives"
-              ? "bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm"
-              : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              ? "bg-panel text-text shadow-sm"
+              : "text-text-muted hover:text-text"
           }`}
         >
-          Recent <span className="text-[10px] text-[var(--color-text-muted)]">({archives.length})</span>
+          Recent <span className="text-nano text-text-muted">({archives.length})</span>
         </button>
         <button
           type="button"
@@ -336,38 +336,38 @@ export default function ArchiveSidebarClient({
           }}
           className={`rounded-lg px-2 py-1.5 transition ${
             viewMode === "bin"
-              ? "bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm"
-              : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              ? "bg-panel text-text shadow-sm"
+              : "text-text-muted hover:text-text"
           }`}
         >
-          Bin <span className="text-[10px] text-[var(--color-text-muted)]">({binArchives.length})</span>
+          Bin <span className="text-nano text-text-muted">({binArchives.length})</span>
         </button>
       </div>
 
       {/* Mini Calendar View */}
       {viewMode === "archives" && showCalendar && (
-        <div className="mb-3 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-2 shrink-0">
+        <div className="mb-3 rounded-lg border border-line bg-panel-soft p-2 shrink-0">
           {/* Calendar Nav */}
           <div className="flex items-center justify-between mb-1.5">
             <button
               onClick={handlePrevMonth}
-              className="p-0.5 rounded hover:bg-[var(--color-panel)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition cursor-pointer"
+              className="p-0.5 rounded hover:bg-panel text-text-muted hover:text-text transition cursor-pointer"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
             </button>
-            <span className="text-[11px] font-bold text-[var(--color-text)]">
+            <span className="text-micro font-bold text-text">
               {monthName} {currentYear}
             </span>
             <button
               onClick={handleNextMonth}
-              className="p-0.5 rounded hover:bg-[var(--color-panel)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition cursor-pointer"
+              className="p-0.5 rounded hover:bg-panel text-text-muted hover:text-text transition cursor-pointer"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg>
             </button>
           </div>
 
           {/* Days Header */}
-          <div className="grid grid-cols-7 gap-0.5 text-center text-[9px] font-bold text-[var(--color-text-muted)] mb-0.5">
+          <div className="grid grid-cols-7 gap-0.5 text-center text-pico font-bold text-text-muted mb-0.5">
             <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
           </div>
 
@@ -390,22 +390,22 @@ export default function ArchiveSidebarClient({
                   onMouseEnter={() => hasChat && setHoveredDateStr(cell.dateStr)}
                   onMouseLeave={() => setHoveredDateStr(null)}
                   onClick={() => hasChat && setSelectedDateStr(isSelected ? null : cell.dateStr)}
-                  className={`relative h-5.5 w-5.5 rounded-md flex items-center justify-center text-[10px] font-medium transition-all ${
+                  className={`relative h-5.5 w-5.5 rounded-md flex items-center justify-center text-nano font-medium transition-all ${
                     hasChat
                       ? isSelected
-                        ? "bg-[var(--color-accent)] text-white font-bold"
-                        : "bg-[var(--color-accent)]/10 text-[var(--color-accent)] font-semibold border border-[var(--color-accent)]/20 cursor-pointer hover:bg-[var(--color-accent)] hover:text-white"
-                      : "text-[var(--color-text-muted)]/60"
+                        ? "bg-accent text-white font-bold"
+                        : "bg-accent/10 text-accent font-semibold border border-accent/20 cursor-pointer hover:bg-accent hover:text-white"
+                      : "text-text-muted/60"
                   } ${
                     isHovered || isArchiveHoverActive
-                      ? "ring-1 ring-[var(--color-accent)] scale-110 shadow-sm z-10"
+                      ? "ring-1 ring-accent scale-110 shadow-sm z-10"
                       : ""
                   }`}
                   title={hasChat ? `${dayArchives.length} chat${dayArchives.length === 1 ? "" : "s"} on this day` : undefined}
                 >
                   {cell.day}
                   {hasChat && (
-                    <span className={`absolute bottom-0.5 left-1/2 -translate-x-1/2 h-0.5 w-0.5 rounded-full ${isSelected ? "bg-white" : "bg-[var(--color-accent)]"}`} />
+                    <span className={`absolute bottom-0.5 left-1/2 -translate-x-1/2 h-0.5 w-0.5 rounded-full ${isSelected ? "bg-white" : "bg-accent"}`} />
                   )}
                 </div>
               );
@@ -416,7 +416,7 @@ export default function ArchiveSidebarClient({
 
       {/* Date Filter Selected Banner */}
       {viewMode === "archives" && selectedDateStr && (
-        <div className="mb-3 rounded-lg border border-[var(--color-accent)]/20 bg-[var(--color-accent)]/10 px-3 py-1.5 flex items-center justify-between text-xs text-[var(--color-accent)] font-semibold shrink-0">
+        <div className="mb-3 rounded-lg border border-accent/20 bg-accent/10 px-control-x py-control-y flex items-center justify-between text-caption text-accent font-semibold shrink-0">
           <span>Active on: {selectedDateStr}</span>
           <button
             onClick={() => setSelectedDateStr(null)}
@@ -431,7 +431,7 @@ export default function ArchiveSidebarClient({
       <div className="flex-1 overflow-y-auto min-h-0 pr-1 space-y-3 scrollbar-thin">
         {viewMode === "archives" ? (
           filteredArchives.length === 0 ? (
-            <p className="text-sm text-[var(--color-text-muted)]">No recent chats match.</p>
+            <p className="text-body text-text-muted">No recent chats match.</p>
           ) : (
             filteredArchives.map((archive) => {
               const selected = selectedArchiveId === archive.id;
@@ -448,13 +448,13 @@ export default function ArchiveSidebarClient({
                   key={archive.id}
                   onMouseEnter={() => setHoveredArchiveId(archive.id)}
                   onMouseLeave={() => setHoveredArchiveId(null)}
-                  className={`rounded-xl border p-2 transition-all duration-200 shadow-sm relative group ${
+                  className={`rounded-card border p-2 transition-all duration-200 shadow-sm relative group ${
                     selected
-                      ? "border-[var(--color-accent)] bg-[var(--color-accent)]/[0.04] shadow-[var(--color-accent)]/[0.02]"
-                      : "border-[var(--color-line)] bg-[var(--color-panel-soft)] hover:border-[var(--color-accent)]/30 hover:bg-[var(--color-panel)]"
+                      ? "border-accent bg-accent/[0.04] shadow-accent/[0.02]"
+                      : "border-line bg-panel-soft hover:border-accent/30 hover:bg-panel"
                   } ${
                     isDateHoverActive || isCardHovered
-                      ? "ring-1 ring-[var(--color-accent)]/40 border-[var(--color-accent)]/40 scale-[1.01]"
+                      ? "ring-1 ring-accent/40 border-accent/40 scale-[1.01]"
                       : ""
                   }`}
                 >
@@ -465,7 +465,7 @@ export default function ArchiveSidebarClient({
                         disabled={isPending}
                         value={editTitleValue}
                         onChange={(e) => setEditTitleValue(e.target.value)}
-                        className="w-full rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-2 py-1 text-xs outline-none focus:border-[var(--color-accent)] disabled:opacity-50"
+                        className="w-full rounded-md border border-line bg-bg px-2 py-1 text-caption outline-none focus:border-accent disabled:opacity-50"
                         onKeyDown={(e) => {
                           if (e.key === "Enter") handleSaveTitle(archive.id);
                           if (e.key === "Escape") setEditingArchiveId(null);
@@ -477,7 +477,7 @@ export default function ArchiveSidebarClient({
                           type="button"
                           disabled={isPending}
                           onClick={() => setEditingArchiveId(null)}
-                          className="rounded border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-2 py-0.5 text-[9px] font-medium text-[var(--color-text-muted)] hover:border-[var(--color-accent)] transition cursor-pointer"
+                          className="rounded border border-line bg-panel-soft px-2 py-0.5 text-pico font-medium text-text-muted hover:border-accent transition cursor-pointer"
                         >
                           Cancel
                         </button>
@@ -485,7 +485,7 @@ export default function ArchiveSidebarClient({
                           type="button"
                           disabled={isPending}
                           onClick={() => handleSaveTitle(archive.id)}
-                          className="rounded bg-[var(--color-accent)] px-2.5 py-0.5 text-[9px] font-medium text-[var(--color-bg)] hover:opacity-90 transition cursor-pointer"
+                          className="rounded bg-accent px-2.5 py-0.5 text-pico font-medium text-bg hover:opacity-90 transition cursor-pointer"
                         >
                           Save
                         </button>
@@ -494,12 +494,12 @@ export default function ArchiveSidebarClient({
                   ) : (
                     <>
                       <Link href={`/agents/${slug}/chat?archive=${archive.id}`} className="block">
-                        <span className="text-[9px] font-semibold text-[var(--color-text-muted)] tracking-wider block mb-0.5">
+                        <span className="text-pico font-semibold text-text-muted tracking-wider block mb-0.5">
                           {formatModernDate(archive.startedAt)}
                         </span>
                         
                         <div className="flex items-start justify-between gap-1.5 mb-1.5">
-                          <p className="line-clamp-2 text-[11px] font-semibold text-[var(--color-text)] leading-relaxed flex-1">
+                          <p className="line-clamp-2 text-micro font-semibold text-text leading-relaxed flex-1">
                             {archive.summary}
                           </p>
                           <button
@@ -510,7 +510,7 @@ export default function ArchiveSidebarClient({
                               setEditingArchiveId(archive.id);
                               setEditTitleValue(archive.summary);
                             }}
-                            className="opacity-0 group-hover:opacity-100 text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-opacity p-0.5 rounded hover:bg-[var(--color-panel)] cursor-pointer"
+                            className="opacity-0 group-hover:opacity-100 text-text-muted hover:text-accent transition-opacity p-0.5 rounded hover:bg-panel cursor-pointer"
                             title="Rename Archive"
                           >
                             <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -520,20 +520,20 @@ export default function ArchiveSidebarClient({
                         </div>
                       </Link>
 
-                      <div className="flex items-center justify-between text-[9px] text-[var(--color-text-muted)] border-t border-[var(--color-line)]/40 pt-1.5 shrink-0">
+                      <div className="flex items-center justify-between text-pico text-text-muted border-t border-line/40 pt-1.5 shrink-0">
                         <span className="flex items-center gap-1.5">
                           <span>
                             {archive.messageCount} msg{archive.messageCount === 1 ? "" : "s"}
                           </span>
                           {archive.hasAttachments && (
-                            <span className="text-[var(--color-accent)] flex items-center" title="Has attachments">
+                            <span className="text-accent flex items-center" title="Has attachments">
                               <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                                 <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
                               </svg>
                             </span>
                           )}
                           {archive.totalSizeKB !== undefined && (
-                            <span className="bg-[var(--color-panel)] border border-[var(--color-line)] px-1 rounded text-[8px] font-mono font-semibold" title="Total memory size including attachments">
+                            <span className="bg-panel border border-line px-1 rounded text-atom font-mono font-semibold" title="Total memory size including attachments">
                               {archive.totalSizeKB} KB
                             </span>
                           )}
@@ -545,10 +545,10 @@ export default function ArchiveSidebarClient({
                           onClick={() => setPending({ kind: "delete-archive", archiveId: archive.id })}
                           aria-label={hasChildren ? "Cannot delete parent of a continuation" : "Delete archived chat"}
                           title={hasChildren ? "Cannot delete: this archive has active continuation children" : "Delete archived chat"}
-                          className={`rounded px-1.5 py-0.5 text-[8px] font-medium transition-all ${
+                          className={`rounded px-1.5 py-0.5 text-atom font-medium transition-all ${
                             hasChildren
-                              ? "bg-[var(--color-line)]/20 text-[var(--color-text-muted)]/40 border border-transparent cursor-not-allowed"
-                              : "border border-[var(--color-line)] text-[var(--color-text-muted)] hover:border-[var(--color-crit)] hover:bg-[var(--color-crit)]/[0.04] hover:text-[var(--color-crit)] cursor-pointer"
+                              ? "bg-line/20 text-text-muted/40 border border-transparent cursor-not-allowed"
+                              : "border border-line text-text-muted hover:border-crit hover:bg-crit/4 hover:text-crit cursor-pointer"
                           }`}
                         >
                           {hasChildren ? "Locked" : "Delete"}
@@ -562,46 +562,46 @@ export default function ArchiveSidebarClient({
           )
         ) : (
           binArchives.length === 0 ? (
-            <p className="text-sm text-[var(--color-text-muted)] py-4 text-center">Trash bin is empty.</p>
+            <p className="text-body text-text-muted py-4 text-center">Trash bin is empty.</p>
           ) : (
             binArchives.map((archive) => {
               const selected = selectedArchiveId === archive.id;
               return (
                 <div
                   key={archive.id}
-                  className={`rounded-xl border p-2 transition-all duration-200 shadow-sm relative ${
+                  className={`rounded-card border p-2 transition-all duration-200 shadow-sm relative ${
                     selected
-                      ? "border-[var(--color-accent)] bg-[var(--color-accent)]/[0.04] shadow-[var(--color-accent)]/[0.02]"
-                      : "border-[var(--color-line)] bg-[var(--color-panel-soft)] hover:border-[var(--color-accent)]/30"
+                      ? "border-accent bg-accent/[0.04] shadow-accent/[0.02]"
+                      : "border-line bg-panel-soft hover:border-accent/30"
                   }`}
                 >
                   <Link href={`/agents/${slug}/chat?archive=${archive.id}`} className="block">
-                    <span className="text-[9px] font-semibold text-[var(--color-text-muted)] tracking-wider block mb-0.5">
+                    <span className="text-pico font-semibold text-text-muted tracking-wider block mb-0.5">
                       {formatModernDate(archive.startedAt)}
                     </span>
-                    <p className="line-clamp-2 text-[11px] font-semibold text-[var(--color-text)] leading-relaxed mb-1.5">
+                    <p className="line-clamp-2 text-micro font-semibold text-text leading-relaxed mb-1.5">
                       {archive.summary}
                     </p>
                   </Link>
 
-                  <div className="flex items-center justify-between text-[9px] text-[var(--color-text-muted)] border-t border-[var(--color-line)]/40 pt-1.5 shrink-0">
+                  <div className="flex items-center justify-between text-pico text-text-muted border-t border-line/40 pt-1.5 shrink-0">
                     <span className="flex flex-wrap items-center gap-1.5">
                       <span>
                         {archive.messageCount} msg{archive.messageCount === 1 ? "" : "s"}
                       </span>
                       {archive.hasAttachments && (
-                        <span className="text-[var(--color-accent)] flex items-center" title="Has attachments">
+                        <span className="text-accent flex items-center" title="Has attachments">
                           <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                             <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
                           </svg>
                         </span>
                       )}
                       {archive.totalSizeKB !== undefined && (
-                        <span className="bg-[var(--color-panel)] border border-[var(--color-line)] px-1 rounded text-[8px] font-mono font-semibold" title="Total memory size including attachments">
+                        <span className="bg-panel border border-line px-1 rounded text-atom font-mono font-semibold" title="Total memory size including attachments">
                           {archive.totalSizeKB} KB
                         </span>
                       )}
-                      <span className="text-[var(--color-crit)] font-semibold font-mono bg-[var(--color-crit)]/[0.06] border border-[var(--color-crit)]/10 px-1.5 py-0.5 rounded-md">
+                      <span className="text-crit font-semibold font-mono bg-crit/6 border border-crit/10 px-1.5 py-0.5 rounded-md">
                         {daysUntilPurge(archive.deletedAt!)}
                       </span>
                     </span>
@@ -610,7 +610,7 @@ export default function ArchiveSidebarClient({
                       type="button"
                       disabled={isPending}
                       onClick={() => handleRestore(archive.id)}
-                      className="rounded border border-[var(--color-accent)]/30 text-[var(--color-accent)] hover:bg-[var(--color-accent)]/[0.04] px-1.5 py-0.5 text-[8px] font-semibold cursor-pointer disabled:opacity-50"
+                      className="rounded border border-accent/30 text-accent hover:bg-accent/[0.04] px-1.5 py-0.5 text-atom font-semibold cursor-pointer disabled:opacity-50"
                     >
                       Restore
                     </button>
@@ -624,12 +624,12 @@ export default function ArchiveSidebarClient({
 
       {/* Empty Bin Button at bottom of Bin View */}
       {viewMode === "bin" && binArchives.length > 0 && (
-        <div className="pt-3 border-t border-[var(--color-line)] mt-3 shrink-0">
+        <div className="pt-3 border-t border-line mt-3 shrink-0">
           <button
             type="button"
             disabled={isPending}
             onClick={handleEmptyBin}
-            className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-[var(--color-crit)]/30 bg-[var(--color-crit)]/[0.04] py-2 text-xs font-semibold text-[var(--color-crit)] hover:bg-[var(--color-crit)]/[0.08] transition cursor-pointer disabled:opacity-50"
+            className="w-full flex items-center justify-center gap-1.5 rounded-lg border border-crit/30 bg-crit/4 py-2 text-caption font-semibold text-crit hover:bg-crit/8 transition cursor-pointer disabled:opacity-50"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>

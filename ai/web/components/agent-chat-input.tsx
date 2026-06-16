@@ -2,6 +2,7 @@
 
 import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
 import MaximizableTextarea from "@/components/maximizable-textarea";
+import { Button } from "@/components/ui/primitives";
 import { generateClientMessageId } from "@/lib/agents/ops/client-message-id";
 import React, { useRef, useState } from "react";
 
@@ -58,16 +59,12 @@ export default function AgentChatInput({
         placeholder={`Message @${agentUsername}...`}
         onKeyDown={handleKeyDown}
         expandedTitle={`Message @${agentUsername}`}
-        className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-xs outline-none focus:border-[var(--color-accent)] resize-none"
+        className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-caption outline-none focus:border-accent resize-none"
       />
       <div className="flex justify-end">
-        <button
-          type="submit"
-          disabled={!canSend}
-          className="rounded-lg bg-[var(--color-accent)] px-3 py-1 text-xs font-medium text-[var(--color-bg)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
-        >
+        <Button type="submit" disabled={!canSend} variant="primary" size="sm">
           Send
-        </button>
+        </Button>
       </div>
     </form>
   );

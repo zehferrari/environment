@@ -110,10 +110,10 @@ export default async function SystemActivityPage() {
 
   return (
     <div className="space-y-6">
-      <header className="rounded-[28px] border border-[var(--color-line)] bg-[var(--color-panel)] p-6 shadow-sm">
-        <p className="text-xs uppercase tracking-[0.28em] text-[var(--color-text-muted)]">System</p>
+      <header className="rounded-hero border border-line bg-panel p-6 shadow-sm">
+        <p className="text-caption uppercase tracking-[0.28em] text-text-muted">System</p>
         <h1 className="mt-2 text-4xl font-semibold tracking-[-0.04em]">Activity stream.</h1>
-        <p className="mt-3 max-w-2xl text-sm leading-6 text-[var(--color-text-muted)]">
+        <p className="mt-3 max-w-2xl text-body leading-6 text-text-muted">
           PM audit trail plus live Atlas host signal: service status, busy agents, open tickets, and recent server activity.
         </p>
       </header>
@@ -133,61 +133,61 @@ export default async function SystemActivityPage() {
       </section>
 
       <section className="grid gap-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-        <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+        <div className="rounded-panel border border-line bg-panel p-card shadow-sm">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">SQLite health</h2>
-              <p className="mt-1 font-mono text-xs text-[var(--color-text-muted)]">{compactDbPath(dbHealth.path)}</p>
+              <h2 className="text-caption uppercase tracking-wider text-text-muted">SQLite health</h2>
+              <p className="mt-1 font-mono text-caption text-text-muted">{compactDbPath(dbHealth.path)}</p>
             </div>
-            <span className={dbHealth.outsideWorktree ? "text-xs font-semibold text-[var(--color-ok)]" : "text-xs font-semibold text-[var(--color-crit)]"}>
+            <span className={dbHealth.outsideWorktree ? "text-caption font-semibold text-ok" : "text-caption font-semibold text-crit"}>
               {dbHealth.outsideWorktree ? "outside worktree" : "inside/unknown"}
             </span>
           </div>
-          <div className="mt-4 grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
+          <div className="mt-4 grid grid-cols-2 gap-2 text-body md:grid-cols-4">
             <MiniMetric label="Pages" value={dbHealth.pageCount == null ? "—" : String(dbHealth.pageCount)} />
             <MiniMetric label="Freelist" value={dbHealth.freelistCount == null ? "—" : `${dbHealth.freelistCount} (${formatFreelistRatio(dbHealth.freelistRatio)})`} />
             <MiniMetric label="Journal" value={dbHealth.journalMode ?? "—"} />
             <MiniMetric label="Locking" value={dbHealth.lockingMode ?? "—"} />
           </div>
-          <p className="mt-3 text-xs text-[var(--color-text-muted)]">
+          <p className="mt-3 text-caption text-text-muted">
             busy_timeout {dbHealth.busyTimeoutMs ?? "—"}ms · WAL {dbHealth.walExists ? "present" : "absent"} · SHM {dbHealth.shmExists ? "present" : "absent"}
           </p>
-          <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+          <p className="mt-1 text-caption text-text-muted">
             lock/busy errors {busyStats.lockErrors}
             {busyStats.lastLockAt ? ` · last ${busyStats.lastLockAt.slice(0, 19).replace("T", " ")}` : ""}
           </p>
           {dbHealth.warnings.length > 0 ? (
             <ul className="mt-3 space-y-1">
               {dbHealth.warnings.map((w) => (
-                <li key={w.code} className="text-xs font-medium text-[var(--color-crit)]">⚠ {w.message}</li>
+                <li key={w.code} className="text-caption font-medium text-crit">⚠ {w.message}</li>
               ))}
             </ul>
           ) : (
-            <p className="mt-3 text-xs text-[var(--color-ok)]">No health warnings.</p>
+            <p className="mt-3 text-caption text-ok">No health warnings.</p>
           )}
-          {dbHealth.error ? <p className="mt-2 text-xs text-[var(--color-crit)]">{dbHealth.error}</p> : null}
+          {dbHealth.error ? <p className="mt-2 text-caption text-crit">{dbHealth.error}</p> : null}
         </div>
 
-        <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
+        <div className="rounded-panel border border-line bg-panel p-card shadow-sm">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h2 className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">PM latency spans</h2>
-            <p className="font-mono text-[11px] text-[var(--color-text-muted)]">
+            <h2 className="text-caption uppercase tracking-wider text-text-muted">PM latency spans</h2>
+            <p className="font-mono text-micro text-text-muted">
               send→final p50 {formatLatency(latencySummary.p50Ms)} · p95 {formatLatency(latencySummary.p95Ms)} · max {formatLatency(latencySummary.maxMs)} · n={latencySummary.count}
             </p>
           </div>
           {recentPmRuns.length === 0 ? (
-            <p className="mt-3 text-sm text-[var(--color-text-muted)]">No PM channel runs recorded yet.</p>
+            <p className="mt-3 text-body text-text-muted">No PM channel runs recorded yet.</p>
           ) : (
-            <ul className="mt-3 divide-y divide-[var(--color-line)] text-xs">
+            <ul className="mt-3 divide-y divide-line text-caption">
               {recentPmRuns.map((run) => {
                 const spans = pmChannelLatencySpans(run);
                 return (
                   <li key={run.id} className="py-2">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="font-medium">@{run.agentSlug} · {run.kind} · {run.status}</span>
-                      <time className="font-mono text-[11px] text-[var(--color-text-muted)]" dateTime={run.updatedAt.toISOString()}>{run.updatedAt.toISOString().slice(0, 19).replace("T", " ")}</time>
+                      <time className="font-mono text-micro text-text-muted" dateTime={run.updatedAt.toISOString()}>{run.updatedAt.toISOString().slice(0, 19).replace("T", " ")}</time>
                     </div>
-                    <div className="mt-1 font-mono text-[11px] text-[var(--color-text-muted)]">
+                    <div className="mt-1 font-mono text-micro text-text-muted">
                       send→accepted {formatLatency(spans.sendToAcceptedMs)} · accepted→first-token {formatLatency(spans.acceptedToFirstTokenMs)} · first-token→final {formatLatency(spans.firstTokenToFinalMs)} · send→final {formatLatency(spans.sendToFinalMs)}
                     </div>
                   </li>
@@ -198,43 +198,43 @@ export default async function SystemActivityPage() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-        <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">PM channel queue</h2>
+      <section className="rounded-panel border border-line bg-panel p-card shadow-sm">
+        <h2 className="mb-3 text-caption uppercase tracking-wider text-text-muted">PM channel queue</h2>
         {queueStats.oldestQueued ? (
-          <p className="text-sm text-[var(--color-text-muted)]">
+          <p className="text-body text-text-muted">
             Oldest available job: @{queueStats.oldestQueued.agentSlug} · {queueStats.oldestQueued.kind} · {queueStats.oldestQueued.availableAt.toISOString().slice(0, 19).replace("T", " ")}
           </p>
         ) : (
-          <p className="text-sm text-[var(--color-text-muted)]">No queued or retryable PM-channel jobs.</p>
+          <p className="text-body text-text-muted">No queued or retryable PM-channel jobs.</p>
         )}
         {queueStats.recentErrors.length > 0 ? (
-          <ul className="mt-3 divide-y divide-[var(--color-line)] text-xs">
+          <ul className="mt-3 divide-y divide-line text-caption">
             {queueStats.recentErrors.map((job) => (
               <li key={job.id} className="py-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="font-medium">@{job.agentSlug} · {job.kind} · {job.status} · attempt {job.attemptCount}</span>
-                  <time className="font-mono text-[11px] text-[var(--color-text-muted)]" dateTime={job.updatedAt.toISOString()}>{job.updatedAt.toISOString().slice(0, 19).replace("T", " ")}</time>
+                  <time className="font-mono text-micro text-text-muted" dateTime={job.updatedAt.toISOString()}>{job.updatedAt.toISOString().slice(0, 19).replace("T", " ")}</time>
                 </div>
-                <p className="mt-1 text-[var(--color-text-muted)]">{job.lastError}</p>
+                <p className="mt-1 text-text-muted">{job.lastError}</p>
               </li>
             ))}
           </ul>
         ) : null}
       </section>
 
-      <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-        <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">Host services</h2>
+      <section className="rounded-panel border border-line bg-panel p-card shadow-sm">
+        <h2 className="mb-3 text-caption uppercase tracking-wider text-text-muted">Host services</h2>
         {Object.keys(system).length === 0 ? (
-          <p className="text-sm text-[var(--color-text-muted)]">No service status reported by the Atlas snapshot feed.</p>
+          <p className="text-body text-text-muted">No service status reported by the Atlas snapshot feed.</p>
         ) : (
           <div className="grid gap-2 md:grid-cols-3">
             {Object.entries(system).map(([name, svc]) => {
               const ok = svc.is_active === "active";
               return (
-                <div key={name} className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-sm">
+                <div key={name} className="rounded-card border border-line bg-panel-soft px-3 py-2 text-body">
                   <div className="flex items-center justify-between gap-3">
-                    <code className="truncate text-xs">{name}</code>
-                    <span className={ok ? "text-[var(--color-ok)]" : "text-[var(--color-crit)]"}>{svc.is_active ?? "unknown"}</span>
+                    <code className="truncate text-caption">{name}</code>
+                    <span className={ok ? "text-ok" : "text-crit"}>{svc.is_active ?? "unknown"}</span>
                   </div>
                 </div>
               );
@@ -243,12 +243,12 @@ export default async function SystemActivityPage() {
         )}
       </section>
 
-      <section className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-        <h2 className="mb-3 text-xs uppercase tracking-wider text-[var(--color-text-muted)]">Recent events</h2>
+      <section className="rounded-panel border border-line bg-panel p-card shadow-sm">
+        <h2 className="mb-3 text-caption uppercase tracking-wider text-text-muted">Recent events</h2>
         {events.length === 0 ? (
-          <p className="text-sm text-[var(--color-text-muted)]">No activity recorded yet.</p>
+          <p className="text-body text-text-muted">No activity recorded yet.</p>
         ) : (
-          <ul className="divide-y divide-[var(--color-line)] text-sm">
+          <ul className="divide-y divide-line text-body">
             {events.map((row) => {
               const actor = serializeActivityActor(row.user) ?? systemActor;
               return (
@@ -258,14 +258,14 @@ export default async function SystemActivityPage() {
                   <MessageAvatar actor={actor} size="sm" />
                   <span className="font-medium">{row.kind}</span>
                 </div>
-                <div className="mt-1 text-xs text-[var(--color-text-muted)]">
+                <div className="mt-1 text-caption text-text-muted">
                   actor: {actorDisplayName(actor)}
                   {row.project ? ` · project: ${row.project.slug}` : ""}
                   {row.task ? ` · task: ${row.task.title}` : ""}
                   {row.targetAgent ? ` · agent: ${row.targetAgent}` : ""}
                   {row.targetFile ? ` · file: ${row.targetFile}` : ""}
                 </div>
-                {row.payload ? <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded-lg bg-[var(--color-panel-soft)] p-2 text-xs text-[var(--color-text-muted)]">{row.payload}</pre> : null}
+                {row.payload ? <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap rounded-lg bg-panel-soft p-2 text-caption text-text-muted">{row.payload}</pre> : null}
               </li>
               );
             })}
@@ -278,19 +278,19 @@ export default async function SystemActivityPage() {
 
 function Tile({ label, value, foot }: { label: string; value: string; foot: string }) {
   return (
-    <div className="rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-sm">
-      <div className="text-xs uppercase tracking-wider text-[var(--color-text-muted)]">{label}</div>
+    <div className="rounded-panel border border-line bg-panel p-card shadow-sm">
+      <div className="text-caption uppercase tracking-wider text-text-muted">{label}</div>
       <div className="mt-3 text-3xl font-semibold tracking-tight">{value}</div>
-      <div className="mt-2 text-xs text-[var(--color-text-muted)]">{foot}</div>
+      <div className="mt-2 text-caption text-text-muted">{foot}</div>
     </div>
   );
 }
 
 function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3">
-      <div className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">{label}</div>
-      <div className="mt-1 truncate font-mono text-xs text-[var(--color-text)]" title={value}>{value}</div>
+    <div className="rounded-card border border-line bg-panel-soft p-3">
+      <div className="text-nano uppercase tracking-wider text-text-muted">{label}</div>
+      <div className="mt-1 truncate font-mono text-caption text-text" title={value}>{value}</div>
     </div>
   );
 }

@@ -177,13 +177,13 @@ export default function TaskChecklist({
   return (
     <div>
       <div className="mb-3 flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold tracking-wide text-[var(--color-text)]">
+        <h2 className="text-body font-semibold tracking-wide text-text">
           Sub-tasks
         </h2>
         <div className="flex items-center gap-3">
           {totalMinutes > 0 ? (
             <span
-              className="inline-flex items-center gap-1 text-xs text-[var(--color-text-muted)]"
+              className="inline-flex items-center gap-1 text-caption text-text-muted"
               title="Total self-reported time across completed sub-tasks"
             >
               <ClockIcon />
@@ -192,13 +192,13 @@ export default function TaskChecklist({
           ) : null}
           {total > 0 ? (
             <div className="flex items-center gap-2">
-              <div className="h-1.5 w-28 overflow-hidden rounded-full bg-[var(--color-line)]">
+              <div className="h-1.5 w-28 overflow-hidden rounded-full bg-line">
                 <div
-                  className="h-full rounded-full bg-[var(--color-accent)] transition-[width]"
+                  className="h-full rounded-full bg-accent transition-[width]"
                   style={{ width: `${pct}%` }}
                 />
               </div>
-              <span className="tabular-nums text-xs text-[var(--color-text-muted)]">
+              <span className="tabular-nums text-caption text-text-muted">
                 {done}/{total}
               </span>
             </div>
@@ -206,14 +206,14 @@ export default function TaskChecklist({
         </div>
       </div>
 
-      <p className="mb-3 text-[11px] text-[var(--color-text-muted)]">
+      <p className="mb-3 text-micro text-text-muted">
         Break this task into independent, parallelizable steps. Tick each off as
         it lands and record the minutes it took — the board shows how many remain
         and the total time rolls up here.
       </p>
 
       {total === 0 ? (
-        <p className="text-xs text-[var(--color-text-muted)]">No sub-tasks yet.</p>
+        <p className="text-caption text-text-muted">No sub-tasks yet.</p>
       ) : (
         <DndContext
           sensors={sensors}
@@ -226,7 +226,7 @@ export default function TaskChecklist({
           >
             <ul
               aria-label="Sub-tasks"
-              className="divide-y divide-[var(--color-line)] rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)]"
+              className="divide-y divide-line rounded-lg border border-line bg-panel-soft"
             >
               {order.map((item) => (
                 <ChecklistRow
@@ -255,12 +255,12 @@ export default function TaskChecklist({
           }}
           maxLength={500}
           placeholder="Add a step…"
-          className="flex-1 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-1.5 text-sm outline-none focus:border-[var(--color-accent)]"
+          className="min-h-11 flex-1 rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent md:min-h-0"
         />
         <button
           type="button"
           onClick={add}
-          className="rounded-lg bg-[var(--color-accent)] px-3 text-sm font-medium text-[var(--color-bg)] hover:opacity-90"
+          className="min-h-11 rounded-lg bg-accent px-4 text-body font-medium text-bg hover:opacity-90 md:min-h-0 md:px-3"
         >
           Add
         </button>
@@ -287,14 +287,14 @@ function ChecklistRow({
     <li
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`flex items-center gap-2 px-3 py-2 text-sm ${isDragging ? "opacity-50" : ""}`}
+      className={`flex min-h-11 items-center gap-2 px-3 py-2 text-body ${isDragging ? "opacity-50" : ""}`}
     >
       <button
         type="button"
         aria-label="Drag to reorder"
         {...attributes}
         {...listeners}
-        className="cursor-grab select-none rounded px-1 text-[var(--color-text-muted)] hover:text-[var(--color-text)] active:cursor-grabbing"
+        className="grid h-11 w-11 cursor-grab select-none place-items-center rounded text-text-muted hover:text-text active:cursor-grabbing md:h-auto md:w-auto md:px-1"
       >
         ⋮⋮
       </button>
@@ -303,10 +303,10 @@ function ChecklistRow({
         checked={done}
         onChange={onToggle}
         aria-label={done ? `Mark "${item.text}" not done` : `Mark "${item.text}" done`}
-        className="h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+        className="h-6 w-6 shrink-0 accent-text-accent md:h-4 md:w-4"
       />
       <span
-        className={`min-w-0 flex-1 ${done ? "text-[var(--color-text-muted)] line-through" : ""}`}
+        className={`min-w-0 flex-1 ${done ? "text-text-muted line-through" : ""}`}
         title={item.completedAt ? `Completed ${item.completedAt}` : undefined}
       >
         {item.text}
@@ -317,7 +317,7 @@ function ChecklistRow({
       <button
         type="button"
         onClick={onRemove}
-        className="shrink-0 rounded-md px-1.5 py-1 text-[var(--color-text-muted)] hover:bg-[var(--color-crit)]/10 hover:text-[var(--color-crit)]"
+        className="grid h-11 w-11 shrink-0 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:px-1.5 md:py-1"
         aria-label={`Remove "${item.text}"`}
         title="Remove"
       >
@@ -345,7 +345,7 @@ function MinutesInput({
     onCommit(trimmed === "" ? null : Number(trimmed));
   };
   return (
-    <label className="flex shrink-0 items-center gap-1 text-[10px] text-[var(--color-text-muted)]" title="Minutes spent on this step">
+    <label className="flex shrink-0 items-center gap-1 text-nano text-text-muted" title="Minutes spent on this step">
       <ClockIcon />
       <input
         type="number"
@@ -363,7 +363,7 @@ function MinutesInput({
         onPointerDown={(e) => e.stopPropagation()}
         placeholder="min"
         aria-label="Minutes spent"
-        className="w-12 rounded border border-[var(--color-line)] bg-[var(--color-bg)] px-1 py-0.5 text-right tabular-nums outline-none focus:border-[var(--color-accent)]"
+        className="w-12 rounded border border-line bg-bg px-1 py-0.5 text-right tabular-nums outline-none focus:border-accent"
       />
       <span>m</span>
     </label>

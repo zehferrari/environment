@@ -29,7 +29,7 @@ export default function ChatLayoutClient({
   };
 
   return (
-    <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
+    <div className="grid min-h-0 flex-1 gap-card lg:grid-cols-[minmax(0,1fr)_auto]">
       <div className="flex min-h-0 flex-1 flex-col relative">
         {chatSection}
         
@@ -37,7 +37,7 @@ export default function ChatLayoutClient({
         {mounted && (
           <button
             onClick={toggleSidebar}
-            className="absolute right-4 top-[14px] z-20 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] p-1.5 text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors cursor-pointer"
+            className="absolute right-4 top-[14px] z-20 rounded-lg border border-line bg-panel p-1.5 text-text-muted hover:border-accent hover:text-accent transition-colors cursor-pointer"
             title={showSidebar ? "Hide Archive Sidebar" : "Show Archive Sidebar"}
           >
             {showSidebar ? (

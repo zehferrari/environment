@@ -17,6 +17,42 @@
   --color-crit: #dc2626;
   --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --spacing-page-x: 1.5rem;
+  --spacing-page-x-lg: 2rem;
+  --spacing-page-y: 1.25rem;
+  --spacing-section-gap: 1rem;
+  --spacing-card: 1rem;
+  --spacing-card-lg: 1.25rem;
+  --spacing-control-x: 0.75rem;
+  --spacing-control-y: 0.375rem;
+  --radius-pixel: 1px;
+  --radius-card: 0.75rem;
+  --radius-panel: 1rem;
+  --radius-hero: 1.75rem;
+  --radius-orbit: 1.25rem;
+  --radius-bubble: 1.15rem;
+  --text-display: 1.875rem;
+  --text-display--line-height: 2.25rem;
+  --text-heading: 1.25rem;
+  --text-heading--line-height: 1.75rem;
+  --text-subheading: 1rem;
+  --text-subheading--line-height: 1.5rem;
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.25rem;
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1rem;
+  --text-micro: 0.6875rem;
+  --text-micro--line-height: 0.875rem;
+  --text-nano: 0.625rem;
+  --text-nano--line-height: 0.875rem;
+  --text-pico: 0.5625rem;
+  --text-pico--line-height: 0.75rem;
+  --text-atom: 0.5rem;
+  --text-atom--line-height: 0.625rem;
+  --text-editor: 0.8125rem;
+  --text-editor--line-height: 1.25rem;
+  --text-icon-lg: 1.125rem;
+  --text-icon-lg--line-height: 1.5rem;
 }
 
 :root {

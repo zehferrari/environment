@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { archiveChatRoom, getAgentChatRoomMessages, sendAgentChatMessage, deleteChatMessage, restoreChatMessage, prebuildAgentChatContext } from "@/lib/agents/chat/actions";
 import ChatBubble from "@/components/chat-bubble";
 import StreamingAgentReply from "@/components/streaming-agent-reply";
+import { ChatStreamManager } from "@/lib/agents/chat/chat-stream-manager";
 import MaximizableTextarea from "@/components/maximizable-textarea";
 import { useActiveTab } from "@/components/task-tabs";
 import {
@@ -126,10 +127,10 @@ function optimisticLocalEchoEnabled() {
 
 function NewMessagesMarker() {
   return (
-    <div className="my-4 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-[var(--color-crit)]">
-      <span className="h-px flex-1 bg-[var(--color-crit)]/50" />
+    <div className="my-4 flex items-center gap-3 text-nano font-semibold uppercase tracking-[0.18em] text-crit">
+      <span className="h-px flex-1 bg-crit/50" />
       <span>New messages</span>
-      <span className="h-px flex-1 bg-[var(--color-crit)]/50" />
+      <span className="h-px flex-1 bg-crit/50" />
     </div>
   );
 }
@@ -219,43 +220,43 @@ function RoomArchiveButton({
         type="button"
         disabled={!hasActiveHistory}
         onClick={() => runArchive(false)}
-        className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-[11px] font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
+        className="rounded-lg border border-line bg-panel px-control-x py-control-y text-micro font-semibold text-text-muted transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
       >
         New Discussion
       </button>
 
       {open ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-card backdrop-blur-sm"
           onClick={() => !isPending && setOpen(false)}
         >
           <div
-            className="w-full max-w-md rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-5 shadow-2xl"
+            className="w-full max-w-md rounded-panel border border-line bg-panel p-card-lg shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             {step === "choice" ? (
-              <div className="space-y-4">
+              <div className="space-y-section-gap">
                 <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold text-[var(--color-text)]">
+                  <h3 className="text-body font-semibold text-text">
                     Start a fresh room
                   </h3>
                   <button
                     type="button"
                     disabled={isPending}
                     onClick={() => setOpen(false)}
-                    className="text-lg leading-none text-[var(--color-text-muted)] transition hover:text-[var(--color-text)] cursor-pointer"
+                    className="text-heading leading-none text-text-muted transition hover:text-text cursor-pointer"
                   >
                     &times;
                   </button>
                 </div>
-                <p className="text-sm leading-relaxed text-[var(--color-text-muted)]">
+                <p className="text-body leading-relaxed text-text-muted">
                   Save the current discussion to Recent Discussions, or move it to the bin and clear this Task/Epic chat.
                 </p>
                 <div className="grid gap-2">
                   <button
                     type="button"
                     onClick={() => setStep("archive")}
-                    className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-2 text-left text-sm font-medium text-[var(--color-text)] transition hover:border-[var(--color-accent)] cursor-pointer"
+                    className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-left text-body font-medium text-text transition hover:border-accent cursor-pointer"
                   >
                     Save current discussion
                   </button>
@@ -263,7 +264,7 @@ function RoomArchiveButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => runArchive(true)}
-                    className="rounded-lg border border-[var(--color-crit)]/30 bg-[var(--color-crit)]/[0.04] px-3 py-2 text-left text-sm font-medium text-[var(--color-crit)] transition hover:bg-[var(--color-crit)]/[0.08] cursor-pointer"
+                    className="rounded-lg border border-crit/30 bg-crit/[0.04] px-3 py-2 text-left text-body font-medium text-crit transition hover:bg-crit/[0.08] cursor-pointer"
                   >
                     {isPending ? "Moving to bin..." : "Move current room to bin"}
                   </button>
@@ -272,21 +273,21 @@ function RoomArchiveButton({
             ) : null}
 
             {step === "archive" ? (
-              <div className="space-y-4">
+              <div className="space-y-section-gap">
                 <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold text-[var(--color-text)]">
+                  <h3 className="text-body font-semibold text-text">
                     Save discussion
                   </h3>
                   <button
                     type="button"
                     disabled={isPending}
                     onClick={() => setOpen(false)}
-                    className="text-lg leading-none text-[var(--color-text-muted)] transition hover:text-[var(--color-text)] cursor-pointer"
+                    className="text-heading leading-none text-text-muted transition hover:text-text cursor-pointer"
                   >
                     &times;
                   </button>
                 </div>
-                <label className="block space-y-1.5 text-xs font-medium text-[var(--color-text-muted)]">
+                <label className="block space-y-1.5 text-caption font-medium text-text-muted">
                   <span>Discussion title</span>
                   <input
                     type="text"
@@ -297,7 +298,7 @@ function RoomArchiveButton({
                       if (event.key === "Enter") runArchive(false);
                     }}
                     placeholder="Optional title"
-                    className="w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-sm text-[var(--color-text)] outline-none transition focus:border-[var(--color-accent)] disabled:opacity-50"
+                    className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body text-text outline-none transition focus:border-accent disabled:opacity-50"
                   />
                 </label>
                 <div className="flex items-center justify-between gap-2">
@@ -305,7 +306,7 @@ function RoomArchiveButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => setStep("choice")}
-                    className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-50 cursor-pointer"
+                    className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium text-text-muted transition hover:border-accent hover:text-accent disabled:opacity-50 cursor-pointer"
                   >
                     Back
                   </button>
@@ -313,7 +314,7 @@ function RoomArchiveButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => runArchive(false)}
-                    className="rounded-lg bg-[var(--color-accent)] px-4 py-1.5 text-xs font-semibold text-[var(--color-bg)] transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                    className="rounded-lg bg-accent px-4 py-1.5 text-caption font-semibold text-bg transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
                   >
                     {isPending ? "Saving..." : "Save discussion"}
                   </button>
@@ -322,21 +323,21 @@ function RoomArchiveButton({
             ) : null}
 
             {step === "delete" ? (
-              <div className="space-y-4">
+              <div className="space-y-section-gap">
                 <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-sm font-semibold text-[var(--color-crit)]">
+                  <h3 className="text-body font-semibold text-crit">
                     Move room to bin
                   </h3>
                   <button
                     type="button"
                     disabled={isPending}
                     onClick={() => setOpen(false)}
-                    className="text-lg leading-none text-[var(--color-text-muted)] transition hover:text-[var(--color-text)] cursor-pointer"
+                    className="text-heading leading-none text-text-muted transition hover:text-text cursor-pointer"
                   >
                     &times;
                   </button>
                 </div>
-                <p className="text-sm leading-relaxed text-[var(--color-text-muted)]">
+                <p className="text-body leading-relaxed text-text-muted">
                   This clears the active room and keeps the deleted transcript until the retention purge runs.
                 </p>
                 <div className="flex items-center justify-between gap-2">
@@ -344,7 +345,7 @@ function RoomArchiveButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => setStep("choice")}
-                    className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-50 cursor-pointer"
+                    className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-medium text-text-muted transition hover:border-accent hover:text-accent disabled:opacity-50 cursor-pointer"
                   >
                     Back
                   </button>
@@ -352,7 +353,7 @@ function RoomArchiveButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => runArchive(true)}
-                    className="rounded-lg bg-[var(--color-crit)] px-4 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                    className="rounded-lg bg-crit px-4 py-1.5 text-caption font-semibold text-white transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
                   >
                     {isPending ? "Deleting..." : "Move to bin"}
                   </button>
@@ -880,13 +881,22 @@ export default function ChatRoom({
     setTargetPickerOpen(false);
   };
 
+  useEffect(() => {
+    if (!archiveSidebarOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setArchiveSidebarOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [archiveSidebarOpen]);
+
   return (
-    <div className="relative flex h-[calc(100dvh-14rem)] min-h-[620px] flex-col overflow-hidden rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] shadow-sm">
+    <div className="relative flex h-[calc(100dvh-14rem)] min-h-[620px] flex-col overflow-hidden rounded-panel border border-line bg-panel shadow-sm max-sm:h-[100dvh] max-sm:min-h-0 max-sm:rounded-none max-sm:border-x-0">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-[var(--color-line)] bg-[var(--color-panel-soft)] px-4 py-2.5">
+      <div className="flex items-center justify-between border-b border-line bg-panel-soft px-card py-control-y.5">
         <div className="flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-[var(--color-accent)] animate-pulse" />
-          <span className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text)]">
+          <span className="h-2.5 w-2.5 rounded-full bg-accent animate-pulse" />
+          <span className="text-caption font-semibold uppercase tracking-wider text-text">
             {taskId ? "Task Chat Room" : "Epic Chat Room"}
           </span>
         </div>
@@ -896,7 +906,7 @@ export default function ChatRoom({
             <button
               type="button"
               onClick={() => setArchiveSidebarOpen((open) => !open)}
-              className="grid h-8 w-8 place-items-center rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer"
+              className="grid h-11 w-11 place-items-center rounded-lg border border-line bg-panel text-text-muted transition hover:border-accent hover:text-accent md:h-8 md:w-8 cursor-pointer"
               aria-label={archiveSidebarOpen ? "Hide recent discussions" : "Show recent discussions"}
               title={archiveSidebarOpen ? "Hide recent discussions" : "Show recent discussions"}
             >
@@ -916,14 +926,14 @@ export default function ChatRoom({
             </button>
           ) : null}
           {viewingArchive ? (
-            <span className="hidden text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider font-semibold sm:inline">
+            <span className="hidden text-nano text-text-muted uppercase tracking-wider font-semibold sm:inline">
               Archived Discussion
             </span>
           ) : null}
           {viewingArchive ? (
             <Link
               href={`${pathname}?chatRoom=current`}
-              className="rounded-lg border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-[11px] font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+              className="rounded-lg border border-line bg-panel px-control-x py-control-y text-micro font-semibold text-text-muted transition hover:border-accent hover:text-accent"
             >
               Current Discussion
             </Link>
@@ -941,22 +951,29 @@ export default function ChatRoom({
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
       {archiveSidebarOpen ? (
-        <aside className="order-2 flex w-[min(22rem,42vw)] min-w-[18rem] flex-col border-l border-[var(--color-line)] bg-[var(--color-panel)] shadow-[-18px_0_35px_rgba(15,23,42,0.06)]">
-          <div className="flex items-center justify-between border-b border-[var(--color-line)] px-3 py-2">
+        <>
+        <button
+          type="button"
+          onClick={() => setArchiveSidebarOpen(false)}
+          className="fixed inset-0 z-40 hidden bg-black/45 backdrop-blur-sm max-sm:block"
+          aria-label="Close recent discussions"
+        />
+        <aside className="order-2 flex w-[min(22rem,42vw)] min-w-[18rem] flex-col border-l border-line bg-panel shadow-[-18px_0_35px_rgba(15,23,42,0.06)] max-sm:fixed max-sm:inset-y-0 max-sm:right-0 max-sm:z-50 max-sm:w-[85vw] max-sm:min-w-0 max-sm:max-w-[85vw] max-sm:shadow-2xl">
+          <div className="flex items-center justify-between border-b border-line px-3 py-2">
             <div>
               <div className="flex items-center gap-1.5">
-                <p className="text-xs font-semibold text-[var(--color-text)]">
+                <p className="text-caption font-semibold text-text">
                   {archiveViewMode === "archives" ? "Recent Discussions" : "Discussion bin"}
                 </p>
-                <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                <span className={`rounded-full px-1.5 py-0.5 text-nano font-bold ${
                   archiveViewMode === "archives"
-                    ? "bg-[var(--color-ok)]/10 text-[var(--color-ok)]"
-                    : "bg-[var(--color-crit)]/10 text-[var(--color-crit)]"
+                    ? "bg-ok/10 text-ok"
+                    : "bg-crit/10 text-crit"
                 }`}>
                   {archiveViewMode === "archives" ? archives.length : binArchives.length}
                 </span>
               </div>
-              <p className="text-[10px] uppercase tracking-wider text-[var(--color-text-muted)]">
+              <p className="text-nano uppercase tracking-wider text-text-muted">
                 {archiveViewMode === "archives" ? "Latest discussions" : "Deleted discussions"}
               </p>
             </div>
@@ -964,7 +981,7 @@ export default function ChatRoom({
               <button
                 type="button"
                 onClick={() => setArchiveSidebarOpen(false)}
-                className="grid h-7 w-7 place-items-center rounded-md border border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer"
+                className="grid h-11 w-11 place-items-center rounded-md border border-line bg-panel-soft text-text-muted transition hover:border-accent hover:text-accent md:h-7 md:w-7 cursor-pointer"
                 aria-label="Close recent discussions"
                 title="Hide sidebar"
               >
@@ -976,7 +993,7 @@ export default function ChatRoom({
               </button>
             </div>
           </div>
-          <div className={`grid gap-1 border-b border-[var(--color-line)] bg-[var(--color-panel-soft)] p-1.5 text-xs font-semibold ${
+          <div className={`grid gap-1 border-b border-line bg-panel-soft p-1.5 text-caption font-semibold ${
             hasArchives && hasBinArchives ? "grid-cols-2" : "grid-cols-1"
           }`}>
             {hasArchives ? (
@@ -985,11 +1002,11 @@ export default function ChatRoom({
                 onClick={() => setArchiveViewMode("archives")}
                 className={`rounded-lg px-2 py-1.5 transition ${
                   archiveViewMode === "archives"
-                    ? "bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm"
-                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                    ? "bg-panel text-text shadow-sm"
+                    : "text-text-muted hover:text-text"
                 }`}
               >
-                Recent <span className="text-[10px] text-[var(--color-text-muted)]">({archives.length})</span>
+                Recent <span className="text-nano text-text-muted">({archives.length})</span>
               </button>
             ) : null}
             {hasBinArchives ? (
@@ -998,32 +1015,32 @@ export default function ChatRoom({
                 onClick={() => setArchiveViewMode("bin")}
                 className={`rounded-lg px-2 py-1.5 transition ${
                   archiveViewMode === "bin"
-                    ? "bg-[var(--color-panel)] text-[var(--color-text)] shadow-sm"
-                    : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                    ? "bg-panel text-text shadow-sm"
+                    : "text-text-muted hover:text-text"
                 }`}
               >
-                Bin <span className="text-[10px] text-[var(--color-text-muted)]">({binArchives.length})</span>
+                Bin <span className="text-nano text-text-muted">({binArchives.length})</span>
               </button>
             ) : null}
           </div>
-          <div className="flex-1 space-y-4 overflow-y-auto p-3">
+          <div className="flex-1 space-y-section-gap overflow-y-auto p-3">
             <Link
               href={`${pathname}?chatRoom=current`}
-              className={`block rounded-lg border px-3 py-2 text-xs transition ${
+              className={`block rounded-lg border px-3 py-2 text-caption transition ${
                 !viewingArchive
-                  ? "border-[var(--color-accent)] bg-[var(--color-accent)]/[0.08] text-[var(--color-text)]"
-                  : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
+                  ? "border-accent bg-accent/[0.08] text-text"
+                  : "border-line bg-panel-soft text-text-muted hover:border-accent hover:text-text"
               }`}
             >
               <span className="font-semibold">Current discussion</span>
-              <span className="mt-1 block text-[10px] uppercase tracking-wider">
+              <span className="mt-1 block text-nano uppercase tracking-wider">
                 {activeCount} message{activeCount === 1 ? "" : "s"}
               </span>
             </Link>
 
             {archiveViewMode === "archives" ? (
               archives.length === 0 ? (
-                <p className="rounded-lg border border-dashed border-[var(--color-line)] p-3 text-center text-xs text-[var(--color-text-muted)]">
+                <p className="rounded-lg border border-dashed border-line p-3 text-center text-caption text-text-muted">
                   No recent discussions.
                 </p>
               ) : (
@@ -1034,17 +1051,17 @@ export default function ChatRoom({
                       <Link
                         key={archive.id}
                         href={`${pathname}?chatArchive=${archive.id}`}
-                        className={`block rounded-xl border p-2 text-xs shadow-sm transition ${
+                        className={`block rounded-card border p-2 text-caption shadow-sm transition ${
                           selected
-                            ? "border-[var(--color-accent)] bg-[var(--color-accent)]/[0.04] text-[var(--color-text)]"
-                            : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)]/30 hover:bg-[var(--color-panel)] hover:text-[var(--color-text)]"
+                            ? "border-accent bg-accent/[0.04] text-text"
+                            : "border-line bg-panel-soft text-text-muted hover:border-accent/30 hover:bg-panel hover:text-text"
                         }`}
                       >
-                        <span className="mb-0.5 block text-[9px] font-semibold tracking-wider text-[var(--color-text-muted)]">
+                        <span className="mb-0.5 block text-pico font-semibold tracking-wider text-text-muted">
                           {formatModernDate(archive.startedAt)}
                         </span>
                         <span className="block truncate font-semibold">{archive.summary}</span>
-                        <span className="mt-1 block border-t border-[var(--color-line)]/40 pt-1 text-[10px] uppercase tracking-wider">
+                        <span className="mt-1 block border-t border-line/40 pt-1 text-nano uppercase tracking-wider">
                           {archive.messageCount} message{archive.messageCount === 1 ? "" : "s"}
                         </span>
                       </Link>
@@ -1053,7 +1070,7 @@ export default function ChatRoom({
                 </div>
               )
             ) : binArchives.length === 0 ? (
-                <p className="rounded-lg border border-dashed border-[var(--color-line)] p-3 text-center text-xs text-[var(--color-text-muted)]">
+                <p className="rounded-lg border border-dashed border-line p-3 text-center text-caption text-text-muted">
                   No deleted action plans.
                 </p>
               ) : (
@@ -1065,22 +1082,22 @@ export default function ChatRoom({
                       <Link
                         key={archive.id}
                         href={`${pathname}?chatArchive=${archive.id}`}
-                        className={`block rounded-xl border p-2 text-xs shadow-sm transition ${
+                        className={`block rounded-card border p-2 text-caption shadow-sm transition ${
                           selected
-                            ? "border-[var(--color-crit)] bg-[var(--color-crit)]/[0.06] text-[var(--color-text)]"
-                            : "border-[var(--color-line)] bg-[var(--color-panel-soft)] text-[var(--color-text-muted)] hover:border-[var(--color-crit)]/50 hover:bg-[var(--color-panel)] hover:text-[var(--color-text)]"
+                            ? "border-crit bg-crit/[0.06] text-text"
+                            : "border-line bg-panel-soft text-text-muted hover:border-crit/50 hover:bg-panel hover:text-text"
                         }`}
                       >
-                        <span className="mb-0.5 block text-[9px] font-semibold tracking-wider text-[var(--color-text-muted)]">
+                        <span className="mb-0.5 block text-pico font-semibold tracking-wider text-text-muted">
                           {formatModernDate(archive.startedAt)}
                         </span>
                         <span className="block truncate font-semibold">{archive.summary}</span>
-                        <span className="mt-1 flex items-center justify-between gap-2 border-t border-[var(--color-line)]/40 pt-1 text-[10px] uppercase tracking-wider">
+                        <span className="mt-1 flex items-center justify-between gap-2 border-t border-line/40 pt-1 text-nano uppercase tracking-wider">
                           <span>
                           {archive.messageCount} message{archive.messageCount === 1 ? "" : "s"}
                           </span>
                           {purgeLabel ? (
-                            <span className="rounded-md border border-[var(--color-crit)]/10 bg-[var(--color-crit)]/[0.06] px-1.5 py-0.5 font-mono font-semibold text-[var(--color-crit)] normal-case">
+                            <span className="rounded-md border border-crit/10 bg-crit/[0.06] px-1.5 py-0.5 font-mono font-semibold text-crit normal-case">
                               {purgeLabel}
                             </span>
                           ) : null}
@@ -1092,23 +1109,24 @@ export default function ChatRoom({
               )}
           </div>
         </aside>
+        </>
       ) : null}
 
       <div className="order-1 flex min-w-0 flex-1 flex-col">
       {/* Messages List */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto p-4 min-h-0 scrollbar-thin"
+        className="flex-1 overflow-y-auto p-card min-h-0 scrollbar-thin max-sm:p-3"
       >
         <div ref={scrollContentRef}>
         {displayedMessages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center p-6 border border-dashed border-[var(--color-line)] rounded-xl bg-[var(--color-panel-soft)]/20">
-            <span className="text-xl">💬</span>
-            <p className="mt-2 text-xs font-semibold text-[var(--color-text)]">
+          <div className="flex flex-col items-center justify-center h-full text-center p-6 border border-dashed border-line rounded-card bg-panel-soft/20">
+            <span className="text-heading">💬</span>
+            <p className="mt-2 text-caption font-semibold text-text">
               Welcome to the Chat Room!
             </p>
-            <p className="mt-1 text-[11px] text-[var(--color-text-muted)] max-w-[280px]">
-              Post a message to invoke default assignees/reviewers, or use <code className="px-1 py-0.5 rounded bg-[var(--color-panel-soft)] font-mono text-[var(--color-accent)]">@agent</code> to mention specific agents.
+            <p className="mt-1 text-micro text-text-muted max-w-[280px]">
+              Post a message to invoke default assignees/reviewers, or use <code className="px-1 py-0.5 rounded bg-panel-soft font-mono text-accent">@agent</code> to mention specific agents.
             </p>
           </div>
         ) : (
@@ -1157,7 +1175,7 @@ export default function ChatRoom({
                   <button
                     type="button"
                     onClick={() => retryOptimisticMessage(m as OptimisticMessage)}
-                    className="rounded-md border border-[var(--color-line)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                    className="rounded-md border border-line bg-bg px-1.5 py-0.5 text-nano font-semibold uppercase tracking-wider text-text-muted transition hover:border-accent hover:text-accent"
                   >
                     Retry
                   </button>
@@ -1171,7 +1189,7 @@ export default function ChatRoom({
                     confirmLabel="Delete message"
                     buttonTitle="Delete message"
                     ariaLabel="Delete message"
-                    className="text-[12px] font-bold text-[var(--color-text-muted)] opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-[var(--color-crit)] cursor-pointer"
+                    className="text-caption font-bold text-text-muted opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 hover:text-crit cursor-pointer"
                   />
                 ) : null}
               />
@@ -1190,6 +1208,12 @@ export default function ChatRoom({
             taskId={taskId}
             epicId={epicId}
             label={agent.username}
+            roomId={ChatStreamManager.roomId({
+              targetKind: taskId ? "task-chat" : "epic-chat",
+              agentSlug: agent.slug,
+              taskId,
+              epicId,
+            })}
             anonymizeTyping
             onFinal={async ({ text, status }) => {
               if (status !== "done") return;
@@ -1227,7 +1251,7 @@ export default function ChatRoom({
 
         {/* Proposal Reviews */}
         {!viewingArchive && pendingProposals.length > 0 && (
-          <div className="mt-4 border-t border-[var(--color-line)] pt-4">
+          <div className="mt-4 border-t border-line pt-4">
             <ProposalReview
               proposals={pendingProposals.map((p: any) => ({
                 id: p.id,
@@ -1249,7 +1273,7 @@ export default function ChatRoom({
         <button
           type="button"
           onClick={() => scheduleScrollToLatest(true)}
-          className="fixed bottom-24 right-6 z-40 rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-xs font-semibold text-[var(--color-text)] shadow-lg transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+          className="fixed bottom-24 right-6 z-40 rounded-full border border-line bg-panel px-3 py-2 text-caption font-semibold text-text shadow-lg transition hover:border-accent hover:text-accent max-sm:bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] max-sm:right-4"
         >
           Jump to latest
         </button>
@@ -1257,7 +1281,7 @@ export default function ChatRoom({
 
       {/* Input Form */}
       {viewingArchive && !canContinueArchive ? (
-        <div className="border-t border-[var(--color-line)] bg-[var(--color-panel-soft)] p-3 text-xs text-[var(--color-text-muted)] shrink-0">
+        <div className="border-t border-line bg-panel-soft p-3 text-caption text-text-muted shrink-0">
           {selectedArchiveDeleted ? (
             "Deleted action plans are read-only."
           ) : activeCount > 0 ? (
@@ -1265,7 +1289,7 @@ export default function ChatRoom({
           ) : (
             "Recent Discussions are read-only."
           )}{" "}
-          <Link href={`${pathname}?chatRoom=current`} className="font-semibold text-[var(--color-accent)] hover:underline">
+          <Link href={`${pathname}?chatRoom=current`} className="font-semibold text-accent hover:underline">
             Open the current action plan
           </Link>
           .
@@ -1274,7 +1298,7 @@ export default function ChatRoom({
         <>
           {composerOpen ? (
             <div
-              className="fixed inset-0 z-50 bg-black/10 p-4 backdrop-blur-[1px]"
+              className="fixed inset-0 z-50 bg-black/10 p-card backdrop-blur-[1px] max-sm:p-0"
               onClick={closeComposer}
             >
               <form
@@ -1282,7 +1306,7 @@ export default function ChatRoom({
                 action={actionHandler}
                 encType="multipart/form-data"
                 onClick={(event) => event.stopPropagation()}
-                className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-2xl space-y-3 rounded-2xl border border-[var(--color-line)] bg-[var(--color-panel)] p-4 shadow-2xl sm:right-6"
+                className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-2xl space-y-3 overflow-y-auto rounded-panel border border-line bg-panel p-card shadow-2xl sm:right-6 max-sm:bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] max-sm:left-3 max-sm:right-3 max-sm:max-h-[calc(100dvh-env(safe-area-inset-bottom)-1.5rem)] max-sm:w-auto"
               >
                 <input type="hidden" name="projectSlug" value={projectSlug} />
                 {taskId ? (
@@ -1304,10 +1328,10 @@ export default function ChatRoom({
 
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                    <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
                       {canContinueArchive ? "Continue action plan" : "Action plan message"}
                     </div>
-                    <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+                    <p className="mt-1 text-caption text-text-muted">
                       Choose recipients, attach files, and send the room a message.
                     </p>
                   </div>
@@ -1315,20 +1339,20 @@ export default function ChatRoom({
                     type="button"
                     onClick={closeComposer}
                     aria-label="Close action plan composer"
-                    className="grid h-8 w-8 place-items-center rounded-lg text-lg leading-none text-[var(--color-text-muted)] transition hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+                    className="grid h-11 w-11 place-items-center rounded-lg text-heading leading-none text-text-muted transition hover:bg-panel-soft hover:text-text md:h-8 md:w-8"
                   >
                     &times;
                   </button>
                 </div>
 
-                <div className="relative text-xs text-[var(--color-text-muted)]">
+                <div className="relative text-caption text-text-muted">
                   <div className="mb-1 flex items-center justify-between gap-2">
                     <span className="font-semibold">To</span>
                     {selectedTargets.length > 0 ? (
                       <button
                         type="button"
                         onClick={() => setSelectedTargets([])}
-                        className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-accent)]"
+                        className="text-nano font-semibold uppercase tracking-wider text-text-muted hover:text-accent"
                       >
                         Clear
                       </button>
@@ -1337,35 +1361,35 @@ export default function ChatRoom({
                   <button
                     type="button"
                     onClick={() => setTargetPickerOpen((open) => !open)}
-                    className="flex min-h-10 w-full items-center justify-between gap-3 rounded-xl border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-left text-xs text-[var(--color-text)] outline-none transition hover:border-[var(--color-accent)]"
+                    className="flex min-h-10 w-full items-center justify-between gap-3 rounded-card border border-line bg-bg px-3 py-2 text-left text-caption text-text outline-none transition hover:border-accent"
                     aria-expanded={targetPickerOpen}
                   >
                     <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
                       {selectedTargetOptions.length === 0 ? (
-                        <span className="text-[var(--color-text-muted)]">Default recipient</span>
+                        <span className="text-text-muted">Default recipient</span>
                       ) : selectedTargetOptions.map((target) => (
                         <span
                           key={target.value}
-                          className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-[var(--color-line)] bg-[var(--color-panel)] px-2 py-1"
+                          className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-line bg-panel px-2 py-1"
                         >
-                          {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-7 w-7 place-items-center rounded-full border border-[var(--color-line)] text-[10px] font-semibold">G</span>}
+                          {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-11 w-11 place-items-center rounded-full border border-line text-nano font-semibold md:h-7 md:w-7">G</span>}
                           <span className="max-w-[9rem] truncate">{target.label}</span>
                         </span>
                       ))}
                     </span>
-                    <span className="shrink-0 text-[var(--color-text-muted)]" aria-hidden="true">
+                    <span className="shrink-0 text-text-muted" aria-hidden="true">
                       {targetPickerOpen ? "▴" : "▾"}
                     </span>
                   </button>
                   <span className="sr-only">{targetButtonLabel}</span>
                   {targetPickerOpen ? (
-                    <div className="absolute bottom-full left-0 z-30 mb-2 max-h-72 w-full overflow-y-auto rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-2 shadow-2xl">
+                    <div className="absolute bottom-full left-0 z-30 mb-2 max-h-72 w-full overflow-y-auto rounded-card border border-line bg-panel p-2 shadow-2xl">
                       {["Groups", "Users", "Agents"].map((group) => {
                         const options = targetOptions.filter((target) => target.group === group);
                         if (options.length === 0) return null;
                         return (
                           <div key={group} className="py-1">
-                            <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+                            <div className="px-2 pb-1 text-nano font-semibold uppercase tracking-wider text-text-muted">
                               {group}
                             </div>
                             <div className="space-y-1">
@@ -1378,13 +1402,13 @@ export default function ChatRoom({
                                     onClick={() => toggleTarget(target)}
                                     className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
                                       selected
-                                        ? "bg-[var(--color-accent)]/[0.12] text-[var(--color-text)]"
-                                        : "text-[var(--color-text-muted)] hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+                                        ? "bg-accent/[0.12] text-text"
+                                        : "text-text-muted hover:bg-panel-soft hover:text-text"
                                     }`}
                                   >
-                                    {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-7 w-7 place-items-center rounded-full border border-[var(--color-line)] text-[10px] font-semibold">G</span>}
+                                    {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-11 w-11 place-items-center rounded-full border border-line text-nano font-semibold md:h-7 md:w-7">G</span>}
                                     <span className="min-w-0 flex-1 truncate">{target.actor ? actorDisplayName(target.actor) : target.label}</span>
-                                    <span className="text-[10px] font-semibold uppercase tracking-wider">
+                                    <span className="text-nano font-semibold uppercase tracking-wider">
                                       {selected ? "Selected" : target.group}
                                     </span>
                                   </button>
@@ -1408,11 +1432,11 @@ export default function ChatRoom({
                   placeholder={canContinueArchive ? "Continue this action plan..." : "Message the action plan..."}
                   onKeyDown={handleKeyDown}
                   expandedTitle={canContinueArchive ? "Continue Action Plan" : "Action Plan Message"}
-                  className="w-full resize-none rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-3 py-2 text-xs outline-none focus:border-[var(--color-accent)]"
+                  className="w-full resize-none rounded-lg border border-line bg-bg px-3 py-2 text-caption outline-none focus:border-accent"
                 />
 
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <label className="flex items-center gap-1.5 rounded-lg border border-[var(--color-line)] bg-[var(--color-panel-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] cursor-pointer select-none">
+                  <label className="flex items-center gap-1.5 rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-caption font-semibold text-text-muted transition hover:border-accent hover:text-accent cursor-pointer select-none">
                     <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round">
                       <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                     </svg>
@@ -1426,15 +1450,15 @@ export default function ChatRoom({
                     />
                   </label>
                   {selectedFiles.length > 0 ? (
-                    <div className="min-w-0 flex-1 text-[11px] text-[var(--color-text-muted)]" aria-live="polite">
-                      <span className="font-semibold text-[var(--color-text)]">Ready to attach:</span>{" "}
+                    <div className="min-w-0 flex-1 text-micro text-text-muted" aria-live="polite">
+                      <span className="font-semibold text-text">Ready to attach:</span>{" "}
                       {selectedFiles.map((file: File) => file.name).join(", ")}
                     </div>
                   ) : null}
                   <button
                     type="submit"
                     disabled={!canSend}
-                    className="rounded-lg bg-[var(--color-accent)] px-4 py-1.5 text-xs font-semibold text-[var(--color-bg)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer select-none"
+                    className="rounded-lg bg-accent px-4 py-1.5 text-caption font-semibold text-bg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer select-none"
                   >
                     {canContinueArchive ? "Continue" : "Send"}
                   </button>
@@ -1447,7 +1471,7 @@ export default function ChatRoom({
             type="button"
             onClick={() => setComposerOpen(true)}
             aria-label={canContinueArchive ? "Continue action plan" : "Message action plan"}
-            className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-[var(--color-accent)] text-3xl leading-none text-[var(--color-bg)] shadow-lg transition hover:opacity-90"
+            className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90 max-sm:bottom-[calc(env(safe-area-inset-bottom)+1rem)] max-sm:right-4"
           >
             <span className="-mt-0.5">+</span>
           </button>

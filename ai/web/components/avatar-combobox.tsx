@@ -6,6 +6,7 @@ import {
   MessageAvatar,
   type MessageActor,
 } from "@/components/message-avatar";
+import { Input } from "@/components/ui/primitives";
 
 export type AvatarComboboxOption = {
   value: string;
@@ -104,12 +105,12 @@ export default function AvatarCombobox({
         aria-label={ariaLabel}
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
-        className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 text-left text-xs outline-none transition hover:border-[var(--color-accent)]"
+        className="flex min-h-11 w-full items-center justify-between gap-2 rounded-lg border border-line bg-bg px-2 text-left text-caption outline-none transition hover:border-accent md:h-9 md:min-h-0"
       >
         <span className="flex min-w-0 items-center gap-1.5">
           {multiple ? (
             selectedOptions.length === 0 ? (
-              <span className="truncate text-[var(--color-text-muted)]">{emptyLabel}</span>
+              <span className="truncate text-text-muted">{emptyLabel}</span>
             ) : selectedOptions.length <= 3 ? (
               <span className="flex min-w-0 items-center gap-1.5">
                 {selectedOptions.map((option) =>
@@ -118,7 +119,7 @@ export default function AvatarCombobox({
                   ) : (
                     <span
                       key={option.value}
-                      className="truncate rounded bg-[var(--color-panel-soft)] px-1.5 py-0.5 text-[var(--color-text)]"
+                      className="truncate rounded bg-panel-soft px-1.5 py-0.5 text-text"
                     >
                       {option.label}
                     </span>
@@ -126,28 +127,28 @@ export default function AvatarCombobox({
                 )}
               </span>
             ) : (
-              <span className="truncate text-[var(--color-text)]">{selectedOptions.length} selected</span>
+              <span className="truncate text-text">{selectedOptions.length} selected</span>
             )
           ) : (
             <>
               {selected?.actor ? <MessageAvatar actor={selected.actor} size="sm" /> : null}
-              <span className={selected ? "truncate text-[var(--color-text)]" : "truncate text-[var(--color-text-muted)]"}>
+              <span className={selected ? "truncate text-text" : "truncate text-text-muted"}>
                 {selected ? selected.label : emptyLabel}
               </span>
             </>
           )}
         </span>
-        <span className="shrink-0 text-[var(--color-text-muted)]" aria-hidden="true">
+        <span className="shrink-0 text-text-muted" aria-hidden="true">
           {open ? "▴" : "▾"}
         </span>
       </button>
       {open ? (
-        <div className="absolute left-0 right-0 top-full z-30 mt-1 rounded-xl border border-[var(--color-line)] bg-[var(--color-panel)] p-2 shadow-2xl">
-          <input
+        <div className="absolute left-0 right-0 top-full z-30 mt-1 rounded-card border border-line bg-panel p-2 shadow-2xl">
+          <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search..."
-            className="mb-2 h-8 w-full rounded-lg border border-[var(--color-line)] bg-[var(--color-bg)] px-2 text-xs outline-none focus:border-[var(--color-accent)]"
+            className="mb-2 h-8 px-2 py-0 text-caption"
           />
           <div className="max-h-64 overflow-y-auto">
             {multiple ? (
@@ -159,7 +160,7 @@ export default function AvatarCombobox({
                       setValues([]);
                       onChangeMultiple?.([]);
                     }}
-                    className="mb-1 w-full rounded-lg px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+                    className="mb-1 min-h-11 w-full rounded-lg px-2 py-1 text-left text-nano font-semibold uppercase tracking-wider text-text-muted hover:bg-panel-soft hover:text-text md:min-h-0"
                   >
                     {emptyLabel}
                   </button>
@@ -169,17 +170,17 @@ export default function AvatarCombobox({
                   return (
                     <label
                       key={option.value}
-                      className={`mt-1 flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition ${
+                      className={`mt-1 flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition md:min-h-0 ${
                         checked
-                          ? "bg-[var(--color-accent)]/[0.12] text-[var(--color-text)]"
-                          : "text-[var(--color-text-muted)] hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+                          ? "bg-accent/[0.12] text-text"
+                          : "text-text-muted hover:bg-panel-soft hover:text-text"
                       }`}
                     >
                       <input
                         type="checkbox"
                         checked={checked}
                         onChange={(event) => toggleValue(option.value, event.currentTarget.checked)}
-                        className="h-3.5 w-3.5 accent-[var(--color-accent)]"
+                        className="h-6 w-6 accent-text-accent md:h-3.5 md:w-3.5"
                       />
                       {option.actor ? <MessageAvatar actor={option.actor} size="sm" /> : null}
                       <span className="min-w-0 flex-1 truncate">
@@ -198,11 +199,11 @@ export default function AvatarCombobox({
                     setOpen(false);
                     setQuery("");
                   }}
-                  className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition ${
-                    value === "" ? "bg-[var(--color-accent)]/[0.12] text-[var(--color-text)]" : "text-[var(--color-text-muted)] hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+                  className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition md:min-h-0 ${
+                    value === "" ? "bg-accent/[0.12] text-text" : "text-text-muted hover:bg-panel-soft hover:text-text"
                   }`}
                 >
-                  <span className="grid h-7 w-7 place-items-center rounded-full border border-dashed border-[var(--color-line)]">--</span>
+                  <span className="grid h-11 w-11 place-items-center rounded-full border border-dashed border-line md:h-7 md:w-7">--</span>
                   <span>{emptyLabel}</span>
                 </button>
                 {filtered.map((option) => (
@@ -214,8 +215,8 @@ export default function AvatarCombobox({
                       setOpen(false);
                       setQuery("");
                     }}
-                    className={`mt-1 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition ${
-                      value === option.value ? "bg-[var(--color-accent)]/[0.12] text-[var(--color-text)]" : "text-[var(--color-text-muted)] hover:bg-[var(--color-panel-soft)] hover:text-[var(--color-text)]"
+                    className={`mt-1 flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition md:min-h-0 ${
+                      value === option.value ? "bg-accent/[0.12] text-text" : "text-text-muted hover:bg-panel-soft hover:text-text"
                     }`}
                   >
                     {option.actor ? <MessageAvatar actor={option.actor} size="sm" /> : null}
