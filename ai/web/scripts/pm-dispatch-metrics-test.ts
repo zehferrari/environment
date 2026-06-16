@@ -52,4 +52,35 @@ assert.equal(missingPromptMetrics.sizes.systemPromptChars, 0);
 assert.equal(missingPromptMetrics.sizes.contextTextChars, null);
 assert.equal(missingPromptMetrics.sizes.transcriptMessageCount, null);
 
+for (const fixture of [
+  {
+    kind: "direct" as const,
+    replyTarget: { kind: "direct" as const, agentSlug: "asdrubal", messageId: "turn-direct" },
+  },
+  {
+    kind: "task-chat" as const,
+    replyTarget: { kind: "task-chat" as const, agentSlug: "asdrubal", taskId: "t1", messageId: "turn-task-chat" },
+  },
+  {
+    kind: "epic-chat" as const,
+    replyTarget: { kind: "epic-chat" as const, agentSlug: "asdrubal", epicId: "e1", messageId: "turn-epic-chat" },
+  },
+  {
+    kind: "task-comment" as const,
+    replyTarget: { kind: "task-comment" as const, agentSlug: "asdrubal", taskId: "t1", messageId: "turn-task-comment" },
+  },
+]) {
+  const metrics = buildPmChannelDispatchMetrics({
+    ...base,
+    kind: fixture.kind,
+    contextText: null,
+    systemPrompt: `PM PER-TURN CONTEXT CONTRACT\nSurface: ${fixture.kind}\nPRIMARY PM CONTEXT PACKET`,
+    replyTarget: fixture.replyTarget,
+  }, 1);
+  assert.equal(metrics.surface, fixture.kind);
+  assert.equal(metrics.sizes.contextTextChars, null, `${fixture.kind} records null legacy contextText`);
+  assert(metrics.sizes.systemPromptChars > 0, `${fixture.kind} records visible per-turn prompt size`);
+  assert.equal(metrics.sizes.transcriptMessageCount, 1, `${fixture.kind} records context-received transcript evidence`);
+}
+
 console.log("pm-dispatch-metrics-test: ok");
