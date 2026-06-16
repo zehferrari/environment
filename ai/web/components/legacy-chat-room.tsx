@@ -880,8 +880,17 @@ export default function ChatRoom({
     setTargetPickerOpen(false);
   };
 
+  useEffect(() => {
+    if (!archiveSidebarOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setArchiveSidebarOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [archiveSidebarOpen]);
+
   return (
-    <div className="relative flex h-[calc(100dvh-14rem)] min-h-[620px] flex-col overflow-hidden rounded-panel border border-line bg-panel shadow-sm">
+    <div className="relative flex h-[calc(100dvh-14rem)] min-h-[620px] flex-col overflow-hidden rounded-panel border border-line bg-panel shadow-sm max-sm:h-[100dvh] max-sm:min-h-0 max-sm:rounded-none max-sm:border-x-0">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-line bg-panel-soft px-card py-control-y.5">
         <div className="flex items-center gap-2">
@@ -941,7 +950,14 @@ export default function ChatRoom({
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
       {archiveSidebarOpen ? (
-        <aside className="order-2 flex w-[min(22rem,42vw)] min-w-[18rem] flex-col border-l border-line bg-panel shadow-[-18px_0_35px_rgba(15,23,42,0.06)]">
+        <>
+        <button
+          type="button"
+          onClick={() => setArchiveSidebarOpen(false)}
+          className="fixed inset-0 z-40 hidden bg-black/45 backdrop-blur-sm max-sm:block"
+          aria-label="Close recent discussions"
+        />
+        <aside className="order-2 flex w-[min(22rem,42vw)] min-w-[18rem] flex-col border-l border-line bg-panel shadow-[-18px_0_35px_rgba(15,23,42,0.06)] max-sm:fixed max-sm:inset-y-0 max-sm:right-0 max-sm:z-50 max-sm:w-[85vw] max-sm:min-w-0 max-sm:max-w-[85vw] max-sm:shadow-2xl">
           <div className="flex items-center justify-between border-b border-line px-3 py-2">
             <div>
               <div className="flex items-center gap-1.5">
@@ -1092,13 +1108,14 @@ export default function ChatRoom({
               )}
           </div>
         </aside>
+        </>
       ) : null}
 
       <div className="order-1 flex min-w-0 flex-1 flex-col">
       {/* Messages List */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto p-card min-h-0 scrollbar-thin"
+        className="flex-1 overflow-y-auto p-card min-h-0 scrollbar-thin max-sm:p-3"
       >
         <div ref={scrollContentRef}>
         {displayedMessages.length === 0 ? (
@@ -1249,7 +1266,7 @@ export default function ChatRoom({
         <button
           type="button"
           onClick={() => scheduleScrollToLatest(true)}
-          className="fixed bottom-24 right-6 z-40 rounded-full border border-line bg-panel px-3 py-2 text-caption font-semibold text-text shadow-lg transition hover:border-accent hover:text-accent"
+          className="fixed bottom-24 right-6 z-40 rounded-full border border-line bg-panel px-3 py-2 text-caption font-semibold text-text shadow-lg transition hover:border-accent hover:text-accent max-sm:bottom-[calc(env(safe-area-inset-bottom)+5.25rem)] max-sm:right-4"
         >
           Jump to latest
         </button>
@@ -1274,7 +1291,7 @@ export default function ChatRoom({
         <>
           {composerOpen ? (
             <div
-              className="fixed inset-0 z-50 bg-black/10 p-card backdrop-blur-[1px]"
+              className="fixed inset-0 z-50 bg-black/10 p-card backdrop-blur-[1px] max-sm:p-0"
               onClick={closeComposer}
             >
               <form
@@ -1282,7 +1299,7 @@ export default function ChatRoom({
                 action={actionHandler}
                 encType="multipart/form-data"
                 onClick={(event) => event.stopPropagation()}
-                className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-2xl space-y-3 rounded-panel border border-line bg-panel p-card shadow-2xl sm:right-6"
+                className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-2xl space-y-3 overflow-y-auto rounded-panel border border-line bg-panel p-card shadow-2xl sm:right-6 max-sm:bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] max-sm:left-3 max-sm:right-3 max-sm:max-h-[calc(100dvh-env(safe-area-inset-bottom)-1.5rem)] max-sm:w-auto"
               >
                 <input type="hidden" name="projectSlug" value={projectSlug} />
                 {taskId ? (
@@ -1447,7 +1464,7 @@ export default function ChatRoom({
             type="button"
             onClick={() => setComposerOpen(true)}
             aria-label={canContinueArchive ? "Continue action plan" : "Message action plan"}
-            className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90"
+            className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90 max-sm:bottom-[calc(env(safe-area-inset-bottom)+1rem)] max-sm:right-4"
           >
             <span className="-mt-0.5">+</span>
           </button>
