@@ -41,6 +41,7 @@ const STORAGE_KEY = "pm:sidebar:collapsed";
 type TileColor = { bg: string; fg: string };
 const NAV_COLORS: Record<string, TileColor> = {
   projects: { bg: "rgba(108,92,231,0.14)", fg: "#6c5ce7" }, // indigo / accent
+  workspaces: { bg: "rgba(168,85,247,0.14)", fg: "#9333ea" }, // purple
   agents: { bg: "rgba(14,165,233,0.14)", fg: "#0ea5e9" }, // sky
   settings: { bg: "rgba(100,116,139,0.16)", fg: "#475569" }, // slate
   activity: { bg: "rgba(245,158,11,0.16)", fg: "#d97706" }, // amber
@@ -56,6 +57,15 @@ const icons = {
       <rect width="7" height="5" x="14" y="3" rx="1" />
       <rect width="7" height="9" x="14" y="12" rx="1" />
       <rect width="7" height="5" x="3" y="16" rx="1" />
+    </>
+  ),
+  workspaces: (
+    <>
+      <rect width="8" height="8" x="3" y="3" rx="2" />
+      <rect width="8" height="8" x="13" y="3" rx="2" />
+      <rect width="8" height="8" x="3" y="13" rx="2" />
+      <path d="M13 17h8" />
+      <path d="M17 13v8" />
     </>
   ),
   agents: (
@@ -199,12 +209,14 @@ export default function SidebarNav({
 
   const meInitial = (meName || "?").slice(0, 1).toUpperCase();
   const isProjectsActive = pathname === "/projects" || pathname?.startsWith("/projects/");
+  const isWorkspacesActive = pathname === "/workspaces" || pathname?.startsWith("/workspaces/");
   const isAgentsActive = pathname === "/agents" || pathname?.startsWith("/agents/");
   const isActivityActive = pathname === "/system/activity";
   const isSettingsActive = pathname === "/system/settings";
   const hasUnreadAgents = agents.some((agent) => agent.unread);
   const mobilePrimaryItems = [
     { href: "/projects", icon: icons.projects, label: "Projects", active: isProjectsActive },
+    { href: "/workspaces", icon: icons.workspaces, label: "Workspaces", active: isWorkspacesActive },
     { href: "/agents", icon: icons.agents, label: "Agents", active: isAgentsActive, badge: hasUnreadAgents },
     { href: "/system/activity", icon: icons.activity, label: "Activity", active: isActivityActive },
     { href: "/system/settings", icon: icons.settings, label: "Settings", active: isSettingsActive },
@@ -338,6 +350,14 @@ export default function SidebarNav({
             color={NAV_COLORS.projects}
             collapsed={collapsed}
             active={isProjectsActive}
+          />
+          <NavItem
+            href="/workspaces"
+            icon={icons.workspaces}
+            label="Workspaces"
+            color={NAV_COLORS.workspaces}
+            collapsed={collapsed}
+            active={isWorkspacesActive}
           />
           {projects.map((project) => {
             const href = `/projects/${project.slug}`;
@@ -504,7 +524,7 @@ export default function SidebarNav({
       aria-label="Mobile primary navigation"
       className="fixed inset-x-3 bottom-3 z-40 rounded-3xl border border-line bg-panel/95 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 shadow-2xl shadow-black/20 backdrop-blur md:hidden"
     >
-      <div className="grid grid-cols-4 gap-1">
+      <div className="grid grid-cols-5 gap-1">
         {mobilePrimaryItems.map((item) => (
           <Link
             key={item.href}
@@ -583,6 +603,7 @@ export default function SidebarNav({
             <section aria-labelledby="mobile-projects-heading" className="space-y-1">
               <h3 id="mobile-projects-heading" className="px-2 text-nano font-semibold uppercase tracking-wider text-text-muted">Projects</h3>
               <NavSheetLink href="/projects" icon={icons.projects} label="All projects" color={NAV_COLORS.projects} active={isProjectsActive} onNavigate={closeMobileMenu} />
+              <NavSheetLink href="/workspaces" icon={icons.workspaces} label="Workspaces" color={NAV_COLORS.workspaces} active={isWorkspacesActive} onNavigate={closeMobileMenu} />
               {projects.map((project) => {
                 const href = `/projects/${project.slug}`;
                 const active = pathname === href || pathname?.startsWith(`${href}/`);
