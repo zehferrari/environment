@@ -35,6 +35,34 @@ export interface ContextCaps {
   attachmentInlineBudget: number;
   /** Per-attachment excerpt character cap (still inside attachmentInlineBudget). */
   attachmentPerExcerpt: number;
+  /** Total rendered related-timeline body budget before older rows are summarized. */
+  maxRenderedTimelineChars: number;
+  /** Recent timeline rows kept verbatim even when older rows are summarized. */
+  recentTimelineVerbatimItems: number;
+}
+
+export const DIRECT_CHAT_CONTEXT_DEFAULTS = {
+  activeMessages: 14,
+  archiveMessages: 12,
+  archiveChainLimit: 2,
+} as const;
+
+export function intEnv(name: string, fallback: number, min: number, max: number) {
+  const raw = Number(process.env[name]);
+  if (!Number.isFinite(raw)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(raw)));
+}
+
+export function directChatContextMessages() {
+  return intEnv("PM_DIRECT_CHAT_CONTEXT_MESSAGES", DIRECT_CHAT_CONTEXT_DEFAULTS.activeMessages, 6, 40);
+}
+
+export function directChatArchiveContextMessages() {
+  return intEnv("PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES", DIRECT_CHAT_CONTEXT_DEFAULTS.archiveMessages, 4, 40);
+}
+
+export function directChatArchiveChainLimit() {
+  return intEnv("PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT", DIRECT_CHAT_CONTEXT_DEFAULTS.archiveChainLimit, 1, 6);
 }
 
 // Targets 1M tokens (~4MB packet ceiling). Realistic busy tasks land in
@@ -52,6 +80,8 @@ export const CODE_CAPS: ContextCaps = {
   projectDescriptionMax: 30000,
   attachmentInlineBudget: 200000,
   attachmentPerExcerpt: 40000,
+  maxRenderedTimelineChars: 700000,
+  recentTimelineVerbatimItems: 24,
 };
 
 // Targets 256k tokens (~1MB packet ceiling). Half the row counts and
@@ -68,6 +98,8 @@ export const MONITOR_CAPS: ContextCaps = {
   projectDescriptionMax: 15000,
   attachmentInlineBudget: 100000,
   attachmentPerExcerpt: 20000,
+  maxRenderedTimelineChars: 320000,
+  recentTimelineVerbatimItems: 16,
 };
 
 export function capsForRole(role: string | null | undefined): ContextCaps {

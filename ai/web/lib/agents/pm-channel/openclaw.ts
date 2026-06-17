@@ -50,6 +50,16 @@ export interface SendPmChannelTurnArgs {
   fetchImpl?: typeof fetch;
 }
 
+export interface PmChannelDispatchMetrics {
+  surface: PmChannelTurnKind;
+  sizes: {
+    systemPromptChars: number;
+    contextTextChars: number | null;
+    textChars: number;
+    transcriptMessageCount: number | null;
+  };
+}
+
 export type PmChannelTransportMode = "http" | "inproc" | "uds";
 
 export interface SendPmChannelTurnResult {
@@ -64,6 +74,21 @@ export function buildPmTurnSessionKey(baseSessionKey: string, messageId: string)
   const base = baseSessionKey.trim();
   const safeMessageId = messageId.trim().replace(/[^A-Za-z0-9_.:-]/g, "_");
   return `${base}:turn:${safeMessageId}`;
+}
+
+export function buildPmChannelDispatchMetrics(
+  args: SendPmChannelTurnArgs,
+  transcriptMessageCount: number | null = null,
+): PmChannelDispatchMetrics {
+  return {
+    surface: args.kind,
+    sizes: {
+      systemPromptChars: args.systemPrompt?.length ?? 0,
+      contextTextChars: args.contextText == null ? null : args.contextText.length,
+      textChars: args.text.length,
+      transcriptMessageCount,
+    },
+  };
 }
 
 export function parsePmChannelReplyTarget(value: unknown): PmChannelReplyTarget | null {

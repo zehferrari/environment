@@ -32,7 +32,9 @@ import {
 import { extractMentions } from "@/lib/markdown";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/auth/session-bindings";
 import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
-import { createContextGrantUrl } from "@/lib/agents/context/grants";
+import { buildUnifiedPmTurnSystemPrompt, nullPmContextText } from "@/lib/agents/pm-channel/context";
+import { buildPmChannelDispatchMetrics } from "@/lib/agents/pm-channel/openclaw";
+import { createContextGrantUrlMap } from "@/lib/agents/context/grants";
 import { DISCUSSION_REPLY_FORMAT_PROMPT } from "@/lib/agents/chat/discussion-reply-format";
 import { createTaskDescriptionWriteToken } from "@/lib/agents/workflow/chat/task/token";
 import { createEpicDescriptionWriteToken } from "@/lib/agents/workflow/chat/epic/token";
@@ -576,13 +578,16 @@ export async function sendAgentChatMessage(formData: FormData) {
     const gatewayPort = target.gatewayPort;
 
     // Live-fetch envelope: hand the model short-lived scoped grant URLs
-    // instead of a reusable PM-channel bearer token.
+    // instead of a reusable PM-channel bearer token. All PM surfaces mint
+    // this bundle through the shared helper so task/Epic/direct chat use the
+    // same endpoint + scope-binding contract.
     const fetchBaseUrl = agentCallbackBaseUrl();
-    const projectGrantUrl = await createContextGrantUrl({
+    const grantUrls = await createContextGrantUrlMap({
       baseUrl: fetchBaseUrl,
       agentSlug,
-      scopeType: "project",
-      scopeId: project.id,
+      projectId: project.id,
+      taskId: taskId ? task.id : null,
+      epicId: taskId ? task.epicId : epic.id,
       turnId: msg.id,
     });
 
@@ -593,32 +598,6 @@ export async function sendAgentChatMessage(formData: FormData) {
     });
     const previousDispatchedMessageId = sessionBinding.lastDispatchedMessageId;
     const isIncrementalTurn = !!previousDispatchedMessageId;
-    const taskGrantUrl = taskId
-      ? await createContextGrantUrl({
-          baseUrl: fetchBaseUrl,
-          agentSlug,
-          scopeType: "task",
-          scopeId: task.id,
-          turnId: msg.id,
-        })
-      : null;
-    const epicGrantUrl = taskId
-      ? task.epicId
-        ? await createContextGrantUrl({
-            baseUrl: fetchBaseUrl,
-            agentSlug,
-            scopeType: "epic",
-            scopeId: task.epicId,
-            turnId: msg.id,
-          })
-        : null
-      : await createContextGrantUrl({
-          baseUrl: fetchBaseUrl,
-          agentSlug,
-          scopeType: "epic",
-          scopeId: epic.id,
-          turnId: msg.id,
-        });
 
     const prebuiltContext = isIncrementalTurn
       ? null
@@ -640,9 +619,9 @@ export async function sendAgentChatMessage(formData: FormData) {
             taskId: task.id,
             epicId: task.epicId ?? null,
             grantUrls: {
-              task: taskGrantUrl!,
-              epic: epicGrantUrl,
-              project: projectGrantUrl,
+              task: grantUrls.task!,
+              epic: grantUrls.epic,
+              project: grantUrls.project,
             },
           })
         : buildTaskNativeChannelPrompt(task.title, agentSlug, directedDescriptor, {
@@ -652,9 +631,9 @@ export async function sendAgentChatMessage(formData: FormData) {
             taskId: task.id,
             epicId: task.epicId ?? null,
             grantUrls: {
-              task: taskGrantUrl!,
-              epic: epicGrantUrl,
-              project: projectGrantUrl,
+              task: grantUrls.task!,
+              epic: grantUrls.epic,
+              project: grantUrls.project,
             },
           })
       : isIncrementalTurn
@@ -665,8 +644,8 @@ export async function sendAgentChatMessage(formData: FormData) {
             epicId: epic.id,
             workflowMessageId: msg.id,
             grantUrls: {
-              epic: epicGrantUrl!,
-              project: projectGrantUrl,
+              epic: grantUrls.epic!,
+              project: grantUrls.project,
             },
           })
         : buildEpicNativeChannelPrompt(epic.title, agentSlug, directedDescriptor, {
@@ -676,8 +655,8 @@ export async function sendAgentChatMessage(formData: FormData) {
             epicId: epic.id,
             workflowMessageId: msg.id,
             grantUrls: {
-              epic: epicGrantUrl!,
-              project: projectGrantUrl,
+              epic: grantUrls.epic!,
+              project: grantUrls.project,
             },
           }));
 
@@ -713,20 +692,29 @@ export async function sendAgentChatMessage(formData: FormData) {
       });
     }
 
-    const systemPrompt = [
-      baseSystemPrompt,
-      DISCUSSION_REPLY_FORMAT_PROMPT,
-      descriptionPrompt,
-      workItemPrompt,
-    ].filter(Boolean).join("\n\n");
+    const kind = taskId ? "task-chat" as const : "epic-chat" as const;
+    const systemPrompt = buildUnifiedPmTurnSystemPrompt({
+      kind,
+      trustedPrompt: [
+        baseSystemPrompt,
+        DISCUSSION_REPLY_FORMAT_PROMPT,
+        descriptionPrompt,
+        workItemPrompt,
+      ].filter(Boolean).join("\n\n"),
+      primaryBlocks: [{
+        title: "CURRENT CHAT MESSAGE (untrustedContext)",
+        body,
+        trust: "untrusted",
+      }],
+    });
 
-    const delivery = await sendOrQueueOpenClawPmChannelTurn({
+    const dispatchArgs = {
       gatewayPort,
       agentSlug,
       sessionKey: sessionBinding.openclawSessionKey,
-      kind: taskId ? "task-chat" : "epic-chat",
+      kind,
       text: body,
-      contextText: null,
+      contextText: nullPmContextText(),
       systemPrompt,
       projectId: project.id,
       actor: {
@@ -736,20 +724,25 @@ export async function sendAgentChatMessage(formData: FormData) {
       },
       replyTarget: taskId
         ? {
-            kind: "task-chat",
+            kind: "task-chat" as const,
             agentSlug,
             taskId: task.id,
             messageId: msg.id,
             projectSlug: slug,
           }
         : {
-            kind: "epic-chat",
+            kind: "epic-chat" as const,
             agentSlug,
             epicId: epic.id,
             messageId: msg.id,
             projectSlug: slug,
           },
-    });
+    };
+    const dispatchMetrics = buildPmChannelDispatchMetrics(
+      dispatchArgs,
+      recentDisc.filter((m) => m.id !== msg.id).length + recentCmts.filter((m) => m.id !== msg.id).length,
+    );
+    const delivery = await sendOrQueueOpenClawPmChannelTurn(dispatchArgs);
 
     if (delivery.ok) {
       await db.agentSessionBinding.update({
@@ -777,6 +770,7 @@ export async function sendAgentChatMessage(formData: FormData) {
           driver: delivery.driver,
           status: delivery.status ?? null,
           error: delivery.error ?? null,
+          dispatchMetrics,
         }),
       },
     });

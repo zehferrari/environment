@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { buildTaskNativeChannelPrompt } from "@/lib/agents/workflow/chat/task/context";
 import { buildEpicNativeChannelPrompt } from "@/lib/agents/workflow/chat/epic/context";
-import { createContextGrantUrl } from "@/lib/agents/context/grants";
+import { createContextGrantUrlMap } from "@/lib/agents/context/grants";
 import { extractMentions } from "@/lib/markdown";
 import { resolveDirectedFromDiscussionRow } from "@/lib/agents/ops/directed-targets";
 import {
@@ -393,12 +393,13 @@ async function prebuildNow(args: {
   const expiresAt = now + ttlMs();
 
   for (const target of targetAgents) {
-    const projectGrantUrl = await createContextGrantUrl({
+    const grantUrls = await createContextGrantUrlMap({
       baseUrl: fetchBaseUrl,
       agentSlug: target.slug,
-      scopeType: "project",
-      scopeId: project.id,
       turnId: args.messageId,
+      projectId: project.id,
+      taskId: task?.id ?? null,
+      epicId: task ? (task.epicId ?? null) : epic!.id,
     });
     const baseSystemPrompt = task
       ? buildTaskNativeChannelPrompt(task.title, target.slug, directedDescriptor, {
@@ -407,41 +408,14 @@ async function prebuildNow(args: {
           inlineRecentBlock,
           taskId: task.id,
           epicId: task.epicId ?? null,
-          grantUrls: {
-            task: await createContextGrantUrl({
-              baseUrl: fetchBaseUrl,
-              agentSlug: target.slug,
-              scopeType: "task",
-              scopeId: task.id,
-              turnId: args.messageId,
-            }),
-            epic: task.epicId
-              ? await createContextGrantUrl({
-                  baseUrl: fetchBaseUrl,
-                  agentSlug: target.slug,
-                  scopeType: "epic",
-                  scopeId: task.epicId,
-                  turnId: args.messageId,
-                })
-              : null,
-            project: projectGrantUrl,
-          },
+          grantUrls,
         })
       : buildEpicNativeChannelPrompt(epic!.title, target.slug, directedDescriptor, {
           baseUrl: fetchBaseUrl,
           projectId: project.id,
           inlineRecentBlock,
           epicId: epic!.id,
-          grantUrls: {
-            epic: await createContextGrantUrl({
-              baseUrl: fetchBaseUrl,
-              agentSlug: target.slug,
-              scopeType: "epic",
-              scopeId: epic!.id,
-              turnId: args.messageId,
-            }),
-            project: projectGrantUrl,
-          },
+          grantUrls,
         });
     const key = cacheKey({ scopeType, scopeId, projectId: project.id, messageId: args.messageId, agentSlug: target.slug, directedKey, revision });
     cache.set(key, {

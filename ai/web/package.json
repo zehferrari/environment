@@ -40,7 +40,8 @@
     "test:breakpoint-alignment": "tsx scripts/breakpoint-alignment-test.ts",
     "test:direct-chat-cursor": "tsx scripts/direct-chat-cursor-test.ts",
     "test:speculative-context": "tsx scripts/speculative-context-test.ts",
-    "test:cross-tab-stream-coordinator": "tsx scripts/cross-tab-stream-coordinator-test.ts"
+    "test:cross-tab-stream-coordinator": "tsx scripts/cross-tab-stream-coordinator-test.ts",
+    "test:context-budget": "tsx scripts/context-budget-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",

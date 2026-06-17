@@ -6,13 +6,15 @@ import {
 } from "@/lib/agents/workflow/chat/task/context";
 import { getOrCreateAgentSessionBinding } from "@/lib/agents/auth/session-bindings";
 import {
+  buildPmChannelDispatchMetrics,
   buildPmTurnSessionKey,
 } from "@/lib/agents/pm-channel/openclaw";
+import { buildUnifiedPmTurnSystemPrompt, nullPmContextText } from "@/lib/agents/pm-channel/context";
 import { sendOrQueueOpenClawPmChannelTurn } from "@/lib/agents/pm-channel/jobs";
 import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/ops/pm-silence";
 import { createTaskWorkflowToken } from "@/lib/agents/workflow/token/task";
 import { resolveDirectedFromComment } from "@/lib/agents/ops/directed-targets";
-import { createContextGrantUrl } from "@/lib/agents/context/grants";
+import { createContextGrantUrl, createContextGrantUrlMap } from "@/lib/agents/context/grants";
 import { createWorkItemGrantToken } from "@/lib/agents/workflow/token/work-item";
 import { buildWorkItemPlanningPrompt } from "@/lib/agents/context/project";
 import {
@@ -375,31 +377,14 @@ export async function sendTaskWorkflowNotification(args: {
     currentMessageId: msg.id,
   });
   const fetchBaseUrl = agentCallbackBaseUrl();
-  const [taskGrantUrl, epicGrantUrl, projectGrantUrl] = await Promise.all([
-    createContextGrantUrl({
-      baseUrl: fetchBaseUrl,
-      agentSlug: targetUser.agent.slug,
-      scopeType: "task",
-      scopeId: task.id,
-      turnId: msg.id,
-    }),
-    task.epic?.id
-      ? createContextGrantUrl({
-          baseUrl: fetchBaseUrl,
-          agentSlug: targetUser.agent.slug,
-          scopeType: "epic",
-          scopeId: task.epic.id,
-          turnId: msg.id,
-        })
-      : Promise.resolve(null),
-    createContextGrantUrl({
-      baseUrl: fetchBaseUrl,
-      agentSlug: targetUser.agent.slug,
-      scopeType: "project",
-      scopeId: task.projectId,
-      turnId: msg.id,
-    }),
-  ]);
+  const grantUrls = await createContextGrantUrlMap({
+    baseUrl: fetchBaseUrl,
+    agentSlug: targetUser.agent.slug,
+    projectId: task.projectId,
+    taskId: task.id,
+    epicId: task.epic?.id ?? null,
+    turnId: msg.id,
+  });
   const sessionBinding = await getOrCreateAgentSessionBinding({
     scopeType: "task",
     scopeId: task.id,
@@ -413,42 +398,47 @@ export async function sendTaskWorkflowNotification(args: {
     epicWorkItemKey: task.epic?.workItemKey ?? null,
     epicCommitPrefix: task.epic?.commitPrefix ?? null,
   });
-  const delivery = await sendOrQueueOpenClawPmChannelTurn({
+  const kind = planChannelNotification ? "task-chat" as const : "task-comment" as const;
+  const dispatchArgs = {
     gatewayPort: targetUser.agent.gatewayPort,
     agentSlug: targetUser.agent.slug,
     sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
-    kind: planChannelNotification ? "task-chat" : "task-comment",
+    kind,
     text: args.body,
-    contextText: userMessage,
-    systemPrompt: [
-      buildTaskNativeChannelPrompt(task.title, targetUser.agent.slug, null, {
-        baseUrl: fetchBaseUrl,
-        projectId: task.projectId,
-        taskId: task.id,
-        epicId: task.epic?.id ?? null,
-        inlineRecentBlock,
-        grantUrls: {
-          task: taskGrantUrl,
-          epic: epicGrantUrl,
-          project: projectGrantUrl,
-        },
-      }),
-      workflowPrompt({
-        taskTitle: task.title,
-        taskId: task.id,
-        agentSlug: targetUser.agent.slug,
-        messageId: msg.id,
-        reason: args.reason,
-        branchName: task.branchName ?? null,
-        commitPrefix,
-        repositoryPath: task.project.repositoryPath ?? null,
-        expectedGitUserName: gitIdentity.name,
-        expectedGitUserEmail: gitIdentity.email,
-        onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
-        onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
-        onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
-      }),
-    ].join("\n\n"),
+    contextText: nullPmContextText(),
+    systemPrompt: buildUnifiedPmTurnSystemPrompt({
+      kind,
+      trustedPrompt: [
+        buildTaskNativeChannelPrompt(task.title, targetUser.agent.slug, null, {
+          baseUrl: fetchBaseUrl,
+          projectId: task.projectId,
+          taskId: task.id,
+          epicId: task.epic?.id ?? null,
+          inlineRecentBlock,
+          grantUrls: {
+            task: grantUrls.task!,
+            epic: grantUrls.epic,
+            project: grantUrls.project,
+          },
+        }),
+        workflowPrompt({
+          taskTitle: task.title,
+          taskId: task.id,
+          agentSlug: targetUser.agent.slug,
+          messageId: msg.id,
+          reason: args.reason,
+          branchName: task.branchName ?? null,
+          commitPrefix,
+          repositoryPath: task.project.repositoryPath ?? null,
+          expectedGitUserName: gitIdentity.name,
+          expectedGitUserEmail: gitIdentity.email,
+          onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
+          onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
+          onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
+        }),
+      ].join("\n\n"),
+      primaryContext: userMessage,
+    }),
     projectId: task.projectId,
     actor: {
       id: args.actor.id,
@@ -456,13 +446,18 @@ export async function sendTaskWorkflowNotification(args: {
       kind: args.actor.kind,
     },
     replyTarget: {
-      kind: planChannelNotification ? "task-chat" : "task-comment",
+      kind: planChannelNotification ? "task-chat" as const : "task-comment" as const,
       agentSlug: targetUser.agent.slug,
       taskId: task.id,
       messageId: msg.id,
       projectSlug: task.project.slug,
     },
-  });
+  };
+  const dispatchMetrics = buildPmChannelDispatchMetrics(
+    dispatchArgs,
+    recentDisc.filter((m) => m.id !== msg.id).length + recentCmts.filter((m) => m.id !== msg.id).length,
+  );
+  const delivery = await sendOrQueueOpenClawPmChannelTurn(dispatchArgs);
 
   await db.activityLog.create({
     data: {
@@ -478,6 +473,7 @@ export async function sendTaskWorkflowNotification(args: {
         driver: delivery.driver,
         status: delivery.status ?? null,
         error: delivery.error ?? null,
+        dispatchMetrics,
       }),
     },
   });
@@ -748,31 +744,14 @@ export async function sendTaskCommentNotifications(args: {
               : (task.status === "Backlog" || task.status === "To Do") && target?.userId === reviewOwnerId
                 ? "action_plan_review_requested"
                 : "monitor_recovery";
-    const [taskGrantUrl, epicGrantUrl, projectGrantUrl] = await Promise.all([
-      createContextGrantUrl({
-        baseUrl: fetchBaseUrl,
-        agentSlug: msg.agentSlug,
-        scopeType: "task",
-        scopeId: task.id,
-        turnId: msg.id,
-      }),
-      task.epic?.id
-        ? createContextGrantUrl({
-            baseUrl: fetchBaseUrl,
-            agentSlug: msg.agentSlug,
-            scopeType: "epic",
-            scopeId: task.epic.id,
-            turnId: msg.id,
-          })
-        : Promise.resolve(null),
-      createContextGrantUrl({
-        baseUrl: fetchBaseUrl,
-        agentSlug: msg.agentSlug,
-        scopeType: "project",
-        scopeId: task.projectId,
-        turnId: msg.id,
-      }),
-    ]);
+    const grantUrls = await createContextGrantUrlMap({
+      baseUrl: fetchBaseUrl,
+      agentSlug: msg.agentSlug,
+      projectId: task.projectId,
+      taskId: task.id,
+      epicId: task.epic?.id ?? null,
+      turnId: msg.id,
+    });
     const workItemPrompt = allowWorkItemManagement
       ? buildWorkItemPlanningPrompt({
           agentSlug: msg.agentSlug,
@@ -785,43 +764,48 @@ export async function sendTaskCommentNotifications(args: {
           token: createWorkItemGrantToken(task.projectId, msg.agentSlug, msg.id),
         })
       : "";
-    const delivery = await sendOrQueueOpenClawPmChannelTurn({
+    const kind = "task-comment" as const;
+    const dispatchArgs = {
       gatewayPort: target?.gatewayPort ?? null,
       agentSlug: msg.agentSlug,
       sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
-      kind: "task-comment",
+      kind,
       text: args.body,
-      contextText: userMessage,
-      systemPrompt: [
-        buildTaskNativeChannelPrompt(task.title, msg.agentSlug, directedDescriptor, {
-          baseUrl: fetchBaseUrl,
-          projectId: task.projectId,
-          taskId: task.id,
-          epicId: task.epic?.id ?? null,
-          inlineRecentBlock,
-          grantUrls: {
-            task: taskGrantUrl,
-            epic: epicGrantUrl,
-            project: projectGrantUrl,
-          },
-        }),
-        workflowPrompt({
-          taskTitle: task.title,
-          taskId: task.id,
-          agentSlug: msg.agentSlug,
-          messageId: msg.id,
-          reason: workflowReason,
-          branchName: task.branchName ?? null,
-          commitPrefix,
-          repositoryPath: task.project.repositoryPath ?? null,
-          expectedGitUserName: gitIdentity.name,
-          expectedGitUserEmail: gitIdentity.email,
-          onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
-          onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
-          onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
-        }),
-        workItemPrompt,
-      ].join("\n\n"),
+      contextText: nullPmContextText(),
+      systemPrompt: buildUnifiedPmTurnSystemPrompt({
+        kind,
+        trustedPrompt: [
+          buildTaskNativeChannelPrompt(task.title, msg.agentSlug, directedDescriptor, {
+            baseUrl: fetchBaseUrl,
+            projectId: task.projectId,
+            taskId: task.id,
+            epicId: task.epic?.id ?? null,
+            inlineRecentBlock,
+            grantUrls: {
+              task: grantUrls.task!,
+              epic: grantUrls.epic,
+              project: grantUrls.project,
+            },
+          }),
+          workflowPrompt({
+            taskTitle: task.title,
+            taskId: task.id,
+            agentSlug: msg.agentSlug,
+            messageId: msg.id,
+            reason: workflowReason,
+            branchName: task.branchName ?? null,
+            commitPrefix,
+            repositoryPath: task.project.repositoryPath ?? null,
+            expectedGitUserName: gitIdentity.name,
+            expectedGitUserEmail: gitIdentity.email,
+            onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
+            onlyReportersCanSetTasksDone: task.project.onlyReportersCanSetTasksDone,
+            onlyReportersCanApprovePullRequests: task.project.onlyReportersCanApprovePullRequests,
+          }),
+          workItemPrompt,
+        ].filter(Boolean).join("\n\n"),
+        primaryContext: userMessage,
+      }),
       projectId: task.projectId,
       actor: {
         id: args.actor.id,
@@ -829,13 +813,18 @@ export async function sendTaskCommentNotifications(args: {
         kind: args.actor.kind,
       },
       replyTarget: {
-        kind: "task-comment",
+        kind: "task-comment" as const,
         agentSlug: msg.agentSlug,
         taskId: task.id,
         messageId: msg.id,
         projectSlug: task.project.slug,
       },
-    });
+    };
+    const dispatchMetrics = buildPmChannelDispatchMetrics(
+      dispatchArgs,
+      recentDisc.filter((m) => m.id !== args.commentId).length + recentCmts.filter((m) => m.id !== args.commentId).length,
+    );
+    const delivery = await sendOrQueueOpenClawPmChannelTurn(dispatchArgs);
     await db.activityLog.create({
       data: {
         projectId: task.projectId,
@@ -851,6 +840,7 @@ export async function sendTaskCommentNotifications(args: {
           driver: delivery.driver,
           status: delivery.status ?? null,
           error: delivery.error ?? null,
+          dispatchMetrics,
         }),
       },
     });
