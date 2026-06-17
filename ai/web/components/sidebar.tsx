@@ -6,6 +6,7 @@ import SidebarNav, {
   type SidebarProject,
   type SidebarWorkspace,
 } from "@/components/sidebar-nav";
+import { avatarStatusTone } from "@/components/avatar-status";
 
 type SnapshotAgent = {
   session_idle_s?: number | null;
@@ -47,16 +48,6 @@ function statusFor(
     return "stale";
   }
   return agent.user ? "live" : "registered";
-}
-
-// Avatar treatment per status (HOMELAB sidebar rework): busy agents get a
-// discrete glowing pulse ring; stale/offline render black & white; live and
-// idle stay in full colour. The old coloured status dot + label are gone.
-function avatarTone(status: string): { grayscale: boolean; pulse: boolean } {
-  return {
-    grayscale: status === "stale" || status === "offline",
-    pulse: status === "busy",
-  };
 }
 
 export default async function Sidebar() {
@@ -150,7 +141,7 @@ export default async function Sidebar() {
   const navAgents: SidebarAgent[] = agents.map((agent) => {
     const live = liveAgents[agent.slug];
     const status = statusFor(agent, live);
-    const tone = avatarTone(status);
+    const tone = avatarStatusTone(status);
     const latest = latestBySlug.get(agent.slug) ?? null;
     const lastRead = cursorBySlug.get(agent.slug) ?? null;
     const unread = Boolean(latest && (!lastRead || latest > lastRead));

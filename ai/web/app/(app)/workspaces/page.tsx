@@ -1,11 +1,26 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { restoreWorkspace } from "@/lib/workspaces/service";
+import { createWorkspace, restoreWorkspace } from "@/lib/workspaces/service";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 
 export const dynamic = "force-dynamic";
+
+async function createWorkspaceAction(formData: FormData) {
+  "use server";
+  const session = await auth();
+  if (!session?.user?.id) throw new Error("Unauthenticated");
+  const workspace = await createWorkspace({
+    name: String(formData.get("name") ?? ""),
+    slug: String(formData.get("slug") ?? ""),
+    type: String(formData.get("type") ?? "internal"),
+    description: String(formData.get("description") ?? ""),
+  });
+  revalidatePath("/workspaces");
+  redirect(`/workspaces/${workspace.slug}/settings`);
+}
 
 async function restoreWorkspaceAction(formData: FormData) {
   "use server";
@@ -45,6 +60,11 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {!showingArchived ? (
+            <a href="#new-workspace" className="rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-white shadow-sm hover:opacity-90">
+              New workspace
+            </a>
+          ) : null}
           {showingArchived ? (
             <Link href="/workspaces" className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent">
               Active workspaces
@@ -56,6 +76,42 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
           ) : null}
         </div>
       </div>
+
+
+      {!showingArchived ? (
+        <form id="new-workspace" action={createWorkspaceAction} className="rounded-panel border border-line bg-panel p-card shadow-sm">
+          <div className="mb-4">
+            <h2 className="text-base font-semibold tracking-tight">Create workspace</h2>
+            <p className="mt-1 text-caption text-text-muted">Create a workspace, then choose related projects, agent pool, defaults, and logo on the settings screen.</p>
+          </div>
+          <div className="grid gap-card md:grid-cols-[1fr_14rem_11rem_auto]">
+            <label className="space-y-1">
+              <span className="block text-nano font-semibold uppercase tracking-wider text-text-muted">Name</span>
+              <input name="name" required maxLength={200} placeholder="Environment" className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent" />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-nano font-semibold uppercase tracking-wider text-text-muted">Slug</span>
+              <input name="slug" required pattern="[a-z0-9]+([._-][a-z0-9]+)*" placeholder="environment" className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y font-mono text-body outline-none focus:border-accent" />
+            </label>
+            <label className="space-y-1">
+              <span className="block text-nano font-semibold uppercase tracking-wider text-text-muted">Type</span>
+              <select name="type" defaultValue="internal" className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent">
+                <option value="internal">Internal</option>
+                <option value="client">Client</option>
+                <option value="personal">Personal</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <button type="submit" className="self-end rounded-lg bg-accent px-control-x py-control-y text-body font-semibold text-white shadow-sm hover:opacity-90">
+              Create
+            </button>
+          </div>
+          <label className="mt-card block space-y-1">
+            <span className="block text-nano font-semibold uppercase tracking-wider text-text-muted">Description</span>
+            <textarea name="description" rows={2} placeholder="Optional context for humans and agents..." className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent" />
+          </label>
+        </form>
+      ) : null}
 
       {workspaces.length === 0 ? (
         <div className="rounded-panel border border-dashed border-line bg-panel p-card text-body text-text-muted">

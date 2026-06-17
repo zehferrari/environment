@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import AvatarStatus from "@/components/avatar-status";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
@@ -45,6 +46,7 @@ type SidebarNavProps = {
 
 const STORAGE_KEY = "pm:sidebar:collapsed";
 const WORKSPACE_EXPANDED_STORAGE_KEY = "pm:sidebar:expanded-workspaces";
+const SELECTED_WORKSPACE_STORAGE_KEY = "pm:sidebar:selected-workspace";
 
 /** Per-option tile colors (soft background + saturated glyph). Inline styles
  *  mirror the agent status-dot pattern so they render regardless of scanning. */
@@ -201,6 +203,8 @@ export default function SidebarNav({
 }: SidebarNavProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [expandedWorkspaceSlugs, setExpandedWorkspaceSlugs] = useState<string[]>([]);
+  const [selectedWorkspaceSlug, setSelectedWorkspaceSlug] = useState<string>("");
+  const [workspaceQuery, setWorkspaceQuery] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const mobileSheetRef = useRef<HTMLDivElement | null>(null);
   const mobileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -220,6 +224,7 @@ export default function SidebarNav({
         // Ignore malformed local state; the sidebar remains usable with defaults.
       }
     }
+    setSelectedWorkspaceSlug(window.localStorage.getItem(SELECTED_WORKSPACE_STORAGE_KEY) ?? "");
   }, []);
 
   function toggle() {
@@ -231,7 +236,7 @@ export default function SidebarNav({
   }
 
   const meInitial = (meName || "?").slice(0, 1).toUpperCase();
-  const isProjectsActive = pathname === "/projects" || pathname?.startsWith("/projects/");
+  const isProjectsActive = pathname === "/" || pathname === "/projects" || pathname?.startsWith("/projects/");
   const isWorkspacesActive = pathname === "/workspaces" || pathname?.startsWith("/workspaces/");
   const isAgentsActive = pathname === "/agents" || pathname?.startsWith("/agents/");
   const isActivityActive = pathname === "/system/activity";
@@ -244,15 +249,21 @@ export default function SidebarNav({
       workspace.projects.some((project) => project.slug === activeProjectSlug),
     )?.slug ??
     null;
+  const selectedWorkspace = workspaces.find((workspace) => workspace.slug === selectedWorkspaceSlug) ?? null;
   const activeWorkspace = workspaces.find((workspace) => workspace.slug === activeWorkspaceSlug) ?? null;
-  const activeWorkspaceAgentSlugs = activeWorkspace?.agentSlugs ?? [];
-  const visibleAgents = activeWorkspace && activeWorkspaceAgentSlugs.length > 0
+  const workspaceFilter = activeWorkspace ?? selectedWorkspace;
+  const activeWorkspaceAgentSlugs = workspaceFilter?.agentSlugs ?? [];
+  const visibleAgents = workspaceFilter && activeWorkspaceAgentSlugs.length > 0
     ? agents.filter((agent) => activeWorkspaceAgentSlugs.includes(agent.slug))
     : agents;
   const hasUnreadAgents = visibleAgents.some((agent) => agent.unread);
   const assignedProjectSlugs = new Set(workspaces.flatMap((workspace) => workspace.projects.map((project) => project.slug)));
   const unassignedProjects = projects.filter((project) => !assignedProjectSlugs.has(project.slug));
+  const filteredWorkspaceProjects = workspaceFilter ? workspaceFilter.projects : unassignedProjects;
   const expandedWorkspaceSet = new Set(expandedWorkspaceSlugs);
+  const workspaceOptions = workspaces.filter((workspace) =>
+    `${workspace.name} ${workspace.slug}`.toLowerCase().includes(workspaceQuery.trim().toLowerCase()),
+  );
   const mobilePrimaryItems = [
     { href: "/workspaces", icon: icons.workspaces, label: "Workspaces", active: isWorkspacesActive || isProjectsActive },
     { href: "/agents", icon: icons.agents, label: "Agents", active: isAgentsActive, badge: hasUnreadAgents },
@@ -329,21 +340,26 @@ export default function SidebarNav({
               : "flex items-center justify-between gap-2"
           }
         >
-          <div className="flex min-w-0 items-center gap-2">
-            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-accent text-body font-bold text-white shadow-sm">
-              Z
-            </div>
+          <Link href="/" title={collapsed ? `${meName} / Mission Control` : undefined} className="flex min-w-0 items-center gap-2 rounded-lg hover:text-accent">
+            <AvatarStatus sizeClass="h-8 w-8" roundedClass="rounded-lg" className="bg-accent text-body font-bold text-white shadow-sm">
+              {userAvatarVersion != null && userId ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={`/api/users/${userId}/avatar?v=${userAvatarVersion}`} alt="" className="h-full w-full object-cover" />
+              ) : (
+                meInitial
+              )}
+            </AvatarStatus>
             {!collapsed ? (
               <div className="min-w-0">
                 <div className="truncate text-body font-semibold tracking-tight">
-                  Zero Latency
+                  {meName}
                 </div>
                 <div className="truncate text-caption text-text-muted">
                   Mission Control
                 </div>
               </div>
             ) : null}
-          </div>
+          </Link>
           <button
             type="button"
             onClick={toggle}
@@ -356,35 +372,6 @@ export default function SidebarNav({
           </button>
         </div>
 
-        <div
-          className={
-            collapsed
-              ? "mt-4 flex justify-center"
-              : "mt-4 flex items-center gap-2 rounded-lg border border-line bg-panel-soft px-3 py-2"
-          }
-        >
-          <div
-            className="grid h-7 w-7 shrink-0 place-items-center overflow-hidden rounded-full border border-line bg-panel text-micro font-semibold text-text"
-            title={collapsed ? meName : undefined}
-          >
-            {userAvatarVersion != null && userId ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={`/api/users/${userId}/avatar?v=${userAvatarVersion}`}
-                alt=""
-                className="h-full w-full object-cover"
-              />
-            ) : (
-              meInitial
-            )}
-          </div>
-          {!collapsed ? (
-            <div className="min-w-0 text-caption text-text-muted">
-              <div className="truncate text-text">{meName}</div>
-              {meKind ? <div className="truncate">{meKind}</div> : null}
-            </div>
-          ) : null}
-        </div>
       </div>
 
       <nav className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 text-body">
@@ -392,41 +379,69 @@ export default function SidebarNav({
           <NavItem
             href="/workspaces"
             icon={icons.workspaces}
-            label="Workspaces"
+            label="Manage workspaces"
             color={NAV_COLORS.workspaces}
             collapsed={collapsed}
             active={isWorkspacesActive}
           />
-          {workspaces.length === 0 ? (
-            !collapsed ? (
-              <div className="rounded-lg px-3 py-2 text-caption text-text-muted">No active workspaces yet.</div>
-            ) : null
-          ) : (
-            workspaces.map((workspace) => {
-              const expanded = expandedWorkspaceSet.has(workspace.slug);
-              const active = activeWorkspaceSlug === workspace.slug;
-              return (
-                <WorkspaceNavGroup
-                  key={workspace.slug}
-                  workspace={workspace}
-                  collapsed={collapsed}
-                  expanded={expanded || active}
-                  active={active}
-                  pathname={pathname}
-                  onToggle={() => toggleWorkspace(workspace.slug)}
-                />
-              );
-            })
-          )}
-          {unassignedProjects.length > 0 ? (
+          {!collapsed ? (
+            <div className="space-y-2 rounded-lg border border-line bg-panel-soft p-2">
+              <label className="block text-nano font-semibold uppercase tracking-wider text-text-muted" htmlFor="workspace-combobox">
+                Workspace
+              </label>
+              <input
+                id="workspace-combobox"
+                list="workspace-options"
+                value={workspaceQuery || workspaceFilter?.name || ""}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setWorkspaceQuery(value);
+                  const match = workspaces.find((workspace) => workspace.name === value || workspace.slug === value);
+                  if (match) {
+                    setSelectedWorkspaceSlug(match.slug);
+                    window.localStorage.setItem(SELECTED_WORKSPACE_STORAGE_KEY, match.slug);
+                  }
+                }}
+                placeholder="Search workspaces..."
+                className="w-full rounded-md border border-line bg-bg px-2 py-1.5 text-caption outline-none focus:border-accent"
+              />
+              <datalist id="workspace-options">
+                {workspaceOptions.map((workspace) => (
+                  <option key={workspace.slug} value={workspace.name}>{workspace.slug}</option>
+                ))}
+              </datalist>
+              <div className="max-h-40 space-y-1 overflow-y-auto">
+                {workspaceOptions.map((workspace) => (
+                  <Link
+                    key={workspace.slug}
+                    href={`/workspaces/${workspace.slug}`}
+                    onClick={() => {
+                      setSelectedWorkspaceSlug(workspace.slug);
+                      setWorkspaceQuery("");
+                      window.localStorage.setItem(SELECTED_WORKSPACE_STORAGE_KEY, workspace.slug);
+                    }}
+                    className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-caption hover:bg-accent-soft hover:text-accent ${workspaceFilter?.slug === workspace.slug ? "text-accent" : "text-text-muted"}`}
+                  >
+                    <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md border border-line bg-bg text-nano font-semibold uppercase">
+                      {workspace.logoSrc ? <img src={workspace.logoSrc} alt="" className="h-full w-full object-cover" /> : workspace.name.slice(0, 1)}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {filteredWorkspaceProjects.length > 0 ? (
             <WorkspaceNavGroup
-              workspace={{ slug: "__unassigned", name: "Other projects", logoSrc: null, projects: unassignedProjects, agentSlugs: [] }}
+              workspace={{ slug: workspaceFilter?.slug ?? "__unassigned", name: workspaceFilter?.name ?? "Other projects", logoSrc: workspaceFilter?.logoSrc ?? null, projects: filteredWorkspaceProjects, agentSlugs: workspaceFilter?.agentSlugs ?? [] }}
               collapsed={collapsed}
-              expanded={expandedWorkspaceSet.has("__unassigned") || unassignedProjects.some((project) => project.slug === activeProjectSlug)}
-              active={unassignedProjects.some((project) => project.slug === activeProjectSlug)}
+              expanded
+              active={Boolean(workspaceFilter && activeWorkspaceSlug === workspaceFilter.slug)}
               pathname={pathname}
-              onToggle={() => toggleWorkspace("__unassigned")}
+              onToggle={() => toggleWorkspace(workspaceFilter?.slug ?? "__unassigned")}
             />
+          ) : !collapsed ? (
+            <div className="rounded-lg px-3 py-2 text-caption text-text-muted">No projects in this workspace.</div>
           ) : null}
         </div>
 
@@ -557,7 +572,7 @@ export default function SidebarNav({
       aria-expanded={mobileMenuOpen}
       className="fixed bottom-[calc(env(safe-area-inset-bottom)+5.75rem)] left-4 z-40 grid h-12 w-12 place-items-center rounded-2xl bg-accent text-body font-bold text-white shadow-lg shadow-black/20 md:hidden"
     >
-      Z
+      {meInitial}
       {hasUnreadAgents ? (
         <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-panel bg-red-500" aria-hidden="true" />
       ) : null}
@@ -611,10 +626,10 @@ export default function SidebarNav({
           <div className="mx-auto mt-3 h-1.5 w-12 rounded-full bg-line" aria-hidden="true" />
           <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-4">
             <div className="flex min-w-0 items-center gap-3">
-              <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-accent text-body font-bold text-white shadow-sm">Z</div>
+              <div className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-2xl bg-accent text-body font-bold text-white shadow-sm">{userAvatarVersion != null && userId ? <img src={`/api/users/${userId}/avatar?v=${userAvatarVersion}`} alt="" className="h-full w-full object-cover" /> : meInitial}</div>
               <div className="min-w-0">
-                <h2 id="mobile-nav-title" className="truncate text-body font-semibold tracking-tight">Zero Latency</h2>
-                <p className="truncate text-caption text-text-muted">Full navigation</p>
+                <h2 id="mobile-nav-title" className="truncate text-body font-semibold tracking-tight">{meName}</h2>
+                <p className="truncate text-caption text-text-muted">Mission Control</p>
               </div>
             </div>
             <button
