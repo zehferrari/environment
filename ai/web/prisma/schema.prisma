@@ -69,6 +69,7 @@ model User {
   workItemProposalsProposed   WorkItemProposal[]   @relation("WorkItemProposalProposedBy")
   workItemProposalsApplied    WorkItemProposal[]   @relation("WorkItemProposalAppliedBy")
   workItemProposalsRejected   WorkItemProposal[]   @relation("WorkItemProposalRejectedBy")
+  archivedWorkspaces          Workspace[]           @relation("WorkspaceArchivedBy")
 
   @@index([kind])
   @@index([status])
@@ -117,6 +118,7 @@ model Agent {
   updatedAt     DateTime  @updatedAt
 
   user User?
+  workspacePools WorkspaceAgentPool[]
 
   @@index([role])
   @@index([deactivatedAt])
@@ -173,6 +175,7 @@ model Project {
   updatedAt   DateTime  @updatedAt
 
   members      ProjectMember[]
+  workspaces   WorkspaceProject[]
   epics        Epic[]
   tasks        Task[]
   activity     ActivityLog[]
@@ -184,6 +187,54 @@ model Project {
   deploymentPullRequests DeploymentPullRequest[]
 
   @@index([deletedAt])
+}
+
+
+model Workspace {
+  id             String   @id @default(cuid())
+  slug           String   @unique
+  name           String
+  description    String?
+  type           String   @default("internal")
+  archivedAt     DateTime? @map("archived_at")
+  archivedById   String?   @map("archived_by")
+  archivedBy     User?     @relation("WorkspaceArchivedBy", fields: [archivedById], references: [id])
+  logoPath       String?   @map("logo_path")
+  logoMimeType   String?   @map("logo_mime_type")
+  logoSizeBytes  Int?      @map("logo_size_bytes")
+  logoUpdatedAt  DateTime? @map("logo_updated_at")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  projects       WorkspaceProject[]
+  agentPool      WorkspaceAgentPool[]
+
+  @@index([archivedAt])
+  @@index([type])
+}
+
+model WorkspaceProject {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  projectId   String
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@unique([workspaceId, projectId])
+  @@index([projectId])
+}
+
+model WorkspaceAgentPool {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  agentId     String
+  agent       Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@unique([workspaceId, agentId])
+  @@index([agentId])
 }
 
 model ProjectMember {
