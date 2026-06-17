@@ -137,6 +137,19 @@ export default function NewEpicFab({
                   ariaLabel="Acting manager"
                 />
               </label>
+              <label className="text-caption">
+                <span className="mb-1 block text-text-muted">
+                  Deploy reviewer
+                </span>
+                <AvatarCombobox
+                  formId="newEpicForm"
+                  name="deployReviewerId"
+                  defaultValue=""
+                  options={workerOptions}
+                  emptyLabel="Use Monitor Agent"
+                  ariaLabel="Deploy reviewer"
+                />
+              </label>
             </div>
 
             <div className="flex justify-end gap-2 pt-1">

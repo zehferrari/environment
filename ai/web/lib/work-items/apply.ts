@@ -398,8 +398,9 @@ export async function commitProposal(
             where: { id },
             select: {
               id: true, title: true, description: true, status: true,
-              actingManagerId: true,
+              actingManagerId: true, deployReviewerId: true,
               actingManager: { select: { username: true } },
+              deployReviewer: { select: { username: true } },
             },
           });
           if (!epic) continue;
@@ -417,6 +418,11 @@ export async function commitProposal(
           if (am !== undefined && am !== epic.actingManagerId) {
             data.actingManagerId = am;
             logs.push({ kind: "epic.acting_manager", payload: { epicId: id, from: epic.actingManager?.username ?? null, to: am ? usernameById.get(am) ?? null : null, proposalId: proposal.id } });
+          }
+          const deployReviewer = resolvePrincipal(op.deployReviewer);
+          if (deployReviewer !== undefined && deployReviewer !== epic.deployReviewerId) {
+            data.deployReviewerId = deployReviewer;
+            logs.push({ kind: "epic.deploy_reviewer", payload: { epicId: id, from: epic.deployReviewer?.username ?? null, to: deployReviewer ? usernameById.get(deployReviewer) ?? null : null, proposalId: proposal.id } });
           }
           if (typeof op.status === "string" && op.status !== epic.status) {
             data.status = op.status;

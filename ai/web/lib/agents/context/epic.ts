@@ -62,6 +62,7 @@ export type EpicAgentContextPacket = {
       approvedOn: string | null;
       workers: string[];
       actingManager: string;
+      deployReviewer: string;
     } | null;
     tasks: Array<{
       id: string;
@@ -442,6 +443,7 @@ export async function buildEpicAgentContextPacket(args: {
         select: { user: { select: { username: true, kind: true } } },
       },
       actingManager: { select: { username: true, kind: true } },
+      deployReviewer: { select: { username: true, kind: true } },
       tasks: {
         where: { deletedAt: null, parentTaskId: null },
         orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
@@ -526,6 +528,7 @@ export async function buildEpicAgentContextPacket(args: {
             approvedOn: formatDate(epic.approvedOn),
             workers: epic.workers.map((worker) => actorLabel(worker.user)),
             actingManager: actorLabel(epic.actingManager),
+            deployReviewer: actorLabel(epic.deployReviewer),
           }
         : null,
       tasks: epic?.tasks.map((t) => ({
@@ -773,6 +776,7 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
     `Action Plan approved_on: ${epic.approvedOn || "(not approved)"}`,
     `Worker pool: ${epic.workers.length ? epic.workers.join(", ") : "(none)"}`,
     `Acting manager: ${epic.actingManager}`,
+    `Deploy reviewer: ${epic.deployReviewer || "(Monitor Agent fallback)"}`,
   );
   pushDescription(lines, "EPIC DESCRIPTION", epic.description, packet.caps.epicDescriptionMax);
 

@@ -46,6 +46,7 @@ export type ProposalOp =
       title: string;
       description?: string | null;
       actingManager?: PrincipalRef;
+      deployReviewer?: PrincipalRef;
     }
   | {
       op: "create_task";
@@ -71,6 +72,7 @@ export type ProposalOp =
       title?: string;
       description?: string | null;
       actingManager?: PrincipalRef;
+      deployReviewer?: PrincipalRef;
       status?: string;
       alert_reporter?: boolean | number | string | null;
       alertReporter?: boolean | number | string | null;
@@ -238,7 +240,7 @@ export async function validateProposal(
   const validatePrincipal = (
     value: unknown,
     errors: string[],
-    label: "assignee" | "actingManager",
+    label: "assignee" | "actingManager" | "deployReviewer",
   ) => {
     if (value === undefined || value === null) return; // unchanged / unset
     if (typeof value !== "string" || !value.trim()) {
@@ -249,6 +251,10 @@ export async function validateProposal(
     const principal = byUsername.get(username);
     if (!principal) {
       errors.push(`${label} @${username} is not an active assignable principal`);
+      return;
+    }
+    if (label === "deployReviewer" && principal.kind !== "agent") {
+      errors.push("deployReviewer must be an active coding agent");
       return;
     }
     if (principal.id === actor.userId || principal.agentSlug === actor.agentSlug) {
@@ -347,6 +353,9 @@ export async function validateProposal(
         if (raw.actingManager !== undefined && raw.actingManager !== null) {
           errors.push("agent-created epics cannot set an acting manager; the requester is recorded as reporter");
         }
+        if (raw.deployReviewer !== undefined && raw.deployReviewer !== null) {
+          errors.push("agent-created epics cannot set a deploy reviewer; the requester is recorded as reporter");
+        }
         break;
       }
       case "create_task": {
@@ -392,6 +401,7 @@ export async function validateProposal(
         validateTitle(raw.title, errors, false);
         validateDescription(raw.description, errors);
         validatePrincipal(raw.actingManager, errors, "actingManager");
+        validatePrincipal(raw.deployReviewer, errors, "deployReviewer");
         if (raw.status !== undefined) {
           if (!EPIC_STATUSES.includes(raw.status as EpicStatus)) {
             errors.push(`unknown epic status: ${String(raw.status)}`);

@@ -76,6 +76,7 @@ export type AgentContextPacket = {
       description: string | null;
       workers: string[];
       actingManager: string;
+      deployReviewer: string;
     } | null;
     checklist: Array<{
       id: string;
@@ -431,6 +432,7 @@ export async function buildTaskAgentContextPacket(args: {
             select: { user: { select: { username: true, kind: true } } },
           },
           actingManager: { select: { username: true, kind: true } },
+          deployReviewer: { select: { username: true, kind: true } },
           attachments: {
             orderBy: { createdAt: "asc" },
             take: 30,
@@ -567,6 +569,7 @@ export async function buildTaskAgentContextPacket(args: {
             description: task.epic.description,
             workers: task.epic.workers.map((worker) => actorLabel(worker.user)),
             actingManager: actorLabel(task.epic.actingManager),
+            deployReviewer: actorLabel(task.epic.deployReviewer),
           }
         : null,
       checklist: task?.checklist.map((item) => ({
@@ -815,6 +818,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
       `Epic: ${epic.title} (${epic.status}, ${epic.id})`,
       `Worker pool: ${epic.workers.length ? epic.workers.join(", ") : "(none)"}`,
       `Acting manager: ${epic.actingManager}`,
+      `Deploy reviewer: ${epic.deployReviewer || "(Monitor Agent fallback)"}`,
     );
     pushDescription(lines, "EPIC DESCRIPTION", epic.description, packet.caps.epicDescriptionMax);
   } else {

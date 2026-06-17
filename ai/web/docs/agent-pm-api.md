@@ -329,7 +329,7 @@ Shape:
     "readmePath": null,
     "repositoryPath": "/srv/Code/environment.worktrees/…"
   },
-  "epic": null,                // or { id, title, status, description, branchName, commitPrefix, assignee, actingManager }
+  "epic": null,                // or { id, title, status, description, branchName, commitPrefix, assignee, actingManager, deployReviewer }
   "checklist": [               // lightweight sub-tasks (progress only; not child Tasks)
     { "id": "…", "text": "…", "done": false, "minutes": null }  // minutes = self-reported effort
   ],
@@ -405,7 +405,7 @@ task is missing or soft-deleted.
 
 ### `GET /api/agents/context/epic/<epicId>`
 
-Same shape minus the task `checklist`, plus `epic.actingManager`,
+Same shape minus the task `checklist`, plus `epic.actingManager`, `epic.deployReviewer`,
 `epic.workers`, and a `tasks` array of every live task under the epic.
 Use when the agent's turn is on an epic discussion, or when you need to
 enumerate the epic's tasks without per-task detail.
@@ -414,7 +414,7 @@ enumerate the epic's tasks without per-task detail.
 
 Returns the project envelope used when proposing work-item change-sets:
 project metadata, the default git identity, the full active-principals
-list (valid `assignee` / `actingManager` values), every non-archived
+list (valid `assignee` / `actingManager` / `deployReviewer` values), every non-archived
 epic with their descriptions, and every active task (status ≠ Done).
 Per-task / per-epic detail isn't included here — fetch the relevant
 task / epic endpoint instead.
@@ -424,7 +424,7 @@ task / epic endpoint instead.
   "project":            { "id", "slug", "name", "description", "readmePath", "repositoryPath" },
   "defaultGitIdentity": { "name", "email" },
   "principals": [ { "id", "username", "kind" }, … ],
-  "epics":      [ { "id", "title", "status", "description", "branchName", "commitPrefix", "workers", "actingManager" }, … ],
+  "epics":      [ { "id", "title", "status", "description", "branchName", "commitPrefix", "workers", "actingManager", "deployReviewer" }, … ],
   "openTasks":  [ { "id", "title", "status", "epicId", "parentTaskId", "assignee", "actingManager", "branchName", "commitPrefix" }, … ],
   "meta":       { "fetchedAt", "note" }
 }

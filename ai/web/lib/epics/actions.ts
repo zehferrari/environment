@@ -54,6 +54,7 @@ async function loadEpicScoped(epicId: string, slug: string) {
       project: { select: { id: true, slug: true } },
       workers: { select: { userId: true, user: { select: { username: true } } } },
       actingManager: { select: { username: true } },
+      deployReviewer: { select: { username: true } },
       reporter: { select: { username: true } },
     },
   });
@@ -84,6 +85,29 @@ async function validateEpicWorkerIds(actor: { id: string; kind: ActorKind }, wor
   }
   const byId = new Map(rows.map((row) => [row.id, row.username]));
   return workerIds.map((id) => ({ id, username: byId.get(id)! }));
+}
+
+async function validateDeployReviewerId(deployReviewerId: string | null) {
+  if (deployReviewerId === null) return null;
+  const row = await db.user.findUnique({
+    where: { id: deployReviewerId },
+    select: {
+      username: true,
+      status: true,
+      kind: true,
+      agent: { select: { role: true, deactivatedAt: true } },
+    },
+  });
+  if (
+    !row ||
+    row.status !== "active" ||
+    row.kind !== "agent" ||
+    row.agent?.role !== "coding" ||
+    row.agent.deactivatedAt !== null
+  ) {
+    throw new Error("Deploy reviewer must be an active coding agent.");
+  }
+  return row.username;
 }
 
 function sameIds(a: string[], b: string[]) {
@@ -145,6 +169,8 @@ export async function createEpic(formData: FormData) {
   const description = String(formData.get("description") ?? "").trim();
   const actingManagerRaw = String(formData.get("actingManagerId") ?? "");
   const actingManagerId = actingManagerRaw === "" ? null : actingManagerRaw;
+  const deployReviewerRaw = String(formData.get("deployReviewerId") ?? "");
+  const deployReviewerId = deployReviewerRaw === "" ? null : deployReviewerRaw;
   const workerIds = getWorkerIds(formData);
   const branchRaw = String(formData.get("branchName") ?? "").trim();
   const branchName = branchRaw === "" ? null : branchRaw;
@@ -179,6 +205,7 @@ export async function createEpic(formData: FormData) {
   }
 
   const workers = await validateEpicWorkerIds(actor, workerIds);
+  await validateDeployReviewerId(deployReviewerId);
 
   const epic = await db.epic.create({
     data: {
@@ -187,6 +214,7 @@ export async function createEpic(formData: FormData) {
       title,
       description: description || null,
       actingManagerId,
+      deployReviewerId,
       workers: {
         create: workerIds.map((userId) => ({ userId })),
       },
@@ -361,6 +389,8 @@ export async function updateEpic(formData: FormData) {
   const workerIds = getWorkerIds(formData);
   const acmRaw = String(formData.get("actingManagerId") ?? "");
   const newActingManagerId = acmRaw === "" ? null : acmRaw;
+  const deployReviewerRaw = String(formData.get("deployReviewerId") ?? "");
+  const newDeployReviewerId = deployReviewerRaw === "" ? null : deployReviewerRaw;
   const reporterRaw = String(formData.get("reporterId") ?? "");
   const newReporterId = reporterRaw === "" ? null : reporterRaw;
   const branchRaw = String(formData.get("branchName") ?? "").trim();
@@ -482,6 +512,24 @@ export async function updateEpic(formData: FormData) {
         epicId,
         reason: "acting_manager_changed",
         from: epic.actingManager?.username ?? null,
+        to: toUsername,
+      }),
+    });
+  }
+
+  // Deploy reviewer (optional active coding agent; Ready-to-Deploy auto-trigger
+  // falls back to Monitor Agent when this is unset).
+  if (newDeployReviewerId !== epic.deployReviewerId) {
+    const toUsername = await validateDeployReviewerId(newDeployReviewerId);
+    data.deployReviewer =
+      newDeployReviewerId === null
+        ? { disconnect: true }
+        : { connect: { id: newDeployReviewerId } };
+    activity.push({
+      kind: "epic.deploy_reviewer",
+      payload: JSON.stringify({
+        epicId,
+        from: epic.deployReviewer?.username ?? null,
         to: toUsername,
       }),
     });

@@ -378,6 +378,17 @@ export default async function EpicDetailPage({
           agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
         },
       },
+      deployReviewer: {
+        select: {
+          id: true,
+          username: true,
+          name: true,
+          kind: true,
+          status: true,
+          avatarUpdatedAt: true,
+          agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
+        },
+      },
       workers: {
         orderBy: { createdAt: "asc" },
         include: {
@@ -1154,6 +1165,19 @@ export default async function EpicDetailPage({
                           options={principalOptions}
                           emptyLabel="No acting manager"
                           ariaLabel="Acting manager"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
+                          Deploy reviewer
+                        </span>
+                        <AvatarCombobox
+                          formId="epicMain"
+                          name="deployReviewerId"
+                          defaultValue={epic.deployReviewerId ?? ""}
+                          options={workerOptions}
+                          emptyLabel="Use Monitor Agent"
+                          ariaLabel="Deploy reviewer"
                         />
                       </label>
                     </div>
