@@ -5,6 +5,8 @@ import { db } from "@/lib/db";
 import { describeActivity } from "@/lib/activity";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
+import { DEPLOYMENT_STATUSES } from "@/lib/deploy/deployment-status";
+import { emptyDeploymentRollup, getDeploymentRollupsByProject, mergeDeploymentRollup, type DeploymentRollup } from "@/lib/workspaces/deployment-rollup";
 import ActivityAgenda from "@/components/activity-agenda";
 import AddProjectFab from "./add-project-fab";
 
@@ -43,6 +45,7 @@ type ProjectDashboardStats = {
   epic: Record<EpicStatus, number>;
   blocked: number;
   recentActivityAt: Date | null;
+  deployment: DeploymentRollup;
 };
 
 type WorkspaceDashboardProject = {
@@ -121,6 +124,7 @@ function emptyStats(): ProjectDashboardStats {
     epic: { Backlog: 0, Open: 0, Done: 0 },
     blocked: 0,
     recentActivityAt: null,
+    deployment: emptyDeploymentRollup(),
   };
 }
 
@@ -167,6 +171,7 @@ function mergeStats(target: ProjectDashboardStats, source: ProjectDashboardStats
   for (const status of TASK_STATUSES) target.task[status] += source.task[status];
   for (const status of EPIC_STATUSES) target.epic[status] += source.epic[status];
   target.blocked += source.blocked;
+  mergeDeploymentRollup(target.deployment, source.deployment);
   if (!target.recentActivityAt || (source.recentActivityAt && source.recentActivityAt > target.recentActivityAt)) {
     target.recentActivityAt = source.recentActivityAt;
   }
@@ -213,7 +218,7 @@ export default async function ProjectsPage() {
   const projectIds = projects.map((p) => p.id);
   const statsByProject = new Map(projects.map((p) => [p.id, emptyStats()]));
 
-  const [taskStatusCounts, epicStatusCounts, blockedCounts, recentProjectActivity, activity] =
+  const [taskStatusCounts, epicStatusCounts, blockedCounts, recentProjectActivity, activity, deploymentRollups] =
     projectIds.length > 0
       ? await Promise.all([
           db.task.groupBy({
@@ -252,8 +257,9 @@ export default async function ProjectsPage() {
               task: { select: { title: true } },
             },
           }),
+          getDeploymentRollupsByProject(db, projectIds),
         ])
-      : [[], [], [], [], []] as const;
+      : [[], [], [], [], [], new Map<string, DeploymentRollup>()] as const;
 
   for (const row of taskStatusCounts) {
     const stats = statsByProject.get(row.projectId);
@@ -274,6 +280,10 @@ export default async function ProjectsPage() {
   for (const row of recentProjectActivity) {
     const stats = row.projectId ? statsByProject.get(row.projectId) : null;
     if (stats) stats.recentActivityAt = row._max.createdAt ?? null;
+  }
+  for (const [projectId, deployment] of deploymentRollups) {
+    const stats = statsByProject.get(projectId);
+    if (stats) stats.deployment = deployment;
   }
 
   const workspaceGroups: WorkspaceDashboardGroup[] = workspaces.map((workspace) => {
@@ -459,6 +469,7 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceDashboardGroup })
             <StatPill label="Active" value={activeTasks(workspace.stats)} />
             <StatPill label="Blocked" value={workspace.stats.blocked} />
           </div>
+          <DeploymentSummary rollup={workspace.stats.deployment} />
           <p className="text-micro text-text-muted">{formatRecent(workspace.stats.recentActivityAt)}</p>
         </div>
 
@@ -528,6 +539,7 @@ function ProjectCard({ project, stats }: { project: ProjectRow; stats: ProjectDa
           <StatPill label="Open" value={stats.epic.Open} />
           <StatPill label="Tasks" value={total} />
         </div>
+        <DeploymentSummary rollup={stats.deployment} compact />
       </div>
 
       <dl className="mt-4 space-y-1 text-micro text-text-muted">
@@ -569,6 +581,36 @@ function ProjectCard({ project, stats }: { project: ProjectRow; stats: ProjectDa
         </Link>
       </div>
     </article>
+  );
+}
+
+function DeploymentSummary({ rollup, compact = false }: { rollup: DeploymentRollup; compact?: boolean }) {
+  const activeTotal = rollup.total - rollup.counts["Not Required"];
+  const visibleStatuses = DEPLOYMENT_STATUSES.filter((status) => compact ? rollup.counts[status] > 0 : true);
+
+  if (rollup.total === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-line bg-bg px-3 py-2 text-micro text-text-muted">
+        No deployment-tracked work yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-line bg-bg px-3 py-2">
+      <div className="mb-2 flex items-center justify-between gap-2 text-micro uppercase tracking-wider text-text-muted">
+        <span>Deployment</span>
+        <span className="tabular-nums">{activeTotal}/{rollup.total} active</span>
+      </div>
+      <div className={`grid gap-1.5 ${compact ? "grid-cols-2" : "grid-cols-1"}`}>
+        {visibleStatuses.map((status) => (
+          <div key={status} className="flex items-center justify-between gap-2 rounded-md border border-line bg-panel-soft px-2 py-1 text-micro">
+            <span className="truncate text-text-muted">{status}</span>
+            <span className="font-semibold tabular-nums text-text">{rollup.counts[status]}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

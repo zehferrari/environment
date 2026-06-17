@@ -49,7 +49,8 @@
     "scan-bare-pm-session-keys": "tsx scripts/scan-bare-pm-session-keys.ts",
     "test:pm-unified-context": "tsx scripts/pm-unified-context-test.ts",
     "test:context-budget": "tsx scripts/context-budget-test.ts",
-    "test:workspace-settings-hierarchy": "tsx scripts/workspace-settings-hierarchy-test.ts"
+    "test:workspace-settings-hierarchy": "tsx scripts/workspace-settings-hierarchy-test.ts",
+    "test:workspace-deployment-rollup": "tsx scripts/workspace-deployment-rollup-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",
