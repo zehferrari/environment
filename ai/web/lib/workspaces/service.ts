@@ -27,6 +27,7 @@ export function trimOrNull(value: unknown): string | null {
 
 export type WorkspacePayload = {
   name?: unknown;
+  archived?: unknown;
   slug?: unknown;
   description?: unknown;
   type?: unknown;
@@ -218,8 +219,8 @@ export async function createWorkspace(payload: WorkspacePayload) {
   return serializeWorkspace(row);
 }
 
-export async function updateWorkspace(slug: string, payload: WorkspacePayload) {
-  const existing = await db.workspace.findUnique({ where: { slug }, select: { id: true } });
+export async function updateWorkspace(slug: string, payload: WorkspacePayload, actorId?: string) {
+  const existing = await db.workspace.findUnique({ where: { slug }, select: { id: true, archivedAt: true, archivedById: true } });
   if (!existing) return null;
   const data: Prisma.WorkspaceUpdateInput = {};
   if (payload.name !== undefined) {
@@ -230,6 +231,19 @@ export async function updateWorkspace(slug: string, payload: WorkspacePayload) {
   if (payload.slug !== undefined) data.slug = normalizeWorkspaceSlug(payload.slug);
   if (payload.description !== undefined) data.description = trimOrNull(payload.description);
   if (payload.type !== undefined) data.type = normalizeWorkspaceType(payload.type);
+  if (payload.archived !== undefined) {
+    if (payload.archived === true) {
+      if (!existing.archivedAt) {
+        data.archivedAt = new Date();
+        if (actorId) data.archivedBy = { connect: { id: actorId } };
+      }
+    } else if (payload.archived === false) {
+      data.archivedAt = null;
+      data.archivedBy = { disconnect: true };
+    } else {
+      throw new Error("Workspace archived flag must be true or false.");
+    }
+  }
   Object.assign(data, workspaceDefaultsData(payload));
   const projectIds = payload.projectIds === undefined ? null : await validateProjectIds(stringArray(payload.projectIds));
   const agentIds = payload.agentIds === undefined ? null : await validateAgentIds(stringArray(payload.agentIds));
@@ -249,12 +263,25 @@ export async function updateWorkspace(slug: string, payload: WorkspacePayload) {
 }
 
 export async function archiveWorkspace(slug: string, actorId: string) {
+  const existing = await db.workspace.findUnique({ where: { slug }, select: { id: true, archivedAt: true } });
+  if (!existing) return null;
   const row = await db.workspace.update({
-    where: { slug },
-    data: { archivedAt: new Date(), archivedById: actorId },
+    where: { id: existing.id },
+    data: existing.archivedAt ? {} : { archivedAt: new Date(), archivedById: actorId },
     include: workspaceInclude,
-  }).catch(() => null);
-  return row ? serializeWorkspace(row) : null;
+  });
+  return serializeWorkspace(row);
+}
+
+export async function restoreWorkspace(slug: string) {
+  const existing = await db.workspace.findUnique({ where: { slug }, select: { id: true } });
+  if (!existing) return null;
+  const row = await db.workspace.update({
+    where: { id: existing.id },
+    data: { archivedAt: null, archivedById: null },
+    include: workspaceInclude,
+  });
+  return serializeWorkspace(row);
 }
 
 export async function seedDefaultWorkspaceFromProjects() {

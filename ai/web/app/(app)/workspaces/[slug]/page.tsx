@@ -229,7 +229,7 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
   }
 
   const workspace = await db.workspace.findUnique({
-    where: { slug, archivedAt: null },
+    where: { slug },
     include: {
       projects: {
         where: { project: { deletedAt: null, archivedAt: null } },
@@ -277,6 +277,7 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
   const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows);
 
   const workspaceProjectNames = workspace.projects.map(({ project }) => project.name).join(", ");
+  const isArchivedWorkspace = workspace.archivedAt != null;
   async function reorderWorkspaceTasks(orderedIds: string[]): Promise<void> {
     "use server";
     await reorderTasks(orderedIds);
@@ -299,6 +300,11 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
               Unified board across {workspace.projects.length} project{workspace.projects.length === 1 ? "" : "s"}
               {workspaceProjectNames ? `: ${workspaceProjectNames}` : ""}.
             </p>
+            {isArchivedWorkspace ? (
+              <div className="mt-3 rounded-card border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-caption text-amber-800">
+                This workspace is archived and hidden from default navigation. Direct access remains available and project history is preserved.
+              </div>
+            ) : null}
           </div>
           <Link
             href={`/workspaces/${workspace.slug}/settings`}

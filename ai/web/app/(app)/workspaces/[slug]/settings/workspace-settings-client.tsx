@@ -81,6 +81,7 @@ export default function WorkspaceSettingsClient({
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [removeLogo, setRemoveLogo] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
 
   const logoPreview = useMemo(() => (logoFile ? URL.createObjectURL(logoFile) : null), [logoFile]);
@@ -138,6 +139,39 @@ export default function WorkspaceSettingsClient({
       }
     }
     return null;
+  }
+
+
+  async function setArchivedState(archived: boolean) {
+    const action = archived ? "archive" : "restore";
+    const confirmed = window.confirm(
+      archived
+        ? "Archive this workspace? It will be hidden from default navigation, but projects, tasks, comments, and history remain available by direct access."
+        : "Restore this workspace to default navigation?",
+    );
+    if (!confirmed) return;
+
+    setArchiveBusy(true);
+    setMessage(null);
+    try {
+      const response = archived
+        ? await fetch(`/api/workspaces/${encodeURIComponent(workspace.slug)}`, { method: "DELETE" })
+        : await fetch(`/api/workspaces/${encodeURIComponent(workspace.slug)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ archived: false }),
+          });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `Workspace ${action} failed.`);
+      const nextWorkspace = payload.workspace as Workspace;
+      setWorkspace(nextWorkspace);
+      setMessage({ tone: "ok", text: archived ? "Workspace archived. It is hidden from default navigation but remains directly accessible." : "Workspace restored to default navigation." });
+      router.refresh();
+    } catch (error) {
+      setMessage({ tone: "error", text: (error as Error).message });
+    } finally {
+      setArchiveBusy(false);
+    }
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -378,6 +412,29 @@ export default function WorkspaceSettingsClient({
             ))}
           </div>
         )}
+      </section>
+
+
+      <section className={cardClass}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold tracking-tight">Archive state</h2>
+            <p className="mt-1 text-caption text-text-muted">
+              Archived workspaces are hidden from the default sidebar and workspace list. Direct URLs, projects, tasks, comments, and history are preserved.
+            </p>
+            {workspace.archivedAt ? (
+              <p className="mt-2 text-caption text-amber-700">Archived {new Date(workspace.archivedAt).toLocaleString()}.</p>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            disabled={saving || archiveBusy}
+            onClick={() => setArchivedState(!workspace.archivedAt)}
+            className={`rounded-lg border px-control-x py-control-y text-caption font-medium disabled:cursor-not-allowed disabled:opacity-60 ${workspace.archivedAt ? "border-line bg-bg text-text-muted hover:border-accent hover:text-accent" : "border-amber-500/40 bg-amber-500/10 text-amber-800 hover:border-amber-600"}`}
+          >
+            {archiveBusy ? "Updating..." : workspace.archivedAt ? "Restore workspace" : "Archive workspace"}
+          </button>
+        </div>
       </section>
 
       <div className="sticky bottom-4 z-10 flex justify-end md:static">

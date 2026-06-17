@@ -24,7 +24,7 @@ export async function GET(
   }
 
   const workspace = await db.workspace.findUnique({
-    where: { slug, archivedAt: null },
+    where: { slug },
     select: {
       id: true,
       projects: {

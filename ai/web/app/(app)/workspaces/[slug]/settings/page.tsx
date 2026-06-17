@@ -23,7 +23,7 @@ export default async function WorkspaceSettingsPage({ params }: { params: Promis
     }),
   ]);
 
-  if (!workspaceRow || workspaceRow.archivedAt) notFound();
+  if (!workspaceRow) notFound();
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
@@ -36,7 +36,7 @@ export default async function WorkspaceSettingsPage({ params }: { params: Promis
           </div>
           <h1 className="text-display font-semibold tracking-tight">Workspace settings</h1>
           <p className="mt-1 text-body text-text-muted">
-            Edit identity, related projects, and the coding-agent pool for this workspace.
+            Edit identity, related projects, archive state, and the coding-agent pool for this workspace.
           </p>
         </div>
         <Link

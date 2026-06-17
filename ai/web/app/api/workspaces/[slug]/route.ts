@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
-import { archiveWorkspace, getWorkspaceBySlug, normalizeWorkspaceSlug, serializeWorkspace, updateWorkspace } from "@/lib/workspaces/service";
+import { archiveWorkspace, getWorkspaceBySlug, normalizeWorkspaceSlug, restoreWorkspace, serializeWorkspace, updateWorkspace } from "@/lib/workspaces/service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,7 +27,13 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ slug: str
   const body = await req.json().catch(() => null);
   if (!body || typeof body !== "object") return NextResponse.json({ error: "invalid_json" }, { status: 400 });
   try {
-    const workspace = await updateWorkspace(normalizeWorkspaceSlug(rawSlug), body);
+    const normalizedSlug = normalizeWorkspaceSlug(rawSlug);
+    if ((body as { archived?: unknown }).archived === false && Object.keys(body).length === 1) {
+      const workspace = await restoreWorkspace(normalizedSlug);
+      if (!workspace) return NextResponse.json({ error: "not_found" }, { status: 404 });
+      return NextResponse.json({ workspace });
+    }
+    const workspace = await updateWorkspace(normalizedSlug, body, session.user.id!);
     if (!workspace) return NextResponse.json({ error: "not_found" }, { status: 404 });
     return NextResponse.json({ workspace });
   } catch (err) {
