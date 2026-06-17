@@ -46,6 +46,7 @@ import AddEpicTaskFab from "./add-epic-task-fab";
 import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
 import EpicTasksClient from "./epic-tasks-client";
 import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
+import { buildEpicActionPlanApprovalUpdate } from "@/lib/epics/action-plan-approval";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, type DeploymentPrRow } from "@/components/deployment-tab";
 
@@ -184,6 +185,7 @@ async function approveEpicActionPlan(formData: FormData) {
       reporterId: true,
       actingManagerId: true,
       approvedOn: true,
+      status: true,
       deletedAt: true,
       project: { select: { slug: true, onlyReportersCanApproveActionPlans: true } },
       _count: {
@@ -213,20 +215,27 @@ async function approveEpicActionPlan(formData: FormData) {
   if (epic.approvedOn) return;
 
   const approvedAt = new Date();
+  const approvalUpdate = buildEpicActionPlanApprovalUpdate({
+    currentStatus: epic.status,
+    approvedAt,
+    actorId: actor.id,
+  });
   await db.$transaction([
     db.epic.update({
       where: { id: epic.id },
-      data: {
-        approvedOn: approvedAt,
-        approvedById: actor.id,
-      },
+      data: approvalUpdate.data,
     }),
     db.activityLog.create({
       data: {
         projectId: epic.projectId,
         userId: actor.id,
         kind: "epic.action_plan.approve",
-        payload: JSON.stringify({ epicId: epic.id }),
+        payload: JSON.stringify({
+          epicId: epic.id,
+          ...(approvalUpdate.promotedToInProgress
+            ? { status: "In Progress", from: "Backlog", via: "action_plan_approval" }
+            : {}),
+        }),
       },
     }),
   ]);
