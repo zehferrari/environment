@@ -1,8 +1,10 @@
 import { auth, signOut } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 import SidebarNav, {
   type SidebarAgent,
   type SidebarProject,
+  type SidebarWorkspace,
 } from "@/components/sidebar-nav";
 
 type SnapshotAgent = {
@@ -58,7 +60,7 @@ function avatarTone(status: string): { grayscale: boolean; pulse: boolean } {
 }
 
 export default async function Sidebar() {
-  const [session, agents, snapshot, projects, latestAgentMsgs] = await Promise.all([
+  const [session, agents, snapshot, projects, workspaces, latestAgentMsgs] = await Promise.all([
     auth(),
     db.agent.findMany({
       where: {
@@ -80,6 +82,28 @@ export default async function Sidebar() {
       where: { archivedAt: null, deletedAt: null },
       orderBy: { name: "asc" },
       select: { slug: true, name: true },
+    }),
+    db.workspace.findMany({
+      where: { archivedAt: null },
+      orderBy: { name: "asc" },
+      select: {
+        slug: true,
+        name: true,
+        logoPath: true,
+        logoUpdatedAt: true,
+        projects: {
+          orderBy: { createdAt: "asc" },
+          select: {
+            project: {
+              select: { slug: true, name: true, archivedAt: true, deletedAt: true },
+            },
+          },
+        },
+        agentPool: {
+          orderBy: { createdAt: "asc" },
+          select: { agent: { select: { slug: true } } },
+        },
+      },
     }),
     // Newest agent-authored direct-chat message per agent — paired with the
     // viewer's read cursor below to decide the unread red dot.
@@ -150,6 +174,19 @@ export default async function Sidebar() {
     name: p.name,
   }));
 
+  const navWorkspaces: SidebarWorkspace[] = workspaces.map((workspace) => ({
+    slug: workspace.slug,
+    name: workspace.name,
+    logoSrc: workspace.logoPath
+      ? workspaceLogoPublicUrl(workspace.slug, workspace.logoUpdatedAt)
+      : null,
+    projects: workspace.projects
+      .map(({ project }) => project)
+      .filter((project) => !project.archivedAt && !project.deletedAt)
+      .map((project) => ({ slug: project.slug, name: project.name })),
+    agentSlugs: workspace.agentPool.map(({ agent }) => agent.slug),
+  }));
+
   async function signOutAction() {
     "use server";
     await signOut({ redirectTo: "/login" });
@@ -160,6 +197,7 @@ export default async function Sidebar() {
       isAdmin={isAdmin}
       agents={navAgents}
       projects={navProjects}
+      workspaces={navWorkspaces}
       meName={me?.name ?? me?.username ?? user?.name ?? "?"}
       meKind={user?.kind ?? null}
       userId={user?.id ?? null}

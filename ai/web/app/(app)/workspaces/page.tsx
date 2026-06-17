@@ -35,7 +35,7 @@ export default async function WorkspacesPage() {
 
       {workspaces.length === 0 ? (
         <div className="rounded-panel border border-dashed border-line bg-panel p-card text-body text-text-muted">
-          No active workspaces yet. Use the workspace API to create one, then manage projects and agents here.
+          No active workspaces yet. Use the workspace API to create one, then manage projects, boards, and agents here.
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-card sm:grid-cols-2 xl:grid-cols-3">
@@ -44,7 +44,7 @@ export default async function WorkspacesPage() {
             return (
               <Link
                 key={workspace.id}
-                href={`/workspaces/${workspace.slug}/settings`}
+                href={`/workspaces/${workspace.slug}`}
                 className="group flex min-h-48 flex-col gap-4 rounded-panel border border-line bg-panel p-card shadow-sm transition hover:border-accent hover:shadow-md"
               >
                 <div className="flex items-start gap-3">
