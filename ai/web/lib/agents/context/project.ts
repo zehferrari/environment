@@ -195,7 +195,7 @@ export async function buildProjectEnvContext(
     }
   }
 
-  lines.push("", `EXISTING OPEN TASKS (${tasks.length}; excludes Done; per-item descriptions capped):`);
+  lines.push("", `EXISTING ACTIVE TASKS (${tasks.length}; excludes Done; per-item descriptions capped):`);
   if (tasks.length === 0) lines.push("(none)");
   else for (const t of tasks) {
     const rel = [

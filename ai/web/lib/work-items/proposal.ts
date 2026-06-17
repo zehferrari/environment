@@ -32,7 +32,7 @@ const MAX_TITLE = 200;
 const MAX_BODY = 8000;
 const MAX_DESCRIPTION = 20000;
 
-export const EPIC_STATUSES = ["Backlog", "Open", "Done"] as const;
+export const EPIC_STATUSES = ["Backlog", "In Progress", "Ready to Deploy", "Done"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
 
 // A principal reference is a username (optionally @-prefixed) or null to

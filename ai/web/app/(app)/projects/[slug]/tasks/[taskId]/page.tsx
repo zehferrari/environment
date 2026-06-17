@@ -1142,7 +1142,7 @@ function workflowOwnerSlugs(task: WorkflowBubbleTask) {
   if (task.status === "Review") {
     add(
       workflowActorSlug(task.actingManager)
-        ?? (task.epic?.status === "Open" ? workflowActorSlug(task.epic?.actingManager) : null)
+        ?? (task.epic?.status === "In Progress" ? workflowActorSlug(task.epic?.actingManager) : null)
         ?? workflowActorSlug(task.reporter),
     );
   }

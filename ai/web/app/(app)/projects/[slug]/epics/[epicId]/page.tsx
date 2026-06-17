@@ -960,7 +960,8 @@ export default async function EpicDetailPage({
                 aria-label="Status"
               >
                 <option value="Backlog">Backlog</option>
-                <option value="Open">Open</option>
+                <option value="In Progress">In Progress</option>
+                <option value="Ready to Deploy">Ready to Deploy</option>
                 <option value="Done">Done</option>
               </select>
             </label>

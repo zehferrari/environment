@@ -29,7 +29,7 @@ import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/dep
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
 
-const EPIC_STATUSES = ["Backlog", "Open", "Done"] as const;
+const EPIC_STATUSES = ["Backlog", "In Progress", "Ready to Deploy", "Done"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
 
 function isEpicStatus(value: unknown): value is EpicStatus {
@@ -127,7 +127,7 @@ async function notifyEpicActingManagerAssigned(args: {
     "If the Epic has no description, use the description endpoint to write a concise description directly from the available Epic/project context. No human Save is required for this empty-description manager write.",
     "If the Epic needs implementation tasks, create the ordered Backlog task breakdown through the Epic manager workflow. Include a concise summary explaining why the tasks are needed.",
     "Creating descriptions/tasks is allowed before Epic approval. Starting the plan is not: only advance the queue or assign workers after a human opens/approves the Epic.",
-    "Never change Epic status. When the Epic is opened by a human, assign work only from the Epic worker pool, one task per project per agent, and never assign yourself as task assignee/reporter/acting manager.",
+    "Never change Epic status. When the Epic is moved to In Progress by a human, assign work only from the Epic worker pool, one task per project per agent, and never assign yourself as task assignee/reporter/acting manager.",
     "Do not post an acknowledgement-only response.",
   ].join("\n"));
 
@@ -407,7 +407,7 @@ export async function updateEpic(formData: FormData) {
   const taskCascade = statusChanged
     ? status === "Backlog"
       ? "Backlog"
-      : status === "Open"
+      : status === "In Progress"
         ? "To Do"
         : null
     : null;
@@ -578,10 +578,10 @@ export async function updateEpic(formData: FormData) {
         data: {
           status: taskCascade,
           statusChangedAt,
-          ...(status === "Open" ? { assigneeId: null } : {}),
+          ...(status === "In Progress" ? { assigneeId: null } : {}),
         },
       });
-      if (status === "Open") {
+      if (status === "In Progress") {
         openAssignment = await assignFirstOpenEpicTask(tx, {
           epicId,
           projectId: epic.project.id,
@@ -616,7 +616,7 @@ export async function updateEpic(formData: FormData) {
       actor,
       reason: "todo_start_required",
       body: [
-        `Epic "${title}" was opened and task "${openAssignment.task.title}" is assigned to you.`,
+        `Epic "${title}" is in progress and task "${openAssignment.task.title}" is assigned to you.`,
         "Read the task context and attachments first. Post one concise technical Action Plan and wait for reviewer/manager/reporter approval before starting implementation.",
         "Use task attachments first; only inspect Epic attachments when the task context explicitly references them or is insufficient.",
       ].join("\n"),
@@ -759,7 +759,7 @@ export async function setEpicStatus(formData: FormData) {
   const taskCascade =
     status === "Backlog"
       ? "Backlog"
-      : status === "Open"
+      : status === "In Progress"
         ? "To Do"
         : null;
 
@@ -775,10 +775,10 @@ export async function setEpicStatus(formData: FormData) {
         data: {
           status: taskCascade,
           statusChangedAt,
-          ...(status === "Open" ? { assigneeId: null } : {}),
+          ...(status === "In Progress" ? { assigneeId: null } : {}),
         },
       });
-      if (status === "Open") {
+      if (status === "In Progress") {
         openAssignment = await assignFirstOpenEpicTask(tx, {
           epicId,
           projectId: epic.project.id,
@@ -816,7 +816,7 @@ export async function setEpicStatus(formData: FormData) {
       actor,
       reason: "todo_start_required",
       body: [
-        `Epic "${epic.title}" was opened and task "${openAssignment.task.title}" is assigned to you.`,
+        `Epic "${epic.title}" is in progress and task "${openAssignment.task.title}" is assigned to you.`,
         "Read the task context and attachments first. Post one concise technical Action Plan and wait for reviewer/manager/reporter approval before starting implementation.",
         "Use task attachments first; only inspect Epic attachments when the task context explicitly references them or is insufficient.",
       ].join("\n"),

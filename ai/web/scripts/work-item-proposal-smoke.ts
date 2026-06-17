@@ -128,13 +128,13 @@ async function main(): Promise<void> {
       data: { slug: "wip-smoke", name: "WIP Smoke" },
     });
     const epic = await prisma.epic.create({
-      data: { projectId: project.id, title: "Existing Epic", status: "Open" },
+      data: { projectId: project.id, title: "Existing Epic", status: "In Progress" },
     });
     const approvedEpic = await prisma.epic.create({
       data: {
         projectId: project.id,
         title: "Approved Empty Epic",
-        status: "Open",
+        status: "In Progress",
         approvedOn: new Date(),
         approvedById: human.id,
         actingManagerId: agentUser.id,
@@ -349,7 +349,7 @@ async function main(): Promise<void> {
       data: {
         projectId: P,
         title: "Approved Apply Epic",
-        status: "Open",
+        status: "In Progress",
         approvedOn: new Date(),
         approvedById: human.id,
         actingManagerId: agentUser.id,

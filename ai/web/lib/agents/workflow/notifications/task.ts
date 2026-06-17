@@ -220,7 +220,7 @@ function workflowPrompt(args: {
     "- Sub-tasks are a lightweight progress checklist (text + done + minutes), NOT child tasks. Break the work into INDEPENDENT, PARALLELIZABLE steps and dispatch parallel sub-agents to tackle the independent ones at once whenever the work allows — don't serialize work that could run on multiple fronts. Keep the checklist current so the board shows how close the task is to done: action=add_subtask {subtaskText} to add a step, action=complete_subtask {subtaskId, completed, minutesSpent} as each lands (include the minutes it took for the task cost roll-up). Ids are in the SUB-TASKS list in your context. Do not create child Tasks for steps inside one task.",
     "- If you are the assignee and you are waiting for reviewer, manager, or reporter feedback/response, call action=ready_for_review with one concise `comment` explaining the blocker/question. Do not leave waiting work in In Progress.",
     "- If a task is blocked in a way agents cannot resolve and human/reporter intervention is required, set `alert_reporter` to true/1 via a task update proposal so the task is visually highlighted for the reporter.",
-    "- Review means the completed work is waiting for reviewer feedback. If you are allowed by project policy to complete the task and are satisfied, call action=review_done; do not write an approval-only comment. PM will then assign the next unassigned To Do task in the same Open Epic to the next eligible Epic worker and wake them. If changes or blockers remain, call action=review_feedback with a clear comment.",
+    "- Review means the completed work is waiting for reviewer feedback. If you are allowed by project policy to complete the task and are satisfied, call action=review_done; do not write an approval-only comment. PM will then assign the next unassigned To Do task in the same In Progress Epic to the next eligible Epic worker and wake them. If changes or blockers remain, call action=review_feedback with a clear comment.",
     args.onlyReportersCanSetTasksDone
       ? "- Project policy: only the reporter can set Tasks to Done. Reviewers should leave concise review feedback or agreement, then wait for the reporter to complete it."
       : "- Project policy: the resolved reviewer can set Tasks to Done.",
@@ -228,8 +228,8 @@ function workflowPrompt(args: {
       ? "- Project policy: only the reporter can approve deployment Pull Requests."
       : "- Project policy: the reporter or resolved reviewer may approve deployment Pull Requests.",
     "- If you are an assignee with review feedback or an unblocking response waiting, address that work before starting newly assigned To Do work.",
-    "- If you are the reviewer or Open Epic acting manager and accept a Backlog or To Do Action Plan, call action=approve_plan with a concise approval comment. If the plan needs adjustment, reply in Action Plan with one consolidated feedback comment instead of approving.",
-    "- For tasks under an Epic, do not start or advance work unless the Epic status in the context is Open.",
+    "- If you are the reviewer or In Progress Epic acting manager and accept a Backlog or To Do Action Plan, call action=approve_plan with a concise approval comment. If the plan needs adjustment, reply in Action Plan with one consolidated feedback comment instead of approving.",
+    "- For tasks under an Epic, do not start or advance work unless the Epic status in the context is In Progress.",
     "- Do not post visible acknowledgements, status narration, restatements, or filler. Consolidate all current issues/blockers/findings into one concise visible comment when a comment is needed.",
     "- Latest explicit human, reviewer, or acting-manager correction wins over older agent comments. Do not repeat a blocker or decision already settled in the recent context.",
     "- If your workflow action fully handles the turn and you have no new information to add, finish with the exact reply token below. Do not add any other words before or after it.",
@@ -586,11 +586,11 @@ export async function sendTaskCommentNotifications(args: {
   const mentionedAgentUsers = mentionedUsers.filter((user) => user.kind === "agent");
   const addReviewOwner = () => {
     addTargetAgent(targetAgents, task.actingManager, "reviewer", excluded);
-    const hasOpenEpicManager = task.epic?.status === "Open" && task.epic.actingManager;
-    if (task.epic?.status === "Open") {
+    const hasInProgressEpicManager = task.epic?.status === "In Progress" && task.epic.actingManager;
+    if (task.epic?.status === "In Progress") {
       addTargetAgent(targetAgents, task.epic.actingManager, "epic-manager", excluded);
     }
-    if (!task.actingManager && !hasOpenEpicManager) {
+    if (!task.actingManager && !hasInProgressEpicManager) {
       addTargetAgent(targetAgents, task.reporter, "reporter", excluded);
     }
   };

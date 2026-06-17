@@ -415,7 +415,7 @@ enumerate the epic's tasks without per-task detail.
 Returns the project envelope used when proposing work-item change-sets:
 project metadata, the default git identity, the full active-principals
 list (valid `assignee` / `actingManager` values), every non-archived
-epic with their descriptions, and every OPEN task (status ≠ Done).
+epic with their descriptions, and every active task (status ≠ Done).
 Per-task / per-epic detail isn't included here — fetch the relevant
 task / epic endpoint instead.
 

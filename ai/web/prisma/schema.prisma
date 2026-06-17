@@ -277,7 +277,7 @@ model Epic {
   title           String
   workItemKey     String?  @unique @map("work_item_key")
   description     String?
-  status          String   @default("Backlog") // "Backlog" | "Open" | "Done"
+  status          String   @default("Backlog") // "Backlog" | "In Progress" | "Ready to Deploy" | "Done"
   statusChangedAt DateTime?
   // Epic-level acting manager plus a multi-agent worker pool. Task
   // assignee stays single; Epic workers define which coding agents the

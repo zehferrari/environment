@@ -511,7 +511,7 @@ export async function commitProposal(
             const assignmentChanged = asg !== undefined && asg !== task.assigneeId;
             const statusChanged = typeof op.status === "string" && op.status !== task.status;
             const reviewerId = finalActingManagerId
-              ?? (task.epic?.status === "Open" ? task.epic.actingManagerId : null)
+              ?? (task.epic?.status === "In Progress" ? task.epic.actingManagerId : null)
               ?? task.reporterId;
 
             if (finalAssigneeId && (assignmentChanged || statusChanged)) {
