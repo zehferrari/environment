@@ -13,6 +13,7 @@ import { isWorktreeExposedRepo } from "@/lib/projects/worktree";
 import { readSwitchState } from "@/lib/deploy/worktrees";
 import { displayWorktreesForRepo, worktreeRepoKey } from "@/lib/deploy/repo-key";
 import WorktreeSwitcher from "@/components/worktree-switcher";
+import { resolveEffectiveProjectSettings, settingSourceLabel } from "@/lib/settings/effective";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +74,7 @@ export default async function ProjectSettingsPage({
     : [];
   const showSwitcher = eligible && switchState !== null && relatedWorktrees.length > 0;
 
+  const effectiveSettings = await resolveEffectiveProjectSettings(project);
   const principals = await listAssignablePrincipals();
   const codingAgentPrincipals = principals.filter((p) => p.kind === "agent" && p.agentRole === "coding");
   const managerAssignableUserIds = new Set(project.managerAssignableAgents.map((row) => row.userId));
@@ -156,13 +158,13 @@ export default async function ProjectSettingsPage({
 
           <SettingsCard
             title="Git defaults"
-            hint="Authorship used for commits agents make in this project."
+            hint={`Authorship used for commits agents make in this project. Effective source: ${settingSourceLabel(effectiveSettings.gitIdentity.name.source)}${effectiveSettings.workspace ? ` (${effectiveSettings.workspace.name})` : ""}.`}
             tone="neutral"
           >
           <div className="grid grid-cols-1 gap-card sm:grid-cols-2">
             <SettingsRow
               label="Default git user (name)"
-              hint="Author name for agent commits in this project."
+              hint={`Author name for agent commits in this project. Effective: ${effectiveSettings.gitIdentity.name.value ?? "not set"}.`}
             >
               <input
                 type="text"
@@ -175,7 +177,7 @@ export default async function ProjectSettingsPage({
 
             <SettingsRow
               label="Default git user (email)"
-              hint="Author email for agent commits in this project."
+              hint={`Author email for agent commits in this project. Effective: ${effectiveSettings.gitIdentity.email.value ?? "not set"}.`}
             >
               <input
                 type="email"
@@ -234,7 +236,7 @@ export default async function ProjectSettingsPage({
 
             <SettingsRow
               label="Automatic Archive (days)"
-              hint="Done tasks auto-archive after this many days. Blank uses the system default."
+              hint={`Done tasks auto-archive after this many days. Blank inherits workspace, then system. Effective: ${effectiveSettings.doneTtlDays.value}d (${settingSourceLabel(effectiveSettings.doneTtlDays.source)}).`}
             >
               <input
                 type="number"
@@ -242,11 +244,23 @@ export default async function ProjectSettingsPage({
                 min={1}
                 max={365}
                 defaultValue={project.doneTtlDays ?? ""}
-                placeholder="System default"
+                placeholder="Workspace/system default"
                 className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>
           </div>
+            <SettingsRow
+              label="Integration defaults JSON"
+              hint={`Provider-agnostic, non-secret config. Effective source: ${settingSourceLabel(effectiveSettings.integrationDefaults.source)}.`}
+            >
+              <textarea
+                name="integrationDefaults"
+                rows={6}
+                defaultValue={project.integrationDefaults ?? ""}
+                placeholder={'{\n  "deployment": { "provider": "bitbucket" }\n}'}
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y font-mono text-body outline-none focus:border-accent"
+              />
+            </SettingsRow>
           </SettingsCard>
 
           <SettingsCard
@@ -352,7 +366,7 @@ export default async function ProjectSettingsPage({
               <div>
                 <h2 className="text-body font-semibold tracking-tight">Deployment</h2>
                 <p className="mt-1 text-caption text-text-muted">
-                  Project deployment config is visible to everyone.
+                  Project deployment config is visible to everyone. Blank-capable fields inherit workspace defaults, then system/fallback values.
                 </p>
               </div>
               {!canEditDeployment ? (

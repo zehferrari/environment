@@ -32,11 +32,64 @@ export type WorkspacePayload = {
   type?: unknown;
   projectIds?: unknown;
   agentIds?: unknown;
+  defaultGitUserName?: unknown;
+  defaultGitUserEmail?: unknown;
+  doneTtlDays?: unknown;
+  deploymentProvider?: unknown;
+  deploymentProductionBranch?: unknown;
+  deploymentPrTargetBranch?: unknown;
+  deploymentMode?: unknown;
+  deploymentOnMerge?: unknown;
+  deploymentPipelineName?: unknown;
+  deploymentHost?: unknown;
+  deploymentEnvironment?: unknown;
+  deploymentBitbucketWorkspace?: unknown;
+  deploymentBitbucketRepoSlug?: unknown;
+  integrationDefaults?: unknown;
 };
 
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.filter((v): v is string => typeof v === "string" && v.trim() !== "").map((v) => v.trim()))];
+}
+
+function intOrNull(value: unknown, min: number, max: number): number | null {
+  const raw = typeof value === "number" ? String(value) : typeof value === "string" ? value.trim() : "";
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
+}
+
+function jsonObjectTextOrNull(value: unknown): string | null {
+  const raw = trimOrNull(value);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid");
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    throw new Error("Integration defaults must be a JSON object.");
+  }
+}
+
+function workspaceDefaultsData(payload: WorkspacePayload): Record<string, string | number | null> {
+  const data: Record<string, string | number | null> = {};
+  if (payload.defaultGitUserName !== undefined) data.defaultGitUserName = trimOrNull(payload.defaultGitUserName);
+  if (payload.defaultGitUserEmail !== undefined) data.defaultGitUserEmail = trimOrNull(payload.defaultGitUserEmail);
+  if (payload.doneTtlDays !== undefined) data.doneTtlDays = intOrNull(payload.doneTtlDays, 1, 365);
+  if (payload.deploymentProvider !== undefined) data.deploymentProvider = trimOrNull(payload.deploymentProvider);
+  if (payload.deploymentProductionBranch !== undefined) data.deploymentProductionBranch = trimOrNull(payload.deploymentProductionBranch);
+  if (payload.deploymentPrTargetBranch !== undefined) data.deploymentPrTargetBranch = trimOrNull(payload.deploymentPrTargetBranch);
+  if (payload.deploymentMode !== undefined) data.deploymentMode = trimOrNull(payload.deploymentMode);
+  if (payload.deploymentOnMerge !== undefined) data.deploymentOnMerge = trimOrNull(payload.deploymentOnMerge);
+  if (payload.deploymentPipelineName !== undefined) data.deploymentPipelineName = trimOrNull(payload.deploymentPipelineName);
+  if (payload.deploymentHost !== undefined) data.deploymentHost = trimOrNull(payload.deploymentHost);
+  if (payload.deploymentEnvironment !== undefined) data.deploymentEnvironment = trimOrNull(payload.deploymentEnvironment);
+  if (payload.deploymentBitbucketWorkspace !== undefined) data.deploymentBitbucketWorkspace = trimOrNull(payload.deploymentBitbucketWorkspace);
+  if (payload.deploymentBitbucketRepoSlug !== undefined) data.deploymentBitbucketRepoSlug = trimOrNull(payload.deploymentBitbucketRepoSlug);
+  if (payload.integrationDefaults !== undefined) data.integrationDefaults = jsonObjectTextOrNull(payload.integrationDefaults);
+  return data;
 }
 
 export async function validateProjectIds(projectIds: string[]) {
@@ -100,6 +153,22 @@ export function serializeWorkspace(workspace: WorkspaceWithRelations) {
       role: agent.role,
       deactivatedAt: agent.deactivatedAt?.toISOString() ?? null,
     })),
+    defaults: {
+      defaultGitUserName: workspace.defaultGitUserName,
+      defaultGitUserEmail: workspace.defaultGitUserEmail,
+      doneTtlDays: workspace.doneTtlDays,
+      deploymentProvider: workspace.deploymentProvider,
+      deploymentProductionBranch: workspace.deploymentProductionBranch,
+      deploymentPrTargetBranch: workspace.deploymentPrTargetBranch,
+      deploymentMode: workspace.deploymentMode,
+      deploymentOnMerge: workspace.deploymentOnMerge,
+      deploymentPipelineName: workspace.deploymentPipelineName,
+      deploymentHost: workspace.deploymentHost,
+      deploymentEnvironment: workspace.deploymentEnvironment,
+      deploymentBitbucketWorkspace: workspace.deploymentBitbucketWorkspace,
+      deploymentBitbucketRepoSlug: workspace.deploymentBitbucketRepoSlug,
+      integrationDefaults: workspace.integrationDefaults,
+    },
     createdAt: workspace.createdAt.toISOString(),
     updatedAt: workspace.updatedAt.toISOString(),
   };
@@ -142,6 +211,7 @@ export async function createWorkspace(payload: WorkspacePayload) {
       type,
       projects: { create: projectIds.map((projectId) => ({ projectId })) },
       agentPool: { create: agentIds.map((agentId) => ({ agentId })) },
+      ...workspaceDefaultsData(payload),
     },
     include: workspaceInclude,
   });
@@ -160,6 +230,7 @@ export async function updateWorkspace(slug: string, payload: WorkspacePayload) {
   if (payload.slug !== undefined) data.slug = normalizeWorkspaceSlug(payload.slug);
   if (payload.description !== undefined) data.description = trimOrNull(payload.description);
   if (payload.type !== undefined) data.type = normalizeWorkspaceType(payload.type);
+  Object.assign(data, workspaceDefaultsData(payload));
   const projectIds = payload.projectIds === undefined ? null : await validateProjectIds(stringArray(payload.projectIds));
   const agentIds = payload.agentIds === undefined ? null : await validateAgentIds(stringArray(payload.agentIds));
 

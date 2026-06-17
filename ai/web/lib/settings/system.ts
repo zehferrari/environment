@@ -26,6 +26,7 @@ export interface SystemSettingsValues {
   openRouterReferer: string | null;
   openRouterTitle: string | null;
   profileImagePrompt: string;
+  integrationDefaults: string | null;
 }
 
 export type SystemTheme = "light" | "dark";
@@ -41,6 +42,7 @@ const EMPTY: SystemSettingsValues = {
   openRouterReferer: null,
   openRouterTitle: null,
   profileImagePrompt: DEFAULT_PROFILE_IMAGE_PROMPT,
+  integrationDefaults: null,
 };
 
 export async function getSystemSettings(): Promise<SystemSettingsValues> {
@@ -56,6 +58,7 @@ export async function getSystemSettings(): Promise<SystemSettingsValues> {
       openRouterReferer: true,
       openRouterTitle: true,
       profileImagePrompt: true,
+      integrationDefaults: true,
     },
   });
   if (!row) return EMPTY;
@@ -71,24 +74,36 @@ export function normalizeTheme(value: unknown): SystemTheme {
   return value === "dark" ? "dark" : "light";
 }
 
-// Automatic archive age (days): project value → system value → hardcoded fallback.
-export async function resolveDoneTtlDays(
-  projectDoneTtlDays: number | null,
-): Promise<number> {
-  if (projectDoneTtlDays != null) return projectDoneTtlDays;
-  const sys = await getSystemSettings();
-  return sys.doneTtlDays ?? DONE_TTL_FALLBACK_DAYS;
+async function primaryWorkspaceDefaults(projectId: string | undefined) {
+  if (!projectId) return null;
+  const link = await db.workspaceProject.findFirst({
+    where: { projectId, workspace: { archivedAt: null } },
+    orderBy: { createdAt: "asc" },
+    select: { workspace: { select: { defaultGitUserName: true, defaultGitUserEmail: true, doneTtlDays: true } } },
+  });
+  return link?.workspace ?? null;
 }
 
-// Effective git identity for a project: project value → system value → null.
+// Automatic archive age (days): project value → workspace value → system value → hardcoded fallback.
+export async function resolveDoneTtlDays(
+  projectDoneTtlDays: number | null,
+  projectId?: string,
+): Promise<number> {
+  if (projectDoneTtlDays != null) return projectDoneTtlDays;
+  const [workspace, sys] = await Promise.all([primaryWorkspaceDefaults(projectId), getSystemSettings()]);
+  return workspace?.doneTtlDays ?? sys.doneTtlDays ?? DONE_TTL_FALLBACK_DAYS;
+}
+
+// Effective git identity for a project: project value → workspace value → system value → null.
 export async function resolveGitIdentity(project: {
+  id?: string;
   defaultGitUserName: string | null;
   defaultGitUserEmail: string | null;
 }): Promise<{ name: string | null; email: string | null }> {
-  const sys = await getSystemSettings();
+  const [workspace, sys] = await Promise.all([primaryWorkspaceDefaults(project.id), getSystemSettings()]);
   return {
-    name: project.defaultGitUserName ?? sys.defaultGitUserName ?? null,
-    email: project.defaultGitUserEmail ?? sys.defaultGitUserEmail ?? null,
+    name: project.defaultGitUserName ?? workspace?.defaultGitUserName ?? sys.defaultGitUserName ?? null,
+    email: project.defaultGitUserEmail ?? workspace?.defaultGitUserEmail ?? sys.defaultGitUserEmail ?? null,
   };
 }
 

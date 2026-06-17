@@ -166,6 +166,8 @@ model Project {
   deploymentEnvironment String? @map("deployment_environment")
   deploymentBitbucketWorkspace String? @map("deployment_bitbucket_workspace")
   deploymentBitbucketRepoSlug String? @map("deployment_bitbucket_repo_slug")
+  // Provider-agnostic, non-secret integration defaults. Overrides workspace and system defaults.
+  integrationDefaults String? @map("integration_defaults")
   // Soft-delete: project bin with 30-day TTL (hard-purge via the
   // hourly job in instrumentation.node.ts).
   deletedAt   DateTime?
@@ -203,6 +205,24 @@ model Workspace {
   logoMimeType   String?   @map("logo_mime_type")
   logoSizeBytes  Int?      @map("logo_size_bytes")
   logoUpdatedAt  DateTime? @map("logo_updated_at")
+  // Nullable workspace defaults sit between project-specific settings and
+  // SystemSettings. Existing project rows keep precedence; blank fields inherit.
+  defaultGitUserName  String? @map("default_git_user_name")
+  defaultGitUserEmail String? @map("default_git_user_email")
+  doneTtlDays         Int?    @map("done_ttl_days")
+  deploymentProvider String? @map("deployment_provider")
+  deploymentProductionBranch String? @map("deployment_production_branch")
+  deploymentPrTargetBranch String? @map("deployment_pr_target_branch")
+  deploymentMode String? @map("deployment_mode")
+  deploymentOnMerge String? @map("deployment_on_merge")
+  deploymentPipelineName String? @map("deployment_pipeline_name")
+  deploymentHost String? @map("deployment_host")
+  deploymentEnvironment String? @map("deployment_environment")
+  deploymentBitbucketWorkspace String? @map("deployment_bitbucket_workspace")
+  deploymentBitbucketRepoSlug String? @map("deployment_bitbucket_repo_slug")
+  // Provider-agnostic integration defaults. Stored as JSON text and exposed
+  // only as non-secret configuration; secrets stay in their existing stores.
+  integrationDefaults String? @map("integration_defaults")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -995,6 +1015,7 @@ model SystemSettings {
   openRouterReferer   String?
   openRouterTitle     String?
   profileImagePrompt  String?
+  integrationDefaults String? @map("integration_defaults")
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }

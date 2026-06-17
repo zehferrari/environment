@@ -13,6 +13,22 @@ type Workspace = {
   logo: { url: string; mimeType: string | null; sizeBytes: number | null; updatedAt: string | null } | null;
   projects: { id: string; slug: string; name: string; archivedAt: string | null; deletedAt: string | null }[];
   agentPool: { id: string; slug: string; name: string; role: string; deactivatedAt: string | null }[];
+  defaults: {
+    defaultGitUserName: string | null;
+    defaultGitUserEmail: string | null;
+    doneTtlDays: number | null;
+    deploymentProvider: string | null;
+    deploymentProductionBranch: string | null;
+    deploymentPrTargetBranch: string | null;
+    deploymentMode: string | null;
+    deploymentOnMerge: string | null;
+    deploymentPipelineName: string | null;
+    deploymentHost: string | null;
+    deploymentEnvironment: string | null;
+    deploymentBitbucketWorkspace: string | null;
+    deploymentBitbucketRepoSlug: string | null;
+    integrationDefaults: string | null;
+  };
   createdAt: string;
   updatedAt: string;
 };
@@ -58,6 +74,8 @@ export default function WorkspaceSettingsClient({
   const [slug, setSlug] = useState(initialWorkspace.slug);
   const [type, setType] = useState(initialWorkspace.type);
   const [description, setDescription] = useState(initialWorkspace.description ?? "");
+  const [defaults, setDefaults] = useState(() => initialWorkspace.defaults);
+  const [integrationDefaults, setIntegrationDefaults] = useState(initialWorkspace.defaults.integrationDefaults ?? "");
   const [selectedProjectIds, setSelectedProjectIds] = useState(() => idsFrom(initialWorkspace.projects));
   const [selectedAgentIds, setSelectedAgentIds] = useState(() => idsFrom(initialWorkspace.agentPool));
   const [logoFile, setLogoFile] = useState<File | null>(null);
@@ -110,6 +128,15 @@ export default function WorkspaceSettingsClient({
       return "Slug must use lowercase letters/numbers separated by dot, underscore, or hyphen.";
     }
     if (!WORKSPACE_TYPES.some((item) => item.value === type)) return "Workspace type is invalid.";
+    const rawIntegrationDefaults = integrationDefaults.trim();
+    if (rawIntegrationDefaults) {
+      try {
+        const parsed = JSON.parse(rawIntegrationDefaults) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "Integration defaults must be a JSON object.";
+      } catch {
+        return "Integration defaults must be valid JSON.";
+      }
+    }
     return null;
   }
 
@@ -136,6 +163,8 @@ export default function WorkspaceSettingsClient({
           description,
           projectIds: selectedProjectIds,
           agentIds: selectedAgentIds,
+          ...defaults,
+          integrationDefaults,
         }),
       });
       const payload = await response.json().catch(() => ({}));
@@ -163,6 +192,8 @@ export default function WorkspaceSettingsClient({
       setSlug(nextWorkspace.slug);
       setType(nextWorkspace.type);
       setDescription(nextWorkspace.description ?? "");
+      setDefaults(nextWorkspace.defaults);
+      setIntegrationDefaults(nextWorkspace.defaults.integrationDefaults ?? "");
       setSelectedProjectIds(idsFrom(nextWorkspace.projects));
       setSelectedAgentIds(idsFrom(nextWorkspace.agentPool));
       setLogoFile(null);
@@ -253,6 +284,51 @@ export default function WorkspaceSettingsClient({
             </SettingsField>
           </div>
         </div>
+      </section>
+
+
+      <section className={cardClass}>
+        <div className="mb-4">
+          <h2 className="text-base font-semibold tracking-tight">Workspace defaults</h2>
+          <p className="mt-1 text-caption text-text-muted">Optional middle-layer defaults. Projects inherit these only when their matching project setting is blank; otherwise system settings remain the fallback.</p>
+        </div>
+        <div className="grid gap-card md:grid-cols-2">
+          <SettingsField label="Default git user (name)" hint="Inherited by projects that leave git author name blank.">
+            <input value={defaults.defaultGitUserName ?? ""} onChange={(event) => setDefaults((cur) => ({ ...cur, defaultGitUserName: event.target.value }))} className={inputClass} placeholder="Inherited from system" />
+          </SettingsField>
+          <SettingsField label="Default git user (email)" hint="Inherited by projects that leave git author email blank.">
+            <input type="email" value={defaults.defaultGitUserEmail ?? ""} onChange={(event) => setDefaults((cur) => ({ ...cur, defaultGitUserEmail: event.target.value }))} className={inputClass} placeholder="Inherited from system" />
+          </SettingsField>
+          <SettingsField label="Automatic Archive (days)" hint="Inherited by projects that leave task archive age blank.">
+            <input type="number" min={1} max={365} value={defaults.doneTtlDays ?? ""} onChange={(event) => setDefaults((cur) => ({ ...cur, doneTtlDays: event.target.value === "" ? null : Number(event.target.value) }))} className={inputClass} placeholder="Inherited from system" />
+          </SettingsField>
+          <SettingsField label="Deployment provider" hint="Provider-agnostic deployment default; blank inherits system/fallback.">
+            <input value={defaults.deploymentProvider ?? ""} onChange={(event) => setDefaults((cur) => ({ ...cur, deploymentProvider: event.target.value }))} className={inputClass} placeholder="bitbucket" />
+          </SettingsField>
+          <SettingsField label="Production branch" hint="Inherited deployment branch for projects without an override.">
+            <input value={defaults.deploymentProductionBranch ?? ""} onChange={(event) => setDefaults((cur) => ({ ...cur, deploymentProductionBranch: event.target.value }))} className={inputClass} placeholder="main" />
+          </SettingsField>
+          <SettingsField label="PR target branch" hint="Inherited deployment PR target for projects without an override.">
+            <input value={defaults.deploymentPrTargetBranch ?? ""} onChange={(event) => setDefaults((cur) => ({ ...cur, deploymentPrTargetBranch: event.target.value }))} className={inputClass} placeholder="Production branch" />
+          </SettingsField>
+          <SettingsField label="Deployment mode" hint="pr-only, script, pipeline, or manual.">
+            <input value={defaults.deploymentMode ?? ""} onChange={(event) => setDefaults((cur) => ({ ...cur, deploymentMode: event.target.value }))} className={inputClass} placeholder="pr-only" />
+          </SettingsField>
+          <SettingsField label="Deployment host" hint="Inherited deployment host label.">
+            <input value={defaults.deploymentHost ?? ""} onChange={(event) => setDefaults((cur) => ({ ...cur, deploymentHost: event.target.value }))} className={inputClass} placeholder="x1" />
+          </SettingsField>
+        </div>
+        <div className="mt-card grid gap-card md:grid-cols-2">
+          <SettingsField label="Bitbucket workspace" hint="Inherited repo workspace override; secrets are not stored here.">
+            <input value={defaults.deploymentBitbucketWorkspace ?? ""} onChange={(event) => setDefaults((cur) => ({ ...cur, deploymentBitbucketWorkspace: event.target.value }))} className={inputClass} />
+          </SettingsField>
+          <SettingsField label="Bitbucket repo slug" hint="Inherited repo slug override; secrets are not stored here.">
+            <input value={defaults.deploymentBitbucketRepoSlug ?? ""} onChange={(event) => setDefaults((cur) => ({ ...cur, deploymentBitbucketRepoSlug: event.target.value }))} className={inputClass} />
+          </SettingsField>
+        </div>
+        <SettingsField label="Integration defaults JSON" hint="Provider-agnostic, non-secret integration config merged below project overrides and above system settings.">
+          <textarea value={integrationDefaults} onChange={(event) => setIntegrationDefaults(event.target.value)} rows={6} className={`${inputClass} font-mono`} placeholder={'{\n  "deployment": { "provider": "bitbucket" }\n}'} />
+        </SettingsField>
       </section>
 
       <section className={cardClass}>

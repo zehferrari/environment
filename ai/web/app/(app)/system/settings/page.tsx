@@ -122,6 +122,19 @@ export default async function SystemSettingsPage({
             />
           </SettingsRow>
 
+          <SettingsRow
+            label="Integration defaults JSON"
+            hint="Provider-agnostic, non-secret integration defaults used when workspace and project settings leave values blank."
+          >
+            <textarea
+              name="integrationDefaults"
+              rows={6}
+              defaultValue={settings.integrationDefaults ?? ""}
+              placeholder={'{\n  "deployment": { "provider": "bitbucket" }\n}'}
+              className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y font-mono text-body outline-none focus:border-accent"
+            />
+          </SettingsRow>
+
           <div className="flex justify-end pt-1">
             <button
               type="submit"

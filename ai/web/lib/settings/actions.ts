@@ -23,6 +23,18 @@ function intOrNull(v: unknown, min: number, max: number): number | null {
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
 
+function jsonObjectTextOrNull(v: unknown): string | null {
+  const raw = trimOrNull(v);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid");
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    throw new Error("Integration defaults must be a JSON object.");
+  }
+}
+
 export async function setSystemSettings(formData: FormData) {
   const session = await auth();
   const userId = session?.user?.id;
@@ -39,6 +51,7 @@ export async function setSystemSettings(formData: FormData) {
     openRouterApiKey?: string | null;
     openRouterReferer?: string | null;
     openRouterTitle?: string | null;
+    integrationDefaults?: string | null;
   } = {};
   const payload: Record<string, unknown> = { scope };
 
@@ -48,7 +61,8 @@ export async function setSystemSettings(formData: FormData) {
     data.doneTtlDays = intOrNull(formData.get("doneTtlDays"), 1, 365);
     data.binTtlDays = intOrNull(formData.get("binTtlDays"), 1, 3650);
     data.theme = normalizeTheme(formData.get("theme"));
-    Object.assign(payload, data);
+    data.integrationDefaults = jsonObjectTextOrNull(formData.get("integrationDefaults"));
+    Object.assign(payload, { ...data, integrationDefaults: data.integrationDefaults ? "set" : null });
   } else {
     const current = await db.systemSettings.findUnique({
       where: { id: "system" },
