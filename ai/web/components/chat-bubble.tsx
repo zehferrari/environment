@@ -15,6 +15,7 @@ import {
 export interface ChatBubbleMessage {
   id: string;
   body: string;
+  thinking?: string | null;
   createdAt: Date | string;
   targetLabel?: string | null;
   targetType?: string | null;
@@ -74,6 +75,23 @@ function summarizeAgentMessage(body: string) {
   return picked.length > 0 ? picked.join("\n\n") : null;
 }
 
+function firstParagraphs(body: string, count = 2) {
+  return body
+    .split(/\n\s*\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .slice(0, count)
+    .join("\n\n");
+}
+
+function paragraphCount(body: string) {
+  return body
+    .split(/\n\s*\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .length;
+}
+
 function hashString(value: string) {
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) {
@@ -109,12 +127,13 @@ export default function ChatBubble({
     ? parseDiscussionReplySections(message.body)
     : null;
   const agentSummary = !sections && fromAgent ? summarizeAgentMessage(message.body) : null;
+  const shouldCollapseAgentBody = Boolean(!sections && fromAgent && paragraphCount(message.body) > 2 && agentSummary);
   const rawDisplayBody = sections
     ? showFullSection
       ? sections.sectionA
       : sections.sectionB
-    : agentSummary && !showFullSection
-      ? agentSummary
+    : shouldCollapseAgentBody && !showFullSection
+      ? firstParagraphs(message.body, 2)
       : message.body;
   const parsedOptions = parsePmOptions(rawDisplayBody);
   const displayBody = parsedOptions.body;
@@ -205,7 +224,7 @@ export default function ChatBubble({
             </span>
             <span className={`flex shrink-0 items-center gap-2 ${touchActionsOpen ? "[&_*]:!opacity-100" : ""}`}>
               <MessageTimestamp value={message.createdAt} />
-              {sections || agentSummary ? (
+              {sections || shouldCollapseAgentBody ? (
                 <button
                   type="button"
                   onClick={() => setShowFullSection((current) => !current)}
@@ -237,10 +256,22 @@ export default function ChatBubble({
             <span className={touchActionsOpen ? "[&_*]:!opacity-100" : undefined}>{actions}</span>
           </div>
         )}
+        {message.thinking && showFullSection ? (
+          <details className="mb-3 rounded-card border border-line bg-bg/70 px-3 py-2 text-caption text-text-muted">
+            <summary className="cursor-pointer font-semibold text-text">Show thinking</summary>
+            <div className="md mt-2 whitespace-pre-wrap text-caption" dangerouslySetInnerHTML={renderChatMarkdown(message.thinking)} />
+          </details>
+        ) : null}
         <div
           className="md md-compact break-words text-body leading-relaxed text-text [overflow-wrap:anywhere]"
           dangerouslySetInnerHTML={renderChatMarkdown(displayBody)}
         />
+        {shouldCollapseAgentBody && !showFullSection && agentSummary ? (
+          <div className="mt-3 rounded-card border border-line bg-bg/70 px-3 py-2 text-caption text-text-muted">
+            <div className="mb-1 text-nano font-semibold uppercase tracking-wider text-text-muted">Summary</div>
+            <div className="md md-compact" dangerouslySetInnerHTML={renderChatMarkdown(agentSummary)} />
+          </div>
+        ) : null}
         {deliveryStatus ? (
           <div className={`mt-2 text-nano font-semibold uppercase tracking-wider ${deliveryStatus === "failed" ? "text-crit" : "text-text-muted"}`}>
             {deliveryStatus === "failed" ? "Failed to send" : "Sending..."}

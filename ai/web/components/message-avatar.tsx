@@ -1,4 +1,5 @@
 import { Avatar } from "@/components/ui/primitives";
+import AvatarStatus from "@/components/avatar-status";
 export type MessageActor = {
   id?: string | null;
   username: string;
@@ -64,13 +65,6 @@ export function MessageAvatar({
   size?: "sm" | "md";
   busy?: boolean;
 }) {
-  const busyRing = busy && actor.kind === "agent" ? (
-    <span
-      className="absolute -inset-1 animate-ping rounded-full bg-accent opacity-30"
-      aria-hidden="true"
-    />
-  ) : null;
-
   if (actor.kind === "system") {
     return (
       <Avatar
@@ -87,13 +81,14 @@ export function MessageAvatar({
 
   const src = actorAvatarSrc(actor);
   const label = actorDisplayName(actor);
+  const sizeClass = size === "sm" ? "h-8 w-8" : "h-11 w-11 md:h-9 md:w-9";
   return (
-    <span className="relative inline-grid shrink-0">
-      {busyRing}
+    <AvatarStatus status={busy && actor.kind === "agent" ? "busy" : "none"} sizeClass={sizeClass} roundedClass="rounded-full" title={label}>
       <Avatar
         size={size}
         title={label}
         aria-label={`${label} avatar`}
+        className="border-0"
       >
         {src ? (
           <img
@@ -107,7 +102,7 @@ export function MessageAvatar({
           <span>{initialFor(actor)}</span>
         )}
       </Avatar>
-    </span>
+    </AvatarStatus>
   );
 }
 
