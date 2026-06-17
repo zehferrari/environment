@@ -25,6 +25,7 @@ import {
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { resolveGitIdentity } from "@/lib/settings/system";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
+import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 
 type Actor = {
   id: string;
@@ -166,6 +167,8 @@ function workflowPrompt(args: {
       "COMMIT HYGIENE (this task touches the repository):",
       `- Repository: ${args.repositoryPath}`,
       `- Branch: ${args.branchName}`,
+      "- Worktrees ONLY, no exceptions: `/srv/Code/environment` and `/srv/Code/patricia` are NO-ZONEs. Make changes only under `/srv/Code/environment.worktrees/<branch>` or `/srv/Code/patricia.worktrees/<branch>` as applicable.",
+      "- If the required worktree cannot be created or used for any reason, tag the reporter in a task comment and explain the blocker before making changes.",
       identityConfigured
         ? `- Required Git identity: ${args.expectedGitUserName} <${args.expectedGitUserEmail}>. Set it in the task worktree before editing or committing:`
         : "- Required Git identity is not configured on the project/system settings. Ask an admin to configure defaultGitUserName/defaultGitUserEmail before committing.",
@@ -205,9 +208,9 @@ function workflowPrompt(args: {
     `This notification is addressed to @${args.agentSlug}. Its workflow reason is ${args.reason}.`,
     "",
     "Workflow rules:",
-    "- Backlog is for planning and opinions only. If you are the assignee and the task is in Backlog, reply in Action Plan with one concrete technical plan, structured as a checklist of INDEPENDENT, PARALLELIZABLE steps wherever possible so the work can be tackled on multiple fronts by parallel sub-agents. Do not change task status and do not start work.",
+    "- Backlog is for planning and opinions only. If you are the assignee and the task is in Backlog, reply in Action Plan with one concrete technical plan, structured as a checklist of INDEPENDENT, PARALLELIZABLE steps wherever possible so the work can be tackled on multiple fronts by parallel sub-agents. Do not split small tasks or strictly sequential/dependent work. Do not change task status and do not start work.",
     "- To Do means the task is actionable, but execution is still blocked until the Action Plan has approved_on set. If you are the assignee and approved_on is empty, reply in Action Plan with one concrete technical plan and wait.",
-    "- If you are the assigned task reviewer on an unassigned task, post one reviewer plan of action in Action Plan. Break it into the independent, parallelizable sub-tasks/topics/items to be addressed or watched, so the assignee can work multiple fronts at once. Do not start implementation and do not assign anyone until the plan is approved.",
+    "- If you are the assigned task reviewer on an unassigned task, post one reviewer plan of action in Action Plan. Break it into the independent, parallelizable sub-tasks/topics/items to be addressed or watched, so the assignee can work multiple fronts at once. If an assignee's Action Plan could be safely split into independent sub-tasks, flag that in consolidated review feedback; do not demand splitting for small or strictly sequential/dependent work. Do not start implementation and do not assign anyone until the plan is approved.",
     "- If you are the resolved reviewer or reporter and you accept the assignee's Action Plan, call action=approve_plan and include one concise `comment` explaining why the plan is acceptable or naming any constraints. If the task was in Backlog, PM will move it to To Do and wake the assignee.",
     args.onlyReportersCanApproveActionPlans
       ? "- Project policy: only the reporter can approve Action Plans. Reviewers and acting managers should comment with feedback or agreement, but must wait for reporter approval."
@@ -220,7 +223,7 @@ function workflowPrompt(args: {
     "- Sub-tasks are a lightweight progress checklist (text + done + minutes), NOT child tasks. Break the work into INDEPENDENT, PARALLELIZABLE steps and dispatch parallel sub-agents to tackle the independent ones at once whenever the work allows — don't serialize work that could run on multiple fronts. Keep the checklist current so the board shows how close the task is to done: action=add_subtask {subtaskText} to add a step, action=complete_subtask {subtaskId, completed, minutesSpent} as each lands (include the minutes it took for the task cost roll-up). Ids are in the SUB-TASKS list in your context. Do not create child Tasks for steps inside one task.",
     "- If you are the assignee and you are waiting for reviewer, manager, or reporter feedback/response, call action=ready_for_review with one concise `comment` explaining the blocker/question. Do not leave waiting work in In Progress.",
     "- If a task is blocked in a way agents cannot resolve and human/reporter intervention is required, set `alert_reporter` to true/1 via a task update proposal so the task is visually highlighted for the reporter.",
-    "- Review means the completed work is waiting for reviewer feedback. If you are allowed by project policy to complete the task and are satisfied, call action=review_done; do not write an approval-only comment. PM will then assign the next unassigned To Do task in the same In Progress Epic to the next eligible Epic worker and wake them. If changes or blockers remain, call action=review_feedback with a clear comment.",
+    "- Review means the completed work is waiting for reviewer feedback. If you are allowed by project policy to complete the task and are satisfied, call action=review_done; do not write an approval-only comment. PM will then assign the next unassigned To Do task in the same In Progress Epic to the next eligible Epic worker and wake them; if that was the Epic's last open task, PM moves the Epic to Ready to Deploy. If changes or blockers remain, call action=review_feedback with a clear comment.",
     args.onlyReportersCanSetTasksDone
       ? "- Project policy: only the reporter can set Tasks to Done. Reviewers should leave concise review feedback or agreement, then wait for the reporter to complete it."
       : "- Project policy: the resolved reviewer can set Tasks to Done.",
@@ -277,7 +280,7 @@ export async function sendTaskWorkflowNotification(args: {
             onlyReportersCanApprovePullRequests: true,
           },
         },
-        epic: { select: { id: true, workItemKey: true, commitPrefix: true } },
+        epic: { select: { id: true, title: true, branchName: true, workItemKey: true, commitPrefix: true } },
       },
     }),
     db.user.findUnique({
@@ -398,6 +401,7 @@ export async function sendTaskWorkflowNotification(args: {
     epicWorkItemKey: task.epic?.workItemKey ?? null,
     epicCommitPrefix: task.epic?.commitPrefix ?? null,
   });
+  const branchName = task.branchName ?? (task.epic ? effectiveEpicBranchName(task.epic) : null);
   const kind = planChannelNotification ? "task-chat" as const : "task-comment" as const;
   const dispatchArgs = {
     gatewayPort: targetUser.agent.gatewayPort,
@@ -427,7 +431,7 @@ export async function sendTaskWorkflowNotification(args: {
           agentSlug: targetUser.agent.slug,
           messageId: msg.id,
           reason: args.reason,
-          branchName: task.branchName ?? null,
+          branchName,
           commitPrefix,
           repositoryPath: task.project.repositoryPath ?? null,
           expectedGitUserName: gitIdentity.name,
@@ -543,8 +547,10 @@ export async function sendTaskCommentNotifications(args: {
       epic: {
         select: {
           id: true,
+          title: true,
           status: true,
           actingManagerId: true,
+          branchName: true,
           commitPrefix: true,
           workItemKey: true,
           actingManager: {
@@ -709,6 +715,7 @@ export async function sendTaskCommentNotifications(args: {
     epicWorkItemKey: task.epic?.workItemKey ?? null,
     epicCommitPrefix: task.epic?.commitPrefix ?? null,
   });
+  const branchName = task.branchName ?? (task.epic ? effectiveEpicBranchName(task.epic) : null);
 
   await Promise.all(mirroredMessages.map(async (msg) => {
     const userMessage = await buildTaskAgentUserMessage({
@@ -793,7 +800,7 @@ export async function sendTaskCommentNotifications(args: {
             agentSlug: msg.agentSlug,
             messageId: msg.id,
             reason: workflowReason,
-            branchName: task.branchName ?? null,
+            branchName,
             commitPrefix,
             repositoryPath: task.project.repositoryPath ?? null,
             expectedGitUserName: gitIdentity.name,

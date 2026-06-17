@@ -27,6 +27,7 @@ import { listAssignablePrincipals } from "@/lib/principals";
 import { validateProposal } from "@/lib/work-items/proposal";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
+import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { MAX_SUBTASK_TEXT } from "@/lib/tasks/subtasks";
 
 type RawOp = Record<string, unknown>;
@@ -337,10 +338,23 @@ export async function commitProposal(
             if (epicId) {
               const epic = await tx.epic.findUnique({
                 where: { id: epicId },
-                select: { branchName: true, commitPrefix: true },
+                select: { id: true, title: true, branchName: true, commitPrefix: true },
               });
-              inheritedBranchName = epic?.branchName ?? null;
-              inheritedCommitPrefix = epic?.commitPrefix ?? null;
+              if (epic) {
+                inheritedBranchName = effectiveEpicBranchName(epic);
+                inheritedCommitPrefix = epic.commitPrefix ?? null;
+                if (!epic.branchName) {
+                  await tx.epic.update({ where: { id: epicId }, data: { branchName: inheritedBranchName } });
+                  await tx.activityLog.create({
+                    data: {
+                      projectId,
+                      userId: agentId,
+                      kind: "epic.branch",
+                      payload: JSON.stringify({ from: null, to: inheritedBranchName, via: "workitem-proposal", proposalId: proposal.id }),
+                    },
+                  });
+                }
+              }
             }
             const title = epicId
               ? await nextEpicTaskTitle(epicId, String(op.title), tx)

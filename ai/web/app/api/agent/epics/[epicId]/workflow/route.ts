@@ -7,6 +7,7 @@ import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
+import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 
 export const runtime = "nodejs";
@@ -216,6 +217,22 @@ export async function POST(
     }
 
     const created = await db.$transaction(async (tx) => {
+      const branchName = effectiveEpicBranchName(epic);
+      if (!epic.branchName) {
+        await tx.epic.update({
+          where: { id: epic.id },
+          data: { branchName },
+        });
+        await tx.activityLog.create({
+          data: {
+            projectId: epic.projectId,
+            userId: agent.user!.id,
+            kind: "epic.branch",
+            payload: JSON.stringify({ from: null, to: branchName, via: "epic-manager-workflow", action }),
+          },
+        });
+      }
+
       const maxRank = await tx.task.aggregate({
         where: { projectId: epic.projectId, status: "Backlog", archivedAt: null, deletedAt: null },
         _max: { rank: true },
@@ -238,7 +255,7 @@ export async function POST(
             statusChangedAt: now,
             actingManagerId: null,
             reporterId: epic.reporterId ?? null,
-            branchName: epic.branchName,
+            branchName,
             commitPrefix: epic.commitPrefix,
           },
           select: { id: true, title: true, workItemKey: true },

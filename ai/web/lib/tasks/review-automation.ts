@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { resolveDoneOwnerId, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
+import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
 
 type Actor = {
   id: string;
@@ -75,6 +76,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
   }
 
   const completion = await db.$transaction(async (tx) => {
+    let promotedEpicToReadyToDeploy = false;
     const maxRank = await tx.task.aggregate({
       where: { status: "Done", archivedAt: null, deletedAt: null },
       _max: { rank: true },
@@ -134,9 +136,49 @@ export async function completeReviewedTaskAndAssignNext(args: {
           }),
         },
       });
+
+      if (task.epicId && task.epic?.status === "In Progress") {
+        const remainingOpenTasks = await tx.task.count({
+          where: {
+            epicId: task.epicId,
+            parentTaskId: null,
+            archivedAt: null,
+            deletedAt: null,
+            status: { not: "Done" },
+          },
+        });
+        if (remainingOpenTasks === 0) {
+          const now = new Date();
+          await tx.epic.update({
+            where: { id: task.epicId },
+            data: { status: "Ready to Deploy", statusChangedAt: now },
+          });
+          await tx.activityLog.create({
+            data: {
+              projectId: task.projectId,
+              userId: args.actor.id,
+              kind: "epic.status",
+              payload: JSON.stringify({
+                epicId: task.epicId,
+                from: task.epic.status,
+                to: "Ready to Deploy",
+                via: args.via,
+                action: "last_task_done",
+              }),
+            },
+          });
+          await resetEpicActionPlanForDeployReview(tx, {
+            projectId: task.projectId,
+            epicId: task.epicId,
+            actorId: args.actor.id,
+            now,
+          });
+          promotedEpicToReadyToDeploy = true;
+        }
+      }
     }
 
-    return { nextAssignment };
+    return { nextAssignment, promotedEpicToReadyToDeploy };
   });
 
   const nextTask = completion.nextAssignment?.task && completion.nextAssignment.worker
@@ -146,6 +188,10 @@ export async function completeReviewedTaskAndAssignNext(args: {
         projectSlug: completion.nextAssignment.task.project.slug,
       }
     : null;
+
+  if (completion.promotedEpicToReadyToDeploy && task.epicId) {
+    await triggerDeployReview({ projectSlug: task.project.slug, epicId: task.epicId, actorId: args.actor.id });
+  }
 
   if (completion.nextAssignment?.task && completion.nextAssignment.worker) {
     await sendTaskWorkflowNotification({

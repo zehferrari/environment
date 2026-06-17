@@ -835,7 +835,9 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
     "You can see EVERY comment and EVERY discussion message above, including messages between other people/agents that were not directed at you. Read them as background and use them in your reasoning.",
     "Visible PM comments must be direct and consolidated: put all current issues, blockers, findings, and required questions in one comment whenever possible.",
     "Do not repeat a blocker or decision already present in the recent hot path unless the current turn adds new information or asks for a status update.",
-    "For tasks under this Epic, assignees must post a technical Action Plan and wait for approved_on before starting To Do work. Once approved, they move To Do work to In Progress when they start and move work to Review when complete or waiting for reviewer/manager/reporter feedback.",
+    "For tasks under this Epic, assignees must post a technical Action Plan and wait for approved_on before starting To Do work. Action Plans should use independent, parallelizable checklist items where useful, but should not split small or strictly sequential/dependent work. Once approved, assignees move To Do work to In Progress when they start and move work to Review when complete or waiting for reviewer/manager/reporter feedback.",
+    "If you are acting as Epic manager, check the Epic branch before proposing Action Plans or creating tasks. If the Epic branch is empty, PM derives it as `<epic-id>-<epic-title>` lowercase/sanitized; Epic child tasks with an empty branch must use that Epic branch.",
+    "Worktrees ONLY, no exceptions: `/srv/Code/environment` and `/srv/Code/patricia` are NO-ZONEs. Make changes only under `/srv/Code/environment.worktrees/<branch>` or `/srv/Code/patricia.worktrees/<branch>` as applicable. If the required worktree cannot be created or used, tag the reporter in a comment and explain before making changes.",
     `If the current turn requires no visible contribution from you, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
   );
 

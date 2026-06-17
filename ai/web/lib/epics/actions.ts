@@ -23,6 +23,7 @@ import {
 } from "@/lib/workflow";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
+import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { buildDeploymentApproved } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
@@ -735,6 +736,7 @@ export async function createTaskInEpic(
     where: { id: epicId },
     select: {
       id: true,
+      title: true,
       projectId: true,
       branchName: true,
       commitPrefix: true,
@@ -765,39 +767,58 @@ export async function createTaskInEpic(
     return { ok: false, error: "Epic tasks can only be created when the Epic has no top-level child tasks yet." };
   }
 
-  const maxRank = await db.task.aggregate({
-    where: { projectId: epic.projectId, status: "Backlog", archivedAt: null, deletedAt: null },
-    _max: { rank: true },
-  });
-  const numberedTitle = await nextEpicTaskTitle(epic.id, title);
+  const branchName = effectiveEpicBranchName(epic);
 
-  const task = await db.task.create({
-    data: {
-      projectId: epic.projectId,
-      workItemKey: await allocateWorkItemKey(epic.projectId),
-      epicId: epic.id,
-      title: numberedTitle,
-      description,
-      status: "Backlog",
-      rank: (maxRank._max.rank ?? 0) + 1,
-      statusChangedAt: new Date(),
-      assigneeId: null,
-      actingManagerId: actor.kind === "human" ? epic.project.defaultReviewerId ?? null : null,
-      reporterId: actor.kind === "human" ? actor.id : epic.reporterId ?? null,
-      branchName: epic.branchName ?? null,
-      commitPrefix: epic.commitPrefix ?? null,
-    },
-    select: { id: true, title: true },
-  });
+  const task = await db.$transaction(async (tx) => {
+    if (!epic.branchName) {
+      await tx.epic.update({
+        where: { id: epic.id },
+        data: { branchName },
+      });
+      await tx.activityLog.create({
+        data: {
+          projectId: epic.projectId,
+          userId: actor.id,
+          kind: "epic.branch",
+          payload: JSON.stringify({ from: null, to: branchName, via: "epic-task-create" }),
+        },
+      });
+    }
 
-  await db.activityLog.create({
-    data: {
-      projectId: epic.projectId,
-      taskId: task.id,
-      userId: actor.id,
-      kind: "task.create",
-      payload: JSON.stringify({ title: task.title, epicId: epic.id }),
-    },
+    const maxRank = await tx.task.aggregate({
+      where: { projectId: epic.projectId, status: "Backlog", archivedAt: null, deletedAt: null },
+      _max: { rank: true },
+    });
+    const numberedTitle = await nextEpicTaskTitle(epic.id, title, tx);
+    const createdTask = await tx.task.create({
+      data: {
+        projectId: epic.projectId,
+        workItemKey: await allocateWorkItemKey(epic.projectId, tx),
+        epicId: epic.id,
+        title: numberedTitle,
+        description,
+        status: "Backlog",
+        rank: (maxRank._max.rank ?? 0) + 1,
+        statusChangedAt: new Date(),
+        assigneeId: null,
+        actingManagerId: actor.kind === "human" ? epic.project.defaultReviewerId ?? null : null,
+        reporterId: actor.kind === "human" ? actor.id : epic.reporterId ?? null,
+        branchName,
+        commitPrefix: epic.commitPrefix ?? null,
+      },
+      select: { id: true, title: true },
+    });
+
+    await tx.activityLog.create({
+      data: {
+        projectId: epic.projectId,
+        taskId: createdTask.id,
+        userId: actor.id,
+        kind: "task.create",
+        payload: JSON.stringify({ title: createdTask.title, epicId: epic.id }),
+      },
+    });
+    return createdTask;
   });
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
