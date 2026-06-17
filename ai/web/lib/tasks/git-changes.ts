@@ -130,9 +130,12 @@ function normalizePrefixes(commitPrefix: string | string[] | null | undefined) {
 }
 
 function subjectStartsWithPrefix(subject: string, prefix: string) {
-  if (!subject.startsWith(prefix)) return false;
-  const next = subject.charAt(prefix.length);
-  return !next || /[^a-z0-9]/i.test(next);
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Commit hygiene may stack related work item keys, e.g. "ENV-98 ENV-105 ...".
+  // Treat a requested prefix as matching if it is the first token or follows
+  // earlier work-item tokens at the start of the subject, while still requiring
+  // a non-alphanumeric boundary after the prefix.
+  return new RegExp(`^(?:[a-z]+-\\d+\\s+)*${escaped}(?:$|[^a-z0-9])`, "i").test(subject);
 }
 
 function filterCommits(
