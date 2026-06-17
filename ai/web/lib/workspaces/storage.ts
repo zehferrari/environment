@@ -2,6 +2,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const LOGO_DIR = path.join(process.cwd(), ".data", "workspace-logos");
+export const MAX_WORKSPACE_LOGO_BYTES = 2 * 1024 * 1024;
 const SAFE_EXTENSIONS: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
@@ -35,4 +36,18 @@ export async function deleteWorkspaceLogo(filePath: string | null | undefined) {
 
 export function validateLogoMimeType(mimeType: string) {
   return Object.prototype.hasOwnProperty.call(SAFE_EXTENSIONS, mimeType);
+}
+
+export function normalizeLogoMimeType(mimeType: string | null | undefined, fileName?: string | null) {
+  const normalized = mimeType?.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (validateLogoMimeType(normalized)) return normalized;
+
+  const ext = fileName?.split(".").pop()?.trim().toLowerCase();
+  if (!ext) return "";
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "png") return "image/png";
+  if (ext === "webp") return "image/webp";
+  if (ext === "gif") return "image/gif";
+  if (ext === "svg") return "image/svg+xml";
+  return "";
 }

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -30,6 +30,7 @@ async function main() {
 
     const dbMod = await import("../lib/db");
     const service = await import("../lib/workspaces/service");
+    const storage = await import("../lib/workspaces/storage");
     db = dbMod.db as PrismaClient;
     const prisma = db;
 
@@ -59,9 +60,23 @@ async function main() {
     assert(updated.agentPool.length === 0, "agent pool replaced");
     assert(updated.logo === null, "logo serializes as null before upload");
 
-    await prisma.workspace.update({ where: { slug: "client-alpha" }, data: { logoPath: path.join(tmp, "logo.png"), logoMimeType: "image/png", logoSizeBytes: 4, logoUpdatedAt: new Date(0) } });
+    assert(storage.normalizeLogoMimeType("multipart/form-data; boundary=x", "logo.PNG") === "image/png", "logo MIME falls back to filename for multipart uploads");
+    assert(storage.normalizeLogoMimeType("image/jpeg", "logo.png") === "image/jpeg", "explicit supported logo MIME wins");
+    assert(!storage.validateLogoMimeType("text/plain"), "unsupported logo MIME rejected");
+    assert(storage.MAX_WORKSPACE_LOGO_BYTES === 2 * 1024 * 1024, "logo size cap exported");
+
+    const logoBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const logoPath = await storage.writeWorkspaceLogo(created.id, "image/png", logoBytes);
+    assert((await readFile(logoPath)).equals(logoBytes), "workspace logo bytes written");
+    assert((await stat(logoPath)).size === logoBytes.length, "workspace logo size is readable");
+    await prisma.workspace.update({ where: { slug: "client-alpha" }, data: { logoPath, logoMimeType: "image/png", logoSizeBytes: logoBytes.length, logoUpdatedAt: new Date(0) } });
     const withLogo = (await service.listWorkspaces()).find((w) => w.slug === "client-alpha");
     assert(withLogo?.logo?.url.includes("/api/workspaces/client-alpha/logo"), "logo URL serialized");
+    await storage.deleteWorkspaceLogo(logoPath);
+    await stat(logoPath).then(
+      () => { throw new Error("workspace logo file was not deleted"); },
+      () => undefined,
+    );
 
     const archived = await service.archiveWorkspace("client-alpha", user.id);
     assert(archived?.archivedAt, "workspace archived");
