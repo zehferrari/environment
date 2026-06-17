@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { DEFAULT_DEPLOY_REVIEW_PROMPT } from "@/lib/epics/deploy-review";
 import { getSystemSettings, DONE_TTL_FALLBACK_DAYS, type SystemSettingsValues } from "@/lib/settings/system";
 
 export type IntegrationDefaults = Record<string, unknown>;
@@ -25,6 +26,7 @@ type ProjectDefaultsInput = {
   deploymentEnvironment?: string | null;
   deploymentBitbucketWorkspace?: string | null;
   deploymentBitbucketRepoSlug?: string | null;
+  deployReviewPrompt?: string | null;
 };
 
 export type WorkspaceDefaults = {
@@ -67,6 +69,7 @@ export type EffectiveProjectSettings = {
     bitbucketRepoSlug: SourcedValue<string | null>;
   };
   integrationDefaults: SourcedValue<IntegrationDefaults>;
+  deployReviewPrompt: SourcedValue<string>;
 };
 
 const workspaceSelect = {
@@ -168,6 +171,7 @@ export function buildEffectiveProjectSettings(project: ProjectDefaultsInput & { 
       bitbucketRepoSlug: sourcedNullable(project.deploymentBitbucketRepoSlug, workspace?.deploymentBitbucketRepoSlug),
     },
     integrationDefaults: mergeIntegrationDefaults(system.integrationDefaults, workspace?.integrationDefaults, project.integrationDefaults),
+    deployReviewPrompt: sourced(project.deployReviewPrompt, null, system.deployReviewPrompt, DEFAULT_DEPLOY_REVIEW_PROMPT),
   };
 }
 

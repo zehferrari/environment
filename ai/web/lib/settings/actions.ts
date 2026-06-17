@@ -8,6 +8,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { normalizeTheme } from "@/lib/settings/system";
+import { normalizeDeployReviewPrompt } from "@/lib/epics/deploy-review";
 
 function trimOrNull(v: unknown): string | null {
   if (typeof v !== "string") return null;
@@ -52,6 +53,7 @@ export async function setSystemSettings(formData: FormData) {
     openRouterReferer?: string | null;
     openRouterTitle?: string | null;
     integrationDefaults?: string | null;
+    deployReviewPrompt?: string | null;
   } = {};
   const payload: Record<string, unknown> = { scope };
 
@@ -62,6 +64,7 @@ export async function setSystemSettings(formData: FormData) {
     data.binTtlDays = intOrNull(formData.get("binTtlDays"), 1, 3650);
     data.theme = normalizeTheme(formData.get("theme"));
     data.integrationDefaults = jsonObjectTextOrNull(formData.get("integrationDefaults"));
+    data.deployReviewPrompt = normalizeDeployReviewPrompt(formData.get("deployReviewPrompt"));
     Object.assign(payload, { ...data, integrationDefaults: data.integrationDefaults ? "set" : null });
   } else {
     const current = await db.systemSettings.findUnique({

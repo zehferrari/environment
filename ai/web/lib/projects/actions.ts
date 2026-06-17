@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import type { ActorKind } from "@/lib/workflow";
 import type { Prisma } from "@prisma/client";
 import { normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
+import { cleanDeployReviewPrompt } from "@/lib/epics/deploy-review";
 
 async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
   const session = await auth();
@@ -74,6 +75,7 @@ export async function setProjectSettings(formData: FormData) {
       deploymentEnvironment: true,
       deploymentBitbucketWorkspace: true,
       deploymentBitbucketRepoSlug: true,
+      deployReviewPrompt: true,
       members: { where: { userId: actor.id }, select: { role: true } },
     },
   });
@@ -164,6 +166,7 @@ export async function setProjectSettings(formData: FormData) {
     const doneTtlDays =
       doneTtlDaysRaw === "" ? null : Math.max(1, Math.min(365, Number(doneTtlDaysRaw) || 5));
     const integrationDefaults = jsonObjectTextOrNull(formData.get("integrationDefaults"));
+    const deployReviewPrompt = cleanDeployReviewPrompt(formData.get("deployReviewPrompt"));
 
     Object.assign(data, {
       name,
@@ -179,6 +182,7 @@ export async function setProjectSettings(formData: FormData) {
       defaultReviewerId,
       doneTtlDays,
       integrationDefaults,
+      deployReviewPrompt,
     });
     Object.assign(payload, data);
     payload.managerAssignableAgentCount = managerAssignableAgentIds.length;

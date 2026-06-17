@@ -150,6 +150,7 @@ model Project {
   onlyReportersCanApproveActionPlans  Boolean                         @default(false) @map("only_reporters_can_approve_action_plans")
   onlyReportersCanSetTasksDone        Boolean                         @default(false) @map("only_reporters_can_set_tasks_done")
   onlyReportersCanApprovePullRequests Boolean                         @default(false) @map("only_reporters_can_approve_pull_requests")
+  deployReviewPrompt                 String?                         @map("deploy_review_prompt")
   defaultAssigneeId                   String?
   defaultAssignee                     User?                           @relation("ProjectDefaultAssignee", fields: [defaultAssigneeId], references: [id])
   defaultReviewerId                   String?
@@ -1017,6 +1018,7 @@ model SystemSettings {
   openRouterReferer   String?
   openRouterTitle     String?
   profileImagePrompt  String?
+  deployReviewPrompt  String?  @map("deploy_review_prompt")
   integrationDefaults String?  @map("integration_defaults")
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt

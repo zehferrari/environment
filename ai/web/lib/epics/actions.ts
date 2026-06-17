@@ -28,6 +28,7 @@ import { notifyDispatch } from "@/lib/pm-dispatch";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
+import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
 
 const EPIC_STATUSES = ["Backlog", "In Progress", "Ready to Deploy", "Done"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
@@ -604,10 +605,19 @@ export async function updateEpic(formData: FormData) {
 
   // When an epic moves to Done, archive all of its live child tasks.
   const archiveChildrenOnDone = statusChanged && status === "Done";
+  const shouldStartDeployReview = statusChanged && status === "Ready to Deploy";
 
   let openAssignment: any = null;
   await db.$transaction(async (tx) => {
     await tx.epic.update({ where: { id: epicId }, data });
+    if (shouldStartDeployReview) {
+      await resetEpicActionPlanForDeployReview(tx, {
+        projectId: epic.project.id,
+        epicId,
+        actorId: actor.id,
+        now: statusChangedAt,
+      });
+    }
     if (workerPoolChanged) {
       await tx.epicWorker.deleteMany({
         where: { epicId, userId: { notIn: newWorkerIds } },
@@ -669,6 +679,10 @@ export async function updateEpic(formData: FormData) {
         "Use task attachments first; only inspect Epic attachments when the task context explicitly references them or is insufficient.",
       ].join("\n"),
     });
+  }
+
+  if (shouldStartDeployReview) {
+    await triggerDeployReview({ projectSlug: slug, epicId, actorId: actor.id });
   }
 
   await notifyEpicActingManagerAssigned({

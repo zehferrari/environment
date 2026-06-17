@@ -135,6 +135,18 @@ export default async function SystemSettingsPage({
             />
           </SettingsRow>
 
+          <SettingsRow
+            label="Deploy-review prompt"
+            hint="Default prompt sent to the Deploy Reviewer when an Epic moves to Ready to Deploy. Projects can override this."
+          >
+            <textarea
+              name="deployReviewPrompt"
+              rows={5}
+              defaultValue={settings.deployReviewPrompt}
+              className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
+            />
+          </SettingsRow>
+
           <div className="flex justify-end pt-1">
             <button
               type="submit"
