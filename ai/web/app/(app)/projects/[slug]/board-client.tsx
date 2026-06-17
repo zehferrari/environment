@@ -58,6 +58,7 @@ type Task = {
   subtaskMinutes: number;
   blockedByKey: string | null;
   activeWorking: boolean;
+  project: { slug: string; name: string } | null;
 };
 type Column = { id: string; label: string; description?: string };
 
@@ -128,6 +129,8 @@ function SubtaskProgress({ task }: { task: Task }) {
 
 type BoardProps = {
   projectSlug: string;
+  boardStreamUrl?: string | null;
+  hideWorkflowFocus?: boolean;
   columns: ReadonlyArray<Column>;
   tasks: Task[];
   moveTaskAction: (
@@ -163,8 +166,9 @@ const boardCollisionDetection: CollisionDetection = (args) => {
   return pointer.length > 0 ? pointer : rectIntersection(args);
 };
 
-export default function Board({ projectSlug, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
+export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus = false, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
   const router = useRouter();
+  const resolvedBoardStreamUrl = boardStreamUrl === undefined ? `/api/projects/${projectSlug}/board/stream` : boardStreamUrl;
   const isMobileBoard = useIsMobileBoard();
   const [items, setItems] = useState<Task[]>(tasks);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -218,7 +222,8 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
     const connect = () => {
       if (closed || document.hidden) return;
       try {
-        source = new EventSource(`/api/projects/${projectSlug}/board/stream`);
+        if (!resolvedBoardStreamUrl) return;
+        source = new EventSource(resolvedBoardStreamUrl);
       } catch {
         return;
       }
@@ -255,7 +260,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       if (retryTimer) clearTimeout(retryTimer);
       source?.close();
     };
-  }, [projectSlug, router]);
+  }, [resolvedBoardStreamUrl, projectSlug, router]);
 
   // Polling safety net for live board updates. The SSE stream above gives
   // near-instant refreshes when the in-process board emitter delivers, but
@@ -281,14 +286,15 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
       const storedFocus = window.localStorage.getItem(
         FOCUS_VISIBLE_KEY_PREFIX + projectSlug,
       );
-      if (storedFocus === "true") setFocusVisible(true);
+      if (hideWorkflowFocus) setFocusVisible(false);
+      else if (storedFocus === "true") setFocusVisible(true);
       else if (storedFocus === "false") setFocusVisible(false);
     } catch {
       // localStorage can throw in private modes or sandboxed iframes —
       // fall back to the default (hidden) silently.
     }
     setPrefsHydrated(true);
-  }, [projectSlug]);
+  }, [hideWorkflowFocus, projectSlug]);
 
   useEffect(() => {
     if (!prefsHydrated) return;
@@ -312,7 +318,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
     } catch {
       // Same fallback as the read: ignore storage failures.
     }
-  }, [focusVisible, projectSlug, prefsHydrated]);
+  }, [focusVisible, hideWorkflowFocus, projectSlug, prefsHydrated]);
 
   useEffect(() => {
     setNow(Date.now());
@@ -674,7 +680,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
         </div>
       ) : null}
 
-      {focusVisible && workflowFocus.length > 0 ? (
+      {!hideWorkflowFocus && focusVisible && workflowFocus.length > 0 ? (
         <section className="mb-5 rounded-lg border border-line bg-panel p-3">
           <div className="mb-2 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -710,7 +716,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
         {/* When the Backlog is expanded, the Show Workflow Focus button gets
             its own row on top of the backlog banner rather than sharing the
             row with the Backlog heading / Hide Backlog control. */}
-        {backlogVisible && !focusVisible && workflowFocus.length > 0 ? (
+        {!hideWorkflowFocus && backlogVisible && !focusVisible && workflowFocus.length > 0 ? (
           <div className="mb-3 flex">
             <button
               type="button"
@@ -726,7 +732,7 @@ export default function Board({ projectSlug, columns, tasks, moveTaskAction, reo
           {/* When the Backlog is hidden, the Show Workflow Focus button sits
               inline at the left, level with the Show Backlog button. */}
           <div className="flex items-center gap-3">
-            {!backlogVisible && !focusVisible && workflowFocus.length > 0 ? (
+            {!hideWorkflowFocus && !backlogVisible && !focusVisible && workflowFocus.length > 0 ? (
               <button
                 type="button"
                 onClick={() => setFocusVisible(true)}
@@ -1004,7 +1010,7 @@ function MobileTaskCard({
         <div
           {...attributes}
           {...listeners}
-          onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
+          onClick={() => router.push(taskHref(task, projectSlug))}
           className={`${taskCardClass(task)} min-w-[calc(100%-9rem)] touch-pan-y active:cursor-grabbing`}
         >
           <div className="relative z-10 space-y-2">
@@ -1023,6 +1029,7 @@ function MobileTaskCard({
                   className="mt-0.5 h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
                 />
                 <div className="min-w-0 flex-1">
+                  <ProjectMetaLine task={task} />
                   <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
                     {actor ? <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} /> : null}
                     <span className="truncate font-mono uppercase tracking-wider">
@@ -1041,7 +1048,7 @@ function MobileTaskCard({
                 onClick={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
               >
-                <input type="hidden" name="projectSlug" value={projectSlug} />
+                <input type="hidden" name="projectSlug" value={taskProjectSlug(task, projectSlug)} />
                 <input type="hidden" name="taskId" value={task.id} />
                 <button
                   type="submit"
@@ -1073,7 +1080,7 @@ function MobileTaskCard({
           </button>
           <button
             type="button"
-            onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
+            onClick={() => router.push(taskHref(task, projectSlug))}
             className="min-h-11 flex-1 rounded-lg border border-line bg-panel px-2 text-caption font-semibold text-text"
           >
             Edit
@@ -1171,7 +1178,7 @@ function TaskCard({
       style={{ transform: CSS.Transform.toString(transform), transition }}
       {...attributes}
       {...listeners}
-      onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
+      onClick={() => router.push(taskHref(task, projectSlug))}
       className={taskCardClass(task, isDragging)}
     >
       <div className="relative z-10 flex items-start justify-between gap-2">
@@ -1196,6 +1203,7 @@ function TaskCard({
             <span className="text-nano text-text-muted">unassigned</span>
           )}
           <div className="min-w-0 flex-1">
+            <ProjectMetaLine task={task} />
             <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
               {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
               <span className="truncate font-mono uppercase tracking-wider">
@@ -1229,7 +1237,7 @@ function TaskCard({
           onMouseDown={(e) => e.stopPropagation()}
           onTouchStart={(e) => e.stopPropagation()}
         >
-          <input type="hidden" name="projectSlug" value={projectSlug} />
+          <input type="hidden" name="projectSlug" value={taskProjectSlug(task, projectSlug)} />
           <input type="hidden" name="taskId" value={task.id} />
           <button
             type="submit"
@@ -1260,7 +1268,7 @@ function WorkflowFocusCard({
   return (
     <button
       type="button"
-      onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
+      onClick={() => router.push(taskHref(task, projectSlug))}
       className={`${taskCardClass(task)} min-w-0 text-left`}
     >
       <div className="relative z-10 flex items-start justify-between gap-2">
@@ -1273,6 +1281,7 @@ function WorkflowFocusCard({
             <span className="text-nano text-text-muted">unassigned</span>
           )}
           <div className="min-w-0 flex-1">
+            <ProjectMetaLine task={task} />
             <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
               <span className={`shrink-0 rounded border px-1 py-0.5 text-pico font-semibold uppercase tracking-wider ${columnHeaderPillClass(task.status)}`}>
                 {task.status}
@@ -1356,11 +1365,11 @@ function BacklogRow({
       style={{ transform: CSS.Transform.toString(transform), transition }}
       role="link"
       tabIndex={0}
-      onClick={() => router.push(`/projects/${projectSlug}/tasks/${task.id}`)}
+      onClick={() => router.push(taskHref(task, projectSlug))}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          router.push(`/projects/${projectSlug}/tasks/${task.id}`);
+          router.push(taskHref(task, projectSlug));
         }
       }}
       className={`grid min-h-11 min-w-[68rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 py-2 text-body transition last:border-b-0 hover:bg-panel-soft active:scale-[0.98] md:min-h-0 md:active:scale-100 ${
@@ -1418,7 +1427,7 @@ function BacklogRow({
         onPointerDown={(event) => event.stopPropagation()}
         className="text-right"
       >
-        <input type="hidden" name="projectSlug" value={projectSlug} />
+        <input type="hidden" name="projectSlug" value={taskProjectSlug(task, projectSlug)} />
         <input type="hidden" name="taskId" value={task.id} />
         <button
           type="submit"
@@ -1429,6 +1438,23 @@ function BacklogRow({
           <TrashIcon />
         </button>
       </form>
+    </div>
+  );
+}
+
+function taskHref(task: Task, fallbackProjectSlug: string) {
+  return `/projects/${taskProjectSlug(task, fallbackProjectSlug)}/tasks/${task.id}`;
+}
+
+function taskProjectSlug(task: Task, fallbackProjectSlug: string) {
+  return task.project?.slug ?? fallbackProjectSlug;
+}
+
+function ProjectMetaLine({ task }: { task: Task }) {
+  if (!task.project) return null;
+  return (
+    <div className="truncate text-nano font-medium text-text-muted">
+      Project: {task.project.name}
     </div>
   );
 }

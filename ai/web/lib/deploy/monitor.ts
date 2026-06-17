@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { db as defaultDb } from "@/lib/db";
+import { resolveEffectiveProjectSettings } from "@/lib/settings/effective";
 
 const execFileAsync = promisify(execFile);
 const LOG_EXCERPT_MAX = 4000;
@@ -200,8 +201,9 @@ export async function resolveDeploymentPlan(args: {
     if (!epic || epic.deletedAt || epic.archivedAt) throw new Error("Epic not found");
     if (!epic.reporter) throw new Error("Epic reporter is required before deployment");
     if (!epic.project.repositoryPath) throw new Error("Project repositoryPath is required before deployment");
-    const repo = epic.project.deploymentBitbucketWorkspace && epic.project.deploymentBitbucketRepoSlug
-      ? { workspace: epic.project.deploymentBitbucketWorkspace, repoSlug: epic.project.deploymentBitbucketRepoSlug }
+    const effective = await resolveEffectiveProjectSettings(epic.project);
+    const repo = effective.deployment.bitbucketWorkspace.value && effective.deployment.bitbucketRepoSlug.value
+      ? { workspace: effective.deployment.bitbucketWorkspace.value, repoSlug: effective.deployment.bitbucketRepoSlug.value }
       : await remoteBitbucketRepo(epic.project.repositoryPath);
     const childTargets = epic.tasks.filter((task: any) => task.branchName);
     const targets = childTargets.length
@@ -232,15 +234,15 @@ export async function resolveDeploymentPlan(args: {
         projectSlug: epic.project.slug,
         repositoryPath: epic.project.repositoryPath,
         provider: "bitbucket",
-        productionBranch: epic.project.deploymentProductionBranch ?? "main",
-        prTargetBranch: epic.project.deploymentPrTargetBranch ?? epic.project.deploymentProductionBranch ?? "main",
-        workspace: epic.project.deploymentBitbucketWorkspace ?? repo.workspace,
-        repoSlug: epic.project.deploymentBitbucketRepoSlug ?? repo.repoSlug,
-        mode: deploymentMode(epic.project.deploymentMode),
-        onMerge: epic.project.deploymentOnMerge,
-        pipelineName: epic.project.deploymentPipelineName ?? null,
-        deploymentHost: epic.project.deploymentHost ?? null,
-        deploymentEnvironment: epic.project.deploymentEnvironment ?? null,
+        productionBranch: effective.deployment.productionBranch.value,
+        prTargetBranch: effective.deployment.prTargetBranch.value,
+        workspace: effective.deployment.bitbucketWorkspace.value ?? repo.workspace,
+        repoSlug: effective.deployment.bitbucketRepoSlug.value ?? repo.repoSlug,
+        mode: deploymentMode(effective.deployment.mode.value),
+        onMerge: effective.deployment.onMerge.value,
+        pipelineName: effective.deployment.pipelineName.value,
+        deploymentHost: effective.deployment.host.value,
+        deploymentEnvironment: effective.deployment.environment.value,
       },
       reporter: { userId: epic.reporter.id, name: reporterName(epic.reporter), email: epic.reporter.email },
       targets,
@@ -260,8 +262,9 @@ export async function resolveDeploymentPlan(args: {
   if (!task.reporter) throw new Error("Task reporter is required before deployment");
   if (!task.project.repositoryPath) throw new Error("Project repositoryPath is required before deployment");
   if (!task.branchName) throw new Error("Task branchName is required before deployment");
-  const repo = task.project.deploymentBitbucketWorkspace && task.project.deploymentBitbucketRepoSlug
-    ? { workspace: task.project.deploymentBitbucketWorkspace, repoSlug: task.project.deploymentBitbucketRepoSlug }
+  const effective = await resolveEffectiveProjectSettings(task.project);
+  const repo = effective.deployment.bitbucketWorkspace.value && effective.deployment.bitbucketRepoSlug.value
+    ? { workspace: effective.deployment.bitbucketWorkspace.value, repoSlug: effective.deployment.bitbucketRepoSlug.value }
     : await remoteBitbucketRepo(task.project.repositoryPath);
   return {
     scope: "task",
@@ -271,15 +274,15 @@ export async function resolveDeploymentPlan(args: {
       projectSlug: task.project.slug,
       repositoryPath: task.project.repositoryPath,
       provider: "bitbucket",
-      productionBranch: task.project.deploymentProductionBranch ?? "main",
-      prTargetBranch: task.project.deploymentPrTargetBranch ?? task.project.deploymentProductionBranch ?? "main",
-      workspace: task.project.deploymentBitbucketWorkspace ?? repo.workspace,
-      repoSlug: task.project.deploymentBitbucketRepoSlug ?? repo.repoSlug,
-      mode: deploymentMode(task.project.deploymentMode),
-      onMerge: task.project.deploymentOnMerge,
-      pipelineName: task.project.deploymentPipelineName ?? null,
-      deploymentHost: task.project.deploymentHost ?? null,
-      deploymentEnvironment: task.project.deploymentEnvironment ?? null,
+      productionBranch: effective.deployment.productionBranch.value,
+      prTargetBranch: effective.deployment.prTargetBranch.value,
+      workspace: effective.deployment.bitbucketWorkspace.value ?? repo.workspace,
+      repoSlug: effective.deployment.bitbucketRepoSlug.value ?? repo.repoSlug,
+      mode: deploymentMode(effective.deployment.mode.value),
+      onMerge: effective.deployment.onMerge.value,
+      pipelineName: effective.deployment.pipelineName.value,
+      deploymentHost: effective.deployment.host.value,
+      deploymentEnvironment: effective.deployment.environment.value,
     },
     reporter: { userId: task.reporter.id, name: reporterName(task.reporter), email: task.reporter.email },
     targets: [{

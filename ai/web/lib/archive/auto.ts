@@ -21,7 +21,7 @@ export async function autoArchiveDoneTasks(): Promise<AutoArchiveDoneTasksResult
 
   for (const project of projects) {
     result.projectsChecked += 1;
-    const days = await resolveDoneTtlDays(project.doneTtlDays);
+    const days = await resolveDoneTtlDays(project.doneTtlDays, project.id);
     const cutoff = new Date(Date.now() - days * 86_400_000);
 
     const tasks = await db.task.findMany({

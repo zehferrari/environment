@@ -39,6 +39,18 @@ function branchOrNull(value: unknown): string | null {
   return branch;
 }
 
+function jsonObjectTextOrNull(value: unknown): string | null {
+  const raw = trimOrNull(value);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid");
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    throw new Error("Integration defaults must be a JSON object.");
+  }
+}
+
 export async function setProjectSettings(formData: FormData) {
   const actor = await requireActor();
   const slug = String(formData.get("projectSlug") ?? "");
@@ -151,6 +163,7 @@ export async function setProjectSettings(formData: FormData) {
     const doneTtlDaysRaw = String(formData.get("doneTtlDays") ?? "").trim();
     const doneTtlDays =
       doneTtlDaysRaw === "" ? null : Math.max(1, Math.min(365, Number(doneTtlDaysRaw) || 5));
+    const integrationDefaults = jsonObjectTextOrNull(formData.get("integrationDefaults"));
 
     Object.assign(data, {
       name,
@@ -165,6 +178,7 @@ export async function setProjectSettings(formData: FormData) {
       defaultAssigneeId,
       defaultReviewerId,
       doneTtlDays,
+      integrationDefaults,
     });
     Object.assign(payload, data);
     payload.managerAssignableAgentCount = managerAssignableAgentIds.length;

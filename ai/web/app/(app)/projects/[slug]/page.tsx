@@ -465,6 +465,7 @@ export default async function ProjectBoardPage({
               Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||
             (t.status === "Review" &&
               Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug))),
+          project: null,
         }))}
         moveTaskAction={moveTask}
         reorderTasksAction={reorderBoardTasks}

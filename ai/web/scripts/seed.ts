@@ -1,5 +1,6 @@
 import { seedZehUser } from "@/lib/agents/auth/seed-zeh";
 import { syncAgents } from "@/lib/agents/management/sync";
+import { seedDefaultWorkspaceFromProjects } from "@/lib/workspaces/service";
 
 async function main() {
   const zeh = await seedZehUser();
@@ -7,6 +8,9 @@ async function main() {
 
   const sync = await syncAgents();
   console.log("[seed] agent sync:", sync);
+
+  const workspace = await seedDefaultWorkspaceFromProjects();
+  console.log("[seed] default workspace:", workspace ? "seeded" : "skipped");
 }
 
 main()
