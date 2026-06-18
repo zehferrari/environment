@@ -36,40 +36,41 @@ model User {
   createdAt          DateTime        @default(now())
   updatedAt          DateTime        @updatedAt
 
-  passwordResetTokens         PasswordResetToken[]
-  projectMembers              ProjectMember[]
-  assignedTasks               Task[]               @relation("TaskAssignee")
-  actingManagerOf             Task[]               @relation("TaskActingManager")
-  reportedTasks               Task[]               @relation("TaskReporter")
-  approvedTasks               Task[]               @relation("TaskApprovedBy")
-  archivedTasks               Task[]               @relation("TaskArchivedBy")
-  deletedTasks                Task[]               @relation("TaskDeletedBy")
-  actingManagerOfEpic         Epic[]               @relation("EpicActingManager")
-  reportedEpics               Epic[]               @relation("EpicReporter")
-  approvedEpics               Epic[]               @relation("EpicApprovedBy")
-  archivedEpics               Epic[]               @relation("EpicArchivedBy")
-  deletedEpics                Epic[]               @relation("EpicDeletedBy")
-  epicWorkerAssignments       EpicWorker[]
-  comments                    Comment[]
-  deletedComments             Comment[]            @relation("CommentDeletedBy")
-  activity                    ActivityLog[]
-  uploadedAttachments         Attachment[]
-  agentChatMessages           AgentChatMessage[]   @relation("AgentChatSender")
-  deletedAgentChatMessages    AgentChatMessage[]   @relation("AgentChatMessageDeletedBy")
-  archivedAgentChatRooms      AgentChatRoomArchive[] @relation("AgentChatRoomArchivedBy")
-  deletedAgentChatRoomArchives AgentChatRoomArchive[] @relation("AgentChatRoomArchiveDeletedBy")
-  directAgentChatMessages     DirectAgentChatMessage[] @relation("DirectAgentChatSender")
-  deletedDirectAgentChatMessages DirectAgentChatMessage[] @relation("DirectAgentChatMessageDeletedBy")
-  archivedDirectAgentChats    DirectAgentChatArchive[] @relation("DirectAgentChatArchivedBy")
-  deletedDirectAgentChatArchives DirectAgentChatArchive[] @relation("DirectAgentChatArchiveDeletedBy")
-  defaultAssigneeForProjects  Project[]            @relation("ProjectDefaultAssignee")
-  defaultReviewerForProjects  Project[]            @relation("ProjectDefaultReviewer")
-  managerAssignableProjects   ProjectManagerAssignableAgent[]
-  deletedProjects             Project[]            @relation("ProjectDeletedBy")
-  workItemProposalsProposed   WorkItemProposal[]   @relation("WorkItemProposalProposedBy")
-  workItemProposalsApplied    WorkItemProposal[]   @relation("WorkItemProposalAppliedBy")
-  workItemProposalsRejected   WorkItemProposal[]   @relation("WorkItemProposalRejectedBy")
-  archivedWorkspaces          Workspace[]           @relation("WorkspaceArchivedBy")
+  passwordResetTokens            PasswordResetToken[]
+  projectMembers                 ProjectMember[]
+  assignedTasks                  Task[]                          @relation("TaskAssignee")
+  actingManagerOf                Task[]                          @relation("TaskActingManager")
+  reportedTasks                  Task[]                          @relation("TaskReporter")
+  approvedTasks                  Task[]                          @relation("TaskApprovedBy")
+  archivedTasks                  Task[]                          @relation("TaskArchivedBy")
+  deletedTasks                   Task[]                          @relation("TaskDeletedBy")
+  actingManagerOfEpic            Epic[]                          @relation("EpicActingManager")
+  deployReviewerOfEpics          Epic[]                          @relation("EpicDeployReviewer")
+  reportedEpics                  Epic[]                          @relation("EpicReporter")
+  approvedEpics                  Epic[]                          @relation("EpicApprovedBy")
+  archivedEpics                  Epic[]                          @relation("EpicArchivedBy")
+  deletedEpics                   Epic[]                          @relation("EpicDeletedBy")
+  epicWorkerAssignments          EpicWorker[]
+  comments                       Comment[]
+  deletedComments                Comment[]                       @relation("CommentDeletedBy")
+  activity                       ActivityLog[]
+  uploadedAttachments            Attachment[]
+  agentChatMessages              AgentChatMessage[]              @relation("AgentChatSender")
+  deletedAgentChatMessages       AgentChatMessage[]              @relation("AgentChatMessageDeletedBy")
+  archivedAgentChatRooms         AgentChatRoomArchive[]          @relation("AgentChatRoomArchivedBy")
+  deletedAgentChatRoomArchives   AgentChatRoomArchive[]          @relation("AgentChatRoomArchiveDeletedBy")
+  directAgentChatMessages        DirectAgentChatMessage[]        @relation("DirectAgentChatSender")
+  deletedDirectAgentChatMessages DirectAgentChatMessage[]        @relation("DirectAgentChatMessageDeletedBy")
+  archivedDirectAgentChats       DirectAgentChatArchive[]        @relation("DirectAgentChatArchivedBy")
+  deletedDirectAgentChatArchives DirectAgentChatArchive[]        @relation("DirectAgentChatArchiveDeletedBy")
+  defaultAssigneeForProjects     Project[]                       @relation("ProjectDefaultAssignee")
+  defaultReviewerForProjects     Project[]                       @relation("ProjectDefaultReviewer")
+  managerAssignableProjects      ProjectManagerAssignableAgent[]
+  deletedProjects                Project[]                       @relation("ProjectDeletedBy")
+  workItemProposalsProposed      WorkItemProposal[]              @relation("WorkItemProposalProposedBy")
+  workItemProposalsApplied       WorkItemProposal[]              @relation("WorkItemProposalAppliedBy")
+  workItemProposalsRejected      WorkItemProposal[]              @relation("WorkItemProposalRejectedBy")
+  archivedWorkspaces             Workspace[]                     @relation("WorkspaceArchivedBy")
 
   @@index([kind])
   @@index([status])
@@ -117,7 +118,7 @@ model Agent {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  user User?
+  user           User?
   workspacePools WorkspaceAgentPool[]
 
   @@index([role])
@@ -129,105 +130,105 @@ model Agent {
 // ------------------------------------------------------------------
 
 model Project {
-  id          String    @id @default(cuid())
-  slug        String    @unique
-  name        String
-  description String?
+  id                                  String                          @id @default(cuid())
+  slug                                String                          @unique
+  name                                String
+  description                         String?
   // On-disk README for the project (zeh decision in HOMELAB-44 / Stage 2):
   // points at /srv/Data/projects/<id>/README.md (deploy/runtime path,
   // outside the app source tree). Server renders via lib/markdown.
-  readmePath  String?
-  archivedAt  DateTime?
+  readmePath                          String?
+  archivedAt                          DateTime?
   // Project settings tab fields. Repo + git identity drive agent
   // commits; defaults seed Task pickers; doneTtlDays controls automatic
   // archiving of aged Done tasks.
-  repositoryPath      String?
-  defaultGitUserName  String?
-  defaultGitUserEmail String?
-  workItemKeyPrefix   String? @unique @map("work_item_key_prefix")
-  nextWorkItemNumber  Int     @default(1) @map("next_work_item_number")
-  onlyReportersCanApproveActionPlans Boolean @default(false) @map("only_reporters_can_approve_action_plans")
-  onlyReportersCanSetTasksDone       Boolean @default(false) @map("only_reporters_can_set_tasks_done")
-  onlyReportersCanApprovePullRequests Boolean @default(false) @map("only_reporters_can_approve_pull_requests")
-  defaultAssigneeId   String?
-  defaultAssignee     User?     @relation("ProjectDefaultAssignee", fields: [defaultAssigneeId], references: [id])
-  defaultReviewerId   String?
-  defaultReviewer     User?     @relation("ProjectDefaultReviewer", fields: [defaultReviewerId], references: [id])
-  managerAssignableAgents ProjectManagerAssignableAgent[]
+  repositoryPath                      String?
+  defaultGitUserName                  String?
+  defaultGitUserEmail                 String?
+  workItemKeyPrefix                   String?                         @unique @map("work_item_key_prefix")
+  nextWorkItemNumber                  Int                             @default(1) @map("next_work_item_number")
+  onlyReportersCanApproveActionPlans  Boolean                         @default(false) @map("only_reporters_can_approve_action_plans")
+  onlyReportersCanSetTasksDone        Boolean                         @default(false) @map("only_reporters_can_set_tasks_done")
+  onlyReportersCanApprovePullRequests Boolean                         @default(false) @map("only_reporters_can_approve_pull_requests")
+  deployReviewPrompt                 String?                         @map("deploy_review_prompt")
+  defaultAssigneeId                   String?
+  defaultAssignee                     User?                           @relation("ProjectDefaultAssignee", fields: [defaultAssigneeId], references: [id])
+  defaultReviewerId                   String?
+  defaultReviewer                     User?                           @relation("ProjectDefaultReviewer", fields: [defaultReviewerId], references: [id])
+  managerAssignableAgents             ProjectManagerAssignableAgent[]
   // Null inherits the system default (SystemSettings.doneTtlDays → 5).
-  doneTtlDays         Int?
-  deploymentProvider String @default("bitbucket") @map("deployment_provider")
-  deploymentProductionBranch String? @map("deployment_production_branch")
-  deploymentPrTargetBranch String? @map("deployment_pr_target_branch")
-  deploymentMode String @default("pr-only") @map("deployment_mode")
-  deploymentOnMerge String? @map("deployment_on_merge")
-  deploymentPipelineName String? @map("deployment_pipeline_name")
-  deploymentHost String? @map("deployment_host")
-  deploymentEnvironment String? @map("deployment_environment")
-  deploymentBitbucketWorkspace String? @map("deployment_bitbucket_workspace")
-  deploymentBitbucketRepoSlug String? @map("deployment_bitbucket_repo_slug")
+  doneTtlDays                         Int?
+  deploymentProvider                  String                          @default("bitbucket") @map("deployment_provider")
+  deploymentProductionBranch          String?                         @map("deployment_production_branch")
+  deploymentPrTargetBranch            String?                         @map("deployment_pr_target_branch")
+  deploymentMode                      String                          @default("pr-only") @map("deployment_mode")
+  deploymentOnMerge                   String?                         @map("deployment_on_merge")
+  deploymentPipelineName              String?                         @map("deployment_pipeline_name")
+  deploymentHost                      String?                         @map("deployment_host")
+  deploymentEnvironment               String?                         @map("deployment_environment")
+  deploymentBitbucketWorkspace        String?                         @map("deployment_bitbucket_workspace")
+  deploymentBitbucketRepoSlug         String?                         @map("deployment_bitbucket_repo_slug")
   // Provider-agnostic, non-secret integration defaults. Overrides workspace and system defaults.
-  integrationDefaults String? @map("integration_defaults")
+  integrationDefaults                 String?                         @map("integration_defaults")
   // Soft-delete: project bin with 30-day TTL (hard-purge via the
   // hourly job in instrumentation.node.ts).
-  deletedAt   DateTime?
-  deletedById String?
-  deletedBy   User?     @relation("ProjectDeletedBy", fields: [deletedById], references: [id])
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  deletedAt                           DateTime?
+  deletedById                         String?
+  deletedBy                           User?                           @relation("ProjectDeletedBy", fields: [deletedById], references: [id])
+  createdAt                           DateTime                        @default(now())
+  updatedAt                           DateTime                        @updatedAt
 
-  members      ProjectMember[]
-  workspaces   WorkspaceProject[]
-  epics        Epic[]
-  tasks        Task[]
-  activity     ActivityLog[]
-  attachments  Attachment[]
-  chatMessages AgentChatMessage[]
-  chatRoomArchives AgentChatRoomArchive[]
-  directChatMessages DirectAgentChatMessage[] @relation("DirectChatProject")
-  workItemProposals  WorkItemProposal[]
+  members                ProjectMember[]
+  workspaces             WorkspaceProject[]
+  epics                  Epic[]
+  tasks                  Task[]
+  activity               ActivityLog[]
+  attachments            Attachment[]
+  chatMessages           AgentChatMessage[]
+  chatRoomArchives       AgentChatRoomArchive[]
+  directChatMessages     DirectAgentChatMessage[] @relation("DirectChatProject")
+  workItemProposals      WorkItemProposal[]
   deploymentPullRequests DeploymentPullRequest[]
 
   @@index([deletedAt])
 }
 
-
 model Workspace {
-  id             String   @id @default(cuid())
-  slug           String   @unique
-  name           String
-  description    String?
-  type           String   @default("internal")
-  archivedAt     DateTime? @map("archived_at")
-  archivedById   String?   @map("archived_by")
-  archivedBy     User?     @relation("WorkspaceArchivedBy", fields: [archivedById], references: [id])
-  logoPath       String?   @map("logo_path")
-  logoMimeType   String?   @map("logo_mime_type")
-  logoSizeBytes  Int?      @map("logo_size_bytes")
-  logoUpdatedAt  DateTime? @map("logo_updated_at")
+  id                           String    @id @default(cuid())
+  slug                         String    @unique
+  name                         String
+  description                  String?
+  type                         String    @default("internal")
+  archivedAt                   DateTime? @map("archived_at")
+  archivedById                 String?   @map("archived_by")
+  archivedBy                   User?     @relation("WorkspaceArchivedBy", fields: [archivedById], references: [id])
+  logoPath                     String?   @map("logo_path")
+  logoMimeType                 String?   @map("logo_mime_type")
+  logoSizeBytes                Int?      @map("logo_size_bytes")
+  logoUpdatedAt                DateTime? @map("logo_updated_at")
   // Nullable workspace defaults sit between project-specific settings and
   // SystemSettings. Existing project rows keep precedence; blank fields inherit.
-  defaultGitUserName  String? @map("default_git_user_name")
-  defaultGitUserEmail String? @map("default_git_user_email")
-  doneTtlDays         Int?    @map("done_ttl_days")
-  deploymentProvider String? @map("deployment_provider")
-  deploymentProductionBranch String? @map("deployment_production_branch")
-  deploymentPrTargetBranch String? @map("deployment_pr_target_branch")
-  deploymentMode String? @map("deployment_mode")
-  deploymentOnMerge String? @map("deployment_on_merge")
-  deploymentPipelineName String? @map("deployment_pipeline_name")
-  deploymentHost String? @map("deployment_host")
-  deploymentEnvironment String? @map("deployment_environment")
-  deploymentBitbucketWorkspace String? @map("deployment_bitbucket_workspace")
-  deploymentBitbucketRepoSlug String? @map("deployment_bitbucket_repo_slug")
+  defaultGitUserName           String?   @map("default_git_user_name")
+  defaultGitUserEmail          String?   @map("default_git_user_email")
+  doneTtlDays                  Int?      @map("done_ttl_days")
+  deploymentProvider           String?   @map("deployment_provider")
+  deploymentProductionBranch   String?   @map("deployment_production_branch")
+  deploymentPrTargetBranch     String?   @map("deployment_pr_target_branch")
+  deploymentMode               String?   @map("deployment_mode")
+  deploymentOnMerge            String?   @map("deployment_on_merge")
+  deploymentPipelineName       String?   @map("deployment_pipeline_name")
+  deploymentHost               String?   @map("deployment_host")
+  deploymentEnvironment        String?   @map("deployment_environment")
+  deploymentBitbucketWorkspace String?   @map("deployment_bitbucket_workspace")
+  deploymentBitbucketRepoSlug  String?   @map("deployment_bitbucket_repo_slug")
   // Provider-agnostic integration defaults. Stored as JSON text and exposed
   // only as non-secret configuration; secrets stay in their existing stores.
-  integrationDefaults String? @map("integration_defaults")
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  integrationDefaults          String?   @map("integration_defaults")
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
 
-  projects       WorkspaceProject[]
-  agentPool      WorkspaceAgentPool[]
+  projects  WorkspaceProject[]
+  agentPool WorkspaceAgentPool[]
 
   @@index([archivedAt])
   @@index([type])
@@ -271,55 +272,58 @@ model ProjectMember {
 }
 
 model Epic {
-  id              String   @id @default(cuid())
-  projectId       String
-  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  title           String
-  workItemKey     String?  @unique @map("work_item_key")
-  description     String?
-  status          String   @default("Backlog") // "Backlog" | "Open" | "Done"
-  statusChangedAt DateTime?
+  id               String    @id @default(cuid())
+  projectId        String
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title            String
+  workItemKey      String?   @unique @map("work_item_key")
+  description      String?
+  status           String    @default("Backlog") // "Backlog" | "In Progress" | "Ready to Deploy" | "Done"
+  statusChangedAt  DateTime?
   // Epic-level acting manager plus a multi-agent worker pool. Task
   // assignee stays single; Epic workers define which coding agents the
   // manager may pick from for child Tasks.
-  actingManagerId String?
-  actingManager   User?    @relation("EpicActingManager", fields: [actingManagerId], references: [id])
-  reporterId      String?
-  reporter        User?    @relation("EpicReporter", fields: [reporterId], references: [id])
-  approvedOn      DateTime? @map("approved_on")
-  approvedById    String?   @map("approved_by")
-  approvedBy      User?     @relation("EpicApprovedBy", fields: [approvedById], references: [id])
-  archivedAt      DateTime? @map("archived_at")
-  archivedById    String?   @map("archived_by")
-  archivedBy      User?     @relation("EpicArchivedBy", fields: [archivedById], references: [id])
+  actingManagerId  String?
+  actingManager    User?     @relation("EpicActingManager", fields: [actingManagerId], references: [id])
+  deployReviewerId String?
+  deployReviewer   User?     @relation("EpicDeployReviewer", fields: [deployReviewerId], references: [id])
+  reporterId       String?
+  reporter         User?     @relation("EpicReporter", fields: [reporterId], references: [id])
+  approvedOn       DateTime? @map("approved_on")
+  approvedById     String?   @map("approved_by")
+  approvedBy       User?     @relation("EpicApprovedBy", fields: [approvedById], references: [id])
+  archivedAt       DateTime? @map("archived_at")
+  archivedById     String?   @map("archived_by")
+  archivedBy       User?     @relation("EpicArchivedBy", fields: [archivedById], references: [id])
   // Epic-level git defaults inherited by child Tasks when their own fields
   // are blank. Task keeps its own branchName/commitPrefix once overridden.
-  branchName      String?
-  commitPrefix    String?
+  branchName       String?
+  commitPrefix     String?
   // Soft delete (HOMELAB-48). deletedAt != null means the row is in the
   // bin; active reads filter deletedAt: null. Hard purge happens after
   // 7 days via the instrumentation interval. deletedById captures the
   // actor (User row, kind tells human vs agent).
-  deploymentStatus String @default("Not Required") @map("deployment_status")
-  deletedAt       DateTime?
-  deletedById     String?
-  deletedBy       User?    @relation("EpicDeletedBy", fields: [deletedById], references: [id])
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  deploymentStatus String    @default("Not Required") @map("deployment_status")
+  deletedAt        DateTime?
+  deletedById      String?
+  deletedBy        User?     @relation("EpicDeletedBy", fields: [deletedById], references: [id])
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  tasks       Task[]
-  workers     EpicWorker[]
-  attachments Attachment[]
-  comments    Comment[]
+  tasks                  Task[]
+  workers                EpicWorker[]
+  attachments            Attachment[]
+  comments               Comment[]
   deploymentPullRequests DeploymentPullRequest[]
-  chats       AgentChatMessage[] @relation("EpicChat")
-  chatRoomArchives AgentChatRoomArchive[] @relation("EpicChatRoomArchive")
+  chats                  AgentChatMessage[]      @relation("EpicChat")
+  chatRoomArchives       AgentChatRoomArchive[]  @relation("EpicChatRoomArchive")
 
   @@index([projectId])
   @@index([workItemKey])
   @@index([status])
   @@index([statusChangedAt])
   @@index([actingManagerId])
+  @@index([deployReviewerId])
   @@index([reporterId])
   @@index([approvedById])
   @@index([archivedAt])
@@ -352,81 +356,81 @@ model ProjectManagerAssignableAgent {
 }
 
 model Task {
-  id              String   @id @default(cuid())
-  projectId       String
-  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  epicId          String?
-  epic            Epic?    @relation(fields: [epicId], references: [id])
+  id               String    @id @default(cuid())
+  projectId        String
+  project          Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  epicId           String?
+  epic             Epic?     @relation(fields: [epicId], references: [id])
   // DEPRECATED (ENV-60): the former self-referential child-Task "sub-task"
   // hierarchy. Sub-tasks are now lightweight checklist rows (see model SubTask
   // / Task.checklist), not child Tasks. This column + self-relation are kept
   // dormant — no live row sets parentTaskId and no code path writes it — to
   // avoid a SQLite table rebuild on the production DB. Drop in a later
   // maintenance migration once a downtime window is acceptable.
-  parentTaskId    String?
-  parent          Task?    @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
-  subtasks        Task[]   @relation("TaskSubtasks")
+  parentTaskId     String?
+  parent           Task?     @relation("TaskSubtasks", fields: [parentTaskId], references: [id], onDelete: Cascade)
+  subtasks         Task[]    @relation("TaskSubtasks")
   // Optional hard dependency (ENV-62): this task requires blockedBy to be Done
   // first. Cycle-guarded on write (lib/tasks/blocking.ts). SetNull so deleting
   // the blocker clears the dependency rather than orphaning it.
-  blockedById     String?
-  blockedBy       Task?    @relation("TaskBlockedBy", fields: [blockedById], references: [id], onDelete: SetNull)
-  blocking        Task[]   @relation("TaskBlockedBy")
-  title           String
-  workItemKey     String?  @unique @map("work_item_key")
-  description     String?
+  blockedById      String?
+  blockedBy        Task?     @relation("TaskBlockedBy", fields: [blockedById], references: [id], onDelete: SetNull)
+  blocking         Task[]    @relation("TaskBlockedBy")
+  title            String
+  workItemKey      String?   @unique @map("work_item_key")
+  description      String?
   // Status uses the verbatim Stage 0 labels — no Jira aliases.
   // Backlog | To Do | In Progress | Review | Done
-  status          String   @default("Backlog")
-  assigneeId      String?
-  assignee        User?    @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  status           String    @default("Backlog")
+  assigneeId       String?
+  assignee         User?     @relation("TaskAssignee", fields: [assigneeId], references: [id])
   // Acting manager: the User who is reviewing/owning the workflow for
   // this task. Pulled from the same users/agents table as assignee per
   // HOMELAB-44 description. Optional; agents may not set themselves as
   // acting manager (see lib/workflow.ts checkActingManager).
-  actingManagerId String?
-  actingManager   User?    @relation("TaskActingManager", fields: [actingManagerId], references: [id])
-  reporterId      String?
-  reporter        User?    @relation("TaskReporter", fields: [reporterId], references: [id])
-  approvedOn      DateTime? @map("approved_on")
-  approvedById    String?   @map("approved_by")
-  approvedBy      User?     @relation("TaskApprovedBy", fields: [approvedById], references: [id])
-  archivedAt      DateTime? @map("archived_at")
-  archivedById    String?   @map("archived_by")
-  archivedBy      User?     @relation("TaskArchivedBy", fields: [archivedById], references: [id])
+  actingManagerId  String?
+  actingManager    User?     @relation("TaskActingManager", fields: [actingManagerId], references: [id])
+  reporterId       String?
+  reporter         User?     @relation("TaskReporter", fields: [reporterId], references: [id])
+  approvedOn       DateTime? @map("approved_on")
+  approvedById     String?   @map("approved_by")
+  approvedBy       User?     @relation("TaskApprovedBy", fields: [approvedById], references: [id])
+  archivedAt       DateTime? @map("archived_at")
+  archivedById     String?   @map("archived_by")
+  archivedBy       User?     @relation("TaskArchivedBy", fields: [archivedById], references: [id])
   // Lexorank-style ordering within column; simple Int for v1.
-  rank            Int      @default(0)
+  rank             Int       @default(0)
   // Set on every status transition; drives automatic archiving of Done
   // tasks after project.doneTtlDays so plain updates to title/description
   // don't reset the clock.
-  statusChangedAt DateTime?
+  statusChangedAt  DateTime?
   // Free-text branch name the agent will use for commits on this task.
-  branchName      String?
+  branchName       String?
   // Free-text commit-message prefix (e.g. a ticket key) the agent prepends
   // to commits on this task. Edited alongside branchName on the task form.
-  commitPrefix    String?
+  commitPrefix     String?
   // Agents set this when human/reporter intervention is required.
-  alertReporter   Boolean  @default(false) @map("alert_reporter")
+  alertReporter    Boolean   @default(false) @map("alert_reporter")
   // Soft delete (HOMELAB-48). See Epic.deletedAt for semantics. Sub-tasks
   // cascade with their parent task; an Epic delete cascades to its
   // non-deleted Tasks (and through them to sub-tasks). Active read
   // queries filter deletedAt: null.
-  deploymentStatus String @default("Not Required") @map("deployment_status")
-  deletedAt       DateTime?
-  deletedById     String?
-  deletedBy       User?    @relation("TaskDeletedBy", fields: [deletedById], references: [id])
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  deploymentStatus String    @default("Not Required") @map("deployment_status")
+  deletedAt        DateTime?
+  deletedById      String?
+  deletedBy        User?     @relation("TaskDeletedBy", fields: [deletedById], references: [id])
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  comments    Comment[]
-  activity    ActivityLog[]
+  comments               Comment[]
+  activity               ActivityLog[]
   deploymentPullRequests DeploymentPullRequest[]
-  attachments Attachment[]
-  chats       AgentChatMessage[] @relation("TaskChat")
-  chatRoomArchives AgentChatRoomArchive[] @relation("TaskChatRoomArchive")
+  attachments            Attachment[]
+  chats                  AgentChatMessage[]      @relation("TaskChat")
+  chatRoomArchives       AgentChatRoomArchive[]  @relation("TaskChatRoomArchive")
   // Lightweight sub-task checklist (ENV-60). NOT the legacy self-referential
   // child-Task hierarchy above (parentTaskId) — that is now dormant. See SubTask.
-  checklist   SubTask[] @relation("TaskChecklist")
+  checklist              SubTask[]               @relation("TaskChecklist")
 
   @@index([projectId])
   @@index([workItemKey])
@@ -453,20 +457,20 @@ model Task {
 // Humans tick items in the task editor; the assignee agent ticks them through
 // the native workflow endpoint (action=add_subtask / complete_subtask).
 model SubTask {
-  id          String    @id @default(cuid())
-  taskId      String
-  task        Task      @relation("TaskChecklist", fields: [taskId], references: [id], onDelete: Cascade)
-  text        String
+  id           String    @id @default(cuid())
+  taskId       String
+  task         Task      @relation("TaskChecklist", fields: [taskId], references: [id], onDelete: Cascade)
+  text         String
   // null = open; a timestamp = done. This is the "hidden field with the
   // timestamp when it was complete" — surfaced only as a checkbox + progress.
-  completedAt DateTime?
+  completedAt  DateTime?
   // Self-reported effort for this step, captured when the assignee ticks it
   // done (ENV-61). Summed across a task's checklist for a rough cost view.
   minutesSpent Int?
   // Ordering within the task's checklist.
-  rank        Int       @default(0)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  rank         Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   @@index([taskId])
 }
@@ -490,7 +494,7 @@ model Attachment {
   uploaderId  String
   uploader    User     @relation(fields: [uploaderId], references: [id])
   filename    String
-  storagePath String   // path relative to the project's attachments dir
+  storagePath String // path relative to the project's attachments dir
   mimeType    String
   sizeBytes   Int
   sha256      String
@@ -510,7 +514,7 @@ model AttachmentExtract {
   sourceAttachmentId String?
   sha256             String
   extractorVersion   String
-  status             String   // "ready" | "unsupported" | "failed"
+  status             String // "ready" | "unsupported" | "failed"
   text               String?
   summary            String?
   error              String?
@@ -523,17 +527,17 @@ model AttachmentExtract {
 }
 
 model Comment {
-  id        String   @id @default(cuid())
+  id          String    @id @default(cuid())
   // A comment belongs to a Task XOR an Epic (mirrors Attachment). Both FKs
   // are nullable; exactly one is set, enforced in the server actions.
-  taskId    String?
-  task      Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  epicId    String?
-  epic      Epic?    @relation(fields: [epicId], references: [id], onDelete: Cascade)
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  body      String
-  createdAt DateTime @default(now())
+  taskId      String?
+  task        Task?     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  epicId      String?
+  epic        Epic?     @relation(fields: [epicId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  body        String
+  createdAt   DateTime  @default(now())
   // Soft delete (HOMELAB-41 / item 2). Active reads filter
   // deletedAt: null; agent-context builders ALWAYS filter deleted rows
   // out so deleted content never reaches an agent. The frontend renders
@@ -541,7 +545,7 @@ model Comment {
   // human reviewer can expand them on demand.
   deletedAt   DateTime?
   deletedById String?
-  deletedBy   User?    @relation("CommentDeletedBy", fields: [deletedById], references: [id])
+  deletedBy   User?     @relation("CommentDeletedBy", fields: [deletedById], references: [id])
 
   @@index([taskId])
   @@index([epicId])
@@ -576,35 +580,34 @@ model ActivityLog {
   @@index([createdAt])
 }
 
-
 model DeploymentPullRequest {
-  id              String   @id @default(cuid())
-  projectId       String
-  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  taskId          String?
-  task            Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  epicId          String?
-  epic            Epic?    @relation(fields: [epicId], references: [id], onDelete: Cascade)
-  provider        String
-  providerPrId    String   @map("provider_pr_id")
-  url             String
-  sourceBranch    String   @map("source_branch")
-  targetBranch    String   @map("target_branch")
-  latestCommitSha String   @map("latest_commit_sha")
-  reporterUserId  String   @map("reporter_user_id")
-  reporterName    String   @map("reporter_name")
-  reporterEmail   String   @map("reporter_email")
-  status          String   @default("open")
-  mergeSha        String?  @map("merge_sha")
-  localChangeSummary String? @map("local_change_summary")
-  localChangeApprovedAt DateTime? @map("local_change_approved_at")
-  localChangeApprovedById String? @map("local_change_approved_by")
-  deploymentExitCode Int?  @map("deployment_exit_code")
-  deploymentStdout String? @map("deployment_stdout")
-  deploymentStderr String? @map("deployment_stderr")
-  deploymentReportedAt DateTime? @map("deployment_reported_at")
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                      String    @id @default(cuid())
+  projectId               String
+  project                 Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId                  String?
+  task                    Task?     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  epicId                  String?
+  epic                    Epic?     @relation(fields: [epicId], references: [id], onDelete: Cascade)
+  provider                String
+  providerPrId            String    @map("provider_pr_id")
+  url                     String
+  sourceBranch            String    @map("source_branch")
+  targetBranch            String    @map("target_branch")
+  latestCommitSha         String    @map("latest_commit_sha")
+  reporterUserId          String    @map("reporter_user_id")
+  reporterName            String    @map("reporter_name")
+  reporterEmail           String    @map("reporter_email")
+  status                  String    @default("open")
+  mergeSha                String?   @map("merge_sha")
+  localChangeSummary      String?   @map("local_change_summary")
+  localChangeApprovedAt   DateTime? @map("local_change_approved_at")
+  localChangeApprovedById String?   @map("local_change_approved_by")
+  deploymentExitCode      Int?      @map("deployment_exit_code")
+  deploymentStdout        String?   @map("deployment_stdout")
+  deploymentStderr        String?   @map("deployment_stderr")
+  deploymentReportedAt    DateTime? @map("deployment_reported_at")
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   @@unique([provider, providerPrId])
   @@index([projectId])
@@ -622,8 +625,8 @@ model DeploymentPullRequest {
 // ------------------------------------------------------------------
 
 model PmEventDelivery {
-  id                String   @id @default(cuid())
-  dedupeKey         String   @unique
+  id                String    @id @default(cuid())
+  dedupeKey         String    @unique
   eventId           String
   kind              String
   taskId            String
@@ -632,10 +635,10 @@ model PmEventDelivery {
   actorId           String
   targetAgentSlug   String?
   targetGatewayPort Int?
-  envelope          String   // JSON-stringified PmEvent for audit
-  receivedAt        DateTime @default(now())
+  envelope          String // JSON-stringified PmEvent for audit
+  receivedAt        DateTime  @default(now())
   deliveredAt       DateTime?
-  deliveryStatus    String?  // "delivered" | "failed" | "unmatched" | "skipped"
+  deliveryStatus    String? // "delivered" | "failed" | "unmatched" | "skipped"
   gatewayStatus     Int?
   error             String?
 
@@ -653,16 +656,16 @@ model PmEventDelivery {
 // callers until OpenClaw exposes a distinct persisted session id in the
 // reply metadata.
 model AgentSessionBinding {
-  id                 String   @id @default(cuid())
-  scopeType          String   // "task" | "epic" | "direct"
-  scopeId            String
-  agentSlug          String
-  openclawSessionKey String   @unique
-  openclawSessionId  String?
+  id                      String    @id @default(cuid())
+  scopeType               String // "task" | "epic" | "direct"
+  scopeId                 String
+  agentSlug               String
+  openclawSessionKey      String    @unique
+  openclawSessionId       String?
   lastDispatchedMessageId String?
-  lastDispatchedAt DateTime?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  lastDispatchedAt        DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
   @@unique([scopeType, scopeId, agentSlug])
   @@index([agentSlug])
@@ -676,32 +679,32 @@ model AgentSessionBinding {
 // work-item grants, this row is also the per-addressed-agent single-use
 // stamp, so All Coders messages can grant each coder independently.
 model PmChannelRun {
-  id          String    @id @default(cuid())
-  targetKey   String    @unique
-  kind        String
-  agentSlug   String
-  messageId   String
-  projectId   String?
-  taskId      String?
-  epicId      String?
-  sessionKey  String?
-  driver      String    @default("openclaw-pm-channel")
-  gatewayPort Int?
-  httpStatus  Int?
-  status      String    @default("queued") // queued | accepted | streaming | complete | failed
-  error       String?
-  acceptedAt  DateTime?
-  streamingAt DateTime?
-  completedAt DateTime?
-  failedAt    DateTime?
-  lastEventAt DateTime?
-  streamSeq   Int       @default(0)
+  id                  String                 @id @default(cuid())
+  targetKey           String                 @unique
+  kind                String
+  agentSlug           String
+  messageId           String
+  projectId           String?
+  taskId              String?
+  epicId              String?
+  sessionKey          String?
+  driver              String                 @default("openclaw-pm-channel")
+  gatewayPort         Int?
+  httpStatus          Int?
+  status              String                 @default("queued") // queued | accepted | streaming | complete | failed
+  error               String?
+  acceptedAt          DateTime?
+  streamingAt         DateTime?
+  completedAt         DateTime?
+  failedAt            DateTime?
+  lastEventAt         DateTime?
+  streamSeq           Int                    @default(0)
   workItemGrantUsedAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  jobs         PmChannelJob[]
-  streamEvents PmChannelStreamEvent[]
-  contextGrants ContextGrant[]
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+  jobs                PmChannelJob[]
+  streamEvents        PmChannelStreamEvent[]
+  contextGrants       ContextGrant[]
 
   @@index([agentSlug])
   @@index([messageId])
@@ -717,22 +720,22 @@ model PmChannelRun {
 // addressed run and return after local persistence; a worker claims and
 // delivers jobs to the local OpenClaw gateway.
 model PmChannelJob {
-  id                String       @id @default(cuid())
-  runId             String
-  run               PmChannelRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  agentSlug         String
-  kind              String       // direct | task-chat | task-comment | epic-chat | wake
-  payload           String       // JSON-stringified dispatch payload
-  status            String       @default("queued") // queued | claimed | accepted | retryable | failed | complete
-  attemptCount      Int          @default(0)
-  availableAt       DateTime     @default(now())
-  claimedBy         String?
-  claimedAt         DateTime?
-  acceptedAt        DateTime?
-  completedAt       DateTime?
-  lastError         String?
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
+  id           String       @id @default(cuid())
+  runId        String
+  run          PmChannelRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  agentSlug    String
+  kind         String // direct | task-chat | task-comment | epic-chat | wake
+  payload      String // JSON-stringified dispatch payload
+  status       String       @default("queued") // queued | claimed | accepted | retryable | failed | complete
+  attemptCount Int          @default(0)
+  availableAt  DateTime     @default(now())
+  claimedBy    String?
+  claimedAt    DateTime?
+  acceptedAt   DateTime?
+  completedAt  DateTime?
+  lastError    String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
 
   @@unique([runId])
   @@index([agentSlug])
@@ -749,8 +752,8 @@ model PmChannelStreamEvent {
   runId     String
   run       PmChannelRun @relation(fields: [runId], references: [id], onDelete: Cascade)
   seq       Int
-  kind      String       // status | partial | reasoning | final | error | done
-  payload   String       // JSON-stringified event payload
+  kind      String // status | partial | reasoning | final | error | done
+  payload   String // JSON-stringified event payload
   createdAt DateTime     @default(now())
 
   @@unique([runId, seq])
@@ -762,22 +765,22 @@ model PmChannelStreamEvent {
 // Opaque, short-lived read capability handed to agents instead of putting a
 // long-lived PM-channel bearer token in model-visible prompts.
 model ContextGrant {
-  id          String        @id @default(cuid())
-  tokenHash   String        @unique
-  runId       String?
-  run         PmChannelRun? @relation(fields: [runId], references: [id], onDelete: Cascade)
-  agentSlug   String
-  scopeType   String        // task | epic | project
-  scopeId     String
-  turnId      String
-  includes    String        // JSON-stringified include allow-list
-  maxBytes    Int
-  maxUses     Int           @default(1)
-  usedCount   Int           @default(0)
-  expiresAt   DateTime
-  revokedAt   DateTime?
-  lastUsedAt  DateTime?
-  createdAt   DateTime      @default(now())
+  id         String        @id @default(cuid())
+  tokenHash  String        @unique
+  runId      String?
+  run        PmChannelRun? @relation(fields: [runId], references: [id], onDelete: Cascade)
+  agentSlug  String
+  scopeType  String // task | epic | project
+  scopeId    String
+  turnId     String
+  includes   String // JSON-stringified include allow-list
+  maxBytes   Int
+  maxUses    Int           @default(1)
+  usedCount  Int           @default(0)
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+  createdAt  DateTime      @default(now())
 
   @@index([agentSlug])
   @@index([scopeType, scopeId])
@@ -797,47 +800,47 @@ model ContextGrant {
 // ------------------------------------------------------------------
 
 model AgentChatMessage {
-  id                   String    @id @default(cuid())
-  projectId            String
-  project              Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  taskId               String?
-  task                 Task?     @relation("TaskChat", fields: [taskId], references: [id], onDelete: Cascade)
-  epicId               String?
-  epic                 Epic?     @relation("EpicChat", fields: [epicId], references: [id], onDelete: Cascade)
+  id                      String                @id @default(cuid())
+  projectId               String
+  project                 Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId                  String?
+  task                    Task?                 @relation("TaskChat", fields: [taskId], references: [id], onDelete: Cascade)
+  epicId                  String?
+  epic                    Epic?                 @relation("EpicChat", fields: [epicId], references: [id], onDelete: Cascade)
   // The agent this conversation is with (Agent.slug). Stored as a slug
   // rather than agentId so chat history survives an Agent row being
   // soft-deactivated and the index.json deciding to re-issue.
-  agentSlug            String
-  archiveId            String?
-  archive              AgentChatRoomArchive? @relation(fields: [archiveId], references: [id], onDelete: SetNull)
-  baseArchiveId        String?
-  targetType           String?
-  targetValue          String?
-  targetLabel          String?
+  agentSlug               String
+  archiveId               String?
+  archive                 AgentChatRoomArchive? @relation(fields: [archiveId], references: [id], onDelete: SetNull)
+  baseArchiveId           String?
+  targetType              String?
+  targetValue             String?
+  targetLabel             String?
   // The sender — a User row (humans send via their own row, agents
   // reply via their own seeded User row).
-  senderUserId         String
-  sender               User      @relation("AgentChatSender", fields: [senderUserId], references: [id])
-  body                 String
-  allowDescriptionEdit Boolean   @default(false)
-  editGrantUsedAt      DateTime?
+  senderUserId            String
+  sender                  User                  @relation("AgentChatSender", fields: [senderUserId], references: [id])
+  body                    String
+  allowDescriptionEdit    Boolean               @default(false)
+  editGrantUsedAt         DateTime?
   // Human-authored Discussion messages grant work-item proposal capability
   // by default. Consumption is tracked per addressed agent in PmChannelRun;
   // this legacy message-level stamp is retained for compatibility.
-  allowWorkItemManagement Boolean @default(false)
-  workItemGrantUsedAt   DateTime?
+  allowWorkItemManagement Boolean               @default(false)
+  workItemGrantUsedAt     DateTime?
   // Where an agent reply should be posted. "chat" means the message
   // originated in the task/epic chat sidebar; "comment" means it was
   // mirrored from a task comment so the reply should return to comments.
-  originChannel        String    @default("chat")
-  originCommentId      String?
-  createdAt            DateTime  @default(now())
+  originChannel           String                @default("chat")
+  originCommentId         String?
+  createdAt               DateTime              @default(now())
   // Soft delete (HOMELAB-41 / item 2). See Comment.deletedAt for the
   // same convention. Active reads filter deletedAt: null; agent context
   // builders ALWAYS filter deleted out.
-  deletedAt            DateTime?
-  deletedById          String?
-  deletedBy            User?     @relation("AgentChatMessageDeletedBy", fields: [deletedById], references: [id])
+  deletedAt               DateTime?
+  deletedById             String?
+  deletedBy               User?                 @relation("AgentChatMessageDeletedBy", fields: [deletedById], references: [id])
 
   @@index([taskId, createdAt])
   @@index([epicId, createdAt])
@@ -852,25 +855,25 @@ model AgentChatMessage {
 }
 
 model AgentChatRoomArchive {
-  id           String   @id @default(cuid())
-  projectId    String
-  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  taskId       String?
-  task         Task?    @relation("TaskChatRoomArchive", fields: [taskId], references: [id], onDelete: Cascade)
-  epicId       String?
-  epic         Epic?    @relation("EpicChatRoomArchive", fields: [epicId], references: [id], onDelete: Cascade)
-  archivedById String
-  archivedBy   User     @relation("AgentChatRoomArchivedBy", fields: [archivedById], references: [id])
-  deletedById  String?
-  deletedBy    User?    @relation("AgentChatRoomArchiveDeletedBy", fields: [deletedById], references: [id])
+  id              String             @id @default(cuid())
+  projectId       String
+  project         Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  taskId          String?
+  task            Task?              @relation("TaskChatRoomArchive", fields: [taskId], references: [id], onDelete: Cascade)
+  epicId          String?
+  epic            Epic?              @relation("EpicChatRoomArchive", fields: [epicId], references: [id], onDelete: Cascade)
+  archivedById    String
+  archivedBy      User               @relation("AgentChatRoomArchivedBy", fields: [archivedById], references: [id])
+  deletedById     String?
+  deletedBy       User?              @relation("AgentChatRoomArchiveDeletedBy", fields: [deletedById], references: [id])
   parentArchiveId String?
-  summary      String
-  startedAt    DateTime
-  endedAt      DateTime
-  messageCount Int      @default(0)
-  deletedAt    DateTime?
-  createdAt    DateTime @default(now())
-  messages     AgentChatMessage[]
+  summary         String
+  startedAt       DateTime
+  endedAt         DateTime
+  messageCount    Int                @default(0)
+  deletedAt       DateTime?
+  createdAt       DateTime           @default(now())
+  messages        AgentChatMessage[]
 
   @@index([projectId, taskId, deletedAt, createdAt])
   @@index([projectId, epicId, deletedAt, createdAt])
@@ -888,34 +891,34 @@ model AgentChatRoomArchive {
 // ------------------------------------------------------------------
 
 model DirectAgentChatMessage {
-  id           String   @id @default(cuid())
-  agentSlug    String
-  senderUserId String
-  sender       User     @relation("DirectAgentChatSender", fields: [senderUserId], references: [id])
-  archiveId    String?
-  archive      DirectAgentChatArchive? @relation(fields: [archiveId], references: [id], onDelete: SetNull)
+  id                      String                  @id @default(cuid())
+  agentSlug               String
+  senderUserId            String
+  sender                  User                    @relation("DirectAgentChatSender", fields: [senderUserId], references: [id])
+  archiveId               String?
+  archive                 DirectAgentChatArchive? @relation(fields: [archiveId], references: [id], onDelete: SetNull)
   // Active child continuations keep the parent archive immutable while
   // still using it as context for the new conversation.
-  baseArchiveId String?
-  body         String
+  baseArchiveId           String?
+  body                    String
   // A direct chat can be attached to a project (agent planning): the agent
   // then gets that project's environment + board as context and may propose
   // work-item changes scoped to it. allowWorkItemManagement is the per-message
   // grant — generalises AgentChatMessage.allowDescriptionEdit; workItemGrantUsedAt
   // stamps it single-use once a proposal is stored.
   projectId               String?
-  project                 Project?  @relation("DirectChatProject", fields: [projectId], references: [id], onDelete: SetNull)
-  allowWorkItemManagement Boolean   @default(false)
+  project                 Project?                @relation("DirectChatProject", fields: [projectId], references: [id], onDelete: SetNull)
+  allowWorkItemManagement Boolean                 @default(false)
   workItemGrantUsedAt     DateTime?
-  createdAt    DateTime @default(now())
+  createdAt               DateTime                @default(now())
   // Soft delete (HOMELAB-41 / item 2). See Comment.deletedAt for the
   // same convention. The archive-level deletedAt on
   // DirectAgentChatArchive remains separate — that one bins an entire
   // archived conversation; this one bins an individual bubble inside
   // the active or archived chat.
-  deletedAt    DateTime?
-  deletedById  String?
-  deletedBy    User?     @relation("DirectAgentChatMessageDeletedBy", fields: [deletedById], references: [id])
+  deletedAt               DateTime?
+  deletedById             String?
+  deletedBy               User?                   @relation("DirectAgentChatMessageDeletedBy", fields: [deletedById], references: [id])
 
   @@index([agentSlug, createdAt])
   @@index([agentSlug, archiveId, createdAt])
@@ -928,22 +931,22 @@ model DirectAgentChatMessage {
 }
 
 model DirectAgentChatArchive {
-  id            String    @id @default(cuid())
-  agentSlug     String
-  archivedById  String
-  archivedBy    User      @relation("DirectAgentChatArchivedBy", fields: [archivedById], references: [id])
-  deletedById   String?
-  deletedBy     User?     @relation("DirectAgentChatArchiveDeletedBy", fields: [deletedById], references: [id])
+  id              String                   @id @default(cuid())
+  agentSlug       String
+  archivedById    String
+  archivedBy      User                     @relation("DirectAgentChatArchivedBy", fields: [archivedById], references: [id])
+  deletedById     String?
+  deletedBy       User?                    @relation("DirectAgentChatArchiveDeletedBy", fields: [deletedById], references: [id])
   // If this archived conversation was a continuation, parentArchiveId
   // points to the frozen archive it used as its base.
   parentArchiveId String?
-  summary       String
-  startedAt     DateTime
-  endedAt       DateTime
-  messageCount  Int       @default(0)
-  deletedAt     DateTime?
-  createdAt     DateTime  @default(now())
-  messages      DirectAgentChatMessage[]
+  summary         String
+  startedAt       DateTime
+  endedAt         DateTime
+  messageCount    Int                      @default(0)
+  deletedAt       DateTime?
+  createdAt       DateTime                 @default(now())
+  messages        DirectAgentChatMessage[]
 
   @@index([agentSlug, createdAt])
   @@index([agentSlug, deletedAt, createdAt])
@@ -1015,7 +1018,8 @@ model SystemSettings {
   openRouterReferer   String?
   openRouterTitle     String?
   profileImagePrompt  String?
-  integrationDefaults String? @map("integration_defaults")
+  deployReviewPrompt  String?  @map("deploy_review_prompt")
+  integrationDefaults String?  @map("integration_defaults")
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
@@ -1034,7 +1038,7 @@ model SystemSettings {
 
 model DescriptionDraft {
   id              String   @id @default(cuid())
-  scope           String   // "task" | "epic"
+  scope           String // "task" | "epic"
   targetId        String
   requesterUserId String
   agentSlug       String
@@ -1079,13 +1083,13 @@ model ChatReadCursor {
 // ------------------------------------------------------------------
 
 model WebPushSubscription {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   userId     String
-  endpoint   String   @unique
+  endpoint   String    @unique
   p256dh     String
   auth       String
   userAgent  String?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
   lastUsedAt DateTime?
 
   @@index([userId])

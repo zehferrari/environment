@@ -13,7 +13,7 @@ export type ReviewOwnerTask = {
 
 export function resolveReviewOwnerId(task: ReviewOwnerTask): string | null {
   if (task.actingManagerId) return task.actingManagerId;
-  if (task.epic?.status === "Open" && task.epic.actingManagerId) {
+  if (task.epic?.status === "In Progress" && task.epic.actingManagerId) {
     return task.epic.actingManagerId;
   }
   return task.reporterId;
@@ -35,5 +35,5 @@ export function canApproveActionPlanForActor(
 }
 
 export function epicAllowsAgentAction(task: { epic: { status: string } | null }) {
-  return !task.epic || task.epic.status === "Open";
+  return !task.epic || task.epic.status === "In Progress";
 }

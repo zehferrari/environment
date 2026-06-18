@@ -86,6 +86,7 @@ export async function buildProjectEnvContext(
         description: true,
         approvedOn: true,
         actingManager: { select: { username: true } },
+        deployReviewer: { select: { username: true } },
       },
     }),
     db.task.findMany({
@@ -134,7 +135,7 @@ export async function buildProjectEnvContext(
 
   lines.push(
     "",
-    "ASSIGNABLE PRINCIPALS (valid usernames for assignee / actingManager):",
+    "ASSIGNABLE PRINCIPALS (valid usernames for assignee / actingManager / deployReviewer):",
   );
   if (principals.length === 0) lines.push("(none)");
   else for (const p of principals) {
@@ -158,7 +159,7 @@ export async function buildProjectEnvContext(
   if (epics.length === 0) lines.push("- Epics: (none)");
   else for (const e of epics) {
     const childTasks = tasksByEpic.get(e.id) ?? [];
-    lines.push(`- Epic [${e.status}] ${e.title} (key: ${e.workItemKey || "not assigned"}; id: ${e.id}; approved_on: ${e.approvedOn ? e.approvedOn.toISOString() : "not approved"}; acting manager: ${e.actingManager?.username ? `@${e.actingManager.username}` : "none"}; open tasks fetched: ${childTasks.length})`);
+    lines.push(`- Epic [${e.status}] ${e.title} (key: ${e.workItemKey || "not assigned"}; id: ${e.id}; approved_on: ${e.approvedOn ? e.approvedOn.toISOString() : "not approved"}; acting manager: ${e.actingManager?.username ? `@${e.actingManager.username}` : "none"}; deploy reviewer: ${e.deployReviewer?.username ? `@${e.deployReviewer.username}` : "Monitor Agent fallback"}; open tasks fetched: ${childTasks.length})`);
     for (const t of childTasks) {
       lines.push(`  - Task [${t.status}] ${t.title} (key: ${t.workItemKey || "not assigned"}; id: ${t.id}${t.parentTaskId ? `; parent: ${t.parentTaskId}` : ""})`);
     }
@@ -180,7 +181,7 @@ export async function buildProjectEnvContext(
   lines.push("", `EXISTING EPICS (${epics.length}; per-item descriptions capped):`);
   if (epics.length === 0) lines.push("(none)");
   else for (const e of epics) {
-    lines.push(`- [${e.status}] ${e.title} (key: ${e.workItemKey || "not assigned"}; id: ${e.id}; approved_on: ${e.approvedOn ? e.approvedOn.toISOString() : "not approved"}; acting manager: ${e.actingManager?.username ? `@${e.actingManager.username}` : "none"})`);
+    lines.push(`- [${e.status}] ${e.title} (key: ${e.workItemKey || "not assigned"}; id: ${e.id}; approved_on: ${e.approvedOn ? e.approvedOn.toISOString() : "not approved"}; acting manager: ${e.actingManager?.username ? `@${e.actingManager.username}` : "none"}; deploy reviewer: ${e.deployReviewer?.username ? `@${e.deployReviewer.username}` : "Monitor Agent fallback"})`);
     if (e.description?.trim()) {
       const clipped = clipWithMeta(e.description, MAX_EPIC_DESCRIPTION);
       if (clipped.truncated) truncatedEpicDescriptions += 1;
@@ -195,7 +196,7 @@ export async function buildProjectEnvContext(
     }
   }
 
-  lines.push("", `EXISTING OPEN TASKS (${tasks.length}; excludes Done; per-item descriptions capped):`);
+  lines.push("", `EXISTING ACTIVE TASKS (${tasks.length}; excludes Done; per-item descriptions capped):`);
   if (tasks.length === 0) lines.push("(none)");
   else for (const t of tasks) {
     const rel = [
@@ -281,21 +282,21 @@ export function buildWorkItemPlanningPrompt(args: {
     "- create_epic    { ref, title, description? }",
     "- create_task    { ref, title, description?, epic? }   (epic optional; top-level task)",
     "- create_subtask { ref, parent, title, description? }  (parent required)",
-    "- update_epic    { target, title?, description?, actingManager? }",
+    "- update_epic    { target, title?, description?, actingManager?, deployReviewer? }",
     "- update_task    { target, title?, description?, assignee?, actingManager?, epic?, parent?, status? }",
     "- comment_task   { target, body }",
     "",
     "REFERENCES:",
     '- New items you create take a "ref" that MUST start with "tmp:" (e.g. "tmp:epic1"). Reference them from later ops (epic / parent) by that ref.',
     "- To touch existing items, use their real id from the PROJECT ENVIRONMENT block above (target / epic / parent).",
-    "- assignee / actingManager are usernames from the ASSIGNABLE PRINCIPALS list, or null to leave unset.",
+    "- assignee / actingManager / deployReviewer are usernames from the ASSIGNABLE PRINCIPALS list, or null to leave unset.",
     "",
     "RULES (your proposal is validated against these; violations are flagged for the user):",
     "- You may propose changes anywhere in the project when the current human message explicitly asks for them.",
     "- Never set yourself as reporter, assignee, reviewer, or acting manager.",
     "- Never change Epic status.",
-    "- New Epics/Tasks/Subtasks created by you must not include assignee or actingManager. PM records the requesting human as reporter automatically.",
-    "- For existing item updates only, keep requested assignee / actingManager values exactly as the human asked; otherwise leave them null.",
+    "- New Epics/Tasks/Subtasks created by you must not include assignee, actingManager, or deployReviewer. PM records the requesting human as reporter automatically.",
+    "- For existing item updates only, keep requested assignee / actingManager / deployReviewer values exactly as the human asked; otherwise leave them null.",
     "- create_task can link to an existing Epic or to a newly created Epic in the same proposal when the human asked for that breakdown.",
     "- create_subtask must reference a top-level Task, either existing or newly created in the same proposal. Do not create subtasks under another subtask.",
     args.autoApply

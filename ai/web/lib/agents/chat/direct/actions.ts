@@ -490,7 +490,7 @@ function buildDirectLiveContextBlock(args: {
     "LIVE PM CONTEXT - FETCH WHEN YOU NEED DEEPER HISTORY:",
     "PM exposes loopback-only JSON endpoints through the short-lived grant URLs below. Use these URLs instead of opening a public browser URL from the user's message.",
     "",
-    "  # Project overview, active epics/open tasks, repository path, git identity, and valid assignee / actingManager principals:",
+    "  # Project overview, active epics/open tasks, repository path, git identity, and valid assignee / actingManager / deployReviewer principals:",
     `  curl -s '${args.projectUrl}'`,
   ];
 

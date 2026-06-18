@@ -76,6 +76,7 @@ export type AgentContextPacket = {
       description: string | null;
       workers: string[];
       actingManager: string;
+      deployReviewer: string;
     } | null;
     checklist: Array<{
       id: string;
@@ -431,6 +432,7 @@ export async function buildTaskAgentContextPacket(args: {
             select: { user: { select: { username: true, kind: true } } },
           },
           actingManager: { select: { username: true, kind: true } },
+          deployReviewer: { select: { username: true, kind: true } },
           attachments: {
             orderBy: { createdAt: "asc" },
             take: 30,
@@ -567,6 +569,7 @@ export async function buildTaskAgentContextPacket(args: {
             description: task.epic.description,
             workers: task.epic.workers.map((worker) => actorLabel(worker.user)),
             actingManager: actorLabel(task.epic.actingManager),
+            deployReviewer: actorLabel(task.epic.deployReviewer),
           }
         : null,
       checklist: task?.checklist.map((item) => ({
@@ -815,6 +818,7 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
       `Epic: ${epic.title} (${epic.status}, ${epic.id})`,
       `Worker pool: ${epic.workers.length ? epic.workers.join(", ") : "(none)"}`,
       `Acting manager: ${epic.actingManager}`,
+      `Deploy reviewer: ${epic.deployReviewer || "(Monitor Agent fallback)"}`,
     );
     pushDescription(lines, "EPIC DESCRIPTION", epic.description, packet.caps.epicDescriptionMax);
   } else {
@@ -880,7 +884,9 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     "You can see EVERY comment and EVERY discussion message above, including messages between other people/agents that were not directed at you. Read them as background and use them in your reasoning.",
     "Visible PM comments must be direct and consolidated: put all current issues, blockers, findings, and required questions in one comment whenever possible.",
     "Do not repeat a blocker or decision already present in the recent hot path unless the current turn adds new information or asks for a status update.",
-    "If you are the assignee: before starting a To Do task, make sure your technical Action Plan is posted and approved_on is set. Then move To Do work to In Progress when you start. When implementation is complete, or when you are waiting for reviewer/manager/reporter feedback or response, use the workflow endpoint to move the task to Review with one concise note.",
+    "If you are the assignee: before starting a To Do task, make sure your technical Action Plan is posted and approved_on is set. Structure the plan as independent, parallelizable checklist items where that is useful, but do not split small or strictly sequential/dependent work. Then move To Do work to In Progress when you start. When implementation is complete, or when you are waiting for reviewer/manager/reporter feedback or response, use the workflow endpoint to move the task to Review with one concise note.",
+    "If you are reviewing an Action Plan that could be safely split into independent sub-tasks, flag that in one consolidated feedback comment; do not require sub-task splitting for small or strictly sequential/dependent work.",
+    "Worktrees ONLY, no exceptions: `/srv/Code/environment` and `/srv/Code/patricia` are NO-ZONEs. Make changes only under `/srv/Code/environment.worktrees/<branch>` or `/srv/Code/patricia.worktrees/<branch>` as applicable. If the required worktree cannot be created or used, tag the reporter in a comment and explain before making changes.",
     "If your task is in Review because it was waiting for feedback or an external response, and that response has arrived, resume it with workflow action=start, complete the follow-up, then call ready_for_review again. Keep one concise visible note.",
     "Sub-tasks are a lightweight progress checklist (text + done + minutes), NOT child tasks. As the assignee, break the task into INDEPENDENT, PARALLELIZABLE steps so you can work multiple fronts at once — dispatch parallel sub-agents to tackle the independent steps concurrently whenever the work allows, instead of doing them one at a time. Keep the checklist current so the board shows how close the task is to done: POST action=add_subtask {subtaskText} to add a step, and action=complete_subtask {subtaskId, completed, minutesSpent} as each step lands (include minutesSpent = the minutes that step took, so the task's total cost rolls up). Use the SUB-TASKS list above for ids. Do not create child Tasks for steps within a single task.",
     "When a task comes back from Review with reviewer feedback, add a new sub-task (add_subtask) for each concrete feedback item BEFORE resuming — your earlier checklist items are already ticked, so without this the progress bar wrongly reads as finished. Tick each new item off (with minutesSpent) as you address it.",

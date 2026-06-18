@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-const OPTIONS = ["Backlog", "Open", "Done"] as const;
+const OPTIONS = ["Backlog", "In Progress", "Ready to Deploy", "Done"] as const;
 
 export default function EpicStatusFilter({
   projectSlug,
@@ -18,7 +18,7 @@ export default function EpicStatusFilter({
   const [open, setOpen] = useState(false);
   const selected = new Set(selectedStatuses);
   const label = selectedStatuses.length === OPTIONS.length
-    ? "Backlog, Open, Done"
+    ? "Backlog, In Progress, Ready to Deploy, Done"
     : selectedStatuses.length === 0
       ? "No statuses"
       : selectedStatuses.join(", ");

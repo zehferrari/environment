@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { buildEffectiveProjectSettings, type WorkspaceDefaults } from "../lib/settings/effective";
 import type { SystemSettingsValues } from "../lib/settings/system";
 import { DEFAULT_PROFILE_IMAGE_PROMPT } from "../lib/agents/management/profile-image-options";
+import { DEFAULT_DEPLOY_REVIEW_PROMPT } from "../lib/epics/deploy-review";
 
 const system: SystemSettingsValues = {
   defaultGitUserName: "System Name",
@@ -14,6 +15,7 @@ const system: SystemSettingsValues = {
   openRouterReferer: null,
   openRouterTitle: null,
   profileImagePrompt: DEFAULT_PROFILE_IMAGE_PROMPT,
+  deployReviewPrompt: "system deploy review",
   integrationDefaults: JSON.stringify({ jira: { host: "system" }, shared: "system" }),
 };
 
@@ -52,6 +54,8 @@ assert.equal(inherited.deployment.productionBranch.value, "release");
 assert.equal(inherited.deployment.prTargetBranch.value, "develop");
 assert.deepEqual(inherited.integrationDefaults.value, { jira: { host: "workspace" }, shared: "system", bitbucket: { workspace: "bb-workspace" } });
 assert.equal(inherited.integrationDefaults.source, "workspace");
+assert.equal(inherited.deployReviewPrompt.value, "system deploy review");
+assert.equal(inherited.deployReviewPrompt.source, "system");
 
 const overridden = buildEffectiveProjectSettings({
   id: "p1",
@@ -61,6 +65,7 @@ const overridden = buildEffectiveProjectSettings({
   deploymentProductionBranch: "main",
   deploymentPrTargetBranch: "main",
   integrationDefaults: JSON.stringify({ jira: { host: "project" } }),
+  deployReviewPrompt: "project deploy review",
 }, workspace, system);
 assert.equal(overridden.gitIdentity.name.value, "Project Name");
 assert.equal(overridden.gitIdentity.name.source, "project");
@@ -68,15 +73,18 @@ assert.equal(overridden.doneTtlDays.value, 30);
 assert.equal(overridden.deployment.productionBranch.value, "main");
 assert.deepEqual(overridden.integrationDefaults.value, { jira: { host: "project" }, shared: "system", bitbucket: { workspace: "bb-workspace" } });
 assert.equal(overridden.integrationDefaults.source, "project");
+assert.equal(overridden.deployReviewPrompt.value, "project deploy review");
+assert.equal(overridden.deployReviewPrompt.source, "project");
 
 const fallback = buildEffectiveProjectSettings({
   defaultGitUserName: null,
   defaultGitUserEmail: null,
   doneTtlDays: null,
-}, null, { ...system, defaultGitUserName: null, defaultGitUserEmail: null, doneTtlDays: null, integrationDefaults: null });
+}, null, { ...system, defaultGitUserName: null, defaultGitUserEmail: null, doneTtlDays: null, integrationDefaults: null, deployReviewPrompt: DEFAULT_DEPLOY_REVIEW_PROMPT });
 assert.equal(fallback.gitIdentity.name.value, null);
 assert.equal(fallback.gitIdentity.name.source, "fallback");
 assert.equal(fallback.doneTtlDays.value, 5);
 assert.equal(fallback.doneTtlDays.source, "fallback");
+assert.equal(fallback.deployReviewPrompt.value, DEFAULT_DEPLOY_REVIEW_PROMPT);
 
 console.log("workspace settings hierarchy ok");

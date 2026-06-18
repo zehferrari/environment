@@ -110,6 +110,7 @@ export interface TaskContextResponse {
     commitPrefix: string | null;
     workers: Array<ReturnType<typeof actor>>;
     actingManager: ReturnType<typeof actor>;
+    deployReviewer: ReturnType<typeof actor>;
   };
   checklist: Array<{ id: string; text: string; done: boolean; minutes: number | null }>;
   comments: Array<{
@@ -204,6 +205,7 @@ export async function buildTaskContextJson(
             select: { user: { select: { username: true, kind: true } } },
           },
           actingManager: { select: { username: true, kind: true } },
+          deployReviewer: { select: { username: true, kind: true } },
         },
       },
       checklist: {
@@ -364,6 +366,7 @@ export async function buildTaskContextJson(
           }),
           workers: task.epic.workers.map((worker) => actor(worker.user)),
           actingManager: actor(task.epic.actingManager),
+          deployReviewer: actor(task.epic.deployReviewer),
         }
       : null,
     checklist: task.checklist.map((s) => ({
@@ -475,6 +478,7 @@ export interface EpicContextResponse {
     updatedAt: string;
     workers: Array<ReturnType<typeof actor>>;
     actingManager: ReturnType<typeof actor>;
+    deployReviewer: ReturnType<typeof actor>;
     reporter: ReturnType<typeof actor>;
   };
   project: TaskContextResponse["project"];
@@ -513,6 +517,7 @@ export async function buildEpicContextJson(
         select: { user: { select: { username: true, kind: true } } },
       },
       actingManager: { select: { username: true, kind: true } },
+      deployReviewer: { select: { username: true, kind: true } },
       reporter: { select: { username: true, kind: true } },
       tasks: {
         where: { deletedAt: null, parentTaskId: null },
@@ -626,6 +631,7 @@ export async function buildEpicContextJson(
       updatedAt: epic.updatedAt.toISOString(),
       workers: epic.workers.map((worker) => actor(worker.user)),
       actingManager: actor(epic.actingManager),
+      deployReviewer: actor(epic.deployReviewer),
       reporter: actor(epic.reporter),
     },
     project: {
@@ -724,6 +730,7 @@ export interface ProjectContextResponse {
     commitPrefix: string | null;
     workers: Array<ReturnType<typeof actor>>;
     actingManager: ReturnType<typeof actor>;
+    deployReviewer: ReturnType<typeof actor>;
   }>;
   openTasks: Array<{
     id: string;
@@ -764,6 +771,7 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
           select: { user: { select: { username: true, kind: true } } },
         },
         actingManager: { select: { username: true, kind: true } },
+        deployReviewer: { select: { username: true, kind: true } },
       },
     }),
     db.task.findMany({
@@ -807,6 +815,7 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
       commitPrefix: effectiveCommitPrefix({ commitPrefix: e.commitPrefix, workItemKey: e.workItemKey }),
       workers: e.workers.map((worker) => actor(worker.user)),
       actingManager: actor(e.actingManager),
+      deployReviewer: actor(e.deployReviewer),
     })),
     openTasks: openTasks.map((t) => ({
       id: t.id,

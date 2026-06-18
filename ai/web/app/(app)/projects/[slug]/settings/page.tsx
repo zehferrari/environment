@@ -261,6 +261,18 @@ export default async function ProjectSettingsPage({
                 className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y font-mono text-body outline-none focus:border-accent"
               />
             </SettingsRow>
+            <SettingsRow
+              label="Deploy-review prompt"
+              hint={`Prompt sent when an Epic moves to Ready to Deploy. Blank inherits system/default. Effective source: ${settingSourceLabel(effectiveSettings.deployReviewPrompt.source)}.`}
+            >
+              <textarea
+                name="deployReviewPrompt"
+                rows={5}
+                defaultValue={project.deployReviewPrompt ?? ""}
+                placeholder={effectiveSettings.deployReviewPrompt.value}
+                className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
+              />
+            </SettingsRow>
           </SettingsCard>
 
           <SettingsCard

@@ -245,12 +245,14 @@ export function renderMemory(): string {
 
 ## PM workflow policy (Zero Latency / PM tasks)
 - Backlog assignments are for planning/opinions only. If assigned in Backlog, read the full PM task context and post one concise technical plan in the Action Plan tab. Do not change status and do not start work.
-- To Do is executable only after the Action Plan is approved. If \`approved_on\` is empty, post the technical Action Plan and wait for reviewer/reporter approval. If \`approved_on\` is set, move the task to In Progress through the PM workflow endpoint and start immediately.
-- Reviewers/reporters approve acceptable Action Plans through the PM workflow endpoint with \`action=approve_plan\`. Do not start implementation before this approval.
+- To Do is executable only after the Action Plan is approved. If \`approved_on\` is empty, post the technical Action Plan and wait for reviewer/reporter approval. Structure Action Plans as independent, parallelizable checklist items where useful; do not split small or strictly sequential/dependent work. If \`approved_on\` is set, move the task to In Progress through the PM workflow endpoint and start immediately.
+- Reviewers/reporters approve acceptable Action Plans through the PM workflow endpoint with \`action=approve_plan\`. If a plan could be safely split into independent sub-tasks, flag that in consolidated feedback; do not start implementation before approval.
 - Move completed implementation from In Progress to Review through the PM workflow endpoint with one concise ready-for-review note.
-- Review is for completed-work review. The resolved reviewer is task acting manager, then Open Epic acting manager, then task reporter. If satisfied, call \`action=review_done\` without posting an approval-only comment; PM will move the task to Done, assign the next To Do task in the Epic when one exists, and wake the assignee. If changes/blockers remain, call \`action=review_feedback\` with concise feedback.
+- Review is for completed-work review. The resolved reviewer is task acting manager, then In Progress Epic acting manager, then task reporter. If satisfied, call \`action=review_done\` without posting an approval-only comment; PM will move the task to Done, assign the next To Do task in the Epic when one exists, and wake the assignee. If that was the Epic's last open task, PM moves the Epic to Ready to Deploy. If changes/blockers remain, call \`action=review_feedback\` with concise feedback.
+- When acting as Epic manager, check whether the Epic has a branch before proposing Action Plans or creating tasks. If empty, PM derives \`<epic-id>-<epic-title>\` lowercase/sanitized; Epic child tasks with an empty branch must use that Epic branch.
+- Worktrees ONLY: \`/srv/Code/environment\` and \`/srv/Code/patricia\` are NO-ZONEs. Make changes only in \`/srv/Code/environment.worktrees/<branch>\` or \`/srv/Code/patricia.worktrees/<branch>\`; if the required worktree cannot be created/used, tag the reporter and explain.
 - Golden rule: if there is no new information, action result, plan, feedback, blocker, or necessary question, stay silent.
-- Tasks under an Epic are actionable only when that Epic is Open.
+- Tasks under an Epic are actionable only when that Epic is In Progress.
 - These PM rules are separate from Jira rules.
 `;
 }

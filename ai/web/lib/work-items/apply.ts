@@ -27,6 +27,7 @@ import { listAssignablePrincipals } from "@/lib/principals";
 import { validateProposal } from "@/lib/work-items/proposal";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
+import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { MAX_SUBTASK_TEXT } from "@/lib/tasks/subtasks";
 
 type RawOp = Record<string, unknown>;
@@ -337,10 +338,23 @@ export async function commitProposal(
             if (epicId) {
               const epic = await tx.epic.findUnique({
                 where: { id: epicId },
-                select: { branchName: true, commitPrefix: true },
+                select: { id: true, title: true, branchName: true, commitPrefix: true },
               });
-              inheritedBranchName = epic?.branchName ?? null;
-              inheritedCommitPrefix = epic?.commitPrefix ?? null;
+              if (epic) {
+                inheritedBranchName = effectiveEpicBranchName(epic);
+                inheritedCommitPrefix = epic.commitPrefix ?? null;
+                if (!epic.branchName) {
+                  await tx.epic.update({ where: { id: epicId }, data: { branchName: inheritedBranchName } });
+                  await tx.activityLog.create({
+                    data: {
+                      projectId,
+                      userId: agentId,
+                      kind: "epic.branch",
+                      payload: JSON.stringify({ from: null, to: inheritedBranchName, via: "workitem-proposal", proposalId: proposal.id }),
+                    },
+                  });
+                }
+              }
             }
             const title = epicId
               ? await nextEpicTaskTitle(epicId, String(op.title), tx)
@@ -398,8 +412,9 @@ export async function commitProposal(
             where: { id },
             select: {
               id: true, title: true, description: true, status: true,
-              actingManagerId: true,
+              actingManagerId: true, deployReviewerId: true,
               actingManager: { select: { username: true } },
+              deployReviewer: { select: { username: true } },
             },
           });
           if (!epic) continue;
@@ -417,6 +432,11 @@ export async function commitProposal(
           if (am !== undefined && am !== epic.actingManagerId) {
             data.actingManagerId = am;
             logs.push({ kind: "epic.acting_manager", payload: { epicId: id, from: epic.actingManager?.username ?? null, to: am ? usernameById.get(am) ?? null : null, proposalId: proposal.id } });
+          }
+          const deployReviewer = resolvePrincipal(op.deployReviewer);
+          if (deployReviewer !== undefined && deployReviewer !== epic.deployReviewerId) {
+            data.deployReviewerId = deployReviewer;
+            logs.push({ kind: "epic.deploy_reviewer", payload: { epicId: id, from: epic.deployReviewer?.username ?? null, to: deployReviewer ? usernameById.get(deployReviewer) ?? null : null, proposalId: proposal.id } });
           }
           if (typeof op.status === "string" && op.status !== epic.status) {
             data.status = op.status;
@@ -511,7 +531,7 @@ export async function commitProposal(
             const assignmentChanged = asg !== undefined && asg !== task.assigneeId;
             const statusChanged = typeof op.status === "string" && op.status !== task.status;
             const reviewerId = finalActingManagerId
-              ?? (task.epic?.status === "Open" ? task.epic.actingManagerId : null)
+              ?? (task.epic?.status === "In Progress" ? task.epic.actingManagerId : null)
               ?? task.reporterId;
 
             if (finalAssigneeId && (assignmentChanged || statusChanged)) {

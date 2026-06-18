@@ -16,9 +16,9 @@ const body = [
   "- To Do is executable only after the Action Plan is approved. If approved_on is empty, post the technical Action Plan and wait for reviewer/reporter approval. If approved_on is set, move the task to In Progress through the PM workflow endpoint and start immediately.",
   "- Reviewers/reporters approve acceptable Action Plans through the PM workflow endpoint with action=approve_plan and include one concise comment explaining why the plan is acceptable or naming any constraints. If the plan needs adjustment, reply in Action Plan with consolidated feedback instead of approving.",
   "- Move completed implementation from In Progress to Review through the PM workflow endpoint with one concise ready-for-review note.",
-  "- Review is for completed-work review. The resolved reviewer is task acting manager, then Open Epic acting manager, then task reporter. If satisfied, call action=review_done without posting an approval-only comment; PM will move the task to Done, assign the next To Do task in the Epic when one exists, and wake the assignee. If changes/blockers remain, call action=review_feedback with concise feedback.",
+  "- Review is for completed-work review. The resolved reviewer is task acting manager, then In Progress Epic acting manager, then task reporter. If satisfied, call action=review_done without posting an approval-only comment; PM will move the task to Done, assign the next To Do task in the Epic when one exists, and wake the assignee. If changes/blockers remain, call action=review_feedback with concise feedback.",
   "- Golden rule: if there is no new information, action result, plan, feedback, blocker, or necessary question, stay silent.",
-  "- Tasks under an Epic are actionable only when that Epic is Open.",
+  "- Tasks under an Epic are actionable only when that Epic is In Progress.",
   "",
   "These PM rules are separate from Jira rules.",
 ].join("\n");

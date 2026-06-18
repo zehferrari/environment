@@ -34,6 +34,7 @@ import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteTask } from "@/lib/bin/actions";
 import { archiveTask, unarchiveTask } from "@/lib/archive/actions";
 import { approveAndMergeDeploymentPullRequest, approveDeploymentLocalChanges } from "@/lib/deploy/actions";
+import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import {
   createSubTaskItem,
   setSubTaskCompletion,
@@ -198,7 +199,7 @@ async function updateTask(formData: FormData) {
           onlyReportersCanApprovePullRequests: true,
         },
       },
-      epic: { select: { title: true, status: true, actingManagerId: true, branchName: true, commitPrefix: true } },
+      epic: { select: { id: true, title: true, status: true, actingManagerId: true, branchName: true, commitPrefix: true } },
       assignee: { select: { id: true, username: true, kind: true } },
       actingManager: { select: { username: true } },
       reporter: { select: { username: true } },
@@ -269,7 +270,10 @@ async function updateTask(formData: FormData) {
   // Epic (must belong to the same project)
   let selectedEpicDefaults =
     newEpicId === task.epicId
-      ? { branchName: task.epic?.branchName ?? null, commitPrefix: task.epic?.commitPrefix ?? null }
+      ? {
+          branchName: task.epic ? effectiveEpicBranchName(task.epic) : null,
+          commitPrefix: task.epic?.commitPrefix ?? null,
+        }
       : null;
 
   if (newEpicId !== task.epicId) {
@@ -277,14 +281,14 @@ async function updateTask(formData: FormData) {
     if (newEpicId !== null) {
       const target = await db.epic.findUnique({
         where: { id: newEpicId },
-        select: { title: true, projectId: true, branchName: true, commitPrefix: true },
+        select: { id: true, title: true, projectId: true, branchName: true, commitPrefix: true },
       });
       if (!target || target.projectId !== task.projectId) {
         throw new Error("Epic not found in this project");
       }
       newEpicTitle = target.title;
       selectedEpicDefaults = {
-        branchName: target.branchName,
+        branchName: effectiveEpicBranchName(target),
         commitPrefix: target.commitPrefix,
       };
     }
@@ -1142,7 +1146,7 @@ function workflowOwnerSlugs(task: WorkflowBubbleTask) {
   if (task.status === "Review") {
     add(
       workflowActorSlug(task.actingManager)
-        ?? (task.epic?.status === "Open" ? workflowActorSlug(task.epic?.actingManager) : null)
+        ?? (task.epic?.status === "In Progress" ? workflowActorSlug(task.epic?.actingManager) : null)
         ?? workflowActorSlug(task.reporter),
     );
   }

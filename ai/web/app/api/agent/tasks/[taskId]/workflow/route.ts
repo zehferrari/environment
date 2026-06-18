@@ -267,7 +267,7 @@ export async function POST(
     if (!task.approvedOn) {
       return NextResponse.json({ error: "Action Plan must be approved before start" }, { status: 409 });
     }
-    if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be Open before task work starts" }, { status: 409 });
+    if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be In Progress before task work starts" }, { status: 409 });
 
     await moveTaskStatus({
       taskId: task.id,
@@ -453,7 +453,7 @@ export async function POST(
     if (task.status !== "In Progress" && task.status !== "Review") {
       return NextResponse.json({ error: "Task must be In Progress or already in Review before ready_for_review" }, { status: 409 });
     }
-    if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be Open before task work advances" }, { status: 409 });
+    if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be In Progress before task work advances" }, { status: 409 });
 
     // Resolve repoTouched. The assignee can override by sending an explicit
     // boolean; otherwise default to "yes, it touched the repo" iff the task
@@ -712,9 +712,9 @@ export async function POST(
   }
 
   if (action === "triage_to_todo") {
-    if (!isReviewer) return NextResponse.json({ error: "Only the reviewer, Open Epic manager, or reporter fallback can move Backlog to To Do" }, { status: 403 });
+    if (!isReviewer) return NextResponse.json({ error: "Only the reviewer, In Progress Epic manager, or reporter fallback can move Backlog to To Do" }, { status: 403 });
     if (task.status !== "Backlog") return NextResponse.json({ error: "Task must be in Backlog before triage to To Do" }, { status: 409 });
-    if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be Open before task work becomes actionable" }, { status: 409 });
+    if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be In Progress before task work becomes actionable" }, { status: 409 });
 
     await moveTaskStatus({
       taskId: task.id,

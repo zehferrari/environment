@@ -23,13 +23,15 @@ import {
 } from "@/lib/workflow";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
+import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { buildDeploymentApproved } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
+import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
 
-const EPIC_STATUSES = ["Backlog", "Open", "Done"] as const;
+const EPIC_STATUSES = ["Backlog", "In Progress", "Ready to Deploy", "Done"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
 
 function isEpicStatus(value: unknown): value is EpicStatus {
@@ -54,6 +56,7 @@ async function loadEpicScoped(epicId: string, slug: string) {
       project: { select: { id: true, slug: true } },
       workers: { select: { userId: true, user: { select: { username: true } } } },
       actingManager: { select: { username: true } },
+      deployReviewer: { select: { username: true } },
       reporter: { select: { username: true } },
     },
   });
@@ -84,6 +87,29 @@ async function validateEpicWorkerIds(actor: { id: string; kind: ActorKind }, wor
   }
   const byId = new Map(rows.map((row) => [row.id, row.username]));
   return workerIds.map((id) => ({ id, username: byId.get(id)! }));
+}
+
+async function validateDeployReviewerId(deployReviewerId: string | null) {
+  if (deployReviewerId === null) return null;
+  const row = await db.user.findUnique({
+    where: { id: deployReviewerId },
+    select: {
+      username: true,
+      status: true,
+      kind: true,
+      agent: { select: { role: true, deactivatedAt: true } },
+    },
+  });
+  if (
+    !row ||
+    row.status !== "active" ||
+    row.kind !== "agent" ||
+    row.agent?.role !== "coding" ||
+    row.agent.deactivatedAt !== null
+  ) {
+    throw new Error("Deploy reviewer must be an active coding agent.");
+  }
+  return row.username;
 }
 
 function sameIds(a: string[], b: string[]) {
@@ -127,7 +153,7 @@ async function notifyEpicActingManagerAssigned(args: {
     "If the Epic has no description, use the description endpoint to write a concise description directly from the available Epic/project context. No human Save is required for this empty-description manager write.",
     "If the Epic needs implementation tasks, create the ordered Backlog task breakdown through the Epic manager workflow. Include a concise summary explaining why the tasks are needed.",
     "Creating descriptions/tasks is allowed before Epic approval. Starting the plan is not: only advance the queue or assign workers after a human opens/approves the Epic.",
-    "Never change Epic status. When the Epic is opened by a human, assign work only from the Epic worker pool, one task per project per agent, and never assign yourself as task assignee/reporter/acting manager.",
+    "Never change Epic status. When the Epic is moved to In Progress by a human, assign work only from the Epic worker pool, one task per project per agent, and never assign yourself as task assignee/reporter/acting manager.",
     "Do not post an acknowledgement-only response.",
   ].join("\n"));
 
@@ -145,6 +171,8 @@ export async function createEpic(formData: FormData) {
   const description = String(formData.get("description") ?? "").trim();
   const actingManagerRaw = String(formData.get("actingManagerId") ?? "");
   const actingManagerId = actingManagerRaw === "" ? null : actingManagerRaw;
+  const deployReviewerRaw = String(formData.get("deployReviewerId") ?? "");
+  const deployReviewerId = deployReviewerRaw === "" ? null : deployReviewerRaw;
   const workerIds = getWorkerIds(formData);
   const branchRaw = String(formData.get("branchName") ?? "").trim();
   const branchName = branchRaw === "" ? null : branchRaw;
@@ -179,6 +207,7 @@ export async function createEpic(formData: FormData) {
   }
 
   const workers = await validateEpicWorkerIds(actor, workerIds);
+  await validateDeployReviewerId(deployReviewerId);
 
   const epic = await db.epic.create({
     data: {
@@ -187,6 +216,7 @@ export async function createEpic(formData: FormData) {
       title,
       description: description || null,
       actingManagerId,
+      deployReviewerId,
       workers: {
         create: workerIds.map((userId) => ({ userId })),
       },
@@ -361,6 +391,8 @@ export async function updateEpic(formData: FormData) {
   const workerIds = getWorkerIds(formData);
   const acmRaw = String(formData.get("actingManagerId") ?? "");
   const newActingManagerId = acmRaw === "" ? null : acmRaw;
+  const deployReviewerRaw = String(formData.get("deployReviewerId") ?? "");
+  const newDeployReviewerId = deployReviewerRaw === "" ? null : deployReviewerRaw;
   const reporterRaw = String(formData.get("reporterId") ?? "");
   const newReporterId = reporterRaw === "" ? null : reporterRaw;
   const branchRaw = String(formData.get("branchName") ?? "").trim();
@@ -407,7 +439,7 @@ export async function updateEpic(formData: FormData) {
   const taskCascade = statusChanged
     ? status === "Backlog"
       ? "Backlog"
-      : status === "Open"
+      : status === "In Progress"
         ? "To Do"
         : null
     : null;
@@ -487,6 +519,24 @@ export async function updateEpic(formData: FormData) {
     });
   }
 
+  // Deploy reviewer (optional active coding agent; Ready-to-Deploy auto-trigger
+  // falls back to Monitor Agent when this is unset).
+  if (newDeployReviewerId !== epic.deployReviewerId) {
+    const toUsername = await validateDeployReviewerId(newDeployReviewerId);
+    data.deployReviewer =
+      newDeployReviewerId === null
+        ? { disconnect: true }
+        : { connect: { id: newDeployReviewerId } };
+    activity.push({
+      kind: "epic.deploy_reviewer",
+      payload: JSON.stringify({
+        epicId,
+        from: epic.deployReviewer?.username ?? null,
+        to: toUsername,
+      }),
+    });
+  }
+
   // Deployment status
   if (deploymentRaw !== "" && deploymentRaw !== epic.deploymentStatus) {
     const actorAgent = actor.kind === "agent"
@@ -556,10 +606,19 @@ export async function updateEpic(formData: FormData) {
 
   // When an epic moves to Done, archive all of its live child tasks.
   const archiveChildrenOnDone = statusChanged && status === "Done";
+  const shouldStartDeployReview = statusChanged && status === "Ready to Deploy";
 
   let openAssignment: any = null;
   await db.$transaction(async (tx) => {
     await tx.epic.update({ where: { id: epicId }, data });
+    if (shouldStartDeployReview) {
+      await resetEpicActionPlanForDeployReview(tx, {
+        projectId: epic.project.id,
+        epicId,
+        actorId: actor.id,
+        now: statusChangedAt,
+      });
+    }
     if (workerPoolChanged) {
       await tx.epicWorker.deleteMany({
         where: { epicId, userId: { notIn: newWorkerIds } },
@@ -578,10 +637,10 @@ export async function updateEpic(formData: FormData) {
         data: {
           status: taskCascade,
           statusChangedAt,
-          ...(status === "Open" ? { assigneeId: null } : {}),
+          ...(status === "In Progress" ? { assigneeId: null } : {}),
         },
       });
-      if (status === "Open") {
+      if (status === "In Progress") {
         openAssignment = await assignFirstOpenEpicTask(tx, {
           epicId,
           projectId: epic.project.id,
@@ -616,11 +675,15 @@ export async function updateEpic(formData: FormData) {
       actor,
       reason: "todo_start_required",
       body: [
-        `Epic "${title}" was opened and task "${openAssignment.task.title}" is assigned to you.`,
+        `Epic "${title}" is in progress and task "${openAssignment.task.title}" is assigned to you.`,
         "Read the task context and attachments first. Post one concise technical Action Plan and wait for reviewer/manager/reporter approval before starting implementation.",
         "Use task attachments first; only inspect Epic attachments when the task context explicitly references them or is insufficient.",
       ].join("\n"),
     });
+  }
+
+  if (shouldStartDeployReview) {
+    await triggerDeployReview({ projectSlug: slug, epicId, actorId: actor.id });
   }
 
   await notifyEpicActingManagerAssigned({
@@ -673,6 +736,7 @@ export async function createTaskInEpic(
     where: { id: epicId },
     select: {
       id: true,
+      title: true,
       projectId: true,
       branchName: true,
       commitPrefix: true,
@@ -703,39 +767,58 @@ export async function createTaskInEpic(
     return { ok: false, error: "Epic tasks can only be created when the Epic has no top-level child tasks yet." };
   }
 
-  const maxRank = await db.task.aggregate({
-    where: { projectId: epic.projectId, status: "Backlog", archivedAt: null, deletedAt: null },
-    _max: { rank: true },
-  });
-  const numberedTitle = await nextEpicTaskTitle(epic.id, title);
+  const branchName = effectiveEpicBranchName(epic);
 
-  const task = await db.task.create({
-    data: {
-      projectId: epic.projectId,
-      workItemKey: await allocateWorkItemKey(epic.projectId),
-      epicId: epic.id,
-      title: numberedTitle,
-      description,
-      status: "Backlog",
-      rank: (maxRank._max.rank ?? 0) + 1,
-      statusChangedAt: new Date(),
-      assigneeId: null,
-      actingManagerId: actor.kind === "human" ? epic.project.defaultReviewerId ?? null : null,
-      reporterId: actor.kind === "human" ? actor.id : epic.reporterId ?? null,
-      branchName: epic.branchName ?? null,
-      commitPrefix: epic.commitPrefix ?? null,
-    },
-    select: { id: true, title: true },
-  });
+  const task = await db.$transaction(async (tx) => {
+    if (!epic.branchName) {
+      await tx.epic.update({
+        where: { id: epic.id },
+        data: { branchName },
+      });
+      await tx.activityLog.create({
+        data: {
+          projectId: epic.projectId,
+          userId: actor.id,
+          kind: "epic.branch",
+          payload: JSON.stringify({ from: null, to: branchName, via: "epic-task-create" }),
+        },
+      });
+    }
 
-  await db.activityLog.create({
-    data: {
-      projectId: epic.projectId,
-      taskId: task.id,
-      userId: actor.id,
-      kind: "task.create",
-      payload: JSON.stringify({ title: task.title, epicId: epic.id }),
-    },
+    const maxRank = await tx.task.aggregate({
+      where: { projectId: epic.projectId, status: "Backlog", archivedAt: null, deletedAt: null },
+      _max: { rank: true },
+    });
+    const numberedTitle = await nextEpicTaskTitle(epic.id, title, tx);
+    const createdTask = await tx.task.create({
+      data: {
+        projectId: epic.projectId,
+        workItemKey: await allocateWorkItemKey(epic.projectId, tx),
+        epicId: epic.id,
+        title: numberedTitle,
+        description,
+        status: "Backlog",
+        rank: (maxRank._max.rank ?? 0) + 1,
+        statusChangedAt: new Date(),
+        assigneeId: null,
+        actingManagerId: actor.kind === "human" ? epic.project.defaultReviewerId ?? null : null,
+        reporterId: actor.kind === "human" ? actor.id : epic.reporterId ?? null,
+        branchName,
+        commitPrefix: epic.commitPrefix ?? null,
+      },
+      select: { id: true, title: true },
+    });
+
+    await tx.activityLog.create({
+      data: {
+        projectId: epic.projectId,
+        taskId: createdTask.id,
+        userId: actor.id,
+        kind: "task.create",
+        payload: JSON.stringify({ title: createdTask.title, epicId: epic.id }),
+      },
+    });
+    return createdTask;
   });
 
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
@@ -759,7 +842,7 @@ export async function setEpicStatus(formData: FormData) {
   const taskCascade =
     status === "Backlog"
       ? "Backlog"
-      : status === "Open"
+      : status === "In Progress"
         ? "To Do"
         : null;
 
@@ -775,10 +858,10 @@ export async function setEpicStatus(formData: FormData) {
         data: {
           status: taskCascade,
           statusChangedAt,
-          ...(status === "Open" ? { assigneeId: null } : {}),
+          ...(status === "In Progress" ? { assigneeId: null } : {}),
         },
       });
-      if (status === "Open") {
+      if (status === "In Progress") {
         openAssignment = await assignFirstOpenEpicTask(tx, {
           epicId,
           projectId: epic.project.id,
@@ -816,7 +899,7 @@ export async function setEpicStatus(formData: FormData) {
       actor,
       reason: "todo_start_required",
       body: [
-        `Epic "${epic.title}" was opened and task "${openAssignment.task.title}" is assigned to you.`,
+        `Epic "${epic.title}" is in progress and task "${openAssignment.task.title}" is assigned to you.`,
         "Read the task context and attachments first. Post one concise technical Action Plan and wait for reviewer/manager/reporter approval before starting implementation.",
         "Use task attachments first; only inspect Epic attachments when the task context explicitly references them or is insufficient.",
       ].join("\n"),

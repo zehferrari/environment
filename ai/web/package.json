@@ -51,7 +51,9 @@
     "test:context-budget": "tsx scripts/context-budget-test.ts",
     "test:workspace-settings-hierarchy": "tsx scripts/workspace-settings-hierarchy-test.ts",
     "test:workspace-deployment-rollup": "tsx scripts/workspace-deployment-rollup-test.ts",
-    "test:workspace-api": "tsx scripts/workspace-api-test.ts"
+    "test:workspace-api": "tsx scripts/workspace-api-test.ts",
+    "test:deploy-review-prompt": "tsx scripts/deploy-review-prompt-test.ts",
+    "test:workflow-agent-rules": "tsx scripts/workflow-agent-rules-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",

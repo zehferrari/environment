@@ -12,6 +12,7 @@
 
 import { db } from "@/lib/db";
 import { DEFAULT_PROFILE_IMAGE_PROMPT, normalizeProfileImagePrompt } from "@/lib/agents/management/profile-image-options";
+import { DEFAULT_DEPLOY_REVIEW_PROMPT, normalizeDeployReviewPrompt } from "@/lib/epics/deploy-review";
 
 export const DONE_TTL_FALLBACK_DAYS = 5;
 
@@ -26,6 +27,7 @@ export interface SystemSettingsValues {
   openRouterReferer: string | null;
   openRouterTitle: string | null;
   profileImagePrompt: string;
+  deployReviewPrompt: string;
   integrationDefaults: string | null;
 }
 
@@ -42,6 +44,7 @@ const EMPTY: SystemSettingsValues = {
   openRouterReferer: null,
   openRouterTitle: null,
   profileImagePrompt: DEFAULT_PROFILE_IMAGE_PROMPT,
+  deployReviewPrompt: DEFAULT_DEPLOY_REVIEW_PROMPT,
   integrationDefaults: null,
 };
 
@@ -58,6 +61,7 @@ export async function getSystemSettings(): Promise<SystemSettingsValues> {
       openRouterReferer: true,
       openRouterTitle: true,
       profileImagePrompt: true,
+      deployReviewPrompt: true,
       integrationDefaults: true,
     },
   });
@@ -67,6 +71,7 @@ export async function getSystemSettings(): Promise<SystemSettingsValues> {
     theme: normalizeTheme(row.theme),
     hasOpenRouterApiKey: Boolean(row.openRouterApiKey),
     profileImagePrompt: normalizeProfileImagePrompt(row.profileImagePrompt),
+    deployReviewPrompt: normalizeDeployReviewPrompt(row.deployReviewPrompt),
   };
 }
 

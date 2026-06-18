@@ -46,6 +46,7 @@ import AddEpicTaskFab from "./add-epic-task-fab";
 import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
 import EpicTasksClient from "./epic-tasks-client";
 import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
+import { buildEpicActionPlanApprovalUpdate } from "@/lib/epics/action-plan-approval";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, type DeploymentPrRow } from "@/components/deployment-tab";
 
@@ -184,6 +185,7 @@ async function approveEpicActionPlan(formData: FormData) {
       reporterId: true,
       actingManagerId: true,
       approvedOn: true,
+      status: true,
       deletedAt: true,
       project: { select: { slug: true, onlyReportersCanApproveActionPlans: true } },
       _count: {
@@ -213,20 +215,27 @@ async function approveEpicActionPlan(formData: FormData) {
   if (epic.approvedOn) return;
 
   const approvedAt = new Date();
+  const approvalUpdate = buildEpicActionPlanApprovalUpdate({
+    currentStatus: epic.status,
+    approvedAt,
+    actorId: actor.id,
+  });
   await db.$transaction([
     db.epic.update({
       where: { id: epic.id },
-      data: {
-        approvedOn: approvedAt,
-        approvedById: actor.id,
-      },
+      data: approvalUpdate.data,
     }),
     db.activityLog.create({
       data: {
         projectId: epic.projectId,
         userId: actor.id,
         kind: "epic.action_plan.approve",
-        payload: JSON.stringify({ epicId: epic.id }),
+        payload: JSON.stringify({
+          epicId: epic.id,
+          ...(approvalUpdate.promotedToInProgress
+            ? { status: "In Progress", from: "Backlog", via: "action_plan_approval" }
+            : {}),
+        }),
       },
     }),
   ]);
@@ -359,6 +368,17 @@ export default async function EpicDetailPage({
         },
       },
       actingManager: {
+        select: {
+          id: true,
+          username: true,
+          name: true,
+          kind: true,
+          status: true,
+          avatarUpdatedAt: true,
+          agent: { select: { slug: true, role: true, deactivatedAt: true, name: true, avatar: true } },
+        },
+      },
+      deployReviewer: {
         select: {
           id: true,
           username: true,
@@ -960,7 +980,8 @@ export default async function EpicDetailPage({
                 aria-label="Status"
               >
                 <option value="Backlog">Backlog</option>
-                <option value="Open">Open</option>
+                <option value="In Progress">In Progress</option>
+                <option value="Ready to Deploy">Ready to Deploy</option>
                 <option value="Done">Done</option>
               </select>
             </label>
@@ -1144,6 +1165,19 @@ export default async function EpicDetailPage({
                           options={principalOptions}
                           emptyLabel="No acting manager"
                           ariaLabel="Acting manager"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
+                          Deploy reviewer
+                        </span>
+                        <AvatarCombobox
+                          formId="epicMain"
+                          name="deployReviewerId"
+                          defaultValue={epic.deployReviewerId ?? ""}
+                          options={workerOptions}
+                          emptyLabel="Use Monitor Agent"
+                          ariaLabel="Deploy reviewer"
                         />
                       </label>
                     </div>

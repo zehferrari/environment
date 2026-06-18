@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { deleteWorkspaceLogo, validateLogoMimeType, writeWorkspaceLogo } from "@/lib/workspaces/storage";
+import { MAX_WORKSPACE_LOGO_BYTES, deleteWorkspaceLogo, normalizeLogoMimeType, validateLogoMimeType, writeWorkspaceLogo } from "@/lib/workspaces/storage";
 import { getWorkspaceBySlug, normalizeWorkspaceSlug, serializeWorkspace } from "@/lib/workspaces/service";
 
 export const runtime = "nodejs";
@@ -34,6 +34,23 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ slug: stri
   });
 }
 
+async function readLogoUpload(req: NextRequest) {
+  const contentType = req.headers.get("content-type") ?? "";
+
+  if (contentType.toLowerCase().startsWith("multipart/form-data")) {
+    const form = await req.formData();
+    const uploaded = form.get("logo");
+    if (!(uploaded instanceof File)) return { error: "logo_file_required" as const };
+    const mimeType = normalizeLogoMimeType(uploaded.type, uploaded.name);
+    const bytes = Buffer.from(await uploaded.arrayBuffer());
+    return { mimeType, bytes };
+  }
+
+  const mimeType = normalizeLogoMimeType(contentType, req.headers.get("x-file-name"));
+  const bytes = Buffer.from(await req.arrayBuffer());
+  return { mimeType, bytes };
+}
+
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ slug: string }> }) {
   const session = await requireSession();
   if (!session) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
@@ -41,15 +58,17 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ slug: strin
   const slug = normalizeWorkspaceSlug(rawSlug);
   const workspace = await db.workspace.findUnique({ where: { slug }, select: { id: true, logoPath: true } });
   if (!workspace) return NextResponse.json({ error: "not_found" }, { status: 404 });
-  const mimeType = req.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? "";
-  if (!validateLogoMimeType(mimeType)) return NextResponse.json({ error: "unsupported_media_type" }, { status: 415 });
-  const bytes = Buffer.from(await req.arrayBuffer());
-  if (bytes.length === 0 || bytes.length > 2 * 1024 * 1024) return NextResponse.json({ error: "logo_size_invalid" }, { status: 400 });
+
+  const upload = await readLogoUpload(req);
+  if ("error" in upload) return NextResponse.json({ error: upload.error }, { status: 400 });
+  if (!validateLogoMimeType(upload.mimeType)) return NextResponse.json({ error: "unsupported_media_type" }, { status: 415 });
+  if (upload.bytes.length === 0 || upload.bytes.length > MAX_WORKSPACE_LOGO_BYTES) return NextResponse.json({ error: "logo_size_invalid" }, { status: 400 });
+
   await deleteWorkspaceLogo(workspace.logoPath);
-  const filePath = await writeWorkspaceLogo(workspace.id, mimeType, bytes);
+  const filePath = await writeWorkspaceLogo(workspace.id, upload.mimeType, upload.bytes);
   const updated = await db.workspace.update({
     where: { id: workspace.id },
-    data: { logoPath: filePath, logoMimeType: mimeType, logoSizeBytes: bytes.length, logoUpdatedAt: new Date() },
+    data: { logoPath: filePath, logoMimeType: upload.mimeType, logoSizeBytes: upload.bytes.length, logoUpdatedAt: new Date() },
   });
   const full = await getWorkspaceBySlug(updated.slug);
   return NextResponse.json({ workspace: full ? serializeWorkspace(full) : null });

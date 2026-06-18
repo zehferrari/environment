@@ -61,15 +61,15 @@ export default function TaskEpicPicker({
         {epics.map((epic) => (
           <option key={epic.id} value={epic.id}>
             {epic.title}
-            {epic.status !== "Open" ? ` · ${epic.status}` : ""}
+            {epic.status !== "In Progress" ? ` · ${epic.status}` : ""}
           </option>
         ))}
       </select>
       {selectedEpic ? (
         <Link
           href={`/projects/${projectSlug}/epics/${selectedEpic.id}`}
-          aria-label={`Open Epic ${selectedEpic.title}`}
-          title={`Open Epic: ${selectedEpic.title}`}
+          aria-label={`Epic ${selectedEpic.title}`}
+          title={`Epic: ${selectedEpic.title}`}
           className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line bg-panel-soft text-text-muted transition hover:border-accent hover:text-accent"
         >
           <SearchIcon />

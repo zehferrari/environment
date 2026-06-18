@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 
 type Workspace = {
@@ -85,6 +85,12 @@ export default function WorkspaceSettingsClient({
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
 
   const logoPreview = useMemo(() => (logoFile ? URL.createObjectURL(logoFile) : null), [logoFile]);
+
+  useEffect(() => {
+    return () => {
+      if (logoPreview) URL.revokeObjectURL(logoPreview);
+    };
+  }, [logoPreview]);
   const selectedProjectSet = useMemo(() => new Set(selectedProjectIds), [selectedProjectIds]);
   const selectedAgentSet = useMemo(() => new Set(selectedAgentIds), [selectedAgentIds]);
   const activeProjects = projects.filter((project) => !project.archived);
@@ -211,10 +217,11 @@ export default function WorkspaceSettingsClient({
         if (!logoResponse.ok) throw new Error(logoPayload.error || "Logo removal failed.");
         if (logoPayload.workspace) nextWorkspace = logoPayload.workspace as Workspace;
       } else if (logoFile) {
+        const logoData = new FormData();
+        logoData.set("logo", logoFile);
         const logoResponse = await fetch(`/api/workspaces/${encodeURIComponent(nextWorkspace.slug)}/logo`, {
           method: "PUT",
-          headers: { "Content-Type": logoFile.type },
-          body: logoFile,
+          body: logoData,
         });
         const logoPayload = await logoResponse.json().catch(() => ({}));
         if (!logoResponse.ok) throw new Error(logoPayload.error || "Logo upload failed.");
