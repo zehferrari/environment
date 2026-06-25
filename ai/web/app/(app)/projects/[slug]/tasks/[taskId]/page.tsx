@@ -48,6 +48,7 @@ import {
   resolveReviewOwnerId,
 } from "@/lib/tasks/workflow-actors";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
+import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
@@ -709,16 +710,29 @@ async function approveTaskActionPlan(formData: FormData) {
   });
 
   if (task.assigneeId) {
+    const autoStart = await startApprovedTodoTaskIfIdle({
+      taskId: task.id,
+      actor,
+      via: "action-plan-approval",
+    });
     await sendTaskWorkflowNotification({
       taskId: task.id,
       targetUserId: task.assigneeId,
       actor,
       reason: "todo_start_required",
-      body: [
-        `The Action Plan for "${task.title}" was approved.`,
-        "You may now call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
-        "Keep visible replies concise; use a comment only if a blocker or material plan change appears.",
-      ].join("\n"),
+      body: autoStart.started
+        ? [
+            `The Action Plan for "${task.title}" was approved.`,
+            "PM moved the task to In Progress because you have no other In Progress task.",
+            "Start implementing the approved plan now. Keep visible replies concise; use a comment only if a blocker or material plan change appears.",
+          ].join("\n")
+        : [
+            `The Action Plan for "${task.title}" was approved.`,
+            autoStart.reason === "busy"
+              ? "You already have another In Progress task, so this task remains in To Do until you are idle."
+              : "You may now call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
+            "Keep visible replies concise; use a comment only if a blocker or material plan change appears.",
+          ].join("\n"),
     });
   } else {
     const reviewerId = resolveReviewOwnerId(task);

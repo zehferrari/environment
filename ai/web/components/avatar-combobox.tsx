@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   actorDisplayName,
   MessageAvatar,
@@ -49,6 +50,15 @@ export default function AvatarCombobox({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [coords, setCoords] = useState<{
+    left: number;
+    width: number;
+    top?: number;
+    bottom?: number;
+    listMaxHeight: number;
+  } | null>(null);
 
   useEffect(() => {
     setValue(defaultValue ?? "");
@@ -59,11 +69,59 @@ export default function AvatarCombobox({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [(defaultValues ?? []).join(",")]);
 
-  // Close on outside click so an open dropdown doesn't trap the page.
+  // Position the dropdown panel relative to the trigger using fixed
+  // coordinates. The panel renders in a portal on <body> (see below) so it
+  // escapes any popup/modal `overflow` or stacking context that would
+  // otherwise clip it to a single visible row.
+  const updatePosition = useCallback(() => {
+    const btn = triggerRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const margin = 8;
+    const gap = 4;
+    const spaceBelow = window.innerHeight - rect.bottom - margin;
+    const spaceAbove = rect.top - margin;
+    // Flip up only when there isn't room below and there's more room above.
+    const openUp = spaceBelow < 240 && spaceAbove > spaceBelow;
+    const available = openUp ? spaceAbove : spaceBelow;
+    // Reserve ~52px for the search input + panel padding; clamp so the list
+    // never spills past the viewport edge in either direction.
+    const listMaxHeight = Math.max(120, Math.min(256, available - gap - 52));
+    setCoords({
+      left: rect.left,
+      width: rect.width,
+      top: openUp ? undefined : rect.bottom + gap,
+      bottom: openUp ? window.innerHeight - rect.top + gap : undefined,
+      listMaxHeight,
+    });
+  }, []);
+
+  // Reposition while open; clear coords when closed.
+  useEffect(() => {
+    if (!open) {
+      setCoords(null);
+      return;
+    }
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    // Capture phase so scrolling inside any nested container repositions too.
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open, updatePosition]);
+
+  // Close on outside click so an open dropdown doesn't trap the page. The
+  // panel lives in a portal, so it's outside containerRef — exclude it too,
+  // otherwise clicking an option would close before the select fires.
   useEffect(() => {
     if (!open) return;
     function onPointerDown(event: PointerEvent) {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (containerRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
@@ -101,6 +159,7 @@ export default function AvatarCombobox({
         <input form={formId} type="hidden" name={name} value={value} />
       )}
       <button
+        ref={triggerRef}
         type="button"
         aria-label={ariaLabel}
         aria-expanded={open}
@@ -142,94 +201,107 @@ export default function AvatarCombobox({
           {open ? "▴" : "▾"}
         </span>
       </button>
-      {open ? (
-        <div className="absolute left-0 right-0 top-full z-30 mt-1 rounded-card border border-line bg-panel p-2 shadow-2xl">
-          <Input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search..."
-            className="mb-2 h-8 px-2 py-0 text-caption"
-          />
-          <div className="max-h-64 overflow-y-auto">
-            {multiple ? (
-              <>
-                {values.length > 0 ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setValues([]);
-                      onChangeMultiple?.([]);
-                    }}
-                    className="mb-1 min-h-11 w-full rounded-lg px-2 py-1 text-left text-nano font-semibold uppercase tracking-wider text-text-muted hover:bg-panel-soft hover:text-text md:min-h-0"
-                  >
-                    {emptyLabel}
-                  </button>
-                ) : null}
-                {filtered.map((option) => {
-                  const checked = selectedSet.has(option.value);
-                  return (
-                    <label
-                      key={option.value}
-                      className={`mt-1 flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition md:min-h-0 ${
-                        checked
-                          ? "bg-accent/[0.12] text-text"
-                          : "text-text-muted hover:bg-panel-soft hover:text-text"
+      {open && coords
+        ? createPortal(
+            <div
+              ref={panelRef}
+              style={{
+                position: "fixed",
+                left: coords.left,
+                width: coords.width,
+                top: coords.top,
+                bottom: coords.bottom,
+              }}
+              className="z-50 rounded-card border border-line bg-panel p-2 shadow-2xl"
+            >
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search..."
+                className="mb-2 h-8 px-2 py-0 text-caption"
+              />
+              <div className="overflow-y-auto" style={{ maxHeight: coords.listMaxHeight }}>
+                {multiple ? (
+                  <>
+                    {values.length > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setValues([]);
+                          onChangeMultiple?.([]);
+                        }}
+                        className="mb-1 min-h-11 w-full rounded-lg px-2 py-1 text-left text-nano font-semibold uppercase tracking-wider text-text-muted hover:bg-panel-soft hover:text-text md:min-h-0"
+                      >
+                        {emptyLabel}
+                      </button>
+                    ) : null}
+                    {filtered.map((option) => {
+                      const checked = selectedSet.has(option.value);
+                      return (
+                        <label
+                          key={option.value}
+                          className={`mt-1 flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition md:min-h-0 ${
+                            checked
+                              ? "bg-accent/[0.12] text-text"
+                              : "text-text-muted hover:bg-panel-soft hover:text-text"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => toggleValue(option.value, event.currentTarget.checked)}
+                            className="h-6 w-6 accent-text-accent md:h-3.5 md:w-3.5"
+                          />
+                          {option.actor ? <MessageAvatar actor={option.actor} size="sm" /> : null}
+                          <span className="min-w-0 flex-1 truncate">
+                            {option.actor ? actorDisplayName(option.actor) : option.label}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        selectValue("");
+                        setOpen(false);
+                        setQuery("");
+                      }}
+                      className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition md:min-h-0 ${
+                        value === "" ? "bg-accent/[0.12] text-text" : "text-text-muted hover:bg-panel-soft hover:text-text"
                       }`}
                     >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={(event) => toggleValue(option.value, event.currentTarget.checked)}
-                        className="h-6 w-6 accent-text-accent md:h-3.5 md:w-3.5"
-                      />
-                      {option.actor ? <MessageAvatar actor={option.actor} size="sm" /> : null}
-                      <span className="min-w-0 flex-1 truncate">
-                        {option.actor ? actorDisplayName(option.actor) : option.label}
-                      </span>
-                    </label>
-                  );
-                })}
-              </>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={() => {
-                    selectValue("");
-                    setOpen(false);
-                    setQuery("");
-                  }}
-                  className={`flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition md:min-h-0 ${
-                    value === "" ? "bg-accent/[0.12] text-text" : "text-text-muted hover:bg-panel-soft hover:text-text"
-                  }`}
-                >
-                  <span className="grid h-11 w-11 place-items-center rounded-full border border-dashed border-line md:h-7 md:w-7">--</span>
-                  <span>{emptyLabel}</span>
-                </button>
-                {filtered.map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    onClick={() => {
-                      selectValue(option.value);
-                      setOpen(false);
-                      setQuery("");
-                    }}
-                    className={`mt-1 flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition md:min-h-0 ${
-                      value === option.value ? "bg-accent/[0.12] text-text" : "text-text-muted hover:bg-panel-soft hover:text-text"
-                    }`}
-                  >
-                    {option.actor ? <MessageAvatar actor={option.actor} size="sm" /> : null}
-                    <span className="min-w-0 flex-1 truncate">
-                      {option.actor ? actorDisplayName(option.actor) : option.label}
-                    </span>
-                  </button>
-                ))}
-              </>
-            )}
-          </div>
-        </div>
-      ) : null}
+                      <span className="grid h-11 w-11 place-items-center rounded-full border border-dashed border-line md:h-7 md:w-7">--</span>
+                      <span>{emptyLabel}</span>
+                    </button>
+                    {filtered.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => {
+                          selectValue(option.value);
+                          setOpen(false);
+                          setQuery("");
+                        }}
+                        className={`mt-1 flex min-h-11 w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-caption transition md:min-h-0 ${
+                          value === option.value ? "bg-accent/[0.12] text-text" : "text-text-muted hover:bg-panel-soft hover:text-text"
+                        }`}
+                      >
+                        {option.actor ? <MessageAvatar actor={option.actor} size="sm" /> : null}
+                        <span className="min-w-0 flex-1 truncate">
+                          {option.actor ? actorDisplayName(option.actor) : option.label}
+                        </span>
+                      </button>
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

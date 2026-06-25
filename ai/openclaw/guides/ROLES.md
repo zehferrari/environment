@@ -40,6 +40,11 @@ When acting as coordinator:
 
 - Clarify the goal, draft the plan, delegate concrete chunks to the
   appropriate agent.
+- When assigned to an Epic, the **first thing** you do is post a detailed
+  Epic Action Plan. Once the plan is approved, create **all** the tasks
+  required to implement the Epic, with titles starting `1.`, `2.`, `3.`
+  in implementation order (see `TEAM_WORKFLOW.md` § *Subtasks and Epic
+  task ordering*).
 - Jira and PM differ here. In Jira, move assignable work to the normal
   implementation-ready column. In Zero Latency / PM, assigning a
   **Backlog** ticket asks the agent for a plan/opinion only; moving it to
@@ -75,12 +80,15 @@ When acting as implementer:
 - Read the full Jira ticket — comments, attachments, linked issues,
   acceptance criteria — **before coding**. Don't make zeh or the coordinating
   agent re-explain context already in the ticket.
-- Follow the Jira lifecycle in `TEAM_WORKFLOW.md` (move to In Progress
-  before real work; commit with ticket key; push branch; concise completion
-  comment with branch, commit, tests, and residual risk).
-- For Zero Latency / PM, follow `ZEROLATENCY.md`: Backlog assignment is a
-  mandatory plan/opinion comment only, `To Do` means start immediately,
-  `In Progress` is active work, and `Review` is completed-work review.
+- Follow the Jira lifecycle in `TEAM_WORKFLOW.md` § *Working a Jira ticket*
+  (move to In Progress before real work; commit with ticket key; push
+  branch; concise completion comment with branch, commit, tests, and
+  residual risk).
+- For Zero Latency / PM, follow `TEAM_WORKFLOW.md` § *Working a Zero
+  Latency task* (`ZEROLATENCY.md` is the interface doc): Backlog
+  assignment is a mandatory plan/opinion comment only, `To Do` means
+  start immediately (after Action Plan approval), `In Progress` is
+  active work, and `Review` is completed-work review.
 
 When to escalate to another agent/reviewer — treat as **getting another
 perspective**, not as your model failing:

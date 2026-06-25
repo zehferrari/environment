@@ -1,9 +1,10 @@
 # BITBUCKET.md
 
 Bitbucket-specific workflow for OpenClaw agents working in shared code
-repositories. Use this with [`TEAM_WORKFLOW.md`](./TEAM_WORKFLOW.md),
-[`CODE_REPOS.md`](./CODE_REPOS.md), and the source-system file for the
-work item (`JIRA.md` or `ZEROLATENCY.md`).
+repositories. Use this with [`../WORKFLOW.md`](../WORKFLOW.md)
+(the single workflow authority for both Jira and Zero Latency / PM) and
+[`./CODE_REPOS.md`](./CODE_REPOS.md). For the PM webapp interface, see
+[`./ZEROLATENCY.md`](./ZEROLATENCY.md).
 
 ## Scope
 

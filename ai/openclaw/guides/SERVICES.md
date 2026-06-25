@@ -13,7 +13,7 @@ x1 uses systemd timers for active automation. Cron references in old migration n
 
 ## System Services
 
-- `ollama.service`: local Ollama API on `0.0.0.0:11434`; firewalld permits raw access only from moonlight (`10.0.0.10`). Agent configs use the moonlight proxy at `http://ollama.local`.
+- `ollama.service`: local Ollama API on `0.0.0.0:11434`; firewalld permits raw access only from moonlight (`10.0.0.10`). Agent `models.providers.ollama.baseUrl` points at `http://127.0.0.1:11434` (the local instance directly). The previous `http://ollama.local` indirection through moonlight is **deprecated** — its nginx upstream pointed at a different LAN host that did not serve the agents' `:cloud` models.
 - `nginx.service`: local reverse proxy/static serving on x1.
 - `mariadb.service`: local DB.
 - `php-fpm.service`: local PHP runtime.

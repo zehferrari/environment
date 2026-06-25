@@ -59,7 +59,7 @@ The monitor agent can build any worktree and point the live PM site
 webapp (a git/worktree-exposed project's Settings → Worktree live preview,
 admin only). Exactly one worktree is served at a time; all share
 the same DB + env, so only the served code changes. Full design:
-[`ai/web/deploy/MULTI_AGENT_WORKTREES.md`](../web/deploy/MULTI_AGENT_WORKTREES.md).
+[`ai/web/deploy/MULTI_AGENT_WORKTREES.md`](../../web/deploy/MULTI_AGENT_WORKTREES.md).
 
 ## Mandatory branch workflow
 

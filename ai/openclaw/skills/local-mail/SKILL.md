@@ -2,7 +2,7 @@
 
 Use this skill on `yoga510` for agent email. Incoming mail is delivered by Postfix to `~/Maildir`; outgoing mail is sent through local Postfix using `/usr/sbin/sendmail`.
 
-Before acting on or replying to mail, check the `allowlist` field returned by the list/get helpers. The allowlist lives in `auto-reply-policy.json`; `mail-send.js` and `mail-reply.js` refuse recipients outside that policy. They also reject unsigned outbound email; every email body must end with `--`, `<First name>`, and `<provider>/<model>` per `TEAM_WORKFLOW.md`. The listener records dispatch state in `~/.openclaw/mail/dispatch-state.json` and wakes the main agent for unread allowlisted messages. Successful dispatches are recorded once; failed dispatches remain retryable after the cooldown, and stale in-flight dispatches are retried after the timeout.
+Before acting on or replying to mail, check the `allowlist` field returned by the list/get helpers. The allowlist lives in `auto-reply-policy.json`; `mail-send.js` and `mail-reply.js` refuse recipients outside that policy. They also reject unsigned outbound email; every email body must end with `--`, `<First name>`, and `<provider>/<model>` per `../../WORKFLOW.md`. The listener records dispatch state in `~/.openclaw/mail/dispatch-state.json` and wakes the main agent for unread allowlisted messages. Successful dispatches are recorded once; failed dispatches remain retryable after the cooldown, and stale in-flight dispatches are retried after the timeout.
 
 Commands:
 

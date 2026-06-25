@@ -338,8 +338,17 @@ write_agent_files() {
   link_home_openclaw_config "$user"
 }
 
-setup_doc_symlinks() {
-  # setup_doc_symlinks <user> <role> — agent docs point at the validated checkout.
+setup_doc_copies() {
+  # setup_doc_copies <user> <role> — copy agent docs from the validated
+  # checkout into the agent's workspace(s). Uses content-diff-gated copies
+  # (not symlinks) so agents get stable files that don't track a mutable
+  # worktree. Files are overwritten only when content differs.
+  #
+  # Common docs (every agent): AGENTS, WORKFLOW, guides/ROLES,
+  # guides/CODE_REPOS, USER. Monitor-only: guides/INCIDENT_HANDLING,
+  # guides/MONITORING, guides/SERVICES. The guides/ files are copied
+  # flat to the workspace root (e.g. ROLES.md, not guides/ROLES.md) so
+  # agents see them at the same path they always have.
   local user="$1" role="$2"
   local home="/home/$user"
   local docs="$REPO_ROOT/ai/openclaw"
@@ -347,17 +356,40 @@ setup_doc_symlinks() {
   local ows="$home/.openclaw/workspace"
   mkdir -p "$ws" "$ows"
 
-  link_doc /srv/agents/openclaw/_shared/USER.md "$ws/USER.md"
-  link_doc /srv/agents/openclaw/_shared/USER.md "$ows/USER.md"
-  local d
-  for d in AGENTS ROLES TEAM_WORKFLOW CODE_REPOS; do
-    link_doc "$docs/$d.md" "$ws/$d.md"
-    link_doc "$docs/$d.md" "$ows/$d.md"
-  done
+  copy_doc() {
+    # copy_doc <src> <dst> — overwrite dst only if content differs.
+    local src="$1" dst="$2"
+    if [[ ! -f "$src" ]]; then
+      echo "Warning: missing source $src — skipping" >&2
+      return 0
+    fi
+    if [[ -L "$dst" ]]; then
+      rm -f "$dst"
+    elif [[ -d "$dst" ]]; then
+      if ! rmdir "$dst" 2>/dev/null; then
+        echo "Warning: refusing to replace non-empty directory $dst with copy of $src" >&2
+        return 0
+      fi
+    fi
+    if [[ ! -f "$dst" ]] || ! cmp -s "$src" "$dst"; then
+      install -o "$user" -g "$user" -m 0644 "$src" "$dst"
+    fi
+  }
+
+  copy_doc /srv/agents/openclaw/_shared/USER.md "$ws/USER.md"
+  copy_doc /srv/agents/openclaw/_shared/USER.md "$ows/USER.md"
+  copy_doc "$docs/AGENTS.md"   "$ws/AGENTS.md"
+  copy_doc "$docs/AGENTS.md"   "$ows/AGENTS.md"
+  copy_doc "$docs/WORKFLOW.md" "$ws/WORKFLOW.md"
+  copy_doc "$docs/WORKFLOW.md" "$ows/WORKFLOW.md"
+  copy_doc "$docs/guides/ROLES.md"      "$ws/ROLES.md"
+  copy_doc "$docs/guides/ROLES.md"      "$ows/ROLES.md"
+  copy_doc "$docs/guides/CODE_REPOS.md" "$ws/CODE_REPOS.md"
+  copy_doc "$docs/guides/CODE_REPOS.md" "$ows/CODE_REPOS.md"
   if [[ "$role" == "monitor" ]]; then
-    for d in INCIDENT_HANDLING MONITORING SERVICES; do
-      link_doc "$docs/$d.md" "$ows/$d.md"
-    done
+    copy_doc "$docs/guides/INCIDENT_HANDLING.md" "$ows/INCIDENT_HANDLING.md"
+    copy_doc "$docs/guides/MONITORING.md"        "$ows/MONITORING.md"
+    copy_doc "$docs/guides/SERVICES.md"          "$ows/SERVICES.md"
   fi
   link_doc /srv/Code "$home/Code"
   chown -h "$user:$user" "$home/Code" 2>/dev/null || true
@@ -532,7 +564,7 @@ EOF
       [[ "$p_uid" == "$uid" ]]   || die "payload .entry.uid ($p_uid) does not match $uid"
 
       write_agent_files "$user" "$payload"
-      setup_doc_symlinks "$user" "$role"
+      setup_doc_copies "$user" "$role"
       setup_picture_dir "$user"
       upsert_registry_entry "$payload"
       write_telegram_token "$user" "$payload"
@@ -584,7 +616,7 @@ EOF
     uid=$(id -u "$user")
 
     write_agent_files "$user" "$payload"
-    setup_doc_symlinks "$user" "$role"
+    setup_doc_copies "$user" "$role"
     setup_picture_dir "$user"
     upsert_registry_entry "$payload"
     write_telegram_token "$user" "$payload"

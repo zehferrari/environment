@@ -20,13 +20,18 @@ For broader context:
 ├── install.sh             host bootstrap/reconcile script for OpenClaw services and PM wake hooks
 ├── AGENT_FILES.md         per-agent files (NOT in this repo) and what each is for
 ├── ENVIRONMENT.md         "where things live" map (source of truth + policy)
-├── SERVICES.md            service catalog
-├── MONITORING.md          monitoring topology overview
 ├── AGENTS.md              shared agent operating manual (every agent reads it)
-├── ROLES.md               task-role behaviour for coding agents + monitor role
-├── TEAM_WORKFLOW.md       canonical workflow rules — symlinked into every agent's workspace
-├── CODE_REPOS.md          shared /srv/Code/ project repos + mandatory branch workflow
+├── WORKFLOW.md            canonical workflow rules — symlinked into every agent's workspace
 ├── index.example.json     agent registry template (single record) — copy to /etc/openclaw/agents.json (live, NOT in repo) and edit
+├── guides/
+│   ├── ROLES.md           task-role behaviour for coding agents + monitor role
+│   ├── SERVICES.md        service catalog
+│   ├── MONITORING.md      monitoring topology overview
+│   ├── CODE_REPOS.md      shared /srv/Code/ project repos + mandatory branch workflow
+│   ├── INCIDENT_HANDLING.md  Karen's incident triage protocol
+│   ├── JIRA.md            Jira-specific workflow (comments, mentions, queue, assignment, working a ticket)
+│   ├── BITBUCKET.md       Bitbucket-specific workflow (branches, commits, Smart Commits, review, PR boundary)
+│   └── ZEROLATENCY.md     Zero Latency / ai/web PM interface guide (routes, tabs, fields, agent runtime contract)
 └── skills/
     ├── agent-self.js      registry-driven identity resolver (reads /etc/openclaw/agents.json by os.userInfo().username)
     ├── jira/              Jira API helpers (jira-comment.js, jira-transition.js, lib.js, …)
@@ -34,12 +39,12 @@ For broader context:
     └── local-mail/        yoga510 Maildir/Postfix helpers and allowlist policy
 ```
 
-The split between `AGENTS.md` and `ROLES.md` is deliberate: every agent reads the
-**same** `AGENTS.md` (operating baseline). Coding agents then use `ROLES.md` to
+The split between `AGENTS.md` and `guides/ROLES.md` is deliberate: every agent reads the
+**same** `AGENTS.md` (operating baseline). Coding agents then use `guides/ROLES.md` to
 map the live ticket/Epic context to a task role; `manager` and `developer` are
 not standing personas. `monitor` remains a standing operational role for Karen.
 One unique source per concern: identity baseline (`AGENTS.md`), task-role
-behaviour (`ROLES.md`), task workflow (`TEAM_WORKFLOW.md`).
+behaviour (`guides/ROLES.md`), task workflow (`WORKFLOW.md`).
 
 ## How agents see this repo
 
@@ -51,11 +56,11 @@ worktree checkout, not a stale main checkout.
 |---|---|
 | `/home/<user>/workspace/AGENTS.md` | `<openclaw-root>/AGENTS.md` (single shared file for every agent) |
 | `/home/<user>/.openclaw/workspace/AGENTS.md` | same |
-| `/home/<user>/workspace/ROLES.md` | `<openclaw-root>/ROLES.md` |
+| `/home/<user>/workspace/ROLES.md` | `<openclaw-root>/guides/ROLES.md` |
 | `/home/<user>/.openclaw/workspace/ROLES.md` | same |
-| `/home/<user>/workspace/TEAM_WORKFLOW.md` | `<openclaw-root>/TEAM_WORKFLOW.md` |
-| `/home/<user>/.openclaw/workspace/TEAM_WORKFLOW.md` | same |
-| `/home/<user>/workspace/CODE_REPOS.md` | `<openclaw-root>/CODE_REPOS.md` |
+| `/home/<user>/workspace/WORKFLOW.md` | `<openclaw-root>/WORKFLOW.md` |
+| `/home/<user>/.openclaw/workspace/WORKFLOW.md` | same |
+| `/home/<user>/workspace/CODE_REPOS.md` | `<openclaw-root>/guides/CODE_REPOS.md` |
 | `/home/<user>/.openclaw/workspace/CODE_REPOS.md` | same |
 | `/home/<user>/.openclaw/workspace/jira/*.js` | `<openclaw-root>/skills/jira/` |
 | `/home/<user>/.openclaw/skills/google-workspace/*.js` | `<openclaw-root>/skills/google-workspace/` |
@@ -67,7 +72,7 @@ worktree checkout, not a stale main checkout.
 
 Note: the monitor agent has only the `~/.openclaw/workspace/` paths. The
 user-facing `~/workspace/` may not exist for monitor users, so
-AGENTS/ROLES/TEAM_WORKFLOW are symlinked once each there.
+AGENTS/ROLES/WORKFLOW are symlinked once each there.
 
 Per-agent **identity**, **memory**, and **OpenClaw runtime config** are
 symlinked to the host's private agent-files root, defaulting to

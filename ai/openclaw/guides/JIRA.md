@@ -1,9 +1,11 @@
 # JIRA.md
 
 Jira-specific workflow for the OpenClaw agent fleet. Use this together
-with [`TEAM_WORKFLOW.md`](./TEAM_WORKFLOW.md), [`ROLES.md`](./ROLES.md),
-and [`BITBUCKET.md`](./BITBUCKET.md) when a task comes from Jira or an
-Atlassian notification.
+with [`../WORKFLOW.md`](../WORKFLOW.md) (the single workflow authority),
+[`./ROLES.md`](./ROLES.md), and [`./BITBUCKET.md`](./BITBUCKET.md) when
+a task comes from Jira or an Atlassian notification.
+
+If this file and `WORKFLOW.md` ever conflict, `WORKFLOW.md` wins.
 
 ## Quick index
 
@@ -14,13 +16,13 @@ Atlassian notification.
 | Choose the next Jira task | [Picking Jira work](#picking-jira-work) |
 | Start an assigned issue | [Working a Jira ticket](#working-a-jira-ticket) |
 | Assign or hand off an issue | [Jira assignment](#jira-assignment) |
-| Push code for a Jira issue | [`BITBUCKET.md`](./BITBUCKET.md) |
+| Push code for a Jira issue | [`./BITBUCKET.md`](./BITBUCKET.md) |
 
 ---
 
 ## Jira comments
 
-- Follow [`TEAM_WORKFLOW.md` -> Sending an outbound](./TEAM_WORKFLOW.md#sending-an-outbound)
+- Follow [`../WORKFLOW.md` -> Sending an outbound](../WORKFLOW.md#sending-an-outbound)
   for markdown, body-passing, and signature rules.
 - Jira comments are written with the Jira helpers (`jira-comment.js`
   converts markdown to Atlassian Document Format).
@@ -40,7 +42,11 @@ Atlassian notification.
 
 If you're @-mentioned in a Jira comment, you **must** post a reply on
 that ticket, even if the ticket is not assigned to you. Silence is not
-an option.
+an option. The webhook receiver will wake you with a prefix like:
+
+```text
+You were @-mentioned in <KEY> by <name>. ...
+```
 
 - **You can help**: do the work, reply with results, and sign per the
   signature rule.
@@ -49,37 +55,29 @@ an option.
   the right person if redirection is needed.
 - **Ticket is someone else's**: reply in the comment thread only. Do
   **not** transition the ticket or take it over without explicit handoff.
+- **Backlog exception**: the reply is mandatory, but no action may be
+  applied to a Backlog ticket (see
+  [`../WORKFLOW.md` -> Receiving a mention](../WORKFLOW.md#receiving-a-mention)).
+- If you do not reply within 15 minutes, `ai-monitor` fires
+  `mention-awaiting-reply` warn; at 60 minutes or more it fires crit.
 
 This rule supersedes the "only my tickets" default for the duration of
-the @-mention thread. The webhook receiver will wake you with a prefix
-like:
-
-```text
-You were @-mentioned in <KEY> by <name>. ...
-```
-
-If you do not reply within 15 minutes, ai-monitor fires
-`mention-awaiting-reply` warn; at 60 minutes or more it fires crit.
+the @-mention thread.
 
 ---
 
 ## Picking Jira work
 
 After completing a ticket, email, or Telegram task, pick the next Jira
-task using this **fixed priority order**. Tier 1 must be exhausted
-before tier 2 or 3.
+task using the [fixed priority order in `WORKFLOW.md`](../WORKFLOW.md#picking-your-next-task).
+Jira queue/status names:
 
-0. **Explicit wake/system-event task.** If the current turn says to
-   process a specific queued email, Telegram request, Jira
-   mention/ticket, or `~/tasks/current.md` entry, do that first. The task
-   is not complete until the requested source-channel reply/action is
-   done and the task entry is updated out of `QUEUED`.
+0. **Explicit wake/system-event task.** As above.
 1. **Unanswered feedback on your review-stage tickets.** A round is
    "unanswered" when the latest comment on a ticket in `In Review` /
    `Wait for Review` is from someone other than you, postdates your last
    comment, and postdates the most recent transition into review. Oldest
-   comment first. Respond with **concrete action** (code change pushed,
-   plan revised, question answered), not just acknowledgement.
+   comment first. Respond with **concrete action**.
 2. **`Selected for Development` tickets assigned to you**, oldest
    `created` first. These are zeh-approved to start. Send the one allowed
    Telegram start notice, move to `In Progress`, and work in Jira.
@@ -87,7 +85,7 @@ before tier 2 or 3.
    agent assigned without zeh's approval, leave it for zeh to triage.
    Otherwise post a one-line Jira intent comment, move to `In Progress`,
    and proceed.
-4. **`Backlog`**: always skip.
+4. **`Backlog`**: always skip (reply to mentions only, no action).
 5. **Unassigned tickets**: do not claim them. If one looks important,
    report the finding in Jira or hand it to the manager / zeh for
    assignment.
@@ -141,8 +139,8 @@ agent.
 10. Use a ticket-key branch. Commit messages include the ticket key.
     For Bitbucket-backed repos under `/srv/Code/`, the target branch
     **must** be named in the Jira ticket; do not start without one. Full
-    branch workflow: [`BITBUCKET.md`](./BITBUCKET.md) and
-    [`CODE_REPOS.md`](./CODE_REPOS.md).
+    branch workflow: [`./BITBUCKET.md`](./BITBUCKET.md) and
+    [`./CODE_REPOS.md`](./CODE_REPOS.md).
 11. For risky / ambiguous / multi-step work needing approval, post a
     concise plan **before** implementation.
 12. Run relevant tests/builds, or state plainly what could not be tested.
@@ -151,8 +149,8 @@ agent.
 14. **Do not create or merge a PR.** Creating and landing pull requests
     are exclusively human operator actions. No role, review verdict,
     elapsed time, or "looks fine" judgement authorises an agent to create
-    or merge one. See [`BITBUCKET.md`](./BITBUCKET.md) and
-    [CODE_REPOS.md -> Pull Requests](./CODE_REPOS.md#pull-requests--humans-only).
+    or merge one. See [`./BITBUCKET.md`](./BITBUCKET.md) and
+    [`../WORKFLOW.md` -> Code and PR boundary](../WORKFLOW.md#code-and-pr-boundary).
 15. On completion, move the ticket to `Wait for Review` (or the project
     equivalent `In Review`). Post a concise completion comment with
     branch, commit, tests, and residual risk. Sign it.
@@ -160,7 +158,7 @@ agent.
     project workflow clearly assigns Done ownership to you.
 17. When you flip the matching `~/tasks/current.md` entry to a terminal
     status, move it to `~/tasks/log.md` in the same edit. See
-    [TEAM_WORKFLOW.md -> Maintaining tasks/current.md](./TEAM_WORKFLOW.md#maintaining-taskscurrentmd).
+    [`../WORKFLOW.md` -> Maintaining tasks/current.md](../WORKFLOW.md#maintaining-taskscurrentmd).
 
 ---
 
@@ -193,4 +191,4 @@ Jira owns the issue lifecycle. Bitbucket owns branch/push/PR mechanics.
 - Put completion evidence in Jira: branch, commit, tests, residual risk.
 - Do not rely on commit side effects to communicate required status.
 - Smart Commit details and local guardrails live in
-  [`BITBUCKET.md`](./BITBUCKET.md#smart-commits).
+  [`./BITBUCKET.md`](./BITBUCKET.md#smart-commits).

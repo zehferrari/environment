@@ -11,11 +11,72 @@ Unified settings and documentation for the hosts in this network. One folder per
 
 Host inventory below covers the networked roles (where they live, what they do); per-host deep docs live in the folders above.
 
+## Document index
+
+Every Markdown doc in the tree, grouped by folder. Agent-facing files (symlinked into each agent's workspace by `openclaw-manage-user`) are marked **(agent-facing)** — edits to those reach running agents on the next worktree reconcile, so change them with care.
+
+### Root
+
+| File | Purpose |
+|---|---|
+| [`README.md`](./README.md) | This file. Network host inventory, deployment model, branch workflow. `CLAUDE.md` and `AGENTS.md` are symlinks to it. |
+
+### `ai/` — x1 host + agent runtime
+
+| File | Purpose |
+|---|---|
+| [`ai/README.md`](./ai/README.md) | x1 host doc: identity, disk, network, power, web/DB stack, Hyprland, OpenClaw architecture, Gmail automation, Ollama, monitoring/recovery, dashboard, yoga510 duplication guide. |
+| [`ai/X1.md`](./ai/X1.md) | x1 OpenClaw agents: runtime layout, agent lifecycle management, Gmail/Google watchers, models/providers, Jira/webhooks, services, validation. |
+| [`ai/CHANGELOG.md`](./ai/CHANGELOG.md) | Historical change notes for the x1 stack (dated 2026-05-08 → 2026-05-20). Frozen as-of each date. |
+
+### `ai/openclaw/` — shared agent operating rules + skills
+
+| File | Symlinked to agents? | Purpose |
+|---|---|---|
+| [`AGENTS.md`](./ai/openclaw/AGENTS.md) | **Yes (all)** | Operating baseline every agent reads: always-on rules, PM context, session/heartbeat/memory/tools. |
+| [`ROLES.md`](./ai/openclaw/guides/ROLES.md) | **Yes (all)** | Task-role behaviour (manager/coordinator, implementer, monitor). |
+| [`WORKFLOW.md`](./ai/openclaw/WORKFLOW.md) | **Yes (all)** | Action-indexed playbook: outbound, mentions, next-task, working/reviewing, email, Telegram, escalation. |
+| [`CODE_REPOS.md`](./ai/openclaw/guides/CODE_REPOS.md) | **Yes (all)** | Shared `/srv/Code` checkout mechanics, `claim-branch`, git identity, PR boundary. |
+| [`USER.md`](./ai/openclaw/USER.md) | **Yes (all)** | About the human operator (Zeh). |
+| [`INCIDENT_HANDLING.md`](./ai/openclaw/guides/INCIDENT_HANDLING.md) | **Yes (monitor)** | Karen's incident triage protocol: tier framework, action playbook by kind. |
+| [`MONITORING.md`](./ai/openclaw/guides/MONITORING.md) | **Yes (monitor)** | Monitoring topology: what gets watched, registry-driven probes, tier framework, dashboard. |
+| [`SERVICES.md`](./ai/openclaw/guides/SERVICES.md) | **Yes (monitor)** | Service catalog: system timers, system/user services, operational commands. |
+| `ENVIRONMENT.md` | No | "Where things live" map + policy. |
+| `AGENT_FILES.md` | No | Per-agent unique files (not in repo) and what each is for. |
+| [`JIRA.md`](./ai/openclaw/guides/JIRA.md) | No | Jira-specific workflow (comments, mentions, queue, assignment, working a ticket). |
+| [`BITBUCKET.md`](./ai/openclaw/guides/BITBUCKET.md) | No | Bitbucket-specific workflow (branches, commits, Smart Commits, review, PR boundary). |
+| [`ZEROLATENCY.md`](./ai/openclaw/guides/ZEROLATENCY.md) | No | Zero Latency / `ai/web` PM **interface guide** (routes, tabs, fields, agent runtime contract). Workflow behaviour is in `WORKFLOW.md`. |
+| `YOGA510.md` | No | yoga510 agent host install notes. |
+| `README.md` | No | Folder overview, layout, editing/host-install notes. |
+| `install.sh` | No | Host bootstrap/reconcile script for OpenClaw services + PM hooks. |
+| `agent-defaults.json` | No | Derived service/capability defaults schema (`core`/`byRole`/`byIntegration`). |
+| `index.example.json` | No | Single-record agent registry template. |
+
+### `ai/web/` — PM webapp (Zero Latency)
+
+| File | Purpose |
+|---|---|
+| [`ai/web/README.md`](./ai/web/README.md) | PM workspace: stack, routes, library layout, agent fleet, capability map, agent runtime contract, schema, env vars, deployment. |
+| [`ai/web/deploy/README.md`](./ai/web/deploy/README.md) | PM deployment notes: files, worktree switcher, branch verifier, service model, first-time install. |
+| [`ai/web/deploy/MULTI_AGENT_WORKTREES.md`](./ai/web/deploy/MULTI_AGENT_WORKTREES.md) | Multi-agent worktree + monitor-driven live-preview design. |
+| `ai/web/docs/agent-pm-api.md` | Agent-facing PM API contract (read once on first PM-channel turn). |
+| `ai/web/docs/agent-interaction.md` | Agent-facing PM interaction contract (chat/comment/proposal). |
+| `ai/web/lib/pm-dispatch/README.md` | Dispatch seam emitter side. |
+| `ai/web/lib/pm-consumer/README.md` | Consumer/dispatcher (OpenClaw-side) service. |
+
+### Desktop configs
+
+| File | Purpose |
+|---|---|
+| [`p16s/README.md`](./p16s/README.md) | ThinkPad P16s Gen 2 Hyprland/Wayland config (thinkpad). |
+| [`zeus/README.md`](./zeus/README.md) | Fedora workstation Hyprland config + ComfyUI/Confy image service (zeus, `10.0.0.17`). |
+| [`ha/README.md`](./ha/README.md) | Home Assistant configuration notes (homeassistant). |
+
 ## x1
 
 - Host/IP: `x1`, `10.0.0.108`
 - OS: openSUSE Tumbleweed
-- Role: OpenClaw multi-agent host, WDT playground host, local service host.
+- Role: OpenClaw multi-agent host, Development playground, local service host.
 - Active users and their roles are listed in `/etc/openclaw/agents.json`
   (historically also exposed at `/srv/agents/index.json`). UIDs start at 1001
   for agents.
@@ -57,7 +118,7 @@ Host inventory below covers the networked roles (where they live, what they do);
 ## thinkpad
 
 - Host/IP: `thinkpad`, `10.0.0.105`
-- Role: previous OpenClaw agent host; current portable Hyprland/Wayland laptop.
+- Role: openSUSE Tumbleweed Hyprland/Wayland laptop.
 - Current status: migrated user services and linger are disabled; source homes remain intact for reference only.
 - Desktop config: [`p16s/`](./p16s).
 
@@ -74,9 +135,12 @@ deeper docs before acting:
 
 - **x1 host + agent runtime:** [`ai/README.md`](./ai), [`ai/X1.md`](./ai/X1.md)
 - **Agent operating rules (the OpenClaw fleet reads these):**
-  [`ai/openclaw/`](./ai/openclaw) — `AGENTS.md`, `ROLES.md`, `TEAM_WORKFLOW.md`,
-  `CODE_REPOS.md`, `SERVICES.md`, `MONITORING.md`, `JIRA.md`, `BITBUCKET.md`,
-  `INCIDENT_HANDLING.md`
+  [`ai/openclaw/`](./ai/openclaw) — `AGENTS.md`, `guides/ROLES.md`,
+  `WORKFLOW.md` (single workflow authority for Jira + PM),
+  `guides/CODE_REPOS.md`, `guides/SERVICES.md`, `guides/MONITORING.md`,
+  `guides/BITBUCKET.md`, `guides/INCIDENT_HANDLING.md`, `guides/JIRA.md`
+  (Jira-specific workflow — no longer a stub), `guides/ZEROLATENCY.md`
+  (the `ai/web` PM interface guide).
 - **PM webapp deploy:** [`ai/web/deploy/README.md`](./ai/web/deploy/README.md)
 
 ### Deployment model

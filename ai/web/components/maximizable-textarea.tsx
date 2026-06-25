@@ -55,7 +55,7 @@ function MaximizableTextarea({
         {...props}
         value={text}
         onChange={(event) => updateValue(event.currentTarget.value)}
-        className={`${className} pr-10`}
+        className={`${className} pr-12`}
       />
       <Button
         type="button"
@@ -63,12 +63,12 @@ function MaximizableTextarea({
         aria-label="Maximize text input"
         title="Maximize"
         variant="ghost"
-        className="absolute right-2 top-2 h-11 w-11 rounded-md bg-panel p-0 shadow-sm md:h-7 md:w-7"
+        className="absolute right-2 top-2 h-11 w-11 rounded-md bg-panel p-0 shadow-sm md:h-9 md:w-9"
       >
         <svg
           aria-hidden="true"
-          width="14"
-          height="14"
+          width="18"
+          height="18"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"

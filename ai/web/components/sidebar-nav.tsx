@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import AvatarStatus from "@/components/avatar-status";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 export type SidebarAgent = {
@@ -60,6 +60,26 @@ const NAV_COLORS: Record<string, TileColor> = {
   users: { bg: "rgba(16,185,129,0.14)", fg: "#059669" }, // emerald
   signOut: { bg: "rgba(239,68,68,0.14)", fg: "#dc2626" }, // rose
 };
+
+const PROJECT_LABEL_COLORS: TileColor[] = [
+  { bg: "rgba(45,108,223,0.14)", fg: "#2d6cdf" },
+  { bg: "rgba(5,150,105,0.14)", fg: "#059669" },
+  { bg: "rgba(217,119,6,0.16)", fg: "#d97706" },
+  { bg: "rgba(220,38,38,0.13)", fg: "#dc2626" },
+  { bg: "rgba(124,58,237,0.14)", fg: "#7c3aed" },
+  { bg: "rgba(8,145,178,0.14)", fg: "#0891b2" },
+  { bg: "rgba(219,39,119,0.13)", fg: "#db2777" },
+  { bg: "rgba(22,101,52,0.14)", fg: "#166534" },
+];
+
+function colorForProject(project: SidebarProject): TileColor {
+  const source = project.slug || project.name;
+  let hash = 0;
+  for (let i = 0; i < source.length; i += 1) {
+    hash = (hash * 31 + source.charCodeAt(i)) >>> 0;
+  }
+  return PROJECT_LABEL_COLORS[hash % PROJECT_LABEL_COLORS.length]!;
+}
 
 /** Lucide-style icons (24×24, stroke=currentColor) to match the rest of the app. */
 const icons = {
@@ -204,11 +224,11 @@ export default function SidebarNav({
   const [collapsed, setCollapsed] = useState(false);
   const [expandedWorkspaceSlugs, setExpandedWorkspaceSlugs] = useState<string[]>([]);
   const [selectedWorkspaceSlug, setSelectedWorkspaceSlug] = useState<string>("");
-  const [workspaceQuery, setWorkspaceQuery] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const mobileSheetRef = useRef<HTMLDivElement | null>(null);
   const mobileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const pathname = usePathname();
+  const router = useRouter();
 
   // Read persisted state after mount to avoid an SSR/hydration mismatch.
   useEffect(() => {
@@ -251,6 +271,9 @@ export default function SidebarNav({
     null;
   const selectedWorkspace = workspaces.find((workspace) => workspace.slug === selectedWorkspaceSlug) ?? null;
   const activeWorkspace = workspaces.find((workspace) => workspace.slug === activeWorkspaceSlug) ?? null;
+  // The current route wins; the persisted selection is only a fallback for
+  // pages that don't imply a workspace (e.g. /agents). Otherwise a stale pin
+  // shadows the workspace/project you just navigated into.
   const workspaceFilter = activeWorkspace ?? selectedWorkspace;
   const activeWorkspaceAgentSlugs = workspaceFilter?.agentSlugs ?? [];
   const visibleAgents = workspaceFilter && activeWorkspaceAgentSlugs.length > 0
@@ -261,9 +284,6 @@ export default function SidebarNav({
   const unassignedProjects = projects.filter((project) => !assignedProjectSlugs.has(project.slug));
   const filteredWorkspaceProjects = workspaceFilter ? workspaceFilter.projects : unassignedProjects;
   const expandedWorkspaceSet = new Set(expandedWorkspaceSlugs);
-  const workspaceOptions = workspaces.filter((workspace) =>
-    `${workspace.name} ${workspace.slug}`.toLowerCase().includes(workspaceQuery.trim().toLowerCase()),
-  );
   const mobilePrimaryItems = [
     { href: "/workspaces", icon: icons.workspaces, label: "Workspaces", active: isWorkspacesActive || isProjectsActive },
     { href: "/agents", icon: icons.agents, label: "Agents", active: isAgentsActive, badge: hasUnreadAgents },
@@ -278,6 +298,22 @@ export default function SidebarNav({
       return next;
     });
   }
+
+  function selectWorkspace(slug: string) {
+    setSelectedWorkspaceSlug(slug);
+    window.localStorage.setItem(SELECTED_WORKSPACE_STORAGE_KEY, slug);
+    router.push(`/workspaces/${slug}`);
+  }
+
+  // Keep the persisted "pin" in sync with the workspace implied by the current
+  // route, so navigating into a workspace/project (not just via the switcher)
+  // updates the filter and carries over to non-workspace pages like /agents.
+  useEffect(() => {
+    if (activeWorkspaceSlug && activeWorkspaceSlug !== selectedWorkspaceSlug) {
+      setSelectedWorkspaceSlug(activeWorkspaceSlug);
+      window.localStorage.setItem(SELECTED_WORKSPACE_STORAGE_KEY, activeWorkspaceSlug);
+    }
+  }, [activeWorkspaceSlug, selectedWorkspaceSlug]);
 
   useEffect(() => {
     if (!mobileMenuOpen) return;
@@ -384,54 +420,7 @@ export default function SidebarNav({
             collapsed={collapsed}
             active={isWorkspacesActive}
           />
-          {!collapsed ? (
-            <div className="space-y-2 rounded-lg border border-line bg-panel-soft p-2">
-              <label className="block text-nano font-semibold uppercase tracking-wider text-text-muted" htmlFor="workspace-combobox">
-                Workspace
-              </label>
-              <input
-                id="workspace-combobox"
-                list="workspace-options"
-                value={workspaceQuery || workspaceFilter?.name || ""}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  setWorkspaceQuery(value);
-                  const match = workspaces.find((workspace) => workspace.name === value || workspace.slug === value);
-                  if (match) {
-                    setSelectedWorkspaceSlug(match.slug);
-                    window.localStorage.setItem(SELECTED_WORKSPACE_STORAGE_KEY, match.slug);
-                  }
-                }}
-                placeholder="Search workspaces..."
-                className="w-full rounded-md border border-line bg-bg px-2 py-1.5 text-caption outline-none focus:border-accent"
-              />
-              <datalist id="workspace-options">
-                {workspaceOptions.map((workspace) => (
-                  <option key={workspace.slug} value={workspace.name}>{workspace.slug}</option>
-                ))}
-              </datalist>
-              <div className="max-h-40 space-y-1 overflow-y-auto">
-                {workspaceOptions.map((workspace) => (
-                  <Link
-                    key={workspace.slug}
-                    href={`/workspaces/${workspace.slug}`}
-                    onClick={() => {
-                      setSelectedWorkspaceSlug(workspace.slug);
-                      setWorkspaceQuery("");
-                      window.localStorage.setItem(SELECTED_WORKSPACE_STORAGE_KEY, workspace.slug);
-                    }}
-                    className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-caption hover:bg-accent-soft hover:text-accent ${workspaceFilter?.slug === workspace.slug ? "text-accent" : "text-text-muted"}`}
-                  >
-                    <span className="grid h-6 w-6 shrink-0 place-items-center overflow-hidden rounded-md border border-line bg-bg text-nano font-semibold uppercase">
-                      {workspace.logoSrc ? <img src={workspace.logoSrc} alt="" className="h-full w-full object-cover" /> : workspace.name.slice(0, 1)}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
-                  </Link>
-                ))}
-              </div>
-            </div>
-          ) : null}
-          {filteredWorkspaceProjects.length > 0 ? (
+          {workspaceFilter || filteredWorkspaceProjects.length > 0 ? (
             <WorkspaceNavGroup
               workspace={{ slug: workspaceFilter?.slug ?? "__unassigned", name: workspaceFilter?.name ?? "Other projects", logoSrc: workspaceFilter?.logoSrc ?? null, projects: filteredWorkspaceProjects, agentSlugs: workspaceFilter?.agentSlugs ?? [] }}
               collapsed={collapsed}
@@ -439,6 +428,9 @@ export default function SidebarNav({
               active={Boolean(workspaceFilter && activeWorkspaceSlug === workspaceFilter.slug)}
               pathname={pathname}
               onToggle={() => toggleWorkspace(workspaceFilter?.slug ?? "__unassigned")}
+              workspaceChoices={workspaceFilter ? workspaces : undefined}
+              selectedWorkspaceSlug={workspaceFilter?.slug ?? ""}
+              onSelectWorkspace={selectWorkspace}
             />
           ) : !collapsed ? (
             <div className="rounded-lg px-3 py-2 text-caption text-text-muted">No projects in this workspace.</div>
@@ -763,6 +755,9 @@ function WorkspaceNavGroup({
   pathname,
   onToggle,
   onNavigate,
+  workspaceChoices,
+  selectedWorkspaceSlug,
+  onSelectWorkspace,
   mobile = false,
 }: {
   workspace: SidebarWorkspace;
@@ -772,9 +767,12 @@ function WorkspaceNavGroup({
   pathname: string | null;
   onToggle: () => void;
   onNavigate?: () => void;
+  workspaceChoices?: SidebarWorkspace[];
+  selectedWorkspaceSlug?: string;
+  onSelectWorkspace?: (slug: string) => void;
   mobile?: boolean;
 }) {
-  const visibleProjects = expanded && !collapsed;
+  const visibleProjects = expanded;
   const tileClass = mobile
     ? "grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-xl border border-line bg-panel-soft text-caption font-semibold uppercase text-text"
     : "grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-lg border border-line bg-panel-soft text-micro font-semibold uppercase text-text";
@@ -783,52 +781,111 @@ function WorkspaceNavGroup({
     : `flex w-full items-center gap-3 rounded-lg py-1.5 text-left hover:bg-accent-soft hover:text-accent ${collapsed ? "justify-center px-0" : "px-3"}`;
   const projectRowClass = mobile
     ? "flex min-h-10 items-center gap-3 rounded-2xl px-3 py-2 text-caption hover:bg-accent-soft hover:text-accent"
-    : "ml-5 flex items-center gap-2 rounded-lg py-1.5 pl-5 pr-3 text-caption hover:bg-accent-soft hover:text-accent";
+    : collapsed
+      ? "flex justify-center rounded-lg py-1.5 hover:bg-accent-soft hover:text-accent"
+      : "ml-5 flex items-center gap-2 rounded-lg py-1.5 pl-5 pr-3 text-caption hover:bg-accent-soft hover:text-accent";
 
   return (
     <div className="space-y-1">
-      <button
-        type="button"
-        title={collapsed ? workspace.name : undefined}
-        aria-expanded={expanded}
-        onClick={onToggle}
-        className={`${rowClass} ${active ? "text-accent" : "text-text-muted"}`}
-      >
-        <span className={tileClass} aria-hidden="true">
-          {workspace.logoSrc ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={workspace.logoSrc} alt="" className="h-full w-full object-cover" />
-          ) : (
-            workspace.name.slice(0, 1)
-          )}
-        </span>
-        {!collapsed ? (
-          <>
-            <span className="min-w-0 flex-1 truncate font-medium">{workspace.name}</span>
-            <span className="shrink-0 text-nano text-text-muted" aria-hidden="true">
-              {expanded ? "▾" : "▸"}
-            </span>
-          </>
-        ) : null}
-      </button>
+      {!collapsed && !mobile && workspaceChoices && workspaceChoices.length > 0 && onSelectWorkspace ? (
+        <div className={`${rowClass} ${active ? "text-accent" : "text-text-muted"}`}>
+          <Link
+            href={`/workspaces/${workspace.slug}`}
+            title={`${workspace.name} hub`}
+            aria-label={`${workspace.name} hub`}
+            className={`${tileClass} transition hover:border-accent hover:text-accent`}
+          >
+            {workspace.logoSrc ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={workspace.logoSrc} alt="" className="h-full w-full object-cover" />
+            ) : (
+              workspace.name.slice(0, 1)
+            )}
+          </Link>
+          <select
+            aria-label="Workspace"
+            value={selectedWorkspaceSlug || workspace.slug}
+            onChange={(event) => onSelectWorkspace(event.currentTarget.value)}
+            className="min-w-0 flex-1 rounded-md border border-line bg-bg px-2 py-1 text-caption font-semibold text-text outline-none focus:border-accent"
+          >
+            {workspaceChoices.map((choice) => (
+              <option key={choice.slug} value={choice.slug}>
+                {choice.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : collapsed && !mobile && workspace.slug !== "__unassigned" ? (
+        <Link
+          href={`/workspaces/${workspace.slug}`}
+          title={`${workspace.name} hub`}
+          aria-label={`${workspace.name} hub`}
+          aria-current={active ? "page" : undefined}
+          className={`${rowClass} ${active ? "text-accent" : "text-text-muted"}`}
+        >
+          <span className={tileClass} aria-hidden="true">
+            {workspace.logoSrc ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={workspace.logoSrc} alt="" className="h-full w-full object-cover" />
+            ) : (
+              workspace.name.slice(0, 1)
+            )}
+          </span>
+        </Link>
+      ) : (
+        <button
+          type="button"
+          title={collapsed ? workspace.name : undefined}
+          aria-expanded={expanded}
+          onClick={onToggle}
+          className={`${rowClass} ${active ? "text-accent" : "text-text-muted"}`}
+        >
+          <span className={tileClass} aria-hidden="true">
+            {workspace.logoSrc ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={workspace.logoSrc} alt="" className="h-full w-full object-cover" />
+            ) : (
+              workspace.name.slice(0, 1)
+            )}
+          </span>
+          {!collapsed ? (
+            <>
+              <span className="min-w-0 flex-1 truncate font-medium">{workspace.name}</span>
+              <span className="shrink-0 text-nano text-text-muted" aria-hidden="true">
+                {expanded ? "▾" : "▸"}
+              </span>
+            </>
+          ) : null}
+        </button>
+      )}
       {visibleProjects ? (
         workspace.projects.length > 0 ? (
           <div className="space-y-1">
             {workspace.projects.map((project) => {
               const href = `/projects/${project.slug}`;
               const projectActive = pathname === href || pathname?.startsWith(`${href}/`);
+              const projectColor = colorForProject(project);
               return (
                 <Link
                   key={project.slug}
                   href={href}
                   onClick={onNavigate}
+                  title={collapsed ? project.name : undefined}
                   aria-current={projectActive ? "page" : undefined}
                   className={`${projectRowClass} ${projectActive ? "text-accent" : "text-text-muted"}`}
                 >
-                  <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-line bg-panel-soft text-[10px] font-semibold uppercase text-text" aria-hidden="true">
+                  <span
+                    className="grid h-6 w-6 shrink-0 place-items-center rounded-md border text-[10px] font-semibold uppercase"
+                    style={{
+                      backgroundColor: projectColor.bg,
+                      borderColor: projectColor.fg,
+                      color: projectColor.fg,
+                    }}
+                    aria-hidden="true"
+                  >
                     {project.name.slice(0, 1)}
                   </span>
-                  <span className="truncate font-medium">{project.name}</span>
+                  {!collapsed ? <span className="truncate font-medium">{project.name}</span> : null}
                 </Link>
               );
             })}

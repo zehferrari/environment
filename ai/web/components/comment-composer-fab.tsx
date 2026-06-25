@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import MaximizableTextarea from "@/components/maximizable-textarea";
 import { Button, Surface } from "@/components/ui/primitives";
 
@@ -21,7 +21,15 @@ export default function CommentComposerFab({
 }) {
   const [open, setOpen] = useState(false);
   const [body, setBody] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const canSubmit = body.trim().length > 0;
+
+  // Focus the textarea whenever the composer opens (the (+) button) so the user
+  // can type straight away — matching the chat / action-plan composers.
+  useEffect(() => {
+    if (!open) return;
+    window.requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [open]);
 
   const submit = async (formData: FormData) => {
     await action(formData);
@@ -66,6 +74,7 @@ export default function CommentComposerFab({
               </Button>
             </div>
             <MaximizableTextarea
+              ref={textareaRef}
               name="body"
               required
               rows={4}

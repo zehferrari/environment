@@ -66,7 +66,7 @@ The action you take depends on **kind** and **tier**. Look up your kind in this 
 
 | Kind | Tier 1 | Tier 2 | Tier 3 |
 |---|---|---|---|
-| `crash-loop` / `inactive` on `ollama.service` | `sudo systemctl restart ollama.service`, sleep 15, re-probe `curl -A node -sf http://ollama.local/api/version` from an agent host, and `curl -sf http://127.0.0.1:11434/api/version` on the backend itself | Restart again + check `journalctl -u ollama -n 50` for clue | Telegram, include the journalctl tail in the message |
+| `crash-loop` / `inactive` on `ollama.service` | `sudo systemctl restart ollama.service`, sleep 15, re-probe `curl -A node -sf http://127.0.0.1:11434/api/version` (the local backend agents hit directly), and confirm `curl -sf http://127.0.0.1:11434/api/version` on the backend itself | Restart again + check `journalctl -u ollama -n 50` for clue | Telegram, include the journalctl tail in the message |
 | `crash-loop` / `inactive` on `nginx.service` | `sudo systemctl restart nginx.service`, sleep 5, re-probe `curl -sI http://127.0.0.1:80` | Same restart again | Telegram |
 | `crash-loop` / `inactive` on `mariadb.service` | `sudo systemctl restart mariadb.service`, sleep 10, re-probe `nc -zv 127.0.0.1 3306` | Same restart again | Telegram |
 | `crash-loop` / `inactive` on `php-fpm.service` | `sudo systemctl restart php-fpm.service`, sleep 5, re-probe `nc -zv 127.0.0.1 9000` | Same restart again | Telegram |
@@ -80,7 +80,7 @@ These are predictable, time-driven, and **should be auto-renewed by cron** — n
 
 | Kind | What it really is | Action |
 |---|---|---|
-| `gmail-watch-expiring` | Gmail watch tokens expire every 7 days. Renewal is `node /srv/Code/environment/ai/openclaw/skills/google-workspace/gmail-watch.js <topic> [labels]` run as the affected agent. | Tier 1: `sudo -u <agent> node /srv/Code/environment/ai/openclaw/skills/google-workspace/gmail-watch.js <topic> <labels>`. Suppress on success. **Also**: leave a one-line note in the decision `reason` saying "no auto-renew cron in place — recommend zeh add a daily timer". This is infrastructure debt, not a real incident. |
+| `gmail-watch-expiring` | Gmail watch tokens expire every 7 days. Renewal is `node <openclaw-root>/skills/google-workspace/gmail-watch.js <topic> [labels]` run as the affected agent, where `<openclaw-root>` is the active OpenClaw checkout (x1: under `/srv/Code/environment.worktrees/<branch>/ai/openclaw`). | Normally **self-healing**: `gmail-watch-renew.timer` runs `/usr/local/sbin/gmail-watch-renew-all` daily at 04:00 and renews every agent's watch from `~/.openclaw/workspace/google/watch-state.json`. If this timer is healthy you never see this incident. If it fires, the timer is broken — Tier 1: manually renew with `sudo -u <agent> node <openclaw-root>/skills/google-workspace/gmail-watch.js <topic> <labels>`, suppress on success, and escalate to zeh in the `reason` that the `gmail-watch-renew.timer` needs investigation. Do **not** recommend "add a daily timer" — it already exists in this repo at `ai/openclaw/systemd/gmail-watch-renew.{service,timer}`. |
 
 ### Resource / observe-only kinds
 

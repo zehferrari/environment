@@ -9,14 +9,14 @@ inventory itself, see [`../../README.md`](../../README.md).
 |---|---|
 | **Active agent roster** (user, role, email, accountId, capabilities, integrations, services, listeners) | `/etc/openclaw/agents.json` → `/srv/agents/index.json` (live runtime, NOT in this repo; the dashboard writes capability/integration toggles back to it). [`index.example.json`](./index.example.json) is the in-repo single-record template. |
 | **Per-agent private identity/memory/config files** (`SOUL`, `USER`, `MEMORY`, `IDENTITY`, `TOOLS`, `HEARTBEAT`, `openclaw.json`) | Top-level `agentFilesRoot` in `/etc/openclaw/agents.json`, default `/srv/agents/openclaw`; workspace/config paths symlink back to `<agentFilesRoot>/<user>/`. |
-| **Workflow rules** (Jira, email, Telegram, formatting, signature, escalation, picking next task) | [`TEAM_WORKFLOW.md`](./TEAM_WORKFLOW.md) |
+| **Workflow rules** (Jira, email, Telegram, formatting, signature, escalation, picking next task) | [`WORKFLOW.md`](./WORKFLOW.md) |
 | **Agent operating baseline** (every agent) | [`AGENTS.md`](./AGENTS.md) |
-| **Role-specific behaviour** (manager / developer / monitor) | [`ROLES.md`](./ROLES.md) |
+| **Role-specific behaviour** (manager / developer / monitor) | [`guides/ROLES.md`](./guides/ROLES.md) |
 | **Shared skill helpers** (Jira, Gmail/Drive, agent-self) | [`skills/`](./skills/) |
 | **Host topology, services, network, monitoring detail, recent changes** | [`../README.md`](../README.md) |
 | **yoga510 agent install** (Maildir/Postfix agent host mapping and validation) | [`YOGA510.md`](./YOGA510.md) |
-| **Service catalog** | [`SERVICES.md`](./SERVICES.md) |
-| **Monitoring topology** | [`MONITORING.md`](./MONITORING.md) |
+| **Service catalog** | [`guides/SERVICES.md`](./guides/SERVICES.md) |
+| **Monitoring topology** | [`guides/MONITORING.md`](./guides/MONITORING.md) |
 | **Per-agent files (NOT in this repo)** | [`AGENT_FILES.md`](./AGENT_FILES.md) |
 | **Webhook routing** (Jira/Bitbucket → coding agent) | `/srv/agents/index.json` via `/etc/openclaw/agents.json` |
 

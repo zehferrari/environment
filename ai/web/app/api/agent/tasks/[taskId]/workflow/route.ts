@@ -15,6 +15,7 @@ import { enqueueBranchVerifyJob } from "@/lib/deploy/branch-verify";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
+import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { createSubTaskItem, setSubTaskCompletion } from "@/lib/tasks/subtasks";
 import { resolveGitIdentity } from "@/lib/settings/system";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
@@ -387,16 +388,29 @@ export async function POST(
       approvedById: agent.user.id,
     });
     if (task.assigneeId) {
+      const autoStart = await startApprovedTodoTaskIfIdle({
+        taskId: task.id,
+        actor,
+        via: "agent-action-plan-approval",
+      });
       await sendTaskWorkflowNotification({
         taskId: task.id,
         targetUserId: task.assigneeId,
         actor,
         reason: "todo_start_required",
-        body: [
-          `The Action Plan for "${task.title}" was approved by @${agent.user.username}.`,
-          "You may now call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
-          "Do not post a visible acknowledgement unless a blocker or material plan change appears.",
-        ].join("\n"),
+        body: autoStart.started
+          ? [
+              `The Action Plan for "${task.title}" was approved by @${agent.user.username}.`,
+              "PM moved the task to In Progress because you have no other In Progress task.",
+              "Start implementing the approved plan now. Do not post a visible acknowledgement unless a blocker or material plan change appears.",
+            ].join("\n")
+          : [
+              `The Action Plan for "${task.title}" was approved by @${agent.user.username}.`,
+              autoStart.reason === "busy"
+                ? "You already have another In Progress task, so this task remains in To Do until you are idle."
+                : "You may now call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
+              "Do not post a visible acknowledgement unless a blocker or material plan change appears.",
+            ].join("\n"),
       });
     } else if (reviewerId) {
       await sendTaskWorkflowNotification({

@@ -3,6 +3,7 @@ import {
   sendTaskWorkflowNotification,
   type TaskWorkflowNotificationReason,
 } from "@/lib/agents/workflow/notifications/task";
+import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 
 type Args = {
   taskId?: string;
@@ -120,11 +121,40 @@ async function main() {
   if (!targetUser) throw new Error(`Active agent user not found for ${args.agent}`);
   if (!sender) throw new Error("No active sender found for PM workflow nudge");
 
-  const requiredAction = args.requiredAction ?? defaultRequiredAction(task.status, args.kind);
+  const actor = {
+    id: sender.id,
+    username: sender.username,
+    kind: sender.kind === "agent" ? "agent" as const : "human" as const,
+  };
+  let requiredAction = args.requiredAction ?? defaultRequiredAction(task.status, args.kind);
+  let autoStarted = false;
+  if (args.kind === "pm-todo-not-started") {
+    const autoStart = await startApprovedTodoTaskIfIdle({
+      taskId: task.id,
+      actor,
+      via: "pm-workflow-nudge",
+    });
+    if (autoStart.started) {
+      autoStarted = true;
+      requiredAction = "PM already moved this approved To Do task to In Progress because you have no other In Progress task. Start implementation now; reply only for new progress, a blocker, or a necessary question.";
+    } else if (autoStart.reason === "busy") {
+      console.log(JSON.stringify({
+        ok: true,
+        skipped: true,
+        reason: "assignee_busy",
+        taskId: task.id,
+        project: task.project.slug,
+        agent: args.agent,
+        kind: args.kind ?? null,
+        activeTask: autoStart.activeTask ?? null,
+      }, null, 2));
+      return;
+    }
+  }
   const body = [
     `PM workflow recovery for @${args.agent}:`,
     "",
-    `Task "${task.title}" is currently in ${task.status}.`,
+    `Task "${task.title}" is currently in ${autoStarted ? "In Progress" : task.status}.`,
     `The monitor agent detected workflow drift${args.kind ? ` (${args.kind})` : ""}.`,
     "",
     `Required action: ${requiredAction}`,
@@ -135,11 +165,7 @@ async function main() {
   const result = await sendTaskWorkflowNotification({
     taskId: task.id,
     targetUserId: targetUser.id,
-    actor: {
-      id: sender.id,
-      username: sender.username,
-      kind: sender.kind === "agent" ? "agent" : "human",
-    },
+    actor,
     reason: reasonForKind(args.kind),
     body,
   });

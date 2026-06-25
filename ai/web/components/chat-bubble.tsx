@@ -109,7 +109,6 @@ export default function ChatBubble({
   actions,
   containerRef,
   className = "",
-  preferShortAgentSections = false,
   participantIndex,
   deliveryStatus,
   isGroupStart = true,
@@ -118,12 +117,13 @@ export default function ChatBubble({
   highlighted = false,
 }: ChatBubbleProps) {
   const [showFullSection, setShowFullSection] = useState(false);
+  const [showThinking, setShowThinking] = useState(false);
   const [touchActionsOpen, setTouchActionsOpen] = useState(false);
   const longPressTimerRef = useRef<number | null>(null);
   const fromAgent = message.sender.kind === "agent";
   const fromCurrentUser = Boolean(currentUserId && message.sender.id === currentUserId);
   const displayName = actorDisplayName(message.sender);
-  const sections = preferShortAgentSections && fromAgent
+  const sections = fromAgent
     ? parseDiscussionReplySections(message.body)
     : null;
   const agentSummary = !sections && fromAgent ? summarizeAgentMessage(message.body) : null;
@@ -133,7 +133,7 @@ export default function ChatBubble({
       ? sections.sectionA
       : sections.sectionB
     : shouldCollapseAgentBody && !showFullSection
-      ? firstParagraphs(message.body, 2)
+      ? agentSummary ?? firstParagraphs(message.body, 2)
       : message.body;
   const parsedOptions = parsePmOptions(rawDisplayBody);
   const displayBody = parsedOptions.body;
@@ -256,22 +256,25 @@ export default function ChatBubble({
             <span className={touchActionsOpen ? "[&_*]:!opacity-100" : undefined}>{actions}</span>
           </div>
         )}
-        {message.thinking && showFullSection ? (
-          <details className="mb-3 rounded-card border border-line bg-bg/70 px-3 py-2 text-caption text-text-muted">
-            <summary className="cursor-pointer font-semibold text-text">Show thinking</summary>
-            <div className="md mt-2 whitespace-pre-wrap text-caption" dangerouslySetInnerHTML={renderChatMarkdown(message.thinking)} />
+        {message.thinking ? (
+          <details
+            className="group mb-3 rounded-lg border border-line bg-panel-soft p-3 font-mono text-micro text-text-muted [&:not([open])]:border-transparent [&:not([open])]:bg-transparent [&:not([open])]:p-0"
+            open={showThinking}
+            onToggle={(event) => setShowThinking(event.currentTarget.open)}
+          >
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-1.5 text-nano font-semibold uppercase tracking-wider outline-none select-none group-open:mb-2 group-open:border-b group-open:border-line group-open:pb-1 [&::-webkit-details-marker]:hidden">
+              <span>Thought Process</span>
+              <span className="text-pico font-normal normal-case text-text-muted opacity-60">
+                {showThinking ? "click to hide" : "click to show"}
+              </span>
+            </summary>
+            <div className="md mt-2 whitespace-pre-wrap leading-relaxed" dangerouslySetInnerHTML={renderChatMarkdown(message.thinking)} />
           </details>
         ) : null}
         <div
           className="md md-compact break-words text-body leading-relaxed text-text [overflow-wrap:anywhere]"
           dangerouslySetInnerHTML={renderChatMarkdown(displayBody)}
         />
-        {shouldCollapseAgentBody && !showFullSection && agentSummary ? (
-          <div className="mt-3 rounded-card border border-line bg-bg/70 px-3 py-2 text-caption text-text-muted">
-            <div className="mb-1 text-nano font-semibold uppercase tracking-wider text-text-muted">Summary</div>
-            <div className="md md-compact" dangerouslySetInnerHTML={renderChatMarkdown(agentSummary)} />
-          </div>
-        ) : null}
         {deliveryStatus ? (
           <div className={`mt-2 text-nano font-semibold uppercase tracking-wider ${deliveryStatus === "failed" ? "text-crit" : "text-text-muted"}`}>
             {deliveryStatus === "failed" ? "Failed to send" : "Sending..."}

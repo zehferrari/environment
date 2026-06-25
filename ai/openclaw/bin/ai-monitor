@@ -1113,6 +1113,54 @@ def _symlink_probe(path, expected, label):
     return item
 
 
+def _content_match_probe(path, expected, label):
+    """Probe that a workspace doc file matches the canonical source by
+    content (hash), not by being a symlink. The propagation model copies
+    docs into workspaces (content-diff gated), so this checks the copy is
+    present and up-to-date rather than checking symlink targets."""
+    import hashlib
+    path = str(path)
+    expected = str(expected)
+    item = {
+        "path": path,
+        "expected": expected,
+        "label": label,
+        "ok": False,
+    }
+
+    def _sha256(fpath):
+        h = hashlib.sha256()
+        try:
+            with open(fpath, "rb") as fh:
+                for chunk in iter(lambda: fh.read(65536), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+        except Exception:
+            return None
+
+    if not os.path.exists(expected):
+        item["reason"] = "source missing"
+        return item
+    if not os.path.exists(path):
+        item["reason"] = "missing"
+        return item
+    expected_hash = _sha256(expected)
+    actual_hash = _sha256(path)
+    if expected_hash is None:
+        item["reason"] = "source unreadable"
+        return item
+    if actual_hash is None:
+        item["reason"] = "file unreadable"
+        return item
+    if actual_hash != expected_hash:
+        item["reason"] = "content drift"
+        item["expected_hash"] = expected_hash[:12]
+        item["actual_hash"] = actual_hash[:12]
+        return item
+    item["ok"] = True
+    return item
+
+
 def probe_agent_symlinks(cfg, registry):
     sc = (cfg.get("agent_symlinks") or cfg.get("symlink_check") or {})
     out = {
@@ -1132,22 +1180,30 @@ def probe_agent_symlinks(cfg, registry):
     shared_user_doc = os.path.realpath(os.path.join(agent_files_root, "_shared", "USER.md"))
     user_doc_expected = shared_user_doc if os.path.exists(shared_user_doc) else os.path.join(docs_root, "USER.md")
 
-    common_docs = list(sc.get("common_docs") or [
-        "AGENTS.md",
-        "ROLES.md",
-        "TEAM_WORKFLOW.md",
-        "CODE_REPOS.md",
-        "USER.md",
+    # Common docs are copied flat to the workspace root. The canonical
+    # sources live at docs_root (for AGENTS.md, WORKFLOW.md) or
+    # docs_root/guides/ (for ROLES.md, CODE_REPOS.md). The workspace copy
+    # path is always flat (e.g. ~/workspace/ROLES.md, not ~/workspace/guides/ROLES.md).
+    guides_dir = os.path.join(docs_root, "guides")
+    common_doc_specs = list(sc.get("common_docs") or [
+        ("AGENTS.md", os.path.join(docs_root, "AGENTS.md")),
+        ("WORKFLOW.md", os.path.join(docs_root, "WORKFLOW.md")),
+        ("ROLES.md", os.path.join(guides_dir, "ROLES.md")),
+        ("CODE_REPOS.md", os.path.join(guides_dir, "CODE_REPOS.md")),
+        ("USER.md", user_doc_expected),
     ])
-    monitor_docs = list(sc.get("monitor_docs") or [
-        "INCIDENT_HANDLING.md",
-        "MONITORING.md",
-        "SERVICES.md",
+    monitor_doc_specs = list(sc.get("monitor_docs") or [
+        ("INCIDENT_HANDLING.md", os.path.join(guides_dir, "INCIDENT_HANDLING.md")),
+        ("MONITORING.md", os.path.join(guides_dir, "MONITORING.md")),
+        ("SERVICES.md", os.path.join(guides_dir, "SERVICES.md")),
     ])
 
     def expected_doc(name):
         if name == "USER.md":
             return user_doc_expected
+        for ws_name, src in common_doc_specs + monitor_doc_specs:
+            if ws_name == name:
+                return src
         return os.path.join(docs_root, name)
 
     for agent in registry.get("agents", []) or []:
@@ -1158,6 +1214,7 @@ def probe_agent_symlinks(cfg, registry):
             continue
         home = agent.get("home") or f"/home/{user}"
         expected_config = os.path.join(agent_files_root, user, "openclaw.json")
+        # The openclaw.json home copy stays a symlink to the canonical runtime config.
         config_probe = _symlink_probe(
             os.path.join(home, ".openclaw", "openclaw.json"),
             expected_config,
@@ -1171,25 +1228,25 @@ def probe_agent_symlinks(cfg, registry):
         role = agent.get("role")
         if role == "monitor":
             doc_roots.append(os.path.join(home, ".openclaw", "workspace"))
-            docs = common_docs + [d for d in monitor_docs if d not in common_docs]
+            specs = common_doc_specs + [s for s in monitor_doc_specs if s[0] not in {n for n, _ in common_doc_specs}]
         else:
             workspace = agent.get("workspace") or os.path.join(home, "workspace")
             doc_roots.extend([
                 workspace,
                 os.path.join(home, ".openclaw", "workspace"),
             ])
-            docs = common_docs
+            specs = common_doc_specs
 
         seen = set()
         for root in doc_roots:
             if root in seen:
                 continue
             seen.add(root)
-            for doc in docs:
-                probe = _symlink_probe(
-                    os.path.join(root, doc),
-                    expected_doc(doc),
-                    f"doc:{doc}",
+            for ws_name, src in specs:
+                probe = _content_match_probe(
+                    os.path.join(root, ws_name),
+                    src,
+                    f"doc:{ws_name}",
                 )
                 out["checked"] += 1
                 if not probe.get("ok"):
@@ -1327,6 +1384,28 @@ def _pm_has_action_plan_since(conn, task_id, user_id, since_s):
         if ts is not None and ts >= since_s:
             return True
     return False
+
+
+def _pm_active_in_progress_task(conn, assignee_id, task_id):
+    if not assignee_id:
+        return None
+    try:
+        return conn.execute(
+            """
+            SELECT id, title
+            FROM Task
+            WHERE assigneeId = ?
+              AND id != ?
+              AND status = 'In Progress'
+              AND deletedAt IS NULL
+              AND archived_at IS NULL
+            ORDER BY statusChangedAt ASC, updatedAt ASC
+            LIMIT 1
+            """,
+            (assignee_id, task_id),
+        ).fetchone()
+    except Exception:
+        return None
 
 
 def _pm_latest_comment_by(conn, task_id, user_id, since_s):
@@ -1730,6 +1809,9 @@ def probe_pm_workflow(cfg, registry):
                         )
                     continue
                 if changed_age >= warn_todo_s:
+                    active_task = _pm_active_in_progress_task(conn, row["assigneeId"], row["id"])
+                    if active_task:
+                        continue
                     add(
                         row,
                         "pm-todo-not-started",
