@@ -631,7 +631,7 @@ def probe_idle_with_queue_for_agent(agent, cfg, sc):
     nothing in In Progress but ≥1 ticket in Selected for Development AND
     their session has been idle past threshold. After finishing a ticket
     (transition out of In Progress) agents should pick up the next per
-    TEAM_WORKFLOW.md "Picking the Next Task"; this fires when they don't.
+    WORKFLOW.md "Picking the Next Task"; this fires when they don't.
     Returns a single-item list (or empty)."""
     user = agent.get("user")
     email = agent.get("email")
@@ -2210,7 +2210,7 @@ def deterministic_issues(probes):
     # in any of the configured queue_statuses (Selected for Development /
     # To Do by default) AND session is idle past threshold. Catches the
     # gap where an agent finishes a ticket and just sits instead of
-    # picking up the next per TEAM_WORKFLOW.md "Picking the Next Task".
+    # picking up the next per WORKFLOW.md "Picking the Next Task".
     # Handled deterministically by ai-monitor (auto-wake, no monitor agent).
     queue_probe = probes.get("agent_queue", {})
     for q in queue_probe.get("idle_with_queue", []) or []:
@@ -2225,7 +2225,7 @@ def deterministic_issues(probes):
             "reason": (
                 f"{q['agent']}: {q['queue_count']} queued ticket(s) "
                 f"({keys}{extra}), nothing In Progress, session idle {mins} min — "
-                f"agent should be picking up next task per TEAM_WORKFLOW.md "
+                f"agent should be picking up next task per WORKFLOW.md "
                 f"\"Picking the Next Task\""
             ),
             "suggested_action": "investigate",
@@ -2858,7 +2858,7 @@ def restart_and_wake_stalled_agents(no_agent_issues, cfg=None):
                 f"tier-2 escalation — wake-agent didn't take. you have {kc} "
                 f"queued ticket(s) ({kk}{extra}) and nothing In Progress; "
                 f"restarting your session — pick the next task per "
-                f"TEAM_WORKFLOW.md \"Picking the Next Task\""
+                f"WORKFLOW.md \"Picking the Next Task\""
             )
         if b["emails"]:
             subjects = "; ".join(
@@ -3019,7 +3019,7 @@ def auto_wake_stalled_agents(no_agent_issues, cfg=None):
             parts.append(
                 f"you have {kc} queued ticket(s) "
                 f"({kk}{extra}) and nothing In Progress — pick the next task "
-                f"per TEAM_WORKFLOW.md \"Picking the Next Task\" "
+                f"per WORKFLOW.md \"Picking the Next Task\" "
                 f"(unanswered feedback first, then Selected for Development, then To Do)"
             )
         if b["emails"]:
