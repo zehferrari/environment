@@ -8,7 +8,7 @@ which one the live PM site serves, including from the browser.
 ## 1. One writer per branch worktree
 
 The worktree workflow itself is the existing `claim-branch` model — see
-[`ai/openclaw/CODE_REPOS.md`](../../openclaw/CODE_REPOS.md): every ticket gets
+[`ai/openclaw/guides/CODE_REPOS.md`](../../openclaw/guides/CODE_REPOS.md): every ticket gets
 its own worktree under `/srv/Code/<repo>.worktrees/<branch>/`, **one implementer
 per branch**, reviewers on detached-HEAD worktrees, enforced by the `/srv/Code`
 pre-commit hook. Two agents must never both *write* the same branch worktree —
