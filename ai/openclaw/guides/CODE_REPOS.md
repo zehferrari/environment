@@ -1,4 +1,4 @@
-# Shared code repositories on x1
+# Shared code repositories on thinkpad
 
 Project repositories that any coding agent may modify live under
 `/srv/Code/`. They are **shared work trees** owned by `zeh` and

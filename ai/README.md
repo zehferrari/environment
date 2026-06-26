@@ -1,6 +1,6 @@
-# X1 — Bookshelf 24/7 AI Agent Host
+# ThinkPad — Bookshelf 24/7 AI Agent Host
 
-Documentation of the openSUSE Tumbleweed setup on the secondary ThinkPad, configured to run lid-closed on a bookshelf 24/7 while still supporting an occasional Hyprland session.
+Documentation of the openSUSE Tumbleweed setup on the ThinkPad P16s Gen 2, configured to run lid-closed on a bookshelf 24/7 while still supporting an occasional Hyprland session.
 
 Last configured: 2026-05-06.
 
@@ -10,20 +10,20 @@ Last configured: 2026-05-06.
 
 | Field | Value |
 |---|---|
-| Hostname | `x1` |
-| Static IP | `10.0.0.108` (router-pinned to USB-C dock NIC MAC) |
-| Hardware | Lenovo ThinkPad X1 Yoga Gen 6 (`20XY0011AU`) |
-| CPU | Intel i7-1165G7 (4C/8T, Tiger Lake) |
-| GPU | Intel Iris Xe (integrated) |
-| RAM / Swap | 15 GiB / 2 GB partition swap |
-| Disk | NVMe Kioxia 476 GB — see partitioning below |
+| Hostname | `thinkpad` |
+| Static IP | `10.0.0.105` (router-pinned to USB-C dock NIC MAC) |
+| Hardware | Lenovo ThinkPad P16s Gen 2 (`20YK0011AU`) |
+| CPU | AMD Ryzen 7 PRO 7840U (8C/16T, Phoenix) |
+| GPU | AMD Radeon 780M (integrated) |
+| RAM / Swap | 60 GiB / 2 GB partition swap |
+| Disk | NVMe Samsung SSD 990 PRO 1 TB — see partitioning below |
 | OS | openSUSE Tumbleweed (snapshot 20260430 at install) |
 | Kernel | `7.0.2-1-default` (rolling) |
-| Battery | Sunwoda `5B10W13975`, 51.3 Wh / 57 Wh design (~90% health, 120 cycles at install) |
+| Battery | (P16s battery details — see `p16s/README.md` for full hardware specs) |
 
 ### SSH
 
-- **Address**: `ssh zeh@10.0.0.108`
+- **Address**: `ssh zeh@10.0.0.105`
 - **Auth**: ed25519 public key only (`e@zeh.me` from this desktop's `~/.ssh/id_ed25519.pub`).
 - **Password auth disabled**, root SSH disabled — see `/etc/ssh/sshd_config.d/90-harden.conf`.
 - Console login still uses local password (the user account password set during install).
@@ -52,7 +52,7 @@ Last configured: 2026-05-06.
 
 | Interface | Type | Driver | IP |
 |---|---|---|---|
-| `enp0s20f0u5u4` | USB-C dock Ethernet | `r8152` (Realtek RTL8152, 100 Mbps) | `10.0.0.108` (router-pinned) |
+| `enp0s20f0u5u4` | USB-C dock Ethernet | `r8152` (Realtek RTL8152, 100 Mbps) | `10.0.0.105` (router-pinned) |
 | `wlp0s20f3` | Internal Wi-Fi (Intel AX201) | `iwlwifi` | `10.0.0.9` (DHCP, fallback) |
 
 NetworkManager prefers Ethernet (metric 100 < Wi-Fi metric 600). Wi-Fi stays up as a backup if the dock disconnects.
@@ -200,13 +200,13 @@ The wrapper at `/usr/bin/start-hyprland` (shipped by the `hyprland` package) set
 - All NVIDIA env vars (Iris Xe iGPU only)
 - Monitor configuration block and `apply-displays.sh` (single internal display, auto-detect)
 - HDMI-audio disable script
-- `wob` volume OSD (not installed on x1)
+- `wob` volume OSD (not installed on thinkpad)
 - Bindings and exec-once entries that referenced scripts living in the desktop's `~/.local/bin` or `~/Scripts/` (loadSession, closeWindows, shutdown, show-keybindings, gnome-control-center, gnome-calendar, hyprlock-dpms, grimblast)
 - `custom/displays` waybar module (no `wdisplays` use case on a 14" panel)
 
 ### What was *substituted*
 
-| Desktop | x1 |
+| Desktop | thinkpad |
 |---|---|
 | `ghostty` (terminal) | `kitty` |
 | `dunst` (notifications) | `mako` |
@@ -228,7 +228,7 @@ The wrapper at `/usr/bin/start-hyprland` (shipped by the `hyprland` package) set
 
 ### Hyprland 0.49+ syntax notes
 
-This is the version on x1; relevant for editing the config:
+This is the version on thinkpad; relevant for editing the config:
 
 - `windowrulev2` is **deprecated**; use `windowrule`.
 - Most window rule actions only work in **block syntax** now, not inline. The pattern is:
@@ -341,7 +341,7 @@ Why fuzzel and not wofi: visual parity with the desktop. `wofi` is still install
 ### Service health one-shot
 
 ```
-ssh zeh@10.0.0.108 'for s in sshd nginx php-fpm mariadb tlp firewalld zypper-dup.timer bluetooth NetworkManager; do
+ssh zeh@10.0.0.105 'for s in sshd nginx php-fpm mariadb tlp firewalld zypper-dup.timer bluetooth NetworkManager; do
   printf "%-22s %s/%s\n" "$s" "$(systemctl is-active $s)" "$(systemctl is-enabled $s)"
 done'
 ```
@@ -349,31 +349,31 @@ done'
 ### Charge / battery health
 
 ```
-ssh zeh@10.0.0.108 'sudo tlp-stat -b | grep -E "energy_full|cycle_count|charge_control"'
+ssh zeh@10.0.0.105 'sudo tlp-stat -b | grep -E "energy_full|cycle_count|charge_control"'
 ```
 
 ### Force a Tumbleweed update now
 
 ```
-ssh zeh@10.0.0.108 'sudo zypper ref && sudo zypper -n dup --auto-agree-with-licenses'
+ssh zeh@10.0.0.105 'sudo zypper ref && sudo zypper -n dup --auto-agree-with-licenses'
 ```
 
 ### See config errors after editing Hyprland config
 
 ```
-ssh zeh@10.0.0.108 'HIS=$(ls /run/user/1000/hypr/ | tail -1); HYPRLAND_INSTANCE_SIGNATURE=$HIS hyprctl configerrors'
+ssh zeh@10.0.0.105 'HIS=$(ls /run/user/1000/hypr/ | tail -1); HYPRLAND_INSTANCE_SIGNATURE=$HIS hyprctl configerrors'
 ```
 
 ### Hyprland log tail
 
 ```
-ssh zeh@10.0.0.108 'tail -50 $(ls -t /run/user/1000/hypr/*/hyprland.log | head -1)'
+ssh zeh@10.0.0.105 'tail -50 $(ls -t /run/user/1000/hypr/*/hyprland.log | head -1)'
 ```
 
 ### Restart waybar
 
 ```
-ssh zeh@10.0.0.108 'killall waybar; HIS=$(ls /run/user/1000/hypr/ | tail -1); HYPRLAND_INSTANCE_SIGNATURE=$HIS hyprctl dispatch exec /home/zeh/.config/waybar/launch-waybar.sh'
+ssh zeh@10.0.0.105 'killall waybar; HIS=$(ls /run/user/1000/hypr/ | tail -1); HYPRLAND_INSTANCE_SIGNATURE=$HIS hyprctl dispatch exec /home/zeh/.config/waybar/launch-waybar.sh'
 ```
 
 ---
@@ -405,6 +405,8 @@ For future remote installs of similar hardware:
 
 Migrated from `thinkpad` (`10.0.0.105`) to `x1` (`10.0.0.108`) on 2026-05-06.
 
+> **Update:** As of the host-swap rename, these services have **moved back to `thinkpad`** (`10.0.0.105`). The prose and paths below describe the 2026-05-06 migration as a historical marker of how the AI agent host landed on `x1` at the time, and were retained as the lineage note for the migration back. The AI agent host is now `thinkpad`; `x1` (`10.0.0.108`) is the personal laptop.
+
 | UID/GID range | Role | Notes |
 |---:|---|---|
 | `1001+` | Coding agents (`role: coding`) | Full OpenClaw agent, Telegram/Gmail/Jira auth. One UID per registered agent in `agents.json`. |
@@ -417,7 +419,7 @@ editing that registry; coding task roles still come from Jira/Epic context.
 Runtime notes:
 
 - Source homes are still intact on `thinkpad`, but migrated user services and linger are disabled there.
-- `moonlight` proxies the relevant `vixi.au` routes to `10.0.0.108` in `/etc/nginx/sites-available/vixiAu`; disabled `/etc/nginx/sites-available/webhooks` was also updated from `10.0.0.105` to `10.0.0.108`.
+- `moonlight` proxies the relevant `vixi.au` routes to `10.0.0.105` in `/etc/nginx/sites-available/vixiAu`; disabled `/etc/nginx/sites-available/webhooks` was also updated from `10.0.0.108` to `10.0.0.105`.
 - Global OpenClaw lives at `/usr/local/lib/node_modules/openclaw`; `/usr/local/bin/openclaw` points to it.
 - `pnpm` 10.33.0 is installed at `/usr/local/lib/node_modules/pnpm` and `/usr/local/bin/pnpm` for Node project builds.
 - Tumbleweed's Node 24 binary rejects being invoked as `node-24`, so `/usr/bin/node-24` is a wrapper that execs `/usr/bin/node` with argv name `node`.
@@ -425,7 +427,7 @@ Runtime notes:
 - Root SSH client material from `thinkpad:/root/.ssh` was migrated because the integrity checker probes `moonlight` over SSH.
 - `/etc/hosts` maps `moonlight` to `10.0.0.10` for the same integrity probe.
 - OpenClaw services must run as their Linux users, never as root.
-- Listener processes should bind to loopback unless nginx is intentionally exposing them locally. Public ingress terminates at `moonlight`, then proxies to nginx on `x1`.
+- Listener processes should bind to loopback unless nginx is intentionally exposing them locally. Public ingress terminates at `moonlight`, then proxies to nginx on `thinkpad`.
 
 ### Current Service Ownership
 
@@ -448,7 +450,7 @@ Expected enabled user services/timers, by role (concrete user → services map i
 | Monitoring agent (user `karen`) | `openclaw-gateway.service`, `openclaw-jira-receiver.service`, `openclaw-bitbucket-receiver.service` |
 | Each coding agent (one row per agent in registry) | Core: `openclaw-gateway.service`, `openclaw-gmail-listener.service` (derived from `role` + `integrations` via `agent-defaults.json`). Plus any project resources the agent has enabled in `~/.local/openclaw/monitor.json` (e.g. `wdt-<user>.service`). |
 
-Expected listeners on `x1` (concrete `user → port` map is in `agents.json` `listeners`):
+Expected listeners on `thinkpad` (concrete `user → port` map is in `agents.json` `listeners`):
 
 | Port range | Role | Service |
 |---:|---|---|
@@ -466,7 +468,7 @@ The exact port numbers per registered user live in `agents.json` (`listeners[].h
 
 ### Project Manager (Zero Latency) Services
 
-The Project Manager (Zero Latency) web interface and queue processor run as host-wide system-level services on `x1` under user `karen`.
+The Project Manager (Zero Latency) web interface and queue processor run as host-wide system-level services on `thinkpad` under user `karen`.
 
 - **`pm.service`**: A system-wide `systemd` service running the Next.js production standalone server on `127.0.0.1:3000`.
   - Env configuration loads from `/etc/default/pm`.
@@ -491,7 +493,7 @@ To securely interface with local agent gateways without exposing credentials, PM
 - `/etc/openclaw/pm-channel-tokens.json` (owned by `root:karen`, mode `0640`): Map of native `pm` channel Bearer tokens.
 
 #### Webhook and Ingress Routing
-Incoming webhooks from Atlassian (Jira/Bitbucket) flow from public URLs through `moonlight` and `x1` nginx, routing to `openclaw-jira-receiver.service` (port `3014`) and `openclaw-bitbucket-receiver.service` (port `3015`) running under `karen`.
+Incoming webhooks from Atlassian (Jira/Bitbucket) flow from public URLs through `moonlight` and `thinkpad` nginx, routing to `openclaw-jira-receiver.service` (port `3014`) and `openclaw-bitbucket-receiver.service` (port `3015`) running under `karen`.
 
 ### OpenClaw Architecture
 
@@ -502,7 +504,7 @@ Incoming webhooks from Atlassian (Jira/Bitbucket) flow from public URLs through 
 - Secrets stay out of `openclaw.json`; use env/token files only.
 - `karen` runs the monitoring agent's OpenClaw gateway on `127.0.0.1:18793`.
 - `karen` also receives webhooks, updates `/home/<user>/tasks/current.md`, and wakes the target agent via `/usr/local/sbin/openclaw-control`.
-- Shared operational knowledge lives in the active OpenClaw checkout (`/srv/Code/environment.worktrees/<branch>/ai/openclaw` on x1; `/home/<owner>/Code/environment/ai/openclaw` on yoga510).
+- Shared operational knowledge lives in the active OpenClaw checkout (`/srv/Code/environment.worktrees/<branch>/ai/openclaw` on thinkpad; `/home/<owner>/Code/environment/ai/openclaw` on yoga510).
 - Active monitored-agent registry lives at `/srv/agents/index.json`; `/etc/openclaw/agents.json` is a symlink to it.
 - Webhook routing is derived from `/srv/agents/index.json`: enabled coding agents with `integrations.jira` receive Jira events, and enabled coding agents with `integrations.bitbucket` receive Bitbucket events.
 - The shared docs (`AGENTS.md`, `guides/ROLES.md`, `WORKFLOW.md`, `guides/CODE_REPOS.md`, `USER.md`) are canonical in the active OpenClaw checkout. `openclaw-manage-user` copies them from `$REPO_ROOT/ai/openclaw/` (the worktree that ran the helper) into each agent's `~/workspace/` and `~/.openclaw/workspace/`, overwriting only when content differs, so both the user-facing and OpenClaw internal workspaces see the same content. The monitoring agent (`karen`) has only `~/.openclaw/workspace/`. A doc change reaches agents once it lands in git and the active PM/OpenClaw worktree is reconciled.
@@ -526,7 +528,7 @@ Live per-user defaults are in each agent's own `~/.openclaw/openclaw.json`, **no
 ```
 https://dev.vixi.au/webhooks/*
   -> moonlight nginx
-  -> x1 nginx
+  -> thinkpad nginx
   -> karen openclaw-jira-receiver on 127.0.0.1:3014
   -> karen openclaw-bitbucket-receiver on 127.0.0.1:3015
   -> /usr/local/sbin/openclaw-control <coding-agent-user> ...
@@ -616,11 +618,11 @@ Ollama is installed as a system service:
 - Service: `/etc/systemd/system/ollama.service`
 - Binary: `/usr/local/bin/ollama`
 - User/group: `ollama:ollama` (`971:971`), also in `video` and `render`
-- Bind: `0.0.0.0:11434` on x1, with firewalld allowing TCP `11434` only from moonlight (`10.0.0.10`). Agent `models.providers.ollama.baseUrl` points at `http://127.0.0.1:11434` (the local instance directly). The previous `http://ollama.local` indirection through moonlight is **deprecated** — its nginx upstream pointed at `10.0.0.17` (a different LAN host) which did not serve the agents' `:cloud` models; see [`X1.md`](./X1.md) § Models and Providers.
+- Bind: `0.0.0.0:11434` on thinkpad, with firewalld allowing TCP `11434` only from moonlight (`10.0.0.10`). Agent `models.providers.ollama.baseUrl` points at `http://127.0.0.1:11434` (the local instance directly). The previous `http://ollama.local` indirection through moonlight is **deprecated** — its nginx upstream pointed at `10.0.0.17` (a different LAN host) which did not serve the agents' `:cloud` models; see [`THINKPAD.md`](./THINKPAD.md) § Models and Providers.
 - Data dir: `/usr/share/ollama`
 - Cloud auth identity: `/usr/share/ollama/.ollama/id_ed25519` and `.pub` were migrated from ThinkPad. If these are regenerated, `:cloud` models can still list but fail with `401 unauthorized`.
 
-Cloud models are installed on `x1`; `qwen2.5:3b-instruct` is also available locally as the small offline fallback. The moonlight `ollama.local` nginx proxy still exists but agents no longer route through it.
+Cloud models are installed on `thinkpad`; `qwen2.5:3b-instruct` is also available locally as the small offline fallback. The moonlight `ollama.local` nginx proxy still exists but agents no longer route through it.
 
 Expected cloud models:
 
@@ -657,7 +659,7 @@ Local fallback model (added 2026-05-08):
 - Monitor config replication: keep host secrets and literal runtime users out of git, but version the policy/defaults in `ai/openclaw/config/ai-monitor.config.json.example`. New AI servers should copy that template to `/etc/ai-monitor/config.json`, fill host-specific values, and keep `monitor_triage.auto_action_kinds_bypass_monitor` plus `pm_workflow.retry_after_tier3_seconds` aligned with this repo.
 - ai-monitor live ticks are single-instance locked; `--dry-run` and `--probe-only` are read-only and do not write state. This prevents debugging or overlapping timer/manual runs from accidentally suppressing future recovery attempts or double-sending nudges.
 - Agent dashboard: `https://dev.vixi.au/agents.html` (basic auth — same `admin` user as the per-agent vhosts, htpasswd at `/etc/nginx/.htpasswd`). Real-time per-agent activity, AI monitor status, monitoring agent decisions, system service health. SSE-driven, no refresh needed. See **§16 Agent Dashboard** subsection below for the architecture.
-- ThinkPad cron job `/etc/cron.d/openclaw-integrity` was preserved for reference only. x1's active automation uses systemd timers, not cron.
+- ThinkPad cron job `/etc/cron.d/openclaw-integrity` was preserved for reference only. thinkpad's active automation uses systemd timers, not cron.
 - On openSUSE, the active scheduler is `openclaw-integrity.timer` plus `openclaw-integrity.service`, running every 2 minutes.
 - `ai-monitor.timer` runs the AI judgment layer every 2 minutes, offset from the integrity check.
 - `openclaw-backup.timer` runs a daily root-only backup of small critical OpenClaw state to `/var/backups/openclaw`, scheduled at 04:20 with up to 20 minutes randomized delay, and keeps the latest 14 archives.
@@ -685,17 +687,17 @@ sudo -u karen XDG_RUNTIME_DIR=/run/user/1003 DBUS_SESSION_BUS_ADDRESS=unix:path=
 
 openclaw-backup backs up small but high-value state only: /etc/openclaw, /etc/ai-monitor/config.json, /srv/Code/environment/ai/openclaw, /srv/Code/environment/ai/web, agent .openclaw and .config/openclaw directories, key workspace instruction files, webhook routing, and Ollama cloud identity keys. It excludes large caches, node_modules, browser data, git directories, and local model blobs. The archive and manifest are mode 0600 under /var/backups/openclaw.
 
-This is a local safety net. Off-host copies should live on `moonlight` under `/srv/backups/openclaw/x1`; the first manual copy was written there on 2026-05-08. Future automation should sync the latest archive and matching `.manifest.json` there after each local backup.
+This is a local safety net. Off-host copies should live on `moonlight` under `/srv/backups/openclaw/thinkpad`; the first manual copy was written there on 2026-05-08. Future automation should sync the latest archive and matching `.manifest.json` there after each local backup.
 
 ### Agent Dashboard (`agent-dashboard`)
 
-Added 2026-05-08. A read-only single-page dashboard at `https://dev.vixi.au/agents.html` showing what every agent on x1 is doing in real time: per-agent activity (latest assistant text / tool call / tool result, session-idle timer, primary model), current Jira task, open Jira tickets per coding agent, ai-monitor health and recent monitoring-agent decisions, and system-service status. Runs as a single Node service; the page itself is plain HTML with vanilla JS connecting to a Server-Sent Events stream — no framework, no build step.
+Added 2026-05-08. A read-only single-page dashboard at `https://dev.vixi.au/agents.html` showing what every agent on thinkpad is doing in real time: per-agent activity (latest assistant text / tool call / tool result, session-idle timer, primary model), current Jira task, open Jira tickets per coding agent, ai-monitor health and recent monitoring-agent decisions, and system-service status. Runs as a single Node service; the page itself is plain HTML with vanilla JS connecting to a Server-Sent Events stream — no framework, no build step.
 
 #### URL and auth
 
-- **Public**: `https://dev.vixi.au/agents.html` — terminates TLS at moonlight, proxies to x1's nginx, then to `127.0.0.1:3013`.
-- **OpenClaw Control UIs**: x1 exposes the coding-agent gateway dashboards through nginx role-based routes backed by ports `18789` and `18790`. The routes are nginx basic-auth protected and pass `X-Forwarded-User: $remote_user` into OpenClaw trusted-proxy auth, so there is no second OpenClaw token login after nginx auth. The gateway ports bind to LAN for trusted-proxy source detection, but firewalld does not open 18789/18790 to the network.
-- **Auth**: HTTP basic auth at the x1 nginx layer, `auth_basic_user_file /etc/nginx/.htpasswd` (same `admin` user that protects per-agent `*.vixi.au` vhosts).
+- **Public**: `https://dev.vixi.au/agents.html` — terminates TLS at moonlight, proxies to thinkpad's nginx, then to `127.0.0.1:3013`.
+- **OpenClaw Control UIs**: thinkpad exposes the coding-agent gateway dashboards through nginx role-based routes backed by ports `18789` and `18790`. The routes are nginx basic-auth protected and pass `X-Forwarded-User: $remote_user` into OpenClaw trusted-proxy auth, so there is no second OpenClaw token login after nginx auth. The gateway ports bind to LAN for trusted-proxy source detection, but firewalld does not open 18789/18790 to the network.
+- **Auth**: HTTP basic auth at the thinkpad nginx layer, `auth_basic_user_file /etc/nginx/.htpasswd` (same `admin` user that protects per-agent `*.vixi.au` vhosts).
 - **Health probe**: `https://dev.vixi.au/agents/health` is unauthenticated by design — returns `{ok, agents, clients}` as JSON for cheap external uptime checks.
 
 #### Files
@@ -754,18 +756,18 @@ what was true **then**, not necessarily now.
 ### Known follow-ups
 
 - If BotFather tokens are ever rotated, update each user's `telegram-token` and OpenClaw secrets env.
-- The Ollama service on `x1` uses conservative default backend settings, not ThinkPad-specific GPU tuning.
-- x1 is still a single point of failure for its OpenClaw agents, monitoring, and remediation. Local backup reduces accidental-loss risk; disk-loss protection depends on keeping `moonlight:/srv/backups/openclaw/x1` current.
+- The Ollama service on `thinkpad` uses conservative default backend settings, not ThinkPad-specific GPU tuning.
+- thinkpad is still a single point of failure for its OpenClaw agents, monitoring, and remediation. Local backup reduces accidental-loss risk; disk-loss protection depends on keeping `moonlight:/srv/backups/openclaw/thinkpad` current.
 - Gmail watch renewal is automated (daily cron via OpenClaw cron system, see § Gmail Automation). IAM: the SA `gmail-watch@asdrubal-projects.iam.gserviceaccount.com` now has `roles/pubsub.editor` (granted 2026-06-07) so subscriptions can be recreated if lost. Keep `/usr/local/bin/openclaw-integrity-check` and dashboard status green; verify that base `openclaw-gmail-listener.service` units reference agent-specific subscription names (not the legacy `gmail-inbox-watch-sub`).
 - The monitoring agent runs on the host it monitors. Self-incidents must continue to bypass the monitoring agent and go directly to Telegram fallback.
 - Secrets are split by Linux user for least privilege, which is correct, but audits should use `/usr/local/bin/openclaw-backup --inventory` plus `/usr/local/bin/openclaw-registry-check`.
-- Future changes should go through `/etc/openclaw/agents.json` and the active OpenClaw checkout (`/srv/Code/environment.worktrees/<branch>/ai/openclaw` on x1); hand-editing dependent configs without running the validator can reintroduce drift.
+- Future changes should go through `/etc/openclaw/agents.json` and the active OpenClaw checkout (`/srv/Code/environment.worktrees/<branch>/ai/openclaw` on thinkpad); hand-editing dependent configs without running the validator can reintroduce drift.
 
 ---
 
 ## 21. Duplicating the OpenClaw Agent Instance on a New Computer
 
-This chapter captures the yoga510 migration pattern for bringing up a new local agent host that shares selected operating behaviour with x1 without treating the new agents as continuations, replacements, or clones of previous agents.
+This chapter captures the yoga510 migration pattern for bringing up a new local agent host that shares selected operating behaviour with thinkpad without treating the new agents as continuations, replacements, or clones of previous agents.
 
 ### 21.1 Decide the user mapping first
 
@@ -784,7 +786,7 @@ Use the target names everywhere in runtime paths: `/home/<target>`, `/home/<targ
 
 ### 21.2 Install the shared runtime
 
-On a fresh Debian-like target, install the base packages, Node 24, and the same OpenClaw release used by x1:
+On a fresh Debian-like target, install the base packages, Node 24, and the same OpenClaw release used by thinkpad:
 
 ```bash
 apt-get update
@@ -809,18 +811,18 @@ find /home/<owner>/Code/environment -type d -exec chmod g+rws {} +
 find /home/<owner>/Code/environment -type f -exec chmod g+rw {} +
 ```
 
-If root/admin validation commands use Git in that checkout, add `/home/<owner>/Code/environment` as a safe directory for that account. x1 is the legacy exception that still uses `/srv/Code/environment`.
+If root/admin validation commands use Git in that checkout, add `/home/<owner>/Code/environment` as a safe directory for that account. thinkpad is the legacy exception that still uses `/srv/Code/environment`.
 
 ### 21.3 Build each agent home
 
 For every target agent:
 
 - Create `~/.openclaw`, `~/.openclaw/workspace`, `~/.openclaw/agents/main`, `~/.config/openclaw`, `~/.config/systemd/user`, `~/workspace`, and `~/Maildir/{new,cur,tmp}`.
-- Symlink shared documents from the host checkout (`/home/<owner>/Code/environment/ai/openclaw` on yoga510, `/srv/Code/environment/ai/openclaw` on x1) into both `~/workspace` and `~/.openclaw/workspace`: `AGENTS.md`, `guides/ROLES.md`, `WORKFLOW.md`, `guides/CODE_REPOS.md`, `USER.md`; add `guides/INCIDENT_HANDLING.md`, `guides/MONITORING.md`, and `guides/SERVICES.md` for the monitor agent.
+- Symlink shared documents from the host checkout (`/home/<owner>/Code/environment/ai/openclaw` on yoga510, `/srv/Code/environment/ai/openclaw` on thinkpad) into both `~/workspace` and `~/.openclaw/workspace`: `AGENTS.md`, `guides/ROLES.md`, `WORKFLOW.md`, `guides/CODE_REPOS.md`, `USER.md`; add `guides/INCIDENT_HANDLING.md`, `guides/MONITORING.md`, and `guides/SERVICES.md` for the monitor agent.
 - Keep persona/runtime files per-user: `SOUL.md`, `IDENTITY.md`, `TOOLS.md`, `MEMORY.md`, `HEARTBEAT.md`.
 - Set `~/Code -> /home/<owner>/Code` for users that should work with the shared repository tree on yoga510.
-- Generate new local secrets; do not copy Telegram, model provider, OAuth, or webhook secrets from x1 unless that is explicitly intended.
-- For Telegram, keep the x1-compatible single-account shape under `channels.telegram` with `enabled`, `dmPolicy: pairing`, `groupPolicy: allowlist`, `streaming.mode: partial`, and `tokenFile: /home/<agent>/.config/openclaw/telegram-token`. Do not use `channels.telegram.accounts.*` unless intentionally changing the host convention. Token files must be owned by the agent and mode `0600`.
+- Generate new local secrets; do not copy Telegram, model provider, OAuth, or webhook secrets from thinkpad unless that is explicitly intended.
+- For Telegram, keep the thinkpad-compatible single-account shape under `channels.telegram` with `enabled`, `dmPolicy: pairing`, `groupPolicy: allowlist`, `streaming.mode: partial`, and `tokenFile: /home/<agent>/.config/openclaw/telegram-token`. Do not use `channels.telegram.accounts.*` unless intentionally changing the host convention. Token files must be owned by the agent and mode `0600`.
 
 Create `/etc/openclaw/agents.json` as the host-level runtime registry. It should contain one record per enabled agent with `user`, `role`, `home`, `workspace`, `gatewayPort`, `services`, and integration flags. The dashboard and integrity tooling read this file as the live source of truth.
 
@@ -835,7 +837,7 @@ When the new host already delivers mail locally through Postfix/Dovecot, OpenCla
 - Read state is Maildir-native: move messages from `new/` to `cur/` with `:2,S`.
 - A listener service watches `~/Maildir/new` and writes events to `~/.openclaw/mail/events.jsonl`.
 
-The reusable skill lives at `/home/<owner>/Code/environment/ai/openclaw/skills/local-mail` on yoga510 (`/srv/Code/environment/ai/openclaw/skills/local-mail` on x1). Link it into each agent as `~/workspace/mail`, `~/.openclaw/workspace/mail`, and `~/.openclaw/skills/local-mail`.
+The reusable skill lives at `/home/<owner>/Code/environment/ai/openclaw/skills/local-mail` on yoga510 (`/srv/Code/environment/ai/openclaw/skills/local-mail` on thinkpad). Link it into each agent as `~/workspace/mail`, `~/.openclaw/workspace/mail`, and `~/.openclaw/skills/local-mail`.
 
 ### 21.5 Services to enable
 
@@ -864,7 +866,7 @@ For the monitor user, create a narrow sudoers file modelled after `karen-opencla
 
 ### 21.6 Web dashboard and protection
 
-The dashboard source pages stay in the checkout at `/home/<owner>/Code/environment/ai/web/` on yoga510 (x1 legacy path: `/srv/Code/environment/ai/web/`). On yoga510 nginx serves `agents.html` directly from that checkout as the web root, proxies dashboard API routes to the local dashboard service, and maps `/agents/avatars/<Name>` to `/srv/agents/Pictures/<Name>/avatar.png`:
+The dashboard source pages stay in the checkout at `/home/<owner>/Code/environment/ai/web/` on yoga510 (thinkpad legacy path: `/srv/Code/environment/ai/web/`). On yoga510 nginx serves `agents.html` directly from that checkout as the web root, proxies dashboard API routes to the local dashboard service, and maps `/agents/avatars/<Name>` to `/srv/agents/Pictures/<Name>/avatar.png`:
 
 ~~~nginx
 server {
@@ -905,10 +907,10 @@ server {
 }
 ~~~
 
-For private dashboards, copy the existing nginx password file from x1:
+For private dashboards, copy the existing nginx password file from thinkpad:
 
 ```bash
-scp x1:/etc/nginx/.htpasswd /etc/nginx/.htpasswd
+scp thinkpad:/etc/nginx/.htpasswd /etc/nginx/.htpasswd
 chown root:root /etc/nginx/.htpasswd
 chmod 0644 /etc/nginx/.htpasswd
 nginx -t && systemctl reload nginx

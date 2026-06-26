@@ -1,6 +1,6 @@
 # ThinkPad P16s Gen 2 Environment
 
-This folder mirrors the Wayland/Hyprland desktop configuration for the laptop `thinkpad`.
+This folder mirrors the Wayland/Hyprland desktop configuration for the laptop `thinkpad` — the AI agent host (see [`../ai/README.md`](../ai/README.md)).
 
 ## Managed Paths
 

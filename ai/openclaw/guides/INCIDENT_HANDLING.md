@@ -80,7 +80,7 @@ These are predictable, time-driven, and **should be auto-renewed by cron** — n
 
 | Kind | What it really is | Action |
 |---|---|---|
-| `gmail-watch-expiring` | Gmail watch tokens expire every 7 days. Renewal is `node <openclaw-root>/skills/google-workspace/gmail-watch.js <topic> [labels]` run as the affected agent, where `<openclaw-root>` is the active OpenClaw checkout (x1: under `/srv/Code/environment.worktrees/<branch>/ai/openclaw`). | Normally **self-healing**: `gmail-watch-renew.timer` runs `/usr/local/sbin/gmail-watch-renew-all` daily at 04:00 and renews every agent's watch from `~/.openclaw/workspace/google/watch-state.json`. If this timer is healthy you never see this incident. If it fires, the timer is broken — Tier 1: manually renew with `sudo -u <agent> node <openclaw-root>/skills/google-workspace/gmail-watch.js <topic> <labels>`, suppress on success, and escalate to zeh in the `reason` that the `gmail-watch-renew.timer` needs investigation. Do **not** recommend "add a daily timer" — it already exists in this repo at `ai/openclaw/systemd/gmail-watch-renew.{service,timer}`. |
+| `gmail-watch-expiring` | Gmail watch tokens expire every 7 days. Renewal is `node <openclaw-root>/skills/google-workspace/gmail-watch.js <topic> [labels]` run as the affected agent, where `<openclaw-root>` is the active OpenClaw checkout (thinkpad: under `/srv/Code/environment.worktrees/<branch>/ai/openclaw`). | Normally **self-healing**: `gmail-watch-renew.timer` runs `/usr/local/sbin/gmail-watch-renew-all` daily at 04:00 and renews every agent's watch from `~/.openclaw/workspace/google/watch-state.json`. If this timer is healthy you never see this incident. If it fires, the timer is broken — Tier 1: manually renew with `sudo -u <agent> node <openclaw-root>/skills/google-workspace/gmail-watch.js <topic> <labels>`, suppress on success, and escalate to zeh in the `reason` that the `gmail-watch-renew.timer` needs investigation. Do **not** recommend "add a daily timer" — it already exists in this repo at `ai/openclaw/systemd/gmail-watch-renew.{service,timer}`. |
 
 ### Resource / observe-only kinds
 
@@ -95,7 +95,7 @@ These usually self-heal — **observe, don't act**, and prefer suppress unless t
 
 ### Escalate immediately (skip tiers)
 
-- **Self-incidents** — anything affecting the monitor agent user (e.g. `karen` on x1) or `ai-monitor` itself. ai-monitor's self-incident guard already routes these direct to Telegram; you should not see them in your queue.
+- **Self-incidents** — anything affecting the monitor agent user (e.g. `karen` on thinkpad) or `ai-monitor` itself. ai-monitor's self-incident guard already routes these direct to Telegram; you should not see them in your queue.
 - **Unknown kinds** without a playbook entry above — don't improvise; escalate with `actions_taken: []` and a `reason` naming the kind so zeh can add it to the playbook.
 - **Repeated escalations of the same kind** within an hour for the same unit even after a tier-3 telegram already went out — page zeh again only if a new symptom is visible. Otherwise add a comment to the prior decision instead of re-paging.
 
@@ -134,7 +134,7 @@ Notes:
 ## Don't
 
 - Don't loop on the same fix; one tier-1 attempt, write the decision, let ai-monitor re-handoff at tier 2.
-- Don't restart your **own** services (`openclaw-gateway` for the monitor agent, e.g. `karen` on x1) — you'd kill your own session mid-decision. (You also don't have sudoers permission to do so.)
+- Don't restart your **own** services (`openclaw-gateway` for the monitor agent, e.g. `karen` on thinkpad) — you'd kill your own session mid-decision. (You also don't have sudoers permission to do so.)
 - Don't restart `ai-monitor.service` unless zeh told you to in the incident text. The self-incident guard already routes ai-monitor failures to zeh directly; restarting it from inside a triage you're trying to write a decision for can create a race.
 - Don't run remediation outside the playbook above. If the kind isn't in the table, escalate with `actions_taken: []` and let zeh extend the playbook.
 - Don't ping zeh just to say "looks fine now". Suppress quietly.

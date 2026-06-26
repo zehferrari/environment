@@ -9,17 +9,17 @@ Use `/etc/openclaw/agents.json` for the machine-readable monitoring roster.
 - `openclaw-backup.timer`: runs `/usr/local/bin/openclaw-backup` daily at 04:20 with up to 20 minutes randomized delay for small critical OpenClaw state.
 - `zypper-dup.timer`: runs weekly Tumbleweed updates.
 
-x1 uses systemd timers for active automation. Cron references in old migration notes are historical, not the active scheduler.
+thinkpad uses systemd timers for active automation. Cron references in old migration notes are historical, not the active scheduler.
 
 ## System Services
 
 - `ollama.service`: local Ollama API on `0.0.0.0:11434`; firewalld permits raw access only from moonlight (`10.0.0.10`). Agent `models.providers.ollama.baseUrl` points at `http://127.0.0.1:11434` (the local instance directly). The previous `http://ollama.local` indirection through moonlight is **deprecated** — its nginx upstream pointed at a different LAN host that did not serve the agents' `:cloud` models.
-- `nginx.service`: local reverse proxy/static serving on x1.
+- `nginx.service`: local reverse proxy/static serving on thinkpad.
 - `mariadb.service`: local DB.
 - `php-fpm.service`: local PHP runtime.
 - `agent-dashboard.service`: real-time per-agent dashboard backend on `127.0.0.1:3013` (HTTP + SSE). Front-end at `https://dev.vixi.au/agents.html` behind nginx basic auth.
 - `pm.service`: one host-wide PM web app for `agents.vixi.au`, normally
-  running as the monitor agent user (`karen` on x1). This is a system unit under
+  running as the monitor agent user (`karen` on thinkpad). This is a system unit under
   `/etc/systemd/system` with `User=karen`, not a per-agent user unit. It
   serves the Next.js standalone app, persists PM tasks/comments/chats,
   sends chat/comment turns into each agent's native OpenClaw `pm`
@@ -42,7 +42,7 @@ x1 uses systemd timers for active automation. Cron references in old migration n
   package-manager files. Stale per-agent user units named `pm.service` or
   `pm-consumer.service` should be removed.
 - `pm-switch-runner.service`: monitor-driven worktree switch runner (system
-  unit, `User=karen` on x1). Watches `/var/lib/pm/switch/request.json`, builds
+  unit, `User=karen` on thinkpad). Watches `/var/lib/pm/switch/request.json`, builds
   the requested worktree with `pm-switch`, and flips `pm.service` to serve it via
   the root helper `pm-apply-worktree` (one NOPASSWD sudoers rule). Deliberately
   decoupled from `pm.service` so the restart at the end of a switch can't kill
@@ -50,7 +50,7 @@ x1 uses systemd timers for active automation. Cron references in old migration n
   panel to poll. Installed by `ai/web/deploy/install-pm-switch.sh`; full design in
   `ai/web/deploy/MULTI_AGENT_WORKTREES.md`.
 - `pm-verify-runner.service`: monitor-driven branch verification runner (system
-  unit, `User=karen` on x1). Watches `/var/lib/pm/branch-verify/*.json` job
+  unit, `User=karen` on thinkpad). Watches `/var/lib/pm/branch-verify/*.json` job
   files dropped by the PM workflow endpoint when an assignee moves a
   code-touching task to Review (with `repoTouched: true`). For each job runs
   `git -C <repositoryPath> fetch origin <branchName>` then `git log
@@ -60,7 +60,7 @@ x1 uses systemd timers for active automation. Cron references in old migration n
   `ActivityLog` row. No sudo / no privileged step — DB writes go through
   `DATABASE_URL` from `/etc/default/pm`. Decoupled from `pm.service` like the
   switch runner. Installed by `ai/web/deploy/install-pm-verify.sh`.
-- OpenClaw Control UIs: per-agent gateway dashboards exposed through nginx behind basic auth. x1 exposes primary, secondary, and monitoring gateway dashboards through role-based nginx routes. OpenClaw uses trusted-proxy auth with `X-Forwarded-User` from nginx, so nginx basic auth is the browser login. Gateway ports bind to LAN but remain blocked from direct network access by firewalld. This is an admin surface; do not expose without auth.
+- OpenClaw Control UIs: per-agent gateway dashboards exposed through nginx behind basic auth. thinkpad exposes primary, secondary, and monitoring gateway dashboards through role-based nginx routes. OpenClaw uses trusted-proxy auth with `X-Forwarded-User` from nginx, so nginx basic auth is the browser login. Gateway ports bind to LAN but remain blocked from direct network access by firewalld. This is an admin surface; do not expose without auth.
   - OpenClaw 2026.5.7 dashboard note: nginx also sends X-OpenClaw-Scopes: operator.admin. Coding agents set gateway.controlUi.dangerouslyDisableDeviceAuth=true so trusted-proxy WebSocket sessions keep operator scope; this depends on nginx basic auth and firewalld remaining in place.
   - No-slash dashboard paths redirect to trailing-slash paths. Do not proxy exact no-slash paths directly, or OpenClaw emits root-relative assets (/assets/...) that 404.
   - Chrome fetches some OpenClaw bootstrap endpoints (control-ui-config.json, manifest.webmanifest, avatar metadata) without Basic auth. nginx leaves only those bootstrap endpoints auth_basic off and forwards trusted admin headers; the dashboard HTML, API, and WebSocket routes remain behind basic auth.
@@ -139,7 +139,7 @@ Derived from enabled integrations (`agent-defaults.json` `byIntegration[k]`):
 
 Per-agent project resources (services that come from a side project the agent has installed) live in `~/<user>/.local/openclaw/monitor.json`. Each resource declares `services[]` and a single `enabled` flag — when `enabled: true`, `openclaw-monitor-sync` keeps the services running and the loaders add them to the monitoring sweep. When `enabled: false`, the services are stopped and dropped from the sweep. See `MONITORING.md` → *Per-agent project resources* for the schema.
 
-### Monitoring agent (`role: monitor`, runs as user `karen` on x1)
+### Monitoring agent (`role: monitor`, runs as user `karen` on thinkpad)
 
 - `openclaw-gateway.service`
 - `openclaw-jira-receiver.service` — Jira webhook receiver (`integrations.monitor: true` & `integrations.jira: true` on coding agents)

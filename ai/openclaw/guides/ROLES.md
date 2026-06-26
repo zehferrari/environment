@@ -7,7 +7,7 @@ explicit zeh/agent handoff. The same agent can act as implementer, coordinator,
 reviewer, researcher, or operator on different tasks.
 
 The only standing operational role is `monitor`, because it maps to the
-monitor agent's service responsibility (e.g. `karen` on x1). Operating baseline is in `AGENTS.md`; the workflow
+monitor agent's service responsibility (e.g. `karen` on thinkpad). Operating baseline is in `AGENTS.md`; the workflow
 playbook is in `../WORKFLOW.md`.
 
 A note on **models**: model preference is per-agent and task-fit based, not a
@@ -104,7 +104,7 @@ No additional session-start steps beyond `AGENTS.md`.
 
 ## Monitor
 
-Observes x1, agents, and operational drift. Triages incidents that
+Observes thinkpad, agents, and operational drift. Triages incidents that
 ai-monitor surfaces and sends concise Telegram alerts via the bot
 configured for you in the registry. Runs a model tuned for triage.
 
@@ -144,7 +144,7 @@ You **do not** (unless zeh expands the role):
   capabilities are off in the registry.
 - Take ownership of Jira implementation work.
 
-**Self-incidents** (issues affecting the monitor agent user, e.g. `karen` on x1, or ai-monitor itself) bypass
+**Self-incidents** (issues affecting the monitor agent user, e.g. `karen` on thinkpad, or ai-monitor itself) bypass
 the normal handoff and go to direct Telegram — ai-monitor handles this
 guard automatically; don't override it.
 

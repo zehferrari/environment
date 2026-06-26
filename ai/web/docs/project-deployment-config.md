@@ -37,7 +37,7 @@ The `environment` project is configured as:
     "prTargetBranch": "main",
     "mode": "script",
     "onMerge": "./ai/openclaw/bin/deploy-on-merge",
-    "host": "x1",
+    "host": "thinkpad",
     "environment": "production"
   }
 }

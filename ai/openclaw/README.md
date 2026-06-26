@@ -2,14 +2,14 @@
 
 Single source of truth for OpenClaw agent operating rules and shared skill helpers. Lives under [`environment/ai/openclaw/`](../../) in the unified `environment` repo.
 
-The contents of this folder are cloned to the host checkout. On x1, feature
+The contents of this folder are cloned to the host checkout. On thinkpad, feature
 work happens only in **`/srv/Code/environment.worktrees/<branch>/ai/openclaw/`**;
 do not edit the primary `/srv/Code/environment/` checkout. Every agent reads
 from the active OpenClaw install through symlinks; every edit goes through git.
 
 For broader context:
-- Host inventory (x1 / moonlight / thinkpad) → [`../../README.md`](../../README.md)
-- Deep host doc for x1 (network, services, monitoring, recent changes) → [`../README.md`](../README.md)
+- Host inventory (thinkpad / moonlight / x1) → [`../../README.md`](../../README.md)
+- Deep host doc for thinkpad (network, services, monitoring, recent changes) → [`../README.md`](../README.md)
 - Agent dashboard frontend → [`../web/agents.html`](../web/agents.html)
 
 ## Layout
@@ -65,7 +65,7 @@ worktree checkout, not a stale main checkout.
 | `/home/<user>/.openclaw/workspace/jira/*.js` | `<openclaw-root>/skills/jira/` |
 | `/home/<user>/.openclaw/skills/google-workspace/*.js` | `<openclaw-root>/skills/google-workspace/` |
 | `/home/<user>/workspace/mail/*.js` | `<openclaw-root>/skills/local-mail/` on yoga510 |
-| `/etc/openclaw/agents.json` | Live runtime registry, NOT in this repo; historical installs may symlink it to `/srv/agents/index.json`. Enable/disable flips come from the dashboard's `POST /agents/registry/toggle`; **agent create/edit/remove** are written by the root `/usr/local/sbin/openclaw-manage-user` helper ([`bin/openclaw-manage-user`](./bin/openclaw-manage-user)), driven by the PM webapp's `/api/agents/*` routes — see [`../X1.md`](../X1.md) § Agent Lifecycle Management. Template: [`index.example.json`](./index.example.json). |
+| `/etc/openclaw/agents.json` | Live runtime registry, NOT in this repo; historical installs may symlink it to `/srv/agents/index.json`. Enable/disable flips come from the dashboard's `POST /agents/registry/toggle`; **agent create/edit/remove** are written by the root `/usr/local/sbin/openclaw-manage-user` helper ([`bin/openclaw-manage-user`](./bin/openclaw-manage-user)), driven by the PM webapp's `/api/agents/*` routes — see [`../THINKPAD.md`](../THINKPAD.md) § Agent Lifecycle Management. Template: [`index.example.json`](./index.example.json). |
 | `/home/<user>/workspace/{SOUL,USER,MEMORY,IDENTITY,TOOLS,HEARTBEAT}.md` | `<agentFilesRoot>/<user>/...` per-agent private files |
 | `/home/<user>/.openclaw/workspace/{SOUL,USER,MEMORY,IDENTITY,TOOLS,HEARTBEAT}.md` | same |
 | `/home/<user>/.openclaw/openclaw.json` | `<agentFilesRoot>/<user>/openclaw.json` per-agent runtime config, agent-owned and writable by the configured `codeGroup` |
@@ -88,7 +88,7 @@ status, and send/reply helpers block recipients outside that policy.
 ## Editing
 
 Edit files in a branch/worktree checkout, commit, push, then deploy/reconcile
-that worktree. On x1 use `/srv/Code/environment.worktrees/<branch>/ai/openclaw`;
+that worktree. On thinkpad use `/srv/Code/environment.worktrees/<branch>/ai/openclaw`;
 do not edit `/srv/Code/environment/` directly. On yoga510 use
 `/home/rachael/Code/environment/ai/openclaw`. Every agent picks up the new
 content on the next read after its symlinks point at the active install.
@@ -108,7 +108,7 @@ sudo -u "$OWNER" git push
 
 ## Host install path
 
-Run `install.sh` after pulling changes on x1. Besides syncing scripts and
+Run `install.sh` after pulling changes on thinkpad. Besides syncing scripts and
 systemd units, it reconciles the PM web/OpenClaw integration when the
 sibling PM checkout exists. The PM step creates `/var/lib/pm/drop`,
 renders the one host-wide `pm.service` and `pm-consumer.service`, binds

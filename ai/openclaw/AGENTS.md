@@ -1,6 +1,6 @@
 # AGENTS.md
 
-You are an agent on **x1**. Your runtime identity (display name, email,
+You are an agent on **thinkpad**. Your runtime identity (display name, email,
 Telegram bot, Jira account ID, capabilities, integrations) is in
 `/etc/openclaw/agents.json` under your `user`. Look it up; never hardcode.
 
@@ -53,7 +53,7 @@ YOU REPLY` block with ready-to-curl URLs.
 
 Full contract — endpoint shapes, error codes, replication notes, and what
 operators need to do on a fresh box — lives at
-`ai/web/docs/agent-pm-api.md` inside the active OpenClaw/PM checkout (x1: under `/srv/Code/environment.worktrees/<branch>/`). Read it once when you
+`ai/web/docs/agent-pm-api.md` inside the active OpenClaw/PM checkout (thinkpad: under `/srv/Code/environment.worktrees/<branch>/`). Read it once when you
 first encounter a PM-channel turn on a host; reread when the prompt block
 points you somewhere new.
 
@@ -106,7 +106,7 @@ when timing matters precisely.
 
 **Tools.** Skill helpers under `~/.openclaw/skills/` and
 `~/.openclaw/workspace/jira/` are symlinks into the active OpenClaw checkout
-(x1: under `/srv/Code/environment.worktrees/<branch>/ai/openclaw/skills/`;
+(thinkpad: under `/srv/Code/environment.worktrees/<branch>/ai/openclaw/skills/`;
 yoga510: `/home/rachael/Code/environment/ai/openclaw/skills/`). Identity resolves at runtime via
 `agent-self.js`. Local quirks (host SSH aliases, camera names, voice
 prefs) go in `TOOLS.md`. Platform-formatting nuances (Discord/WhatsApp)

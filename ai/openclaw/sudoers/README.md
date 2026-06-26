@@ -6,7 +6,7 @@ these as-is — they contain placeholders. Copy, substitute, validate with
 
 | File | Used by | Substitutions required |
 |---|---|---|
-| `monitor-agent.example` | The monitor agent (role: monitor in agents.json) — e.g. `karen` on x1, `emery` on yoga510 | `<MONITOR_USER>`, `<CODING_USERS>`, plus uncomment per-host system services |
+| `monitor-agent.example` | The monitor agent (role: monitor in agents.json) — e.g. `karen` on thinkpad, `emery` on yoga510 | `<MONITOR_USER>`, `<CODING_USERS>`, plus uncomment per-host system services |
 | `openclaw-mail-self-wake.example` | yoga510 mail-stack integration | (see comments inside) |
 
 The concrete `/etc/sudoers.d/<user>-openclaw-control` files are

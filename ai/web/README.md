@@ -287,7 +287,7 @@ route then reconciles the PM DB with `syncAgents()` and writes an
   to `~/.config/openclaw/telegram-token` + `TELEGRAM_BOT_TOKEN`; DM pairing then
   authorises the operator's account.
 - **Server email.** The `maildir` integration provisions `~/Maildir` + a mail
-  listener for local server mail (host needs an MTA — see [`../X1.md`](../X1.md)).
+  listener for local server mail (host needs an MTA — see [`../THINKPAD.md`](../THINKPAD.md)).
 - **Gateway verification.** The PM-channel installer restarts the affected
   `openclaw-gateway.service` and waits for systemd to report `active`; a gateway
   restart failure is surfaced as provisioning failure instead of a silent broken
@@ -296,7 +296,7 @@ route then reconciles the PM DB with `syncAgents()` and writes an
   canonical host registry (`/etc/openclaw/agents.json`, historically also
   exposed at `/srv/agents/index.json`) for lifecycle changes; `agent-dashboard`
   only watches the file and re-broadcasts it over SSE. Helper + privilege model:
-  [`../X1.md`](../X1.md) § Agent lifecycle management and
+  [`../THINKPAD.md`](../THINKPAD.md) § Agent lifecycle management and
   [`../openclaw/bin/openclaw-manage-user`](../openclaw/bin/openclaw-manage-user).
 
 ## Capability map
@@ -633,7 +633,7 @@ integration. With a PM checkout present it must:
   on the PM host matches the consumer side for non-chat PM events.
 - Install and enable the one host-wide `pm.service` and `pm-consumer.service`
   as system services with runtime `User=` / `Group=` set to the configured
-  PM app user/group (`karen` on x1 by default). These are **not**
+  PM app user/group (`karen` on thinkpad by default). These are **not**
   per-agent user units; stale
   `/home/<agent>/.config/systemd/user/pm*.service` files should be
   removed so a coding agent cannot accidentally own the PM port or

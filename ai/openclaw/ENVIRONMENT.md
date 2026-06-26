@@ -32,7 +32,7 @@ inventory itself, see [`../../README.md`](../../README.md).
   hardcode email/displayName/accountId.
 - **`Backlog` Jira tickets are ignored** unless zeh explicitly overrides for
   that specific ticket.
-- **Edits go through git.** Edit the host checkout (x1: `/srv/Code/environment/ai/openclaw/`; yoga510: `/home/rachael/Code/environment/ai/openclaw/`), commit,
+- **Edits go through git.** Edit the host checkout (thinkpad: `/srv/Code/environment/ai/openclaw/`; yoga510: `/home/rachael/Code/environment/ai/openclaw/`), commit,
   push. Every agent picks up the change on next read.
 - **No Claude / Anthropic attribution in commits, PRs, or anything else.**
   If a host enables Anthropic / Claude (e.g. an agent runs Claude Code, or a

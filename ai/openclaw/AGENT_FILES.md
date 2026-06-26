@@ -8,7 +8,7 @@ These files stay separate for each registered coding agent. Each lives under `/h
 > into the agent-files root `/srv/agents/openclaw/<user>/` from templates
 > rendered by `ai/web/lib/agents/provisioning.ts`, and points
 > `~/.openclaw/openclaw.json` at the canonical copy by symlink. Editing the
-> agent re-renders them. See [`../X1.md`](../X1.md) § Agent Lifecycle Management.
+> agent re-renders them. See [`../THINKPAD.md`](../THINKPAD.md) § Agent Lifecycle Management.
 
 ## Identity & persona — `~/workspace/*.md`
 
@@ -75,7 +75,7 @@ mail sent by another local agent.
 
 ## Code workspaces — `~/Code/`
 
-On x1, `~/Code` should be a symlink to the shared `/srv/Code` tree. Agents
+On thinkpad, `~/Code` should be a symlink to the shared `/srv/Code` tree. Agents
 claim isolated branches through `/srv/Code/environment.worktrees/<branch>/`
 instead of using private per-agent checkouts. During provisioning/update,
 `openclaw-manage-user` repairs missing file/symlink targets, but it will not

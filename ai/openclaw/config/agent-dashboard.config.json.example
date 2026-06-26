@@ -1,11 +1,11 @@
 {
-  "_doc": "Per-host config for agent-dashboard.service. Install to /etc/agent-dashboard/config.json. The `system_services` list is host-specific — list every system unit you want shown in the dashboard's System Services panel. agents_registry MUST be /etc/openclaw/agents.json (symlinked to the live /srv/agents/index.json on x1, etc). html_path points to the dashboard frontend file shipped under ai/web/ in this repo; install.sh creates a symlink to it.",
+  "_doc": "Per-host config for agent-dashboard.service. Install to /etc/agent-dashboard/config.json. The `system_services` list is host-specific — list every system unit you want shown in the dashboard's System Services panel. agents_registry MUST be /etc/openclaw/agents.json (symlinked to the live /srv/agents/index.json on thinkpad, etc). html_path points to the dashboard frontend file shipped under ai/web/ in this repo; install.sh creates a symlink to it.",
 
   "bind": "127.0.0.1",
   "port": 3013,
 
   "_host_label_doc": "Colloquial host name surfaced in the dashboard brand title ('<host_label> Agent Dashboard') and tab title. Falls back to os.hostname().split('.')[0] if absent. Set to override when the OS hostname doesn't match the human-friendly name (e.g. mail.eurekafiles.com → yoga510).",
-  "host_label": "x1",
+  "host_label": "thinkpad",
 
   "agents_registry": "/etc/openclaw/agents.json",
   "agent_defaults": "/etc/openclaw/agent-defaults.json",

@@ -1,16 +1,16 @@
-# x1 OpenClaw Agents
+# thinkpad OpenClaw Agents
 
-Installed on 2026-05-06 for host `x1` (`10.0.0.108`).
+Installed on 2026-05-06 for host `thinkpad` (`10.0.0.105`).
 
-> **Environment:** `x1` is the **production** environment for this repository.
-> There is no separate dev tier yet — every code change is deployed to `x1`
+> **Environment:** `thinkpad` is the **production** environment for this repository.
+> There is no separate dev tier yet — every code change is deployed to `thinkpad`
 > via `ai/web/deploy/rebuild-and-restart.sh` (or the PM Worktree-switcher
 > when changing which worktree is served). A dedicated dev environment
 > will be set up once the project matures enough to justify the split.
 
 ## Local Users
 
-| x1 user | Role | UID |
+| thinkpad user | Role | UID |
 |---|---|---|
 | coding-agent | coding | `<per-agent UID>` |
 | monitor-agent | monitor | `<monitor UID>` |
@@ -116,7 +116,7 @@ Installed on 2026-05-06 for host `x1` (`10.0.0.108`).
   by the helper to `~/.config/openclaw/telegram-token` + `TELEGRAM_BOT_TOKEN`
   (pair via DM afterwards). The `maildir` integration provisions
   `~/Maildir/{new,cur,tmp}` + `~/.openclaw/mail` — the MTA (Postfix/Dovecot) and
-  `openclaw-mail-listener` remain host prerequisites (present on yoga510, not x1).
+  `openclaw-mail-listener` remain host prerequisites (present on yoga510, not thinkpad).
 - **Guards.** Protected accounts (`root`, `zeh`, the monitor, system users,
   `code-agents`) cannot be added, edited, or removed from this surface —
   enforced in both the route and the helper. A failed create is rolled back
@@ -137,7 +137,7 @@ Installed on 2026-05-06 for host `x1` (`10.0.0.108`).
 ### Replicating agent lifecycle management on another host
 
 Everything needed to stand the feature up on a fresh server. Adjust the
-path/identity constants below if your host doesn't use the `x1` layout.
+path/identity constants below if your host doesn't use the `thinkpad` layout.
 
 **1. Packages / binaries** (must resolve on `root`'s `PATH` and under sudo's
 `secure_path`):
@@ -222,7 +222,7 @@ sudo scripts/test-user-lifecycle.sh
 
 ## Monitor Agent Full Service Set
 
-The monitor agent (e.g. `karen` on x1) is not just a triage/alert agent —
+The monitor agent (e.g. `karen` on thinkpad) is not just a triage/alert agent —
 she is the **service identity** behind the entire PM webapp, the webhook
 receivers, the worktree switcher, the branch verifier, and the
 agent-provisioning runner. Replicating the monitor on another host
@@ -342,7 +342,7 @@ To bring up the monitor on a fresh host:
 
 ## Gmail and Google Watchers
 
-Host `x1` uses Google Workspace/Gmail watchers rather than local Maildir. Gmail polling runs per coding agent to preserve security isolation and prevent mailbox confusion:
+Host `thinkpad` uses Google Workspace/Gmail watchers rather than local Maildir. Gmail polling runs per coding agent to preserve security isolation and prevent mailbox confusion:
 
 - **Listener Service**: `openclaw-gmail-listener.service` is enabled for each coding agent user.
 - **Pub/Sub Subscriptions**:
@@ -357,10 +357,10 @@ Host `x1` uses Google Workspace/Gmail watchers rather than local Maildir. Gmail 
 
 ## Models and Providers
 
-As of May 2026, host `x1` relies dynamically on **OpenAI OAuth**, **Claude CLI**, and **Ollama** (running locally on `x1` and bridging `:cloud` models to `https://ollama.com` for the agents) to provision the models in use. Model configurations and fallback paths are managed dynamically per-user in each agent's private `~/.openclaw/openclaw.json` configuration file rather than being hardcoded in central host documentation.
+As of May 2026, host `thinkpad` relies dynamically on **OpenAI OAuth**, **Claude CLI**, and **Ollama** (running locally on `thinkpad` and bridging `:cloud` models to `https://ollama.com` for the agents) to provision the models in use. Model configurations and fallback paths are managed dynamically per-user in each agent's private `~/.openclaw/openclaw.json` configuration file rather than being hardcoded in central host documentation.
 
-- **Ollama endpoint**: each agent's `models.providers.ollama.baseUrl` points at `http://127.0.0.1:11434` — the local Ollama on `x1` (managed by `ollama.service`, `OLLAMA_HOST=0.0.0.0:11434`). The previous `http://ollama.local` indirection through `moonlight` is **deprecated** — moonlight's nginx upstream pointed at `10.0.0.17` (a different LAN host) which doesn't actually serve the agents' `:cloud` models, so requests were either silently mis-routed or going to x1's local Ollama anyway. Agents now hit the local instance directly.
-- **Local Fallback Model**: `qwen2.5:3b-instruct` (~2 GB q4_K_M) is installed locally on the `x1` CPU as a last-resort offline fallback.
+- **Ollama endpoint**: each agent's `models.providers.ollama.baseUrl` points at `http://127.0.0.1:11434` — the local Ollama on `thinkpad` (managed by `ollama.service`, `OLLAMA_HOST=0.0.0.0:11434`). The previous `http://ollama.local` indirection through `moonlight` is **deprecated** — moonlight's nginx upstream pointed at `10.0.0.17` (a different LAN host) which doesn't actually serve the agents' `:cloud` models, so requests were either silently mis-routed or going to thinkpad's local Ollama anyway. Agents now hit the local instance directly.
+- **Local Fallback Model**: `qwen2.5:3b-instruct` (~2 GB q4_K_M) is installed locally on the `thinkpad` CPU as a last-resort offline fallback.
 
 ## Telegram
 

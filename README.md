@@ -4,9 +4,9 @@ Unified settings and documentation for the hosts in this network. One folder per
 
 | Folder | Subject |
 |---|---|
-| [`ai/`](./ai) | OpenClaw multi-agent stack on **x1** — host doc + shared agent docs/skills + dashboard frontend |
+| [`ai/`](./ai) | OpenClaw multi-agent stack on **thinkpad** — host doc + shared agent docs/skills + dashboard frontend |
 | [`ha/`](./ha) | Home Assistant configuration (hostname `homeassistant`) |
-| [`p16s/`](./p16s) | Hyprland/Wayland desktop config for the **thinkpad** laptop (Lenovo P16s Gen 2) |
+| [`p16s/`](./p16s) | Hyprland/Wayland desktop config for the **thinkpad** AI host (Lenovo P16s Gen 2) |
 | [`zeus/`](./zeus) | Hyprland/Wayland desktop config for the **fedora** workstation |
 
 Host inventory below covers the networked roles (where they live, what they do); per-host deep docs live in the folders above.
@@ -21,24 +21,24 @@ Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied in
 |---|---|
 | [`README.md`](./README.md) | This file. Network host inventory, deployment model, branch workflow. `CLAUDE.md` and `AGENTS.md` are symlinks to it. |
 
-### `ai/` — x1 host + agent runtime
+### `ai/` — thinkpad host + agent runtime
 
 | File | Purpose |
 |---|---|
-| [`ai/README.md`](./ai/README.md) | x1 host doc: identity, disk, network, power, web/DB stack, Hyprland, OpenClaw architecture, Gmail automation, Ollama, monitoring/recovery, dashboard, yoga510 duplication guide. |
-| [`ai/X1.md`](./ai/X1.md) | x1 OpenClaw agents: runtime layout, agent lifecycle management, Gmail/Google watchers, models/providers, Jira/webhooks, services, validation. |
-| [`ai/CHANGELOG.md`](./ai/CHANGELOG.md) | Historical change notes for the x1 stack (dated 2026-05-08 → 2026-05-20). Frozen as-of each date. |
+| [`ai/README.md`](./ai/README.md) | thinkpad host doc: identity, disk, network, power, web/DB stack, Hyprland, OpenClaw architecture, Gmail automation, Ollama, monitoring/recovery, dashboard, yoga510 duplication guide. |
+| [`ai/THINKPAD.md`](./ai/THINKPAD.md) | thinkpad OpenClaw agents: runtime layout, agent lifecycle management, Gmail/Google watchers, models/providers, Jira/webhooks, services, validation, monitor-agent replication runbook. |
+| [`ai/CHANGELOG.md`](./ai/CHANGELOG.md) | Historical change notes for the thinkpad stack (dated 2026-05-08 → 2026-05-20). Frozen as-of each date. |
 
 ### `ai/openclaw/` — shared agent operating rules + skills
 
-| File | Symlinked to agents? | Purpose |
+| File | Copied to agents? | Purpose |
 |---|---|---|
 | [`AGENTS.md`](./ai/openclaw/AGENTS.md) | **Yes (all)** | Operating baseline every agent reads: always-on rules, PM context, session/heartbeat/memory/tools. |
 | [`ROLES.md`](./ai/openclaw/guides/ROLES.md) | **Yes (all)** | Task-role behaviour (manager/coordinator, implementer, monitor). |
 | [`WORKFLOW.md`](./ai/openclaw/WORKFLOW.md) | **Yes (all)** | Action-indexed playbook: outbound, mentions, next-task, working/reviewing, email, Telegram, escalation. |
 | [`CODE_REPOS.md`](./ai/openclaw/guides/CODE_REPOS.md) | **Yes (all)** | Shared `/srv/Code` checkout mechanics, `claim-branch`, git identity, PR boundary. |
 | [`USER.md`](./ai/openclaw/USER.md) | **Yes (all)** | About the human operator (Zeh). |
-| [`INCIDENT_HANDLING.md`](./ai/openclaw/guides/INCIDENT_HANDLING.md) | **Yes (monitor)** | Karen's incident triage protocol: tier framework, action playbook by kind. |
+| [`INCIDENT_HANDLING.md`](./ai/openclaw/guides/INCIDENT_HANDLING.md) | **Yes (monitor)** | The monitor agent's incident triage protocol: tier framework, action playbook by kind. |
 | [`MONITORING.md`](./ai/openclaw/guides/MONITORING.md) | **Yes (monitor)** | Monitoring topology: what gets watched, registry-driven probes, tier framework, dashboard. |
 | [`SERVICES.md`](./ai/openclaw/guides/SERVICES.md) | **Yes (monitor)** | Service catalog: system timers, system/user services, operational commands. |
 | `ENVIRONMENT.md` | No | "Where things live" map + policy. |
@@ -68,13 +68,13 @@ Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied in
 
 | File | Purpose |
 |---|---|
-| [`p16s/README.md`](./p16s/README.md) | ThinkPad P16s Gen 2 Hyprland/Wayland config (thinkpad). |
+| [`p16s/README.md`](./p16s/README.md) | ThinkPad P16s Gen 2 Hyprland/Wayland config — now the AI host (thinkpad). |
 | [`zeus/README.md`](./zeus/README.md) | Fedora workstation Hyprland config + ComfyUI/Confy image service (zeus, `10.0.0.17`). |
 | [`ha/README.md`](./ha/README.md) | Home Assistant configuration notes (homeassistant). |
 
-## x1
+## thinkpad
 
-- Host/IP: `x1`, `10.0.0.108`
+- Host/IP: `thinkpad`, `10.0.0.105`
 - OS: openSUSE Tumbleweed
 - Role: OpenClaw multi-agent host, Development playground, local service host.
 - Active users and their roles are listed in `/etc/openclaw/agents.json`
@@ -101,7 +101,7 @@ Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied in
 - Queue inbox: `/tmp/samba-password-sync/<username>/password.pw`; the parent is root-owned `0711`, and each user subdirectory is owned by the matching Linux account with mode `0700`.
 - Scope: the operator account plus every active user in the agent registry.
 - Behavior: when one of those users changes their Linux password with `passwd`, the hook creates or updates the matching Samba credential with the same password.
-- Bootstrap: users who do not yet exist in Samba should run `passwd` once on `x1`; after that, SMB login uses the same username and password as Linux.
+- Bootstrap: users who do not yet exist in Samba should run `passwd` once on `thinkpad`; after that, SMB login uses the same username and password as Linux.
 - Verification commands:
   - `sudo /usr/sbin/pam-config --verify`
   - `sudo pdbedit -L`
@@ -112,15 +112,15 @@ Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied in
 
 - Host/IP: `moonlight`, `10.0.0.10`
 - Role: public nginx ingress for `vixi.au` routes.
-- Webhook path: `https://dev.vixi.au/webhooks/*` proxies to x1.
+- Webhook path: `https://dev.vixi.au/webhooks/*` proxies to thinkpad.
 - Ollama is also proxied externally through moonlight as documented in root operations notes.
 
-## thinkpad
+## x1
 
-- Host/IP: `thinkpad`, `10.0.0.105`
-- Role: openSUSE Tumbleweed Hyprland/Wayland laptop.
-- Current status: migrated user services and linger are disabled; source homes remain intact for reference only.
-- Desktop config: [`p16s/`](./p16s).
+- Host/IP: `x1`, `10.0.0.108`
+- Role: openSUSE Tumbleweed Hyprland/Wayland laptop (zeh's personal laptop).
+- Current status: no longer the AI agent host; OpenClaw user services and linger are disabled.
+- Desktop config: the x1 Hyprland config was previously documented in `ai/README.md` §9–12 (now applies to thinkpad). For the x1 personal-laptop desktop config, see the historical notes in `ai/README.md` or adapt from the thinkpad/p16s config.
 
 ## Working in this repo (humans & AI assistants)
 
@@ -133,20 +133,20 @@ This repo is **documentation + config that is applied to live hosts**, not a
 buildable product — with one exception, the `ai/web` PM webapp. Read the
 deeper docs before acting:
 
-- **x1 host + agent runtime:** [`ai/README.md`](./ai), [`ai/X1.md`](./ai/X1.md)
+- **thinkpad host + agent runtime:** [`ai/README.md`](./ai), [`ai/THINKPAD.md`](./ai/THINKPAD.md)
 - **Agent operating rules (the OpenClaw fleet reads these):**
   [`ai/openclaw/`](./ai/openclaw) — `AGENTS.md`, `guides/ROLES.md`,
   `WORKFLOW.md` (single workflow authority for Jira + PM),
   `guides/CODE_REPOS.md`, `guides/SERVICES.md`, `guides/MONITORING.md`,
   `guides/BITBUCKET.md`, `guides/INCIDENT_HANDLING.md`, `guides/JIRA.md`
-  (Jira-specific workflow — no longer a stub), `guides/ZEROLATENCY.md`
+  (Jira-specific workflow), `guides/ZEROLATENCY.md`
   (the `ai/web` PM interface guide).
 - **PM webapp deploy:** [`ai/web/deploy/README.md`](./ai/web/deploy/README.md)
 
 ### Deployment model
 
-- **`x1` is production.** There is no separate dev tier yet; changes go live on
-  `x1`.
+- **`thinkpad` is production.** There is no separate dev tier yet; changes go live on
+  `thinkpad`.
 - The **PM webapp** (`ai/web`) is served at **`agents.vixi.au`**: nginx → one
   host-wide `pm.service` running the standalone Next.js server as the **monitor
   agent (`karen`)**, bound to `127.0.0.1:3000`. The Node process serves all
@@ -170,13 +170,13 @@ deeper docs before acting:
   drives `/api/agents/{add,edit,remove}`, which delegate every privileged step
   to the root `openclaw-manage-user` helper via tightly-scoped sudo —
   `agent-dashboard` no longer mutates the registry. Full flow, privilege model,
-  and a fresh-host replication runbook: [`ai/X1.md`](./ai/X1.md) § Agent
+  and a fresh-host replication runbook: [`ai/THINKPAD.md`](./ai/THINKPAD.md) § Agent
   Lifecycle Management and [`ai/web/README.md`](./ai/web/README.md) § Agent
   lifecycle.
 
 ### Multi-agent / branch workflow
 
-- Several agents share `/srv/Code` on `x1` (group `code-agents`, setgid + ACLs).
+- Several agents share `/srv/Code` on `thinkpad` (group `code-agents`, setgid + ACLs).
   All commits are attributed to `Zeh Ferrari` by design — `git log` can't tell
   which agent committed.
 - The **primary checkout (`/srv/Code/<repo>/`) never carries feature commits.**

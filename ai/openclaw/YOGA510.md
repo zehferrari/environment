@@ -4,7 +4,7 @@ Installed on 2026-05-17 for host `mail.eurekafiles.com` / `yoga510`.
 
 ## Local Users
 
-Yoga510 is a new agent instance. It shares selected operating behaviour with x1, but its agents are not continuations, replacements, or clones of previous agents.
+Yoga510 is a new agent instance. It shares selected operating behaviour with thinkpad, but its agents are not continuations, replacements, or clones of previous agents.
 
 | yoga510 user | Role |
 |---|---|
@@ -18,7 +18,7 @@ Yoga510 is a new agent instance. It shares selected operating behaviour with x1,
 - Environment repo: `/home/rachael/Code/environment` (kept outside the samba-backed `/srv` tree).
 - Shared OpenClaw docs and skills: `/home/rachael/Code/environment/ai/openclaw`.
 - Agent users access the repo through group/ACL permissions on `/home/rachael/Code`; each agent has `~/Code -> /home/rachael/Code`.
-- Agent registry: `/etc/openclaw/agents.json` -> `/srv/agents/index.json`. The live file uses the same registry schema as x1 (`version`, `description`, `sharedKnowledgeDir`, `agents`), with yoga510 users and paths.
+- Agent registry: `/etc/openclaw/agents.json` -> `/srv/agents/index.json`. The live file uses the same registry schema as thinkpad (`version`, `description`, `sharedKnowledgeDir`, `agents`), with yoga510 users and paths.
 - Dashboard config: `/etc/agent-dashboard/config.json`.
 - Dashboard source files and nginx web root: `/home/rachael/Code/environment/ai/web`.
 - Nginx serves `agents.html` directly from the repo checkout; stale `/srv/www/agents*.html` deployment copies are not used on yoga510.
@@ -60,19 +60,19 @@ mail-capable local agent, add that agent's email to
 
 Emery is allowed to send local email on yoga510 because this host uses local
 Maildir for all agents and the user expects every agent to answer direct mail.
-This differs from the stricter x1 monitor capability but keeps the same
+This differs from the stricter thinkpad monitor capability but keeps the same
 signature and allowlist controls.
 
 ## Models and Providers
 
-- Ada uses `openai-codex/gpt-5.5` with the x1 primary code-agent fallback order.
-- Claudia uses Claude CLI OAuth through the normalized `anthropic/claude-opus-4-7` provider, with the x1 secondary code-agent fallback order.
-- Emery uses the x1 monitoring-agent Ollama cloud fallback stack.
+- Ada uses `openai-codex/gpt-5.5` with the thinkpad primary code-agent fallback order.
+- Claudia uses Claude CLI OAuth through the normalized `anthropic/claude-opus-4-7` provider, with the thinkpad secondary code-agent fallback order.
+- Emery uses the thinkpad monitoring-agent Ollama cloud fallback stack.
 - All Ollama cloud entries use `http://ollama.local`, resolved locally to moonlight (`10.0.0.10`) via `/etc/hosts`.
 
 ## Telegram
 
-Ada, Claudia, and Emery follow the x1 config shape: a single top-level `channels.telegram` block, not per-account `channels.telegram.accounts.*` entries. Tokens live only in per-user files:
+Ada, Claudia, and Emery follow the thinkpad config shape: a single top-level `channels.telegram` block, not per-account `channels.telegram.accounts.*` entries. Tokens live only in per-user files:
 
 - `/home/ada/.config/openclaw/telegram-token`
 - `/home/claudia/.config/openclaw/telegram-token`
@@ -94,7 +94,7 @@ Validate with `openclaw channels list` as each user, then restart `openclaw-gate
 
 ## Jira and Webhooks
 
-Yoga510 now uses the x1-style monitor-owned webhook dispatcher for Jira routing:
+Yoga510 now uses the thinkpad-style monitor-owned webhook dispatcher for Jira routing:
 
 - Main local receivers: `/home/emery/webhooks/jira-receiver.js` (port `3014`) and `/home/emery/webhooks/bitbucket-receiver.js` (port `3015`).
 - Routing config: `/srv/agents/index.json` via `/etc/openclaw/agents.json`.

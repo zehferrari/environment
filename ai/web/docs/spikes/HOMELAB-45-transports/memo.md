@@ -17,7 +17,7 @@ risks.
 
 The OpenClaw gateway is per-agent. Authoritative source is
 `/srv/agents/index.json` (`agents[].listeners[?owner=='openclaw-gateway'].port`,
-or per-agent `gateway_port`). Verified on host `x1`:
+or per-agent `gateway_port`). Verified on host `thinkpad`:
 
 | agent       | uid  | gateway       |
 |-------------|------|---------------|

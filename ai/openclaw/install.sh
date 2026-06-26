@@ -315,7 +315,7 @@ if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
         # Two modes:
         #   (1) HOST-level override: registry has top-level gitName/gitEmail.
         #       Every coding agent's commits under codeRoot are attributed
-        #       to that single identity (e.g. x1: gitName="Zeh Ferrari").
+        #       to that single identity (e.g. thinkpad: gitName="Zeh Ferrari").
         #       install.sh maintains <codeRoot>/.gitconfig-registry with
         #       [user] from those fields and links agent ~/.gitconfig to it
         #       via includeIf.

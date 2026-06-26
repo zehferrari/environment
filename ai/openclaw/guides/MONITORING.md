@@ -17,7 +17,7 @@ the entry-point overview.
   - `openclaw-backup` — daily at 04:20 (±20 min) via
     `openclaw-backup.timer`. Latest 14 archives kept under
     `/var/backups/openclaw`; off-host copy at
-    `moonlight:/srv/backups/openclaw/x1`.
+    `moonlight:/srv/backups/openclaw/thinkpad`.
 - **Per-agent services** derived at runtime from `agent-defaults.json` based on
   the agent's `role` plus enabled `integrations` (e.g. `openclaw-gateway`,
   `openclaw-gmail-listener`, `openclaw-webhook-receiver`,

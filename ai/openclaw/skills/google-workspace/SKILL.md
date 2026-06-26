@@ -1,6 +1,6 @@
 # Google Workspace
 
-Use this skill for Gmail, Google Calendar, Drive, and Photos on `x1` and
+Use this skill for Gmail, Google Calendar, Drive, and Photos on `thinkpad` and
 yoga510. Email is read from Gmail via the API; outgoing mail is sent
 through the same API. OAuth tokens live in `~/.local/share/openclaw/...`
 and are auto-refreshed by the `googleapis` library using the refresh
