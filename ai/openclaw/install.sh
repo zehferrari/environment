@@ -120,6 +120,7 @@ do_install 755 "$REPO_ROOT/bin/openclaw-registry-check"   /usr/local/bin/opencla
 do_install 755 "$REPO_ROOT/bin/openclaw-integrity-check"  /usr/local/bin/openclaw-integrity-check
 do_install 755 "$REPO_ROOT/bin/openclaw-control"          /usr/local/sbin/openclaw-control
 do_install 755 "$REPO_ROOT/bin/openclaw-manage-user"     /usr/local/sbin/openclaw-manage-user
+do_install 755 "$REPO_ROOT/bin/openclaw-doc-sync"       /usr/local/sbin/openclaw-doc-sync
 do_install 755 "$REPO_ROOT/bin/openclaw-agent-runner"    /usr/local/sbin/openclaw-agent-runner
 do_install 755 "$REPO_ROOT/bin/pm-workflow-nudge"         /usr/local/sbin/pm-workflow-nudge
 do_install 755 "$REPO_ROOT/bin/pm-self-assignment-guard" /usr/local/sbin/pm-self-assignment-guard
@@ -148,6 +149,7 @@ for u in agent-dashboard.service \
          ai-monitor.service ai-monitor.timer \
          openclaw-integrity.service openclaw-integrity.timer \
          openclaw-backup.service openclaw-backup.timer \
+         openclaw-doc-sync.service openclaw-doc-sync.timer \
          openclaw-monitor-sync.service openclaw-monitor-sync.timer \
          openclaw-typing-keepalive.service \
          gmail-watch-renew.service gmail-watch-renew.timer; do

@@ -13,6 +13,8 @@ units are host-portable; deploy via `../install.sh`.
 | `openclaw-integrity.timer` | timer | Runs the integrity check every 2 min | Yes |
 | `openclaw-backup.service` | oneshot | Daily root-only backup of small critical OpenClaw state to `/var/backups/openclaw` | Yes |
 | `openclaw-backup.timer` | timer | Daily 04:20 (±20 min) trigger for the above | Yes |
+| `openclaw-doc-sync.service` | oneshot | Copies agent docs from the active OpenClaw checkout into every enabled agent's workspace. Content-diff gated (only overwrites when source differs). Also syncs `openclaw.json` from `/srv/agents/openclaw/<user>/` to `~/.openclaw/` if diverged. Removes stale `TEAM_WORKFLOW.md`. | Yes |
+| `openclaw-doc-sync.timer` | timer | Runs the doc sync every 5 min | Yes |
 | `openclaw-typing-keepalive.service` | simple | Telegram typing-indicator sidecar for `claude-cli` provider (non-streaming → openclaw's built-in keepalive lapses mid-turn) | Anywhere agents use claude-cli |
 | `openclaw-monitor-sync.service` | oneshot | Reconciles per-agent `~/.local/openclaw/monitor.json` against actual systemd state — enabled resources are `enable --now`, disabled are `stop` | Yes |
 | `openclaw-monitor-sync.timer` | timer | Periodic drift correction every 5 min for the above | Yes |

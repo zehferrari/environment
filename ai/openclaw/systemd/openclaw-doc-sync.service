@@ -1,0 +1,9 @@
+[Unit]
+Description=Sync agent workspace docs from the active OpenClaw checkout
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/openclaw-doc-sync
+StandardOutput=journal
+StandardError=journal

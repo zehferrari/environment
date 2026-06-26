@@ -1,0 +1,135 @@
+#!/bin/bash
+# openclaw-doc-sync — copy agent docs from the active OpenClaw checkout
+# into every enabled agent's workspace(s). Content-diff gated: only
+# overwrites when the source differs from the destination.
+#
+# Runs via openclaw-doc-sync.timer every 5 minutes. Source root resolves
+# from /etc/default/pm-active-worktree (the PM-served worktree), falling
+# back to /etc/default/pm, then /srv/Code/environment.worktrees/main.
+#
+# No symlinks — plain copies, so agents get stable files that don't
+# track a mutable worktree. Files are overwritten only when content
+# differs (cmp -s check), minimizing churn.
+set -u
+
+REGISTRY="${OPENCLAW_AGENTS_JSON:-/etc/openclaw/agents.json}"
+SHARED_USER_DOC="/srv/agents/openclaw/_shared/USER.md"
+GUIDES_DIR=""  # resolved below
+
+# --- Resolve the active OpenClaw checkout root ---
+resolve_docs_root() {
+  local active_root=""
+  for env_file in /etc/default/pm-active-worktree /etc/default/pm; do
+    if [ -r "$env_file" ]; then
+      for key in PM_APP_ROOT PM_APP_DIR; do
+        val=$(grep -E "^${key}=" "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+        [ -n "$val" ] || continue
+        active_root="$val"
+        break
+      done
+      [ -n "$active_root" ] && break
+    fi
+  done
+
+  active_root="${active_root%%/ai/web}"
+  active_root="${active_root%%/ai}"
+  if [ -d "$active_root/ai/openclaw" ]; then
+    printf '%s/ai/openclaw' "$active_root"
+    return 0
+  fi
+
+  # Fall back: check if the worktree main checkout exists
+  for fallback in /srv/Code/environment.worktrees/main/ai/openclaw /srv/Code/environment/ai/openclaw; do
+    if [ -d "$fallback" ]; then
+      printf '%s' "$fallback"
+      return 0
+    fi
+  done
+
+  echo "Error: could not resolve active OpenClaw checkout root" >&2
+  return 1
+}
+
+DOCS_ROOT=$(resolve_docs_root) || exit 1
+GUIDES_DIR="$DOCS_ROOT/guides"
+
+if [ ! -d "$DOCS_ROOT" ] || [ ! -d "$GUIDES_DIR" ]; then
+  echo "Error: docs root or guides dir missing at $DOCS_ROOT" >&2
+  exit 1
+fi
+
+if [ ! -r "$REGISTRY" ] || ! command -v jq >/dev/null 2>&1; then
+  echo "Error: registry ($REGISTRY) or jq unavailable" >&2
+  exit 1
+fi
+
+# --- copy_doc: overwrite only if content differs ---
+copy_doc() {
+  local src="$1" dst="$2" owner="$3"
+  if [ ! -f "$src" ]; then
+    return 0  # source missing — skip silently
+  fi
+  if [ -L "$dst" ]; then
+    rm -f "$dst"  # replace stale symlink
+  elif [ -d "$dst" ]; then
+    rmdir "$dst" 2>/dev/null || return 0  # non-empty dir — skip
+  fi
+  if [ ! -f "$dst" ] || ! cmp -s "$src" "$dst"; then
+    install -o "$owner" -g "$owner" -m 0644 "$src" "$dst"
+    echo "  copied: $dst"
+  fi
+}
+
+# --- Iterate enabled agents from registry ---
+copied=0
+total=0
+
+while IFS=$'\t' read -r user role home; do
+  [ -n "$user" ] || continue
+  total=$((total + 1))
+  echo "==> $user (role=$role, home=$home)"
+
+  ws="$home/workspace"
+  ows="$home/.openclaw/workspace"
+  mkdir -p "$ws" "$ows" 2>/dev/null || true
+
+  # Common docs (every agent)
+  copy_doc "$SHARED_USER_DOC"           "$ws/USER.md"        "$user"
+  copy_doc "$SHARED_USER_DOC"           "$ows/USER.md"       "$user"
+  copy_doc "$DOCS_ROOT/AGENTS.md"       "$ws/AGENTS.md"      "$user"
+  copy_doc "$DOCS_ROOT/AGENTS.md"       "$ows/AGENTS.md"     "$user"
+  copy_doc "$DOCS_ROOT/WORKFLOW.md"     "$ws/WORKFLOW.md"    "$user"
+  copy_doc "$DOCS_ROOT/WORKFLOW.md"     "$ows/WORKFLOW.md"   "$user"
+  copy_doc "$GUIDES_DIR/ROLES.md"       "$ws/ROLES.md"       "$user"
+  copy_doc "$GUIDES_DIR/ROLES.md"       "$ows/ROLES.md"      "$user"
+  copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ws/CODE_REPOS.md"  "$user"
+  copy_doc "$GUIDES_DIR/CODE_REPOS.md"  "$ows/CODE_REPOS.md" "$user"
+
+  # Monitor-only docs
+  if [ "$role" = "monitor" ]; then
+    copy_doc "$GUIDES_DIR/INCIDENT_HANDLING.md" "$ows/INCIDENT_HANDLING.md" "$user"
+    copy_doc "$GUIDES_DIR/MONITORING.md"        "$ows/MONITORING.md"        "$user"
+    copy_doc "$GUIDES_DIR/SERVICES.md"          "$ows/SERVICES.md"          "$user"
+  fi
+
+  # Remove stale TEAM_WORKFLOW.md (legacy)
+  for stale in "$ws/TEAM_WORKFLOW.md" "$ows/TEAM_WORKFLOW.md"; do
+    [ -e "$stale" ] && rm -f "$stale" && echo "  removed stale: $(basename "$stale")"
+  done
+
+  # Sync openclaw.json from canonical to home (if diverged)
+  canon_cfg="/srv/agents/openclaw/$user/openclaw.json"
+  home_cfg="$home/.openclaw/openclaw.json"
+  if [ -f "$canon_cfg" ] && [ -f "$home_cfg" ]; then
+    if ! cmp -s "$canon_cfg" "$home_cfg"; then
+      cp "$canon_cfg" "$home_cfg"
+      chown "$user:$user" "$home_cfg"
+      chmod 0600 "$home_cfg"
+      echo "  synced: openclaw.json (was diverged)"
+    fi
+  fi
+
+done < <(jq -r '.agents[] | select(.enabled == true) | "\(.user)\t\(.role)\t\(.home // "/home/\(.user)")"' "$REGISTRY")
+
+echo
+echo "Done. Processed $total agent(s)."
