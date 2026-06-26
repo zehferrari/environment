@@ -1,0 +1,6 @@
+# PM degraded-fallback wake: lets a coding agent call the monitor's
+# pm-monitor-wake-agent helper when gateway hooks are unavailable.
+# Static fragment — hand-install. Substitute the real coding + monitor usernames.
+# The pm-monitor-wake-agent helper is installed at /usr/local/sbin/pm-monitor-wake-agent.
+Defaults:<CODING_USER> !requiretty
+<CODING_USER> ALL=(root) NOPASSWD: /usr/local/sbin/pm-monitor-wake-agent *

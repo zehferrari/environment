@@ -1,0 +1,7 @@
+[Unit]
+Description=Back up OpenClaw agent state
+ConditionPathExists=/etc/openclaw/agents.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/openclaw-backup

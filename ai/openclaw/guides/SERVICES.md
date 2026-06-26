@@ -19,7 +19,7 @@ x1 uses systemd timers for active automation. Cron references in old migration n
 - `php-fpm.service`: local PHP runtime.
 - `agent-dashboard.service`: real-time per-agent dashboard backend on `127.0.0.1:3013` (HTTP + SSE). Front-end at `https://dev.vixi.au/agents.html` behind nginx basic auth.
 - `pm.service`: one host-wide PM web app for `agents.vixi.au`, normally
-  running as Karen on x1. This is a system unit under
+  running as the monitor agent user (`karen` on x1). This is a system unit under
   `/etc/systemd/system` with `User=karen`, not a per-agent user unit. It
   serves the Next.js standalone app, persists PM tasks/comments/chats,
   sends chat/comment turns into each agent's native OpenClaw `pm`
@@ -55,7 +55,7 @@ x1 uses systemd timers for active automation. Cron references in old migration n
   code-touching task to Review (with `repoTouched: true`). For each job runs
   `git -C <repositoryPath> fetch origin <branchName>` then `git log
   origin/<branchName>` on the already-cloned local repo, looks for commits
-  whose subject starts with the task/epic `commitPrefix`, and writes a Karen-
+  whose subject starts with the task/epic `commitPrefix`, and writes a monitor-authored
   authored task `Comment` plus a `pm.repo.verify.ok` or `pm.repo.verify.fail`
   `ActivityLog` row. No sudo / no privileged step — DB writes go through
   `DATABASE_URL` from `/etc/default/pm`. Decoupled from `pm.service` like the
@@ -94,7 +94,7 @@ x1 uses systemd timers for active automation. Cron references in old migration n
   `POST /hooks/wake` → 401, authenticated `POST /hooks/wake` → 200, and
   `HEAD /pm-channel/ingest` → 405.
 - `openclaw-typing-keepalive.service`: Telegram typing-indicator sidecar for the openclaw `claude-cli` provider (`/usr/local/bin/openclaw-typing-keepalive`). The cli-backend is non-streaming, so openclaw's built-in typing keepalive (60 s TTL refreshed by stream events) lapses mid-turn on long opus runs. This service polls every registered agent's `~/.openclaw/agents/main/sessions/sessions.json` and re-fires `sendChatAction("typing")` every 4 s for any telegram conversation key currently `status=running` on `modelProvider=claude-cli`. Auto-discovers agents from `/etc/openclaw/agents.json`; no per-agent install. Runs as root because each agent's `sessions.json` and `~/.config/openclaw/openclaw-secrets.env` (where `TELEGRAM_BOT_TOKEN` lives) are mode `0600` per-user. Agents on `ollama` / `openai-codex` / other providers are skipped — they emit native streaming events that drive the in-process typing pipeline correctly.
-- `gmail-watch-renew.timer` → `gmail-watch-renew.service`: daily (04:00 ±10 min) auto-renewal of every per-agent Gmail push watch. Runs `/usr/local/sbin/gmail-watch-renew-all`, which discovers `/home/*/.openclaw/workspace/google/watch-state.json`, reads the topic and labels recorded there, and re-runs the per-user `gmail-watch.js` as the affected agent. Gmail watches expire in 7 days; daily renewal stays well inside the window. Without this timer, `openclaw-integrity-check` raises `gmail-watch-expiring` at <24 h, which used to escalate to Karen and then to Telegram for a known-recurring, deterministic issue.
+- `gmail-watch-renew.timer` → `gmail-watch-renew.service`: daily (04:00 ±10 min) auto-renewal of every per-agent Gmail push watch. Runs `/usr/local/sbin/gmail-watch-renew-all`, which discovers `/home/*/.openclaw/workspace/google/watch-state.json`, reads the topic and labels recorded there, and re-runs the per-user `gmail-watch.js` as the affected agent. Gmail watches expire in 7 days; daily renewal stays well inside the window. Without this timer, `openclaw-integrity-check` raises `gmail-watch-expiring` at <24 h, which used to escalate to the monitor agent and then to Telegram for a known-recurring, deterministic issue.
 - `openclaw-monitor-sync.path` → `openclaw-monitor-sync.service`: watches every per-agent `~/.local/openclaw/monitor.json`; on change (within ~1 s), runs `/usr/local/sbin/openclaw-monitor-sync` which reconciles per-agent project resources — `enabled: true` resources get `systemctl --user enable --now`, `enabled: false` resources get `systemctl --user stop`. Companion `openclaw-monitor-sync.timer` runs every 5 min for drift correction. Triggered manually with `sudo /usr/local/sbin/openclaw-monitor-sync [<user>]`.
 
 ## Operational Commands
@@ -139,7 +139,7 @@ Derived from enabled integrations (`agent-defaults.json` `byIntegration[k]`):
 
 Per-agent project resources (services that come from a side project the agent has installed) live in `~/<user>/.local/openclaw/monitor.json`. Each resource declares `services[]` and a single `enabled` flag — when `enabled: true`, `openclaw-monitor-sync` keeps the services running and the loaders add them to the monitoring sweep. When `enabled: false`, the services are stopped and dropped from the sweep. See `MONITORING.md` → *Per-agent project resources* for the schema.
 
-### Monitoring agent (`role: monitoring agent`, runs as user `karen`)
+### Monitoring agent (`role: monitor`, runs as user `karen` on x1)
 
 - `openclaw-gateway.service`
 - `openclaw-jira-receiver.service` — Jira webhook receiver (`integrations.monitor: true` & `integrations.jira: true` on coding agents)

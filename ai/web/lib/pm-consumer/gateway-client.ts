@@ -37,7 +37,7 @@ export interface WakeResult {
   ok: boolean;
   status?: number;
   error?: string;
-  driver?: "gateway-http" | "karen-control";
+  driver?: "gateway-http" | "monitor-control";
 }
 
 const DEFAULT_TOKEN_FILE =
@@ -83,7 +83,7 @@ export async function resolveHookToken(slug: string): Promise<string | null> {
 export async function wakeAgent(args: WakeArgs): Promise<WakeResult> {
   const token = await resolveHookToken(args.slug);
   if (!token) {
-    return wakeViaKarenControl(
+    return wakeViaMonitorControl(
       args,
       `missing hook token for agent "${args.slug}"`,
     );
@@ -104,42 +104,42 @@ export async function wakeAgent(args: WakeArgs): Promise<WakeResult> {
       }),
     });
     if (!res.ok) {
-      return wakeViaKarenControl(args, `gateway ${res.status}`, res.status);
+      return wakeViaMonitorControl(args, `gateway ${res.status}`, res.status);
     }
     return { ok: true, status: res.status, driver: "gateway-http" };
   } catch (err) {
-    return wakeViaKarenControl(
+    return wakeViaMonitorControl(
       args,
       err instanceof Error ? err.message : String(err),
     );
   }
 }
 
-function karenFallbackEnabled() {
+function monitorFallbackEnabled() {
   return (
     process.env.PM_CONSUMER_MONITOR_WAKE_FALLBACK
       ?? process.env.PM_CONSUMER_KAREN_WAKE_FALLBACK
   ) !== "off";
 }
 
-function karenWakeHelperPath() {
+function monitorWakeHelperPath() {
   return process.env.PM_MONITOR_WAKE_HELPER
     ?? process.env.PM_KAREN_WAKE_HELPER
-    ?? "/usr/local/sbin/pm-karen-wake-agent";
+    ?? "/usr/local/sbin/pm-monitor-wake-agent";
 }
 
-async function wakeViaKarenControl(
+async function wakeViaMonitorControl(
   args: WakeArgs,
   reason: string,
   status?: number,
 ): Promise<WakeResult> {
-  if (!karenFallbackEnabled()) {
+  if (!monitorFallbackEnabled()) {
     return { ok: false, status, error: reason, driver: "gateway-http" };
   }
   try {
     const commandArgs = [
       "-n",
-      karenWakeHelperPath(),
+      monitorWakeHelperPath(),
       args.slug,
     ];
     if (args.sessionKey) {
@@ -151,13 +151,13 @@ async function wakeViaKarenControl(
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     });
-    return { ok: true, status, driver: "karen-control" };
+    return { ok: true, status, driver: "monitor-control" };
   } catch (err) {
     const fallbackError = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
       status,
-      driver: "karen-control",
+      driver: "monitor-control",
       error: `${reason}; monitor wake fallback failed: ${fallbackError}`,
     };
   }

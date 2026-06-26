@@ -6,9 +6,9 @@ then determine the task role from the live Jira issue, Epic ownership, or an
 explicit zeh/agent handoff. The same agent can act as implementer, coordinator,
 reviewer, researcher, or operator on different tasks.
 
-The only standing operational role is `monitor`, because it maps to Karen's
-service responsibility. Operating baseline is in `AGENTS.md`; the workflow
-playbook is in `TEAM_WORKFLOW.md`.
+The only standing operational role is `monitor`, because it maps to the
+monitor agent's service responsibility (e.g. `karen` on x1). Operating baseline is in `AGENTS.md`; the workflow
+playbook is in `../WORKFLOW.md`.
 
 A note on **models**: model preference is per-agent and task-fit based, not a
 cheap-vs-expensive ladder. Asking another agent for review is a fresh
@@ -144,7 +144,7 @@ You **do not** (unless zeh expands the role):
   capabilities are off in the registry.
 - Take ownership of Jira implementation work.
 
-**Self-incidents** (issues affecting `karen` or ai-monitor itself) bypass
+**Self-incidents** (issues affecting the monitor agent user, e.g. `karen` on x1, or ai-monitor itself) bypass
 the normal handoff and go to direct Telegram — ai-monitor handles this
 guard automatically; don't override it.
 

@@ -1,0 +1,11 @@
+# Legacy cron fallback for openclaw-integrity-check.
+#
+# DEPRECATED — on x1 and any host running systemd, the active scheduler is
+# openclaw-integrity.timer (in ../systemd/), not this cron entry. This file
+# is versioned for reference and for hosts where systemd timers are
+# unavailable. install.sh does NOT install it; copy to /etc/cron.d/ by hand
+# only if you explicitly need the cron path.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+*/2 * * * * root /usr/local/bin/openclaw-integrity-check 2>&1 | /usr/bin/logger -t openclaw-integrity

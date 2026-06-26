@@ -1,0 +1,4 @@
+# Allow anotheragent to wake themselves
+# Static fragment — hand-install when a non-coding, non-monitor agent needs
+# self-wake capability. Substitute the real username.
+anotheragent ALL=(root) NOPASSWD: /usr/local/sbin/openclaw-control wake-agent anotheragent *

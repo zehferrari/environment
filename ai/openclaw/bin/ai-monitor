@@ -2155,17 +2155,29 @@ def deterministic_issues(probes):
         })
     symlinks = probes.get("agent_symlinks", {})
     for issue in symlinks.get("issues", []) or []:
-        label = issue.get("label", "symlink")
-        severity = "crit" if label == "openclaw-config" else "warn"
-        resolved = issue.get("resolved") or issue.get("link_target") or "none"
-        out.append({
-            "unit": f"agent-symlink:{issue.get('agent','?')}/{label}",
-            "kind": "agent-symlink-drift",
-            "severity": severity,
-            "reason": (
+        label = issue.get("label", "doc")
+        is_config = label == "openclaw-config"
+        if is_config:
+            unit = f"agent-config-symlink:{issue.get('agent','?')}"
+            kind = "agent-config-symlink-drift"
+            resolved = issue.get("resolved") or issue.get("link_target") or "none"
+            reason = (
                 f"{issue.get('path')} is {issue.get('reason','invalid')}; "
                 f"resolved={resolved}; expected={issue.get('expected_real') or issue.get('expected')}"
-            ),
+            )
+        else:
+            unit = f"agent-doc:{issue.get('agent','?')}/{label}"
+            kind = "agent-doc-drift"
+            reason = (
+                f"{issue.get('path')} is {issue.get('reason','invalid')}; "
+                f"expected={issue.get('expected')}"
+            )
+        severity = "crit" if is_config else "warn"
+        out.append({
+            "unit": unit,
+            "kind": kind,
+            "severity": severity,
+            "reason": reason,
             "suggested_action": "investigate",
         })
     stalled = probes.get("stalled_tasks", {})
@@ -4428,7 +4440,7 @@ def main():
             "pending_email_tasks": len(
                 probes.get("pending_email_tasks", {}).get("pending", [])
             ),
-            "agent_symlink_drift": len(
+            "agent_doc_drift": len(
                 probes.get("agent_symlinks", {}).get("issues", [])
             ),
             "down_listeners": [

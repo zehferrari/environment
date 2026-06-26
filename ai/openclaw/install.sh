@@ -145,6 +145,9 @@ fi
 # 2. system-wide systemd units (host-portable)
 log "[2/7] systemd system units"
 for u in agent-dashboard.service \
+         ai-monitor.service ai-monitor.timer \
+         openclaw-integrity.service openclaw-integrity.timer \
+         openclaw-backup.service openclaw-backup.timer \
          openclaw-monitor-sync.service openclaw-monitor-sync.timer \
          openclaw-typing-keepalive.service \
          gmail-watch-renew.service gmail-watch-renew.timer; do

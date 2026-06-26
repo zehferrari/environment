@@ -1,0 +1,13 @@
+[Unit]
+Description=AI judgment layer over openclaw-integrity-check
+After=network-online.target ollama.service openclaw-integrity.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/ai-monitor
+Nice=10
+StandardOutput=journal
+StandardError=journal
+SuccessExitStatus=0 1
+TimeoutStartSec=180

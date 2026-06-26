@@ -1,0 +1,10 @@
+[Unit]
+Description=Run OpenClaw state backup daily
+
+[Timer]
+OnCalendar=*-*-* 04:20:00
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

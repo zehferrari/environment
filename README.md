@@ -13,7 +13,7 @@ Host inventory below covers the networked roles (where they live, what they do);
 
 ## Document index
 
-Every Markdown doc in the tree, grouped by folder. Agent-facing files (symlinked into each agent's workspace by `openclaw-manage-user`) are marked **(agent-facing)** — edits to those reach running agents on the next worktree reconcile, so change them with care.
+Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied into each agent's workspace by `openclaw-manage-user`) are marked **(agent-facing)** — edits to those reach running agents on the next worktree reconcile, so change them with care.
 
 ### Root
 
@@ -186,6 +186,7 @@ deeper docs before acting:
 - **Agents never create or merge pull requests — humans (zeh) only.** An agent's
   job ends at "branch pushed, ready for review."
 - **Agent-facing docs propagate through the active OpenClaw install:** each
-  agent's workspace docs are symlinks to `ai/openclaw/*.md` from the validated
-  deployed worktree. A doc change reaches agents once it lands in git and the
-  active PM/OpenClaw worktree is reconciled.
+  agent's workspace docs are content copies of `ai/openclaw/*.md` from the
+  validated deployed worktree (`openclaw-manage-user` overwrites a copy only
+  when content differs). A doc change reaches agents once it lands in git
+  and the active PM/OpenClaw worktree is reconciled.

@@ -7,6 +7,12 @@ units are host-portable; deploy via `../install.sh`.
 | Unit | Type | Purpose | Required everywhere? |
 |---|---|---|---|
 | `agent-dashboard.service` | simple | Node server on `127.0.0.1:3013` serving `/agents.html` + `/agents/events` SSE + `/agents/registry.json` | Yes |
+| `ai-monitor.service` | oneshot | AI judgment layer over `openclaw-integrity-check` — triages incidents, wakes/restarts agents, sends Telegram alerts via the monitor agent | Yes |
+| `ai-monitor.timer` | timer | Runs the AI monitor every 2 min (offset from integrity) | Yes |
+| `openclaw-integrity.service` | oneshot | Runs `openclaw-integrity-check` (validates registry, services, listeners, Gmail watches) | Yes |
+| `openclaw-integrity.timer` | timer | Runs the integrity check every 2 min | Yes |
+| `openclaw-backup.service` | oneshot | Daily root-only backup of small critical OpenClaw state to `/var/backups/openclaw` | Yes |
+| `openclaw-backup.timer` | timer | Daily 04:20 (±20 min) trigger for the above | Yes |
 | `openclaw-typing-keepalive.service` | simple | Telegram typing-indicator sidecar for `claude-cli` provider (non-streaming → openclaw's built-in keepalive lapses mid-turn) | Anywhere agents use claude-cli |
 | `openclaw-monitor-sync.service` | oneshot | Reconciles per-agent `~/.local/openclaw/monitor.json` against actual systemd state — enabled resources are `enable --now`, disabled are `stop` | Yes |
 | `openclaw-monitor-sync.timer` | timer | Periodic drift correction every 5 min for the above | Yes |

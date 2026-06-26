@@ -1,0 +1,12 @@
+# Allow mail ingestion workers to wake only their own OpenClaw agent.
+# This keeps immediate whitelisted-email handling on the same hardened
+# openclaw-control path used by ai-monitor.
+#
+# This is a reference template. The live files are generated per-agent by
+# openclaw-manage-user as /etc/sudoers.d/openclaw-wake-<user> during
+# add/update. On a host that predates the generator (or was hand-provisioned),
+# the consolidated file /etc/sudoers.d/openclaw-mail-self-wake may exist
+# instead — one line per coding agent.
+#
+# Placeholders: <CODING_USER> = each coding agent's username
+<CODING_USER> ALL=(root) NOPASSWD: /usr/local/sbin/openclaw-control wake-agent <CODING_USER> *

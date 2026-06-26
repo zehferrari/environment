@@ -1,0 +1,6 @@
+[Unit]
+Description=OpenClaw integrity check
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -lc '/usr/local/bin/openclaw-integrity-check 2>&1 | /usr/bin/logger -t openclaw-integrity'

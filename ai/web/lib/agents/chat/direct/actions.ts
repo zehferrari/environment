@@ -349,15 +349,16 @@ function summarizeMessages(messages: Array<{ body: string; sender: { kind: strin
   return truncateSummary(source || "Direct chat");
 }
 
-function karenWakeHelperPath() {
-  return process.env.PM_KAREN_WAKE_HELPER
-    ?? "/usr/local/sbin/pm-karen-wake-agent";
+function monitorWakeHelperPath() {
+  return process.env.PM_MONITOR_WAKE_HELPER
+    ?? process.env.PM_KAREN_WAKE_HELPER
+    ?? "/usr/local/sbin/pm-monitor-wake-agent";
 }
 
-async function wakeAgentViaKaren(agentSlug: string, prompt: string, sessionBinding: AgentSessionBinding) {
+async function wakeAgentViaMonitor(agentSlug: string, prompt: string, sessionBinding: AgentSessionBinding) {
   await execFileAsync("sudo", [
     "-n",
-    karenWakeHelperPath(),
+    monitorWakeHelperPath(),
     agentSlug,
     "--session-key",
     sessionBinding.openclawSessionId ?? sessionBinding.openclawSessionKey,
@@ -385,8 +386,8 @@ async function wakeDirectAgent(args: {
     throw new Error(result.error ?? "Gateway wake failed");
   }
 
-  await wakeAgentViaKaren(args.agentSlug, args.prompt, args.sessionBinding);
-  return "karen-control" as const;
+  await wakeAgentViaMonitor(args.agentSlug, args.prompt, args.sessionBinding);
+  return "monitor-control" as const;
 }
 
 function currentProcessUser() {

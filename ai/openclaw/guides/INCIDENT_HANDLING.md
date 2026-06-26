@@ -1,4 +1,4 @@
-# INCIDENT_HANDLING.md — Karen's monitoring incident protocol
+# INCIDENT_HANDLING.md — the monitor agent's incident triage protocol
 
 ## When this fires
 
@@ -39,7 +39,7 @@ You can still escalate early if a tier-1 fix is unsafe or out-of-scope (system-s
    - `sudo -u <user> XDG_RUNTIME_DIR=/run/user/<uid> DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus systemctl --user is-active <unit>` for user units.
    - For listener-down: try `nc -zv 127.0.0.1 <port>` or `curl -sI http://127.0.0.1:<port>`.
    - For `task-stalled` Jira issues: query Jira (your token is at `~/.ssh/jiraToken.txt`) — confirm the stall is still real *now*.
-   - **Busy-vs-stalled check (mandatory before any wake/restart action).** A long tool call (big grep, slow API call, codex turn) looks identical to a wedged process if you only check session-jsonl mtime. ai-monitor already gates `task-stalled-no-agent` and `agent-idle-with-queue` on its 3-signal busy probe (sessions.json status=running with recent updatedAt, claude-cli jsonl < 60 s old, process CPU > 5 %), so an incident reaching you means at least one signal said "not busy" at probe time — but turns can start in the gap. Re-confirm before acting. The cheap version Karen runs:
+   - **Busy-vs-stalled check (mandatory before any wake/restart action).** A long tool call (big grep, slow API call, codex turn) looks identical to a wedged process if you only check session-jsonl mtime. ai-monitor already gates `task-stalled-no-agent` and `agent-idle-with-queue` on its 3-signal busy probe (sessions.json status=running with recent updatedAt, claude-cli jsonl < 60 s old, process CPU > 5 %), so an incident reaching you means at least one signal said "not busy" at probe time — but turns can start in the gap. Re-confirm before acting. The cheap version you run:
      - `sudo cat /home/<user>/.openclaw/agents/main/sessions/sessions.json | jq '[to_entries[] | select(.key|startswith("agent:main:")) | select(.value.status=="running") | select((now*1000 - (.value.updatedAt//0)) < 1800000)] | length'` — non-zero means a turn is in progress within the last 30 min. Suppress with `actions_taken: []` and `reason: "agent mid-turn — sessions.json running key, age <Xm"`.
      - `sudo find /home/<user>/.claude/projects -name '*.jsonl' -newermt '60 seconds ago' | head -1` — if any line returns, claude-cli wrote within the last minute (active turn). Suppress with `reason: "claude-cli jsonl write within last 60 s"`.
      - `sudo ps -u <user> -o pid,pcpu,comm --no-headers | awk '/openclaw|claude/ {sum+=$2} END {print sum+0}'` — gives lifetime-average CPU per process; if > 10 % on long-lived processes the agent is doing real work. (For a more precise "right now" sample, read `/proc/<pid>/stat` field 14+15 twice 1 s apart and diff.)
@@ -95,7 +95,7 @@ These usually self-heal — **observe, don't act**, and prefer suppress unless t
 
 ### Escalate immediately (skip tiers)
 
-- **Self-incidents** — anything affecting `karen` or `ai-monitor` itself. ai-monitor's self-incident guard already routes these direct to Telegram; you should not see them in your queue.
+- **Self-incidents** — anything affecting the monitor agent user (e.g. `karen` on x1) or `ai-monitor` itself. ai-monitor's self-incident guard already routes these direct to Telegram; you should not see them in your queue.
 - **Unknown kinds** without a playbook entry above — don't improvise; escalate with `actions_taken: []` and a `reason` naming the kind so zeh can add it to the playbook.
 - **Repeated escalations of the same kind** within an hour for the same unit even after a tier-3 telegram already went out — page zeh again only if a new symptom is visible. Otherwise add a comment to the prior decision instead of re-paging.
 
@@ -134,7 +134,7 @@ Notes:
 ## Don't
 
 - Don't loop on the same fix; one tier-1 attempt, write the decision, let ai-monitor re-handoff at tier 2.
-- Don't restart your **own** services (`openclaw-gateway` for `karen`) — you'd kill your own session mid-decision. (You also don't have sudoers permission to do so.)
+- Don't restart your **own** services (`openclaw-gateway` for the monitor agent, e.g. `karen` on x1) — you'd kill your own session mid-decision. (You also don't have sudoers permission to do so.)
 - Don't restart `ai-monitor.service` unless zeh told you to in the incident text. The self-incident guard already routes ai-monitor failures to zeh directly; restarting it from inside a triage you're trying to write a decision for can create a race.
 - Don't run remediation outside the playbook above. If the kind isn't in the table, escalate with `actions_taken: []` and let zeh extend the playbook.
 - Don't ping zeh just to say "looks fine now". Suppress quietly.

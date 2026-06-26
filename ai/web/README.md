@@ -558,12 +558,12 @@ OpenClaw requires `hook:` when no hook default session key is configured;
 PM-owned sessions use the `pm:` prefix. On this single-host install,
 every agent gateway should be bound to loopback, so `/hooks/wake` and
 `/pm-channel/ingest` are only reachable from this computer.
-Karen's
-`openclaw-control wake-agent` bridge at `/usr/local/sbin/pm-karen-wake-agent`
+The monitor agent's
+`openclaw-control wake-agent` bridge at `/usr/local/sbin/pm-monitor-wake-agent`
 is a degraded fallback for hosts that have not enabled gateway hooks or
 for temporary gateway hook failures; the fallback passes the same
 `--session-key <pm:...>` through `openclaw system event`.
-Karen's PM workflow drift fallback uses `/usr/local/sbin/pm-workflow-nudge`
+The monitor agent's PM workflow drift fallback uses `/usr/local/sbin/pm-workflow-nudge`
 instead. That helper re-enters the native `pm` channel so the target agent
 gets the full Mission Control context packet, workflow endpoint capability,
 and task-comment reply target instead of a generic heartbeat reminder.
@@ -686,9 +686,9 @@ integration. With a PM checkout present it must:
 - Ensure nginx dashboard upstreams use `127.0.0.1:<gateway_port>` and
   block prefixed hook/channel paths such as `/<agent>/hooks` and
   `/<agent>/pm-channel`; gateway ports should not listen on the LAN.
-- Keep the Karen bridge installed for hook outages or older hosts:
-  `/usr/local/sbin/pm-karen-wake-agent` should call
-  `sudo -n -u karen sudo -n /usr/local/sbin/openclaw-control wake-agent ...`,
+- Keep the monitor bridge installed for hook outages or older hosts:
+  `/usr/local/sbin/pm-monitor-wake-agent` should call
+  `sudo -n -u <monitor-user> sudo -n /usr/local/sbin/openclaw-control wake-agent ...`,
   and sudoers should allow the PM consumer user to execute that helper
   without a password.
 
