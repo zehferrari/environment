@@ -11,42 +11,86 @@ import crypto from "node:crypto";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
-import { readSwitchState, SWITCH_DIR } from "@/lib/deploy/worktrees";
+import { readSwitchState } from "@/lib/deploy/worktrees";
+import { getSwitchProject } from "@/lib/deploy/switch-registry";
 import {
   approveAndMergeBitbucketPullRequest,
   approveLocalChangesAndOpenDeploymentPr,
   DEPLOYMENT_LOCAL_CHANGES_PENDING,
 } from "@/lib/deploy/monitor";
 
+// Atomic publish of a request into a project's spool: write a temp file then
+// rename it into place so the runner never reads a half-written request.
+async function publishRequest(spoolDir: string, payload: Record<string, unknown>): Promise<void> {
+  const body = JSON.stringify(payload, null, 2);
+  const tmp = path.join(spoolDir, `request.json.tmp-${payload.id}`);
+  await writeFile(tmp, body, { mode: 0o664 });
+  await rename(tmp, path.join(spoolDir, "request.json"));
+}
+
 export async function requestWorktreeSwitch(
+  repoKey: string,
   target: string,
   opts: { rebuild?: boolean } = {},
 ): Promise<{ id: string }> {
   const session = await auth();
   if (!session?.user?.id || session.user.kind === "agent") throw new Error("Forbidden");
 
-  const state = await readSwitchState();
+  const project = getSwitchProject(repoKey);
+  if (!project) throw new Error(`No worktree switcher configured for ${repoKey}.`);
+
+  const state = await readSwitchState(project.spoolDir);
   if (!state.available) {
     throw new Error("Worktree switcher is not installed on this host.");
   }
   const wt = state.worktrees.find((w) => w.name === target || w.path === target);
   if (!wt) throw new Error(`Unknown worktree: ${target}`);
-  const rebuild = Boolean(opts.rebuild && wt.served);
-  if (wt.served && !rebuild) throw new Error(`${wt.name} is already live.`);
+  const rebuild = Boolean(opts.rebuild && wt.served && state.siteActive);
+  if (wt.served && state.siteActive && !rebuild) throw new Error(`${wt.name} is already live.`);
   if (!wt.ready) {
-    throw new Error(`${wt.name} has no node_modules — run 'pnpm install' in its ai/web first.`);
+    throw new Error(`${wt.name} has no node_modules — run 'pnpm install' in its app dir first.`);
   }
 
   const id = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
-  const body = JSON.stringify(
-    { id, target: wt.name, rebuild, requestedBy: session.user.name ?? session.user.id, requestedAt: new Date().toISOString() },
-    null,
-    2
-  );
-  // Atomic publish: write to a temp file then rename into place.
-  const tmp = path.join(SWITCH_DIR, `request.json.tmp-${id}`);
-  await writeFile(tmp, body, { mode: 0o664 });
-  await rename(tmp, path.join(SWITCH_DIR, "request.json"));
+  await publishRequest(project.spoolDir, {
+    id,
+    action: "serve",
+    target: wt.name,
+    rebuild,
+    requestedBy: session.user.name ?? session.user.id,
+    requestedAt: new Date().toISOString(),
+  });
+  return { id };
+}
+
+// On/off lifecycle: take the project's site offline (free resources for a
+// node-service; engage the maintenance/deny gate for an nginx-docroot) or bring
+// it back online on whatever worktree was last served. Human-only, like serve.
+export async function setSiteActive(
+  repoKey: string,
+  active: boolean,
+): Promise<{ id: string }> {
+  const session = await auth();
+  if (!session?.user?.id || session.user.kind === "agent") throw new Error("Forbidden");
+
+  const project = getSwitchProject(repoKey);
+  if (!project) throw new Error(`No worktree switcher configured for ${repoKey}.`);
+
+  const state = await readSwitchState(project.spoolDir);
+  if (!state.available) {
+    throw new Error("Worktree switcher is not installed on this host.");
+  }
+  if (active && state.siteActive) throw new Error("Site is already on.");
+  if (!active && !state.siteActive) throw new Error("Site is already off.");
+
+  const id = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+  await publishRequest(project.spoolDir, {
+    id,
+    action: active ? "on" : "off",
+    target: state.served ?? null,
+    requestedBy: session.user.name ?? session.user.id,
+    requestedAt: new Date().toISOString(),
+  });
   return { id };
 }
 

@@ -1,16 +1,27 @@
-// Read side of the "switchable single site" feature. The PM web app (runs as
+// Read side of the "switchable single site" feature. The web app (runs as
 // karen) is intentionally UNPRIVILEGED here: it only reads a state file and
-// writes a request file under a shared spool dir. The privileged build +
-// `systemctl restart pm.service` is done by the separate `pm-switch-runner`
-// service (runs as zeh, decoupled from pm.service). See
-// deploy/MULTI_AGENT_WORKTREES.md.
+// writes a request file under a per-project spool dir. The privileged build +
+// service flip is done by the separate worktree switch runner (runs as the
+// monitor, decoupled from the served unit). See deploy/MULTI_AGENT_WORKTREES.md.
+//
+// The spool dir is per-project (resolved from the switch registry by repoKey),
+// so multiple projects each get their own switcher state without colliding.
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+// Legacy default spool for the environment/PM project. Kept so PM behaves
+// identically until its supervised migration; the registry points the
+// `environment` entry at this same path. New projects use their own spool.
 export const SWITCH_DIR = process.env.PM_SWITCH_DIR ?? "/var/lib/pm/switch";
-export const STATE_FILE = path.join(SWITCH_DIR, "state.json");
-export const REQUEST_FILE = path.join(SWITCH_DIR, "request.json");
+
+export function stateFilePath(spoolDir: string): string {
+  return path.join(spoolDir, "state.json");
+}
+
+export function requestFilePath(spoolDir: string): string {
+  return path.join(spoolDir, "request.json");
+}
 
 export type SwitchWorktree = {
   path: string;
@@ -34,13 +45,19 @@ export type SwitchJob = {
 };
 
 export type SwitchState = {
-  /** Worktree root pm.service is currently serving, or null if unknown. */
+  /** Worktree root the service is currently serving, or null if off/unknown. */
   served: string | null;
   servedBranch: string | null;
+  /**
+   * Whether the project's site is currently up. false = the runner has taken
+   * it offline ("off"): for node-service the unit is stopped (port freed); for
+   * nginx-docroot the maintenance/deny gate is engaged.
+   */
+  siteActive: boolean;
   worktrees: SwitchWorktree[];
   job: SwitchJob;
   updatedAt: string;
-  /** false when the runner / spool isn't installed on this host. */
+  /** false when the runner / spool isn't installed for this project. */
   available: boolean;
 };
 
@@ -56,15 +73,21 @@ function idleJob(): SwitchJob {
   };
 }
 
-/** Read the runner-maintained state.json. Never throws — a missing file just
- *  means the switcher isn't installed (available: false). */
-export async function readSwitchState(): Promise<SwitchState> {
+/** Read the runner-maintained state.json for a project's spool dir. Never
+ *  throws — a missing file just means the switcher isn't installed for this
+ *  project on this host (available: false). */
+export async function readSwitchState(
+  spoolDir: string = SWITCH_DIR,
+): Promise<SwitchState> {
   try {
-    const raw = await readFile(STATE_FILE, "utf8");
+    const raw = await readFile(stateFilePath(spoolDir), "utf8");
     const s = JSON.parse(raw) as Partial<SwitchState>;
     return {
       served: s.served ?? null,
       servedBranch: s.servedBranch ?? null,
+      // Older runners (pre-on/off) don't emit siteActive; treat presence of a
+      // served worktree as "on" for backward compatibility.
+      siteActive: s.siteActive ?? Boolean(s.served),
       worktrees: Array.isArray(s.worktrees) ? s.worktrees : [],
       job: s.job ?? idleJob(),
       updatedAt: s.updatedAt ?? new Date().toISOString(),
@@ -74,6 +97,7 @@ export async function readSwitchState(): Promise<SwitchState> {
     return {
       served: null,
       servedBranch: null,
+      siteActive: false,
       worktrees: [],
       job: idleJob(),
       updatedAt: new Date().toISOString(),
