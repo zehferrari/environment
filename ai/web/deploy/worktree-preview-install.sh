@@ -23,7 +23,7 @@
 set -euo pipefail
 
 # ---- knobs (override on the command line: VAR=... sudo -E ...) -------------
-SRC="${SRC:-/srv/Code/environment.worktrees/ENV-107-worktree-switch/ai/web/deploy}"
+SRC="${SRC:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)}"
 WT_MONITOR_USER="${WT_MONITOR_USER:-barekbaal}"   # runs the switch runner + sudo apply
 CODE_GROUP="${CODE_GROUP:-code-agents}"
 SBIN=/usr/local/sbin

@@ -34,7 +34,7 @@ export default function WorktreeSwitcher({
   const [pending, startTransition] = useTransition();
 
   const job = state.job;
-  const inProgress = job.state === "queued" || job.state === "building";
+  const inProgress = job.state === "queued" || job.state === "building" || job.state === "working";
   const worktrees = displayWorktreesForRepo(state.worktrees, repoKey);
   const busy = inProgress || pending;
 
