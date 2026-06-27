@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#
+# worktree-preview-apply — the ONLY privileged step of a node-service switch.
+#
+# Runs as root (called via a single NOPASSWD sudoers rule). Points the project's
+# served unit (worktree-preview@<key>) at the selected worktree build + its
+# per-branch DB and restarts it; or stops/starts it for the off/on lifecycle.
+#
+# Every path is validated against the project's env-file allow-list
+# (WORKTREES_ROOT / DB_ROOT), so a non-root caller can never steer the unit at
+# an arbitrary path — same guarantee as pm-apply-worktree. A literal (non-symlink)
+# WorkingDirectory is written so CHDIR succeeds under a sandboxed unit.
+#
+# Usage:
+#   worktree-preview-apply <key> apply <app_dir> <file:db_url|->
+#   worktree-preview-apply <key> stop|start
+set -euo pipefail
+
+ENV_DIR=/etc/worktree-preview
+die(){ printf 'worktree-preview-apply: %s\n' "$*" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || die "must run as root (via sudo)"
+
+KEY="${1:-}"; ACTION="${2:-}"
+[[ "$KEY" =~ ^[a-z0-9_-]+$ ]] || die "bad/empty key"
+ENV_FILE="$ENV_DIR/$KEY.env"
+[[ -r "$ENV_FILE" ]] || die "no env file $ENV_FILE"
+set -a; . "$ENV_FILE"; set +a
+[[ "${DRIVER:-}" == "node-service" ]] || die "driver for $KEY is not node-service"
+
+UNIT="${SERVED_UNIT:-worktree-preview@$KEY.service}"
+DROPIN_DIR="/etc/systemd/system/${UNIT}.d"
+DROPIN="$DROPIN_DIR/20-active-worktree.conf"
+
+case "$ACTION" in
+  stop)  systemctl stop  "$UNIT"; echo "worktree-preview-apply: stopped $UNIT"; exit 0 ;;
+  start) systemctl start "$UNIT"; echo "worktree-preview-apply: started $UNIT"; exit 0 ;;
+  apply) : ;;
+  *) die "unknown action '$ACTION' (apply|stop|start)" ;;
+esac
+
+WT_ROOT="$(readlink -f "${WORKTREES_ROOT:?WORKTREES_ROOT}")" || die "WORKTREES_ROOT unresolved"
+APP_DIR_IN="${3:?app dir}"; DB_URL="${4:-}"
+app_real="$(readlink -f "$APP_DIR_IN")" || die "app dir does not resolve: $APP_DIR_IN"
+
+# Allow-list: must be a worktree under WT_ROOT (optionally + APP_SUBDIR).
+if [[ -n "${APP_SUBDIR:-}" ]]; then
+  [[ "$app_real" == "$WT_ROOT"/*/"$APP_SUBDIR" ]] || die "refused: $app_real not under $WT_ROOT/*/$APP_SUBDIR"
+else
+  [[ "$app_real" == "$WT_ROOT"/* ]] || die "refused: $app_real not under $WT_ROOT"
+fi
+[[ -d "$app_real/.next" ]] || die "no .next build in $app_real (build first)"
+
+db_env=""
+if [[ "${DB_ENGINE:-none}" == "sqlite" ]]; then
+  case "$DB_URL" in file:*) : ;; *) die "DATABASE_URL must be a file: url, got '$DB_URL'" ;; esac
+  db_path="${DB_URL#file:}"; db_path="${db_path#//}"
+  db_root="$(readlink -f "${DB_ROOT:?DB_ROOT}")" || die "DB_ROOT unresolved"
+  db_real="$(readlink -f "$db_path")" || die "db path does not resolve: $db_path"
+  [[ "$db_real" == "$db_root"/* ]] || die "refused: $db_real not under $db_root"
+  [[ -f "$db_real" ]] || die "db file does not exist: $db_real"
+  db_env="Environment=DATABASE_URL=file:$db_real"
+fi
+
+install -d "$DROPIN_DIR"
+{
+  echo "[Service]"
+  echo "WorkingDirectory="
+  echo "WorkingDirectory=$app_real"
+  [[ -n "$db_env" ]] && echo "$db_env"
+} > "$DROPIN"
+systemctl daemon-reload
+systemctl restart "$UNIT"
+echo "worktree-preview-apply: $UNIT now serving $app_real${db_real:+ (DATABASE_URL=file:$db_real)}"
