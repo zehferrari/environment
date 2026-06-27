@@ -21,6 +21,7 @@ import { resolveGitIdentity } from "@/lib/settings/system";
 import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignTaskAfterPlanApproval } from "@/lib/tasks/reviewer-assignment";
+import { isProtectedBranch, parseProtectedBranches } from "@/lib/projects/protected-branches";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -215,6 +216,7 @@ export async function POST(
             defaultGitUserEmail: true,
             onlyReportersCanApproveActionPlans: true,
             onlyReportersCanSetTasksDone: true,
+            agentChangeBlockedBranches: true,
           },
         },
         epic: { select: { status: true, actingManagerId: true, commitPrefix: true, workItemKey: true } },
@@ -484,6 +486,14 @@ export async function POST(
     const resolvedCommitPrefix = task.epic?.workItemKey
       ? `${task.epic.workItemKey} ${taskKey}`
       : fallbackCommitPrefix;
+
+    if (repoTouched && isProtectedBranch(task.project.agentChangeBlockedBranches, task.branchName)) {
+      return NextResponse.json({
+        error: `Agents cannot submit code-changing work from protected branch ${task.branchName}. Move the work to an allowed task branch, push it, then call ready_for_review again.`,
+        branchName: task.branchName,
+        protectedBranches: parseProtectedBranches(task.project.agentChangeBlockedBranches),
+      }, { status: 409 });
+    }
 
     if (task.status !== "Review") {
       await moveTaskStatus({

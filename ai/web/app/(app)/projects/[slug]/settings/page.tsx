@@ -13,6 +13,8 @@ import { isWorktreeExposedRepo } from "@/lib/projects/worktree";
 import { readSwitchState } from "@/lib/deploy/worktrees";
 import { displayWorktreesForRepo, worktreeRepoKey } from "@/lib/deploy/repo-key";
 import WorktreeSwitcher from "@/components/worktree-switcher";
+import BranchMultiCombobox from "@/components/branch-multi-combobox";
+import { parseProtectedBranches } from "@/lib/projects/protected-branches";
 import { resolveEffectiveProjectSettings, settingSourceLabel } from "@/lib/settings/effective";
 
 export const dynamic = "force-dynamic";
@@ -74,7 +76,21 @@ export default async function ProjectSettingsPage({
     : [];
   const showSwitcher = eligible && switchState !== null && relatedWorktrees.length > 0;
 
-  const effectiveSettings = await resolveEffectiveProjectSettings(project);
+  const [effectiveSettings, projectTaskBranches] = await Promise.all([
+    resolveEffectiveProjectSettings(project),
+    db.task.findMany({
+      where: { projectId: project.id, deletedAt: null, branchName: { not: null } },
+      distinct: ["branchName"],
+      orderBy: { branchName: "asc" },
+      select: { branchName: true },
+    }),
+  ]);
+  const protectedBranches = parseProtectedBranches(project.agentChangeBlockedBranches);
+  const branchOptions = [
+    project.deploymentProductionBranch ?? "main",
+    project.deploymentPrTargetBranch ?? project.deploymentProductionBranch ?? "main",
+    ...projectTaskBranches.map((row) => row.branchName ?? ""),
+  ];
   const principals = await listAssignablePrincipals();
   const codingAgentPrincipals = principals.filter((p) => p.kind === "agent" && p.agentRole === "coding");
   const managerAssignableUserIds = new Set(project.managerAssignableAgents.map((row) => row.userId));
@@ -398,6 +414,18 @@ export default async function ProjectSettingsPage({
                 <input type="text" name="deploymentPrTargetBranch" defaultValue={project.deploymentPrTargetBranch ?? project.deploymentProductionBranch ?? "main"} disabled={!canEditDeployment} className={deploymentInputClass} />
               </SettingsRow>
             </div>
+            <SettingsRow
+              label="Protected agent branches"
+              hint="Agents cannot submit code-changing work for review when the task branch is in this list. Use this for production or other branch names that must only change through human-controlled paths."
+            >
+              <BranchMultiCombobox
+                name="agentChangeBlockedBranch"
+                defaultBranches={protectedBranches}
+                options={branchOptions}
+                disabled={!canEditDeployment}
+                inputClassName={deploymentInputClass}
+              />
+            </SettingsRow>
             <div className="grid gap-3 md:grid-cols-3">
               <SettingsRow label="Mode" hint="How Monitor deploys after merge.">
                 <select name="deploymentMode" defaultValue={project.deploymentMode} disabled={!canEditDeployment} className={deploymentInputClass}>

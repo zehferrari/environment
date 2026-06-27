@@ -340,8 +340,9 @@ shared layout (`app/(app)/projects/[slug]/layout.tsx`) carrying a tab
 bar — Board · Epics · Library · Settings · Bin (`project-tabs.tsx`).
 The **Settings** tab (`lib/projects/actions.ts::setProjectSettings`)
 stores the repository path, default git user name/email used for agent
-commits, default assignee + reviewer that seed Task pickers, and the
-`doneTtlDays` board cutoff; it also hosts project delete and a recent
+commits, default assignee + reviewer that seed Task pickers, deployment
+settings, protected agent branches that reject code-changing
+`ready_for_review`, and the `doneTtlDays` board cutoff; it also hosts project delete and a recent
 `ActivityLog` agenda (`components/activity-agenda.tsx`). The **Library**
 tab lists every `Attachment` under the project (task- and epic-anchored
 alike, since `Attachment.projectId` is a direct FK), skipping files

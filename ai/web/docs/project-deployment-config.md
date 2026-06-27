@@ -15,8 +15,9 @@ The PM database stores the block on `Project` and surfaces it in Project Setting
 - `host`: deployment host label.
 - `environment`: deployment environment name, for example `production`.
 - `bitbucketWorkspace` / `bitbucketRepoSlug`: optional overrides; otherwise Monitor infers them from `origin`.
+- `agentChangeBlockedBranches`: JSON string array of branch names where agents must not submit code-changing work for review.
 
-Project Settings renders the block read-only for non-owners. Owners can edit it alongside the other project settings.
+Project Settings renders the block read-only for non-owners. Owners can edit it alongside the other project settings. The protected agent branch combobox accepts multiple branch names and suggests the production branch, PR target branch, and known task branches.
 
 ## Modes
 
@@ -50,6 +51,12 @@ DRY_RUN=1 ./ai/openclaw/bin/deploy-on-merge
 ```
 
 The Monitor Agent runs this after Bitbucket reports the deployment PR as merged. A zero exit status becomes `Successfully Deployed`; a non-zero status becomes `Deployment Error` with a captured log excerpt.
+
+## Protected agent branches
+
+Protected agent branches are a workflow guard for branches such as `main` or `production` that must not receive direct agent implementation work. When an assignee calls `ready_for_review` with `repoTouched: true`, PM rejects the transition if the task branch matches the protected list. The monitor verifier also reports a `pm.repo.verify.fail` with a protected-branch reason if a queued verification job encounters a protected branch.
+
+Agents should resume the task, move code-changing work to an allowed task branch, push it, and call `ready_for_review` again. Reviewers should treat protected-branch failures as workflow blockers, not as missing commits or credential issues.
 
 ## Approval flow
 

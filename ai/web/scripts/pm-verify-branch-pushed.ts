@@ -24,6 +24,7 @@ import { db } from "@/lib/db";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { BRANCH_VERIFY_DIR, type BranchVerifyJob } from "@/lib/deploy/branch-verify";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import { isProtectedBranch, parseProtectedBranches } from "@/lib/projects/protected-branches";
 
 const exec = promisify(execFile);
 const SWITCH_SCRIPT = process.env.PM_SWITCH_SCRIPT ?? "/usr/local/sbin/pm-switch";
@@ -350,6 +351,17 @@ function renderOkBody(args: {
   return lines.join("\n");
 }
 
+function renderProtectedBranchBody(args: { branchName: string; protectedBranches: string[] }) {
+  return [
+    `origin/${args.branchName} is blocked from reviewer hand-off.`,
+    "",
+    `- Branch \`${args.branchName}\` is configured as a protected agent branch for this project.`,
+    args.protectedBranches.length > 0 ? `- Protected branches: ${args.protectedBranches.map((branch) => `\`${branch}\``).join(", ")}.` : null,
+    "",
+    "Assignee: resume the task, move code-changing work to an allowed task branch, push it, then call `ready_for_review` again.",
+  ].filter(Boolean).join("\n");
+}
+
 function renderFailBody(args: {
   branchName: string;
   head: GitCommit | null;
@@ -494,6 +506,47 @@ async function main() {
   }
 
   const job = JSON.parse(readFileSync(jobFile, "utf8")) as BranchVerifyJob;
+  const project = await db.project.findUnique({
+    where: { id: job.projectId },
+    select: { agentChangeBlockedBranches: true },
+  });
+  if (project && isProtectedBranch(project.agentChangeBlockedBranches, job.branchName)) {
+    const protectedBranches = parseProtectedBranches(project.agentChangeBlockedBranches);
+    const body = renderProtectedBranchBody({ branchName: job.branchName, protectedBranches });
+    const actor = await monitorActor();
+    await db.$transaction([
+      db.comment.create({
+        data: { taskId: job.taskId, userId: actor.id, body },
+      }),
+      db.activityLog.create({
+        data: {
+          projectId: job.projectId,
+          taskId: job.taskId,
+          userId: actor.id,
+          kind: "pm.repo.verify.fail",
+          payload: JSON.stringify({
+            jobId: job.jobId,
+            branchName: job.branchName,
+            protectedBranches,
+            requestedByAgentSlug: job.requestedByAgentSlug,
+            reason: "protected-agent-branch",
+          }),
+        },
+      }),
+    ]);
+    await notifyAfterGate({
+      job,
+      actor,
+      verifiedOk: false,
+      reviewReady: false,
+      summary: body,
+      monitorAccessProblem: false,
+    });
+    console.log(JSON.stringify({ ok: false, taskId: job.taskId, branch: job.branchName, protectedBranch: true }, null, 2));
+    unlinkSync(jobFile);
+    return;
+  }
+
   const fetchError = await fetchBranch(job.repositoryPath, job.branchName);
   const state = await localState(job, fetchError);
   const { commits, error: logError } = await readLog(job.repositoryPath, job.branchName);

@@ -433,17 +433,22 @@ assignee must:
   `ready_for_review` (default when branchName + repositoryPath are
   set), or `repoTouched: false` for docs-only / decision-only tasks.
 
-When `repoTouched` resolves true, PM drops a JSON job into
+When `repoTouched` resolves true, PM first checks the project's protected
+agent branch list. If `<branchName>` is configured there, `ready_for_review`
+is rejected before the task moves to Review; the assignee must move the work
+to an allowed branch and retry.
+
+For allowed branches, PM drops a JSON job into
 `/var/lib/pm/branch-verify/<jobId>.json`. The branch-verify runner
 (`pm-verify-runner.service`) runs as `PM_VERIFY_RUN_USER`, executes
 `git -C <repositoryPath> fetch origin <branchName>` on the already-cloned
 repo, looks for commits whose subject starts with the COMMIT_PREFIX on
 `origin/<branchName>`, and posts a `pm.repo.verify.ok` task comment
 (with HEAD sha, the latest prefix-matching commit, push timestamp) or
-`pm.repo.verify.fail` (no push found / no prefix match / verifier
-credential failure) as `PM_MONITOR_USER`. The Review transition itself
-is NOT blocked — the verifier publishes its result asynchronously and
-the reviewer reads it before approving.
+`pm.repo.verify.fail` (no push found / no prefix match / protected branch /
+verifier credential failure) as `PM_MONITOR_USER`. The Review transition for
+allowed branches itself is NOT blocked — the verifier publishes its result
+asynchronously and the reviewer reads it before approving.
 
 The reviewer's `review_requested` workflow turn adds a **Review
 verification** block instructing them to read the latest

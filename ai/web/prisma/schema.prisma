@@ -168,6 +168,8 @@ model Project {
   deploymentEnvironment               String?                         @map("deployment_environment")
   deploymentBitbucketWorkspace        String?                         @map("deployment_bitbucket_workspace")
   deploymentBitbucketRepoSlug         String?                         @map("deployment_bitbucket_repo_slug")
+  // JSON string array of branch names where agents must not submit code-changing work.
+  agentChangeBlockedBranches          String?                         @map("agent_change_blocked_branches")
   // Provider-agnostic, non-secret integration defaults. Overrides workspace and system defaults.
   integrationDefaults                 String?                         @map("integration_defaults")
   // Soft-delete: project bin with 30-day TTL (hard-purge via the

@@ -8,6 +8,7 @@ import type { ActorKind } from "@/lib/workflow";
 import type { Prisma } from "@prisma/client";
 import { normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
 import { cleanDeployReviewPrompt } from "@/lib/epics/deploy-review";
+import { serializeProtectedBranches } from "@/lib/projects/protected-branches";
 
 async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
   const session = await auth();
@@ -75,6 +76,7 @@ export async function setProjectSettings(formData: FormData) {
       deploymentEnvironment: true,
       deploymentBitbucketWorkspace: true,
       deploymentBitbucketRepoSlug: true,
+      agentChangeBlockedBranches: true,
       deployReviewPrompt: true,
       members: { where: { userId: actor.id }, select: { role: true } },
     },
@@ -204,6 +206,7 @@ export async function setProjectSettings(formData: FormData) {
       deploymentEnvironment: trimOrNull(formData.get("deploymentEnvironment")),
       deploymentBitbucketWorkspace: trimOrNull(formData.get("deploymentBitbucketWorkspace")),
       deploymentBitbucketRepoSlug: trimOrNull(formData.get("deploymentBitbucketRepoSlug")),
+      agentChangeBlockedBranches: serializeProtectedBranches(formData.getAll("agentChangeBlockedBranch")),
     };
     Object.assign(data, deploymentData);
     payload.deployment = deploymentData;
