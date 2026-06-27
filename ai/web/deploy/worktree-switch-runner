@@ -187,7 +187,7 @@ def write_state(job):
         json.dump(state, f, indent=2)
     os.replace(tmp, STATE)
     try:
-        os.chmod(STATE, 0o600)
+        os.chmod(STATE, 0o660)
     except OSError:
         pass
 

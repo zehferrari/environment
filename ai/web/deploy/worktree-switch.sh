@@ -100,9 +100,24 @@ node_switch() {
     ( cd "$app" && DATABASE_URL="$db_url" eval "${MIGRATE_CMD:-pnpm exec prisma migrate deploy}" )
   fi
 
+  # Cross-user safe rebuild: a previous builder (another code-agents member) may
+  # own the generated Prisma client. `prisma generate` copyfiles its output and
+  # fchmods the destination, which only the file's owner may do, so regenerating
+  # over another user's files fails with EPERM. Remove the generated client so
+  # this builder writes fresh, self-owned files. Safe because /srv/Code is
+  # group-writable (code-agents, setgid, no sticky), so any member can unlink.
+  # Mirrors pm-switch.sh's `rm -rf .prisma`; the find handles pnpm/Prisma 7,
+  # which nests the client under node_modules/.pnpm/@prisma+client@*/.
+  if [[ -d "$app/node_modules" ]]; then
+    find "$app/node_modules" -type d -name '.prisma' -prune -exec rm -rf {} + 2>/dev/null || true
+  fi
+
   log "Building $app (branch $branch) …"
   ( cd "$app" && DATABASE_URL="$db_url" eval "${BUILD_CMD:?BUILD_CMD missing}" )
-  [[ -d "$app/.next" ]] || die "build did not produce $app/.next"
+  # Build output dir; default .next, but a project may set a custom Next distDir
+  # (WDT uses 'dist') in its env contract. Keep in sync with worktree-preview-apply.
+  local out_dir="${BUILD_OUTPUT_DIR:-.next}"
+  [[ -d "$app/$out_dir" ]] || die "build did not produce $app/$out_dir"
 
   log "Flipping ${SERVED_UNIT:-worktree-preview@$KEY.service} -> $app and restarting …"
   sudo -n "$PREVIEW_APPLY" "$KEY" apply "$app" "$db_url"

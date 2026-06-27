@@ -100,6 +100,10 @@ PORT=3001
 HOST=127.0.0.1
 BUILD_CMD='pnpm build'
 START_CMD='pnpm start'
+# WDT's next.config.js sets distDir: 'dist', so the build output is dist/ not
+# .next/. Default is .next when omitted (e.g. PM). Used by worktree-switch.sh
+# and worktree-preview-apply to locate/validate the build.
+BUILD_OUTPUT_DIR=dist
 MIGRATE_CMD='pnpm exec prisma migrate deploy'
 DB_ENGINE=sqlite
 CANONICAL_DB=$canonical
@@ -129,7 +133,7 @@ EOF
 
   log "Enabling served unit + switch runner for $key …"
   systemctl daemon-reload
-  systemctl enable --now "worktree-preview@$key.service" || warn "served unit not up yet (no live worktree until first switch) — check: journalctl -u worktree-preview@$key -n 30"
+  systemctl enable "worktree-preview@$key.service" >/dev/null || warn "could not enable served unit (it will still be started by the first successful switch)"
   systemctl enable --now "worktree-switch-runner@$key.service"
   ok "WDT runner active. nginx wdt.vixi.au already proxies 127.0.0.1:3001."
   warn "First switch builds the worktree before the served unit can come up; pick a worktree in the PM/WDT switch UI (or: sudo -u $WT_MONITOR_USER worktree-switch $key <branch>)."

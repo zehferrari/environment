@@ -48,7 +48,10 @@ if [[ -n "${APP_SUBDIR:-}" ]]; then
 else
   [[ "$app_real" == "$WT_ROOT"/* ]] || die "refused: $app_real not under $WT_ROOT"
 fi
-[[ -d "$app_real/.next" ]] || die "no .next build in $app_real (build first)"
+# Build output dir; default .next, overridable per project (WDT uses Next distDir
+# 'dist'). Sourced from the env contract above. Keep in sync with worktree-switch.sh.
+BUILD_OUTPUT_DIR="${BUILD_OUTPUT_DIR:-.next}"
+[[ -d "$app_real/$BUILD_OUTPUT_DIR" ]] || die "no $BUILD_OUTPUT_DIR build in $app_real (build first)"
 
 db_env=""
 if [[ "${DB_ENGINE:-none}" == "sqlite" ]]; then
