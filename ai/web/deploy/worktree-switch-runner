@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""worktree-switch-runner — generic, registry-driven worktree switch runner.
+
+The host-side mirror of the per-project switch contract. One instance per
+project key (worktree-switch-runner@<key>), DECOUPLED from the served unit so
+the restart at the end of a node-service switch can't kill the switch itself.
+
+The web app only drops a request.json into the project's spool dir; this runner
+picks it up, runs worktree-switch.sh (build/DB-fork + the privileged flip), and
+publishes state.json for the browser to poll. It is the generic successor to
+pm-switch-runner: same spool protocol, but it learns every project-specific
+detail from /etc/worktree-preview/<key>.env instead of hard-coding PM.
+
+Spool layout (SPOOL_DIR, e.g. /var/lib/worktree-switch/<key>):
+  request.json  — written by the web app:
+                  {id, target, action?: switch|off|on, requestedBy, requestedAt}
+  state.json    — written here:
+                  {key, driver, siteActive, served, servedBranch, worktrees[], job{}, updatedAt}
+
+Config via env (set in the systemd unit / project env file):
+  WT_KEY, WT_ENV_FILE, WT_SWITCH_SCRIPT, REPO, WORKTREES_ROOT, APP_SUBDIR,
+  DRIVER, SERVED_UNIT, CURRENT_SYMLINK, WT_SWITCH_POLL_SECONDS
+"""
+import datetime
+import json
+import os
+import re
+import subprocess
+import time
+
+
+def env(name, default=""):
+    return os.environ.get(name, default)
+
+
+KEY = env("WT_KEY") or env("KEY")
+ENV_FILE = env("WT_ENV_FILE", f"/etc/worktree-preview/{KEY}.env")
+
+# Load the project contract so the runner is self-describing even if the unit
+# only passes WT_KEY. Values already in the environment win (the unit may
+# override), then the env file fills the rest.
+if os.path.isfile(ENV_FILE):
+    with open(ENV_FILE) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
+SWITCH_SCRIPT = env("WT_SWITCH_SCRIPT", "/usr/local/sbin/worktree-switch")
+SPOOL_DIR = env("SPOOL_DIR", f"/var/lib/worktree-switch/{KEY}")
+REPO = env("REPO")
+WT_ROOT = env("WORKTREES_ROOT")
+APP_SUBDIR = env("APP_SUBDIR", "")
+DRIVER = env("DRIVER", "node-service")
+SERVED_UNIT = env("SERVED_UNIT", f"worktree-preview@{KEY}.service")
+CURRENT_SYMLINK = env("CURRENT_SYMLINK", "")
+POLL = float(env("WT_SWITCH_POLL_SECONDS", "2"))
+
+REQUEST = os.path.join(SPOOL_DIR, "request.json")
+STATE = os.path.join(SPOOL_DIR, "state.json")
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def read_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=kw.pop("timeout", 20), **kw)
+
+
+# nginx-docroot has no per-project process: "off" removes the docroot symlink,
+# so "on" has nothing to restart and needs a target branch to re-point at. We
+# remember the worktree that was served (on each switch and just before "off")
+# so a later "on" can restore it without forcing the user to re-select.
+LAST_SERVED = os.path.join(SPOOL_DIR, "last-served")
+
+
+def read_last_served():
+    try:
+        with open(LAST_SERVED) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def write_last_served(name):
+    if not name:
+        return
+    try:
+        tmp = LAST_SERVED + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(name)
+        os.replace(tmp, LAST_SERVED)
+    except Exception:
+        pass
+
+
+def service_active(name):
+    try:
+        return run(["systemctl", "is-active", name], timeout=10).stdout.strip() == "active"
+    except Exception:
+        return False
+
+
+def branch_of(path):
+    try:
+        return run(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"], timeout=10).stdout.strip() or "?"
+    except Exception:
+        return "?"
+
+
+def served():
+    """(worktree_root, branch, siteActive) for the project's driver."""
+    if DRIVER == "node-service":
+        active = service_active(SERVED_UNIT)
+        try:
+            wd = run(["systemctl", "show", "-p", "WorkingDirectory", "--value", SERVED_UNIT], timeout=10).stdout.strip()
+        except Exception:
+            wd = ""
+        root = wd
+        if APP_SUBDIR and wd.endswith("/" + APP_SUBDIR):
+            root = wd[: -len("/" + APP_SUBDIR)]
+        if root and os.path.isdir(root):
+            return root, branch_of(root), active
+        return None, None, active
+    if DRIVER == "nginx-docroot":
+        if CURRENT_SYMLINK and os.path.islink(CURRENT_SYMLINK):
+            root = os.path.realpath(CURRENT_SYMLINK)
+            if os.path.isdir(root):
+                return root, branch_of(root), True
+        return None, None, False  # no symlink == OFF
+    return None, None, False
+
+
+def worktrees(served_root):
+    if not REPO:
+        return []
+    out = run(["git", "-C", REPO, "worktree", "list", "--porcelain"], timeout=20).stdout
+    res, cur = [], {}
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            cur = {"path": line[9:]}
+        elif line.startswith("HEAD "):
+            cur["head"] = line[5:][:10]
+        elif line.startswith("branch "):
+            cur["branch"] = line[7:].replace("refs/heads/", "")
+        elif line.startswith("detached"):
+            cur["branch"] = "(detached)"
+        elif line == "" and cur:
+            res.append(cur); cur = {}
+    if cur:
+        res.append(cur)
+    ready_marker = os.path.join(APP_SUBDIR, "node_modules") if DRIVER == "node-service" else ""
+    for w in res:
+        w["name"] = os.path.basename(w["path"])
+        w["ready"] = (not ready_marker) or os.path.isdir(os.path.join(w["path"], ready_marker))
+        w["served"] = (w["path"] == served_root)
+        w.setdefault("branch", "?")
+    return res
+
+
+def write_state(job):
+    root, br, active = served()
+    state = {
+        "key": KEY,
+        "driver": DRIVER,
+        "siteActive": active,
+        "served": root,
+        "servedBranch": br,
+        "worktrees": worktrees(root),
+        "job": job,
+        "updatedAt": now(),
+    }
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f, indent=2)
+    os.replace(tmp, STATE)
+    try:
+        os.chmod(STATE, 0o600)
+    except OSError:
+        pass
+
+
+def run_action(req):
+    action = str(req.get("action", "switch")).strip() or "switch"
+    target = str(req.get("target", "")).strip()
+    started = now()
+
+    if action in ("off", "on"):
+        cmd = [SWITCH_SCRIPT, KEY, action]
+        restore = None
+        if DRIVER == "nginx-docroot":
+            if action == "off":
+                # Remember what we're serving so "on" can put it back.
+                root, _, _ = served()
+                if root:
+                    write_last_served(os.path.basename(root))
+            else:  # on: nginx-docroot has no unit to start — restore last served
+                restore = read_last_served()
+                if not restore:
+                    return {"id": req["id"], "state": "error", "action": "on", "target": None,
+                            "message": f"Select a worktree to bring {KEY} online.",
+                            "startedAt": started, "updatedAt": now(), "log": ""}
+                cmd = [SWITCH_SCRIPT, KEY, restore]  # a guarded switch, not a bare "on"
+        verb = "Stopping" if action == "off" else "Starting"
+        write_state({"id": req["id"], "state": "working", "action": action, "target": restore,
+                     "message": f"{verb} {KEY}…", "startedAt": started, "updatedAt": now(), "log": ""})
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        tail = "\n".join(ANSI.sub("", (proc.stdout or "") + (proc.stderr or "")).splitlines()[-40:])
+        if proc.returncode == 0:
+            msg = f"{KEY} is now {'OFF' if action == 'off' else 'ON'}."
+            return {"id": req["id"], "state": "done", "action": action, "target": restore,
+                    "message": msg, "startedAt": started, "updatedAt": now(), "log": tail}
+        return {"id": req["id"], "state": "error", "action": action, "target": restore,
+                "message": f"{action} failed (exit {proc.returncode}).", "startedAt": started,
+                "updatedAt": now(), "log": tail}
+
+    # switch
+    valid = {w["name"] for w in worktrees(None)} | {w["path"] for w in worktrees(None)}
+    if target not in valid:
+        return {"id": req["id"], "state": "error", "action": "switch", "target": target,
+                "message": f"Unknown worktree: {target}", "startedAt": started,
+                "updatedAt": now(), "log": ""}
+    write_state({"id": req["id"], "state": "building", "action": "switch", "target": target,
+                 "message": f"Building & switching to {target}…", "startedAt": started,
+                 "updatedAt": now(), "log": ""})
+    proc = subprocess.run([SWITCH_SCRIPT, KEY, target], capture_output=True, text=True)
+    tail = "\n".join(ANSI.sub("", (proc.stdout or "") + (proc.stderr or "")).splitlines()[-40:])
+    if proc.returncode == 0:
+        if DRIVER == "nginx-docroot":
+            write_last_served(os.path.basename(target))
+        return {"id": req["id"], "state": "done", "action": "switch", "target": target,
+                "message": f"Now serving {target}.", "startedAt": started,
+                "updatedAt": now(), "log": tail}
+    return {"id": req["id"], "state": "error", "action": "switch", "target": target,
+            "message": f"Switch failed (exit {proc.returncode}).", "startedAt": started,
+            "updatedAt": now(), "log": tail}
+
+
+def main():
+    if not KEY:
+        raise SystemExit("worktree-switch-runner: WT_KEY (or KEY) is required")
+    os.makedirs(SPOOL_DIR, exist_ok=True)
+    st = read_json(STATE)
+    job = (st or {}).get("job") or {
+        "id": None, "state": "idle", "action": None, "target": None,
+        "message": "", "startedAt": None, "updatedAt": now(), "log": "",
+    }
+    last_id = job.get("id")
+    write_state(job)
+    while True:
+        req = read_json(REQUEST)
+        if req and req.get("id") and req["id"] != last_id:
+            last_id = req["id"]
+            job = run_action(req)
+            write_state(job)
+        else:
+            write_state(job)  # refresh inventory/served (catches CLI switches, new worktrees)
+        time.sleep(POLL)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,19 @@
+# worktree-preview switcher — let the monitor agent perform the ONE privileged
+# step of a switch, and nothing more. Both helpers validate every path against
+# the project's env-file allow-list (WORKTREES_ROOT / DB_ROOT) before touching
+# the live site, so this grant cannot be used to steer a docroot/served unit at
+# an arbitrary path or run arbitrary commands.
+#
+#   worktree-preview-apply  — node-service (WDT, …): flip the served unit's
+#                             WorkingDirectory + DATABASE_URL, restart, or
+#                             stop/start for the off/on lifecycle.
+#   worktree-docroot-apply  — nginx-docroot (patricia): repoint the docroot
+#                             symlink + reload nginx, or take the site OFF.
+#
+# Installed to /etc/sudoers.d/worktree-preview (mode 0440) by
+# ~/worktree-preview-install.sh, which substitutes __WT_MONITOR_USER__ with the
+# configured monitor user and validates with `visudo -c` before install.
+#
+# This is the generic successor to /etc/sudoers.d/pm-switch; PM keeps its own
+# grant until the supervised migration.
+__WT_MONITOR_USER__ ALL=(root) NOPASSWD: /usr/local/sbin/worktree-preview-apply, /usr/local/sbin/worktree-docroot-apply

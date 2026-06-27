@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# worktree-preview-serve <key> — ExecStart for worktree-preview@<key>.service.
+#
+# Reads the project's static config from /etc/worktree-preview/<key>.env and
+# execs its START_CMD. The served WorkingDirectory and per-branch DATABASE_URL
+# are injected by the switch via a systemd drop-in, so this wrapper stays
+# project-agnostic. START_CMD comes from a root-owned env file (trusted), so the
+# eval here is intentional and safe.
+set -euo pipefail
+KEY="${1:?usage: worktree-preview-serve <key>}"
+ENV_FILE="/etc/worktree-preview/${KEY}.env"
+[[ -r "$ENV_FILE" ]] || { echo "worktree-preview-serve: missing $ENV_FILE" >&2; exit 1; }
+set -a; . "$ENV_FILE"; set +a
+# Exported for START_CMDs / frameworks that read them (Next.js honours PORT).
+export PORT="${PORT:-3000}" HOST="${HOST:-127.0.0.1}"
+eval "exec ${START_CMD:?START_CMD missing in $ENV_FILE}"

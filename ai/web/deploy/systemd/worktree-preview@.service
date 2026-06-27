@@ -1,0 +1,38 @@
+# Templated served unit for node-service worktree-preview projects (WDT, and
+# eventually environment/PM after its supervised migration). One instance per
+# project key: `systemctl start worktree-preview@wdt`.
+#
+# This is the unit whose WorkingDirectory is flipped between worktrees by the
+# privileged apply helper (the only root step of a switch), and which is
+# stopped/started for the off/on lifecycle. The static per-project config lives
+# in /etc/worktree-preview/%i.env; the dynamic bits a switch writes (the served
+# WorkingDirectory + DATABASE_URL) come from a systemd drop-in, exactly like the
+# existing pm.service pattern — so this template stays project-agnostic.
+#
+# REVIEW-PENDING (ENV-107 / asdrubal): not installed yet. The matching generic
+# runner (worktree-switch-runner), apply helper (worktree-preview-apply), and
+# serve wrapper land in the same WS2 slice and are applied to the host only
+# during the supervised WS4 (WDT bring-up) / WS6 (PM migration) windows.
+[Unit]
+Description=worktree-preview served site (%i) — registry-driven live preview
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Per-project static config (KEY, HOST, PORT, START_CMD, APP_SUBDIR, …).
+EnvironmentFile=/etc/worktree-preview/%i.env
+# WorkingDirectory + DATABASE_URL are injected by the switch via a drop-in
+# (/etc/systemd/system/worktree-preview@%i.service.d/20-active-worktree.conf),
+# written by the privileged apply helper. A literal (non-symlink) path is used
+# so CHDIR succeeds under the sandbox, matching pm-apply-worktree.
+WorkingDirectory=/srv/Code
+# The serve wrapper execs ${START_CMD} from the flipped WorkingDirectory with
+# the per-branch DATABASE_URL already in the environment.
+ExecStart=/usr/local/sbin/worktree-preview-serve %i
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,41 @@
+# Templated switch runner for registry-driven worktree-preview projects (WDT,
+# patricia, and eventually environment/PM after its supervised migration). One
+# instance per project key: `systemctl enable --now worktree-switch-runner@wdt`.
+#
+# The generic successor to pm-switch-runner.service. It runs as the monitor
+# agent, DECOUPLED from any served unit on purpose: a node-service switch ends
+# by restarting worktree-preview@%i, so the runner must not live in that unit's
+# cgroup. All project-specific detail comes from /etc/worktree-preview/%i.env;
+# this template stays project-agnostic.
+#
+# REVIEW-PENDING (ENV-107 / asdrubal): not installed yet. Applied to the host
+# only during the supervised WS4 (WDT bring-up) / WS6 (PM migration) windows by
+# ~/worktree-preview-install.sh.
+[Unit]
+Description=worktree-preview switch runner (%i) — registry-driven build + serve flip
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as the monitor agent (the installer substitutes __WT_MONITOR_USER__).
+User=__WT_MONITOR_USER__
+Group=code-agents
+Environment=HOME=/home/__WT_MONITOR_USER__
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Per-project static config (DRIVER, REPO, WORKTREES_ROOT, SPOOL_DIR, …). The
+# runner also reads this file directly, so the unit only needs to name the key.
+EnvironmentFile=/etc/worktree-preview/%i.env
+Environment=WT_KEY=%i
+Environment=WT_ENV_FILE=/etc/worktree-preview/%i.env
+Environment=WT_SWITCH_SCRIPT=/usr/local/sbin/worktree-switch
+ExecStart=/usr/local/sbin/worktree-switch-runner
+Restart=on-failure
+RestartSec=5s
+
+# NOTE: deliberately NOT NoNewPrivileges — the runner must `sudo -n` the one
+# privileged step (worktree-preview-apply / worktree-docroot-apply), allowed by
+# /etc/sudoers.d/worktree-preview.
+
+[Install]
+WantedBy=multi-user.target

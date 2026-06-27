@@ -9,8 +9,8 @@ import {
 } from "@/lib/projects/actions";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { auth } from "@/lib/auth";
-import { isWorktreeExposedRepo } from "@/lib/projects/worktree";
 import { readSwitchState } from "@/lib/deploy/worktrees";
+import { getSwitchProject } from "@/lib/deploy/switch-registry";
 import { displayWorktreesForRepo, worktreeRepoKey } from "@/lib/deploy/repo-key";
 import WorktreeSwitcher from "@/components/worktree-switcher";
 import BranchMultiCombobox from "@/components/branch-multi-combobox";
@@ -69,12 +69,9 @@ export default async function ProjectSettingsPage({
   const canEditDeployment = isHuman || isAdmin || project.members.some((member) => member.role === "owner");
   const deploymentInputClass = "w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-70";
   const repoKey = worktreeRepoKey(project.repositoryPath);
-  const eligible = isHuman && isWorktreeExposedRepo(project.repositoryPath) && !!repoKey;
-  const switchState = eligible ? await readSwitchState() : null;
-  const relatedWorktrees = switchState
-    ? displayWorktreesForRepo(switchState.worktrees, repoKey ?? "")
-    : [];
-  const showSwitcher = eligible && switchState !== null && relatedWorktrees.length > 0;
+  const switchProject = isHuman ? getSwitchProject(repoKey) : null;
+  const switchState = switchProject ? await readSwitchState(switchProject.spoolDir) : null;
+  const showSwitcher = Boolean(switchProject) && switchState !== null;
 
   const [effectiveSettings, projectTaskBranches] = await Promise.all([
     resolveEffectiveProjectSettings(project),
@@ -478,21 +475,17 @@ export default async function ProjectSettingsPage({
                 only the served code changes.
               </p>
             </div>
-            {/* TODO (later): implement the full per-project pm.service serving
-                solution — a dedicated service per project so each repo can be
-                built + served independently. For now switching routes through
-                the single shared PM app service (pm.service). */}
-            <div className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-caption leading-5 text-warn">
-              <span className="font-semibold">TODO (later):</span> implement the
-              full per-project <code>pm.service</code> serving solution (one
-              service per project repo). For now switching routes through the
-              single shared PM app service.
-            </div>
-            {showSwitcher && switchState ? (
-              <WorktreeSwitcher initial={switchState} repoKey={repoKey ?? ""} />
+            {showSwitcher && switchState && switchProject ? (
+              <WorktreeSwitcher
+                initial={switchState}
+                repoKey={repoKey ?? ""}
+                driver={switchProject.driver}
+                offFreesResources={switchProject.offFreesResources}
+                lifecycleControl={switchProject.lifecycleControl}
+              />
             ) : (
               <p className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-body text-text-muted">
-                No live-preview worktrees are available for this project repository on this host.
+                This project repository is not wired into the worktree switcher on this host.
               </p>
             )}
           </section>

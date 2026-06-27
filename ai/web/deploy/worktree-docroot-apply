@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#
+# worktree-docroot-apply — the ONLY privileged step of an nginx-docroot switch
+# (Patricia). Repoints the project's docroot symlink to a chosen worktree and
+# reloads nginx, or takes the site fully OFF.
+#
+# Runs as root via a single NOPASSWD sudoers rule. The target is validated
+# against the project's env-file allow-list (WORKTREES_ROOT), so a non-root
+# caller cannot point the live docroot at an arbitrary path.
+#
+# off (per product decision): the project is COMPLETELY off — the docroot
+# symlink is removed, or pointed at MAINTENANCE_ROOT if one is configured, so
+# nginx serves the default/maintenance page. PHP-FPM is shared, so this gates
+# access; it does not stop a per-project process.
+#
+# Usage:
+#   worktree-docroot-apply <key> apply <worktree_path>
+#   worktree-docroot-apply <key> off
+set -euo pipefail
+
+ENV_DIR=/etc/worktree-preview
+die(){ printf 'worktree-docroot-apply: %s\n' "$*" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || die "must run as root (via sudo)"
+
+KEY="${1:-}"; ACTION="${2:-}"
+[[ "$KEY" =~ ^[a-z0-9_-]+$ ]] || die "bad/empty key"
+ENV_FILE="$ENV_DIR/$KEY.env"
+[[ -r "$ENV_FILE" ]] || die "no env file $ENV_FILE"
+set -a; . "$ENV_FILE"; set +a
+[[ "${DRIVER:-}" == "nginx-docroot" ]] || die "driver for $KEY is not nginx-docroot"
+
+WT_ROOT="$(readlink -f "${WORKTREES_ROOT:?WORKTREES_ROOT}")" || die "WORKTREES_ROOT unresolved"
+LINK="${CURRENT_SYMLINK:?CURRENT_SYMLINK}"
+MAINT="${MAINTENANCE_ROOT:-}"
+RELOAD="${RELOAD_CMD:-nginx -s reload}"
+
+reload_nginx(){ nginx -t && eval "$RELOAD"; }
+
+case "$ACTION" in
+  apply)
+    TARGET_IN="${3:?worktree path}"
+    tgt="$(readlink -f "$TARGET_IN")" || die "target does not resolve: $TARGET_IN"
+    [[ "$tgt" == "$WT_ROOT"/* ]] || die "refused: $tgt not under $WT_ROOT"
+    [[ -d "$tgt" ]] || die "not a directory: $tgt"
+    ln -sfn "$tgt" "$LINK"
+    reload_nginx
+    echo "worktree-docroot-apply: $LINK -> $tgt" ;;
+  off)
+    if [[ -n "$MAINT" ]]; then ln -sfn "$MAINT" "$LINK"; else rm -f "$LINK"; fi
+    reload_nginx
+    echo "worktree-docroot-apply: $KEY OFF (${MAINT:+maintenance=$MAINT}${MAINT:-symlink removed})" ;;
+  *) die "unknown action '$ACTION' (apply|off)" ;;
+esac

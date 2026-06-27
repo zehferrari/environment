@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { displayWorktreesForRepo, worktreeRepoKey } from "@/lib/deploy/repo-key";
 import { readSwitchState } from "@/lib/deploy/worktrees";
+import { getSwitchProject } from "@/lib/deploy/switch-registry";
 
 const execFile = promisify(execFileCb);
 const MAX_FILE_BYTES = 700 * 1024;
@@ -99,7 +100,8 @@ export function resolveInside(root: string, relPath: string): string | null {
 export async function listCodeSources(repositoryPath: string | null | undefined): Promise<CodeSource[]> {
   if (!repositoryPath) return [];
   const repoKey = worktreeRepoKey(repositoryPath);
-  const state = await readSwitchState();
+  const project = getSwitchProject(repoKey);
+  const state = await readSwitchState(project?.spoolDir);
   const sources =
     state.available && repoKey
       ? displayWorktreesForRepo(state.worktrees, repoKey).map((w) => ({
