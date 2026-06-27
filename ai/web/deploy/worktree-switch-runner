@@ -79,6 +79,33 @@ def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=kw.pop("timeout", 20), **kw)
 
 
+# nginx-docroot has no per-project process: "off" removes the docroot symlink,
+# so "on" has nothing to restart and needs a target branch to re-point at. We
+# remember the worktree that was served (on each switch and just before "off")
+# so a later "on" can restore it without forcing the user to re-select.
+LAST_SERVED = os.path.join(SPOOL_DIR, "last-served")
+
+
+def read_last_served():
+    try:
+        with open(LAST_SERVED) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def write_last_served(name):
+    if not name:
+        return
+    try:
+        tmp = LAST_SERVED + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(name)
+        os.replace(tmp, LAST_SERVED)
+    except Exception:
+        pass
+
+
 def service_active(name):
     try:
         return run(["systemctl", "is-active", name], timeout=10).stdout.strip() == "active"
@@ -171,16 +198,31 @@ def run_action(req):
     started = now()
 
     if action in ("off", "on"):
+        cmd = [SWITCH_SCRIPT, KEY, action]
+        restore = None
+        if DRIVER == "nginx-docroot":
+            if action == "off":
+                # Remember what we're serving so "on" can put it back.
+                root, _, _ = served()
+                if root:
+                    write_last_served(os.path.basename(root))
+            else:  # on: nginx-docroot has no unit to start — restore last served
+                restore = read_last_served()
+                if not restore:
+                    return {"id": req["id"], "state": "error", "action": "on", "target": None,
+                            "message": f"Select a worktree to bring {KEY} online.",
+                            "startedAt": started, "updatedAt": now(), "log": ""}
+                cmd = [SWITCH_SCRIPT, KEY, restore]  # a guarded switch, not a bare "on"
         verb = "Stopping" if action == "off" else "Starting"
-        write_state({"id": req["id"], "state": "working", "action": action, "target": None,
+        write_state({"id": req["id"], "state": "working", "action": action, "target": restore,
                      "message": f"{verb} {KEY}…", "startedAt": started, "updatedAt": now(), "log": ""})
-        proc = subprocess.run([SWITCH_SCRIPT, KEY, action], capture_output=True, text=True)
+        proc = subprocess.run(cmd, capture_output=True, text=True)
         tail = "\n".join(ANSI.sub("", (proc.stdout or "") + (proc.stderr or "")).splitlines()[-40:])
         if proc.returncode == 0:
             msg = f"{KEY} is now {'OFF' if action == 'off' else 'ON'}."
-            return {"id": req["id"], "state": "done", "action": action, "target": None,
+            return {"id": req["id"], "state": "done", "action": action, "target": restore,
                     "message": msg, "startedAt": started, "updatedAt": now(), "log": tail}
-        return {"id": req["id"], "state": "error", "action": action, "target": None,
+        return {"id": req["id"], "state": "error", "action": action, "target": restore,
                 "message": f"{action} failed (exit {proc.returncode}).", "startedAt": started,
                 "updatedAt": now(), "log": tail}
 
@@ -196,6 +238,8 @@ def run_action(req):
     proc = subprocess.run([SWITCH_SCRIPT, KEY, target], capture_output=True, text=True)
     tail = "\n".join(ANSI.sub("", (proc.stdout or "") + (proc.stderr or "")).splitlines()[-40:])
     if proc.returncode == 0:
+        if DRIVER == "nginx-docroot":
+            write_last_served(os.path.basename(target))
         return {"id": req["id"], "state": "done", "action": "switch", "target": target,
                 "message": f"Now serving {target}.", "startedAt": started,
                 "updatedAt": now(), "log": tail}

@@ -481,6 +481,7 @@ export default async function ProjectSettingsPage({
                 repoKey={repoKey ?? ""}
                 driver={switchProject.driver}
                 offFreesResources={switchProject.offFreesResources}
+                lifecycleControl={switchProject.lifecycleControl}
               />
             ) : (
               <p className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-body text-text-muted">

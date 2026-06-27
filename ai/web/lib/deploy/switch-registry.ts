@@ -44,6 +44,15 @@ export type SwitchProject = {
    * Surfaced in the UI so the control is honest about what it does.
    */
   offFreesResources: boolean;
+  /**
+   * Whether this project's spool is served by a runner that understands the
+   * on/off lifecycle (worktree-switch-runner). False for `environment`, which
+   * still runs on the legacy pm-switch-runner that ignores action:off|on — so
+   * the UI hides the on/off control there rather than expose a misleading
+   * production switch, until the supervised PM migration (WS6) moves it onto
+   * the templated runner.
+   */
+  lifecycleControl: boolean;
 };
 
 // Registry, keyed by canonical repoKey. Adding a project = one entry here plus
@@ -59,6 +68,8 @@ const PROJECTS: SwitchProject[] = [
     driver: "node-service",
     appSubdir: "ai/web",
     offFreesResources: true,
+    // Legacy pm-switch-runner — no on/off support yet (see WS6 migration).
+    lifecycleControl: false,
   },
   {
     key: "wdt",
@@ -68,6 +79,7 @@ const PROJECTS: SwitchProject[] = [
     driver: "node-service",
     appSubdir: "",
     offFreesResources: true,
+    lifecycleControl: true,
   },
   {
     key: "patricia",
@@ -77,6 +89,7 @@ const PROJECTS: SwitchProject[] = [
     driver: "nginx-docroot",
     appSubdir: "",
     offFreesResources: false,
+    lifecycleControl: true,
   },
 ];
 

@@ -14,6 +14,7 @@ export default function WorktreeSwitcher({
   repoKey,
   driver,
   offFreesResources,
+  lifecycleControl,
 }: {
   initial: SwitchState;
   // Only worktrees belonging to this project's repo are shown.
@@ -22,6 +23,11 @@ export default function WorktreeSwitcher({
   // Whether "off" actually frees resources (node-service) or only gates access
   // (nginx-docroot). Drives the honest copy on the on/off control.
   offFreesResources: boolean;
+  // Whether this project's runner understands the on/off lifecycle. When false
+  // (environment on the legacy pm-switch-runner), the on/off control is hidden
+  // so we don't expose a production switch the runner would misread as a
+  // branch switch. Serving a worktree still works.
+  lifecycleControl: boolean;
 }) {
   const [state, setState] = useState<SwitchState>(initial);
   const [error, setError] = useState<string | null>(null);
@@ -114,26 +120,28 @@ export default function WorktreeSwitcher({
         </div>
       ) : null}
 
-      {/* On/off lifecycle control */}
-      <div className="flex items-center justify-between gap-3 rounded-lg border border-line bg-panel-soft px-3 py-2.5">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 text-body font-medium text-text">
-            <span
-              className={`h-2 w-2 rounded-full ${state.siteActive ? "bg-ok" : "bg-text-muted"}`}
-            />
-            {state.siteActive ? "Site is online" : "Site is off"}
+      {/* On/off lifecycle control — only for projects whose runner supports it. */}
+      {lifecycleControl ? (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-line bg-panel-soft px-3 py-2.5">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-body font-medium text-text">
+              <span
+                className={`h-2 w-2 rounded-full ${state.siteActive ? "bg-ok" : "bg-text-muted"}`}
+              />
+              {state.siteActive ? "Site is online" : "Site is off"}
+            </div>
+            <p className="mt-0.5 text-caption text-text-muted">{offHint}</p>
           </div>
-          <p className="mt-0.5 text-caption text-text-muted">{offHint}</p>
+          <button
+            type="button"
+            onClick={() => toggleSite(!state.siteActive)}
+            disabled={busy}
+            className="shrink-0 rounded-lg border border-line px-control-x py-control-y text-body font-medium text-text hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {state.siteActive ? "Take offline" : "Bring online"}
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => toggleSite(!state.siteActive)}
-          disabled={busy}
-          className="shrink-0 rounded-lg border border-line px-control-x py-control-y text-body font-medium text-text hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {state.siteActive ? "Take offline" : "Bring online"}
-        </button>
-      </div>
+      ) : null}
 
       {inProgress ? (
         <div className="flex items-center gap-2 rounded-lg border border-accent/40 bg-accent-soft px-3 py-2 text-body text-accent">
