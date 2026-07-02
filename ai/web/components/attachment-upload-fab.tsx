@@ -1,7 +1,21 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useActionState, useEffect, useState } from "react";
+import { useFormStatus } from "react-dom";
 import { Button, Surface } from "@/components/ui/primitives";
+
+type UploadState = { ok: boolean; error: string | null };
+
+const IDLE_STATE: UploadState = { ok: false, error: null };
+
+function SubmitButton() {
+  const { pending } = useFormStatus();
+  return (
+    <Button type="submit" variant="primary" disabled={pending}>
+      {pending ? "Uploading…" : "Upload files"}
+    </Button>
+  );
+}
 
 export default function AttachmentUploadFab({
   projectSlug,
@@ -18,6 +32,26 @@ export default function AttachmentUploadFab({
 }) {
   const [open, setOpen] = useState(false);
 
+  const [state, formAction] = useActionState<UploadState, FormData>(
+    async (_prev, formData) => {
+      try {
+        await uploadAction(formData);
+        return { ok: true, error: null };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : "Upload failed",
+        };
+      }
+    },
+    IDLE_STATE,
+  );
+
+  // Only a successful upload closes the modal.
+  useEffect(() => {
+    if (state.ok) setOpen(false);
+  }, [state.ok]);
+
   return (
     <>
       {open ? (
@@ -27,9 +61,8 @@ export default function AttachmentUploadFab({
         >
           <Surface
             as="form"
-            action={uploadAction}
+            action={formAction}
             encType="multipart/form-data"
-            onSubmit={() => setOpen(false)}
             onClick={(event: React.MouseEvent) => event.stopPropagation()}
             elevated
             padding="lg"
@@ -64,13 +97,19 @@ export default function AttachmentUploadFab({
               required
               className="w-full rounded-lg border border-dashed border-line bg-bg px-3 py-6 text-body file:mr-3 file:rounded-lg file:border-0 file:bg-accent file:px-3 file:py-1.5 file:text-caption file:font-medium file:text-bg hover:file:opacity-90"
             />
+            {state.error ? (
+              <p
+                role="alert"
+                className="rounded-lg border border-crit/40 bg-crit/10 px-3 py-2 text-caption text-crit"
+              >
+                {state.error}
+              </p>
+            ) : null}
             <div className="flex justify-end gap-2">
               <Button type="button" onClick={() => setOpen(false)} variant="ghost">
                 Cancel
               </Button>
-              <Button type="submit" variant="primary">
-                Upload files
-              </Button>
+              <SubmitButton />
             </div>
           </Surface>
         </div>

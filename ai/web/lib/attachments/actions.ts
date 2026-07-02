@@ -41,13 +41,14 @@ export async function uploadAttachment(formData: FormData) {
   const taskId = taskIdRaw === "" ? null : taskIdRaw;
   const epicId = epicIdRaw === "" ? null : epicIdRaw;
   const files = uploadedFiles(formData);
-  if (!slug || files.length === 0) return;
+  if (!slug) throw new Error("Missing project slug");
+  if (files.length === 0) throw new Error("No files were selected to upload");
 
   const project = await db.project.findUnique({
     where: { slug },
     select: { id: true },
   });
-  if (!project) return;
+  if (!project) throw new Error(`Unknown project: ${slug}`);
 
   assertOneTarget({ projectId: project.id, taskId, epicId });
 
@@ -57,13 +58,17 @@ export async function uploadAttachment(formData: FormData) {
       where: { id: taskId },
       select: { projectId: true, title: true },
     });
-    if (!t || t.projectId !== project.id) return;
+    if (!t || t.projectId !== project.id) {
+      throw new Error("Task does not belong to this project");
+    }
   } else if (epicId) {
     const e = await db.epic.findUnique({
       where: { id: epicId },
       select: { projectId: true, title: true },
     });
-    if (!e || e.projectId !== project.id) return;
+    if (!e || e.projectId !== project.id) {
+      throw new Error("Epic does not belong to this project");
+    }
   }
 
   const maxBytes = attachmentMaxBytes();
@@ -79,12 +84,23 @@ export async function uploadAttachment(formData: FormData) {
     const filename = file.name || "attachment";
     const mimeType = normalizeAttachmentMimeType(filename, file.type);
     const buffer = Buffer.from(await file.arrayBuffer());
-    const written = await writeAttachment({
-      projectId: project.id,
-      filename,
-      mimeType,
-      data: buffer,
-    });
+    let written;
+    try {
+      written = await writeAttachment({
+        projectId: project.id,
+        filename,
+        mimeType,
+        data: buffer,
+      });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EACCES" || code === "EPERM") {
+        throw new Error(
+          `Cannot write attachment "${filename}" — the storage directory is not writable by the server (${code}). Check permissions on the attachment root.`,
+        );
+      }
+      throw err;
+    }
 
     const row = await db.attachment.create({
       data: {
