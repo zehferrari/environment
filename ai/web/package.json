@@ -52,7 +52,9 @@
     "test:workspace-settings-hierarchy": "tsx scripts/workspace-settings-hierarchy-test.ts",
     "test:workspace-deployment-rollup": "tsx scripts/workspace-deployment-rollup-test.ts",
     "test:workspace-api": "tsx scripts/workspace-api-test.ts",
+    "test:client-recovery": "tsx scripts/client-recovery-test.ts",
     "test:deploy-review-prompt": "tsx scripts/deploy-review-prompt-test.ts",
+    "test:markdown-links": "tsx scripts/markdown-link-test.ts",
     "test:workflow-agent-rules": "tsx scripts/workflow-agent-rules-test.ts",
     "test:protected-branches": "tsx scripts/protected-branches-test.ts"
   },

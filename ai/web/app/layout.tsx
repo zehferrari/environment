@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import StaleBuildRecovery from "@/components/stale-build-recovery";
 import { getSystemSettings, type SystemTheme } from "@/lib/settings/system";
 import "./globals.css";
 
@@ -15,7 +16,10 @@ export default async function RootLayout({
   const theme = await rootTheme();
   return (
     <html lang="en" data-theme={theme}>
-      <body>{children}</body>
+      <body>
+        <StaleBuildRecovery />
+        {children}
+      </body>
     </html>
   );
 }
