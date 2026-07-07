@@ -728,14 +728,16 @@ export default async function EpicDetailPage({
     commitPrefix: epic.commitPrefix,
     workItemKey: epic.workItemKey,
   });
-  const childTaskCommitPrefixes = epic.tasks.map((task) =>
+  const childTaskCommitPrefixes = epic.tasks.flatMap((task) => [
     effectiveCommitPrefix({
       commitPrefix: task.commitPrefix ?? epic.commitPrefix,
       workItemKey: task.workItemKey ?? null,
     }),
-  );
+    task.workItemKey,
+  ]);
   const epicChangeCommitPrefixes = uniqueStrings([
     epicCommitPrefix,
+    epic.workItemKey,
     ...childTaskCommitPrefixes,
   ]);
   const epicChangeBranchName = epic.branchName ?? epic.tasks.find((task) => task.branchName)?.branchName ?? null;

@@ -42,7 +42,7 @@ export default function TaskChangesPanel({
           <div>
             <h3 className="text-body font-semibold text-text">Repository Changes</h3>
             <p className="mt-1 text-caption text-text-muted">
-              Local Git commits from the branch, filtered by commit prefix and this {scopeLabel}&apos;s work window when available.
+              Local Git commits from the branch, filtered by commit prefix or work item ID and this {scopeLabel}&apos;s work window when available.
             </p>
           </div>
           <div className="flex flex-wrap gap-2 text-micro text-text-muted">

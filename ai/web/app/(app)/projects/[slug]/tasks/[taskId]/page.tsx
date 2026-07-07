@@ -1047,6 +1047,13 @@ function payloadValue(payload: string | null | undefined, key: string) {
   }
 }
 
+function uniqueStrings(values: Array<string | null | undefined>) {
+  return [...new Set(values.flatMap((value) => {
+    const trimmed = value?.trim();
+    return trimmed ? [trimmed] : [];
+  }))];
+}
+
 function taskWorkWindows(
   rows: Array<{ kind: string; payload: string | null; createdAt: Date | string }>,
   fallback: { status: string; statusChangedAt: Date | string | null },
@@ -1651,11 +1658,15 @@ export default async function TaskDetailPage({
     commitPrefix: taskExplicitCommitPrefix,
     workItemKey: task.workItemKey ?? null,
   });
+  const taskChangeCommitPrefixes = uniqueStrings([
+    taskCommitPrefix,
+    task.workItemKey,
+  ]);
   const taskChanges = selectedTab === "Changes"
     ? await getTaskGitChanges({
         repositoryPath: task.project.repositoryPath,
         branchName: task.branchName ?? task.epic?.branchName ?? null,
-        commitPrefix: taskCommitPrefix,
+        commitPrefix: taskChangeCommitPrefixes,
         windows: changeWindows,
       })
     : { commits: [], ref: null, error: null };
@@ -2317,6 +2328,7 @@ export default async function TaskDetailPage({
                   changes={taskChanges}
                   branchName={task.branchName ?? task.epic?.branchName ?? null}
                   commitPrefix={taskCommitPrefix}
+                  commitPrefixes={taskChangeCommitPrefixes}
                   baseHref={`/projects/${slug}/tasks/${task.id}`}
                   selectedDiff={selectedDiff}
                 />

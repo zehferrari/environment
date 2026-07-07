@@ -31,6 +31,7 @@
     "test:db-maintenance": "tsx scripts/db-maintenance-test.ts",
     "test:deployment-monitor": "tsx scripts/deployment-monitor-test.ts",
     "test:deployment-tab": "tsx scripts/deployment-tab-test.tsx",
+    "test:task-git-changes": "tsx scripts/task-git-changes-test.ts",
     "test:add-epic-task-fab": "tsx scripts/add-epic-task-fab-test.tsx",
     "test:pm-channel-stream-protocol": "tsx scripts/pm-channel-stream-protocol-test.ts",
     "test:pm-channel-transport": "tsx scripts/pm-channel-transport-test.ts",
