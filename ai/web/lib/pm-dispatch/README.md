@@ -10,15 +10,22 @@ stands. `notifyDispatch` is the only call-site entry point and is
 guaranteed not to throw: transport, config, and disabled-env paths
 all resolve to a `DispatchResult` with `ok=false`.
 
-## Wired call sites (Slice 2)
+## Wired call sites (current)
 
 - `app/api/tasks/[id]/ack/route.ts` — emits `task.ack_ready` after the
   auto To Do → In Progress transition is persisted.
-- `app/(app)/projects/[slug]/tasks/[taskId]/page.tsx`
-  - `createComment` — emits `task.commented` for the comment plus one
-    `task.mentioned` per resolved `@username` in the body.
-  - `assignTask` — emits `task.assigned` with the previous and new
-    assignee shape after the row is updated.
+- `app/(app)/projects/[slug]/tasks/[taskId]/page.tsx` — `assignTask`
+  emits `task.assigned` with the previous and new assignee shape after
+  the row is updated; the human "Deployment Approved" path emits
+  `deployment.approved`.
+- `lib/epics/actions.ts` — the Epic-level "Deployment Approved" path
+  emits `deployment.approved`.
+
+Comments and chat do **not** go through this seam anymore: they use the
+native PM channel (`sendTaskCommentNotifications` → pm-channel turns).
+The `task.commented` / `task.mentioned` / `task.agent_chat` builders and
+their consumer routing still exist but are legacy dead paths with zero
+emit sites — do not build new features on them.
 
 HOMELAB-44 enforcement (`checkAssignment`, `checkStatusTransition`,
 `autoTransitionOnAck`) is unchanged: rule rejections still run before
@@ -85,7 +92,7 @@ temp `DATABASE_URL`) plus a temp `PM_DISPATCH_DROP_DIR`. Seeds a
 project + human actor + agent assignee + task, mirrors the
 `assignTask` server-action persistence + dispatch shape, then reads
 the dropped envelope and asserts envelope identity (`task.id`,
-`task.key`, `task.projectKey`, actor, payload assignee). `task.key`
-is asserted to equal `task.id` — that is the current contract flagged
-in HOMELAB-46 commentId 12265, and this assertion will fail loudly if
-that ever drifts before a PM-visible key is introduced for live wake.
+`task.key`, `task.projectKey`, actor, payload assignee). Note the key
+contract has evolved since HOMELAB-46: live emitters now send
+`task.workItemKey ?? task.id` as `task.key` (the seeded test task has no
+`workItemKey`, so the integration script still sees `key === id`).

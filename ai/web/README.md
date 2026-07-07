@@ -70,18 +70,27 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/login`, `app/rotate-password` | unauthenticated routes (forced rotation on first login). |
 | `app/(app)/projects` | projects list + inline create. |
 | `app/(app)/projects/bin` | project-level soft-delete bin — restores whole projects within the 30-day TTL. |
-| `app/(app)/projects/[slug]` | kanban board (four workflow columns + a separate Backlog table, drag-and-drop, Backlog show/hide toggle); per-project tab bar (`project-tabs.tsx` in `layout.tsx`: Board · Epics · Library · Settings · Bin). Done cards older than `doneTtlDays` drop off the board. Task cards show the current workflow actor + `updated` time; Done cards show the reporter. |
-| `app/(app)/projects/[slug]/tasks/[taskId]` | task editor — two-column. Main: inline title, description editor, sub-tasks (progress checklist), attachments, comments. Sidebar: status, assignee, reviewer, epic picker, dates. |
-| `app/(app)/projects/[slug]/epics` | epic list with status filter (open/done/archived) + inline create (title + description + Acting Manager picker, then redirects into detail for attachments). |
-| `app/(app)/projects/[slug]/epics/[epicId]` | epic detail — assignee + acting manager (Epic keeps that label), status, attachments, tasks grouped by their own status, chat sidebar, Delete. |
+| `app/(app)/projects/[slug]` | kanban board (four workflow columns + a separate Backlog table, drag-and-drop, Backlog show/hide toggle); per-project tab bar (`project-tabs.tsx` in `layout.tsx`: Summary · Board · Epics · Tasks · Library · Code · Changes · Settings · Activity · Bin — Summary/Code/Changes only with a configured repo, Activity only when there is no Summary, Bin only when non-empty). Done cards older than `doneTtlDays` drop off the board. Task cards show the current workflow actor + `updated` time; Done cards show the reporter. |
+| `app/(app)/projects/[slug]/tasks` | flat task list across all statuses; shows the deployment indicator for standalone tasks. |
+| `app/(app)/projects/[slug]/tasks/[taskId]` | task editor — two-column. Main: inline title, description editor, sub-tasks (progress checklist), attachments, comments, Development section (deployment PRs) for standalone tasks. Sidebar: status, assignee, reviewer, epic picker, deployment status, dates. |
+| `app/(app)/projects/[slug]/epics` | epic list with status filter (Backlog / In Progress / Ready to Deploy / Done) + inline create (title + description + Acting Manager picker, then redirects into detail for attachments). |
+| `app/(app)/projects/[slug]/epics/[epicId]` | epic detail — acting manager + deploy reviewer, worker pool, status, deployment status + Development section (deployment PRs), attachments, tasks grouped by their own status, chat sidebar, Delete. |
+| `app/(app)/projects/[slug]/summary` | repo README render for repo-configured projects (hosts the activity agenda). |
+| `app/(app)/projects/[slug]/code` (+ `/code/raw`) | repo file browser / raw file serving. |
+| `app/(app)/projects/[slug]/changes` | repo branch/commit activity. |
+| `app/(app)/projects/[slug]/activity` | project activity stream (own tab only when there is no Summary). |
 | `app/(app)/projects/[slug]/library` | project library — every attachment under the project (task- + epic-anchored) in one list; excludes files whose parent is in the bin. |
 | `app/(app)/projects/[slug]/settings` | project settings — repository path, default git identity, default assignee/reviewer for pickers, Done-card TTL, and project delete; plus a recent-activity agenda. For admin (`zeh`) on git/worktree-exposed projects, also a **Worktree live preview** switcher (build a worktree + flip which one `pm.service` serves; currently shared-service-scoped — see TODO). |
 | `app/(app)/projects/[slug]/bin` | soft-delete bin — lists deleted Epics + Tasks with per-row Restore and "Restore + N children" actions. |
 | `app/(app)/agents` | agents grid; merges PM DB rows with Atlas live snapshot. Admin (`zeh`) gets `Add Agent` + per-card `Edit`/`Delete` lifecycle controls (`agent-management-controls.tsx`). |
-| `app/(app)/agents/[agent]` | per-agent deck, three tabs (`?tab=`): **Profile & controls** (Atlas controls, profile editor, audit), **Operations** (models, tickets, current task, lifecycle, listeners), **Activity** (recent activity-log stream). |
+| `app/(app)/agents/[agent]` | per-agent deck, four tabs (`?tab=`): **Profile & controls** (Atlas controls, profile editor, audit), **Images** (profile/avatar image staging + theme), **Operations** (models, tickets, current task, lifecycle, listeners), **Activity** (recent activity-log stream). |
 | `app/(app)/agents/[agent]/chat` | direct per-agent chat opened from the global sidebar CHAT section. |
 | `app/(app)/system/activity` | system-wide ActivityLog stream. |
 | `app/(app)/system/settings` | system-wide setting defaults. |
+| `app/(app)/system/users` | user administration (admin/`zeh` only). |
+| `app/(app)/workspaces` | workspace list + create; the sidebar groups projects by workspace. |
+| `app/(app)/workspaces/[slug]` | cross-project workspace board. |
+| `app/(app)/workspaces/[slug]/settings` | workspace-level defaults (git identity, deployment, Done-card TTL) inherited by member projects — the layer between project settings and system settings. |
 | `app/api/system/worktree-switch/status` | admin-only poll of the runner-maintained worktree-switch state (served worktree, inventory, current job). Drives the per-project **Worktree live preview** panel. |
 | `app/api/auth/[...nextauth]` | NextAuth route. |
 | `app/api/debug/sync` | manual trigger for the agent sync (auth-only). |
@@ -337,7 +346,10 @@ out of the board server-side so the column doesn't grow without bound.
 
 **Project tabs, settings & library.** Every project is wrapped in a
 shared layout (`app/(app)/projects/[slug]/layout.tsx`) carrying a tab
-bar — Board · Epics · Library · Settings · Bin (`project-tabs.tsx`).
+bar — Summary · Board · Epics · Tasks · Library · Code · Changes ·
+Settings · Activity · Bin (`project-tabs.tsx`; Summary/Code/Changes are
+repo-conditional, Activity appears only without a Summary, Bin only when
+non-empty).
 The **Settings** tab (`lib/projects/actions.ts::setProjectSettings`)
 stores the repository path, default git user name/email used for agent
 commits, default assignee + reviewer that seed Task pickers, deployment
@@ -374,15 +386,36 @@ unchanged), epic picker (with "No epic"), and a
 created/updated dates panel. Tasks may live without an Epic; an Epic
 and its tasks can be assigned to different principals and the task
 keeps its own kanban status independent of the Epic's
-open/done/archived status. All mutations write `ActivityLog`.
+Backlog / In Progress / Ready to Deploy / Done status. All mutations
+write `ActivityLog`.
 
-**Epics (HOMELAB-47).** `/projects/<slug>/epics` is a status-filtered
-list with inline create; `/projects/<slug>/epics/<id>` is the detail
-view. Epics have a single human owner field labelled **Acting manager**
-(no Reviewer concept at the Epic level), plus an Assignee, status,
-description, attachments, and a tasks panel grouped by each task's own
-kanban status. Tasks linked into an Epic still drive their workflow
-from the project board.
+**Epics (HOMELAB-47; principals reworked since).** `/projects/<slug>/epics`
+is a status-filtered list with inline create; `/projects/<slug>/epics/<id>`
+is the detail view. Epics have **no assignee**: they carry an **Acting
+manager** (workflow owner), a **Deploy reviewer** (for the
+Ready-to-Deploy review pass), and a **worker pool** (`EpicWorker`) of
+coding agents the acting manager assigns child tasks from — one active
+task per worker per project (To Do / In Progress / Review), assigned
+sequentially. Status is Backlog / In Progress / Ready to Deploy / Done;
+child tasks are agent-actionable only while the Epic is In Progress.
+The detail view also shows status, description, attachments, the
+Development section (deployment status + PRs), and a tasks panel grouped
+by each task's own kanban status. Tasks linked into an Epic still drive
+their workflow from the project board.
+
+**Deployment.** Standalone Tasks (no epic, no parent) and Epics carry a
+`deploymentStatus` (default `Not Required`) plus a **Development**
+section listing `DeploymentPullRequest` rows; epic-child tasks deploy
+through their Epic, so deployment fields are shown/written only at the
+Epic level for them. Moving an Epic to **Ready to Deploy** kicks off the
+deploy review (`Project.deployReviewPrompt` → deploy reviewer). A human
+approval emits `deployment.approved`; the monitor verifies pushed
+branches, opens the Bitbucket PR(s) (or records
+`local_changes_pending_approval`), and `instrumentation.node.ts` polls
+them — merge runs the project's on-merge script and each row ends in
+`deployed` / `deployment_error` / `declined` / `pipeline_failed` with the
+captured exit code + log excerpt, rolled up into the scope's
+`deploymentStatus` (`lib/deploy/monitor.ts`).
 
 **Attachments (HOMELAB-47).** Files attached to a Task XOR an Epic;
 metadata in the `Attachment` table, bytes on disk under
@@ -720,10 +753,26 @@ the consumer service when the PM checkout is present.
   `/srv/Data/projects/<id>/README.md` on the host filesystem. `Project`
   also carries settings columns (`repositoryPath`,
   `defaultGitUserName`/`Email`, `defaultAssigneeId`, `defaultReviewerId`,
-  `doneTtlDays`) and its own soft-delete pair (`deletedAt` +
-  `deletedById`, 30-day bin) plus an `archivedAt` tombstone. `Epic`
-  carries its own `assigneeId` + `actingManagerId` (HOMELAB-47) —
+  `doneTtlDays`, the deployment settings block, `deployReviewPrompt`,
+  `onlyReportersCanApprovePullRequests`, `agentChangeBlockedBranches`)
+  and its own soft-delete pair (`deletedAt` + `deletedById`, 30-day bin)
+  plus an `archivedAt` tombstone. `Epic` has **no assignee**: it carries
+  `actingManagerId`, `deployReviewerId`, `reporterId`, a `workers`
+  pool (`EpicWorker`), approval stamps, and `deploymentStatus` —
   independent of any task's principals or status.
+- `Workspace` / `WorkspaceProject` — workspace grouping above projects,
+  with workspace-level git/deployment/doneTtl defaults that member
+  projects inherit.
+- `EpicWorker` / `ProjectManagerAssignableAgent` — the Epic's coding-agent
+  worker pool and the per-project allow-list restricting which agents an
+  acting manager may assign.
+- `DeploymentPullRequest` — one row per deployment PR
+  (provider/branch/status plus `deploymentExitCode`/`Stdout`/`Stderr`/
+  `ReportedAt` captured from the on-merge script).
+- `DescriptionDraft` — heartbeat-leased description drafts so an agent
+  write-back and a human editor don't clobber each other.
+- `SystemSettings` / `WebPushSubscription` — system-wide defaults and
+  browser push subscriptions.
 - `Attachment` (HOMELAB-47) — file metadata for task/epic uploads.
   XOR(taskId, epicId) is enforced server-side. Content-addressed via
   `sha256`, indexed for de-duped GC.
@@ -807,6 +856,14 @@ Migrations under `prisma/migrations/`:
 - `20260530180000_asdrubal_p0_kernel` — durable PM-channel jobs,
   replayable stream events, scoped context grants, and per-run stream
   sequence tracking.
+
+The list above stops at the 2026-05-30 kernel migration; roughly thirty
+newer migrations followed (workspaces `20260617092000_workspace_model_api`,
+the epic status rework `20260617213200_epic_status_in_progress_ready`,
+`20260617215500_epic_deploy_reviewer`, deployment PRs, description
+drafts, web push, protected agent branches, …). The directory listing in
+`prisma/migrations/` plus each migration's SQL is the authoritative
+record — this README no longer tracks them one-by-one.
 
 ## Environment
 

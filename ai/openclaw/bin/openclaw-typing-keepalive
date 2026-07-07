@@ -116,7 +116,11 @@ def main() -> int:
             registry_loaded_at = now
 
         for agent in agents:
-            if not agent.get("enabled") or not agent.get("monitor"):
+            # Every enabled agent is covered; Telegram enablement is checked
+            # below. (A legacy top-level "monitor" field check used to sit
+            # here — no registry record carries that field, so it silently
+            # excluded every agent.)
+            if not agent.get("enabled"):
                 continue
             user = agent.get("user")
             home = agent.get("home") or (f"/home/{user}" if user else None)

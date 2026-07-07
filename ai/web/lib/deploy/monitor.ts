@@ -2,14 +2,20 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { db as defaultDb } from "@/lib/db";
 import { resolveEffectiveProjectSettings } from "@/lib/settings/effective";
+import {
+  DEPLOYMENT_PR_LOCAL_CHANGES_PENDING,
+  type DeploymentPrTerminalStatus,
+} from "@/lib/deploy/deployment-status";
 
 const execFileAsync = promisify(execFile);
 const LOG_EXCERPT_MAX = 4000;
 
 export type DeploymentScope = "epic" | "task";
 export type DeploymentMonitorAction = "opened-prs" | "reporter-email-required" | "local-changes-approval-required";
-export type DeploymentPrTerminalStatus = "deployed" | "deployment_error" | "declined" | "pipeline_failed";
-export const DEPLOYMENT_LOCAL_CHANGES_PENDING = "local_changes_pending_approval";
+// Row-status vocabulary is shared with the Development tab via
+// lib/deploy/deployment-status.ts — do not redefine values here.
+export type { DeploymentPrTerminalStatus };
+export const DEPLOYMENT_LOCAL_CHANGES_PENDING = DEPLOYMENT_PR_LOCAL_CHANGES_PENDING;
 
 export interface ReporterIdentity {
   userId: string;

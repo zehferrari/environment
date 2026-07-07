@@ -1,6 +1,11 @@
 import type { Prisma } from "@prisma/client";
 
-export const ACTIVE_TASK_ASSIGNMENT_STATUSES = ["To Do", "In Progress"] as const;
+// "One active Task per project" (docs/agent-pm-api.md § Role permissions):
+// a worker holding a task in any of these statuses is not eligible for another
+// automated assignment in that project. Review counts — work awaiting review
+// (or reviewer feedback) must leave the active set before the next task is
+// handed out, so agents resolve feedback instead of stacking new work.
+export const ACTIVE_TASK_ASSIGNMENT_STATUSES = ["To Do", "In Progress", "Review"] as const;
 
 export async function findAvailableEpicWorker(
   tx: Prisma.TransactionClient,

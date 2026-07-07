@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Back up small OpenClaw state and metadata to /var/backups/openclaw.
+
+Run daily by openclaw-backup.timer (see systemd/openclaw-backup.service).
+Captures the registry/config under /etc, per-agent runtime state and doc
+copies, and the stable base checkout of the openclaw + web trees. Keeps the
+last KEEP archives. `--inventory` prints the path inventory without archiving.
+"""
+import argparse
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+REGISTRY = Path("/etc/openclaw/agents.json")
+DEST = Path("/var/backups/openclaw")
+KEEP = 14
+
+
+STATIC_PATHS = [
+    "/etc/openclaw",
+    "/etc/ai-monitor/config.json",
+    "/srv/Code/environment/ai/openclaw",
+    "/srv/Code/environment/ai/web",
+    "/home/karen/webhooks/users.json",
+    "/home/karen/webhooks/webhook-receiver.js",
+    "/usr/share/ollama/.ollama/id_ed25519",
+    "/usr/share/ollama/.ollama/id_ed25519.pub",
+]
+
+
+EXCLUDES = [
+    "*/node_modules/*",
+    "*/.cache/*",
+    "*/tmp/*",
+    "*/logs/*",
+    "*/browser-data/*",
+    "*/playwright/*",
+    "*/chromium/*",
+    "*/.git/*",
+    "*/.next/cache/*",
+]
+
+
+def load_registry():
+    return json.loads(REGISTRY.read_text(encoding="utf-8"))
+
+
+def candidate_paths():
+    paths = [Path(p) for p in STATIC_PATHS]
+    registry = load_registry()
+    for agent in registry.get("agents", []):
+        home = Path(agent["home"])
+        workspace = Path(agent["workspace"])
+        paths.extend(
+            [
+                home / ".openclaw",
+                home / ".config" / "openclaw",
+                home / ".ssh" / "jiraToken.txt",
+                home / ".ssh" / "bitbucketToken.txt",
+                workspace / "AGENTS.md",
+                workspace / "WORKFLOW.md",
+                workspace / "MEMORY.md",
+                workspace / "SOUL.md",
+                workspace / "IDENTITY.md",
+                workspace / "INCIDENT_HANDLING.md",
+            ]
+        )
+    return sorted({p for p in paths}, key=lambda p: str(p))
+
+
+def mode_string(path):
+    st = path.lstat()
+    return stat.filemode(st.st_mode), st.st_uid, st.st_gid, st.st_size
+
+
+def inventory(paths):
+    rows = []
+    for path in paths:
+        if not path.exists() and not path.is_symlink():
+            rows.append({"path": str(path), "exists": False})
+            continue
+        mode, uid, gid, size = mode_string(path)
+        rows.append(
+            {
+                "path": str(path),
+                "exists": True,
+                "type": "symlink" if path.is_symlink() else "dir" if path.is_dir() else "file",
+                "mode": mode,
+                "uid": uid,
+                "gid": gid,
+                "size": size,
+            }
+        )
+    return rows
+
+
+def prune_old():
+    backups = sorted(DEST.glob("openclaw-state-*.tar.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in backups[KEEP:]:
+        old.unlink()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Back up small OpenClaw state and metadata.")
+    parser.add_argument("--inventory", action="store_true", help="print the backup path inventory only")
+    parser.add_argument("--dest", default=str(DEST), help="backup destination directory")
+    args = parser.parse_args()
+
+    paths = candidate_paths()
+    if args.inventory:
+        print(json.dumps(inventory(paths), indent=2))
+        return 0
+
+    dest = Path(args.dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    os.chmod(dest, 0o700)
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    archive = dest / f"openclaw-state-{stamp}.tar.gz"
+    manifest = dest / f"openclaw-state-{stamp}.manifest.json"
+
+    existing = [str(p) for p in paths if p.exists() or p.is_symlink()]
+    if not existing:
+        print("No backup paths exist", file=sys.stderr)
+        return 1
+
+    tar = shutil.which("tar")
+    if not tar:
+        print("tar not found", file=sys.stderr)
+        return 1
+
+    cmd = [
+        tar,
+        "--create",
+        "--gzip",
+        "--file",
+        str(archive),
+        "--ignore-failed-read",
+        "--warning=no-file-changed",
+    ]
+    for pattern in EXCLUDES:
+        cmd.extend(["--exclude", pattern])
+    cmd.extend(["--absolute-names"])
+    cmd.extend(existing)
+
+    proc = subprocess.run(cmd, text=True, capture_output=True)
+    if proc.returncode != 0:
+        if proc.stdout:
+            print(proc.stdout)
+        if proc.stderr:
+            print(proc.stderr, file=sys.stderr)
+        return proc.returncode
+
+    os.chmod(archive, 0o600)
+    manifest.write_text(json.dumps(inventory(paths), indent=2) + "\n", encoding="utf-8")
+    os.chmod(manifest, 0o600)
+    prune_old()
+
+    print(str(archive))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

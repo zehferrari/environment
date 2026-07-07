@@ -45,6 +45,16 @@ export type SwitchProject = {
    */
   offFreesResources: boolean;
   /**
+   * Whether each branch deployment serves its OWN database (forked once from
+   * the canonical seed by the switch scripts, so schema and data can drift
+   * between branches) or all worktrees share one database. Mirrors the host
+   * env contract: DB_ENGINE=sqlite → per-branch fork (environment, wdt);
+   * DB_ENGINE=none → the switcher never touches a DB, so every branch serves
+   * the same database the app is configured against (patricia). Drives the
+   * honest copy in the switcher UI.
+   */
+  branchDatabases: boolean;
+  /**
    * Whether this project's spool is served by a runner that understands the
    * on/off lifecycle (worktree-switch-runner). False for `environment`, which
    * still runs on the legacy pm-switch-runner that ignores action:off|on — so
@@ -68,6 +78,7 @@ const PROJECTS: SwitchProject[] = [
     driver: "node-service",
     appSubdir: "ai/web",
     offFreesResources: true,
+    branchDatabases: true,
     // Legacy pm-switch-runner — no on/off support yet (see WS6 migration).
     lifecycleControl: false,
   },
@@ -79,6 +90,7 @@ const PROJECTS: SwitchProject[] = [
     driver: "node-service",
     appSubdir: "",
     offFreesResources: true,
+    branchDatabases: true,
     lifecycleControl: true,
   },
   {
@@ -89,6 +101,7 @@ const PROJECTS: SwitchProject[] = [
     driver: "nginx-docroot",
     appSubdir: "",
     offFreesResources: false,
+    branchDatabases: false,
     lifecycleControl: true,
   },
 ];

@@ -1,6 +1,10 @@
 import React from "react";
 import Link from "next/link";
-import { canShowDeploymentForTask, DEPLOYMENT_STATUSES } from "@/lib/deploy/deployment-status";
+import {
+  canShowDeploymentForTask,
+  DEPLOYMENT_STATUSES,
+  DEPLOYMENT_PR_LOCAL_CHANGES_PENDING,
+} from "@/lib/deploy/deployment-status";
 
 export type DeploymentPrRow = {
   id: string;
@@ -14,11 +18,15 @@ export type DeploymentPrRow = {
   localChangeSummary?: string | null;
   localChangeApprovedAt?: Date | string | null;
   localChangeApprovedById?: string | null;
+  deploymentExitCode?: number | null;
+  deploymentStdout?: string | null;
+  deploymentStderr?: string | null;
+  deploymentReportedAt?: Date | string | null;
   updatedAt: Date | string;
   task?: { workItemKey?: string | null; title?: string | null } | null;
 };
 
-const LOCAL_CHANGES_PENDING = "local_changes_pending_approval";
+const LOCAL_CHANGES_PENDING = DEPLOYMENT_PR_LOCAL_CHANGES_PENDING;
 
 export function canShowDeploymentTab(item: { epicId?: string | null; parentTaskId?: string | null } | "epic") {
   if (item === "epic") return true;
@@ -83,12 +91,20 @@ function prTitle(row: DeploymentPrRow, fallbackTitle: string) {
   return `${prefix}${row.task?.title || fallbackTitle}`;
 }
 
+// Row statuses are the monitor's actual vocabulary: `open`,
+// `local_changes_pending_approval`, then one terminal value —
+// `deployed` | `deployment_error` | `declined` | `pipeline_failed`
+// (DEPLOYMENT_PR_TERMINAL_STATUSES). State is per-row: the scope-level
+// deploymentStatus is a rollup and must not colour sibling rows.
 function mergeState(row: DeploymentPrRow) {
-  const status = row.status.toLowerCase();
-  if (status === LOCAL_CHANGES_PENDING) return "PR not opened";
-  if (["merged", "fulfilled"].includes(status)) return "Merged";
-  if (["declined", "rejected"].includes(status)) return "Declined";
-  return "Waiting for merge";
+  switch (row.status) {
+    case LOCAL_CHANGES_PENDING: return "PR not opened";
+    case "declined": return "Declined";
+    case "pipeline_failed": return "Pipeline failed";
+    case "deployed":
+    case "deployment_error": return "Merged";
+    default: return "Waiting for merge";
+  }
 }
 
 function approvalState(row: DeploymentPrRow, deploymentStatus: string) {
@@ -97,27 +113,27 @@ function approvalState(row: DeploymentPrRow, deploymentStatus: string) {
   return deploymentStatus === "Not Required" ? "Not required" : "Approved";
 }
 
-function deployResult(row: DeploymentPrRow, deploymentStatus: string) {
-  const status = row.status.toLowerCase();
-  if (status === LOCAL_CHANGES_PENDING) return "Waiting for local commit approval";
-  if (deploymentStatus === "Successfully Deployed") return "Deploy script succeeded";
-  if (deploymentStatus === "Deployment Error") return "Deploy script failed";
-  if (["failed", "error"].includes(status)) return "Pipeline failed";
-  if (["merged", "fulfilled"].includes(status)) return "Awaiting deployment result";
-  return "Pipeline pending";
+function deployResult(row: DeploymentPrRow) {
+  switch (row.status) {
+    case LOCAL_CHANGES_PENDING: return "Waiting for local commit approval";
+    case "deployed": return "Deploy script succeeded";
+    case "deployment_error": return "Deploy script failed";
+    case "pipeline_failed": return "Not run (pipeline failed)";
+    case "declined": return "Not run (PR declined)";
+    default: return "Pending merge";
+  }
 }
 
-function errorExcerpt(row: DeploymentPrRow, deploymentStatus: string) {
+function errorExcerpt(row: DeploymentPrRow) {
   if (row.status === LOCAL_CHANGES_PENDING) {
     return row.localChangeSummary
       ? `Uncommitted local changes:\n${row.localChangeSummary}`
       : "Uncommitted local changes are waiting for approval.";
   }
-  if (deploymentStatus === "Deployment Error") {
-    return "Deployment failed; monitor will attach the captured log excerpt when available.";
-  }
-  if (["failed", "error"].includes(row.status.toLowerCase())) {
-    return "Provider reported a failed PR/pipeline state; full log excerpt pending monitor update.";
+  if (row.status === "deployment_error" || row.status === "pipeline_failed") {
+    const log = row.deploymentStderr?.trim() || row.deploymentStdout?.trim() || "";
+    const head = row.deploymentExitCode != null ? `Exit code ${row.deploymentExitCode}` : "Failed";
+    return log ? `${head}\n${log.slice(-2000)}` : `${head}; no log excerpt was captured.`;
   }
   return null;
 }
@@ -201,29 +217,37 @@ export default function DeploymentTab({
   approveLocalChangesAction?: (formData: FormData) => void | Promise<void>;
   approveAndMergeAction?: (formData: FormData) => void | Promise<void>;
 }) {
-  const mockedRows = rows.length > 0 ? rows : [{
-    id: "mock-deployment-record",
-    provider: "bitbucket",
-    providerPrId: "pending",
-    url: "",
-    sourceBranch: "work branch pending",
-    targetBranch: "main",
-    latestCommitSha: "pending",
-    status: deploymentStatus === "Not Required" ? "not-required" : "open",
-    updatedAt: new Date(0),
-  }];
+  const header = (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-card border border-line bg-panel-soft p-card">
+      <div>
+        <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">Deployment</div>
+        <div className="mt-1 text-body text-text-muted">
+          {mode === "epic" ? "Epic child PR rollup" : "Top-level task PR"}
+        </div>
+      </div>
+      <StatusPill>{statusLabel(deploymentStatus)}</StatusPill>
+    </div>
+  );
+
+  // Honest empty state — never a synthetic PR row (a mock row used to render
+  // here with a live Approve/Merge button that posted a fake id and silently
+  // did nothing).
+  if (rows.length === 0) {
+    return (
+      <div className="space-y-section-gap">
+        {header}
+        <div className="rounded-card border border-line bg-panel-soft p-card text-body text-text-muted">
+          {deploymentStatus === "Not Required"
+            ? `No deployment PRs — deployment is not required for this ${mode === "epic" ? "Epic" : "task"}.`
+            : "No deployment PRs yet. Once a human sets “Deployment Approved”, the monitor verifies the pushed work branches and opens the pull request(s); rows appear here as they are created."}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-section-gap">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-card border border-line bg-panel-soft p-card">
-        <div>
-          <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">Deployment</div>
-          <div className="mt-1 text-body text-text-muted">
-            {mode === "epic" ? "Epic child PR rollup" : "Top-level task PR"}
-          </div>
-        </div>
-        <StatusPill>{statusLabel(deploymentStatus)}</StatusPill>
-      </div>
+      {header}
 
       <div className="overflow-x-auto rounded-card border border-line">
         <table className="min-w-full divide-y divide-line text-body">
@@ -239,15 +263,15 @@ export default function DeploymentTab({
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
-            {mockedRows.map((row) => {
-              const excerpt = errorExcerpt(row, deploymentStatus);
+            {rows.map((row) => {
+              const excerpt = errorExcerpt(row);
               return (
                 <tr key={row.id} className="align-top">
                   <td className="px-3 py-3">
                     <div className="font-medium text-text">
                       {row.url ? <Link className="underline decoration-dotted" href={row.url}>{prTitle(row, title)}</Link> : prTitle(row, title)}
                     </div>
-                    <div className="mt-1 text-caption text-text-muted">{row.provider} · {row.providerPrId} · {row.status}</div>
+                    <div className="mt-1 text-caption text-text-muted">{row.provider} · {row.providerPrId} · {row.status.replace(/_/g, " ")}</div>
                   </td>
                   <td className="px-3 py-3 text-caption text-text-muted">
                     <code>{row.sourceBranch}</code> → <code>{row.targetBranch}</code>
@@ -256,7 +280,7 @@ export default function DeploymentTab({
                   <td className="px-3 py-3"><StatusPill>{approvalState(row, deploymentStatus)}</StatusPill></td>
                   <td className="px-3 py-3 text-caption text-text-muted">{mergeState(row)}</td>
                   <td className="px-3 py-3 text-caption text-text-muted">
-                    <div>{deployResult(row, deploymentStatus)}</div>
+                    <div>{deployResult(row)}</div>
                     {excerpt ? <pre className="mt-2 max-w-xs whitespace-pre-wrap rounded-lg bg-bg p-2 font-mono text-micro">{excerpt}</pre> : null}
                   </td>
                   <td className="px-3 py-3">

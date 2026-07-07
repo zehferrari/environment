@@ -72,8 +72,8 @@ the entry-point overview.
   bypasses monitor-agent judgment entirely (see
   `monitor_triage.auto_action_kinds_bypass_monitor`) and runs
   `openclaw-control wake-agent <user>` directly with a reminder naming the
-  queued ticket keys and referencing TEAM_WORKFLOW.md *"Picking the Next
-  Task"*. Rationale: situation is unambiguous and the action is bounded; no
+  queued ticket keys and referencing WORKFLOW.md *"Picking your next
+  task"*. Rationale: situation is unambiguous and the action is bounded; no
   triage judgment needed.
 - **Pending email tasks** for any coding agent with email integration.
   Gmail and local Maildir listeners are the first responders: when an

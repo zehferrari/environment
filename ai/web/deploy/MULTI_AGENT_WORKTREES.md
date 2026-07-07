@@ -57,8 +57,9 @@ introduced them.
 
 ### From the browser (monitor-driven)
 
-A git/worktree-exposed project's **Settings → Worktree live preview** (admin
-only). Lists that project's **own** repo worktrees, marks the live one, and a
+A git/worktree-exposed project's **Settings → Worktree live preview** (human
+sessions only; agents are rejected — a stricter admin-only gate is still
+pending). Lists that project's **own** repo worktrees, marks the live one, and a
 **Serve live** button builds + switches. The live row exposes **Rebuild live**,
 which rebuilds and restarts the same worktree without changing the served
 branch. It is shown only when the project's
@@ -67,11 +68,18 @@ branch. It is shown only when the project's
 otherwise the block is hidden. Options are scoped by repo identity
 (`lib/deploy/repo-key.ts`).
 
-> **TODO (later):** switching still routes through the single shared
-> `pm.service`, so today the panel only resolves to real options for the repo
-> that service serves (the `environment` repo). The full per-project solution —
-> a dedicated service per project repo so each can be built + served
-> independently — is not yet implemented.
+> **Status (ENV-107):** the per-project solution now exists as the generic
+> switcher stack — a registry entry in `lib/deploy/switch-registry.ts`, a
+> per-project spool at `/var/lib/worktree-switch/<key>` consumed by
+> `worktree-switch-runner@<key>.service`, an env contract at
+> `/etc/worktree-preview/<key>.env`, and one of two drivers:
+> `node-service` (build → fork DB → flip `worktree-preview@<key>` — WDT)
+> or `nginx-docroot` (repoint docroot symlink + reload — Patricia). The
+> generic runner also understands an `on`/`off` lifecycle
+> (`lifecycleControl` in the registry). PM (`environment`) itself still
+> rides the original `pm-switch` pipeline below; its supervised migration
+> onto the generic runner (WS6) is deliberately gated pending an operator
+> decision.
 
 The web app (runs as the monitor) is **unprivileged** here: it only writes a
 request into the spool and polls a state file. A separate **runner service**
@@ -145,7 +153,12 @@ Versioned under `ai/web/deploy/` (PM-specific) and `ai/openclaw/` (generic):
 | `ai/web/deploy/systemd/pm-switch-runner.service` | runner unit (`User=<monitor>`, templated) |
 | `ai/web/deploy/sudoers.d/pm-switch` | one NOPASSWD rule: monitor → `pm-apply-worktree` |
 | `ai/web/deploy/install-pm-switch.sh` | idempotent installer (scripts, unit, sudoers, spool, RW drop-in) |
-| `ai/web/lib/deploy/{worktrees.ts,actions.ts}` · `app/api/system/worktree-switch/status` · `components/worktree-switcher.tsx` | the browser UI |
+| `ai/web/lib/deploy/{worktrees.ts,actions.ts,switch-registry.ts,repo-key.ts}` · `app/api/system/worktree-switch/status` · `components/worktree-switcher.tsx` | the browser UI + project registry |
+| `ai/web/deploy/worktree-switch.sh` | generic build-and-flip driver for registered non-PM projects |
+| `ai/web/deploy/worktree-switch-runner` · `systemd/worktree-switch-runner@.service` | generic per-project spool runner (`switch`/`on`/`off`) |
+| `ai/web/deploy/worktree-preview-apply` · `worktree-docroot-apply` | **root** apply helpers for the `node-service` / `nginx-docroot` drivers |
+| `ai/web/deploy/worktree-preview-serve` · `systemd/worktree-preview@.service` | templated preview service for `node-service` projects |
+| `ai/web/deploy/sudoers.d/worktree-preview` · `worktree-preview-install.sh` · `worktree-preview.env.example` | generic-stack sudoers, installer, and per-project env contract |
 
 Install on a host (after `code-tree-perms` has run):
 
@@ -175,6 +188,7 @@ Everything is parameterized (`PM_MONITOR_USER`, `PM_WORKTREES_ROOT`,
   INTO` move before enabling worktree forks.
 - **The switcher rides in the app it switches.** Switching to a worktree whose
   branch predates this feature lands you on a build without the UI — switch back
-  with the CLI `pm-switch`. Resolved once this is merged to `main`.
+  with the CLI `pm-switch`. (Merged to `main` long since, so this only bites on
+  very old branches.)
 - Only one worktree is live at a time — switching off a worktree takes its
   preview offline until you switch back.

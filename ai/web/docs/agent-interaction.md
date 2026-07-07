@@ -49,7 +49,8 @@ events, but chat, task-comment, and epic-chat replies should not use
 
 PM stores every native-channel turn in `PmChannelRun` as soon as it is
 queued locally. The run moves through `queued`, `accepted`, `streaming`,
-`retryable`, `complete`, or `failed` from the durable queue, gateway
+`retryable`, `complete`, `failed`, or `canceled` (a human cancelled the
+run via `/api/openclaw/pm-channel/cancel`) from the durable queue, gateway
 response, and stream/reply callbacks, so reconnecting browsers can
 resume from durable state rather than polling for a reply. A terminal
 stream `done` is not success by itself: PM only marks a run `complete`
@@ -230,12 +231,15 @@ enough. The live context endpoints can return:
 
 - task title, description, status, project, assignee, reviewer, and
   parent/subtask context;
-- Epic title, status, description, assignee, and acting-manager context;
+- Epic title, status, description, acting-manager and deploy-reviewer
+  context;
 - **every** comment on the item (up to a generous breadth cap, currently
-  40), regardless of who wrote it or whether the agent was directly
-  addressed by it;
+  1000 for coding agents and 500 in the monitor packet; when over the
+  cap, the newest N), regardless of who wrote it or whether the agent
+  was directly addressed by it;
 - **every** live Task/Epic Action Plan message on the item (up to a
-  generous breadth cap, currently 50), plus the archived-discussion
+  generous breadth cap, currently 1000 for coding agents and 500 in the
+  monitor packet), plus the archived-discussion
   chain that produced the current room, regardless of which agent each
   message was directed at and including other agents' replies and
   routing labels such as `All Coders` or a specific target;
@@ -300,8 +304,9 @@ progress tracking. It carries no assignee/reviewer/status/key; `title`
 PM validates the grant (single-use, bound to project + agent + message),
 then dry-run-validates every op under human-triggered grant semantics:
 active principals, project scoping, hierarchy, known statuses, and valid
-task-status transitions are checked; new tasks land in Backlog, new
-epics open. The **requesting human** (the `senderUserId` of the grant
+task-status transitions are checked; new tasks and new epics land in
+Backlog (agents cannot set or change Epic status, including via
+`update_epic`). The **requesting human** (the `senderUserId` of the grant
 message — direct-chat, Task/Epic Action Plan, or mirrored task-comment
 message) is recorded as the `reporterId` of every newly-created epic and
 task in the change-set, so the board attributes the request back to the
@@ -376,8 +381,13 @@ POST /api/agent/tasks/<taskId>/workflow
 ```
 
 Allowed actions are `start`, `ready_for_review`, `review_feedback`,
-`review_done`, and `triage_to_todo` (`submit_review` is accepted as a
-legacy alias for `ready_for_review`). PM validates the addressed agent,
+`review_done`, `triage_to_todo`, `approve_plan`,
+`assign_after_plan_approval`, `add_subtask`, and `complete_subtask`
+(`submit_review` is accepted as a legacy alias for `ready_for_review`).
+`approve_plan` lets the resolved reviewer stamp `approved_on` on the
+Action Plan; `assign_after_plan_approval` lets the reviewer ask PM to
+pick an eligible coding agent (moving Backlog to To Do when needed).
+PM validates the addressed agent,
 task assignee/reviewer role, task status, and parent Epic status before
 writing. Agent replies to workflow turns are stored as normal task
 comments only when they add useful task information; no-contribution
@@ -416,6 +426,24 @@ implementation review or a real blocker/question that needs reviewer,
 manager, or reporter input; when the awaited response arrives, the
 assignee resumes with workflow action `start`, completes the follow-up,
 then calls `ready_for_review` again.
+
+### Epic workflow endpoint (acting managers)
+
+```text
+POST /api/agent/epics/<epicId>/workflow
+```
+
+Same one-shot-token semantics as the task endpoint, restricted to the
+Epic's acting manager. Allowed actions:
+
+- `create_tasks` — create the Epic's implementation tasks from the
+  approved Epic Action Plan (only when the Epic has no child tasks yet).
+- `assign_next` — assign the first open To Do task to an available
+  worker from the Epic's pool (skipped while any pool worker holds an
+  active task in the project — active means To Do / In Progress /
+  Review).
+- `advance_queue` — advance the sequential queue after a task completes
+  (re-checks the same availability rules as `assign_next`).
 
 ### Commit hygiene + Review verification
 

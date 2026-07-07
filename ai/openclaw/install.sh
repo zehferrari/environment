@@ -12,10 +12,13 @@
 #   3. install systemd/user/ user units to /etc/systemd/user (admin-installed
 #      user units, visible to every user's systemd instance — only the
 #      monitor agent enables them based on derived services)
-#   4. generate/sync host-specific assets from agents.json, including
-#      openclaw-monitor-sync.path, shared helpers, the host-wide PM web
-#      service, PM dispatch drop, the consumer service, local gateway
-#      /hooks/wake tokens, and the native PM channel plugin/token map
+#   4. generate/sync host-specific assets from agents.json — fans out into
+#      sub-steps [4/7]..[4f/7]: openclaw-monitor-sync.path (4), webhook
+#      script symlinks (4b) + agent provisioning runner (4b.2), agent-self
+#      symlinks (4c), codeRoot drift check + per-agent git identity (4d),
+#      gmail helpers (4e), and the host-wide PM web service, PM dispatch
+#      drop, consumer service, local gateway /hooks/wake tokens, and the
+#      native PM channel plugin/token map (4f)
 #   5. symlink the frontend HTML for agent-dashboard
 #   6. systemctl daemon-reload (system + per-user) + restart running units
 #   7. reconcile per-agent user-systemd state against the derived services
@@ -130,6 +133,23 @@ do_install 755 "$REPO_ROOT/bin/openclaw-monitor-sync"     /usr/local/sbin/opencl
 do_install 755 "$REPO_ROOT/bin/openclaw-typing-keepalive" /usr/local/bin/openclaw-typing-keepalive
 do_install 755 "$REPO_ROOT/bin/gmail-watch-renew-all"     /usr/local/sbin/gmail-watch-renew-all
 do_install 755 "$REPO_ROOT/bin/code-tree-perms"           /usr/local/sbin/code-tree-perms
+do_install 755 "$REPO_ROOT/bin/openclaw-backup"           /usr/local/bin/openclaw-backup
+do_install 755 "$REPO_ROOT/bin/openclaw-boot-readiness"   /usr/local/bin/openclaw-boot-readiness
+do_install 755 "$REPO_ROOT/bin/pm-monitor-wake-agent"     /usr/local/sbin/pm-monitor-wake-agent
+
+# Shared derivation defaults consumed by step [7/7], ai-monitor,
+# agent-dashboard, and openclaw-integrity-check. Installed as a COPY (never a
+# symlink into a checkout) so /etc does not depend on repo tree state; step 7
+# silently skips the whole per-agent reconcile when this file is missing.
+if [ "$DRY" -eq 1 ]; then
+    log "  would install -m 644 $REPO_ROOT/agent-defaults.json → /etc/openclaw/agent-defaults.json"
+else
+    install -d -o root -g root -m 0755 /etc/openclaw
+    if [ -L /etc/openclaw/agent-defaults.json ]; then
+        rm -f /etc/openclaw/agent-defaults.json   # replace legacy checkout symlink with a real copy
+    fi
+fi
+do_install 644 "$REPO_ROOT/agent-defaults.json"           /etc/openclaw/agent-defaults.json
 if [ "$OPENCLAW_SESSION_FENCE_PATCH" != "0" ] && [ "$OPENCLAW_SESSION_FENCE_PATCH" != "false" ]; then
     if [ "$DRY" -eq 1 ]; then
         log "  would patch OpenClaw session fence at $OPENCLAW_SESSION_FENCE_PATCH_FILE"
@@ -234,7 +254,7 @@ fi
 # The PM web app (pm.service) is NoNewPrivileges and cannot sudo. It spools a
 # request; this monitor-owned runner (NOT NoNewPrivileges) runs the privileged
 # openclaw-manage-user step and writes a result the web app polls for.
-log "[4b/7] agent provisioning runner"
+log "[4b.2/7] agent provisioning runner"
 RUNNER_MONITOR=""
 if [ -r "$REGISTRY" ] && command -v jq >/dev/null 2>&1; then
     RUNNER_MONITOR=$(jq -r '.agents[] | select(.role == "monitor" and .enabled == true) | .user' "$REGISTRY" | head -1)
@@ -761,7 +781,7 @@ else
                 -e "s|^EnvironmentFile=.*|EnvironmentFile=$PM_ENV_FILE|" \
                 -e "s|^Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=.*|Environment=PM_OPENCLAW_CHANNEL_TOKEN_FILE=$PM_OPENCLAW_CHANNEL_TOKEN_FILE|" \
                 -e "s|^ExecStart=.*|ExecStart=$PM_NODE_BIN server.js|" \
-                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_WEB_ROOT/.data $PM_AGENT_CREDENTIALS_DIR $PM_DROP_DIR /srv/agents/openclaw /srv/agents/Pictures -$PM_ATTACHMENT_ROOT -$PM_SAMBA_SHARED_ROOT|" \
+                -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_WEB_ROOT/.data $PM_AGENT_CREDENTIALS_DIR $PM_DROP_DIR /srv/agents/openclaw /srv/agents/Pictures -$PM_ATTACHMENT_ROOT -$PM_SAMBA_SHARED_ROOT -${PM_AGENT_PROVISION_DIR:-/var/lib/pm/agent-provision} -/var/lib/worktree-switch|" \
                 -e "s|^ReadOnlyPaths=.*|ReadOnlyPaths=/srv/agents $PM_OPENCLAW_CHANNEL_TOKEN_FILE|" \
                 "$pm_unit_src" > "$tmp_unit"
             install -o root -g root -m 0644 "$tmp_unit" /etc/systemd/system/pm.service

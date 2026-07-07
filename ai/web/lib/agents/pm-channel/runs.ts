@@ -5,6 +5,11 @@ import type {
   SendPmChannelTurnResult,
 } from "@/lib/agents/pm-channel/openclaw";
 import type { PmChannelStreamEventKind } from "@/lib/agents/pm-channel/stream";
+import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/bus";
+
+// Re-exported for existing importers; the definition moved to bus.ts so the
+// bus envelope id and the run identity can never drift apart.
+export { pmChannelRunTargetKey };
 
 export type PmChannelRunStatus =
   | "queued"
@@ -27,16 +32,6 @@ const FIRST_STREAM_WARNING_MS = Number.parseInt(
   process.env.PM_OPENCLAW_FIRST_STREAM_WARNING_MS ?? "15000",
   10,
 );
-
-export function pmChannelRunTargetKey(target: PmChannelReplyTarget): string {
-  if (target.kind === "direct") {
-    return `direct:${target.agentSlug}:${target.messageId}`;
-  }
-  if (target.kind === "epic-chat") {
-    return `epic-chat:${target.agentSlug}:${target.epicId}:${target.messageId}`;
-  }
-  return `${target.kind}:${target.agentSlug}:${target.taskId}:${target.messageId}`;
-}
 
 function targetIds(target: PmChannelReplyTarget) {
   return {

@@ -81,7 +81,7 @@ const server = c.http.createServer(async (req, res) => {
           for (const m of mentioned) {
             mentionContextByUser[m.userCfg.username] =
               `You were @-mentioned in ${issueKey} by ${mentioner}. ` +
-              `TEAM_WORKFLOW.md "Responding to @mentions" applies — you must reply, even if the ticket isn't assigned to you. ` +
+              `WORKFLOW.md "Receiving a mention" applies — you must reply, even if the ticket isn't assigned to you. ` +
               `Comment preview: "${preview}"`;
             c.recordPendingMention(m.userCfg, event);
           }

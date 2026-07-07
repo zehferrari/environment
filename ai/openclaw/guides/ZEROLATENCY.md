@@ -36,9 +36,22 @@ schema, env vars, deployment, library layout), see
 
 ## Zero Latency statuses
 
+Task:
+
 ```text
 Backlog | To Do | In Progress | Review | Done
 ```
+
+Epic:
+
+```text
+Backlog | In Progress | Ready to Deploy | Done
+```
+
+Tasks under an Epic are agent-actionable only while that Epic is
+**In Progress**. Moving an Epic to `Ready to Deploy` starts the
+deployment flow (see [Deployment](#deployment) below). Agents cannot set
+or change Epic status — humans (and the deploy flow) move Epics.
 
 See [`../WORKFLOW.md`](../WORKFLOW.md) § *Picking your next task* and
 § *Working a Zero Latency task* for what each status authorises.
@@ -49,8 +62,12 @@ See [`../WORKFLOW.md`](../WORKFLOW.md) § *Picking your next task* and
 
 ### Project workspace
 
-Every project is wrapped in a shared layout with a tab bar — **Board ·
-Epics · Library · Settings · Bin**.
+Every project is wrapped in a shared layout with a tab bar — **Summary ·
+Board · Epics · Tasks · Library · Code · Changes · Settings · Activity ·
+Bin**. Summary, Code, and Changes appear only for projects with a
+configured repository (Summary renders the repo README); Activity is its
+own tab only when there is no Summary to host it; Bin appears only when
+it holds something.
 
 | Route | Purpose |
 |---|---|
@@ -58,10 +75,15 @@ Epics · Library · Settings · Bin**.
 | `app/(app)/projects/bin` | project-level soft-delete bin (30-day TTL restores). |
 | `app/(app)/projects/[slug]` | kanban board — four workflow columns (To Do · In Progress · Review · Done) with drag-and-drop; Backlog is a separate table below with a show/hide toggle. Done cards older than `doneTtlDays` drop off. Task cards show the current workflow actor + `updated` time. |
 | `app/(app)/projects/[slug]/tasks/[taskId]` | task editor — two-column. **Main**: inline title, markdown description editor, sub-tasks progress checklist, attachments, comments. **Sidebar**: status, assignee, reviewer, epic picker, dates. |
-| `app/(app)/projects/[slug]/epics` | epic list (status filter: open/done/archived) + inline create. |
-| `app/(app)/projects/[slug]/epics/[epicId]` | epic detail — assignee + acting manager, status, attachments, tasks grouped by their own status, chat sidebar, Delete. |
+| `app/(app)/projects/[slug]/tasks` | flat task list across all statuses (search/filter; shows the deployment indicator for standalone tasks). |
+| `app/(app)/projects/[slug]/epics` | epic list (status filter: Backlog / In Progress / Ready to Deploy / Done) + inline create. |
+| `app/(app)/projects/[slug]/epics/[epicId]` | epic detail — acting manager + deploy reviewer, status, deployment status + Development section (deployment PRs), attachments, worker pool, tasks grouped by their own status, chat sidebar, Delete. |
+| `app/(app)/projects/[slug]/summary` | repo README render (repo-configured projects; hosts the activity agenda). |
+| `app/(app)/projects/[slug]/code` | repo file browser (`/code/raw` serves raw files). |
+| `app/(app)/projects/[slug]/changes` | repo branch/commit activity. |
+| `app/(app)/projects/[slug]/activity` | project activity stream (own tab only when there is no Summary). |
 | `app/(app)/projects/[slug]/library` | every attachment under the project (task + epic) in one list; excludes files whose parent is in the bin. |
-| `app/(app)/projects/[slug]/settings` | repository path, default git identity, default assignee/reviewer pickers, Done-card TTL, project delete, recent-activity agenda. Admin (`zeh`) on git/worktree-exposed projects also sees **Worktree live preview**. |
+| `app/(app)/projects/[slug]/settings` | repository path, default git identity, default assignee/reviewer pickers, Done-card TTL, deployment settings (provider, target branch, on-merge script, deploy-review prompt, reporter-only PR approval, protected agent branches), project delete, recent-activity agenda. Admin (`zeh`) on git/worktree-exposed projects also sees **Worktree live preview**. |
 | `app/(app)/projects/[slug]/bin` | soft-delete bin for deleted Epics + Tasks (7-day TTL); per-row Restore + "Restore + N children". |
 
 ### Agents deck
@@ -69,10 +91,22 @@ Epics · Library · Settings · Bin**.
 | Route | Purpose |
 |---|---|
 | `app/(app)/agents` | agents grid; merges PM DB rows with Atlas live snapshot. Admin (`zeh`) gets `Add Agent` + per-card `Edit`/`Delete`. |
-| `app/(app)/agents/[agent]` | per-agent deck, three tabs (`?tab=`): **Profile & controls**, **Operations** (models, tickets, current task, lifecycle, listeners), **Activity**. |
+| `app/(app)/agents/[agent]` | per-agent deck, four tabs (`?tab=`): **Profile & controls**, **Images** (avatar/theme assets), **Operations** (models, tickets, current task, lifecycle, listeners), **Activity**. |
 | `app/(app)/agents/[agent]/chat` | direct per-agent chat opened from the sidebar CHAT section. |
 | `app/(app)/system/activity` | system-wide ActivityLog stream. |
 | `app/(app)/system/settings` | system-wide setting defaults. |
+| `app/(app)/system/users` | user administration (admin/`zeh` only). |
+
+### Workspaces
+
+Projects are grouped into workspaces; the sidebar lists projects by
+workspace group.
+
+| Route | Purpose |
+|---|---|
+| `app/(app)/workspaces` | workspace list + create. |
+| `app/(app)/workspaces/[slug]` | cross-project workspace board. |
+| `app/(app)/workspaces/[slug]/settings` | workspace-level defaults (git identity, deployment, Done-card TTL) that member projects inherit — the layer between project settings and system settings. |
 
 ### Agent-facing API (loopback / token-scoped, not browser routes)
 
@@ -82,6 +116,8 @@ Epics · Library · Settings · Bin**.
 | `app/api/tasks/[id]/description` | agent description write-back (one-shot grant). |
 | `app/api/epics/[id]/description` | agent Epic description write-back (one-shot grant). |
 | `app/api/agent/projects/[projectId]/proposals` | work-item proposal submission (grant-gated, idempotent on `planId`). |
+| `app/api/agent/tasks/[taskId]/workflow` | one-shot-token task workflow actions — `start`, `ready_for_review`/`submit_review`, `review_feedback`, `review_done`, `triage_to_todo`, `approve_plan`, `assign_after_plan_approval`, `add_subtask`, `complete_subtask` (full contract in `agent-interaction.md`). |
+| `app/api/agent/epics/[epicId]/workflow` | one-shot-token epic-manager workflow actions — `advance_queue`, `assign_next`, `create_tasks`. |
 | `app/api/agents/context/{task,epic,project}/[id]` | loopback-only live PM read API; scoped `?grant=` URLs preferred. |
 | `app/api/openclaw/pm-channel/stream` | token-scoped native PM channel live partial-reply callback. |
 | `app/api/openclaw/pm-channel/reply` | token-scoped native PM channel durable final-reply callback. |
@@ -107,10 +143,42 @@ Epics · Library · Settings · Bin**.
   reach Done first (cycle-guarded on write).
 - `Task.deletedAt` / `Epic.deletedAt` — soft-delete; `!= null` means in
   the bin.
-- `Epic.assigneeId` / `Epic.actingManagerId` — Epic-level principals
-  (independent of any task's principals or status).
-- `Epic.status` — `open` | `done` | `archived`. Tasks under an Epic are
-  actionable only when that Epic status is `open`.
+- `Epic.actingManagerId` — Epic-level acting manager. Epics have **no
+  assignee**; they carry a worker pool instead.
+- `Epic.workers` — the coding-agent pool the acting manager assigns
+  child tasks from (sequential queue, one active task at a time).
+- `Epic.deployReviewerId` — the reviewer for the deploy-review pass when
+  the Epic reaches `Ready to Deploy`.
+- `Epic.status` — `Backlog` | `In Progress` | `Ready to Deploy` | `Done`.
+  Tasks under an Epic are agent-actionable only while the Epic is
+  **In Progress**; agents cannot change Epic status.
+- `Task.deploymentStatus` / `Epic.deploymentStatus` — deployment state
+  (default `Not Required`). Humans are authoritative; only the monitor
+  agent writes result statuses. See [Deployment](#deployment).
+
+---
+
+## Deployment
+
+Standalone Tasks (no Epic, no parent task) and Epics carry the
+deployment pipeline; Epic-child tasks deploy through their Epic, so
+their own `deploymentStatus` is never set.
+
+1. Moving an Epic to **Ready to Deploy** starts the deploy review: PM
+   prompts the Epic's deploy reviewer with the project's
+   `deployReviewPrompt`.
+2. A human setting **Deployment Approved** emits `deployment.approved`;
+   the monitor verifies the work branches are pushed, then opens the
+   provider pull request(s) (Bitbucket) — or records a
+   `local_changes_pending_approval` row when there is nothing to PR.
+3. PM polls the open PRs. A merge runs the project's on-merge deploy
+   script; declines and pipeline failures short-circuit. Each PR row in
+   the **Development** section ends in `deployed`, `deployment_error`,
+   `declined`, or `pipeline_failed`, with the captured exit code and log
+   excerpt, and the scope-level `deploymentStatus` is rolled up from
+   those rows.
+4. Reporter/deploy-reviewer actions (approve local commit, approve +
+   merge PR) live in the same Development section on the Task/Epic page.
 
 ---
 

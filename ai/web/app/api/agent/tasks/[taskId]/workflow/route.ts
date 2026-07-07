@@ -618,9 +618,12 @@ export async function POST(
       return NextResponse.json({ error: "comment is required and must be <= 8000 chars" }, { status: 400 });
     }
 
-    const maxRank = await db.task.aggregate({
-      where: { status: "To Do", deletedAt: null },
-      _max: { rank: true },
+    // Feedback work is the assignee's top priority (WORKFLOW.md § Picking your
+    // next task, tier 1), so the task returns to the FRONT of this project's
+    // To Do column — not the back of a global queue.
+    const minRank = await db.task.aggregate({
+      where: { projectId: task.projectId, status: "To Do", deletedAt: null },
+      _min: { rank: true },
     });
     const created = await db.$transaction(async (tx) => {
       const row = await tx.comment.create({
@@ -631,7 +634,7 @@ export async function POST(
         where: { id: task.id },
         data: {
           status: "To Do",
-          rank: (maxRank._max.rank ?? 0) + 1,
+          rank: (minRank._min.rank ?? 0) - 1,
           statusChangedAt: new Date(),
         },
       });
@@ -687,7 +690,8 @@ export async function POST(
         actor,
         reason: "review_feedback",
         body: [
-          `Review feedback for "${task.title}" moved the task back to To Do.`,
+          `Review feedback for "${task.title}" moved the task back to To Do, at the front of the queue.`,
+          "Unanswered review feedback is your top priority — address it before starting or resuming any other task (WORKFLOW.md § Picking your next task, tier 1).",
           "Add a sub-task (action=add_subtask) for each concrete item in the reviewer's feedback BEFORE resuming, so the progress checklist reflects the remaining work and the board bar stays honest (your earlier items are already ticked). Tick each new item off (with minutesSpent) as you address it.",
           "Keep the approved Action Plan unless a material plan change is required, then start/resume work through the workflow endpoint.",
           "Do not post an acknowledgement-only response.",

@@ -422,6 +422,7 @@ function buildAgentBody(payload) {
 function targetConversationId(target) {
   if (target.kind === "direct") return `direct:${target.agentSlug}`;
   if (target.kind === "task-chat" || target.kind === "task-comment") return `task:${target.taskId}`;
+  if (target.kind === "epic-chat") return `epic:${target.epicId}`;
   return "pm";
 }
 
@@ -429,6 +430,7 @@ function targetConversationLabel(target) {
   if (target.kind === "direct") return `PM direct chat with @${target.agentSlug}`;
   if (target.kind === "task-comment") return `PM task comment ${target.taskId}`;
   if (target.kind === "task-chat") return `PM task chat ${target.taskId}`;
+  if (target.kind === "epic-chat") return `PM epic chat ${target.epicId}`;
   return "PM";
 }
 

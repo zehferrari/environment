@@ -5,6 +5,20 @@ export const DEPLOYMENT_STATUSES = [
   "Deployment Error",
 ] as const;
 
+// DeploymentPullRequest ROW statuses. The deployment monitor
+// (lib/deploy/monitor.ts) writes `open`, `local_changes_pending_approval`,
+// then exactly one terminal value per row. The Development tab renders from
+// this vocabulary — writer and reader must both import from here.
+export const DEPLOYMENT_PR_OPEN = "open";
+export const DEPLOYMENT_PR_LOCAL_CHANGES_PENDING = "local_changes_pending_approval";
+export const DEPLOYMENT_PR_TERMINAL_STATUSES = [
+  "deployed",
+  "deployment_error",
+  "declined",
+  "pipeline_failed",
+] as const;
+export type DeploymentPrTerminalStatus = (typeof DEPLOYMENT_PR_TERMINAL_STATUSES)[number];
+
 export type DeploymentStatus = (typeof DEPLOYMENT_STATUSES)[number];
 
 export function isDeploymentStatus(value: unknown): value is DeploymentStatus {

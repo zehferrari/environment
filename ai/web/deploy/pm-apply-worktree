@@ -212,8 +212,14 @@ WorkingDirectory=
 WorkingDirectory=$real
 TimeoutStopSec=15s
 ReadWritePaths=
-ReadWritePaths=$db_root $app_root/prisma -$app_root/.data $real/.next/cache /etc/openclaw/pm-agent-credentials $DROP_DIR $VERIFY_DIR /srv/agents/Pictures -/srv/Data/projects -/srv/samba/shared $SWITCH_DIR
+ReadWritePaths=$db_root $app_root/prisma -$app_root/.data $real/.next/cache /etc/openclaw/pm-agent-credentials $DROP_DIR $VERIFY_DIR /srv/agents/Pictures -/srv/Data/projects -/srv/samba/shared $SWITCH_DIR -/srv/agents/openclaw -/var/lib/pm/agent-provision -/var/lib/worktree-switch
 EOF
+# NOTE: the reset above (`ReadWritePaths=`) clears every grant accumulated from
+# the base unit and earlier-sorted drop-ins, so this list must carry EVERY
+# write path pm.service needs: agent provisioning spool (agent add/edit/remove
+# would EROFS without it), /srv/agents/openclaw (agent profile sync), and the
+# generic worktree-switch spools (wdt/patricia switcher UI). Keep it in sync
+# with openclaw/install.sh's pm.service render and deploy/pm.service.
 
 if systemctl list-unit-files 'pm-consumer.service' --no-legend 2>/dev/null | grep -q '^pm-consumer\.service'; then
   install -d "$CONSUMER_DROPIN_DIR"

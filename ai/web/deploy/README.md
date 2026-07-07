@@ -33,18 +33,49 @@ the operator sees exactly what changes on the host.
 | `pm-verify-runner` | `-> /usr/local/sbin/pm-verify-runner` | root | repo-fetch-user runner behind `pm-verify-runner.service`; polls `/var/lib/pm/branch-verify/*.json` and invokes the TS verifier in the active worktree. |
 | `systemd/pm-verify-runner.service` | `/etc/systemd/system/` | root | runner unit (`User=<repo-fetch-user>`, templated; PM comments still use `<monitor-user>`). No sudo / no privileged step. |
 | `install-pm-verify.sh` | run as root | — | idempotent installer for the branch verifier (runner, unit, spool, RW drop-in). |
+| `worktree-switch.sh` | `-> /usr/local/sbin/worktree-switch` | root | generic (ENV-107) build-and-flip driver for registered non-PM projects; reads the project contract from `/etc/worktree-preview/<key>.env`. |
+| `worktree-switch-runner` | `-> /usr/local/sbin/worktree-switch-runner` | root | monitor-run spool consumer behind `worktree-switch-runner@<key>.service`; understands `switch`/`on`/`off`. |
+| `worktree-preview-apply` | `-> /usr/local/sbin/worktree-preview-apply` | root | privileged apply step for `node-service` projects (drop-ins + restart of `worktree-preview@<key>`). |
+| `worktree-docroot-apply` | `-> /usr/local/sbin/worktree-docroot-apply` | root | privileged apply step for `nginx-docroot` projects (repoint docroot symlink + nginx reload). |
+| `worktree-preview-serve` | `-> /usr/local/sbin/worktree-preview-serve` | root | exec wrapper `worktree-preview@<key>.service` runs to start the served app from the applied worktree. |
+| `systemd/worktree-preview@.service` | `/etc/systemd/system/` | root | templated preview service (one instance per node-service project key, e.g. `@wdt`). |
+| `systemd/worktree-switch-runner@.service` | `/etc/systemd/system/` | root | templated runner unit (one instance per project key). |
+| `sudoers.d/worktree-preview` | `/etc/sudoers.d/worktree-preview`, `0440` | root | NOPASSWD rules: monitor -> the two apply helpers. |
+| `worktree-preview-install.sh` | run as root | — | idempotent installer for the generic switcher (scripts, units, sudoers, spools, `/etc/worktree-preview/<key>.env`). |
+| `worktree-preview.env.example` | copy -> `/etc/worktree-preview/<key>.env` | root | per-project env contract template (driver, repo, spool, build/serve/migrate commands, DB engine). |
+| `systemd/pm-consumer-monitor-home.conf` | `/etc/systemd/system/pm-consumer.service.d/30-monitor-home.conf` | root | keeps the monitor home readable for SSH while redirecting pnpm dirs (see Service Model). |
+| `nginx-agents.vixi.au.conf` | `/etc/nginx/sites-available/agents.vixi.au` | root | PM vhost incl. the graceful-502 rebuilding-page block. |
+| `install-openclaw-pm-channel.mjs` | run as root (node) | — | stages the native PM channel plugin, writes per-agent tokens, links gateways (see Native OpenClaw PM channel). |
 
 ## Worktree switcher (live preview)
 
 Lets the monitor agent build any git worktree and flip which one `pm.service`
 serves and which source tree `pm-consumer.service` uses — from the CLI
 (`pm-switch <wt>`) or, in the PM webapp, a git/worktree-exposed project's
-**Settings → Worktree live preview** panel (admin only). The currently served
+**Settings → Worktree live preview** panel (human sessions only; agents are
+rejected — a stricter admin-only gate is still pending). The currently served
 worktree exposes **Rebuild live**, which runs the same monitor-driven switch
 pipeline against the active branch without changing worktrees. Install with
 `sudo PM_MONITOR_USER=<monitor-user> ai/web/deploy/install-pm-switch.sh` (after
 `code-tree-perms` has made `/srv/Code` group-collaborative). Full design,
 mechanism, and caveats: [`MULTI_AGENT_WORKTREES.md`](./MULTI_AGENT_WORKTREES.md).
+
+The same Settings panel serves every project registered in
+`lib/deploy/switch-registry.ts` (ENV-107 generic stack), not just PM:
+**wdt** (`node-service` behind `worktree-preview@wdt.service`) and
+**patricia** (`nginx-docroot` — docroot symlink + nginx reload). Their
+spools live at `/var/lib/worktree-switch/<key>` and are consumed by
+`worktree-switch-runner@<key>.service`; each project's contract lives in
+`/etc/worktree-preview/<key>.env`, installed by
+`worktree-preview-install.sh`.
+
+**Database model per project.** PM (`environment`) and WDT run
+`DB_ENGINE=sqlite`: every branch deployment gets its own database
+(`wt-<branch>.db`) forked once from the canonical seed and migrated
+before the build, so schema *and data* can differ between branches.
+Patricia runs `DB_ENGINE=none`: the switcher never touches a database,
+so all Patricia branch deployments share whatever database the PHP app
+is configured against.
 
 ### Live rebuild troubleshooting
 

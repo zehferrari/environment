@@ -68,6 +68,33 @@ install_shared() {
   ok "/etc/sudoers.d/worktree-preview installed"
 
   install -d -m 0755 -o root -g root "$ENVDIR"
+
+  # The PM web app hosts the switcher UI for ALL registered projects, but
+  # pm.service runs ProtectSystem=strict — without an explicit grant its spool
+  # writes to /var/lib/worktree-switch/<key> fail with EROFS and the Settings
+  # panel shows "Failed to request switch" for wdt/patricia. The 60- prefix
+  # sorts after the 20-active-worktree.conf reset that pm-apply-worktree
+  # rewrites on every PM switch, so the grant survives switches.
+  if systemctl list-unit-files 'pm.service' --no-legend 2>/dev/null | grep -q '^pm\.service'; then
+    local dropin_dir=/etc/systemd/system/pm.service.d
+    local dropin=$dropin_dir/60-worktree-switch-spools.conf
+    local tmp_dropin; tmp_dropin="$(mktemp)"
+    printf '[Service]\nReadWritePaths=-/var/lib/worktree-switch\n' > "$tmp_dropin"
+    if ! cmp -s "$tmp_dropin" "$dropin" 2>/dev/null; then
+      install -d "$dropin_dir"
+      install -m 0644 -o root -g root "$tmp_dropin" "$dropin"
+      systemctl daemon-reload
+      systemctl try-restart pm.service \
+        || warn "could not restart pm.service — restart it manually so the spool grant takes effect"
+      ok "$dropin installed (pm.service restarted for the sandbox grant)"
+    else
+      ok "$dropin already current"
+    fi
+    rm -f "$tmp_dropin"
+  else
+    warn "pm.service not installed — skipped the PM spool grant (browser-triggered switches need it once PM exists)"
+  fi
+
   systemctl daemon-reload
 }
 

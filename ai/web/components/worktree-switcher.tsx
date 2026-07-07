@@ -14,6 +14,7 @@ export default function WorktreeSwitcher({
   repoKey,
   driver,
   offFreesResources,
+  branchDatabases,
   lifecycleControl,
 }: {
   initial: SwitchState;
@@ -23,6 +24,9 @@ export default function WorktreeSwitcher({
   // Whether "off" actually frees resources (node-service) or only gates access
   // (nginx-docroot). Drives the honest copy on the on/off control.
   offFreesResources: boolean;
+  // Whether each branch deployment serves its own forked database (environment,
+  // wdt) or all worktrees share one database (patricia). Drives the DB copy.
+  branchDatabases: boolean;
   // Whether this project's runner understands the on/off lifecycle. When false
   // (environment on the legacy pm-switch-runner), the on/off control is hidden
   // so we don't expose a production switch the runner would misread as a
@@ -205,8 +209,10 @@ export default function WorktreeSwitcher({
       <p className="text-caption text-text-muted">
         Builds the chosen worktree and points the live site at it, or rebuilds
         the current live worktree (≈1–2 min; the site restarts, so it briefly
-        blips). All worktrees share the same database and secrets — only the
-        served code changes.
+        blips).{" "}
+        {branchDatabases
+          ? "Each branch serves its own database, forked once from the canonical seed — schema and data can differ between branches. Secrets are shared."
+          : "All worktrees share the same database and secrets — only the served code changes."}
       </p>
     </div>
   );

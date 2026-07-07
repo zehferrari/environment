@@ -485,7 +485,7 @@ Status: QUEUED
 ### Next steps
 - [ ] Check live Jira and repository state
 - [ ] Do not auto-create a PR from the webhook receiver
-- [ ] Follow the role policy in ROLES.md and TEAM_WORKFLOW.md
+- [ ] Follow the role policy in ROLES.md and WORKFLOW.md
 
 ### Progress log
 - ${timestamp} — Status changed to Deployment Approved (by ${user})
@@ -575,7 +575,7 @@ function wakeAgent(userCfg, reason = 'webhook-event', extraContext = '') {
   }
   const prefix = extraContext ? `${extraContext}\n\n` : '';
   const rolePolicy = 'You are a coding agent, not a standing manager/developer persona. Determine the task role from live Jira/Epic context and explicit assignment. Do not self-assign. Start implementation only when assigned by zeh or a valid handoff. Do not create PRs.';
-  const text = `${prefix}New webhook event received (${reason}). Process ${userCfg.tasksFile} now. ${rolePolicy} Send exactly one concise Telegram start notice to zeh if this creates actionable work, then keep all task communication in Jira. Do not send Telegram progress, completion, or blocker messages for this Jira task unless zeh explicitly redirects the conversation. Fill Next steps and follow SOUL.md, ROLES.md, and TEAM_WORKFLOW.md. Sign every outbound Jira comment/update with the current runtime model using the Outbound Signature Rule. Update ${userCfg.logFile}.`;
+  const text = `${prefix}New webhook event received (${reason}). Process ${userCfg.tasksFile} now. ${rolePolicy} Send exactly one concise Telegram start notice to zeh if this creates actionable work, then keep all task communication in Jira. Do not send Telegram progress, completion, or blocker messages for this Jira task unless zeh explicitly redirects the conversation. Fill Next steps and follow SOUL.md, ROLES.md, and WORKFLOW.md. Sign every outbound Jira comment/update with the current runtime model using the Outbound Signature Rule. Update ${userCfg.logFile}.`;
 
   try {
     runOpenClawControl(['wake-agent', userCfg.username, text]);

@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# deploy-on-merge — default `deploymentOnMerge` script for PM projects.
+#
+# Fast-forwards the deploy branch in the worktree that actually has it checked
+# out (never `git checkout` in a shared/claim-branch worktree — the branch is
+# usually held by another worktree, which makes checkout fail outright), then
+# restarts the invoking user's OpenClaw gateway so it picks the new tree up.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -16,21 +22,48 @@ run() {
   fi
 }
 
-cd "$REPO_ROOT"
-current_branch="$(git rev-parse --abbrev-ref HEAD)"
-if [[ "$current_branch" != "$BRANCH" ]]; then
-  run git checkout "$BRANCH"
+# Find the worktree where $BRANCH is checked out. With the shared-checkout
+# model the deploy branch lives in <repo>.worktrees/<branch> (or the primary
+# checkout), not necessarily in the tree this script file resides in.
+branch_worktree="$(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null \
+  | awk -v want="refs/heads/$BRANCH" '
+      $1 == "worktree" { wt = substr($0, 10) }
+      $1 == "branch" && $2 == want { print wt; exit }')"
+
+if [[ -n "$branch_worktree" ]]; then
+  cd "$branch_worktree"
+elif [[ "$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)" == "$BRANCH" ]]; then
+  cd "$REPO_ROOT"
+else
+  # No worktree holds the branch and this tree is on another branch. A
+  # checkout here would either fail (branch held elsewhere) or hijack a
+  # shared tree — refuse instead.
+  printf 'deploy-on-merge: no worktree has %s checked out (and %s is on %s) — refusing to checkout in a shared tree\n' \
+    "$BRANCH" "$REPO_ROOT" "$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)" >&2
+  exit 1
 fi
+
 run git fetch origin "$BRANCH"
 run git pull --ff-only origin "$BRANCH"
 
-if command -v systemctl >/dev/null 2>&1; then
-  if systemctl --user list-unit-files "$SERVICE.service" >/dev/null 2>&1; then
-    run systemctl --user restart "$SERVICE.service"
-  else
-    run sudo systemctl restart "$SERVICE.service"
-  fi
-else
+if ! command -v systemctl >/dev/null 2>&1; then
   printf 'systemctl not available; cannot restart %s\n' "$SERVICE" >&2
+  exit 1
+fi
+
+# The gateway is a per-agent USER service. When invoked from a service
+# context (pm-consumer) XDG_RUNTIME_DIR is often unset, which breaks
+# `systemctl --user` — derive it from the invoking uid.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if systemctl --user list-unit-files "$SERVICE.service" --no-legend 2>/dev/null | grep -q "^$SERVICE\.service"; then
+  run systemctl --user restart "$SERVICE.service"
+elif sudo -n systemctl restart "$SERVICE.service" 2>/dev/null; then
+  # System-unit path: only works where a system gateway unit AND a NOPASSWD
+  # grant exist (neither is standard on this stack). sudo -n fails fast
+  # instead of hanging on a password prompt.
+  :
+else
+  printf 'deploy-on-merge: pulled %s but could not restart %s (no user unit for this account, no sudo grant) — restart it manually\n' \
+    "$BRANCH" "$SERVICE" >&2
   exit 1
 fi

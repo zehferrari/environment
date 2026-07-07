@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node-24 /usr/local/bin/agent-dashboard
+ExecStart=/usr/bin/node24 /usr/local/bin/agent-dashboard
 Restart=always
 RestartSec=5
 StandardOutput=journal

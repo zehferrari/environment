@@ -191,7 +191,11 @@ the status names differ (see [`guides/JIRA.md`](./guides/JIRA.md) § *Picking Ji
    someone other than you, postdates your last response, and postdates
    the most recent move into review. Oldest comment first. Respond with
    **concrete action** (code change pushed, plan revised, question
-   answered), not just acknowledgement.
+   answered), not just acknowledgement. In Zero Latency / PM the system
+   backs this rule: you hold at most one active task per project
+   (To Do / In Progress / Review — no new automated assignment while one
+   is active), and reviewer `review_feedback` returns the task to the
+   **front** of To Do, so clearing feedback is what unblocks your queue.
 2. **Approved work assigned to you and ready to start.** Follow the
    source-specific queue/status rules before acting.
 3. **Directly assigned work that is not yet in an approved ready state.**

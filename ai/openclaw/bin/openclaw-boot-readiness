@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Boot-time readiness gate: registry validation, per-agent linger,
+integrity check, and an ai-monitor probe. Non-zero exit on any FAIL.
+
+Referenced by guides/SERVICES.md and guides/MONITORING.md; installed by
+install.sh step [1/7].
+"""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+
+REGISTRY_CHECK = "/usr/local/bin/openclaw-registry-check"
+INTEGRITY_CHECK = "/usr/local/bin/openclaw-integrity-check"
+AI_MONITOR = "/usr/local/bin/ai-monitor"
+REGISTRY = Path("/etc/openclaw/agents.json")
+
+
+class Reporter:
+    def __init__(self):
+        self.ok = 0
+        self.warn = 0
+        self.fail = 0
+
+    def ok_(self, msg):
+        self.ok += 1
+        print(f"[OK] {msg}")
+
+    def warn_(self, msg):
+        self.warn += 1
+        print(f"[WARN] {msg}")
+
+    def fail_(self, msg):
+        self.fail += 1
+        print(f"[FAIL] {msg}")
+
+    def summary(self):
+        print(f"[SUMMARY] ok={self.ok} warn={self.warn} fail={self.fail}")
+        return 1 if self.fail else 0
+
+
+def run(cmd, timeout=90):
+    return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout)
+
+
+def check_cmd(reporter, name, cmd, timeout=90, warn_only=False):
+    print(f"[INFO] running {name}")
+    proc = run(cmd, timeout=timeout)
+    if proc.stdout.strip():
+        print(proc.stdout.rstrip())
+    if proc.stderr.strip():
+        print(proc.stderr.rstrip(), file=sys.stderr)
+    if proc.returncode == 0:
+        reporter.ok_(f"{name} passed")
+    elif warn_only:
+        reporter.warn_(f"{name} returned {proc.returncode}")
+    else:
+        reporter.fail_(f"{name} returned {proc.returncode}")
+    return proc.returncode
+
+
+def main():
+    reporter = Reporter()
+
+    check_cmd(reporter, "registry runtime validation", [REGISTRY_CHECK, "--runtime"], timeout=60)
+
+    try:
+        registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    except Exception as exc:
+        reporter.fail_(f"cannot read registry for linger checks: {exc}")
+        return reporter.summary()
+
+    for agent in registry.get("agents", []):
+        # Every enabled agent runs user services (gateway etc.), so every one
+        # needs linger. (A legacy top-level "monitor" field check used to sit
+        # here — no registry record carries that field, so the linger check
+        # silently covered zero agents.)
+        if not agent.get("enabled"):
+            continue
+        user = agent.get("user")
+        if not user:
+            reporter.warn_("registry agent without a user field — skipped linger check")
+            continue
+        proc = run(["loginctl", "show-user", user, "-p", "Linger"], timeout=10)
+        if proc.returncode == 0 and "Linger=yes" in proc.stdout:
+            reporter.ok_(f"{user}: linger enabled")
+        else:
+            reporter.fail_(f"{user}: linger is not enabled")
+
+    check_cmd(reporter, "OpenClaw integrity check", [INTEGRITY_CHECK], timeout=180)
+    check_cmd(reporter, "AI monitor probe", [AI_MONITOR, "--probe-only"], timeout=90)
+
+    print("[INFO] boot readiness complete")
+    return reporter.summary()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

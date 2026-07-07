@@ -1,9 +1,25 @@
 import { mkdir, rename, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import { connect } from "net";
-import type { SendPmChannelTurnArgs } from "@/lib/agents/pm-channel/openclaw";
+import type { PmChannelReplyTarget, SendPmChannelTurnArgs } from "@/lib/agents/pm-channel/openclaw";
 
 export const PM_CHANNEL_BUS_SCHEMA_VERSION = 1 as const;
+
+// One key per (agent, scope, message). This is BOTH the run identity in
+// PmChannelRun and the bus envelope id: broadcast turns ("All Coders",
+// multi-targets, comment fan-out) reuse one chat message id across N agents,
+// so the envelope id must carry the agent slug or the consumer's insert-once
+// dedupe collapses the broadcast down to the first agent. Retries republish
+// the same target → same key → still deduped per target.
+export function pmChannelRunTargetKey(target: PmChannelReplyTarget): string {
+  if (target.kind === "direct") {
+    return `direct:${target.agentSlug}:${target.messageId}`;
+  }
+  if (target.kind === "epic-chat") {
+    return `epic-chat:${target.agentSlug}:${target.epicId}:${target.messageId}`;
+  }
+  return `${target.kind}:${target.agentSlug}:${target.taskId}:${target.messageId}`;
+}
 
 export interface PmChannelBusEvent {
   schema: typeof PM_CHANNEL_BUS_SCHEMA_VERSION;
@@ -31,7 +47,9 @@ function makeEvent(args: SendPmChannelTurnArgs): PmChannelBusEvent {
   const { fetchImpl: _fetchImpl, ...payload } = args;
   return {
     schema: PM_CHANNEL_BUS_SCHEMA_VERSION,
-    id: args.replyTarget.messageId,
+    // Per-target, not the bare messageId — see pmChannelRunTargetKey. Also
+    // keeps same-millisecond file-drop names from colliding on broadcasts.
+    id: pmChannelRunTargetKey(args.replyTarget),
     kind: "openclaw.pm_channel_turn",
     occurredAt: new Date().toISOString(),
     target: args.replyTarget,

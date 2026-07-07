@@ -222,7 +222,7 @@ export async function buildTaskContextJson(
   const [comments, liveChats, activity, taskAttachments, epicAttachments] = await Promise.all([
     db.comment.findMany({
       where: { taskId, deletedAt: null },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: "desc" },
       take: MAX_COMMENTS,
       select: {
         id: true, createdAt: true, body: true,
@@ -231,7 +231,7 @@ export async function buildTaskContextJson(
     }),
     db.agentChatMessage.findMany({
       where: { taskId, archiveId: null, deletedAt: null },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: "desc" },
       take: MAX_LIVE_CHATS,
       select: {
         id: true, createdAt: true, body: true,
@@ -250,7 +250,7 @@ export async function buildTaskContextJson(
     }),
     db.attachment.findMany({
       where: { taskId },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: "desc" },
       take: MAX_ATTACHMENTS,
       select: {
         id: true, filename: true, mimeType: true, sizeBytes: true,
@@ -261,7 +261,7 @@ export async function buildTaskContextJson(
     task.epic
       ? db.attachment.findMany({
           where: { epicId: task.epic.id },
-          orderBy: { createdAt: "asc" },
+          orderBy: { createdAt: "desc" },
           take: MAX_ATTACHMENTS,
           select: {
             id: true, filename: true, mimeType: true, sizeBytes: true,
@@ -271,6 +271,13 @@ export async function buildTaskContextJson(
         })
       : Promise.resolve([]),
   ]);
+
+  // The caps keep the NEWEST N rows (queries run desc); flip back to
+  // chronological order for presentation. Activity stays newest-first.
+  comments.reverse();
+  liveChats.reverse();
+  taskAttachments.reverse();
+  epicAttachments.reverse();
 
   // Archive chain (active room's ancestors), walked by baseArchiveId from
   // the most recent live message. Capped depth so a long chain doesn't
@@ -305,20 +312,20 @@ export async function buildTaskContextJson(
         cursor = archive.parentArchiveId;
       }
       if (archiveIds.length > 0) {
-        archivedChats = await db.agentChatMessage.findMany({
+        archivedChats = (await db.agentChatMessage.findMany({
           where: {
             taskId,
             archiveId: { in: archiveIds },
             deletedAt: null,
           },
-          orderBy: { createdAt: "asc" },
+          orderBy: { createdAt: "desc" },
           take: MAX_ARCHIVED_CHATS,
           select: {
             id: true, createdAt: true, body: true,
             targetType: true, targetLabel: true, archiveId: true,
             sender: { select: { username: true, kind: true } },
           },
-        });
+        })).reverse();
       }
     }
   }
@@ -534,7 +541,7 @@ export async function buildEpicContextJson(
   const [comments, liveChats, attachments] = await Promise.all([
     db.comment.findMany({
       where: { epicId, deletedAt: null },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: "desc" },
       take: MAX_COMMENTS,
       select: {
         id: true, createdAt: true, body: true,
@@ -543,7 +550,7 @@ export async function buildEpicContextJson(
     }),
     db.agentChatMessage.findMany({
       where: { epicId, archiveId: null, deletedAt: null },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: "desc" },
       take: MAX_LIVE_CHATS,
       select: {
         id: true, createdAt: true, body: true,
@@ -553,7 +560,7 @@ export async function buildEpicContextJson(
     }),
     db.attachment.findMany({
       where: { epicId },
-      orderBy: { createdAt: "asc" },
+      orderBy: { createdAt: "desc" },
       take: MAX_ATTACHMENTS,
       select: {
         id: true, filename: true, mimeType: true, sizeBytes: true,
@@ -563,6 +570,11 @@ export async function buildEpicContextJson(
     }),
   ]);
 
+  // The caps keep the NEWEST N rows (queries run desc); flip back to
+  // chronological order for presentation.
+  comments.reverse();
+  liveChats.reverse();
+  attachments.reverse();
 
   // Archive chain (active room's ancestors), walked by baseArchiveId from
   // the most recent live message. Keep Epic live-fetch parity with the
@@ -597,20 +609,20 @@ export async function buildEpicContextJson(
         cursor = archive.parentArchiveId;
       }
       if (archiveIds.length > 0) {
-        archivedChats = await db.agentChatMessage.findMany({
+        archivedChats = (await db.agentChatMessage.findMany({
           where: {
             epicId,
             archiveId: { in: archiveIds },
             deletedAt: null,
           },
-          orderBy: { createdAt: "asc" },
+          orderBy: { createdAt: "desc" },
           take: MAX_ARCHIVED_CHATS,
           select: {
             id: true, createdAt: true, body: true,
             targetType: true, targetLabel: true, archiveId: true,
             sender: { select: { username: true, kind: true } },
           },
-        });
+        })).reverse();
       }
     }
   }

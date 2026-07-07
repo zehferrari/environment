@@ -105,14 +105,64 @@ async function main() {
     const consumerOutcome = await handler.handle(envelope);
     assert.deepEqual(consumerOutcome, {
       kind: "delivered",
-      dedupeKey: `openclaw.pm_channel_turn:${nonce}`,
+      // Envelope id is per-target (agent slug + scope + message), so a
+      // broadcast reusing one message id never collapses to one agent.
+      dedupeKey: `openclaw.pm_channel_turn:${targetKey}`,
       targetSlug: "asdrubal",
     });
     assert.equal(delivered.length, 1, "consumer must dispatch exactly one PM-channel turn");
     assert.equal((delivered[0] as BusEnvelope["payload"]).text, "hello over bus");
     assert.equal((delivered[0] as BusEnvelope["payload"]).sessionKey, `test:${nonce}`);
 
+    // Broadcast case: the SAME message id fanned out to two agents must
+    // produce two distinct envelopes, both delivered — and a republish of
+    // either envelope (publisher retry) must be skipped as a duplicate.
+    const { publishPmChannelTurnToBus } = await import("@/lib/agents/pm-channel/bus");
+    const broadcastNonce = `bus-broadcast-${Date.now()}`;
+    const broadcastDelivered: string[] = [];
+    const broadcastHandler = createHandler({
+      pmChannelDispatch: async (args: { agentSlug: string }) => {
+        broadcastDelivered.push(args.agentSlug);
+        return {
+          ok: true,
+          status: 202,
+          driver: "openclaw-pm-channel",
+          transportMode: "http",
+        };
+      },
+    });
+    const broadcastEnvelopes: unknown[] = [];
+    for (const slug of ["asdrubal", "barekbaal"]) {
+      const published = await publishPmChannelTurnToBus({
+        gatewayPort: 45678,
+        agentSlug: slug,
+        sessionKey: `test:${broadcastNonce}:${slug}`,
+        kind: "direct",
+        text: "broadcast over bus",
+        actor: { id: "human-test", kind: "human" },
+        replyTarget: { kind: "direct", agentSlug: slug, messageId: broadcastNonce },
+      } as Parameters<typeof publishPmChannelTurnToBus>[0]);
+      assert.equal(published.ok, true, `broadcast publish for ${slug}`);
+      const receipt = published.receipt as { path: string };
+      broadcastEnvelopes.push(JSON.parse(await readFile(receipt.path, "utf8")));
+    }
+    const ids = (broadcastEnvelopes as Array<{ id: string }>).map((e) => e.id);
+    assert.notEqual(ids[0], ids[1], "broadcast envelopes must carry distinct per-target ids");
+    for (const raw of broadcastEnvelopes) {
+      const out = await broadcastHandler.handle(raw);
+      assert.equal((out as { kind: string }).kind, "delivered", "each broadcast target must be delivered");
+    }
+    assert.deepEqual(
+      broadcastDelivered.sort(),
+      ["asdrubal", "barekbaal"],
+      "both broadcast agents must be dispatched exactly once",
+    );
+    const replay = await broadcastHandler.handle(broadcastEnvelopes[0]);
+    assert.equal((replay as { kind: string }).kind, "skipped-duplicate", "publisher retry of the same target must dedupe");
+    assert.equal(broadcastDelivered.length, 2, "replay must not dispatch again");
+
     await db.pmChannelRun.deleteMany({ where: { targetKey } });
+    await db.pmEventDelivery.deleteMany({ where: { dedupeKey: { contains: broadcastNonce } } });
   } finally {
     delete process.env.PM_CHANNEL_BUS_DROP_DIR;
     await db.$disconnect();

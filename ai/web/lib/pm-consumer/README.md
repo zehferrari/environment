@@ -60,7 +60,8 @@ For each received envelope:
    `@unique dedupeKey`. A UNIQUE conflict shortcuts the pipeline as a
    `skipped-duplicate` outcome with no downstream side effects.
 4. Target resolution — User → Agent (PM DB) → gateway port
-   (`/srv/agents/index.json`). No agent target ⇒ "unmatched".
+   (`/etc/openclaw/agents.json`, override via `AGENT_INDEX_PATH`). No
+   agent target ⇒ "unmatched".
 5. Wake — `POST http://127.0.0.1:<gateway_port>/hooks/wake` with the
    per-agent Bearer token. This is the primary path on the local host:
    each agent gateway must be bound to loopback and expose external
@@ -71,8 +72,10 @@ For each received envelope:
    `PM_CONSUMER_MONITOR_WAKE_FALLBACK=off`.
    Exhausting both paths ⇒ "failed".
 6. Audit — exactly one `ActivityLog{ kind: "agent.wake.<outcome>" }`
-   row per envelope, with `targetAgent` set so HOMELAB-51's
-   agent-action audit trail can be queried per-slug.
+   row per **PmEvent** envelope, with `targetAgent` set so HOMELAB-51's
+   agent-action audit trail can be queried per-slug. (Native
+   `pm_channel_turn` envelopes are audited through the PM-channel run
+   machinery instead, not through this row.)
    Deployment-approved Epic envelopes are project-scoped for audit
    purposes because their `task.id` field carries the Epic ID for the
    legacy envelope shape.

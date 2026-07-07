@@ -471,8 +471,8 @@ export default async function ProjectSettingsPage({
               <h2 className="text-body font-semibold tracking-tight">Worktree live preview</h2>
               <p className="mt-1 text-caption leading-5 text-text-muted">
                 Build a git worktree and point the live site at it. One worktree
-                is served at a time; all share the same database and secrets, so
-                only the served code changes.
+                is served at a time; whether branches share one database or each
+                serves its own fork depends on the project (stated below).
               </p>
             </div>
             {showSwitcher && switchState && switchProject ? (
@@ -481,6 +481,7 @@ export default async function ProjectSettingsPage({
                 repoKey={repoKey ?? ""}
                 driver={switchProject.driver}
                 offFreesResources={switchProject.offFreesResources}
+                branchDatabases={switchProject.branchDatabases}
                 lifecycleControl={switchProject.lifecycleControl}
               />
             ) : (

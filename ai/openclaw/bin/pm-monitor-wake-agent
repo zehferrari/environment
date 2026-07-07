@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Legacy PM-consumer fallback: wake an agent through the monitor's
+# openclaw-control grant when the direct gateway /hooks/wake path fails.
+# Referenced by sudoers.d/pm-monitor-wake-agent; installed by install.sh
+# step [1/7] to /usr/local/sbin.
+set -euo pipefail
+if [ "$#" -lt 1 ]; then
+  echo "Usage: pm-monitor-wake-agent <agent> [text...]" >&2
+  exit 2
+fi
+agent="$1"
+shift || true
+
+# Resolve the monitor account from the registry (fallback: karen) so the
+# helper works on hosts where the monitor is a different user (e.g. yoga510).
+REGISTRY="${OPENCLAW_REGISTRY:-/etc/openclaw/agents.json}"
+monitor=""
+if command -v jq >/dev/null 2>&1 && [ -r "$REGISTRY" ]; then
+  monitor="$(jq -r '.agents[] | select(.role == "monitor" and .enabled == true) | .user' "$REGISTRY" 2>/dev/null | head -1)"
+fi
+monitor="${monitor:-karen}"
+
+exec sudo -n -u "$monitor" sudo -n /usr/local/sbin/openclaw-control wake-agent "$agent" "$@"

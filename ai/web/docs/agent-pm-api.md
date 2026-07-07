@@ -280,7 +280,18 @@ assigning child Tasks. Task assignee remains a single user.
 
 An agent may have only one active Task per project. Active means `To Do`,
 `In Progress`, or `Review`. The same agent may hold active Tasks in
-different projects.
+different projects. This is enforced server-side in every automated
+assignment path (the epic sequential queue, `assign_next`, and
+post-plan-approval assignment): an agent holding an active Task in a
+project is not offered another assignment there until that Task leaves
+the active set (reviewer moves it to Done, or feedback returns it to the
+assignee). Humans may still assign explicitly as a deliberate override.
+
+Review-stage work that received reviewer/reporter feedback and awaits the
+assignee's response is always the assignee's first priority (WORKFLOW.md
+§ Picking your next task, tier 1). A reviewer `review_feedback` action
+returns the task to the **front** of the project's To Do queue so it is
+picked up before any other pending work.
 
 Monitor agents are intentionally excluded from those picker and validator
 pools. They can observe, triage, wake/restart agents, submit proposals
@@ -317,6 +328,9 @@ Shape:
     "commitPrefix": "HOMELAB-41:",
     "createdAt": "2026-05-27T11:12:46.974Z",
     "updatedAt": "2026-05-28T00:34:44.180Z",
+    "workItemKey": "HOMELAB-41",  // stable board key; null on older rows
+    "approved_on": null,          // Action Plan approval stamp (also approvedOn)
+    "alert_reporter": false,      // assignee raised a blocker for the reporter
     "assignee":  { "username": "coding-agent", "kind": "agent" },
     "reviewer":  { "username": "review-agent", "kind": "agent" },
     "reporter":  { "username": "requester",    "kind": "human" }
@@ -329,7 +343,7 @@ Shape:
     "readmePath": null,
     "repositoryPath": "/srv/Code/environment.worktrees/…"
   },
-  "epic": null,                // or { id, title, status, description, branchName, commitPrefix, assignee, actingManager, deployReviewer }
+  "epic": null,                // or { id, workItemKey, title, status, description, branchName, commitPrefix, workers, actingManager, deployReviewer } — Epics have no assignee
   "checklist": [               // lightweight sub-tasks (progress only; not child Tasks)
     { "id": "…", "text": "…", "done": false, "minutes": null }  // minutes = self-reported effort
   ],
@@ -405,16 +419,19 @@ task is missing or soft-deleted.
 
 ### `GET /api/agents/context/epic/<epicId>`
 
-Same shape minus the task `checklist`, plus `epic.actingManager`, `epic.deployReviewer`,
-`epic.workers`, and a `tasks` array of every live task under the epic.
-Use when the agent's turn is on an epic discussion, or when you need to
-enumerate the epic's tasks without per-task detail.
+Same shape minus the task `checklist` and the `activity` array (epic
+context carries no activity log), plus `epic.actingManager`,
+`epic.deployReviewer`, `epic.workers`, and a `tasks` array of every live
+task under the epic. Use when the agent's turn is on an epic discussion,
+or when you need to enumerate the epic's tasks without per-task detail.
 
 ### `GET /api/agents/context/project/<projectId>`
 
 Returns the project envelope used when proposing work-item change-sets:
 project metadata, the default git identity, the full active-principals
-list (valid `assignee` / `actingManager` / `deployReviewer` values), every non-archived
+list (every active user, monitors included — eligibility for
+`assignee` / `actingManager` / `deployReviewer` is validated on write,
+where monitor agents are rejected), every non-archived
 epic with their descriptions, and every active task (status ≠ Done).
 Per-task / per-epic detail isn't included here — fetch the relevant
 task / epic endpoint instead.
@@ -424,8 +441,8 @@ task / epic endpoint instead.
   "project":            { "id", "slug", "name", "description", "readmePath", "repositoryPath" },
   "defaultGitIdentity": { "name", "email" },
   "principals": [ { "id", "username", "kind" }, … ],
-  "epics":      [ { "id", "title", "status", "description", "branchName", "commitPrefix", "workers", "actingManager", "deployReviewer" }, … ],
-  "openTasks":  [ { "id", "title", "status", "epicId", "parentTaskId", "assignee", "actingManager", "branchName", "commitPrefix" }, … ],
+  "epics":      [ { "id", "workItemKey", "title", "status", "description", "branchName", "commitPrefix", "workers", "actingManager", "deployReviewer" }, … ],
+  "openTasks":  [ { "id", "workItemKey", "title", "status", "epicId", "parentTaskId", "assignee", "actingManager", "branchName", "commitPrefix" }, … ],
   "meta":       { "fetchedAt", "note" }
 }
 ```
@@ -494,10 +511,10 @@ from the current packet or fetched PM JSON, PM wins.
 When this repo lands on a new host:
 
 1. `pnpm build` of `ai/web` includes the three new routes automatically.
-2. `ai/web/deploy/pm.env.example` already exposes `PM_INTERNAL_APP_URL`
-   and `PM_AGENT_CALLBACK_URL`. Set both to `http://127.0.0.1:<pm-port>`
-   on the replicated host. The system prompts the agents receive use
-   `PM_AGENT_CALLBACK_URL` first.
+2. `ai/web/deploy/pm.env.example` exposes `PM_INTERNAL_APP_URL`
+   (`PM_AGENT_CALLBACK_URL` is referenced there in a comment). Set both
+   to `http://127.0.0.1:<pm-port>` on the replicated host. The system
+   prompts the agents receive use `PM_AGENT_CALLBACK_URL` first.
 3. No additional agent secret is needed for live context reads. PM mints
    grant URLs per channel turn and puts them in the prompt.
 4. **No nginx changes needed.** These endpoints are deliberately

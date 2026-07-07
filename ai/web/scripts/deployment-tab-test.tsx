@@ -59,6 +59,9 @@ assert.equal(canShowDeploymentAction({
   onlyReportersCanApprovePullRequests: true,
 }), false, "reviewer actions hide when reporter-only PR policy is enabled");
 
+// Terminal statuses render from the ROW's own state (the monitor's actual
+// vocabulary), never from the scope-level rollup — a deployed sibling must
+// not show "Waiting for merge" because another row errored.
 const html = renderToStaticMarkup(
   <DeploymentTab
     mode="epic"
@@ -72,9 +75,23 @@ const html = renderToStaticMarkup(
       sourceBranch: "pm-deployments",
       targetBranch: "main",
       latestCommitSha: "abcdef1234567890",
-      status: "open",
+      status: "deployed",
+      deploymentExitCode: 0,
       updatedAt: new Date("2026-06-04T00:00:00Z"),
       task: { workItemKey: "ENV-17", title: "Deployment tab UI" },
+    }, {
+      id: "pr-2",
+      provider: "bitbucket",
+      providerPrId: "43",
+      url: "https://bitbucket.org/example/repo/pull-requests/43",
+      sourceBranch: "pm-deployments-2",
+      targetBranch: "main",
+      latestCommitSha: "1234567890abcdef",
+      status: "deployment_error",
+      deploymentExitCode: 7,
+      deploymentStderr: "prisma migrate deploy failed: P2022",
+      updatedAt: new Date("2026-06-04T00:00:00Z"),
+      task: { workItemKey: "ENV-18", title: "Broken deploy" },
     }]}
     canAct={() => true}
     approveLocalChangesAction={async () => {}}
@@ -89,12 +106,41 @@ for (const expected of [
   "main",
   "abcdef123456",
   "Approved",
-  "Waiting for merge",
+  "Merged",
+  "Deploy script succeeded",
   "Deploy script failed",
-  "Deployment failed",
-  "Approve/Merge",
+  "Exit code 7",
+  "prisma migrate deploy failed: P2022",
+  "No action",
 ]) {
   assert.match(html, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `renders ${expected}`);
+}
+assert.doesNotMatch(html, /Waiting for merge/, "terminal rows never show Waiting for merge");
+assert.doesNotMatch(html, /Approve\/Merge/, "terminal rows expose no Approve/Merge button");
+
+const openHtml = renderToStaticMarkup(
+  <DeploymentTab
+    mode="task"
+    title="Open PR task"
+    deploymentStatus="Deployment Approved"
+    rows={[{
+      id: "pr-open",
+      provider: "bitbucket",
+      providerPrId: "44",
+      url: "https://bitbucket.org/example/repo/pull-requests/44",
+      sourceBranch: "feature/open",
+      targetBranch: "main",
+      latestCommitSha: "feedbeef12345678",
+      status: "open",
+      updatedAt: new Date("2026-06-04T00:00:00Z"),
+    }]}
+    canAct={() => true}
+    approveLocalChangesAction={async () => {}}
+    approveAndMergeAction={async () => {}}
+  />,
+);
+for (const expected of ["Waiting for merge", "Pending merge", "Approve/Merge"]) {
+  assert.match(openHtml, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `open row renders ${expected}`);
 }
 
 const pendingHtml = renderToStaticMarkup(
@@ -128,6 +174,7 @@ for (const expected of [
   assert.match(pendingHtml, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), `renders ${expected}`);
 }
 
+// No rows → an honest empty state, never a synthetic PR row with live buttons.
 const taskHtml = renderToStaticMarkup(
   <DeploymentTab
     mode="task"
@@ -138,6 +185,19 @@ const taskHtml = renderToStaticMarkup(
   />,
 );
 assert.match(taskHtml, /Top-level task PR/, "renders task single-row mode");
-assert.match(taskHtml, /work branch pending/, "renders mocked pending record fields when no PR exists yet");
+assert.match(taskHtml, /No deployment PRs yet/, "renders the empty state when no PR exists yet");
+assert.doesNotMatch(taskHtml, /work branch pending/, "no fabricated mock row");
+assert.doesNotMatch(taskHtml, /Approve\/Merge/, "empty state exposes no action button");
+
+const notRequiredHtml = renderToStaticMarkup(
+  <DeploymentTab
+    mode="epic"
+    title="Docs epic"
+    deploymentStatus="Not Required"
+    rows={[]}
+    canAct={() => false}
+  />,
+);
+assert.match(notRequiredHtml, /deployment is not required for this Epic/, "renders the not-required empty state");
 
 console.log("deployment-tab-test ok");
