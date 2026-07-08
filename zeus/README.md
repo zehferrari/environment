@@ -20,12 +20,14 @@ This folder mirrors the Wayland/Hyprland desktop configuration for the workstati
 - `~/Scripts/screenshot.sh` -> `Scripts/screenshot.sh`
 - `~/Scripts/shutDown.sh` -> `Scripts/shutDown.sh`
 - `~/Scripts/loadSession.sh` -> `Scripts/loadSession.sh`
+- `~/Scripts/logout.sh` -> `Scripts/logout.sh`
 
 ## Hardware Specs
 
 - Hostname: `fedora`
 - OS: Fedora Linux 43 (Workstation Edition)
-- Kernel: Linux 7.0.4-100.fc43.x86_64
+- Kernel: Linux 7.0.12-101.fc43.x86_64 (as of 2026-07-08)
+- Firmware: F11 (2026-02-05)
 - Filesystem: BTRFS for `/` and `/home`
 - CPU: AMD Ryzen 9 9950X3D (16C/32T, up to 5.7 GHz)
 - GPU: NVIDIA GeForce RTX 5080 16GB (GB203)
@@ -33,27 +35,42 @@ This folder mirrors the Wayland/Hyprland desktop configuration for the workstati
 - Memory: 64 GiB DDR5-6000 (2x32GB Kingston Fury Beast)
 - Motherboard: Gigabyte X870 Aorus Elite WiFi7
 - Storage: Samsung 9100 PRO 2TB PCIe 5.0 NVMe
-- Ethernet: Realtek RTL8125 (r8169)
-- Wi-Fi: Realtek RTL8922AE Wi-Fi 7 (rtw89_8922ae)
+- Ethernet: Realtek RTL8125 2.5GbE (r8169) — `enp6s0`, `10.0.0.17`
+- Wi-Fi: Realtek RTL8922AE Wi-Fi 7 (rtw89_8922ae) — `wlp7s0`, `10.0.0.114`
 - Bluetooth: Realtek (btusb)
 
 ## Display Layout (5 Monitors)
 
-- DP-5: Kogan 27in QHD, 2560x1440, 144 Hz, workspaces 1-2
-- DP-6: Dell U2421E, 1920x1200, 60 Hz, workspaces 3-4
-- DP-4: Kogan 34in ultrawide, 3440x1440, 144 Hz, VRR enabled, workspaces 5-6
-- HDMI (AMD): ZeusLap P16F, 2560x1600, 60 Hz, scale 1.6, workspaces 7-8
-- HDMI-A-3 (NVIDIA): ZeusLap P16F, 2560x1600, 60 Hz, scale 1.6, workspaces 9-10
+Connector names (`DP-x`/`HDMI-A-x`) shuffle across boots, so `apply-displays.sh`
+matches monitors by EDID description and re-applies layout + workspace mapping
+at session start. VRR is disabled on all outputs. Layout is two rows:
+
+Top row (left to right):
+
+- Kogan 27in QHD (`KAMN27Q18CSA`): 2560x1440, 180 Hz, workspaces 1-2 — currently `DP-6` (NVIDIA)
+- Dell U2421E: 1920x1200, 60 Hz, portrait, workspaces 3-4 — currently `DP-5` (NVIDIA)
+- Kogan 34in ultrawide (`KAMN34FXQULA`): 3440x1440, 144 Hz, workspaces 5-6, primary — currently `DP-3` (NVIDIA)
+
+Bottom row:
+
+- ZeusLap P16F left: 2560x1600, 60 Hz, scale 1.6, workspaces 9-10 — higher-numbered HDMI connector, currently `HDMI-A-3` (NVIDIA)
+- ZeusLap P16F right: 2560x1600, 60 Hz, scale 1.6, workspaces 7-8 — lower-numbered HDMI connector, currently `HDMI-A-2` (AMD iGPU); gets a DPMS retrain cycle at login to clear post-login flicker
 
 ## Desktop Stack
 
-- Compositor: Hyprland
+- Compositor: Hyprland (0.51.1 as of 2026-07-08)
 - Session manager: UWSM via `hyprland-uwsm.desktop`
-- Bar: Waybar
+- Bar: Waybar (0.14.0)
 - Lock helper: hyprlock via `hyprlock-dpms`
 - Screenshots: `grimblast`, `grim`, `slurp`, `wl-copy`, optional `swappy`
 - Volume OSD: `volume-osd` with Wob FIFO support (`start-wob`)
 - HDMI audio: disabled at session start via `disable-hdmi-audio`
+- Wallpapers: hyprpaper, one solid colour per display via
+  `hyprpaper-solid-displays.sh` (regenerates `hyprpaper.conf`, so that file's
+  connector names reflect the last run)
+- Session restore: `~/Scripts/loadSession.sh` closes and relaunches apps on
+  their workspaces — Chromium (ws 1), Kitty (ws 3), Firefox + Sublime tiled
+  (ws 5), Brave (ws 7), Chrome (ws 9)
 
 ## Peripherals
 
@@ -64,7 +81,8 @@ This folder mirrors the Wayland/Hyprland desktop configuration for the workstati
 
 ## Drivers and Media Stack
 
-- NVIDIA proprietary stack installed (`akmod-nvidia`, CUDA userspace available)
+- NVIDIA proprietary stack installed (`akmod-nvidia`, 580.159.04 as of
+  2026-07-08, CUDA userspace available)
 - AMD GPU stack active via `amdgpu`
 - Multimedia stack installed (RPM Fusion + codecs, FFmpeg, GStreamer full plugins, HEIC/AVIF/WebP support)
 

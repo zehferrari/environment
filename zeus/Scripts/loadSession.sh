@@ -2,16 +2,15 @@
 set -euo pipefail
 
 # loadSession.sh
-# - Gracefully close selected browsers (to avoid session corruption)
+# - Gracefully close selected browsers/editors (to avoid session corruption)
 # - Re-open them on specific Hyprland workspaces
 #
-# Targets:
-#   PhpStorm  -> workspace 1 (DP-4)
-#   Chromium  -> workspace 3 (DP-6)
-#   Firefox   -> workspace 5 (DP-3)
-#   Brave     -> workspace 7 (HDMI-A-2)
-#   Chrome    -> workspace 9 (HDMI-A-3)
-#   Kitty     -> workspace 10 (HDMI-A-3)
+# Targets (launch order matters: Firefox before Sublime so Sublime tiles right):
+#   Chromium             -> workspace 1 (DP-4)
+#   Kitty                -> workspace 3 (DP-6)
+#   Firefox + Sublime    -> workspace 5 (DP-3) — Sublime tiled on the right
+#   Brave                -> workspace 7 (HDMI-A-2)
+#   Chrome               -> workspace 9 (HDMI-A-3)
 
 log() { printf '[loadSession] %s\n' "$*"; }
 err() { printf '[loadSession] ERROR: %s\n' "$*" >&2; }
@@ -38,28 +37,11 @@ fi
 
 log "Starting in $MODE mode..."
 
-ensure_workspace_active() {
-  local ws="$1"
-  local timeout_s="${2:-3}"
+# ---------------------------------------------------------------------------
+# Generic helpers (app-agnostic)
+# ---------------------------------------------------------------------------
 
-  hyprctl dispatch workspace "$ws" >/dev/null 2>&1 || true
-
-  local start now current
-  start=$(date +%s)
-  while true; do
-    current=$(hyprctl activeworkspace -j | jq -r '.id' 2>/dev/null || echo "")
-    if [[ "$current" == "$ws" ]]; then
-      return 0
-    fi
-    now=$(date +%s)
-    if (( now - start >= timeout_s )); then
-      return 1
-    fi
-    sleep 0.1
-  done
-}
-
-# Resolve a runnable command name (first existing wins)
+# Resolve a runnable command name (first existing wins). Echoes "" if none.
 resolve_cmd() {
   local c
   for c in "$@"; do
@@ -71,404 +53,326 @@ resolve_cmd() {
   return 1
 }
 
-# Close Hyprland windows matching class regex (best-effort graceful close)
-close_windows_by_class_regex() {
+# Echo the addresses of all Hyprland clients whose class matches a regex.
+client_addrs_by_class() {
   local class_regex="$1"
-
-  # Collect window addresses for matching clients
-  local addrs
-  addrs=$(hyprctl clients -j | jq -r --arg re "$class_regex" '.[] | select(.class|test($re;"i")) | .address')
-
-  if [[ -z "$addrs" ]]; then
-    return 0
-  fi
-
-  while IFS= read -r addr; do
-    [[ -z "$addr" ]] && continue
-    # closewindow expects address:<hex>
-    hyprctl dispatch closewindow "address:$addr" >/dev/null 2>&1 || true
-  done <<< "$addrs"
+  hyprctl clients -j | jq -r --arg re "$class_regex" '.[] | select(.class|test($re;"i")) | .address'
 }
 
-# Wait until no Hyprland windows match class regex (returns 0 if gone)
-wait_no_windows_by_class_regex() {
-  local class_regex="$1"
-  local timeout_s="$2"
+# True (0) if any Hyprland window matches the class regex.
+has_window_for_class_regex() {
+  hyprctl clients -j | jq -e --arg re "$1" 'any(.[]; .class|test($re;"i"))' >/dev/null
+}
 
-  local start now
+# Switch to a workspace and wait (best-effort) until it is active.
+ensure_workspace_active() {
+  local ws="$1" timeout_s="${2:-3}" start now current
+  hyprctl dispatch workspace "$ws" >/dev/null 2>&1 || true
   start=$(date +%s)
-
   while true; do
-    if ! hyprctl clients -j | jq -e --arg re "$class_regex" 'any(.[]; .class|test($re;"i"))' >/dev/null; then
-      return 0
-    fi
+    current=$(hyprctl activeworkspace -j | jq -r '.id' 2>/dev/null || echo "")
+    [[ "$current" == "$ws" ]] && return 0
     now=$(date +%s)
-    if (( now - start >= timeout_s )); then
-      return 1
-    fi
+    (( now - start >= timeout_s )) && return 1
+    sleep 0.1
+  done
+}
+
+# Close every window matching a class regex (best-effort graceful WM close).
+close_windows_by_class_regex() {
+  local addr
+  while IFS= read -r addr; do
+    [[ -z "$addr" ]] && continue
+    hyprctl dispatch closewindow "address:$addr" >/dev/null 2>&1 || true
+  done < <(client_addrs_by_class "$1")
+}
+
+# Wait until no window matches the class regex (0 if gone within timeout).
+wait_no_windows_by_class_regex() {
+  local class_regex="$1" timeout_s="$2" start now
+  start=$(date +%s)
+  while true; do
+    has_window_for_class_regex "$class_regex" || return 0
+    now=$(date +%s)
+    (( now - start >= timeout_s )) && return 1
     sleep 0.2
   done
 }
 
-# Check if any Hyprland window matches class regex.
-has_window_for_class_regex() {
-  local class_regex="$1"
-
-  if hyprctl clients -j | jq -e --arg re "$class_regex" 'any(.[]; .class|test($re;"i"))' >/dev/null; then
-    return 0
-  fi
-  return 1
+# Wait until a window of the class regex exists (0 if it appears within timeout).
+wait_for_window_of_class() {
+  local class_regex="$1" timeout_s="${2:-5}" start now
+  start=$(date +%s)
+  while true; do
+    has_window_for_class_regex "$class_regex" && return 0
+    now=$(date +%s)
+    (( now - start >= timeout_s )) && return 1
+    sleep 0.1
+  done
 }
 
-# Move the first window matching class regex to the given workspace (best-effort).
+# Move the first window matching a class regex to a workspace (best-effort).
 move_first_window_of_class_to_workspace() {
-  local class_regex="$1"
-  local ws="$2"
-
-  local addr
-  addr=$(hyprctl clients -j | jq -r --arg re "$class_regex" '.[] | select(.class|test($re;"i")) | .address' 2>/dev/null | head -n1 || true)
+  local class_regex="$1" ws="$2" addr
+  addr=$(client_addrs_by_class "$class_regex" | head -n1 || true)
   [[ -z "$addr" ]] && return 0
-
   hyprctl dispatch movetoworkspace "$ws,address:$addr" >/dev/null 2>&1 || true
 }
 
+# Focus the first window matching a class regex (waiting briefly for it).
+# Used so a newly-launched window tiles next to (to the right of) this one.
+focus_first_window_of_class() {
+  local class_regex="$1" addr
+  wait_for_window_of_class "$class_regex" 5 || return 1
+  addr=$(client_addrs_by_class "$class_regex" | head -n1 || true)
+  [[ -z "$addr" ]] && return 1
+  hyprctl dispatch focuswindow "address:$addr" >/dev/null 2>&1 || true
+}
 
-# Gracefully close an app by:
-# 1) Closing its windows via Hyprland (WM close)
-# 2) Waiting for windows to disappear
-#
-# We avoid SIGKILL to reduce risk of session/profile corruption.
+# Gracefully close an app: WM-close its windows, then wait for them to vanish.
+# Avoids SIGKILL to reduce the risk of session/profile corruption.
 close_app_gracefully() {
-  local name="$1"
-  local class_regex="$2"
-  local timeout_s="${3:-25}"
-
+  local name="$1" class_regex="$2" timeout_s="${3:-25}"
   log "Closing $name…"
-
   close_windows_by_class_regex "$class_regex"
-
   if ! wait_no_windows_by_class_regex "$class_regex" "$timeout_s"; then
     err "$name windows did not close within ${timeout_s}s. Please close them manually."
     return 1
   fi
-
   log "$name closed."
 }
 
+# Launch a command on a specific workspace (best-effort).
 launch_on_workspace() {
-  local ws="$1"
-  shift
+  local ws="$1"; shift
   local cmd=("$@")
-
-  # Best-effort: ask Hyprland to switch, but don't abort if it fails.
   if ! ensure_workspace_active "$ws" 3; then
     err "Failed to confirm workspace $ws active; launching anyway."
   fi
-
   log "Launching on workspace $ws: ${cmd[*]}"
   hyprctl dispatch exec "[workspace ${ws}] ${cmd[*]}" >/dev/null 2>&1 || true
 }
 
-# Dedicated helper for PhpStorm to be extra tolerant
-launch_phpstorm_ws1() {
-  if [[ -z "$PHPSTORM_CMD" ]]; then
-    err "PHPSTORM_CMD is empty; cannot launch PhpStorm."
-    return 1
-  fi
-  log "Launching PhpStorm on workspace 1: $PHPSTORM_CMD"
-  hyprctl dispatch exec "[workspace 1] $PHPSTORM_CMD" >/dev/null 2>&1 || true
+is_process_running() {
+  pgrep -f "$1" >/dev/null 2>&1
 }
 
-# Commands (best-effort; only launch if installed)
-CHROME_CMD=""
-FIREFOX_CMD=""
-CHROMIUM_CMD=""
-BRAVE_CMD=""
-PHPSTORM_CMD=""
-KITTY_CMD=""
-
-# Whether each app should be relaunched after the close phase
-LAUNCH_CHROME=0
-LAUNCH_FIREFOX=0
-LAUNCH_CHROMIUM=0
-LAUNCH_BRAVE=0
-LAUNCH_KITTY=0
-LAUNCH_PHPSTORM=0
-
-CHROME_CMD=$(resolve_cmd google-chrome-stable google-chrome chrome || true)
-FIREFOX_CMD=$(resolve_cmd firefox || true)
-CHROMIUM_CMD=$(resolve_cmd chromium-browser chromium || true)
-BRAVE_CMD=$(resolve_cmd brave-browser brave || true)
-
-# JetBrains Toolbox (PhpStorm) usually installs under ~/.local/share/JetBrains/Toolbox/apps/
-if [[ -x "$HOME/.local/share/JetBrains/Toolbox/apps/phpstorm/bin/phpstorm" ]]; then
-  PHPSTORM_CMD="$HOME/.local/share/JetBrains/Toolbox/apps/phpstorm/bin/phpstorm"
-else
-  shopt -s nullglob
-  for p in \
-    "$HOME/.local/share/JetBrains/Toolbox/apps/phpstorm/ch-"*/bin/phpstorm \
-    "$HOME/.local/share/JetBrains/Toolbox/apps/phpstorm/ch-"*/*/bin/phpstorm
-  do
-    if [[ -x "$p" ]]; then
-      PHPSTORM_CMD="$p"
-      break
-    fi
-  done
-  shopt -u nullglob
-  [[ -n "$PHPSTORM_CMD" ]] || PHPSTORM_CMD=$(resolve_cmd phpstorm || true)
-fi
-
-# Kitty is usually installed via package manager
-KITTY_CMD=$(resolve_cmd kitty || true)
-
+# App-specific pre-launch hook: clear Firefox crash-recovery markers so it does
+# not show a "restore session" prompt. Does NOT change startup/home pages.
 clear_firefox_crash_recovery() {
-  # Remove crash-recovery markers so Firefox won't show a restore prompt.
-  # This does NOT change your configured startup/home pages.
   local base="$HOME/.mozilla/firefox"
   local ini="$base/profiles.ini"
-
   [[ -d "$base" ]] || return 0
 
   local -a profiles=()
   if [[ -f "$ini" ]]; then
     while IFS= read -r p; do
       [[ -z "$p" ]] && continue
-      if [[ "$p" = /* ]]; then
-        profiles+=("$p")
-      else
-        profiles+=("$base/$p")
-      fi
+      [[ "$p" = /* ]] && profiles+=("$p") || profiles+=("$base/$p")
     done < <(awk -F= '/^Path=/{print $2}' "$ini")
   fi
-
-  # Fallback: try all subdirs if profiles.ini isn't present/parseable
-  if (( ${#profiles[@]} == 0 )); then
-    profiles=("$base"/*)
-  fi
+  (( ${#profiles[@]} == 0 )) && profiles=("$base"/*)
 
   local prof f
   for prof in "${profiles[@]}"; do
     [[ -d "$prof" ]] || continue
     shopt -s nullglob
-    # Remove recovery snapshots so Firefox does not attempt to restore a crashed session.
-    for f in "$prof"/sessionstore-backups/recovery*.jsonlz4 "$prof"/sessionstore-backups/recovery*.baklz4; do
-      rm -f -- "$f" 2>/dev/null || true
-    done
-    # Also drop the main sessionstore so that a badly crashed session does not keep
-    # triggering the "session is broken" page.
-    for f in "$prof"/sessionstore.jsonlz4 "$prof"/sessionstore.js; do
+    for f in "$prof"/sessionstore-backups/recovery*.jsonlz4 \
+             "$prof"/sessionstore-backups/recovery*.baklz4 \
+             "$prof"/sessionstore.jsonlz4 "$prof"/sessionstore.js; do
       rm -f -- "$f" 2>/dev/null || true
     done
     shopt -u nullglob
   done
 }
 
-# Class regexes (Hyprland client .class values)
+# ---------------------------------------------------------------------------
+# App registry — single source of truth. Add/edit an app here only.
+#   APPS                 ordered list of ids (launch order; ws-ascending,
+#                        and Firefox before Sublime so Sublime tiles right)
+#   APP_NAME             human-readable name (logs)
+#   APP_RESOLVE          candidate executables (first found wins)
+#   APP_CLASS_RE         Hyprland client .class regex
+#   APP_WS               target workspace
+#   APP_PROC             pgrep -f pattern (soft mode "is it running?")
+#   APP_ARGS             extra launch args (space-separated; optional)
+#   APP_CLOSE_TIMEOUT    graceful-close timeout, seconds (default 25)
+#   APP_PREHOOK          function to run right before launching (optional)
+#   APP_FOCUS_BEFORE     focus a window of this class regex before launching,
+#                        so the new window tiles to its right (optional)
+#   APP_KILL_ZOMBIE      1 = if running but window-less, kill before relaunch
+# ---------------------------------------------------------------------------
 CHROME_CLASS_RE='^(google-chrome|google-chrome-stable|chrome)$'
 CHROMIUM_CLASS_RE='^(chromium|chromium-browser|Chromium-browser|Chromium)$'
 BRAVE_CLASS_RE='^(brave-browser|Brave-browser|Brave)$'
 FIREFOX_CLASS_RE='^(firefox|Firefox|org\.mozilla\.firefox)$'
-PHPSTORM_CLASS_RE='^(jetbrains-phpstorm|jetbrains-phpstorm-eap|jetbrains-.*phpstorm.*)$'
+SUBLIME_CLASS_RE='^(sublime_text|Sublime_text|subl)$'
 KITTY_CLASS_RE='^(kitty|Kitty)$'
 
+APPS=(chromium kitty firefox sublime brave chrome)
 
-if [[ "$MODE" == "hard" ]]; then
-  # Close browsers/IDE/terminal first (only if their command exists)
-  if [[ -n "$CHROME_CMD" ]]; then
-    if close_app_gracefully "Google Chrome" "$CHROME_CLASS_RE" 30; then
-      LAUNCH_CHROME=1
-    else
-      err "Chrome did not close cleanly; it will not be relaunched automatically."
-    fi
-  else
-    log "Chrome not found; skipping."
-  fi
+declare -A APP_NAME APP_RESOLVE APP_CLASS_RE APP_WS APP_PROC \
+           APP_ARGS APP_CLOSE_TIMEOUT APP_PREHOOK APP_FOCUS_BEFORE \
+           APP_KILL_ZOMBIE APP_CMD APP_LAUNCH
 
-  if [[ -n "$FIREFOX_CMD" ]]; then
-    # Firefox usually exits cleanly with window close.
-    if close_app_gracefully "Firefox" "$FIREFOX_CLASS_RE" 30; then
-      LAUNCH_FIREFOX=1
-    else
-      err "Firefox did not close cleanly; it will not be relaunched automatically."
-    fi
-  else
-    log "Firefox not found; skipping."
-  fi
+CRASH_FLAGS='--no-first-run --disable-session-crashed-bubble'
 
-  if [[ -n "$CHROMIUM_CMD" ]]; then
-    if close_app_gracefully "Chromium" "$CHROMIUM_CLASS_RE" 30; then
-      LAUNCH_CHROMIUM=1
-    else
-      err "Chromium did not close cleanly; it will not be relaunched automatically."
-    fi
-  else
-    log "Chromium not found; skipping."
-  fi
+# Chromium
+APP_NAME[chromium]='Chromium'
+APP_RESOLVE[chromium]='chromium-browser chromium'
+APP_CLASS_RE[chromium]="$CHROMIUM_CLASS_RE"
+APP_WS[chromium]=1
+APP_PROC[chromium]='chromium'
+APP_ARGS[chromium]="$CRASH_FLAGS"
+APP_CLOSE_TIMEOUT[chromium]=30
 
-  if [[ -n "$BRAVE_CMD" ]]; then
-    if close_app_gracefully "Brave" "$BRAVE_CLASS_RE" 30; then
-      LAUNCH_BRAVE=1
-    else
-      err "Brave did not close cleanly; it will not be relaunched automatically."
-    fi
-  else
-    log "Brave not found; skipping."
-  fi
+# Kitty
+APP_NAME[kitty]='Kitty'
+APP_RESOLVE[kitty]='kitty'
+APP_CLASS_RE[kitty]="$KITTY_CLASS_RE"
+APP_WS[kitty]=3
+APP_PROC[kitty]='kitty'
+APP_CLOSE_TIMEOUT[kitty]=20
 
-  if [[ -n "$KITTY_CMD" ]]; then
-    # Kitty usually exits cleanly on WM close.
-    if close_app_gracefully "Kitty" "$KITTY_CLASS_RE" 20; then
-      LAUNCH_KITTY=1
-    else
-      err "Kitty did not close cleanly; it will not be relaunched automatically."
-    fi
-  else
-    log "Kitty not found; skipping."
-  fi
+# Firefox (left half of workspace 5)
+APP_NAME[firefox]='Firefox'
+APP_RESOLVE[firefox]='firefox'
+APP_CLASS_RE[firefox]="$FIREFOX_CLASS_RE"
+APP_WS[firefox]=5
+APP_PROC[firefox]='firefox'
+APP_CLOSE_TIMEOUT[firefox]=30
+APP_PREHOOK[firefox]='clear_firefox_crash_recovery'
+APP_KILL_ZOMBIE[firefox]=1
 
-  if [[ -n "$PHPSTORM_CMD" ]]; then
-    if close_app_gracefully "PhpStorm" "$PHPSTORM_CLASS_RE" 40; then
-      LAUNCH_PHPSTORM=1
-    else
-      log "PhpStorm windows did not close cleanly; force-killing process..."
-      pkill -9 -f "phpstorm" || true
-      sleep 1
-      LAUNCH_PHPSTORM=1
-    fi
-  else
-    log "PhpStorm not found; skipping."
-  fi
-fi
+# Sublime Text (right half of workspace 5 — focus Firefox first so it tiles right)
+APP_NAME[sublime]='Sublime Text'
+APP_RESOLVE[sublime]='subl sublime_text subl3'
+APP_CLASS_RE[sublime]="$SUBLIME_CLASS_RE"
+APP_WS[sublime]=5
+APP_PROC[sublime]='sublime_text'
+APP_CLOSE_TIMEOUT[sublime]=30
+APP_FOCUS_BEFORE[sublime]="$FIREFOX_CLASS_RE"
 
-# Make sure displays are properly set
-~/.config/hypr/apply-displays.sh
+# Brave
+APP_NAME[brave]='Brave'
+APP_RESOLVE[brave]='brave-browser brave'
+APP_CLASS_RE[brave]="$BRAVE_CLASS_RE"
+APP_WS[brave]=7
+APP_PROC[brave]='brave'
+APP_ARGS[brave]="$CRASH_FLAGS"
+APP_CLOSE_TIMEOUT[brave]=30
 
-# Check if a process matching pattern is running
-is_process_running() {
-  local pattern="$1"
-  if pgrep -f "$pattern" >/dev/null 2>&1; then
-    return 0
-  fi
-  return 1
+# Chrome
+APP_NAME[chrome]='Google Chrome'
+APP_RESOLVE[chrome]='google-chrome-stable google-chrome chrome'
+APP_CLASS_RE[chrome]="$CHROME_CLASS_RE"
+APP_WS[chrome]=9
+APP_PROC[chrome]='chrome'
+APP_ARGS[chrome]="$CRASH_FLAGS"
+APP_CLOSE_TIMEOUT[chrome]=30
+
+# Resolve every app's command up front (empty => not installed => skipped).
+for id in "${APPS[@]}"; do
+  APP_CMD[$id]=$(resolve_cmd ${APP_RESOLVE[$id]} || true)
+  APP_LAUNCH[$id]=0
+done
+
+# ---------------------------------------------------------------------------
+# Per-app operations (driven entirely by the registry above)
+# ---------------------------------------------------------------------------
+
+run_prehook() {
+  local hook="${APP_PREHOOK[$1]:-}"
+  [[ -n "$hook" ]] && "$hook"
+  return 0
 }
 
-# Launch/place apps on requested workspaces
-# Chromium-family: suppress the "restore session" bubble if the browser thinks it crashed.
-if [[ "$MODE" == "hard" ]]; then
-  if [[ -n "$CHROMIUM_CMD" && $LAUNCH_CHROMIUM -eq 1 ]]; then
-    launch_on_workspace 3 "$CHROMIUM_CMD" --no-first-run --disable-session-crashed-bubble
-  fi
+focus_before_launch() {
+  local re="${APP_FOCUS_BEFORE[$1]:-}"
+  [[ -n "$re" ]] && focus_first_window_of_class "$re"
+  return 0
+}
 
-  if [[ -n "$FIREFOX_CMD" && $LAUNCH_FIREFOX -eq 1 ]]; then
-    clear_firefox_crash_recovery
-    launch_on_workspace 5 "$FIREFOX_CMD" --devtools
-  fi
+do_launch() {
+  local id="$1"
+  run_prehook "$id"
+  focus_before_launch "$id"
+  launch_on_workspace "${APP_WS[$id]}" "${APP_CMD[$id]}" ${APP_ARGS[$id]:-}
+}
 
-  if [[ -n "$BRAVE_CMD" && $LAUNCH_BRAVE -eq 1 ]]; then
-    launch_on_workspace 7 "$BRAVE_CMD" --no-first-run --disable-session-crashed-bubble
+# hard mode: close the app and arm it for relaunch if it closed cleanly.
+close_app() {
+  local id="$1"
+  local name="${APP_NAME[$id]}"
+  if [[ -z "${APP_CMD[$id]}" ]]; then
+    log "$name not found; skipping."
+    return 0
   fi
-
-  if [[ -n "$CHROME_CMD" && $LAUNCH_CHROME -eq 1 ]]; then
-    launch_on_workspace 9 "$CHROME_CMD" --no-first-run --disable-session-crashed-bubble
-  fi
-
-  if [[ -n "$KITTY_CMD" && $LAUNCH_KITTY -eq 1 ]]; then
-    launch_on_workspace 10 "$KITTY_CMD"
-  fi
-
-  # Launch PhpStorm last (as requested)
-  if [[ -n "$PHPSTORM_CMD" && $LAUNCH_PHPSTORM -eq 1 ]]; then
-    sleep 1  # Brief delay to ensure PhpStorm process is fully terminated
-    launch_phpstorm_ws1
+  if close_app_gracefully "$name" "${APP_CLASS_RE[$id]}" "${APP_CLOSE_TIMEOUT[$id]:-25}"; then
+    APP_LAUNCH[$id]=1
   else
-    log "PhpStorm launch skipped: PHPSTORM_CMD='$PHPSTORM_CMD', LAUNCH_PHPSTORM=$LAUNCH_PHPSTORM"
+    err "$name did not close cleanly; it will not be relaunched automatically."
+  fi
+}
+
+# hard mode: relaunch only apps that were closed cleanly above.
+relaunch_app() {
+  local id="$1"
+  [[ -n "${APP_CMD[$id]}" && "${APP_LAUNCH[$id]}" -eq 1 ]] || return 0
+  do_launch "$id"
+}
+
+# soft mode: don't close anything. If running with a window, move it to its
+# workspace; otherwise (re)launch it there.
+place_or_launch_app() {
+  local id="$1"
+  local name="${APP_NAME[$id]}"
+  local re="${APP_CLASS_RE[$id]}"
+  if [[ -z "${APP_CMD[$id]}" ]]; then
+    log "$name not found; skipping."
+    return 0
   fi
 
-# Soft mode: do not close anything. Ensure apps exist and are on desired workspaces.
-elif [[ "$MODE" == "soft" ]]; then
-
-
-  # Chromium
-  if is_process_running "chromium"; then
-    log "Chromium is running; checking for windows..."
-    if has_window_for_class_regex "$CHROMIUM_CLASS_RE"; then
-      move_first_window_of_class_to_workspace "$CHROMIUM_CLASS_RE" 3
-    else
-      launch_on_workspace 3 "$CHROMIUM_CMD"
+  if is_process_running "${APP_PROC[$id]}"; then
+    log "$name is running; checking for windows..."
+    if has_window_for_class_regex "$re"; then
+      move_first_window_of_class_to_workspace "$re" "${APP_WS[$id]}"
+      return 0
     fi
-  else
-    launch_on_workspace 3 "$CHROMIUM_CMD" --no-first-run --disable-session-crashed-bubble
-  fi
-
-  # Firefox
-  if is_process_running "firefox"; then
-    log "Firefox is running; checking for windows..."
-    if has_window_for_class_regex "$FIREFOX_CLASS_RE"; then
-      move_first_window_of_class_to_workspace "$FIREFOX_CLASS_RE" 5
-    else
-      log "Firefox running but no window found (possible zombie/headless). Killing process to ensure clean launch..."
-      pkill -f "firefox" || true
+    # Running but no window (zombie/headless).
+    if [[ "${APP_KILL_ZOMBIE[$id]:-0}" -eq 1 ]]; then
+      log "$name running but no window found; killing stale process for a clean launch..."
+      pkill -f "${APP_PROC[$id]}" || true
       sleep 1
-      clear_firefox_crash_recovery
-      launch_on_workspace 5 "$FIREFOX_CMD" --devtools
     fi
   else
-    log "Firefox not running; launching..."
-    clear_firefox_crash_recovery
-    launch_on_workspace 5 "$FIREFOX_CMD" --devtools
+    log "$name not running; launching..."
   fi
 
-  # Brave
-  if is_process_running "brave"; then
-    log "Brave is running; checking for windows..."
-    if has_window_for_class_regex "$BRAVE_CLASS_RE"; then
-      move_first_window_of_class_to_workspace "$BRAVE_CLASS_RE" 7
-    else
-      launch_on_workspace 7 "$BRAVE_CMD"
-    fi
-  else
-    launch_on_workspace 7 "$BRAVE_CMD" --no-first-run --disable-session-crashed-bubble
-  fi
+  do_launch "$id"
+}
 
-  # Chrome
-  if is_process_running "chrome"; then
-    log "Chrome is running; checking for windows..."
-    if has_window_for_class_regex "$CHROME_CLASS_RE"; then
-      move_first_window_of_class_to_workspace "$CHROME_CLASS_RE" 9
-    else
-      launch_on_workspace 9 "$CHROME_CMD"
-    fi
-  else
-    launch_on_workspace 9 "$CHROME_CMD" --no-first-run --disable-session-crashed-bubble
-  fi
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
 
-  # Kitty
-  if is_process_running "kitty"; then
-    log "Kitty is running; checking for windows..."
-    if has_window_for_class_regex "$KITTY_CLASS_RE"; then
-      move_first_window_of_class_to_workspace "$KITTY_CLASS_RE" 10
-    else
-      launch_on_workspace 10 "$KITTY_CMD"
-    fi
-  else
-    launch_on_workspace 10 "$KITTY_CMD"
-  fi
-
-# PhpStorm
-if is_process_running "phpstorm"; then
-  log "PhpStorm is running; checking for windows..."
-  if has_window_for_class_regex "$PHPSTORM_CLASS_RE"; then
-    move_first_window_of_class_to_workspace "$PHPSTORM_CLASS_RE" 1
-  else
-    log "PhpStorm process found but no window present. Killing stale process and relaunching..."
-    pkill -f "phpstorm" || true
-    sleep 1
-    launch_phpstorm_ws1
-  fi
-else
-  launch_phpstorm_ws1
+# hard mode: close phase first (so relaunches start from a clean state).
+if [[ "$MODE" == "hard" ]]; then
+  for id in "${APPS[@]}"; do
+    close_app "$id"
+  done
 fi
 
-fi
+# Make sure displays are properly set before placing windows.
+~/.config/hypr/apply-displays.sh
+
+# Launch/place phase.
+for id in "${APPS[@]}"; do
+  if [[ "$MODE" == "hard" ]]; then
+    relaunch_app "$id"
+  else
+    place_or_launch_app "$id"
+  fi
+done
 
 log "Done."

@@ -16,8 +16,8 @@ fi
 # Wait a bit for outputs to appear/settle (e.g. USB-C docks, DP MST).
 # With the ZEUSLAP attached you typically have 5 outputs; waiting for 5 avoids missing it if it appears late.
 for _ in $(seq 1 40); do
-  if hyprctl monitors -j >/dev/null 2>&1; then
-    count=$(hyprctl monitors -j | jq 'length')
+  monitors_json=$(hyprctl monitors -j 2>/dev/null || true)
+  if count=$(jq -e 'length' <<<"${monitors_json}" 2>/dev/null); then
     if [ "${count}" -ge 5 ]; then
       break
     fi
@@ -26,7 +26,7 @@ for _ in $(seq 1 40); do
 done
 
 monitors_json=$(hyprctl monitors -j 2>/dev/null || true)
-if [ -z "${monitors_json}" ]; then
+if ! jq -e type <<<"${monitors_json}" >/dev/null 2>&1; then
   exit 0
 fi
 
@@ -56,12 +56,33 @@ fi
 # Bottom Row:
 # ZEUSLAP higher connector name (Left-ish): 961x1569
 # ZEUSLAP lower connector name (Right): 3760x1569
-BATCH="keyword monitor ${name_left},2560x1440@60,0x129,1,transform,0,vrr,0; \
-keyword monitor ${name_dell},1920x1200@60,2560x129,1,transform,1,vrr,0; \
-keyword monitor ${name_ultra},3440x1440@60,3760x129,1,transform,0,vrr,0; \
-keyword monitor ${name_zus_left},2560x1600@60,961x1569,1.60,transform,0,vrr,0; \
-keyword monitor ${name_zus_right},2560x1600@60,3760x1569,1.60,transform,0,vrr,0;"
+# KOGAN 27" (DisplayPort) supports 2560x1440@180; KOGAN 34" ultrawide (DisplayPort)
+# supports 3440x1440@144. Both are DP, so no HDMI bandwidth/flicker concerns.
+rule_left="monitor ${name_left},2560x1440@180,0x129,1,transform,0,vrr,0"
+# Dell U2421E is a native 60Hz panel — leave at 60.
+rule_dell="monitor ${name_dell},1920x1200@60,2560x129,1,transform,1,vrr,0"
+rule_ultra="monitor ${name_ultra},3440x1440@144,3760x129,1,transform,0,vrr,0"
+rule_zus_left="monitor ${name_zus_left},2560x1600@60,961x1569,1.60,transform,0,vrr,0"
+rule_zus_right="monitor ${name_zus_right},2560x1600@60,3760x1569,1.60,transform,0,vrr,0"
+
+BATCH="keyword ${rule_left}; \
+keyword ${rule_dell}; \
+keyword ${rule_ultra}; \
+keyword ${rule_zus_left}; \
+keyword ${rule_zus_right};"
 hyprctl --batch "${BATCH}" >/dev/null 2>&1 || true
+
+# The lower-numbered ZEUSLAP on HDMI-A-2 can come up flickering after login.
+# A targeted DPMS cycle retrains only that HDMI link without disturbing the rest
+# of the monitor layout. Re-apply the native 60 Hz rule after the link comes
+# back so the AMD HDMI output does not keep a bad post-DPMS mode.
+if [[ "${name_zus_right}" == HDMI-A-* ]]; then
+  hyprctl dispatch dpms off "${name_zus_right}" >/dev/null 2>&1 || true
+  sleep 2
+  hyprctl dispatch dpms on "${name_zus_right}" >/dev/null 2>&1 || true
+  sleep 0.5
+  hyprctl keyword "${rule_zus_right}" >/dev/null 2>&1 || true
+fi
 
 # Ensure workspace-to-monitor placement (best-effort; harmless if some workspaces don't exist yet).
 # 2 workspaces per display.
