@@ -226,6 +226,23 @@ const WORKING_STATUS_ORDER: Record<string, number> = {
   "To Do": 2,
 };
 
+// How recent a PM-channel run or session activity must be to count as "what
+// the agent is doing right now". Runs can wedge in `streaming` for days when
+// a stream dies, so status alone is not enough.
+const LIVE_FRESH_MS = 15 * 60_000;
+
+// Fresh live-session activity preview from the Atlas snapshot (ts is epoch
+// ms straight off the agent's CLI jsonl, so it tracks the busy probe).
+function liveActivityPreview(live?: SnapshotAgent | null): string | null {
+  const last = live?.last_activity;
+  if (!last || typeof last === "string") return null;
+  if (!last.ts || Date.now() - last.ts > LIVE_FRESH_MS) return null;
+  const item = last.items?.find((i) => (i.preview ?? "").trim().length > 0);
+  if (!item?.preview) return null;
+  const text = item.preview.trim().replace(/\s+/g, " ");
+  return text.length > 120 ? `${text.slice(0, 119)}…` : text;
+}
+
 function workingRank(status: string) {
   return WORKING_STATUS_ORDER[status] ?? 4;
 }
@@ -317,6 +334,8 @@ export default async function AgentsPage() {
         agentSlug: true,
         kind: true,
         status: true,
+        taskId: true,
+        epicId: true,
         createdAt: true,
         updatedAt: true,
         acceptedAt: true,
@@ -336,9 +355,19 @@ export default async function AgentsPage() {
   // Per-agent freshness signals straight from the PM DB (the Atlas snapshot's
   // current_task/last_activity fields lag behind): the agent's latest audit
   // row and its non-system event count over the last 24h (temperature).
-  const dayAgo = new Date(Date.now() - 24 * 3_600_000);
+  const now = Date.now();
+  const dayAgo = new Date(now - 24 * 3_600_000);
   const agentUserIds = agents.map((a) => a.user?.id).filter((id): id is string => Boolean(id));
-  const [lastActionRows, activity24hGroups, reviewTasks] = await Promise.all([
+  // Fresh in-flight PM turns (stale wedged runs excluded) — these say exactly
+  // what a busy agent is answering right now.
+  const freshPendingRuns = recentPmRuns.filter(
+    (run) =>
+      (run.status === "queued" || run.status === "accepted" || run.status === "streaming") &&
+      now - run.updatedAt.getTime() < LIVE_FRESH_MS,
+  );
+  const runTaskIds = [...new Set(freshPendingRuns.map((r) => r.taskId).filter((id): id is string => Boolean(id)))];
+  const runEpicIds = [...new Set(freshPendingRuns.map((r) => r.epicId).filter((id): id is string => Boolean(id)))];
+  const [lastActionRows, activity24hGroups, reviewTasks, runTasks, runEpics] = await Promise.all([
     Promise.all(
       agents.map((a) =>
         a.user
@@ -381,11 +410,48 @@ export default async function AgentsPage() {
           },
         })
       : Promise.resolve([]),
+    runTaskIds.length > 0
+      ? db.task.findMany({
+          where: { id: { in: runTaskIds } },
+          select: { id: true, title: true, project: { select: { slug: true } } },
+        })
+      : Promise.resolve([]),
+    runEpicIds.length > 0
+      ? db.epic.findMany({
+          where: { id: { in: runEpicIds } },
+          select: { id: true, title: true, project: { select: { slug: true } } },
+        })
+      : Promise.resolve([]),
   ]);
   const lastActionBySlug = new Map(agents.map((a, i) => [a.slug, lastActionRows[i]]));
   const events24hByUserId = new Map(activity24hGroups.map((row) => [row.userId, row._count._all]));
   const reviewOwnedBy = (userId: string) =>
     reviewTasks.filter((t) => t.actingManagerId === userId || t.epic?.actingManagerId === userId);
+  const runTaskById = new Map(runTasks.map((t) => [t.id, t]));
+  const runEpicById = new Map(runEpics.map((e) => [e.id, e]));
+
+  // Human line for an in-flight PM-channel turn.
+  function liveRunWork(run: (typeof freshPendingRuns)[number]): { label: string; href: string | null } {
+    if (run.kind === "direct") {
+      return { label: "Replying in direct chat", href: `/agents/${run.agentSlug}/chat` };
+    }
+    if (run.taskId) {
+      const t = runTaskById.get(run.taskId);
+      const verb = run.kind === "task-comment" ? "Writing a comment on" : "Replying in chat on";
+      return {
+        label: `${verb} ${t?.title ?? "a task"}`,
+        href: t ? `/projects/${t.project.slug}/tasks/${run.taskId}` : null,
+      };
+    }
+    if (run.epicId) {
+      const e = runEpicById.get(run.epicId);
+      return {
+        label: `Replying on epic ${e?.title ?? ""}`.trim(),
+        href: e ? `/projects/${e.project.slug}/epics/${run.epicId}` : null,
+      };
+    }
+    return { label: `PM channel turn (${run.kind})`, href: null };
+  }
 
   const rawAgentJsons = agents.map((agent) => agent.rawJson);
   const clientAgents = await Promise.all(
@@ -504,6 +570,23 @@ export default async function AgentsPage() {
             const workingTasks = [...new Map([...assignedOpen, ...reviewing].map((t) => [t.id, t])).values()]
               .sort((x, y) => workingRank(x.status) - workingRank(y.status))
               .slice(0, 3);
+            // "Right now" line: a fresh in-flight PM turn wins; a busy agent
+            // without one falls back to its live session preview / busy
+            // signals so the tile always says what the pulse is about.
+            const liveRun = pendingRuns.find((run) => now - run.updatedAt.getTime() < LIVE_FRESH_MS) ?? null;
+            const busy = status === "busy";
+            const livePreview = busy ? liveActivityPreview(live) : null;
+            const busySignals = live?.busy_state?.signals?.filter(Boolean) ?? [];
+            const liveWork = liveRun
+              ? liveRunWork(liveRun)
+              : busy
+                ? livePreview
+                  ? { label: livePreview, href: null }
+                  : busySignals.length > 0
+                    ? { label: `Busy — ${busySignals.join(", ")}`, href: null }
+                    : { label: "Busy — live session active", href: null }
+                : null;
+            const hasWork = liveWork !== null || workingTasks.length > 0;
             const lastAction = lastActionBySlug.get(a.slug) ?? null;
             const lastActionLabel = lastAction
               ? describeActivity({
@@ -592,16 +675,38 @@ export default async function AgentsPage() {
                   </div>
                 </div>
 
-                <div className="relative mt-3 grid gap-x-4 gap-y-2.5 border-t border-line pt-2.5 sm:grid-cols-2">
-                  <div className="min-w-0">
-                    <div className="inline-flex items-center gap-1.5 text-micro font-bold uppercase tracking-wider text-text">
-                      <span className="text-accent"><ClipboardListIcon /></span>
-                      Working on
-                    </div>
-                    {workingTasks.length === 0 ? (
-                      <p className="mt-0.5 text-body text-text-muted">No open task assigned</p>
-                    ) : (
+                <div className={`relative mt-3 grid gap-x-4 gap-y-2.5 border-t border-line pt-2.5 ${hasWork ? "sm:grid-cols-2" : ""}`}>
+                  {hasWork ? (
+                    <div className="min-w-0">
+                      <div className="inline-flex items-center gap-1.5 text-micro font-bold uppercase tracking-wider text-text">
+                        <span className="text-accent"><ClipboardListIcon /></span>
+                        Working on
+                      </div>
                       <ul className="mt-1 space-y-1">
+                        {liveWork ? (
+                          <li className="flex min-w-0 items-center gap-2 text-body">
+                            <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">
+                              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ok opacity-60" />
+                              <span className="relative inline-flex h-2 w-2 rounded-full bg-ok" />
+                            </span>
+                            <span className="shrink-0 rounded-full border border-ok/40 bg-ok/10 px-1.5 py-px text-pico font-semibold uppercase text-ok">
+                              live
+                            </span>
+                            {liveWork.href ? (
+                              <Link
+                                href={liveWork.href}
+                                className="min-w-0 truncate font-medium hover:text-accent hover:underline"
+                                title={liveWork.label}
+                              >
+                                {liveWork.label}
+                              </Link>
+                            ) : (
+                              <span className="min-w-0 truncate font-medium" title={liveWork.label}>
+                                {liveWork.label}
+                              </span>
+                            )}
+                          </li>
+                        ) : null}
                         {workingTasks.map((t) => (
                           <li key={t.id} className="flex min-w-0 items-center gap-2 text-body">
                             <span className={`shrink-0 rounded-full border px-1.5 py-px text-pico font-semibold ${statusPillClass(t.status)}`}>
@@ -618,8 +723,8 @@ export default async function AgentsPage() {
                           </li>
                         ))}
                       </ul>
-                    )}
-                  </div>
+                    </div>
+                  ) : null}
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                       <span className="inline-flex items-center gap-1.5 text-micro font-bold uppercase tracking-wider text-text">
