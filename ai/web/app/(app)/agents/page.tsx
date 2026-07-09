@@ -666,88 +666,89 @@ export default async function AgentsPage() {
                             <span className="tabular-nums">{formatIdle(live?.session_idle_s)}</span>
                           </span>
                         </div>
+
+                        {/* One or the other: current work when there is any,
+                            otherwise the most recent recorded action. */}
+                        {hasWork ? (
+                          <div className="mt-2.5 min-w-0">
+                            <div className="inline-flex items-center gap-1.5 text-micro font-bold uppercase tracking-wider text-text">
+                              <span className="text-accent"><ClipboardListIcon /></span>
+                              Working on
+                            </div>
+                            <ul className="mt-1 space-y-1">
+                              {liveWork ? (
+                                <li className="flex min-w-0 items-center gap-2 text-body">
+                                  <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">
+                                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ok opacity-60" />
+                                    <span className="relative inline-flex h-2 w-2 rounded-full bg-ok" />
+                                  </span>
+                                  <span className="shrink-0 rounded-full border border-ok/40 bg-ok/10 px-1.5 py-px text-pico font-semibold uppercase text-ok">
+                                    live
+                                  </span>
+                                  {liveWork.href ? (
+                                    <Link
+                                      href={liveWork.href}
+                                      className="min-w-0 truncate font-medium hover:text-accent hover:underline"
+                                      title={liveWork.label}
+                                    >
+                                      {liveWork.label}
+                                    </Link>
+                                  ) : (
+                                    <span className="min-w-0 truncate font-medium" title={liveWork.label}>
+                                      {liveWork.label}
+                                    </span>
+                                  )}
+                                </li>
+                              ) : null}
+                              {workingTasks.map((t) => (
+                                <li key={t.id} className="flex min-w-0 items-center gap-2 text-body">
+                                  <span className={`shrink-0 rounded-full border px-1.5 py-px text-pico font-semibold ${statusPillClass(t.status)}`}>
+                                    {t.status}
+                                  </span>
+                                  <Link
+                                    href={`/projects/${t.project.slug}/tasks/${t.id}`}
+                                    className="min-w-0 truncate font-medium hover:text-accent hover:underline"
+                                    title={t.title}
+                                  >
+                                    {t.title}
+                                  </Link>
+                                  <span className="shrink-0 text-caption text-text-muted">· {t.project.slug}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : (
+                          <div className="mt-2.5 min-w-0">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                              <span className="inline-flex items-center gap-1.5 text-micro font-bold uppercase tracking-wider text-text">
+                                <span className="text-accent"><HistoryIcon /></span>
+                                Last action
+                              </span>
+                              {lastAction ? (
+                                <span
+                                  className="inline-flex items-center gap-1 text-micro font-medium text-accent"
+                                  title={lastAction.createdAt.toISOString()}
+                                >
+                                  <CalendarIcon />
+                                  {formatAge(lastAction.createdAt)} · {formatClockShort(lastAction.createdAt)}
+                                </span>
+                              ) : null}
+                            </div>
+                            {lastAction && lastActionLabel ? (
+                              <p className="mt-0.5 truncate text-body" title={lastActionLabel}>
+                                {lastActionLabel}
+                              </p>
+                            ) : (
+                              <p className="mt-0.5 text-body text-text-muted">No recorded activity</p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
 
                   <div className="min-w-0 md:col-span-1">
                     <AgentServiceControls agent={a.slug} services={agentServices} />
-                  </div>
-                </div>
-
-                <div className={`relative mt-3 grid gap-x-4 gap-y-2.5 border-t border-line pt-2.5 ${hasWork ? "sm:grid-cols-2" : ""}`}>
-                  {hasWork ? (
-                    <div className="min-w-0">
-                      <div className="inline-flex items-center gap-1.5 text-micro font-bold uppercase tracking-wider text-text">
-                        <span className="text-accent"><ClipboardListIcon /></span>
-                        Working on
-                      </div>
-                      <ul className="mt-1 space-y-1">
-                        {liveWork ? (
-                          <li className="flex min-w-0 items-center gap-2 text-body">
-                            <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">
-                              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ok opacity-60" />
-                              <span className="relative inline-flex h-2 w-2 rounded-full bg-ok" />
-                            </span>
-                            <span className="shrink-0 rounded-full border border-ok/40 bg-ok/10 px-1.5 py-px text-pico font-semibold uppercase text-ok">
-                              live
-                            </span>
-                            {liveWork.href ? (
-                              <Link
-                                href={liveWork.href}
-                                className="min-w-0 truncate font-medium hover:text-accent hover:underline"
-                                title={liveWork.label}
-                              >
-                                {liveWork.label}
-                              </Link>
-                            ) : (
-                              <span className="min-w-0 truncate font-medium" title={liveWork.label}>
-                                {liveWork.label}
-                              </span>
-                            )}
-                          </li>
-                        ) : null}
-                        {workingTasks.map((t) => (
-                          <li key={t.id} className="flex min-w-0 items-center gap-2 text-body">
-                            <span className={`shrink-0 rounded-full border px-1.5 py-px text-pico font-semibold ${statusPillClass(t.status)}`}>
-                              {t.status}
-                            </span>
-                            <Link
-                              href={`/projects/${t.project.slug}/tasks/${t.id}`}
-                              className="min-w-0 truncate font-medium hover:text-accent hover:underline"
-                              title={t.title}
-                            >
-                              {t.title}
-                            </Link>
-                            <span className="shrink-0 text-caption text-text-muted">· {t.project.slug}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                      <span className="inline-flex items-center gap-1.5 text-micro font-bold uppercase tracking-wider text-text">
-                        <span className="text-accent"><HistoryIcon /></span>
-                        Last action
-                      </span>
-                      {lastAction ? (
-                        <span
-                          className="inline-flex items-center gap-1 text-micro font-medium text-accent"
-                          title={lastAction.createdAt.toISOString()}
-                        >
-                          <CalendarIcon />
-                          {formatAge(lastAction.createdAt)} · {formatClockShort(lastAction.createdAt)}
-                        </span>
-                      ) : null}
-                    </div>
-                    {lastAction && lastActionLabel ? (
-                      <p className="mt-0.5 truncate text-body" title={lastActionLabel}>
-                        {lastActionLabel}
-                      </p>
-                    ) : (
-                      <p className="mt-0.5 text-body text-text-muted">No recorded activity</p>
-                    )}
                   </div>
                 </div>
 
