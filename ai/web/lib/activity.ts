@@ -85,6 +85,29 @@ export type ActivityKind =
   | "project.archive"
   | "project.unarchive"
   | "agent.sync"
+  | "task.subtask.add"
+  | "task.subtask.complete"
+  | "task.subtask.delete"
+  | "task.subtask.time"
+  | "task.chat.reply"
+  | "epic.chat.reply"
+  | "task.chat.stream_error"
+  | "task.action_plan.approve"
+  | "task.action_plan.reset"
+  | "epic.action_plan.reset"
+  | "task.branch"
+  | "task.commit_prefix"
+  | "task.workflow.notify"
+  | "task.workflow.dispatch"
+  | "task.workflow.next_assignment_skipped"
+  | "task.comment.dispatch"
+  | "pm.repo.verify.enqueue"
+  | "pm.repo.verify.ok"
+  | "pm.repo.verify.fail"
+  | "pm.channel.latency_warning"
+  | "agent.wake.delivered"
+  | "agent.wake.unmatched"
+  | "pm.self_assignment_guard"
   | string;
 
 export interface ActivityRow {
@@ -139,6 +162,11 @@ function parsePayload<T>(payload: string | null): T | null {
   } catch {
     return null;
   }
+}
+
+function trunc(text: string, max = 64): string {
+  const clean = text.trim();
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
 function actor(name: string | null): string {
@@ -504,6 +532,94 @@ export function describeActivity(row: ActivityRow): string {
     case "workitem.proposal.reject": {
       const p = parsePayload<{ agentSlug?: string }>(row.payload);
       return `${actor(row.actorName)} rejected a work-item proposal from @${p?.agentSlug ?? "agent"}`;
+    }
+    case "task.subtask.add":
+    case "task.subtask.complete":
+    case "task.subtask.delete": {
+      const p = parsePayload<{ text?: string }>(row.payload);
+      const verb =
+        row.kind === "task.subtask.add" ? "added" : row.kind === "task.subtask.complete" ? "completed" : "removed";
+      const item = p?.text ? ` “${trunc(p.text)}”` : "";
+      return `${actor(row.actorName)} ${verb} checklist item${item} on ${task(row.taskTitle)}`;
+    }
+    case "task.subtask.time": {
+      const p = parsePayload<{ text?: string; minutesSpent?: number }>(row.payload);
+      const minutes = p?.minutesSpent != null ? `${p.minutesSpent}m` : "time";
+      const item = p?.text ? ` “${trunc(p.text)}”` : "";
+      return `${actor(row.actorName)} logged ${minutes} on checklist item${item}`;
+    }
+    case "task.chat.reply":
+    case "epic.chat.reply": {
+      const p = parsePayload<{ agentSlug?: string }>(row.payload);
+      const target = row.kind === "task.chat.reply" ? task(row.taskTitle) : "an epic";
+      return `@${p?.agentSlug ?? "agent"} replied in the chat on ${target}`;
+    }
+    case "task.chat.stream_error": {
+      const p = parsePayload<{ target?: { agentSlug?: string }; error?: string }>(row.payload);
+      const slug = p?.target?.agentSlug;
+      return `Chat stream ${slug ? `to @${slug} ` : ""}failed on ${task(row.taskTitle)}${p?.error ? `: ${trunc(p.error, 80)}` : ""}`;
+    }
+    case "task.action_plan.approve":
+      return `${actor(row.actorName)} approved the action plan on ${task(row.taskTitle)}`;
+    case "task.action_plan.reset":
+    case "epic.action_plan.reset": {
+      const p = parsePayload<{ reason?: string }>(row.payload);
+      const target = row.kind === "task.action_plan.reset" ? task(row.taskTitle) : "an epic";
+      return `Action plan reset on ${target}${p?.reason ? ` (${p.reason})` : ""}`;
+    }
+    case "task.branch": {
+      const p = parsePayload<{ from?: string | null; to?: string | null }>(row.payload);
+      if (p?.to && !p?.from) return `${actor(row.actorName)} set branch ${p.to} on ${task(row.taskTitle)}`;
+      if (p?.from && !p?.to) return `${actor(row.actorName)} cleared branch on ${task(row.taskTitle)} (was ${p.from})`;
+      if (p?.from && p?.to) return `${actor(row.actorName)} changed branch on ${task(row.taskTitle)} to ${p.to}`;
+      return `${actor(row.actorName)} updated branch on ${task(row.taskTitle)}`;
+    }
+    case "task.commit_prefix": {
+      const p = parsePayload<{ from?: string | null; to?: string | null }>(row.payload);
+      return p?.to
+        ? `${actor(row.actorName)} set commit prefix ${p.to} on ${task(row.taskTitle)}`
+        : `${actor(row.actorName)} updated commit prefix on ${task(row.taskTitle)}`;
+    }
+    case "task.workflow.notify": {
+      const p = parsePayload<{ agentSlug?: string; reason?: string }>(row.payload);
+      return `PM workflow notified @${p?.agentSlug ?? "?"}${p?.reason ? ` (${p.reason})` : ""}`;
+    }
+    case "task.workflow.dispatch": {
+      const p = parsePayload<{ agentSlug?: string; reason?: string; error?: string | null }>(row.payload);
+      const base = `PM dispatched a workflow turn to @${p?.agentSlug ?? "?"}${p?.reason ? ` (${p.reason})` : ""}`;
+      return p?.error ? `${base} — error: ${trunc(p.error, 80)}` : base;
+    }
+    case "task.workflow.next_assignment_skipped": {
+      const p = parsePayload<{ reason?: string }>(row.payload);
+      return `Workflow skipped the next assignment${p?.reason ? ` (${p.reason})` : ""}`;
+    }
+    case "task.comment.dispatch": {
+      const p = parsePayload<{ agentSlug?: string; reason?: string[]; error?: string | null }>(row.payload);
+      const reasons = p?.reason?.length ? ` (${p.reason.join(", ")})` : "";
+      const base = `PM dispatched a comment to @${p?.agentSlug ?? "?"}${reasons}`;
+      return p?.error ? `${base} — error: ${trunc(p.error, 80)}` : base;
+    }
+    case "pm.repo.verify.enqueue":
+    case "pm.repo.verify.ok":
+    case "pm.repo.verify.fail": {
+      const p = parsePayload<{ branchName?: string }>(row.payload);
+      const verb = row.kind.endsWith(".enqueue") ? "queued" : row.kind.endsWith(".ok") ? "passed" : "failed";
+      return `Repo verify ${verb}${p?.branchName ? ` for ${p.branchName}` : ""}`;
+    }
+    case "pm.channel.latency_warning": {
+      const p = parsePayload<{ agentSlug?: string; kind?: string }>(row.payload);
+      return `PM channel latency warning — @${p?.agentSlug ?? "?"}${p?.kind ? ` (${p.kind})` : ""}`;
+    }
+    case "agent.wake.delivered":
+    case "agent.wake.unmatched": {
+      const p = parsePayload<{ kind?: string }>(row.payload);
+      const event = p?.kind ? `${p.kind} wake event` : "Wake event";
+      return row.kind.endsWith(".delivered") ? `${event} delivered` : `${event} matched no agent`;
+    }
+    case "pm.self_assignment_guard": {
+      const p = parsePayload<{ repairs?: unknown[] }>(row.payload);
+      const n = p?.repairs?.length ?? 0;
+      return `Self-assignment guard repaired ${n} assignment${n === 1 ? "" : "s"}`;
     }
     case "system.settings":
       return `${actor(row.actorName)} updated system settings`;

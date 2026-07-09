@@ -1,125 +1,14 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { resolveEffectiveAgentConfig } from "@/lib/agents/management/effective-config";
-import { describeActivity } from "@/lib/activity";
 import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel/latency";
-import { MessageAvatar, MessageTimestamp, type MessageActor } from "@/components/message-avatar";
+import { readAtlasSnapshot, type SnapshotAgent } from "@/lib/atlas-snapshot";
 import AgentServiceControls, { type AgentService } from "./agent-service-controls";
 import fs from "fs/promises";
-import path from "path";
 import AgentManagementControls from "./agent-management-controls";
 import { getSystemSettings } from "@/lib/settings/system";
 
 export const dynamic = "force-dynamic";
-
-type SnapshotAgent = {
-  name?: string;
-  role?: string;
-  avatar?: string;
-  avatar_url?: string;
-  bot?: string;
-  gateway_listeners?: number[];
-  current_task?: { heading?: string; ticket?: string; status?: string } | null;
-  session_idle_s?: number | null;
-  model_primary?: string | null;
-  busy_state?: { is_busy?: boolean; signals?: string[]; details?: Record<string, unknown> } | null;
-  jira_tickets?: Array<{ key?: string; summary?: string; status?: string; updated?: string }>;
-  last_activity?: {
-    ts?: number;
-    role?: string;
-    items?: Array<{ kind?: string; name?: string; preview?: string }>;
-    error?: string | null;
-    stop_reason?: string | null;
-  } | string | null;
-};
-
-type MonitorEvent = {
-  key?: string;
-  unit?: string;
-  kind?: string;
-  severity?: string;
-  first_seen?: string;
-  missed_runs?: number;
-  alert_sent?: boolean;
-};
-
-type MonitorState = {
-  last_tick?: {
-    ts?: string;
-    healthy?: boolean;
-    summary?: string;
-    issues?: number;
-    actions?: string[];
-  } | null;
-  open_events?: MonitorEvent[];
-  recent_decisions?: Array<{
-    ts?: string;
-    summary?: string;
-    actions_taken?: string[];
-    decision?: string;
-    issue?: { unit?: string; kind?: string; severity?: string };
-  }>;
-};
-
-const actorSelect = {
-  id: true,
-  username: true,
-  kind: true,
-  name: true,
-  avatarUpdatedAt: true,
-  agent: { select: { slug: true, name: true, avatar: true } },
-};
-
-type ActivityActorRow = {
-  id: string;
-  username: string;
-  kind: string;
-  name: string | null;
-  avatarUpdatedAt: Date | null;
-  agent: { slug: string; name: string; avatar: string | null } | null;
-};
-
-const systemActor: MessageActor = {
-  id: null,
-  username: "system",
-  kind: "system",
-  name: "System",
-  avatarUpdatedAt: null,
-  agent: null,
-};
-
-function serializeActivityActor(actor: ActivityActorRow | null): MessageActor | null {
-  if (!actor) return null;
-  return {
-    id: actor.id,
-    username: actor.username,
-    kind: actor.kind,
-    name: actor.name,
-    avatarUpdatedAt: actor.avatarUpdatedAt,
-    agent: actor.agent,
-  };
-}
-
-type Snapshot = {
-  ts?: number;
-  host?: string;
-  agents?: Record<string, SnapshotAgent>;
-  system?: Record<string, { is_active?: string }>;
-  monitor?: MonitorState;
-};
-
-async function readSnapshot(): Promise<Snapshot | null> {
-  try {
-    const res = await fetch("http://127.0.0.1:3013/agents/snapshot", {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as Snapshot;
-  } catch {
-    return null;
-  }
-}
 
 function avatarUrl(name: string) {
   const first = name.split(" ")[0] || name;
@@ -260,7 +149,7 @@ async function getModelConfig(slug: string): Promise<AgentModelConfig> {
 }
 
 export default async function AgentsPage() {
-  const [agents, recentActivity, snapshot, totalOpenTasks, totalActivityLogs, recentPmRuns, settings] = await Promise.all([
+  const [agents, snapshot, totalOpenTasks, recentPmRuns, settings] = await Promise.all([
     db.agent.findMany({
       orderBy: { slug: "asc" },
       include: {
@@ -276,23 +165,13 @@ export default async function AgentsPage() {
         },
       },
     }),
-    db.activityLog.findMany({
-      where: {
-        kind: { startsWith: "agent." },
-        NOT: { kind: "agent.sync" },
-      },
-      orderBy: { createdAt: "desc" },
-      take: 18,
-      include: { user: { select: actorSelect }, task: { select: { title: true } } },
-    }),
-    readSnapshot(),
+    readAtlasSnapshot(),
     db.task.count({
       where: {
         status: { not: "Done" },
         deletedAt: null,
       },
     }),
-    db.activityLog.count(),
     db.pmChannelRun.findMany({
       orderBy: { updatedAt: "desc" },
       take: 50,
@@ -366,22 +245,6 @@ export default async function AgentsPage() {
     rows.push(run);
     pmRunsByAgent.set(run.agentSlug, rows);
   }
-  const recentActions = recentActivity.map((row) => ({
-    id: row.id,
-    createdAt: row.createdAt,
-    kind: row.kind,
-    targetAgent: row.targetAgent,
-    actor: serializeActivityActor(row.user),
-    label: describeActivity({
-      kind: row.kind,
-      payload: row.payload,
-      actorName: row.user?.username ?? null,
-      taskTitle: row.task?.title ?? null,
-      targetAgent: row.targetAgent,
-      targetFile: row.targetFile,
-    }),
-  }));
-
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -516,94 +379,6 @@ export default async function AgentsPage() {
         </section>
       )}
 
-      <section className="grid gap-card xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-        <div className="rounded-panel border border-line bg-panel p-card shadow-sm">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-body font-semibold text-text">Mission Control Actions</h2>
-              <p className="mt-1 text-caption text-text-muted">
-                Agent control changes recorded by PM
-              </p>
-            </div>
-            <Link href="/system/activity" className="text-caption font-medium text-accent hover:underline">
-              Full stream
-            </Link>
-          </div>
-          {recentActions.length === 0 ? (
-            <p className="rounded-card border border-dashed border-line p-card text-body text-text-muted">
-              No agent actions recorded yet.
-            </p>
-          ) : (
-            <ul className="divide-y divide-line text-body">
-              {recentActions.map((action) => (
-                <li key={action.id} className="py-2.5">
-                  <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <MessageTimestamp value={action.createdAt} />
-                    <MessageAvatar actor={action.actor ?? systemActor} size="sm" />
-                    <span className="min-w-0 flex-1 font-medium">{action.label}</span>
-                  </div>
-                  <div className="mt-1 flex flex-wrap gap-2 text-nano uppercase tracking-wider text-text-muted">
-                    <span>{action.kind}</span>
-                    {action.targetAgent ? <span>@{action.targetAgent}</span> : null}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-          <p className="mt-3 text-micro text-text-muted">
-            Total PM audit rows: {totalActivityLogs}
-          </p>
-        </div>
-
-        <div className="rounded-panel border border-line bg-panel p-card shadow-sm">
-          <div className="mb-3">
-            <h2 className="text-body font-semibold text-text">Signals & Sensors</h2>
-            <p className="mt-1 text-caption text-text-muted">
-              Busy probes and open monitor events from the live Atlas snapshot
-            </p>
-          </div>
-          <div className="space-y-3">
-            <div className="rounded-card border border-line bg-panel-soft p-3">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-caption font-semibold uppercase tracking-wider text-text-muted">Monitor tick</span>
-                <span className={monitor?.last_tick?.healthy === false ? "text-caption font-semibold text-crit" : "text-caption font-semibold text-ok"}>
-                  {monitor?.last_tick ? (monitor.last_tick.healthy === false ? "attention" : "healthy") : "unknown"}
-                </span>
-              </div>
-              <p className="mt-2 line-clamp-2 text-body text-text-muted">
-                {monitor?.last_tick?.summary ?? "No monitor tick reported."}
-              </p>
-              {monitor?.last_tick?.actions?.length ? (
-                <p className="mt-2 font-mono text-micro text-text-muted">
-                  actions: {monitor.last_tick.actions.join(", ")}
-                </p>
-              ) : null}
-            </div>
-
-            {openSensorEvents.length === 0 ? (
-              <p className="rounded-card border border-dashed border-line p-card text-body text-text-muted">
-                No open sensor events.
-              </p>
-            ) : (
-              <ul className="space-y-2">
-                {openSensorEvents.slice(0, 8).map((event) => (
-                  <li key={event.key ?? `${event.unit}:${event.kind}`} className="rounded-card border border-line bg-panel-soft px-3 py-2 text-body">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="truncate font-medium">{event.unit ?? "unknown unit"}</span>
-                      <span className={event.severity === "crit" ? "text-caption font-semibold text-crit" : "text-caption font-semibold text-warn"}>
-                        {event.severity ?? "warn"}
-                      </span>
-                    </div>
-                    <div className="mt-1 text-caption text-text-muted">
-                      {event.kind ?? "sensor"}{typeof event.missed_runs === "number" ? ` · missed ${event.missed_runs}` : ""}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </div>
-      </section>
     </div>
   );
 }

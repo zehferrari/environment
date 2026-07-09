@@ -57,10 +57,21 @@
 
 :root {
   color-scheme: light;
+  /* Data-viz categorical slots (activity stream). Values validated per mode
+     against the panel surface (#ffffff / #1b1d24) with the dataviz palette
+     checker — swap both modes together, never one side alone. */
+  --viz-work: #2a78d6;
+  --viz-chat: #1baf7a;
+  --viz-agents: #eda100;
+  --viz-muted: #94a3b8;
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
+  --viz-work: #3987e5;
+  --viz-chat: #199e70;
+  --viz-agents: #c98500;
+  --viz-muted: #777f91;
   --color-bg: #111217;
   --color-bg-elev: #171920;
   --color-panel: #1b1d24;
