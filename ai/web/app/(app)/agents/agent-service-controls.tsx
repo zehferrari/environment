@@ -105,7 +105,7 @@ export default function AgentServiceControls({
 
   return (
     <div className="space-y-2">
-      <div className="grid gap-1.5 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-1.5">
         {rows.map((service) => {
           const active = service.status === "active";
           const toggling = busy === `toggle:${service.name}`;

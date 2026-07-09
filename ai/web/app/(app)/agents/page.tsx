@@ -150,6 +150,64 @@ function CalendarIcon() {
   );
 }
 
+function ClipboardListIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="12"
+      height="12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="8" y="2" width="8" height="4" rx="1" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+      <path d="M9 12h6M9 16h6" />
+    </svg>
+  );
+}
+
+function HistoryIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="12"
+      height="12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M12 7v5l4 2" />
+    </svg>
+  );
+}
+
+function ChatIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" />
+    </svg>
+  );
+}
+
 function formatClockShort(value: Date) {
   return value.toLocaleString("en-AU", {
     day: "2-digit",
@@ -435,9 +493,13 @@ export default async function AgentsPage() {
               >
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_0%_0%,color-mix(in_srgb,var(--agent-hue)_14%,transparent),transparent_42%)]" />
 
-                <div className="relative grid gap-3 md:grid-cols-3">
-                  <div className="min-w-0 md:col-span-1">
-                    <div className="flex items-start gap-2.5">
+                <div className="relative grid gap-3 md:grid-cols-4">
+                  <div className="min-w-0 md:col-span-3">
+                    <Link
+                      href={`/agents/${a.slug}`}
+                      className="group/head flex items-start gap-2.5"
+                      title={`${a.name} — profile`}
+                    >
                       <div className="relative shrink-0">
                         {tone.pulse && (
                           <span
@@ -462,12 +524,14 @@ export default async function AgentsPage() {
                         <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-line bg-panel px-1.5 py-0.5 text-pico font-semibold uppercase tracking-wide" style={{ color: ring.ring }}>{status}</span>
                       </div>
                       <div className="min-w-0 flex-1">
-                        <h2 className="truncate text-subheading font-semibold tracking-tight" title={a.name}>{a.name}</h2>
+                        <h2 className="truncate text-subheading font-semibold tracking-tight transition-colors group-hover/head:text-accent" title={a.name}>
+                          {a.name}
+                        </h2>
                         <p className="truncate font-mono text-caption text-text-muted" title={`@${a.slug} · ${a.role}`}>
                           @{a.slug} · {a.role}
                         </p>
                       </div>
-                    </div>
+                    </Link>
                     <div className="mt-3 flex min-w-0 items-center gap-2.5 font-mono text-micro text-text-dim">
                       <span className="min-w-0 truncate" title={live?.model_primary ?? "model unknown"}>
                         {shortModel(live?.model_primary)}
@@ -490,14 +554,17 @@ export default async function AgentsPage() {
                     </div>
                   </div>
 
-                  <div className="min-w-0 md:col-span-2">
+                  <div className="min-w-0 md:col-span-1">
                     <AgentServiceControls agent={a.slug} services={agentServices} />
                   </div>
                 </div>
 
                 <div className="relative mt-3 space-y-2.5 border-t border-line pt-2.5">
                   <div>
-                    <div className="text-micro uppercase tracking-wider text-text-muted">Working on</div>
+                    <div className="inline-flex items-center gap-1.5 text-micro font-bold uppercase tracking-wider text-text">
+                      <span className="text-accent"><ClipboardListIcon /></span>
+                      Working on
+                    </div>
                     {workingTasks.length === 0 ? (
                       <p className="mt-0.5 text-body text-text-muted">No open task assigned</p>
                     ) : (
@@ -522,7 +589,10 @@ export default async function AgentsPage() {
                   </div>
                   <div>
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                      <span className="text-micro uppercase tracking-wider text-text-muted">Last action</span>
+                      <span className="inline-flex items-center gap-1.5 text-micro font-bold uppercase tracking-wider text-text">
+                        <span className="text-accent"><HistoryIcon /></span>
+                        Last action
+                      </span>
                       {lastAction ? (
                         <span
                           className="inline-flex items-center gap-1 text-micro font-medium text-accent"
@@ -555,8 +625,14 @@ export default async function AgentsPage() {
                     </span>
                   ) : null}
                   <span className="flex-1" />
-                  <Link href={`/agents/${a.slug}`} className="font-medium text-text-muted hover:text-accent hover:underline">Profile →</Link>
-                  <Link href={`/agents/${a.slug}/chat`} className="font-medium text-text-muted hover:text-accent hover:underline">Chat →</Link>
+                  <Link
+                    href={`/agents/${a.slug}/chat`}
+                    className="grid h-7 w-7 place-items-center rounded-full border border-line text-text-muted transition hover:border-accent hover:bg-accent-soft hover:text-accent"
+                    title={`Chat with ${a.name}`}
+                    aria-label={`Chat with ${a.name}`}
+                  >
+                    <ChatIcon />
+                  </Link>
                 </div>
               </article>
             );
