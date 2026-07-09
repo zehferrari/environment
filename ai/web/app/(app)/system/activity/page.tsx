@@ -419,30 +419,25 @@ export default async function SystemActivityPage({
         </p>
       </header>
 
-      <nav
-        className="flex flex-wrap gap-2 rounded-panel border border-line bg-panel p-2 shadow-sm"
-        aria-label="Activity stream tabs"
-      >
-        {TABS.map((tab) => {
-          const active = tab.key === url.tab;
-          return (
-            <Link
-              key={tab.key}
-              href={hrefFor(url, { tab: tab.key })}
-              className={`rounded-lg px-control-x py-control-y text-body font-medium transition ${
-                active ? "bg-accent text-bg" : "text-text-muted hover:bg-panel-soft hover:text-text"
-              }`}
-            >
-              {tab.label}
-            </Link>
-          );
-        })}
-      </nav>
-
-      {url.tab === "overview" || url.tab === "events" ? (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-panel border border-line bg-panel px-card py-3 shadow-sm">
-          <span className="text-nano font-semibold uppercase tracking-wider text-text-muted">Window</span>
-          <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-panel border border-line bg-panel p-2 shadow-sm">
+        <nav className="flex flex-wrap gap-1" aria-label="Activity stream tabs">
+          {TABS.map((tab) => {
+            const active = tab.key === url.tab;
+            return (
+              <Link
+                key={tab.key}
+                href={hrefFor(url, { tab: tab.key })}
+                className={`rounded-lg px-control-x py-control-y text-body font-medium transition ${
+                  active ? "bg-accent text-bg" : "text-text-muted hover:bg-panel-soft hover:text-text"
+                }`}
+              >
+                {tab.label}
+              </Link>
+            );
+          })}
+        </nav>
+        {url.tab === "overview" || url.tab === "events" ? (
+          <div className="ml-auto flex flex-wrap items-center gap-1.5 pr-1">
             {RANGES.map((r) => {
               const active = !url.day && url.range === r.key;
               return (
@@ -459,20 +454,18 @@ export default async function SystemActivityPage({
                 </Link>
               );
             })}
+            <span className="mx-1 hidden h-5 w-px bg-line sm:inline-block" aria-hidden="true" />
+            <ActivityDayPicker day={url.day} />
           </div>
-          <ActivityDayPicker day={url.day} />
-          <span className="ml-auto text-caption text-text-muted">
-            {activityCount.toLocaleString("en-AU")} events · {win.label}
-            {windowCapped ? " · truncated to latest 20k rows" : ""}
-          </span>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
 
       {url.tab === "overview" ? (
         <OverviewTab
           url={url}
           win={win}
           buckets={buckets}
+          windowCapped={windowCapped}
           categoryCounts={categoryCounts}
           activityCount={activityCount}
           delta={delta}
@@ -540,6 +533,7 @@ function OverviewTab({
   url,
   win,
   buckets,
+  windowCapped,
   categoryCounts,
   activityCount,
   delta,
@@ -558,6 +552,7 @@ function OverviewTab({
   url: UrlState;
   win: ActivityWindow;
   buckets: ActivityChartBucket[];
+  windowCapped: boolean;
   categoryCounts: Record<ActivityCategory, number>;
   activityCount: number;
   delta: number | null;
@@ -615,115 +610,127 @@ function OverviewTab({
         />
       </section>
 
-      <section className="rounded-panel border border-line bg-panel p-card shadow-sm">
-        <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-body font-semibold text-text">Activity — {win.label}</h2>
-          <p className="text-caption text-text-muted">System/heartbeat events excluded</p>
-        </div>
-        <SystemActivityChart buckets={buckets} />
-      </section>
-
-      <section className="grid gap-card lg:grid-cols-2">
-        <div className="rounded-panel border border-line bg-panel p-card shadow-sm">
-          <h2 className="text-body font-semibold text-text">By category</h2>
-          <div className="mt-4 space-y-3">
-            {ACTIVITY_CATEGORIES.map((c) => {
-              const count = categoryCounts[c.key];
-              return (
-                <div key={c.key} title={c.hint}>
-                  <div className="flex items-baseline justify-between gap-3">
-                    <span className="inline-flex items-center gap-2 text-body text-text">
-                      <span className="h-2.5 w-2.5 rounded-[3px]" style={{ background: CATEGORY_CSS[c.key] }} />
-                      {c.label}
-                    </span>
-                    <span className="text-body font-medium tabular-nums text-text">{count.toLocaleString("en-AU")}</span>
-                  </div>
-                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-panel-soft">
-                    <div
-                      className="h-full rounded-full"
-                      style={{ width: `${Math.min(100, (count / maxCategory) * 100)}%`, background: CATEGORY_CSS[c.key] }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+      <section className="grid gap-card lg:grid-cols-4">
+        <div className="rounded-panel border border-line bg-panel p-card shadow-sm lg:col-span-3">
+          <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-body font-semibold text-text">Activity — {win.label}</h2>
+            <p className="text-caption text-text-muted">
+              System/heartbeat events excluded
+              {windowCapped ? " · truncated to latest 20k rows" : ""}
+            </p>
           </div>
-          {topKinds.length > 0 ? (
-            <div className="mt-5 border-t border-line pt-3">
-              <h3 className="text-nano font-semibold uppercase tracking-wider text-text-muted">Top event kinds</h3>
-              <ul className="mt-2 space-y-1">
-                {topKinds.map(([kind, count]) => (
-                  <li key={kind} className="flex items-baseline justify-between gap-3 text-caption">
-                    <code className="truncate text-text-muted">{kind}</code>
-                    <span className="tabular-nums text-text">{count.toLocaleString("en-AU")}</span>
+          <SystemActivityChart buckets={buckets} />
+
+          <div className="mt-5 border-t border-line pt-3">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <h3 className="text-body font-semibold text-text">Latest events</h3>
+              <Link
+                href={hrefFor(url, { tab: "events" })}
+                className="text-caption font-medium text-accent hover:underline"
+              >
+                View all →
+              </Link>
+            </div>
+            {feed.length === 0 ? (
+              <p className="rounded-card border border-dashed border-line p-card text-body text-text-muted">
+                No activity in this window.
+              </p>
+            ) : (
+              <ul className="divide-y divide-line">
+                {feed.map((item) => (
+                  <li key={item.id} className="flex items-center gap-3 py-2">
+                    <time className="w-11 shrink-0 text-right text-caption font-medium tabular-nums text-text-muted">
+                      {item.clock}
+                    </time>
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ background: CATEGORY_CSS[item.category] }}
+                      title={item.category}
+                    />
+                    <MessageAvatar actor={item.actor} size="sm" />
+                    <span className="min-w-0 flex-1 truncate text-body" title={item.label}>
+                      {item.label}
+                    </span>
                   </li>
                 ))}
               </ul>
-            </div>
-          ) : null}
+            )}
+          </div>
         </div>
 
-        <div className="rounded-panel border border-line bg-panel p-card shadow-sm">
-          <h2 className="text-body font-semibold text-text">Most active</h2>
-          {topActors.length === 0 ? (
-            <p className="mt-4 rounded-card border border-dashed border-line p-card text-body text-text-muted">
-              No activity in this window.
-            </p>
-          ) : (
-            <ul className="mt-4 space-y-3">
-              {topActors.map(({ actor, count }) => (
-                <li key={actor.id ?? actor.username} className="flex items-center gap-3">
-                  <MessageAvatar actor={actor} size="sm" />
-                  <div className="min-w-0 flex-1">
+        <div className="space-y-card lg:col-span-1">
+          <div className="rounded-panel border border-line bg-panel p-card shadow-sm">
+            <h2 className="text-body font-semibold text-text">By category</h2>
+            <div className="mt-4 space-y-3">
+              {ACTIVITY_CATEGORIES.map((c) => {
+                const count = categoryCounts[c.key];
+                return (
+                  <div key={c.key} title={c.hint}>
                     <div className="flex items-baseline justify-between gap-3">
-                      <span className="truncate text-body font-medium text-text">{actorLabel(actor)}</span>
-                      <span className="text-body tabular-nums text-text">{count.toLocaleString("en-AU")}</span>
+                      <span className="inline-flex items-center gap-2 text-caption text-text">
+                        <span className="h-2.5 w-2.5 rounded-[3px]" style={{ background: CATEGORY_CSS[c.key] }} />
+                        {c.label}
+                      </span>
+                      <span className="text-caption font-medium tabular-nums text-text">
+                        {count.toLocaleString("en-AU")}
+                      </span>
                     </div>
                     <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-panel-soft">
                       <div
-                        className="h-full rounded-full bg-accent"
-                        style={{ width: `${Math.min(100, (count / maxActor) * 100)}%` }}
+                        className="h-full rounded-full"
+                        style={{ width: `${Math.min(100, (count / maxCategory) * 100)}%`, background: CATEGORY_CSS[c.key] }}
                       />
                     </div>
                   </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
+                );
+              })}
+            </div>
+            {topKinds.length > 0 ? (
+              <div className="mt-5 border-t border-line pt-3">
+                <h3 className="text-nano font-semibold uppercase tracking-wider text-text-muted">Top event kinds</h3>
+                <ul className="mt-2 space-y-1">
+                  {topKinds.map(([kind, count]) => (
+                    <li key={kind} className="flex items-baseline justify-between gap-3 text-caption">
+                      <code className="truncate text-text-muted" title={kind}>
+                        {kind}
+                      </code>
+                      <span className="tabular-nums text-text">{count.toLocaleString("en-AU")}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
 
-      <section className="rounded-panel border border-line bg-panel p-card shadow-sm">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="text-body font-semibold text-text">Latest events</h2>
-          <Link href={hrefFor(url, { tab: "events" })} className="text-caption font-medium text-accent hover:underline">
-            View all →
-          </Link>
+          <div className="rounded-panel border border-line bg-panel p-card shadow-sm">
+            <h2 className="text-body font-semibold text-text">Most active</h2>
+            {topActors.length === 0 ? (
+              <p className="mt-4 rounded-card border border-dashed border-line p-card text-body text-text-muted">
+                No activity in this window.
+              </p>
+            ) : (
+              <ul className="mt-4 space-y-3">
+                {topActors.map(({ actor, count }) => (
+                  <li key={actor.id ?? actor.username} className="flex items-center gap-2.5">
+                    <MessageAvatar actor={actor} size="sm" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="truncate text-caption font-medium text-text">{actorLabel(actor)}</span>
+                        <span className="text-caption tabular-nums text-text">{count.toLocaleString("en-AU")}</span>
+                      </div>
+                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-panel-soft">
+                        <div
+                          className="h-full rounded-full bg-accent"
+                          style={{ width: `${Math.min(100, (count / maxActor) * 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
-        {feed.length === 0 ? (
-          <p className="rounded-card border border-dashed border-line p-card text-body text-text-muted">
-            No activity in this window.
-          </p>
-        ) : (
-          <ul className="divide-y divide-line">
-            {feed.map((item) => (
-              <li key={item.id} className="flex items-center gap-3 py-2">
-                <time className="w-11 shrink-0 text-right text-caption font-medium tabular-nums text-text-muted">
-                  {item.clock}
-                </time>
-                <span
-                  className="h-2 w-2 shrink-0 rounded-full"
-                  style={{ background: CATEGORY_CSS[item.category] }}
-                  title={item.category}
-                />
-                <MessageAvatar actor={item.actor} size="sm" />
-                <span className="min-w-0 flex-1 truncate text-body" title={item.label}>
-                  {item.label}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
       </section>
     </div>
   );
