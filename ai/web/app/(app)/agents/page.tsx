@@ -5,7 +5,8 @@ import { describeActivity } from "@/lib/activity";
 import { activityScopeWhere } from "@/lib/activity-categories";
 import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel/latency";
 import { readAtlasSnapshot, type SnapshotAgent } from "@/lib/atlas-snapshot";
-import { MessageTimestamp } from "@/components/message-avatar";
+import { statusPillClass } from "@/lib/board-status";
+import AutoRefresh from "@/components/auto-refresh";
 import AgentServiceControls, { type AgentService } from "./agent-service-controls";
 import fs from "fs/promises";
 import AgentManagementControls from "./agent-management-controls";
@@ -130,6 +131,48 @@ function StopwatchIcon() {
   );
 }
 
+function CalendarIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="11"
+      height="11"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="4.5" width="18" height="16" rx="2" />
+      <path d="M8 2.5v4M16 2.5v4M3 10h18" />
+    </svg>
+  );
+}
+
+function formatClockShort(value: Date) {
+  return value.toLocaleString("en-AU", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+// "Working on" = the agent's open assigned tasks, most-active status first
+// (there is rarely a task literally In Progress, so open To Do/Review work
+// counts too — the status pill tells the difference).
+const WORKING_STATUS_ORDER: Record<string, number> = {
+  "In Progress": 0,
+  Review: 1,
+  "To Do": 2,
+  Backlog: 3,
+};
+
+function workingRank(status: string) {
+  return WORKING_STATUS_ORDER[status] ?? 4;
+}
+
 type SelectedModel = { provider: string; id: string; name?: string };
 type AgentModelConfig = {
   default_model: string;
@@ -190,7 +233,7 @@ export default async function AgentsPage() {
         user: {
           include: {
             assignedTasks: {
-              where: { status: { not: "Done" } },
+              where: { status: { not: "Done" }, deletedAt: null },
               orderBy: { updatedAt: "desc" },
               take: 5,
               include: { project: { select: { slug: true, name: true } } },
@@ -314,6 +357,7 @@ export default async function AgentsPage() {
   }
   return (
     <div className="space-y-6">
+      <AutoRefresh intervalMs={15_000} />
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <h1 className="text-3xl font-semibold tracking-tight">Agents</h1>
@@ -364,8 +408,8 @@ export default async function AgentsPage() {
               status: system[`${a.slug}/${name}`]?.is_active ?? system[name]?.is_active ?? null,
             }));
             const tone = avatarTone(status);
-            const workingTasks = (a.user?.assignedTasks ?? [])
-              .filter((t) => t.status === "In Progress")
+            const workingTasks = [...(a.user?.assignedTasks ?? [])]
+              .sort((x, y) => workingRank(x.status) - workingRank(y.status))
               .slice(0, 3);
             const lastAction = lastActionBySlug.get(a.slug) ?? null;
             const lastActionLabel = lastAction
@@ -379,7 +423,10 @@ export default async function AgentsPage() {
                 })
               : null;
             const events24h = a.user ? events24hByUserId.get(a.user.id) ?? 0 : 0;
-            const heat = heatLevel(events24h, workingTasks.length);
+            const activeTaskCount = (a.user?.assignedTasks ?? []).filter(
+              (t) => t.status === "In Progress" || t.status === "Review",
+            ).length;
+            const heat = heatLevel(events24h, activeTaskCount);
             return (
               <article
                 key={a.id}
@@ -388,99 +435,108 @@ export default async function AgentsPage() {
               >
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_0%_0%,color-mix(in_srgb,var(--agent-hue)_14%,transparent),transparent_42%)]" />
 
-                <div className="relative flex items-start gap-3">
-                  <div className="relative shrink-0">
-                    {tone.pulse && (
-                      <span
-                        className="pointer-events-none absolute -inset-1 animate-ping rounded-orbit opacity-30"
-                        style={{ background: ring.ring }}
-                        aria-hidden="true"
-                      />
-                    )}
-                    <div
-                      className={`relative grid h-14 w-14 place-items-center overflow-hidden rounded-panel border bg-panel-soft text-heading font-semibold ${tone.grayscale ? "opacity-80 grayscale" : ""}`}
-                      style={{
-                        borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))",
-                        boxShadow: tone.pulse ? `0 0 12px 2px ${ring.bg}` : undefined,
-                      }}
-                    >
-                      {avatarSrc ? (
-                        <img src={avatarSrc} alt={`${a.name} avatar`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
-                      ) : live?.avatar_url ? (
-                        <img src={live.avatar_url} alt={`${a.name} avatar`} className="h-full w-full object-cover" />
-                      ) : (live?.avatar ?? a.name.slice(0, 1))}
-                    </div>
-                    <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-line bg-panel px-1.5 py-0.5 text-pico font-semibold uppercase tracking-wide" style={{ color: ring.ring }}>{status}</span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <h2 className="truncate text-heading font-semibold tracking-tight">{a.name}</h2>
-                        <p className="font-mono text-caption text-text-muted">@{a.slug} · {a.role}</p>
-                        <p className="mt-0.5 truncate font-mono text-micro text-text-dim" title={live?.model_primary ?? "model unknown"}>
-                          {shortModel(live?.model_primary)}
+                <div className="relative grid gap-3 md:grid-cols-3">
+                  <div className="min-w-0 md:col-span-1">
+                    <div className="flex items-start gap-2.5">
+                      <div className="relative shrink-0">
+                        {tone.pulse && (
+                          <span
+                            className="pointer-events-none absolute -inset-1 animate-ping rounded-orbit opacity-30"
+                            style={{ background: ring.ring }}
+                            aria-hidden="true"
+                          />
+                        )}
+                        <div
+                          className={`relative grid h-14 w-14 place-items-center overflow-hidden rounded-panel border bg-panel-soft text-heading font-semibold ${tone.grayscale ? "opacity-80 grayscale" : ""}`}
+                          style={{
+                            borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))",
+                            boxShadow: tone.pulse ? `0 0 12px 2px ${ring.bg}` : undefined,
+                          }}
+                        >
+                          {avatarSrc ? (
+                            <img src={avatarSrc} alt={`${a.name} avatar`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
+                          ) : live?.avatar_url ? (
+                            <img src={live.avatar_url} alt={`${a.name} avatar`} className="h-full w-full object-cover" />
+                          ) : (live?.avatar ?? a.name.slice(0, 1))}
+                        </div>
+                        <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-line bg-panel px-1.5 py-0.5 text-pico font-semibold uppercase tracking-wide" style={{ color: ring.ring }}>{status}</span>
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <h2 className="truncate text-subheading font-semibold tracking-tight" title={a.name}>{a.name}</h2>
+                        <p className="truncate font-mono text-caption text-text-muted" title={`@${a.slug} · ${a.role}`}>
+                          @{a.slug} · {a.role}
                         </p>
                       </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full border border-line bg-panel px-2 py-0.5 text-nano font-medium text-text-muted"
-                          style={{ color: heat.color }}
-                          title={`Load: ${heat.label} — ${events24h} event${events24h === 1 ? "" : "s"} in 24h · ${workingTasks.length} active task${workingTasks.length === 1 ? "" : "s"}`}
-                        >
-                          <ThermometerIcon color={heat.color} mercuryTop={heat.mercuryTop} />
-                          <span className="tabular-nums">{events24h}</span>
-                        </span>
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full border border-line bg-panel px-2 py-0.5 text-nano font-medium text-text-muted"
-                          title="Session idle time"
-                        >
-                          <StopwatchIcon />
-                          <span className="tabular-nums">{formatIdle(live?.session_idle_s)}</span>
-                        </span>
-                      </div>
+                    </div>
+                    <div className="mt-3 flex min-w-0 items-center gap-2.5 font-mono text-micro text-text-dim">
+                      <span className="min-w-0 truncate" title={live?.model_primary ?? "model unknown"}>
+                        {shortModel(live?.model_primary)}
+                      </span>
+                      <span
+                        className="inline-flex shrink-0 items-center gap-1 font-medium"
+                        style={{ color: heat.color }}
+                        title={`Load: ${heat.label} — ${events24h} event${events24h === 1 ? "" : "s"} in 24h · ${activeTaskCount} active task${activeTaskCount === 1 ? "" : "s"}`}
+                      >
+                        <ThermometerIcon color={heat.color} mercuryTop={heat.mercuryTop} />
+                        <span className="tabular-nums">{events24h}</span>
+                      </span>
+                      <span
+                        className="inline-flex shrink-0 items-center gap-1 font-medium text-text-muted"
+                        title="Session idle time"
+                      >
+                        <StopwatchIcon />
+                        <span className="tabular-nums">{formatIdle(live?.session_idle_s)}</span>
+                      </span>
                     </div>
                   </div>
-                </div>
 
-                <div className="relative mt-3 rounded-card border border-line bg-panel-soft p-2.5">
-                  <div className="mb-1.5 flex items-center justify-between gap-2">
-                    <span className="text-nano font-semibold uppercase tracking-wider text-text-muted">Services</span>
-                    <Link href={`/agents/${a.slug}`} className="text-nano font-medium text-accent hover:underline">Profile →</Link>
+                  <div className="min-w-0 md:col-span-2">
+                    <AgentServiceControls agent={a.slug} services={agentServices} />
                   </div>
-                  <AgentServiceControls agent={a.slug} services={agentServices} columns={3} />
                 </div>
 
-                <div className="relative mt-3 space-y-2">
+                <div className="relative mt-3 space-y-2.5 border-t border-line pt-2.5">
                   <div>
                     <div className="text-micro uppercase tracking-wider text-text-muted">Working on</div>
                     {workingTasks.length === 0 ? (
-                      <p className="mt-0.5 text-body text-text-muted">No active task</p>
+                      <p className="mt-0.5 text-body text-text-muted">No open task assigned</p>
                     ) : (
-                      <ul className="mt-0.5 space-y-0.5">
+                      <ul className="mt-1 space-y-1">
                         {workingTasks.map((t) => (
-                          <li key={t.id} className="truncate text-body">
+                          <li key={t.id} className="flex min-w-0 items-center gap-2 text-body">
+                            <span className={`shrink-0 rounded-full border px-1.5 py-px text-pico font-semibold ${statusPillClass(t.status)}`}>
+                              {t.status}
+                            </span>
                             <Link
                               href={`/projects/${t.project.slug}/tasks/${t.id}`}
-                              className="font-medium hover:text-accent hover:underline"
+                              className="min-w-0 truncate font-medium hover:text-accent hover:underline"
                               title={t.title}
                             >
                               {t.title}
                             </Link>
-                            <span className="text-caption text-text-muted"> · {t.project.slug}</span>
+                            <span className="shrink-0 text-caption text-text-muted">· {t.project.slug}</span>
                           </li>
                         ))}
                       </ul>
                     )}
                   </div>
                   <div>
-                    <div className="text-micro uppercase tracking-wider text-text-muted">Last action</div>
-                    {lastAction && lastActionLabel ? (
-                      <div className="mt-1 flex min-w-0 items-center gap-2">
-                        <MessageTimestamp value={lastAction.createdAt} />
-                        <span className="min-w-0 flex-1 truncate text-body" title={lastActionLabel}>
-                          {lastActionLabel}
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="text-micro uppercase tracking-wider text-text-muted">Last action</span>
+                      {lastAction ? (
+                        <span
+                          className="inline-flex items-center gap-1 text-micro font-medium text-accent"
+                          title={lastAction.createdAt.toISOString()}
+                        >
+                          <CalendarIcon />
+                          {formatAge(lastAction.createdAt)} · {formatClockShort(lastAction.createdAt)}
                         </span>
-                      </div>
+                      ) : null}
+                    </div>
+                    {lastAction && lastActionLabel ? (
+                      <p className="mt-0.5 truncate text-body" title={lastActionLabel}>
+                        {lastActionLabel}
+                      </p>
                     ) : (
                       <p className="mt-0.5 text-body text-text-muted">No recorded activity</p>
                     )}
@@ -499,6 +555,7 @@ export default async function AgentsPage() {
                     </span>
                   ) : null}
                   <span className="flex-1" />
+                  <Link href={`/agents/${a.slug}`} className="font-medium text-text-muted hover:text-accent hover:underline">Profile →</Link>
                   <Link href={`/agents/${a.slug}/chat`} className="font-medium text-text-muted hover:text-accent hover:underline">Chat →</Link>
                 </div>
               </article>
