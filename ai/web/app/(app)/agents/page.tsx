@@ -194,8 +194,8 @@ function ChatIcon() {
   return (
     <svg
       viewBox="0 0 24 24"
-      width="14"
-      height="14"
+      width="20"
+      height="20"
       fill="none"
       stroke="currentColor"
       strokeWidth="2"
@@ -217,14 +217,13 @@ function formatClockShort(value: Date) {
   });
 }
 
-// "Working on" = the agent's open assigned tasks, most-active status first
-// (there is rarely a task literally In Progress, so open To Do/Review work
-// counts too — the status pill tells the difference).
+// "Working on" ordering: In Progress first, then Review work the agent owns
+// as reviewer/epic acting manager, then queued To Do. Backlog and Done never
+// show here.
 const WORKING_STATUS_ORDER: Record<string, number> = {
   "In Progress": 0,
   Review: 1,
   "To Do": 2,
-  Backlog: 3,
 };
 
 function workingRank(status: string) {
@@ -291,10 +290,13 @@ export default async function AgentsPage() {
         user: {
           include: {
             assignedTasks: {
-              where: { status: { not: "Done" }, deletedAt: null },
+              where: { status: { notIn: ["Done", "Backlog"] }, deletedAt: null },
               orderBy: { updatedAt: "desc" },
               take: 5,
-              include: { project: { select: { slug: true, name: true } } },
+              include: {
+                project: { select: { slug: true, name: true } },
+                epic: { select: { actingManagerId: true } },
+              },
             },
           },
         },
@@ -336,7 +338,7 @@ export default async function AgentsPage() {
   // row and its non-system event count over the last 24h (temperature).
   const dayAgo = new Date(Date.now() - 24 * 3_600_000);
   const agentUserIds = agents.map((a) => a.user?.id).filter((id): id is string => Boolean(id));
-  const [lastActionRows, activity24hGroups] = await Promise.all([
+  const [lastActionRows, activity24hGroups, reviewTasks] = await Promise.all([
     Promise.all(
       agents.map((a) =>
         a.user
@@ -359,9 +361,31 @@ export default async function AgentsPage() {
           _count: { _all: true },
         })
       : Promise.resolve([]),
+    // Review-stage tasks the agent OWNS as reviewer (task acting manager) or
+    // as the epic's acting manager — those count as "working on" even when
+    // the task is assigned to someone else.
+    agentUserIds.length > 0
+      ? db.task.findMany({
+          where: {
+            status: "Review",
+            deletedAt: null,
+            OR: [
+              { actingManagerId: { in: agentUserIds } },
+              { epic: { actingManagerId: { in: agentUserIds } } },
+            ],
+          },
+          orderBy: { updatedAt: "desc" },
+          include: {
+            project: { select: { slug: true, name: true } },
+            epic: { select: { actingManagerId: true } },
+          },
+        })
+      : Promise.resolve([]),
   ]);
   const lastActionBySlug = new Map(agents.map((a, i) => [a.slug, lastActionRows[i]]));
   const events24hByUserId = new Map(activity24hGroups.map((row) => [row.userId, row._count._all]));
+  const reviewOwnedBy = (userId: string) =>
+    reviewTasks.filter((t) => t.actingManagerId === userId || t.epic?.actingManagerId === userId);
 
   const rawAgentJsons = agents.map((agent) => agent.rawJson);
   const clientAgents = await Promise.all(
@@ -466,7 +490,18 @@ export default async function AgentsPage() {
               status: system[`${a.slug}/${name}`]?.is_active ?? system[name]?.is_active ?? null,
             }));
             const tone = avatarTone(status);
-            const workingTasks = [...(a.user?.assignedTasks ?? [])]
+            // Assigned open tasks (Backlog/Done excluded in the query). A task
+            // sitting in Review is the *reviewer's* work, so it only counts
+            // for this agent when they are its acting manager (or the epic's);
+            // reviewer-owned Review tasks assigned to others are merged in.
+            const userId = a.user?.id ?? null;
+            const assignedOpen = (a.user?.assignedTasks ?? []).filter((t) =>
+              t.status === "Review"
+                ? userId != null && (t.actingManagerId === userId || t.epic?.actingManagerId === userId)
+                : true,
+            );
+            const reviewing = userId ? reviewOwnedBy(userId) : [];
+            const workingTasks = [...new Map([...assignedOpen, ...reviewing].map((t) => [t.id, t])).values()]
               .sort((x, y) => workingRank(x.status) - workingRank(y.status))
               .slice(0, 3);
             const lastAction = lastActionBySlug.get(a.slug) ?? null;
@@ -495,12 +530,8 @@ export default async function AgentsPage() {
 
                 <div className="relative grid gap-3 md:grid-cols-4">
                   <div className="min-w-0 md:col-span-3">
-                    <Link
-                      href={`/agents/${a.slug}`}
-                      className="group/head flex items-start gap-2.5"
-                      title={`${a.name} — profile`}
-                    >
-                      <div className="relative shrink-0">
+                    <div className="flex items-start gap-2.5">
+                      <Link href={`/agents/${a.slug}`} className="relative shrink-0" title={`${a.name} — profile`}>
                         {tone.pulse && (
                           <span
                             className="pointer-events-none absolute -inset-1 animate-ping rounded-orbit opacity-30"
@@ -522,35 +553,37 @@ export default async function AgentsPage() {
                           ) : (live?.avatar ?? a.name.slice(0, 1))}
                         </div>
                         <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-line bg-panel px-1.5 py-0.5 text-pico font-semibold uppercase tracking-wide" style={{ color: ring.ring }}>{status}</span>
-                      </div>
+                      </Link>
                       <div className="min-w-0 flex-1">
-                        <h2 className="truncate text-subheading font-semibold tracking-tight transition-colors group-hover/head:text-accent" title={a.name}>
-                          {a.name}
-                        </h2>
-                        <p className="truncate font-mono text-caption text-text-muted" title={`@${a.slug} · ${a.role}`}>
-                          @{a.slug} · {a.role}
-                        </p>
+                        <Link href={`/agents/${a.slug}`} className="group/head block" title={`${a.name} — profile`}>
+                          <h2 className="truncate text-subheading font-semibold tracking-tight transition-colors group-hover/head:text-accent" title={a.name}>
+                            {a.name}
+                          </h2>
+                          <p className="truncate font-mono text-caption text-text-muted" title={`@${a.slug} · ${a.role}`}>
+                            @{a.slug} · {a.role}
+                          </p>
+                        </Link>
+                        <div className="mt-1 flex min-w-0 items-center gap-2.5 font-mono text-micro text-text-dim">
+                          <span className="min-w-0 truncate" title={live?.model_primary ?? "model unknown"}>
+                            {shortModel(live?.model_primary)}
+                          </span>
+                          <span
+                            className="inline-flex shrink-0 items-center gap-1 font-medium"
+                            style={{ color: heat.color }}
+                            title={`Load: ${heat.label} — ${events24h} event${events24h === 1 ? "" : "s"} in 24h · ${activeTaskCount} active task${activeTaskCount === 1 ? "" : "s"}`}
+                          >
+                            <ThermometerIcon color={heat.color} mercuryTop={heat.mercuryTop} />
+                            <span className="tabular-nums">{events24h}</span>
+                          </span>
+                          <span
+                            className="inline-flex shrink-0 items-center gap-1 font-medium text-text-muted"
+                            title="Session idle time"
+                          >
+                            <StopwatchIcon />
+                            <span className="tabular-nums">{formatIdle(live?.session_idle_s)}</span>
+                          </span>
+                        </div>
                       </div>
-                    </Link>
-                    <div className="mt-3 flex min-w-0 items-center gap-2.5 font-mono text-micro text-text-dim">
-                      <span className="min-w-0 truncate" title={live?.model_primary ?? "model unknown"}>
-                        {shortModel(live?.model_primary)}
-                      </span>
-                      <span
-                        className="inline-flex shrink-0 items-center gap-1 font-medium"
-                        style={{ color: heat.color }}
-                        title={`Load: ${heat.label} — ${events24h} event${events24h === 1 ? "" : "s"} in 24h · ${activeTaskCount} active task${activeTaskCount === 1 ? "" : "s"}`}
-                      >
-                        <ThermometerIcon color={heat.color} mercuryTop={heat.mercuryTop} />
-                        <span className="tabular-nums">{events24h}</span>
-                      </span>
-                      <span
-                        className="inline-flex shrink-0 items-center gap-1 font-medium text-text-muted"
-                        title="Session idle time"
-                      >
-                        <StopwatchIcon />
-                        <span className="tabular-nums">{formatIdle(live?.session_idle_s)}</span>
-                      </span>
                     </div>
                   </div>
 
@@ -559,8 +592,8 @@ export default async function AgentsPage() {
                   </div>
                 </div>
 
-                <div className="relative mt-3 space-y-2.5 border-t border-line pt-2.5">
-                  <div>
+                <div className="relative mt-3 grid gap-x-4 gap-y-2.5 border-t border-line pt-2.5 sm:grid-cols-2">
+                  <div className="min-w-0">
                     <div className="inline-flex items-center gap-1.5 text-micro font-bold uppercase tracking-wider text-text">
                       <span className="text-accent"><ClipboardListIcon /></span>
                       Working on
@@ -587,7 +620,7 @@ export default async function AgentsPage() {
                       </ul>
                     )}
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                       <span className="inline-flex items-center gap-1.5 text-micro font-bold uppercase tracking-wider text-text">
                         <span className="text-accent"><HistoryIcon /></span>
@@ -627,7 +660,7 @@ export default async function AgentsPage() {
                   <span className="flex-1" />
                   <Link
                     href={`/agents/${a.slug}/chat`}
-                    className="grid h-7 w-7 place-items-center rounded-full border border-line text-text-muted transition hover:border-accent hover:bg-accent-soft hover:text-accent"
+                    className="grid h-10 w-10 place-items-center rounded-full border border-accent/30 bg-accent-soft text-accent shadow-sm transition hover:bg-accent hover:text-white"
                     title={`Chat with ${a.name}`}
                     aria-label={`Chat with ${a.name}`}
                   >

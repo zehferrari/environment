@@ -12,6 +12,7 @@ import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { normalizeWorkspaceSlug } from "@/lib/workspaces/service";
+import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 import Board from "../../projects/[slug]/board-client";
 import { COLUMNS, COLUMN_IDS } from "../../projects/[slug]/columns";
 import type { MoveTaskResult } from "../../projects/[slug]/page";
@@ -295,7 +296,16 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
         </div>
         <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-display font-semibold tracking-tight">{workspace.name}</h1>
+            <div className="flex items-center gap-3">
+              {workspace.logoPath ? (
+                <img
+                  src={workspaceLogoPublicUrl(workspace.slug, workspace.logoUpdatedAt)}
+                  alt={`${workspace.name} logo`}
+                  className="h-10 w-10 shrink-0 rounded-lg border border-line bg-panel object-cover"
+                />
+              ) : null}
+              <h1 className="text-display font-semibold tracking-tight">{workspace.name}</h1>
+            </div>
             <p className="mt-1 text-body text-text-muted">
               Unified board across {workspace.projects.length} project{workspace.projects.length === 1 ? "" : "s"}
               {workspaceProjectNames ? `: ${workspaceProjectNames}` : ""}.
