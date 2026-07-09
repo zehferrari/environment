@@ -27,9 +27,11 @@ function labelFor(service: string) {
 export default function AgentServiceControls({
   agent,
   services,
+  columns = 2,
 }: {
   agent: string;
   services: AgentService[];
+  columns?: 2 | 3;
 }) {
   const router = useRouter();
   const [rows, setRows] = useState(services);
@@ -88,7 +90,7 @@ export default function AgentServiceControls({
 
   return (
     <div className="space-y-2">
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className={`grid gap-2 ${columns === 3 ? "grid-cols-2 sm:grid-cols-3" : "sm:grid-cols-2"}`}>
         {rows.map((service) => {
           const active = service.status === "active";
           const toggling = busy === `toggle:${service.name}`;
@@ -96,48 +98,56 @@ export default function AgentServiceControls({
           return (
             <div
               key={service.name}
-              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-card border border-line bg-bg px-3 py-2 transition-all hover:bg-panel-soft"
+              className="min-w-0 rounded-card border border-line bg-bg p-2 transition-colors hover:border-line-strong"
             >
-              <div className="min-w-0">
-                <div className="truncate text-caption font-semibold text-text">{labelFor(service.name)}</div>
-                <div className="mt-1 flex items-center gap-1.5 text-nano font-bold uppercase tracking-wider text-text-muted">
-                  <span
-                    className={`h-2 w-2 rounded-full transition-all duration-300 ${
-                      active
-                        ? "bg-ok shadow-[0_0_8px_rgba(34,197,94,0.6)]"
-                        : "bg-crit shadow-[0_0_8px_rgba(239,68,68,0.6)]"
-                    }`}
-                  />
-                  {service.status ?? "unknown"}
-                </div>
-              </div>
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  type="button"
-                  disabled={toggling}
-                  onClick={() => setPending({ kind: "toggle", service, enabled: !active })}
-                  className={`rounded-md p-1.5 border transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full transition-all duration-300 ${
                     active
-                      ? "border-line bg-panel text-text-muted hover:border-crit/30 hover:bg-crit/4 hover:text-crit"
-                      : "border-transparent bg-accent text-white hover:opacity-90"
+                      ? "bg-ok shadow-[0_0_8px_rgba(34,197,94,0.6)]"
+                      : "bg-crit shadow-[0_0_8px_rgba(239,68,68,0.6)]"
                   }`}
-                  title={active ? `Stop ${labelFor(service.name)}` : `Start ${labelFor(service.name)}`}
-                >
-                  {active ? (
-                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>
-                  ) : (
-                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  disabled={restarting}
-                  onClick={() => setPending({ kind: "restart", service })}
-                  className="rounded-md border border-line p-1.5 text-text-muted hover:border-accent hover:text-accent hover:bg-accent-soft transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                  title={`Restart ${labelFor(service.name)}`}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
-                </button>
+                />
+                <span className="truncate text-caption font-semibold text-text" title={service.name}>
+                  {labelFor(service.name)}
+                </span>
+              </div>
+              <div className="mt-1.5 flex items-center justify-between gap-1">
+                <span className="truncate text-nano font-bold uppercase tracking-wider text-text-muted">
+                  {service.status ?? "unknown"}
+                </span>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={toggling}
+                    onClick={() => setPending({ kind: "toggle", service, enabled: !active })}
+                    className={`grid h-7 w-7 cursor-pointer place-items-center rounded-full border transition-all focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 ${
+                      active
+                        ? "border-line bg-panel text-text-muted hover:border-crit/50 hover:bg-crit/10 hover:text-crit"
+                        : "border-ok/40 bg-ok/10 text-ok hover:border-ok hover:bg-ok hover:text-white"
+                    }`}
+                    title={active ? `Stop ${labelFor(service.name)}` : `Start ${labelFor(service.name)}`}
+                    aria-label={active ? `Stop ${labelFor(service.name)}` : `Start ${labelFor(service.name)}`}
+                  >
+                    {toggling ? (
+                      <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 12a9 9 0 1 1-6.2-8.56"/></svg>
+                    ) : active ? (
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect width="16" height="16" x="4" y="4" rx="2"/></svg>
+                    ) : (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="7 4 20 12 7 20 7 4"/></svg>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={restarting}
+                    onClick={() => setPending({ kind: "restart", service })}
+                    className="grid h-7 w-7 cursor-pointer place-items-center rounded-full border border-line bg-panel text-text-muted transition-all hover:border-accent hover:bg-accent-soft hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                    title={`Restart ${labelFor(service.name)}`}
+                    aria-label={`Restart ${labelFor(service.name)}`}
+                  >
+                    <svg className={restarting ? "animate-spin" : ""} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                  </button>
+                </div>
               </div>
             </div>
           );

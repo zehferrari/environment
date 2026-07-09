@@ -1,8 +1,11 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { resolveEffectiveAgentConfig } from "@/lib/agents/management/effective-config";
+import { describeActivity } from "@/lib/activity";
+import { activityScopeWhere } from "@/lib/activity-categories";
 import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel/latency";
 import { readAtlasSnapshot, type SnapshotAgent } from "@/lib/atlas-snapshot";
+import { MessageTimestamp } from "@/components/message-avatar";
 import AgentServiceControls, { type AgentService } from "./agent-service-controls";
 import fs from "fs/promises";
 import AgentManagementControls from "./agent-management-controls";
@@ -81,19 +84,50 @@ function formatAge(value: Date | string | number | null | undefined) {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
-function signalLabel(live?: SnapshotAgent | null) {
-  const signals = live?.busy_state?.signals?.filter(Boolean) ?? [];
-  if (signals.length > 0) return signals.join(", ");
-  return live?.busy_state?.is_busy ? "busy" : "clear";
+// "Temperature" of an agent: how busy it is in the PM system, derived from
+// its recorded activity (non-system audit rows over the last 24h) plus the
+// tasks it currently has In Progress.
+function heatLevel(events24h: number, activeTasks: number) {
+  const score = events24h + activeTasks * 5;
+  if (score >= 30) return { key: "hot", label: "hot", color: "var(--color-crit)", mercuryTop: 5.5 };
+  if (score >= 10) return { key: "warm", label: "warm", color: "var(--color-warn)", mercuryTop: 9 };
+  if (score >= 1) return { key: "mild", label: "mild", color: "var(--viz-work)", mercuryTop: 12.5 };
+  return { key: "cold", label: "cold", color: "var(--color-text-dim)", mercuryTop: 15.5 };
 }
 
-function lastActivityLabel(live?: SnapshotAgent | null) {
-  const last = live?.last_activity;
-  if (!last || typeof last === "string") return "no action captured";
-  const first = last.items?.find((item) => item.preview || item.name || item.kind);
-  if (!first) return last.role ? `${last.role} activity` : "activity captured";
-  const prefix = first.name || first.kind || last.role || "activity";
-  return first.preview ? `${prefix}: ${first.preview}` : prefix;
+function ThermometerIcon({ color, mercuryTop }: { color: string; mercuryTop: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true">
+      <path
+        d="M12 2.5A2.5 2.5 0 0 0 9.5 5v8.7a4.75 4.75 0 1 0 5 0V5A2.5 2.5 0 0 0 12 2.5Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+      />
+      <circle cx="12" cy="17.6" r="2.5" fill={color} />
+      <rect x="11.1" y={mercuryTop} width="1.8" height={17.6 - mercuryTop} rx="0.9" fill={color} />
+    </svg>
+  );
+}
+
+function StopwatchIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="12"
+      height="12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="13.5" r="8" />
+      <path d="M12 9.5v4l2.5 2" />
+      <path d="M9.5 2.5h5" />
+    </svg>
+  );
 }
 
 type SelectedModel = { provider: string; id: string; name?: string };
@@ -195,6 +229,39 @@ export default async function AgentsPage() {
   const liveAgents = snapshot?.agents ?? {};
   const system = snapshot?.system ?? {};
   const monitor = snapshot?.monitor ?? null;
+
+  // Per-agent freshness signals straight from the PM DB (the Atlas snapshot's
+  // current_task/last_activity fields lag behind): the agent's latest audit
+  // row and its non-system event count over the last 24h (temperature).
+  const dayAgo = new Date(Date.now() - 24 * 3_600_000);
+  const agentUserIds = agents.map((a) => a.user?.id).filter((id): id is string => Boolean(id));
+  const [lastActionRows, activity24hGroups] = await Promise.all([
+    Promise.all(
+      agents.map((a) =>
+        a.user
+          ? db.activityLog.findFirst({
+              where: { userId: a.user.id, AND: [activityScopeWhere("all")] },
+              orderBy: { createdAt: "desc" },
+              include: { task: { select: { title: true } } },
+            })
+          : Promise.resolve(null),
+      ),
+    ),
+    agentUserIds.length > 0
+      ? db.activityLog.groupBy({
+          by: ["userId"],
+          where: {
+            createdAt: { gte: dayAgo },
+            userId: { in: agentUserIds },
+            AND: [activityScopeWhere("all")],
+          },
+          _count: { _all: true },
+        })
+      : Promise.resolve([]),
+  ]);
+  const lastActionBySlug = new Map(agents.map((a, i) => [a.slug, lastActionRows[i]]));
+  const events24hByUserId = new Map(activity24hGroups.map((row) => [row.userId, row._count._all]));
+
   const rawAgentJsons = agents.map((agent) => agent.rawJson);
   const clientAgents = await Promise.all(
     agents.map(async (a) => {
@@ -285,8 +352,6 @@ export default async function AgentsPage() {
             const newestPmLatency = newestPmRun ? pmChannelLatencySpans(newestPmRun) : null;
             const status = statusFor(a, live);
             const ring = ringFor(status);
-            const liveTask = live?.current_task ?? null;
-            const pmTask = a.user?.assignedTasks.find((t) => t.status === "In Progress") ?? a.user?.assignedTasks[0] ?? null;
             const tickets = live?.jira_tickets ?? [];
             const avatarSrc = localAvatarSrc(a.avatar, live?.avatar_url, a.name);
             const effective = effectiveConfigs.get(a.slug);
@@ -298,15 +363,23 @@ export default async function AgentsPage() {
               name,
               status: system[`${a.slug}/${name}`]?.is_active ?? system[name]?.is_active ?? null,
             }));
-            const activeSvc = agentServices.filter((svc) => svc.status === "active").length;
             const tone = avatarTone(status);
-            const ticketStatus = liveTask?.ticket
-              ? `${liveTask.ticket} · ${liveTask.status ?? "—"}`
-              : liveTask?.status
-                ? liveTask.status
-                : pmTask
-                  ? `${pmTask.project.slug} · ${pmTask.status}`
-                  : "—";
+            const workingTasks = (a.user?.assignedTasks ?? [])
+              .filter((t) => t.status === "In Progress")
+              .slice(0, 3);
+            const lastAction = lastActionBySlug.get(a.slug) ?? null;
+            const lastActionLabel = lastAction
+              ? describeActivity({
+                  kind: lastAction.kind,
+                  payload: lastAction.payload,
+                  actorName: a.user?.username ?? a.slug,
+                  taskTitle: lastAction.task?.title ?? null,
+                  targetAgent: lastAction.targetAgent,
+                  targetFile: lastAction.targetFile,
+                })
+              : null;
+            const events24h = a.user ? events24hByUserId.get(a.user.id) ?? 0 : 0;
+            const heat = heatLevel(events24h, workingTasks.length);
             return (
               <article
                 key={a.id}
@@ -318,11 +391,18 @@ export default async function AgentsPage() {
                 <div className="relative flex items-start gap-3">
                   <div className="relative shrink-0">
                     {tone.pulse && (
-                      <span className="absolute -inset-1 animate-pulse rounded-orbit border-2" style={{ borderColor: ring.ring }} aria-hidden="true" />
+                      <span
+                        className="pointer-events-none absolute -inset-1 animate-ping rounded-orbit opacity-30"
+                        style={{ background: ring.ring }}
+                        aria-hidden="true"
+                      />
                     )}
                     <div
                       className={`relative grid h-14 w-14 place-items-center overflow-hidden rounded-panel border bg-panel-soft text-heading font-semibold ${tone.grayscale ? "opacity-80 grayscale" : ""}`}
-                      style={{ borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))" }}
+                      style={{
+                        borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))",
+                        boxShadow: tone.pulse ? `0 0 12px 2px ${ring.bg}` : undefined,
+                      }}
                     >
                       {avatarSrc ? (
                         <img src={avatarSrc} alt={`${a.name} avatar`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
@@ -333,22 +413,33 @@ export default async function AgentsPage() {
                     <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-line bg-panel px-1.5 py-0.5 text-pico font-semibold uppercase tracking-wide" style={{ color: ring.ring }}>{status}</span>
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <h2 className="truncate text-heading font-semibold tracking-tight">{a.name}</h2>
-                    </div>
-                    <p className="font-mono text-caption text-text-muted">@{a.slug} · {a.role}</p>
-                    <div className="mt-2 grid grid-cols-3 gap-2">
-                      <CockpitStat label="Idle" value={formatIdle(live?.session_idle_s)} />
-                      <CockpitStat label="Model" value={shortModel(live?.model_primary)} tone={live?.busy_state?.is_busy ? "warn" : undefined} />
-                      <CockpitStat label="Services" value={`${activeSvc}/${agentServices.length || 0}`} />
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <h2 className="truncate text-heading font-semibold tracking-tight">{a.name}</h2>
+                        <p className="font-mono text-caption text-text-muted">@{a.slug} · {a.role}</p>
+                        <p className="mt-0.5 truncate font-mono text-micro text-text-dim" title={live?.model_primary ?? "model unknown"}>
+                          {shortModel(live?.model_primary)}
+                        </p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border border-line bg-panel px-2 py-0.5 text-nano font-medium text-text-muted"
+                          style={{ color: heat.color }}
+                          title={`Load: ${heat.label} — ${events24h} event${events24h === 1 ? "" : "s"} in 24h · ${workingTasks.length} active task${workingTasks.length === 1 ? "" : "s"}`}
+                        >
+                          <ThermometerIcon color={heat.color} mercuryTop={heat.mercuryTop} />
+                          <span className="tabular-nums">{events24h}</span>
+                        </span>
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full border border-line bg-panel px-2 py-0.5 text-nano font-medium text-text-muted"
+                          title="Session idle time"
+                        >
+                          <StopwatchIcon />
+                          <span className="tabular-nums">{formatIdle(live?.session_idle_s)}</span>
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
-
-                <div className="relative mt-3 space-y-2 text-body">
-                  <Metric label="Current task" value={liveTask?.heading ?? pmTask?.title ?? "No active task"} />
-                  <Metric label="Ticket / status" value={ticketStatus} />
-                  <Metric label="Last action" value={lastActivityLabel(live)} />
                 </div>
 
                 <div className="relative mt-3 rounded-card border border-line bg-panel-soft p-2.5">
@@ -356,7 +447,44 @@ export default async function AgentsPage() {
                     <span className="text-nano font-semibold uppercase tracking-wider text-text-muted">Services</span>
                     <Link href={`/agents/${a.slug}`} className="text-nano font-medium text-accent hover:underline">Profile →</Link>
                   </div>
-                  <AgentServiceControls agent={a.slug} services={agentServices} />
+                  <AgentServiceControls agent={a.slug} services={agentServices} columns={3} />
+                </div>
+
+                <div className="relative mt-3 space-y-2">
+                  <div>
+                    <div className="text-micro uppercase tracking-wider text-text-muted">Working on</div>
+                    {workingTasks.length === 0 ? (
+                      <p className="mt-0.5 text-body text-text-muted">No active task</p>
+                    ) : (
+                      <ul className="mt-0.5 space-y-0.5">
+                        {workingTasks.map((t) => (
+                          <li key={t.id} className="truncate text-body">
+                            <Link
+                              href={`/projects/${t.project.slug}/tasks/${t.id}`}
+                              className="font-medium hover:text-accent hover:underline"
+                              title={t.title}
+                            >
+                              {t.title}
+                            </Link>
+                            <span className="text-caption text-text-muted"> · {t.project.slug}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div>
+                    <div className="text-micro uppercase tracking-wider text-text-muted">Last action</div>
+                    {lastAction && lastActionLabel ? (
+                      <div className="mt-1 flex min-w-0 items-center gap-2">
+                        <MessageTimestamp value={lastAction.createdAt} />
+                        <span className="min-w-0 flex-1 truncate text-body" title={lastActionLabel}>
+                          {lastActionLabel}
+                        </span>
+                      </div>
+                    ) : (
+                      <p className="mt-0.5 text-body text-text-muted">No recorded activity</p>
+                    )}
+                  </div>
                 </div>
 
                 <div className="relative mt-3 flex flex-wrap items-center gap-2 text-caption">
@@ -393,21 +521,3 @@ function Kpi({ label, value, foot }: { label: string; value: string; foot: strin
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-micro uppercase tracking-wider text-text-muted">{label}</div>
-      <div className="truncate font-medium" title={value}>{value}</div>
-    </div>
-  );
-}
-
-function CockpitStat({ label, value, tone }: { label: string; value: string; tone?: "ok" | "warn" }) {
-  const color = tone === "ok" ? "text-ok" : tone === "warn" ? "text-warn" : "text-text";
-  return (
-    <div className="rounded-lg border border-line bg-bg px-2 py-2">
-      <div className="text-nano uppercase tracking-wider text-text-muted">{label}</div>
-      <div className={`mt-1 truncate font-mono text-caption font-semibold ${color}`} title={value}>{value}</div>
-    </div>
-  );
-}
