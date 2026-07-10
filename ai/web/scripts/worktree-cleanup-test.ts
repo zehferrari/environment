@@ -113,6 +113,18 @@ function main() {
     expectRejected(repo, worktreesRoot, "dirty", "local changes");
     assert.equal(existsSync(dirty), true, "dirty worktree must remain");
 
+    git(repo, ["checkout", "-b", "feature/generated-version"]);
+    mkdirSync(path.join(repo, "public"), { recursive: true });
+    commit(repo, "public/version.json", "{\"commit\":\"base\",\"builtAt\":\"initial\"}\n", "generated version base");
+    git(repo, ["checkout", "main"]);
+    git(repo, ["merge", "--no-ff", "feature/generated-version", "-m", "Merge feature/generated-version"]);
+    const generatedVersion = addWorktree(repo, worktreesRoot, "feature/generated-version", "generated-version");
+    writeFileSync(path.join(generatedVersion, "public/version.json"), "{\"commit\":\"generated\",\"builtAt\":\"later\"}\n");
+    const removedGeneratedVersion = runCleanup(repo, worktreesRoot, "generated-version");
+    assert.equal(removedGeneratedVersion.ok, true, removedGeneratedVersion.output);
+    assert.equal(existsSync(generatedVersion), false, "worktree with only a generated version stamp should be removable");
+    assert.equal(hasLocalBranch(repo, "feature/generated-version"), false, "generated-version local branch should be removed");
+
     createBranch(repo, "feature/unmerged", false);
     git(repo, ["push", "origin", "feature/unmerged"]);
     const unmerged = addWorktree(repo, worktreesRoot, "feature/unmerged", "unmerged");
@@ -181,6 +193,7 @@ function main() {
     const helperSource = readFileSync(helper, "utf8");
     assert.match(helperSource, /\["worktree", "remove", selected_path\]/);
     assert.match(helperSource, /\["branch", "-D", "--", branch\]/);
+    assert.match(helperSource, /public\/version\.json/);
     assert.match(helperSource, /O_NOFOLLOW/);
     assert.doesNotMatch(helperSource, /--force|push/);
     const actionSource = readFileSync(path.resolve(process.cwd(), "lib/deploy/actions.ts"), "utf8");

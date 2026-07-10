@@ -27,7 +27,7 @@ the operator sees exactly what changes on the host.
 | `pm-switch.sh` | `-> /usr/local/sbin/pm-switch` | root | build a chosen worktree + flip `pm.service` and `pm-consumer.service` to it (`pm-switch <wt>` / `pm-switch status`). |
 | `pm-apply-worktree` | `-> /usr/local/sbin/pm-apply-worktree` | root | the one privileged step (web + consumer drop-ins, daemon-reload + restarts), path-validated. |
 | `pm-switch-runner` | `-> /usr/local/sbin/pm-switch-runner` | root | monitor-run runner behind `pm-switch-runner.service`; watches the spool, runs `pm-switch`. |
-| `worktree-remove` | `-> /usr/local/sbin/worktree-remove` | root | monitor-run helper that removes a clean linked worktree and its local branch (even when unmerged); never deletes `origin`. |
+| `worktree-remove` | `-> /usr/local/sbin/worktree-remove` | root | monitor-run helper that removes a clean linked worktree and its local branch (even when unmerged); it may discard generated `public/version.json` build stamps and never deletes `origin`. |
 | `systemd/pm-switch-runner.service` | `/etc/systemd/system/` | root | runner unit (`User=<monitor>`, templated). |
 | `sudoers.d/pm-switch` | `/etc/sudoers.d/pm-switch`, `0440` | root | one NOPASSWD rule: monitor -> `pm-apply-worktree`. |
 | `install-pm-switch.sh` | run as root | — | idempotent installer for the switcher (scripts, unit, sudoers, spool, RW drop-in). |
@@ -58,8 +58,9 @@ rejected — a stricter admin-only gate is still pending). The currently served
 worktree exposes **Rebuild live**, which runs the same monitor-driven switch
 pipeline against the active branch without changing worktrees. The admin can
 use **Remove local** on a non-live, non-protected linked worktree. It removes
-only a clean worktree; an attached local branch is deleted even when it is
-unmerged, while remote branches and per-branch preview databases remain. Install with
+only a clean worktree; generated `public/version.json` build stamps are discarded.
+An attached local branch is deleted even when it is unmerged, while remote branches
+and per-branch preview databases remain. Install with
 `sudo PM_MONITOR_USER=<monitor-user> ai/web/deploy/install-pm-switch.sh` (after
 `code-tree-perms` has made `/srv/Code` group-collaborative). Full design,
 mechanism, and caveats: [`MULTI_AGENT_WORKTREES.md`](./MULTI_AGENT_WORKTREES.md).

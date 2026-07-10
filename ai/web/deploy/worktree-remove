@@ -25,6 +25,10 @@ PROTECTED_BRANCHES = frozenset({
     "dev",
 })
 
+GENERATED_REMOVAL_CHANGES = frozenset({
+    " M public/version.json",
+})
+
 
 class RemovalError(RuntimeError):
     pass
@@ -82,6 +86,20 @@ def branch_name(record):
     if not ref or not ref.startswith("refs/heads/"):
         return None
     return ref[len("refs/heads/"):]
+
+
+def clean_or_discard_generated_changes(worktree_path):
+    status_lines = [
+        line
+        for line in git(worktree_path, ["status", "--porcelain=v1", "--untracked-files=all"]).stdout.splitlines()
+        if line.strip()
+    ]
+    if not status_lines:
+        return
+    unexpected = [line for line in status_lines if line not in GENERATED_REMOVAL_CHANGES]
+    if unexpected:
+        raise RemovalError("worktree has local changes; commit, stash, or clean it before removal")
+    git(worktree_path, ["restore", "--", "public/version.json"])
 
 
 def acquire_operation_lock(lock_path):
@@ -154,9 +172,7 @@ def remove_local_worktree(repo, worktrees_root, target, driver, served_reference
         if selected.get("locked"):
             raise RemovalError("worktree is locked")
 
-        status = git(selected_path, ["status", "--porcelain=v1", "--untracked-files=all"]).stdout.strip()
-        if status:
-            raise RemovalError("worktree has local changes; commit, stash, or clean it before removal")
+        clean_or_discard_generated_changes(selected_path)
 
         branch = branch_name(selected)
         if branch:
