@@ -57,7 +57,8 @@
     "test:deploy-review-prompt": "tsx scripts/deploy-review-prompt-test.ts",
     "test:markdown-links": "tsx scripts/markdown-link-test.ts",
     "test:workflow-agent-rules": "tsx scripts/workflow-agent-rules-test.ts",
-    "test:protected-branches": "tsx scripts/protected-branches-test.ts"
+    "test:protected-branches": "tsx scripts/protected-branches-test.ts",
+    "test:worktree-cleanup": "tsx scripts/worktree-cleanup-test.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",

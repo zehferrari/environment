@@ -43,6 +43,13 @@ APP_SUBDIR="${APP_SUBDIR:-}"
 PREVIEW_APPLY="${PREVIEW_APPLY_HELPER:-/usr/local/sbin/worktree-preview-apply}"
 DOCROOT_APPLY="${DOCROOT_APPLY_HELPER:-/usr/local/sbin/worktree-docroot-apply}"
 
+# Serialize switches and local cleanup. The installer creates this regular
+# file under a root-owned parent so shared worktree users cannot replace it.
+LOCK_FILE="${WORKTREE_LOCK_FILE:?WORKTREE_LOCK_FILE missing in $ENV_FILE}"
+[[ -f "$LOCK_FILE" && ! -L "$LOCK_FILE" ]] || die "worktree operation lock missing: $LOCK_FILE (run worktree-preview-install.sh)"
+exec 9<>"$LOCK_FILE"
+flock -x 9
+
 # ---- resolve a target argument to an absolute worktree root ---------------
 resolve_worktree() {
   local t="$1" p

@@ -24,6 +24,9 @@ import time
 SWITCH_DIR = os.environ.get("PM_SWITCH_DIR", "/var/lib/pm/switch")
 SWITCH_SCRIPT = os.environ.get("PM_SWITCH_SCRIPT", "/usr/local/sbin/pm-switch")
 REPO = os.environ.get("ENV_REPO", "/srv/Code/environment")
+WORKTREES_ROOT = os.environ.get("PM_WORKTREES_ROOT", "/srv/Code/environment.worktrees")
+LOCK_FILE = os.environ.get("PM_WORKTREE_LOCK", "/var/lib/worktree-locks/environment.lock")
+REMOVE_SCRIPT = os.environ.get("PM_WORKTREE_REMOVE_SCRIPT", "/usr/local/sbin/worktree-remove")
 POLL = float(os.environ.get("PM_SWITCH_POLL_SECONDS", "2"))
 REQUEST = os.path.join(SWITCH_DIR, "request.json")
 STATE = os.path.join(SWITCH_DIR, "state.json")
@@ -103,6 +106,7 @@ def write_state(job):
     root, br = served()
     if (
         job.get("state") == "error"
+        and job.get("action") != "remove"
         and root
         and service_active("pm.service")
         and service_active("pm-consumer.service")
@@ -138,24 +142,73 @@ def run_switch(req):
     target = str(req.get("target", "")).strip()
     valid = {w["name"] for w in worktrees(None)} | {w["path"] for w in worktrees(None)}
     if target not in valid:
-        return {"id": req["id"], "state": "error", "target": target,
+        return {"id": req["id"], "state": "error", "action": "serve", "target": target,
                 "message": f"Unknown worktree: {target}", "startedAt": now(),
                 "updatedAt": now(), "log": ""}
 
     started = now()
-    write_state({"id": req["id"], "state": "building", "target": target,
+    write_state({"id": req["id"], "state": "building", "action": "serve", "target": target,
                  "message": f"Building & switching to {target}…", "startedAt": started,
                  "updatedAt": now(), "log": ""})
     proc = subprocess.run([SWITCH_SCRIPT, target], capture_output=True, text=True)
     log = ANSI.sub("", (proc.stdout or "") + (proc.stderr or ""))
     tail = "\n".join(log.splitlines()[-40:])
     if proc.returncode == 0:
-        return {"id": req["id"], "state": "done", "target": target,
+        return {"id": req["id"], "state": "done", "action": "serve", "target": target,
                 "message": f"Now serving {target}.", "startedAt": started,
                 "updatedAt": now(), "log": tail}
-    return {"id": req["id"], "state": "error", "target": target,
+    return {"id": req["id"], "state": "error", "action": "serve", "target": target,
             "message": f"Switch failed (exit {proc.returncode}).", "startedAt": started,
             "updatedAt": now(), "log": tail}
+
+
+def run_remove(req):
+    target = str(req.get("target", "")).strip()
+    valid = {w["name"] for w in worktrees(None)}
+    if target not in valid:
+        return {"id": req["id"], "state": "error", "action": "remove", "target": target,
+                "message": f"Unknown worktree: {target}", "startedAt": now(),
+                "updatedAt": now(), "log": ""}
+
+    started = now()
+    write_state({"id": req["id"], "state": "working", "action": "remove", "target": target,
+                 "message": f"Removing local worktree {target}…", "startedAt": started,
+                 "updatedAt": now(), "log": ""})
+    try:
+        protected = req.get("protectedBranches", [])
+        if not isinstance(protected, list) or not all(isinstance(branch, str) for branch in protected):
+            protected = []
+        proc = subprocess.run(
+            [REMOVE_SCRIPT, REPO, WORKTREES_ROOT, target, "node-service", "pm.service", "ai/web/.next/standalone", LOCK_FILE, json.dumps(protected)],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        return {"id": req["id"], "state": "error", "action": "remove", "target": target,
+                "message": "Local removal helper could not start.", "startedAt": started,
+                "updatedAt": now(), "log": str(exc)}
+    tail = "\n".join(ANSI.sub("", (proc.stdout or "") + (proc.stderr or "")).splitlines()[-40:])
+    if proc.returncode == 0:
+        return {"id": req["id"], "state": "done", "action": "remove", "target": target,
+                "message": f"Removed local worktree {target}.", "startedAt": started,
+                "updatedAt": now(), "log": tail}
+    message = (f"Worktree {target} was removed, but its local branch remains."
+               if "worktree was removed but local branch" in tail
+               else f"Could not remove local worktree {target}.")
+    return {"id": req["id"], "state": "error", "action": "remove", "target": target,
+            "message": message, "startedAt": started,
+            "updatedAt": now(), "log": tail}
+
+
+def run_action(req):
+    action = str(req.get("action", "serve")).strip() or "serve"
+    if action == "remove":
+        return run_remove(req)
+    if action != "serve":
+        return {"id": req["id"], "state": "error", "action": action, "target": req.get("target"),
+                "message": f"Unsupported action: {action}", "startedAt": now(),
+                "updatedAt": now(), "log": ""}
+    return run_switch(req)
 
 
 def main():
@@ -170,7 +223,7 @@ def main():
         req = read_json(REQUEST)
         if req and req.get("id") and req["id"] != last_id:
             last_id = req["id"]
-            job = run_switch(req)
+            job = run_action(req)
             write_state(job)
         else:
             write_state(job)  # refresh inventory/served (catches CLI switches, new worktrees)

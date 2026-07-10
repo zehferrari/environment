@@ -12,6 +12,7 @@ import { auth } from "@/lib/auth";
 import { readSwitchState } from "@/lib/deploy/worktrees";
 import { getSwitchProject } from "@/lib/deploy/switch-registry";
 import { displayWorktreesForRepo, worktreeRepoKey } from "@/lib/deploy/repo-key";
+import { localWorktreeProtectedBranches } from "@/lib/deploy/local-worktree";
 import WorktreeSwitcher from "@/components/worktree-switcher";
 import BranchMultiCombobox from "@/components/branch-multi-combobox";
 import { parseProtectedBranches } from "@/lib/projects/protected-branches";
@@ -67,6 +68,7 @@ export default async function ProjectSettingsPage({
   const isAdmin = session?.user?.name === "zeh";
   const isHuman = Boolean(session?.user?.id && session.user.kind !== "agent");
   const canEditDeployment = isHuman || isAdmin || project.members.some((member) => member.role === "owner");
+  const canRemoveWorktrees = isAdmin;
   const deploymentInputClass = "w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-70";
   const repoKey = worktreeRepoKey(project.repositoryPath);
   const switchProject = isHuman ? getSwitchProject(repoKey) : null;
@@ -83,6 +85,7 @@ export default async function ProjectSettingsPage({
     }),
   ]);
   const protectedBranches = parseProtectedBranches(project.agentChangeBlockedBranches);
+  const worktreeProtectedBranches = localWorktreeProtectedBranches(project);
   const branchOptions = [
     project.deploymentProductionBranch ?? "main",
     project.deploymentPrTargetBranch ?? project.deploymentProductionBranch ?? "main",
@@ -478,6 +481,9 @@ export default async function ProjectSettingsPage({
             {showSwitcher && switchState && switchProject ? (
               <WorktreeSwitcher
                 initial={switchState}
+                projectSlug={slug}
+                canRemove={canRemoveWorktrees}
+                protectedBranches={worktreeProtectedBranches}
                 repoKey={repoKey ?? ""}
                 driver={switchProject.driver}
                 offFreesResources={switchProject.offFreesResources}

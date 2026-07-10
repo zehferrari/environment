@@ -49,7 +49,9 @@ if os.path.isfile(ENV_FILE):
             os.environ.setdefault(k.strip(), v.strip())
 
 SWITCH_SCRIPT = env("WT_SWITCH_SCRIPT", "/usr/local/sbin/worktree-switch")
+REMOVE_SCRIPT = env("WT_REMOVE_SCRIPT", "/usr/local/sbin/worktree-remove")
 SPOOL_DIR = env("SPOOL_DIR", f"/var/lib/worktree-switch/{KEY}")
+LOCK_FILE = env("WORKTREE_LOCK_FILE", f"/var/lib/worktree-locks/{KEY}.lock")
 REPO = env("REPO")
 WT_ROOT = env("WORKTREES_ROOT")
 APP_SUBDIR = env("APP_SUBDIR", "")
@@ -102,6 +104,15 @@ def write_last_served(name):
         with open(tmp, "w") as f:
             f.write(name)
         os.replace(tmp, LAST_SERVED)
+    except Exception:
+        pass
+
+
+def clear_last_served():
+    try:
+        os.unlink(LAST_SERVED)
+    except FileNotFoundError:
+        pass
     except Exception:
         pass
 
@@ -192,10 +203,63 @@ def write_state(job):
         pass
 
 
+def run_remove(req):
+    target = str(req.get("target", "")).strip()
+    valid = {w["name"] for w in worktrees(None)}
+    started = now()
+    if target not in valid:
+        return {"id": req["id"], "state": "error", "action": "remove", "target": target,
+                "message": f"Unknown worktree: {target}", "startedAt": started,
+                "updatedAt": now(), "log": ""}
+
+    write_state({"id": req["id"], "state": "working", "action": "remove", "target": target,
+                 "message": f"Removing local worktree {target}…", "startedAt": started,
+                 "updatedAt": now(), "log": ""})
+    try:
+        protected = req.get("protectedBranches", [])
+        if not isinstance(protected, list) or not all(isinstance(branch, str) for branch in protected):
+            protected = []
+        proc = subprocess.run(
+            [
+                REMOVE_SCRIPT,
+                REPO,
+                WT_ROOT,
+                target,
+                DRIVER,
+                SERVED_UNIT if DRIVER == "node-service" else CURRENT_SYMLINK,
+                APP_SUBDIR,
+                LOCK_FILE,
+                json.dumps(protected),
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        return {"id": req["id"], "state": "error", "action": "remove", "target": target,
+                "message": "Local removal helper could not start.", "startedAt": started,
+                "updatedAt": now(), "log": str(exc)}
+    tail = "\n".join(ANSI.sub("", (proc.stdout or "") + (proc.stderr or "")).splitlines()[-40:])
+    if proc.returncode == 0:
+        if target == read_last_served():
+            clear_last_served()
+        return {"id": req["id"], "state": "done", "action": "remove", "target": target,
+                "message": f"Removed local worktree {target}.", "startedAt": started,
+                "updatedAt": now(), "log": tail}
+    message = (f"Worktree {target} was removed, but its local branch remains."
+               if "worktree was removed but local branch" in tail
+               else f"Could not remove local worktree {target}.")
+    return {"id": req["id"], "state": "error", "action": "remove", "target": target,
+            "message": message, "startedAt": started,
+            "updatedAt": now(), "log": tail}
+
+
 def run_action(req):
     action = str(req.get("action", "switch")).strip() or "switch"
     target = str(req.get("target", "")).strip()
     started = now()
+
+    if action == "remove":
+        return run_remove(req)
 
     if action in ("off", "on"):
         cmd = [SWITCH_SCRIPT, KEY, action]
@@ -225,6 +289,11 @@ def run_action(req):
         return {"id": req["id"], "state": "error", "action": action, "target": restore,
                 "message": f"{action} failed (exit {proc.returncode}).", "startedAt": started,
                 "updatedAt": now(), "log": tail}
+
+    if action not in ("switch", "serve"):
+        return {"id": req["id"], "state": "error", "action": action, "target": target,
+                "message": f"Unsupported action: {action}", "startedAt": started,
+                "updatedAt": now(), "log": ""}
 
     # switch
     valid = {w["name"] for w in worktrees(None)} | {w["path"] for w in worktrees(None)}

@@ -182,7 +182,7 @@ user.
 | `components/task-checklist.tsx` | task **sub-tasks** progress checklist (ENV-60): add/tick/remove/drag-reorder lightweight items; optimistic, server-authoritative. |
 | `lib/tasks/subtasks.ts` | `SubTask` checklist core (create/complete/delete/reorder + `stripStepNumber`); shared by the task editor server actions and the agent workflow endpoint (`add_subtask` / `complete_subtask`). |
 | `components/activity-agenda.tsx` | compact recent-activity feed rendered on the project settings page. |
-| `components/worktree-switcher.tsx` | admin live-preview switcher (shown in a git/worktree-exposed project's Settings via `lib/projects/worktree.ts::isWorktreeExposedRepo`): lists worktrees, polls switch state, requests a build+flip. |
+| `components/worktree-switcher.tsx` | live-preview switcher (shown in a git/worktree-exposed project's Settings via `lib/projects/worktree.ts::isWorktreeExposedRepo`): lists worktrees, polls switch state, requests a build+flip, and lets the admin queue local-only cleanup for a non-live worktree. |
 | `lib/deploy/worktrees.ts` · `lib/deploy/actions.ts` | read the runner's switch `state.json` / write a switch `request.json`. The web app stays unprivileged; the build + restart happen in `pm-switch-runner` (as the monitor). See [deploy/MULTI_AGENT_WORKTREES.md](./deploy/MULTI_AGENT_WORKTREES.md). |
 | `lib/activity.ts` | ActivityLog write helpers. |
 | `lib/markdown.tsx` | server-side markdown renderer with safe-href allowlist + @mention resolver. |

@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Safely remove one linked local worktree and its local branch.
+
+This helper is run by the monitor-owned worktree runners, never by the web
+process. It deliberately refuses dirty or unmerged work and never contacts a
+remote; callers supply only a worktree name from the runner inventory.
+"""
+import fcntl
+import json
+import os
+import stat
+import subprocess
+import sys
+
+
+PROTECTED_BRANCHES = frozenset({
+    "main",
+    "master",
+    "production",
+    "prod",
+    "staging",
+    "stage",
+    "develop",
+    "dev",
+})
+
+
+class RemovalError(RuntimeError):
+    pass
+
+
+def git(repo, args, *, check=True):
+    proc = subprocess.run(
+        ["git", "-C", repo, *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if check and proc.returncode:
+        detail = (proc.stderr or proc.stdout or "git command failed").strip()
+        raise RemovalError(detail)
+    return proc
+
+
+def worktrees(repo):
+    out = git(repo, ["worktree", "list", "--porcelain"]).stdout
+    records = []
+    current = None
+
+    def flush():
+        nonlocal current
+        if current:
+            records.append(current)
+        current = None
+
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            flush()
+            current = {"path": line.removeprefix("worktree ")}
+        elif current is not None and line.startswith("branch "):
+            current["branch"] = line[len("branch "):]
+        elif current is not None and line.startswith("detached"):
+            current["detached"] = True
+        elif current is not None and line.startswith("locked"):
+            current["locked"] = True
+        elif line == "":
+            flush()
+    flush()
+    return records
+
+
+def is_descendant(root, candidate):
+    try:
+        return os.path.commonpath([root, candidate]) == root and candidate != root
+    except ValueError:
+        return False
+
+
+def branch_name(record):
+    ref = record.get("branch")
+    if not ref or not ref.startswith("refs/heads/"):
+        return None
+    return ref[len("refs/heads/"):]
+
+
+def acquire_operation_lock(lock_path):
+    if not os.path.isabs(lock_path) or os.path.islink(lock_path):
+        raise RemovalError("invalid worktree operation lock")
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(lock_path, flags)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise RemovalError("worktree operation lock is not a regular file")
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def active_served_root(driver, reference, app_subdir):
+    if driver == "node-service":
+        proc = subprocess.run(
+            ["systemctl", "show", "-p", "WorkingDirectory", "--value", reference],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if proc.returncode:
+            detail = (proc.stderr or proc.stdout or "could not inspect served worktree").strip()
+            raise RemovalError(detail)
+        root = proc.stdout.strip()
+        suffix = f"/{app_subdir.strip('/')}" if app_subdir else ""
+        if suffix:
+            if not root.endswith(suffix):
+                return None
+            root = root[: -len(suffix)]
+        return os.path.realpath(root) if root and os.path.isdir(root) else None
+    if driver == "nginx-docroot":
+        return os.path.realpath(reference) if reference and os.path.islink(reference) else None
+    if driver == "path":
+        return os.path.realpath(reference) if reference else None
+    if driver == "none":
+        return None
+    raise RemovalError(f"unknown serve driver: {driver}")
+
+
+def remove_local_worktree(repo, worktrees_root, target, driver, served_reference, app_subdir, lock_path, protected_branches):
+    repo_real = os.path.realpath(repo)
+    root_real = os.path.realpath(worktrees_root)
+    if not os.path.isdir(repo_real):
+        raise RemovalError(f"repository does not exist: {repo}")
+    if not os.path.isdir(root_real):
+        raise RemovalError(f"worktree root does not exist: {worktrees_root}")
+    if not target or target in {".", ".."} or os.path.basename(target) != target:
+        raise RemovalError("invalid worktree name")
+
+    lock_fd = acquire_operation_lock(lock_path)
+    try:
+        served_root = active_served_root(driver, served_reference, app_subdir) or ""
+        inventory = worktrees(repo_real)
+        matches = [record for record in inventory if os.path.basename(record["path"].rstrip(os.sep)) == target]
+        if len(matches) != 1:
+            raise RemovalError(f"unknown or ambiguous worktree: {target}")
+        selected = matches[0]
+        selected_path = os.path.abspath(selected["path"])
+        selected_real = os.path.realpath(selected_path)
+        if selected_path != selected_real:
+            raise RemovalError("refused worktree path that resolves through a symlink")
+        if not is_descendant(root_real, selected_path):
+            raise RemovalError("refused to remove the primary checkout or a worktree outside the managed root")
+        if not os.path.isdir(selected_path):
+            raise RemovalError("worktree directory is missing; run git worktree prune manually")
+        if served_root and selected_real == os.path.realpath(served_root):
+            raise RemovalError("refused to remove the currently served worktree")
+        if selected.get("locked"):
+            raise RemovalError("worktree is locked")
+
+        status = git(selected_path, ["status", "--porcelain=v1", "--untracked-files=all"]).stdout.strip()
+        if status:
+            raise RemovalError("worktree has local changes; commit, stash, or clean it before removal")
+
+        branch = branch_name(selected)
+        if branch:
+            if branch.lower() in PROTECTED_BRANCHES | {item.lower() for item in protected_branches}:
+                raise RemovalError(f"refused to remove protected local branch: {branch}")
+            ref = selected["branch"]
+            for record in inventory:
+                if record is selected:
+                    continue
+                if record.get("branch") == ref:
+                    raise RemovalError(f"branch {branch} is still checked out by another worktree")
+            merged_primary = git(repo_real, ["merge-base", "--is-ancestor", ref, "HEAD"], check=False)
+            if merged_primary.returncode == 1:
+                raise RemovalError(f"local branch {branch} is not merged into the primary checkout")
+            if merged_primary.returncode:
+                detail = (merged_primary.stderr or merged_primary.stdout or "could not check branch merge state").strip()
+                raise RemovalError(detail)
+            upstream = git(repo_real, ["for-each-ref", "--format=%(upstream)", ref]).stdout.strip()
+            if upstream:
+                merged_upstream = git(repo_real, ["merge-base", "--is-ancestor", ref, upstream], check=False)
+                if merged_upstream.returncode == 1:
+                    raise RemovalError(f"local branch {branch} is not merged into its upstream {upstream}")
+                if merged_upstream.returncode:
+                    detail = (merged_upstream.stderr or merged_upstream.stdout or "could not check upstream merge state").strip()
+                    raise RemovalError(detail)
+        else:
+            detached_head = git(selected_path, ["rev-parse", "HEAD"]).stdout.strip()
+            merged_detached = git(repo_real, ["merge-base", "--is-ancestor", detached_head, "HEAD"], check=False)
+            if merged_detached.returncode == 1:
+                raise RemovalError("detached worktree HEAD is not merged into the primary checkout")
+            if merged_detached.returncode:
+                detail = (merged_detached.stderr or merged_detached.stdout or "could not check detached HEAD merge state").strip()
+                raise RemovalError(detail)
+
+        if os.path.realpath(selected_path) != selected_path:
+            raise RemovalError("worktree path changed while removal was pending")
+        git(repo_real, ["worktree", "remove", selected_path])
+        if branch:
+            try:
+                git(repo_real, ["branch", "-d", "--", branch])
+            except RemovalError as exc:
+                raise RemovalError(f"worktree was removed but local branch {branch} remains: {exc}")
+        git(repo_real, ["worktree", "prune"])
+
+        if branch:
+            return f"Removed local worktree {target} and local branch {branch}. Remote branches were not changed."
+        return f"Removed detached local worktree {target}. Remote branches were not changed."
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def main(argv):
+    if len(argv) == 9:
+        try:
+            protected_branches = json.loads(argv[8])
+        except json.JSONDecodeError as exc:
+            raise RemovalError(f"invalid protected branch list: {exc}")
+        if not isinstance(protected_branches, list) or not all(isinstance(item, str) for item in protected_branches):
+            raise RemovalError("invalid protected branch list")
+        print(remove_local_worktree(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], protected_branches))
+        return
+    raise RemovalError("usage: worktree-remove <repo> <worktrees-root> <worktree-name> <driver> <served-reference> <app-subdir> <lock-file> <protected-branches-json>")
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv)
+    except (RemovalError, OSError, subprocess.TimeoutExpired) as exc:
+        print(f"worktree-remove: {exc}", file=sys.stderr)
+        raise SystemExit(1)

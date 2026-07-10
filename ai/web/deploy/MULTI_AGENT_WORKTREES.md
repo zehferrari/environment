@@ -155,7 +155,8 @@ Versioned under `ai/web/deploy/` (PM-specific) and `ai/openclaw/` (generic):
 | `ai/web/deploy/install-pm-switch.sh` | idempotent installer (scripts, unit, sudoers, spool, RW drop-in) |
 | `ai/web/lib/deploy/{worktrees.ts,actions.ts,switch-registry.ts,repo-key.ts}` · `app/api/system/worktree-switch/status` · `components/worktree-switcher.tsx` | the browser UI + project registry |
 | `ai/web/deploy/worktree-switch.sh` | generic build-and-flip driver for registered non-PM projects |
-| `ai/web/deploy/worktree-switch-runner` · `systemd/worktree-switch-runner@.service` | generic per-project spool runner (`switch`/`on`/`off`) |
+| `ai/web/deploy/worktree-switch-runner` · `systemd/worktree-switch-runner@.service` | generic per-project spool runner (`switch`/`on`/`off`/`remove`) |
+| `ai/web/deploy/worktree-remove` | monitor-run clean local worktree/branch cleanup helper; never deletes remote refs |
 | `ai/web/deploy/worktree-preview-apply` · `worktree-docroot-apply` | **root** apply helpers for the `node-service` / `nginx-docroot` drivers |
 | `ai/web/deploy/worktree-preview-serve` · `systemd/worktree-preview@.service` | templated preview service for `node-service` projects |
 | `ai/web/deploy/sudoers.d/worktree-preview` · `worktree-preview-install.sh` · `worktree-preview.env.example` | generic-stack sudoers, installer, and per-project env contract |

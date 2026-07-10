@@ -29,6 +29,13 @@ log()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Serialize switches and local cleanup. The installer creates this regular
+# file under a root-owned parent so shared worktree users cannot replace it.
+LOCK_FILE="${PM_WORKTREE_LOCK:-/var/lib/worktree-locks/environment.lock}"
+[[ -f "$LOCK_FILE" && ! -L "$LOCK_FILE" ]] || die "worktree operation lock missing: $LOCK_FILE (run install-pm-switch.sh)"
+exec 9<>"$LOCK_FILE"
+flock -x 9
+
 run_build() {
   ( cd "$APP_DIR" && DATABASE_URL="$BRANCH_DB_URL" "$PNPM" build )
 }

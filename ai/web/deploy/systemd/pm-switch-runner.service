@@ -17,6 +17,7 @@ Environment=PM_SWITCH_DIR=/var/lib/pm/switch
 Environment=PM_SWITCH_SCRIPT=/usr/local/sbin/pm-switch
 Environment=ENV_REPO=/srv/Code/environment
 Environment=PM_WORKTREES_ROOT=/srv/Code/environment.worktrees
+Environment=PM_WORKTREE_LOCK=/var/lib/worktree-locks/environment.lock
 ExecStart=/usr/local/sbin/pm-switch-runner
 Restart=on-failure
 RestartSec=5s

@@ -5,7 +5,7 @@
 // pm-switch-runner (as zeh) picks it up. The web app never builds or restarts
 // anything itself.
 
-import { writeFile, rename } from "node:fs/promises";
+import { open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { auth } from "@/lib/auth";
@@ -13,6 +13,8 @@ import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import { readSwitchState } from "@/lib/deploy/worktrees";
 import { getSwitchProject } from "@/lib/deploy/switch-registry";
+import { displayWorktreesForRepo, isLinkedWorktreePath, worktreeRepoKey } from "@/lib/deploy/repo-key";
+import { isLocalWorktreeProtected, localWorktreeProtectedBranches } from "@/lib/deploy/local-worktree";
 import {
   approveAndMergeBitbucketPullRequest,
   approveLocalChangesAndOpenDeploymentPr,
@@ -20,12 +22,58 @@ import {
 } from "@/lib/deploy/monitor";
 
 // Atomic publish of a request into a project's spool: write a temp file then
-// rename it into place so the runner never reads a half-written request.
+// rename it into place so the runner never reads a half-written request. The
+// small lock also prevents two browser actions from both claiming to queue an
+// operation while one request.json would overwrite the other.
+const REQUEST_LOCK_STALE_MS = 60_000;
+
+async function acquireRequestLock(lockPath: string) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await open(lockPath, "wx", 0o664);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const lockStat = await stat(lockPath).catch(() => null);
+      if (!lockStat) continue;
+      const age = Date.now() - lockStat.mtimeMs;
+      if (age <= REQUEST_LOCK_STALE_MS || attempt === 1) {
+        throw new Error("Another worktree operation is being queued. Try again shortly.");
+      }
+      const currentLock = await stat(lockPath).catch(() => null);
+      if (!currentLock || currentLock.ino !== lockStat.ino || currentLock.mtimeMs !== lockStat.mtimeMs) continue;
+      await unlink(lockPath).catch(() => undefined);
+    }
+  }
+  throw new Error("Another worktree operation is being queued. Try again shortly.");
+}
+
 async function publishRequest(spoolDir: string, payload: Record<string, unknown>): Promise<void> {
-  const body = JSON.stringify(payload, null, 2);
-  const tmp = path.join(spoolDir, `request.json.tmp-${payload.id}`);
-  await writeFile(tmp, body, { mode: 0o664 });
-  await rename(tmp, path.join(spoolDir, "request.json"));
+  const lockPath = path.join(spoolDir, "request.lock");
+  const lock = await acquireRequestLock(lockPath);
+
+  try {
+    const state = await readSwitchState(spoolDir);
+    if (isSwitchJobInProgress(state)) throw new Error("Wait for the current worktree operation to finish.");
+    const existing = await readFile(path.join(spoolDir, "request.json"), "utf8").catch(() => "");
+    if (existing) {
+      try {
+        const request = JSON.parse(existing) as { id?: unknown };
+        if (typeof request.id === "string" && request.id !== state.job.id) {
+          throw new Error("Another worktree operation is already queued.");
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message === "Another worktree operation is already queued.") throw error;
+        throw new Error("The pending worktree request could not be verified.");
+      }
+    }
+    const body = JSON.stringify(payload, null, 2);
+    const tmp = path.join(spoolDir, `request.json.tmp-${payload.id}`);
+    await writeFile(tmp, body, { mode: 0o664 });
+    await rename(tmp, path.join(spoolDir, "request.json"));
+  } finally {
+    await lock?.close();
+    await unlink(lockPath).catch(() => undefined);
+  }
 }
 
 export async function requestWorktreeSwitch(
@@ -60,6 +108,81 @@ export async function requestWorktreeSwitch(
     requestedBy: session.user.name ?? session.user.id,
     requestedAt: new Date().toISOString(),
   });
+  return { id };
+}
+
+function pathIsInside(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function isSwitchJobInProgress(state: Awaited<ReturnType<typeof readSwitchState>>): boolean {
+  return state.job.state === "queued" || state.job.state === "building" || state.job.state === "working";
+}
+
+// Queue local cleanup through the monitor-owned runner. pm.service is sandboxed
+// from the shared worktree directories, so the web process must never mutate
+// them directly.
+export async function requestLocalWorktreeRemoval(
+  projectSlug: string,
+  target: string,
+): Promise<{ id: string }> {
+  const session = await auth();
+  if (!session?.user?.id || session.user.kind === "agent") throw new Error("Forbidden");
+
+  const projectRecord = await db.project.findUnique({
+    where: { slug: projectSlug },
+    select: {
+      id: true,
+      deletedAt: true,
+      repositoryPath: true,
+      deploymentProductionBranch: true,
+      deploymentPrTargetBranch: true,
+      agentChangeBlockedBranches: true,
+    },
+  });
+  if (!projectRecord || projectRecord.deletedAt) throw new Error("Project not found.");
+  if (session.user.name !== "zeh") throw new Error("Only the admin can remove local worktrees.");
+
+  const repoKey = worktreeRepoKey(projectRecord.repositoryPath);
+  const project = getSwitchProject(repoKey);
+  if (!project || !repoKey) throw new Error("This project has no managed local worktrees.");
+
+  const state = await readSwitchState(project.spoolDir);
+  if (!state.available) throw new Error("Worktree switcher is not installed on this host.");
+  if (isSwitchJobInProgress(state)) throw new Error("Wait for the current worktree operation to finish.");
+
+  const normalizedTarget = target.trim();
+  const worktree = displayWorktreesForRepo(state.worktrees, repoKey).find((item) => item.name === normalizedTarget);
+  if (!worktree || !isLinkedWorktreePath(worktree.path) || !pathIsInside(project.worktreesRoot, worktree.path)) {
+    throw new Error("Unknown managed local worktree.");
+  }
+  if (worktree.served || (state.served && path.resolve(worktree.path) === path.resolve(state.served))) {
+    throw new Error("The currently served worktree cannot be removed.");
+  }
+  const protectedBranches = localWorktreeProtectedBranches(projectRecord);
+  if (isLocalWorktreeProtected(worktree.branch, protectedBranches)) {
+    throw new Error("This local branch is protected and cannot be removed.");
+  }
+
+  const id = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+  await publishRequest(project.spoolDir, {
+    id,
+    action: "remove",
+    target: worktree.name,
+    protectedBranches,
+    requestedBy: session.user.name ?? session.user.id,
+    requestedAt: new Date().toISOString(),
+  });
+  await db.activityLog.create({
+    data: {
+      projectId: projectRecord.id,
+      userId: session.user.id,
+      kind: "project.worktree_remove_requested",
+      payload: JSON.stringify({ worktree: worktree.name, branch: worktree.branch, remote: false }),
+    },
+  }).catch(() => null);
+  revalidatePath(`/projects/${projectSlug}/settings`);
   return { id };
 }
 

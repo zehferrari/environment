@@ -1,16 +1,20 @@
 "use client";
 
 import { useEffect, useState, useTransition } from "react";
-import { requestWorktreeSwitch, setSiteActive } from "@/lib/deploy/actions";
-import type { SwitchState } from "@/lib/deploy/worktrees";
+import { requestLocalWorktreeRemoval, requestWorktreeSwitch, setSiteActive } from "@/lib/deploy/actions";
+import type { SwitchState, SwitchWorktree } from "@/lib/deploy/worktrees";
 import type { SwitchDriver } from "@/lib/deploy/switch-registry";
 import { displayWorktreesForRepo } from "@/lib/deploy/repo-key";
+import ConfirmPopup from "@/components/confirm-popup";
 
 const POLL_BUSY_MS = 2000;
 const POLL_IDLE_MS = 5000;
 
 export default function WorktreeSwitcher({
   initial,
+  projectSlug,
+  canRemove,
+  protectedBranches,
   repoKey,
   driver,
   offFreesResources,
@@ -18,6 +22,9 @@ export default function WorktreeSwitcher({
   lifecycleControl,
 }: {
   initial: SwitchState;
+  projectSlug: string;
+  canRemove: boolean;
+  protectedBranches: string[];
   // Only worktrees belonging to this project's repo are shown.
   repoKey: string;
   driver: SwitchDriver;
@@ -35,11 +42,13 @@ export default function WorktreeSwitcher({
 }) {
   const [state, setState] = useState<SwitchState>(initial);
   const [error, setError] = useState<string | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<SwitchWorktree | null>(null);
   const [pending, startTransition] = useTransition();
 
   const job = state.job;
   const inProgress = job.state === "queued" || job.state === "building" || job.state === "working";
   const worktrees = displayWorktreesForRepo(state.worktrees, repoKey);
+  const protectedBranchNames = new Set(protectedBranches.map((branch) => branch.toLowerCase()));
   const busy = inProgress || pending;
 
   // Poll the runner-maintained state for THIS project. Tolerant of network
@@ -104,6 +113,21 @@ export default function WorktreeSwitcher({
     });
   }
 
+  function removeLocalWorktree() {
+    if (!removeTarget) return;
+    const target = removeTarget;
+    setError(null);
+    startTransition(async () => {
+      try {
+        await requestLocalWorktreeRemoval(projectSlug, target.name);
+        optimisticJob(target.name, `Queued removal of local worktree ${target.name}…`);
+        setRemoveTarget(null);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to request local worktree removal");
+      }
+    });
+  }
+
   if (!state.available) {
     return (
       <p className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-body text-text-muted">
@@ -163,7 +187,8 @@ export default function WorktreeSwitcher({
         </details>
       ) : job.state === "done" ? (
         <div className="rounded-lg border border-ok/40 bg-ok/10 px-3 py-2 text-body text-ok">
-          {job.message || "Switch complete."} Hard-refresh to load the new build.
+          {job.message || "Switch complete."}
+          {job.message.startsWith("Removed local worktree") ? null : " Hard-refresh to load the new build."}
         </div>
       ) : null}
 
@@ -194,14 +219,27 @@ export default function WorktreeSwitcher({
                   {w.branch} · {w.head}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => serve(w.name, live)}
-                disabled={busy || !w.ready}
-                className="shrink-0 rounded-lg border border-line px-control-x py-control-y text-body font-medium text-text hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line disabled:hover:text-text"
-              >
-                {live ? "Rebuild live" : "Serve live"}
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => serve(w.name, live)}
+                  disabled={busy || !w.ready}
+                  className="rounded-lg border border-line px-control-x py-control-y text-body font-medium text-text hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line disabled:hover:text-text"
+                >
+                  {live ? "Rebuild live" : "Serve live"}
+                </button>
+                {canRemove && !w.served && !protectedBranchNames.has(w.branch.toLowerCase()) ? (
+                  <button
+                    type="button"
+                    onClick={() => setRemoveTarget(w)}
+                    disabled={busy}
+                    title="Remove this local worktree and branch"
+                    className="rounded-lg border border-crit/40 px-control-x py-control-y text-body font-medium text-crit hover:bg-crit/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Remove local
+                  </button>
+                ) : null}
+              </div>
             </li>
           );
         })}
@@ -214,6 +252,24 @@ export default function WorktreeSwitcher({
           ? "Each branch serves its own database, forked once from the canonical seed — schema and data can differ between branches. Secrets are shared."
           : "All worktrees share the same database and secrets — only the served code changes."}
       </p>
+      <ConfirmPopup
+        open={Boolean(removeTarget)}
+        title="Remove local worktree?"
+        description={removeTarget ? (
+          <>
+            This removes the local worktree <span className="font-mono text-text">{removeTarget.name}</span>
+            {removeTarget.branch === "(detached)" ? ". It has no attached local branch." : (
+              <> and local branch <span className="font-mono text-text">{removeTarget.branch}</span>.</>
+            )} It never deletes the remote branch. Removal is refused when the worktree has local changes,
+            the branch is unmerged, or the target is protected or live.
+          </>
+        ) : undefined}
+        confirmLabel="Remove local"
+        danger
+        busy={pending}
+        onConfirm={removeLocalWorktree}
+        onCancel={() => setRemoveTarget(null)}
+      />
     </div>
   );
 }

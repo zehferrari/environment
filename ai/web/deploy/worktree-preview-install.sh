@@ -25,10 +25,12 @@ set -euo pipefail
 # ---- knobs (override on the command line: VAR=... sudo -E ...) -------------
 SRC="${SRC:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)}"
 WT_MONITOR_USER="${WT_MONITOR_USER:-barekbaal}"   # runs the switch runner + sudo apply
+PM_WEB_USER="${PM_WEB_USER:-karen}"               # PM web app reads/writes each spool
 CODE_GROUP="${CODE_GROUP:-code-agents}"
 SBIN=/usr/local/sbin
 ENVDIR=/etc/worktree-preview
 UNITDIR=/etc/systemd/system
+LOCKDIR=/var/lib/worktree-locks
 
 c_info=$'\033[1;36m'; c_ok=$'\033[1;32m'; c_warn=$'\033[1;33m'; c_err=$'\033[1;31m'; c_z=$'\033[0m'
 log()  { printf '%s==>%s %s\n' "$c_info" "$c_z" "$*"; }
@@ -39,6 +41,8 @@ die()  { printf '%sERR %s %s\n' "$c_err" "$c_z" "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "must run as root: sudo $0 ${*:-all}"
 [[ -d "$SRC" ]]   || die "source deploy dir not found: $SRC (set SRC=...)"
 id "$WT_MONITOR_USER" >/dev/null 2>&1 || die "monitor user '$WT_MONITOR_USER' does not exist (set WT_MONITOR_USER=...)"
+id "$PM_WEB_USER" >/dev/null 2>&1 || die "PM web user '$PM_WEB_USER' does not exist (set PM_WEB_USER=...)"
+command -v setfacl >/dev/null 2>&1 || die "setfacl is required to grant the PM web app spool access"
 
 # ---------------------------------------------------------------------------
 # shared: helpers, systemd templates, sudoers, env dir
@@ -47,6 +51,7 @@ install_shared() {
   log "Installing privileged helpers to $SBIN …"
   install -m 0755 -o root -g root "$SRC/worktree-switch.sh"        "$SBIN/worktree-switch"
   install -m 0755 -o root -g root "$SRC/worktree-switch-runner"    "$SBIN/worktree-switch-runner"
+  install -m 0755 -o root -g root "$SRC/worktree-remove"           "$SBIN/worktree-remove"
   install -m 0755 -o root -g root "$SRC/worktree-preview-serve"    "$SBIN/worktree-preview-serve"
   install -m 0755 -o root -g root "$SRC/worktree-preview-apply"    "$SBIN/worktree-preview-apply"
   install -m 0755 -o root -g root "$SRC/worktree-docroot-apply"    "$SBIN/worktree-docroot-apply"
@@ -68,6 +73,7 @@ install_shared() {
   ok "/etc/sudoers.d/worktree-preview installed"
 
   install -d -m 0755 -o root -g root "$ENVDIR"
+  install -d -m 0750 -o root -g "$CODE_GROUP" "$LOCKDIR"
 
   # The PM web app hosts the switcher UI for ALL registered projects, but
   # pm.service runs ProtectSystem=strict — without an explicit grant its spool
@@ -109,9 +115,11 @@ install_wdt() {
   local db_root=/srv/Data/wdt
   local canonical=$db_root/wdt.main.db
   local seed_src=$db_root/data/prisma/production.db   # existing live data
+  local lock_file=$LOCKDIR/$key.lock
 
   [[ -d "$repo" ]]   || die "WDT repo missing: $repo"
   [[ -d "$wtroot" ]] || die "WDT worktrees root missing: $wtroot"
+  install -o root -g "$CODE_GROUP" -m 0660 /dev/null "$lock_file"
 
   log "Writing $ENVDIR/$key.env …"
   cat > "$ENVDIR/$key.env" <<EOF
@@ -121,6 +129,7 @@ DRIVER=node-service
 REPO=$repo
 WORKTREES_ROOT=$wtroot
 SPOOL_DIR=$spool
+WORKTREE_LOCK_FILE=$lock_file
 APP_SUBDIR=
 SERVED_UNIT=worktree-preview@$key.service
 PORT=3001
@@ -139,8 +148,12 @@ EOF
   chmod 0644 "$ENVDIR/$key.env"
   ok "$ENVDIR/$key.env"
 
-  log "Creating spool dir $spool (owner $WT_MONITOR_USER:$CODE_GROUP) …"
-  install -d -m 2770 -o "$WT_MONITOR_USER" -g "$CODE_GROUP" "$spool"
+  log "Creating private spool dir $spool (runner + PM web ACL) …"
+  install -d -m 2700 -o "$WT_MONITOR_USER" -g root "$spool"
+  setfacl -b "$spool"
+  if [[ "$PM_WEB_USER" != "$WT_MONITOR_USER" ]]; then
+    setfacl -m "u:$PM_WEB_USER:rwx,d:u:$PM_WEB_USER:rwx,d:u:$WT_MONITOR_USER:rwx" "$spool"
+  fi
 
   # DB_ROOT must be group-writable so the runner can create per-branch forks.
   log "Ensuring $db_root is writable by $CODE_GROUP (per-branch DB forks) …"
@@ -162,6 +175,7 @@ EOF
   systemctl daemon-reload
   systemctl enable "worktree-preview@$key.service" >/dev/null || warn "could not enable served unit (it will still be started by the first successful switch)"
   systemctl enable --now "worktree-switch-runner@$key.service"
+  systemctl restart "worktree-switch-runner@$key.service"
   ok "WDT runner active. nginx wdt.vixi.au already proxies 127.0.0.1:3001."
   warn "First switch builds the worktree before the served unit can come up; pick a worktree in the PM/WDT switch UI (or: sudo -u $WT_MONITOR_USER worktree-switch $key <branch>)."
 }
@@ -175,9 +189,11 @@ install_patricia() {
   local wtroot=/srv/Code/patricia.worktrees
   local spool=/var/lib/worktree-switch/$key
   local link=/srv/Code/patricia.current
+  local lock_file=$LOCKDIR/$key.lock
 
   [[ -d "$repo" ]]   || die "Patricia repo missing: $repo"
   [[ -d "$wtroot" ]] || die "Patricia worktrees root missing: $wtroot"
+  install -o root -g "$CODE_GROUP" -m 0660 /dev/null "$lock_file"
 
   log "Writing $ENVDIR/$key.env …"
   cat > "$ENVDIR/$key.env" <<EOF
@@ -187,6 +203,7 @@ DRIVER=nginx-docroot
 REPO=$repo
 WORKTREES_ROOT=$wtroot
 SPOOL_DIR=$spool
+WORKTREE_LOCK_FILE=$lock_file
 APP_SUBDIR=
 # nginx 'root' for patricia.vixi.au; repointed per switch, removed on 'off'.
 CURRENT_SYMLINK=$link
@@ -200,8 +217,12 @@ EOF
   chmod 0644 "$ENVDIR/$key.env"
   ok "$ENVDIR/$key.env"
 
-  log "Creating spool dir $spool (owner $WT_MONITOR_USER:$CODE_GROUP) …"
-  install -d -m 2770 -o "$WT_MONITOR_USER" -g "$CODE_GROUP" "$spool"
+  log "Creating private spool dir $spool (runner + PM web ACL) …"
+  install -d -m 2700 -o "$WT_MONITOR_USER" -g root "$spool"
+  setfacl -b "$spool"
+  if [[ "$PM_WEB_USER" != "$WT_MONITOR_USER" ]]; then
+    setfacl -m "u:$PM_WEB_USER:rwx,d:u:$PM_WEB_USER:rwx,d:u:$WT_MONITOR_USER:rwx" "$spool"
+  fi
 
   if [[ -L "$link" ]]; then
     ok "docroot symlink already present: $link -> $(readlink "$link")"
@@ -212,6 +233,7 @@ EOF
   log "Enabling switch runner for $key (no served unit; nginx-docroot has no per-project process) …"
   systemctl daemon-reload
   systemctl enable --now "worktree-switch-runner@$key.service"
+  systemctl restart "worktree-switch-runner@$key.service"
   ok "Patricia runner active. Switch in the UI (or: sudo -u $WT_MONITOR_USER worktree-switch $key <branch>)."
 }
 
@@ -222,6 +244,7 @@ migrate_pm() {
   local key=environment
   warn "PM is the PRODUCTION environment. This subcommand only STAGES the new"
   warn "contract; it does NOT disturb the running pm.service / pm-switch* setup."
+  install -o root -g "$CODE_GROUP" -m 0660 /dev/null "$LOCKDIR/$key.lock"
   log "Staging $ENVDIR/$key.env (the generic contract mirroring the PM mechanism) …"
   cat > "$ENVDIR/$key.env" <<'EOF'
 # PM / environment — node-service contract (STAGED for the supervised cutover).
@@ -232,6 +255,7 @@ DRIVER=node-service
 REPO=/srv/Code/environment
 WORKTREES_ROOT=/srv/Code/environment.worktrees
 SPOOL_DIR=/var/lib/pm/switch
+WORKTREE_LOCK_FILE=/var/lib/worktree-locks/environment.lock
 APP_SUBDIR=ai/web
 SERVED_UNIT=pm.service
 PORT=3000

@@ -27,6 +27,7 @@ the operator sees exactly what changes on the host.
 | `pm-switch.sh` | `-> /usr/local/sbin/pm-switch` | root | build a chosen worktree + flip `pm.service` and `pm-consumer.service` to it (`pm-switch <wt>` / `pm-switch status`). |
 | `pm-apply-worktree` | `-> /usr/local/sbin/pm-apply-worktree` | root | the one privileged step (web + consumer drop-ins, daemon-reload + restarts), path-validated. |
 | `pm-switch-runner` | `-> /usr/local/sbin/pm-switch-runner` | root | monitor-run runner behind `pm-switch-runner.service`; watches the spool, runs `pm-switch`. |
+| `worktree-remove` | `-> /usr/local/sbin/worktree-remove` | root | monitor-run helper that removes a clean, merged linked worktree and its local branch; never deletes `origin`. |
 | `systemd/pm-switch-runner.service` | `/etc/systemd/system/` | root | runner unit (`User=<monitor>`, templated). |
 | `sudoers.d/pm-switch` | `/etc/sudoers.d/pm-switch`, `0440` | root | one NOPASSWD rule: monitor -> `pm-apply-worktree`. |
 | `install-pm-switch.sh` | run as root | — | idempotent installer for the switcher (scripts, unit, sudoers, spool, RW drop-in). |
@@ -34,7 +35,7 @@ the operator sees exactly what changes on the host.
 | `systemd/pm-verify-runner.service` | `/etc/systemd/system/` | root | runner unit (`User=<repo-fetch-user>`, templated; PM comments still use `<monitor-user>`). No sudo / no privileged step. |
 | `install-pm-verify.sh` | run as root | — | idempotent installer for the branch verifier (runner, unit, spool, RW drop-in). |
 | `worktree-switch.sh` | `-> /usr/local/sbin/worktree-switch` | root | generic (ENV-107) build-and-flip driver for registered non-PM projects; reads the project contract from `/etc/worktree-preview/<key>.env`. |
-| `worktree-switch-runner` | `-> /usr/local/sbin/worktree-switch-runner` | root | monitor-run spool consumer behind `worktree-switch-runner@<key>.service`; understands `switch`/`on`/`off`. |
+| `worktree-switch-runner` | `-> /usr/local/sbin/worktree-switch-runner` | root | monitor-run spool consumer behind `worktree-switch-runner@<key>.service`; understands `switch`/`on`/`off`/`remove`. |
 | `worktree-preview-apply` | `-> /usr/local/sbin/worktree-preview-apply` | root | privileged apply step for `node-service` projects (drop-ins + restart of `worktree-preview@<key>`). |
 | `worktree-docroot-apply` | `-> /usr/local/sbin/worktree-docroot-apply` | root | privileged apply step for `nginx-docroot` projects (repoint docroot symlink + nginx reload). |
 | `worktree-preview-serve` | `-> /usr/local/sbin/worktree-preview-serve` | root | exec wrapper `worktree-preview@<key>.service` runs to start the served app from the applied worktree. |
@@ -55,7 +56,11 @@ serves and which source tree `pm-consumer.service` uses — from the CLI
 **Settings → Worktree live preview** panel (human sessions only; agents are
 rejected — a stricter admin-only gate is still pending). The currently served
 worktree exposes **Rebuild live**, which runs the same monitor-driven switch
-pipeline against the active branch without changing worktrees. Install with
+pipeline against the active branch without changing worktrees. The admin can
+use **Remove local** on a non-live, non-protected linked worktree. It removes
+only a clean worktree whose branch or detached HEAD is reachable from the
+primary checkout; remote
+branches and per-branch preview databases remain. Install with
 `sudo PM_MONITOR_USER=<monitor-user> ai/web/deploy/install-pm-switch.sh` (after
 `code-tree-perms` has made `/srv/Code` group-collaborative). Full design,
 mechanism, and caveats: [`MULTI_AGENT_WORKTREES.md`](./MULTI_AGENT_WORKTREES.md).
@@ -67,7 +72,12 @@ The same Settings panel serves every project registered in
 spools live at `/var/lib/worktree-switch/<key>` and are consumed by
 `worktree-switch-runner@<key>.service`; each project's contract lives in
 `/etc/worktree-preview/<key>.env`, installed by
-`worktree-preview-install.sh`.
+`worktree-preview-install.sh`. Re-run the relevant installer after changing a
+runner helper; it now restarts the runner so the installed Python process loads
+the update. The installers also create root-owned operation locks under
+`/var/lib/worktree-locks`, shared only for flock access by `code-agents`.
+Generic project spools are private to the runner and the configured PM web
+user (`PM_WEB_USER`, default `karen`) through ACLs.
 
 **Database model per project.** PM (`environment`) and WDT run
 `DB_ENGINE=sqlite`: every branch deployment gets its own database
