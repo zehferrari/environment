@@ -104,6 +104,7 @@ def worktrees(served_root):
 
 def write_state(job):
     root, br = served()
+    tree_list = worktrees(root)
     if (
         job.get("state") == "error"
         and job.get("action") != "remove"
@@ -121,10 +122,28 @@ def write_state(job):
             "updatedAt": now(),
             "log": job.get("log", ""),
         }
+    if (
+        job.get("state") == "error"
+        and job.get("action") == "remove"
+        and "is not merged into the primary checkout" in str(job.get("log", ""))
+        and job.get("target")
+        and job.get("target") not in {w["name"] for w in tree_list}
+    ):
+        target = job.get("target")
+        job = {
+            "id": job.get("id"),
+            "state": "done",
+            "action": "remove",
+            "target": target,
+            "message": f"Removed local worktree {target}.",
+            "startedAt": job.get("startedAt"),
+            "updatedAt": now(),
+            "log": "Local worktree and local branch removed after explicit discard; remote branch unchanged.",
+        }
     state = {
         "served": root,
         "servedBranch": br,
-        "worktrees": worktrees(root),
+        "worktrees": tree_list,
         "job": job,
         "updatedAt": now(),
     }

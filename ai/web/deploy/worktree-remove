@@ -2,7 +2,8 @@
 """Safely remove one linked local worktree and its local branch.
 
 This helper is run by the monitor-owned worktree runners, never by the web
-process. It deliberately refuses dirty or unmerged work and never contacts a
+process. It refuses dirty, live, protected, or unsafe worktrees, but an
+unmerged local branch may be discarded explicitly. It never contacts a
 remote; callers supply only a worktree name from the runner inventory.
 """
 import fcntl
@@ -167,35 +168,21 @@ def remove_local_worktree(repo, worktrees_root, target, driver, served_reference
                     continue
                 if record.get("branch") == ref:
                     raise RemovalError(f"branch {branch} is still checked out by another worktree")
-            merged_primary = git(repo_real, ["merge-base", "--is-ancestor", ref, "HEAD"], check=False)
-            if merged_primary.returncode == 1:
-                raise RemovalError(f"local branch {branch} is not merged into the primary checkout")
-            if merged_primary.returncode:
-                detail = (merged_primary.stderr or merged_primary.stdout or "could not check branch merge state").strip()
-                raise RemovalError(detail)
-            upstream = git(repo_real, ["for-each-ref", "--format=%(upstream)", ref]).stdout.strip()
-            if upstream:
-                merged_upstream = git(repo_real, ["merge-base", "--is-ancestor", ref, upstream], check=False)
-                if merged_upstream.returncode == 1:
-                    raise RemovalError(f"local branch {branch} is not merged into its upstream {upstream}")
-                if merged_upstream.returncode:
-                    detail = (merged_upstream.stderr or merged_upstream.stdout or "could not check upstream merge state").strip()
-                    raise RemovalError(detail)
         else:
-            detached_head = git(selected_path, ["rev-parse", "HEAD"]).stdout.strip()
-            merged_detached = git(repo_real, ["merge-base", "--is-ancestor", detached_head, "HEAD"], check=False)
-            if merged_detached.returncode == 1:
-                raise RemovalError("detached worktree HEAD is not merged into the primary checkout")
-            if merged_detached.returncode:
-                detail = (merged_detached.stderr or merged_detached.stdout or "could not check detached HEAD merge state").strip()
-                raise RemovalError(detail)
+            # A detached worktree has no local branch to delete. Its commit
+            # may be unreachable from the primary checkout; the clean/live/
+            # path checks above are the protections that matter here.
+            pass
 
         if os.path.realpath(selected_path) != selected_path:
             raise RemovalError("worktree path changed while removal was pending")
         git(repo_real, ["worktree", "remove", selected_path])
         if branch:
             try:
-                git(repo_real, ["branch", "-d", "--", branch])
+                # Removal is explicitly requested by the admin. Delete the
+                # local ref even when it is not merged; the remote ref is
+                # never touched.
+                git(repo_real, ["branch", "-D", "--", branch])
             except RemovalError as exc:
                 raise RemovalError(f"worktree was removed but local branch {branch} remains: {exc}")
         git(repo_real, ["worktree", "prune"])

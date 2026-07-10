@@ -114,15 +114,21 @@ function main() {
     assert.equal(existsSync(dirty), true, "dirty worktree must remain");
 
     createBranch(repo, "feature/unmerged", false);
+    git(repo, ["push", "origin", "feature/unmerged"]);
     const unmerged = addWorktree(repo, worktreesRoot, "feature/unmerged", "unmerged");
-    expectRejected(repo, worktreesRoot, "unmerged", "not merged");
-    assert.equal(existsSync(unmerged), true, "unmerged worktree must remain");
+    const removedUnmerged = runCleanup(repo, worktreesRoot, "unmerged");
+    assert.equal(removedUnmerged.ok, true, removedUnmerged.output);
+    assert.equal(existsSync(unmerged), false, "clean unmerged worktree should be removable");
+    assert.equal(hasLocalBranch(repo, "feature/unmerged"), false, "unmerged local branch should be removed");
+    execFileSync("git", ["--git-dir", remote, "show-ref", "--verify", "--quiet", "refs/heads/feature/unmerged"]);
 
     createBranch(repo, "feature/stale-upstream", true);
     git(repo, ["branch", "--set-upstream-to=origin/main", "feature/stale-upstream"]);
     const staleUpstream = addWorktree(repo, worktreesRoot, "feature/stale-upstream", "stale-upstream");
-    expectRejected(repo, worktreesRoot, "stale-upstream", "not merged into its upstream");
-    assert.equal(existsSync(staleUpstream), true, "worktree with a stale upstream must remain");
+    const removedStaleUpstream = runCleanup(repo, worktreesRoot, "stale-upstream");
+    assert.equal(removedStaleUpstream.ok, true, removedStaleUpstream.output);
+    assert.equal(existsSync(staleUpstream), false, "clean worktree with a stale upstream should be removable");
+    assert.equal(hasLocalBranch(repo, "feature/stale-upstream"), false, "stale-upstream local branch should be removed");
 
     git(repo, ["branch", "develop", "main"]);
     const protectedWorktree = addWorktree(repo, worktreesRoot, "develop", "develop");
@@ -140,10 +146,13 @@ function main() {
     assert.equal(detachedResult.ok, true, detachedResult.output);
     assert.equal(existsSync(detached), false, "clean detached worktree should be removable");
 
+    createBranch(repo, "feature/detached-unmerged", false);
     const detachedUnmerged = path.join(worktreesRoot, "detached-unmerged");
-    git(repo, ["worktree", "add", "--detach", detachedUnmerged, "feature/unmerged"]);
-    expectRejected(repo, worktreesRoot, "detached-unmerged", "detached worktree HEAD is not merged");
-    assert.equal(existsSync(detachedUnmerged), true, "detached worktree with unmerged commits must remain");
+    git(repo, ["worktree", "add", "--detach", detachedUnmerged, "feature/detached-unmerged"]);
+    const removedDetachedUnmerged = runCleanup(repo, worktreesRoot, "detached-unmerged");
+    assert.equal(removedDetachedUnmerged.ok, true, removedDetachedUnmerged.output);
+    assert.equal(existsSync(detachedUnmerged), false, "clean detached worktree with unmerged commits should be removable");
+    assert.equal(hasLocalBranch(repo, "feature/detached-unmerged"), true, "detached removal should not delete a local branch");
 
     createBranch(repo, "feature/outside", true);
     const outside = path.join(root, "outside");
@@ -171,9 +180,9 @@ function main() {
 
     const helperSource = readFileSync(helper, "utf8");
     assert.match(helperSource, /\["worktree", "remove", selected_path\]/);
-    assert.match(helperSource, /\["branch", "-d", "--", branch\]/);
+    assert.match(helperSource, /\["branch", "-D", "--", branch\]/);
     assert.match(helperSource, /O_NOFOLLOW/);
-    assert.doesNotMatch(helperSource, /--force|"-D"|push/);
+    assert.doesNotMatch(helperSource, /--force|push/);
     const actionSource = readFileSync(path.resolve(process.cwd(), "lib/deploy/actions.ts"), "utf8");
     assert.match(actionSource, /Only the admin can remove local worktrees/);
     assert.match(actionSource, /protectedBranches/);

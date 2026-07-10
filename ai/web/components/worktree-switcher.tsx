@@ -260,8 +260,8 @@ export default function WorktreeSwitcher({
             This removes the local worktree <span className="font-mono text-text">{removeTarget.name}</span>
             {removeTarget.branch === "(detached)" ? ". It has no attached local branch." : (
               <> and local branch <span className="font-mono text-text">{removeTarget.branch}</span>.</>
-            )} It never deletes the remote branch. Removal is refused when the worktree has local changes,
-            the branch is unmerged, or the target is protected or live.
+            )} It never deletes the remote branch. Removal is refused when the worktree has local changes
+            or the target is protected or live; an unmerged local branch is discarded explicitly.
           </>
         ) : undefined}
         confirmLabel="Remove local"
