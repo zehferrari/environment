@@ -75,7 +75,7 @@ export async function buildProjectEnvContext(
 
   const [epics, tasks, principals] = await Promise.all([
     db.epic.findMany({
-      where: { projectId, archivedAt: null, deletedAt: null },
+      where: { projectId, archivedAt: null, deletedAt: null, private: false },
       orderBy: { createdAt: "asc" },
       take: MAX_EPICS,
       select: {
@@ -90,7 +90,15 @@ export async function buildProjectEnvContext(
       },
     }),
     db.task.findMany({
-      where: { projectId, parentTaskId: null, archivedAt: null, deletedAt: null, status: { not: "Done" } },
+      where: {
+        projectId,
+        parentTaskId: null,
+        archivedAt: null,
+        deletedAt: null,
+        status: { not: "Done" },
+        private: false,
+        OR: [{ epicId: null }, { epic: { private: false } }],
+      },
       orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
       take: MAX_TASKS,
       select: {

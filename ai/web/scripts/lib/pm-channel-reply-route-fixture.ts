@@ -5,6 +5,7 @@
 import { runRouteHandler } from "./next-route-harness";
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
+import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/runs";
 import { POST as pmChannelReplyPost } from "@/app/api/openclaw/pm-channel/reply/route";
 
 export type CallResult = { status: number; json: unknown };
@@ -25,8 +26,23 @@ export async function callPmChannelReply(args: {
   return { status: res.status, json: await res.json() };
 }
 
-// Seed an active agent + its agent-user so persistDirectReply / activeAgentUser
-// resolve, plus an original direct message the callback can reply to.
+async function markDirectTurnAccepted(slug: string, messageId: string) {
+  const target = { kind: "direct" as const, agentSlug: slug, messageId };
+  await db.pmChannelRun.create({
+    data: {
+      targetKey: pmChannelRunTargetKey(target),
+      kind: "direct",
+      agentSlug: slug,
+      messageId,
+      status: "accepted",
+      acceptedAt: new Date(),
+      lastEventAt: new Date(),
+    },
+  });
+}
+
+// Seed an active agent + its agent-user, an active Mission Control owner as
+// the original sender, and a corresponding accepted PM-channel turn.
 export async function seedDirectAgentMessage(slug: string, body = "original message") {
   const agent = await db.agent.create({
     data: { slug, name: `Route Test ${slug}`, role: "coding" },
@@ -40,11 +56,22 @@ export async function seedDirectAgentMessage(slug: string, body = "original mess
       status: "active",
     },
   });
+  const owner = await db.user.create({
+    data: {
+      username: `${slug}-owner`,
+      email: `${slug}-owner@route-test.local`,
+      kind: "human",
+      status: "active",
+      isOwner: true,
+      mustRotatePassword: false,
+    },
+  });
   const message = await db.directAgentChatMessage.create({
-    data: { agentSlug: slug, senderUserId: agentUser.id, body },
+    data: { agentSlug: slug, senderUserId: owner.id, body },
     select: { id: true },
   });
-  return { agentId: agent.id, agentUserId: agentUser.id, messageId: message.id };
+  await markDirectTurnAccepted(slug, message.id);
+  return { agentId: agent.id, agentUserId: agentUser.id, ownerUserId: owner.id, messageId: message.id };
 }
 
 export async function addDirectMessage(slug: string, senderUserId: string, body = "another") {
@@ -52,6 +79,7 @@ export async function addDirectMessage(slug: string, senderUserId: string, body 
     data: { agentSlug: slug, senderUserId, body },
     select: { id: true },
   });
+  await markDirectTurnAccepted(slug, message.id);
   return message.id;
 }
 
@@ -63,4 +91,5 @@ export async function cleanupDirectAgent(slug: string) {
   await db.directAgentChatMessage.deleteMany({ where: { agentSlug: slug } });
   await db.user.deleteMany({ where: { agent: { slug } } });
   await db.agent.deleteMany({ where: { slug } });
+  await db.user.deleteMany({ where: { username: `${slug}-owner` } });
 }

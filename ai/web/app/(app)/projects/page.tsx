@@ -18,7 +18,7 @@ import {
   requireViewer,
   workspaceAccessWhere,
 } from "@/lib/auth/permissions";
-import { getActorVisibility, serializeVisibleActor, visibleActivityRows } from "@/lib/users/actor-visibility";
+import { getActorVisibility, serializeVisibleActor, visibleActivityRows, visibleActivityWhere } from "@/lib/users/actor-visibility";
 
 export const dynamic = "force-dynamic";
 
@@ -41,10 +41,10 @@ type ProjectRow = {
   slug: string;
   name: string;
   description: string | null;
-  repositoryPath: string | null;
-  defaultGitUserName: string | null;
-  defaultGitUserEmail: string | null;
-  doneTtlDays: number | null;
+  repositoryPath?: string | null;
+  defaultGitUserName?: string | null;
+  defaultGitUserEmail?: string | null;
+  doneTtlDays?: number | null;
 };
 
 type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -193,6 +193,18 @@ export default async function ProjectsPage() {
   const viewer = await requireViewer();
   const actorVisibility = await getActorVisibility(viewer);
   const activeProjectWhere = accessibleProjectWhere(viewer, { archivedAt: null, deletedAt: null });
+  const projectCardSelect = {
+    id: true,
+    slug: true,
+    name: true,
+    description: true,
+    ...(viewer.isOwner ? {
+      repositoryPath: true,
+      defaultGitUserName: true,
+      defaultGitUserEmail: true,
+      doneTtlDays: true,
+    } : {}),
+  } satisfies Prisma.ProjectSelect;
   const [workspaces, deletedCount, archivedCount, principals] = await Promise.all([
     db.workspace.findMany({
       where: { AND: [{ archivedAt: null }, workspaceAccessWhere(viewer)] },
@@ -207,25 +219,14 @@ export default async function ProjectsPage() {
           where: { project: activeProjectWhere },
           orderBy: { createdAt: "asc" },
           select: {
-            project: {
-              select: {
-                id: true,
-                slug: true,
-                name: true,
-                description: true,
-                repositoryPath: true,
-                defaultGitUserName: true,
-                defaultGitUserEmail: true,
-                doneTtlDays: true,
-              },
-            },
+            project: { select: projectCardSelect },
           },
         },
       },
     }),
     db.project.count({ where: accessibleProjectWhere(viewer, { deletedAt: { not: null } }) }),
     db.project.count({ where: accessibleProjectWhere(viewer, { archivedAt: { not: null }, deletedAt: null }) }),
-    listAssignablePrincipals(viewer),
+    viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
   ]);
 
   const projects = workspaces.flatMap((workspace) => workspace.projects.map(({ project }) => project));
@@ -262,6 +263,7 @@ export default async function ProjectsPage() {
           memberNonTaskActivity,
         ],
       };
+  const browserActivityWhere = visibleActivityWhere(viewer);
 
   const [taskStatusCounts, epicStatusCounts, blockedCounts, recentProjectActivity, activity, deploymentRollups] =
     projectIds.length > 0
@@ -288,12 +290,12 @@ export default async function ProjectsPage() {
             _count: { _all: true },
           }),
           Promise.all(projectIds.map((projectId) => db.activityLog.findFirst({
-            where: { AND: [{ projectId }, activityVisibilityWhere] },
+            where: { AND: [{ projectId }, activityVisibilityWhere, browserActivityWhere] },
             orderBy: { createdAt: "desc" },
             select: { projectId: true, createdAt: true },
           }))),
           db.activityLog.findMany({
-            where: { AND: [{ projectId: { in: projectIds } }, activityVisibilityWhere] },
+            where: { AND: [{ projectId: { in: projectIds } }, activityVisibilityWhere, browserActivityWhere] },
             orderBy: { createdAt: "desc" },
             take: ACTIVITY_FEED_LIMIT,
             include: {

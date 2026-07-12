@@ -32,7 +32,7 @@ const API_TIMELINE_BODY_MAX = 24000;
 const API_ACTIVITY_PAYLOAD_MAX = 12000;
 const API_DESCRIPTION_MAX = 60000;
 
-type ActorLite = { username: string | null; kind: string | null } | null;
+type ActorLite = { username: string | null; kind: string | null; isOwner?: boolean } | null;
 
 function clipApi(value: string | null | undefined, max: number) {
   const text = (value ?? "").trim();
@@ -42,7 +42,7 @@ function clipApi(value: string | null | undefined, max: number) {
 
 function actor(u: ActorLite) {
   if (!u || !u.username) return null;
-  return { username: u.username, kind: u.kind ?? "human" };
+  return { username: u.username, kind: u.kind ?? "human", isOwner: Boolean(u.isOwner) };
 }
 
 function attachmentDownloadPath(
@@ -185,8 +185,22 @@ export async function buildTaskContextJson(
   taskId: string,
   opts: { attachmentGrant?: string | null } = {},
 ): Promise<TaskContextResponse | null> {
-  const task = await db.task.findUnique({
-    where: { id: taskId, archivedAt: null, deletedAt: null },
+  const task = await db.task.findFirst({
+    where: {
+      id: taskId,
+      archivedAt: null,
+      deletedAt: null,
+      private: false,
+      AND: [
+        { OR: [{ epicId: null }, { epic: { private: false } }] },
+        {
+          OR: [
+            { parentTaskId: null },
+            { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
+          ],
+        },
+      ],
+    },
     select: {
       id: true, title: true, status: true, description: true, branchName: true,
       commitPrefix: true, workItemKey: true, approvedOn: true, alertReporter: true, createdAt: true, updatedAt: true,
@@ -202,19 +216,19 @@ export async function buildTaskContextJson(
           branchName: true, commitPrefix: true,
           workers: {
             orderBy: { createdAt: "asc" },
-            select: { user: { select: { username: true, kind: true } } },
+            select: { user: { select: { username: true, kind: true, isOwner: true } } },
           },
-          actingManager: { select: { username: true, kind: true } },
-          deployReviewer: { select: { username: true, kind: true } },
+          actingManager: { select: { username: true, kind: true, isOwner: true } },
+          deployReviewer: { select: { username: true, kind: true, isOwner: true } },
         },
       },
       checklist: {
         orderBy: { rank: "asc" },
         select: { id: true, text: true, completedAt: true, minutesSpent: true },
       },
-      assignee: { select: { username: true, kind: true } },
-      actingManager: { select: { username: true, kind: true } },
-      reporter: { select: { username: true, kind: true } },
+      assignee: { select: { username: true, kind: true, isOwner: true } },
+      actingManager: { select: { username: true, kind: true, isOwner: true } },
+      reporter: { select: { username: true, kind: true, isOwner: true } },
     },
   });
   if (!task) return null;
@@ -226,7 +240,7 @@ export async function buildTaskContextJson(
       take: MAX_COMMENTS,
       select: {
         id: true, createdAt: true, body: true,
-        user: { select: { username: true, kind: true } },
+        user: { select: { username: true, kind: true, isOwner: true } },
       },
     }),
     db.agentChatMessage.findMany({
@@ -236,7 +250,7 @@ export async function buildTaskContextJson(
       select: {
         id: true, createdAt: true, body: true,
         targetType: true, targetLabel: true, archiveId: true,
-        sender: { select: { username: true, kind: true } },
+        sender: { select: { username: true, kind: true, isOwner: true } },
       },
     }),
     db.activityLog.findMany({
@@ -245,7 +259,7 @@ export async function buildTaskContextJson(
       take: MAX_ACTIVITY,
       select: {
         id: true, createdAt: true, kind: true, payload: true, targetAgent: true,
-        user: { select: { username: true, kind: true } },
+        user: { select: { username: true, kind: true, isOwner: true } },
       },
     }),
     db.attachment.findMany({
@@ -255,7 +269,7 @@ export async function buildTaskContextJson(
       select: {
         id: true, filename: true, mimeType: true, sizeBytes: true,
         createdAt: true,
-        uploader: { select: { username: true, kind: true } },
+        uploader: { select: { username: true, kind: true, isOwner: true } },
       },
     }),
     task.epic
@@ -266,7 +280,7 @@ export async function buildTaskContextJson(
           select: {
             id: true, filename: true, mimeType: true, sizeBytes: true,
             createdAt: true,
-            uploader: { select: { username: true, kind: true } },
+            uploader: { select: { username: true, kind: true, isOwner: true } },
           },
         })
       : Promise.resolve([]),
@@ -289,7 +303,7 @@ export async function buildTaskContextJson(
     targetType: string | null;
     targetLabel: string | null;
     archiveId: string | null;
-    sender: { username: string | null; kind: string | null } | null;
+    sender: { username: string | null; kind: string | null; isOwner?: boolean } | null;
   }> = [];
   const lastLive = liveChats.at(-1);
   if (lastLive) {
@@ -323,7 +337,7 @@ export async function buildTaskContextJson(
           select: {
             id: true, createdAt: true, body: true,
             targetType: true, targetLabel: true, archiveId: true,
-            sender: { select: { username: true, kind: true } },
+            sender: { select: { username: true, kind: true, isOwner: true } },
           },
         })).reverse();
       }
@@ -508,8 +522,8 @@ export async function buildEpicContextJson(
   epicId: string,
   opts: { attachmentGrant?: string | null } = {},
 ): Promise<EpicContextResponse | null> {
-  const epic = await db.epic.findUnique({
-    where: { id: epicId, archivedAt: null, deletedAt: null },
+  const epic = await db.epic.findFirst({
+    where: { id: epicId, archivedAt: null, deletedAt: null, private: false },
     select: {
       id: true, title: true, status: true, description: true, branchName: true,
       commitPrefix: true, workItemKey: true, createdAt: true, updatedAt: true,
@@ -521,17 +535,17 @@ export async function buildEpicContextJson(
       },
       workers: {
         orderBy: { createdAt: "asc" },
-        select: { user: { select: { username: true, kind: true } } },
+        select: { user: { select: { username: true, kind: true, isOwner: true } } },
       },
-      actingManager: { select: { username: true, kind: true } },
-      deployReviewer: { select: { username: true, kind: true } },
-      reporter: { select: { username: true, kind: true } },
+      actingManager: { select: { username: true, kind: true, isOwner: true } },
+      deployReviewer: { select: { username: true, kind: true, isOwner: true } },
+      reporter: { select: { username: true, kind: true, isOwner: true } },
       tasks: {
-        where: { deletedAt: null, parentTaskId: null },
+        where: { deletedAt: null, parentTaskId: null, private: false },
         orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
         select: {
           id: true, workItemKey: true, title: true, status: true,
-          assignee: { select: { username: true, kind: true } },
+          assignee: { select: { username: true, kind: true, isOwner: true } },
         },
       },
     },
@@ -545,7 +559,7 @@ export async function buildEpicContextJson(
       take: MAX_COMMENTS,
       select: {
         id: true, createdAt: true, body: true,
-        user: { select: { username: true, kind: true } },
+        user: { select: { username: true, kind: true, isOwner: true } },
       },
     }),
     db.agentChatMessage.findMany({
@@ -555,7 +569,7 @@ export async function buildEpicContextJson(
       select: {
         id: true, createdAt: true, body: true,
         targetType: true, targetLabel: true, archiveId: true,
-        sender: { select: { username: true, kind: true } },
+        sender: { select: { username: true, kind: true, isOwner: true } },
       },
     }),
     db.attachment.findMany({
@@ -565,7 +579,7 @@ export async function buildEpicContextJson(
       select: {
         id: true, filename: true, mimeType: true, sizeBytes: true,
         createdAt: true,
-        uploader: { select: { username: true, kind: true } },
+        uploader: { select: { username: true, kind: true, isOwner: true } },
       },
     }),
   ]);
@@ -586,7 +600,7 @@ export async function buildEpicContextJson(
     targetType: string | null;
     targetLabel: string | null;
     archiveId: string | null;
-    sender: { username: string | null; kind: string | null } | null;
+    sender: { username: string | null; kind: string | null; isOwner?: boolean } | null;
   }> = [];
   const lastLive = liveChats.at(-1);
   if (lastLive) {
@@ -620,7 +634,7 @@ export async function buildEpicContextJson(
           select: {
             id: true, createdAt: true, body: true,
             targetType: true, targetLabel: true, archiveId: true,
-            sender: { select: { username: true, kind: true } },
+            sender: { select: { username: true, kind: true, isOwner: true } },
           },
         })).reverse();
       }
@@ -773,27 +787,35 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
 
   const [epics, openTasks, principals] = await Promise.all([
     db.epic.findMany({
-      where: { projectId, archivedAt: null, deletedAt: null },
+      where: { projectId, archivedAt: null, deletedAt: null, private: false },
       orderBy: [{ status: "asc" }, { createdAt: "asc" }],
       select: {
         id: true, workItemKey: true, title: true, status: true, description: true,
         branchName: true, commitPrefix: true,
         workers: {
           orderBy: { createdAt: "asc" },
-          select: { user: { select: { username: true, kind: true } } },
+          select: { user: { select: { username: true, kind: true, isOwner: true } } },
         },
-        actingManager: { select: { username: true, kind: true } },
-        deployReviewer: { select: { username: true, kind: true } },
+        actingManager: { select: { username: true, kind: true, isOwner: true } },
+        deployReviewer: { select: { username: true, kind: true, isOwner: true } },
       },
     }),
     db.task.findMany({
-      where: { projectId, parentTaskId: null, status: { not: "Done" }, archivedAt: null, deletedAt: null },
+      where: {
+        projectId,
+        parentTaskId: null,
+        status: { not: "Done" },
+        archivedAt: null,
+        deletedAt: null,
+        private: false,
+        OR: [{ epicId: null }, { epic: { private: false } }],
+      },
       orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
       select: {
         id: true, workItemKey: true, title: true, status: true, epicId: true, parentTaskId: true,
         branchName: true, commitPrefix: true,
-        assignee: { select: { username: true, kind: true } },
-        actingManager: { select: { username: true, kind: true } },
+        assignee: { select: { username: true, kind: true, isOwner: true } },
+        actingManager: { select: { username: true, kind: true, isOwner: true } },
       },
     }),
     db.user.findMany({

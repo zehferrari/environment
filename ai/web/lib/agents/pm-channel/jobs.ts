@@ -1,8 +1,10 @@
 import { db } from "@/lib/db";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 import {
   dispatchOpenClawPmChannelTurn,
   parsePmChannelReplyTarget,
   sendOpenClawPmChannelTurn,
+  type PmChannelReplyTarget,
   type SendPmChannelTurnArgs,
   type SendPmChannelTurnResult,
 } from "@/lib/agents/pm-channel/openclaw";
@@ -51,6 +53,71 @@ function parseJobPayload(value: string): DispatchJobPayload {
   const target = parsePmChannelReplyTarget(payload.replyTarget);
   if (!target) throw new Error("Invalid PM channel job reply target");
   return { ...payload, replyTarget: target };
+}
+
+async function dispatchTargetIsEffectivelyPublic(target: PmChannelReplyTarget) {
+  if (target.kind === "direct") return true;
+  if (target.kind === "epic-chat") {
+    return Boolean(await db.epic.findFirst({
+      where: { id: target.epicId, deletedAt: null, private: false },
+      select: { id: true },
+    }));
+  }
+  return Boolean(await db.task.findFirst({
+    where: {
+      id: target.taskId,
+      deletedAt: null,
+      private: false,
+      AND: [
+        { OR: [{ epicId: null }, { epic: { private: false } }] },
+        {
+          OR: [
+            { parentTaskId: null },
+            {
+              parent: {
+                private: false,
+                OR: [{ epicId: null }, { epic: { private: false } }],
+              },
+            },
+          ],
+        },
+      ],
+    },
+    select: { id: true },
+  }));
+}
+
+async function cancelJobForPolicy(args: {
+  job: { id: string; runId: string };
+  payload: DispatchJobPayload;
+  error: string;
+}) {
+  const now = new Date();
+  await db.$transaction([
+    db.pmChannelJob.update({
+      where: { id: args.job.id },
+      data: {
+        status: "canceled",
+        claimedBy: null,
+        claimedAt: null,
+        completedAt: now,
+        lastError: args.error,
+      },
+    }),
+    db.pmChannelRun.update({
+      where: { id: args.job.runId },
+      data: {
+        status: "canceled",
+        error: args.error,
+        completedAt: now,
+        failedAt: null,
+        lastEventAt: now,
+      },
+    }),
+  ]);
+  await appendAndPublishStatus({ payload: args.payload, runStatus: "canceled", error: args.error });
+  await rollbackDispatchedTurnBinding(args.payload);
+  return { ok: true, status: 200, driver: "openclaw-pm-channel" } satisfies SendPmChannelTurnResult;
 }
 
 function retryDelayMs(attemptCount: number) {
@@ -277,6 +344,23 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
     await appendAndPublishStatus({ payload, runStatus: "canceled" });
     return { ok: true, status: 200, driver: "openclaw-pm-channel" } satisfies SendPmChannelTurnResult;
   }
+  // Jobs are durable and may outlive a policy change. Re-check human
+  // authority at delivery time so a queued/retryable turn from a former
+  // member cannot wake an agent after the owner-only rule takes effect.
+  if (payload.actor.kind !== "agent" && !(await isOwnerUserId(payload.actor.id))) {
+    return cancelJobForPolicy({
+      job,
+      payload,
+      error: "PM channel dispatch canceled: the original human sender is not the active Mission Control owner",
+    });
+  }
+  if (!(await dispatchTargetIsEffectivelyPublic(payload.replyTarget))) {
+    return cancelJobForPolicy({
+      job,
+      payload,
+      error: "PM channel dispatch canceled: private or unavailable work cannot be delivered to agents",
+    });
+  }
   const result = await dispatchOpenClawPmChannelTurn(payload);
   const now = new Date();
 
@@ -355,7 +439,12 @@ export async function runPmChannelWorkerOnce(workerId = `pm-channel-worker:${pro
   const job = await claimNextPmChannelJob(workerId);
   if (!job) return { claimed: false as const };
   const result = await runPmChannelJob(job);
-  return { claimed: true as const, jobId: job.id, ok: result.ok, error: result.error ?? null };
+  return {
+    claimed: true as const,
+    jobId: job.id,
+    ok: result.ok,
+    error: "error" in result ? result.error ?? null : null,
+  };
 }
 
 function workerDrainMaxJobs() {

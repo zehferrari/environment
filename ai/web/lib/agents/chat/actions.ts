@@ -228,6 +228,9 @@ export async function prebuildAgentChatContext(formData: FormData) {
 export async function sendAgentChatMessage(formData: FormData) {
   const publicOrigin = publicOriginFromHeaders(await headers());
   const actor = await requireActor();
+  if (!actor.isOwner) {
+    throw new Error("Only the Mission Control owner can send agent messages.");
+  }
   const canTriggerAgents = actor.isOwner;
   const slug = String(formData.get("projectSlug") ?? "");
   const taskIdRaw = String(formData.get("taskId") ?? "");
@@ -307,8 +310,12 @@ export async function sendAgentChatMessage(formData: FormData) {
         id: true,
         title: true,
         projectId: true,
+        epicId: true,
         description: true,
         deletedAt: true,
+        private: true,
+        parent: { select: { private: true, epic: { select: { private: true } } } },
+        epic: { select: { private: true } },
         assignee: {
           select: {
             id: true,
@@ -331,7 +338,9 @@ export async function sendAgentChatMessage(formData: FormData) {
         },
       },
     });
-    if (!task || task.projectId !== project.id || task.deletedAt) return;
+    if (!task || task.projectId !== project.id || task.deletedAt || task.private || task.parent?.private || task.parent?.epic?.private || task.epic?.private) {
+      throw new Error("Private work items cannot be sent to agents.");
+    }
   } else if (epicId) {
     epic = await db.epic.findUnique({
       where: { id: epicId },
@@ -341,6 +350,7 @@ export async function sendAgentChatMessage(formData: FormData) {
         projectId: true,
         description: true,
         deletedAt: true,
+        private: true,
         actingManager: {
           select: {
             id: true,
@@ -353,7 +363,9 @@ export async function sendAgentChatMessage(formData: FormData) {
         },
       },
     });
-    if (!epic || epic.projectId !== project.id || epic.deletedAt) return;
+    if (!epic || epic.projectId !== project.id || epic.deletedAt || epic.private) {
+      throw new Error("Private work items cannot be sent to agents.");
+    }
   }
 
   const dbAgentSlug = "room";

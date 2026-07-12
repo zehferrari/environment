@@ -24,6 +24,7 @@ import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { buildDeploymentApproved } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
+import { isPublicEpic } from "@/lib/pm-events/visibility";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
@@ -183,6 +184,15 @@ async function notifyEpicActingManagerAssigned(args: {
 
 export async function createEpic(formData: FormData) {
   const actor = await requireActor();
+  if (!actor.isOwner && (
+    formData.has("reporterId") ||
+    formData.has("assigneeId") ||
+    formData.has("workerPoolSubmitted") ||
+    formData.has("actingManagerId") ||
+    formData.has("deployReviewerId")
+  )) {
+    throw new Error("Only the Mission Control owner can set Epic roles.");
+  }
   const slug = String(formData.get("projectSlug") ?? "");
   const title = String(formData.get("title") ?? "").trim();
   const description = String(formData.get("description") ?? "").trim();
@@ -326,6 +336,7 @@ export async function renameEpic(formData: FormData) {
 
 export async function setEpicActingManager(formData: FormData) {
   const actor = await requireActor();
+  if (!actor.isOwner) throw new Error("Only the Mission Control owner can set Epic roles.");
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
   const raw = String(formData.get("actingManagerId") ?? "");
@@ -429,6 +440,14 @@ export async function updateEpic(formData: FormData) {
   const newCommitPrefix = commitRaw === "" ? null : commitRaw;
   const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
   const hasPrivateField = formData.has("privateSubmitted");
+  if (!actor.isOwner && (
+    hasAssigneeField ||
+    hasActingManagerField ||
+    hasDeployReviewerField ||
+    hasReporterField
+  )) {
+    throw new Error("Only the Mission Control owner can change Epic roles.");
+  }
   if ((hasPrivateField || formData.has("private")) && !actor.isOwner) throw new Error("Not authorized");
   const newPrivate = formData.get("private") === "on";
 
@@ -772,7 +791,12 @@ export async function updateEpic(formData: FormData) {
   revalidatePath(`/projects/${slug}`);
   publishBoardTouch(epic.project.id);
 
-  if (canTriggerAgents && deploymentRaw === "Deployment Approved" && epic.deploymentStatus !== "Deployment Approved") {
+  if (
+    canTriggerAgents
+    && deploymentRaw === "Deployment Approved"
+    && epic.deploymentStatus !== "Deployment Approved"
+    && await isPublicEpic(epic.id)
+  ) {
     await notifyDispatch(
       buildDeploymentApproved(
         {
@@ -792,6 +816,15 @@ export async function createTaskInEpic(
   formData: FormData,
 ): Promise<{ ok: boolean; error: string | null }> {
   const actor = await requireActor();
+  if (!actor.isOwner && (
+    formData.has("reporterId") ||
+    formData.has("assigneeId") ||
+    formData.has("actingManagerId") ||
+    formData.has("deployReviewerId") ||
+    formData.has("workerPoolSubmitted")
+  )) {
+    return { ok: false, error: "Only the Mission Control owner can set task roles." };
+  }
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
   const title = String(formData.get("title") ?? "").trim();
@@ -1056,8 +1089,8 @@ export async function createEpicComment(formData: FormData) {
 
 export async function deleteEpicComment(formData: FormData) {
   const actor = await requireActor();
-  // Comment delete is a human-only control (mirrors the task rule).
-  if (actor.kind !== "human") return;
+  // Moderation is owner-only so a member cannot mutate hidden agent context.
+  if (!actor.isOwner) return;
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
   const commentId = String(formData.get("commentId") ?? "");
@@ -1103,7 +1136,7 @@ export async function deleteEpicComment(formData: FormData) {
 // Inverse of deleteEpicComment. Human-only, idempotent.
 export async function restoreEpicComment(formData: FormData) {
   const actor = await requireActor();
-  if (actor.kind !== "human") return;
+  if (!actor.isOwner) return;
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
   const commentId = String(formData.get("commentId") ?? "");

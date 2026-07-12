@@ -81,7 +81,9 @@ async function main() {
     sessionKey: `test:${nonce}`,
     kind: "direct",
     text: "hello",
-    actor: { id: "human-test", kind: "human" },
+    // This queue/retry assertion models an internal agent-originated turn;
+    // browser human turns are revalidated as the active owner at delivery.
+    actor: { id: "internal-test-agent", kind: "agent" },
     replyTarget: target,
   });
   assert.equal(queued.ok, true);

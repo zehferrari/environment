@@ -31,6 +31,8 @@ async function main() {
     const permissions = await import("../lib/auth/permissions");
     const actorVisibility = await import("../lib/users/actor-visibility");
     const workspaceService = await import("../lib/workspaces/service");
+    const contextApi = await import("../lib/agents/context/api/serialize");
+    const agentAttachmentAccess = await import("../lib/attachments/agent-access");
     db = dbMod.db as PrismaClient;
     const prisma = db;
 
@@ -94,7 +96,12 @@ async function main() {
       data: { projectId: visibleProject.id, title: "Public Task" },
     });
     const privateTask = await prisma.task.create({
-      data: { projectId: visibleProject.id, title: "Private Task", private: true },
+      data: {
+        projectId: visibleProject.id,
+        title: "Private Task",
+        private: true,
+        assigneeId: agentUser.id,
+      },
     });
     const publicTaskWithPrivateBlocker = await prisma.task.create({
       data: {
@@ -115,6 +122,32 @@ async function main() {
     });
     const privateEpicTask = await prisma.task.create({
       data: { projectId: visibleProject.id, epicId: privateEpic.id, title: "Private Epic Task" },
+    });
+    const publicParentInPrivateEpic = await prisma.task.create({
+      data: {
+        projectId: visibleProject.id,
+        epicId: privateEpic.id,
+        title: "Public Parent Under Private Epic",
+      },
+    });
+    const publicChildOfParentInPrivateEpic = await prisma.task.create({
+      data: {
+        projectId: visibleProject.id,
+        parentTaskId: publicParentInPrivateEpic.id,
+        title: "Public Child Under Parent In Private Epic",
+      },
+    });
+    const privateTaskAttachment = await prisma.attachment.create({
+      data: {
+        projectId: visibleProject.id,
+        taskId: privateTask.id,
+        uploaderId: ownerUser.id,
+        filename: "private.txt",
+        storagePath: "private.txt",
+        mimeType: "text/plain",
+        sizeBytes: 7,
+        sha256: "a".repeat(64),
+      },
     });
     await prisma.workspace.create({
       data: {
@@ -147,6 +180,12 @@ async function main() {
       id: memberUser.id,
       username: memberUser.username,
       kind: "human",
+      isOwner: false,
+    };
+    const agentViewer: Viewer = {
+      id: agentUser.id,
+      username: agentUser.username,
+      kind: "agent",
       isOwner: false,
     };
 
@@ -186,7 +225,7 @@ async function main() {
     assert.deepEqual(
       memberTasks.map(({ id }) => id),
       [publicTask.id, publicTaskWithPrivateBlocker.id],
-      "members cannot see private Tasks or Tasks nested under a private Epic or parent Task",
+      "members cannot see private Tasks or Tasks nested under a private Epic, parent Task, or parent Epic",
     );
 
     const ownerTasks = await prisma.task.findMany({
@@ -202,6 +241,8 @@ async function main() {
         privateParentTask.id,
         privateParentChild.id,
         privateEpicTask.id,
+        publicParentInPrivateEpic.id,
+        publicChildOfParentInPrivateEpic.id,
       ]),
       "the owner can see all public and private Tasks",
     );
@@ -212,6 +253,45 @@ async function main() {
       select: { id: true },
     });
     assert.deepEqual(visiblePrivateBlocker, [], "private blocker metadata is not visible to members");
+
+    const agentEpics = await prisma.epic.findMany({
+      where: permissions.accessibleEpicWhere(agentViewer, { projectId: visibleProject.id }),
+      select: { id: true },
+    });
+    assert.deepEqual(agentEpics, [], "browser-authenticated agents cannot see Epics");
+    const agentTasks = await prisma.task.findMany({
+      where: permissions.accessibleTaskWhere(agentViewer, { projectId: visibleProject.id }),
+      select: { id: true },
+      orderBy: { createdAt: "asc" },
+    });
+    assert.deepEqual(
+      agentTasks.map(({ id }) => id),
+      [],
+      "browser-authenticated agents cannot see Tasks",
+    );
+    assert.equal(await permissions.canAccessTask(agentViewer, privateTask.id), false, "agent private Task direct access is denied");
+    assert.equal(await permissions.canAccessEpic(agentViewer, privateEpic.id), false, "agent private Epic direct access is denied");
+    assert.equal(await contextApi.buildTaskContextJson(privateTask.id), null, "agent task context omits private Tasks");
+    assert.equal(await contextApi.buildEpicContextJson(privateEpic.id), null, "agent Epic context omits private Epics");
+    const agentProjectContext = await contextApi.buildProjectContextJson(visibleProject.id);
+    assert.deepEqual(
+      agentProjectContext?.epics.map(({ id }) => id),
+      [publicEpic.id],
+      "agent project context omits private Epics",
+    );
+    assert.deepEqual(
+      agentProjectContext?.openTasks.map(({ id }) => id),
+      [publicTask.id, publicTaskWithPrivateBlocker.id],
+      "agent project context omits private Tasks",
+    );
+    assert.deepEqual(
+      await agentAttachmentAccess.checkAgentAttachmentReadAccess({
+        attachmentId: privateTaskAttachment.id,
+        agentSlug: agent.slug,
+      }),
+      { allowed: false, reason: "forbidden" },
+      "agents cannot read attachments on private Tasks even when assigned",
+    );
 
     const activity = await Promise.all([
       prisma.activityLog.create({
@@ -239,6 +319,23 @@ async function main() {
       new Set([activity[0].id, activity[2].id, activity[4].id]),
       "member activity feeds omit private Task and Epic activity",
     );
+    const agentActivity = await prisma.activityLog.findMany({
+      where: await permissions.accessibleActivityWhere(agentViewer, { projectId: visibleProject.id }),
+      select: { id: true },
+    });
+    assert.deepEqual(
+      new Set(agentActivity.map(({ id }) => id)),
+      new Set(),
+      "browser-authenticated agents do not receive activity",
+    );
+
+    await prisma.project.update({
+      where: { id: hiddenProject.id },
+      data: {
+        archivedAt: new Date(),
+        members: { create: { userId: memberUser.id } },
+      },
+    });
 
     const memberWorkspaces = await workspaceService.listWorkspaces(false, member);
     assert.deepEqual(
@@ -249,12 +346,22 @@ async function main() {
     assert.deepEqual(
       memberWorkspaces[0]?.projects.map(({ slug }) => slug),
       ["visible-project"],
-      "inaccessible projects are omitted from an otherwise visible workspace",
+      "inaccessible, archived projects are omitted from an otherwise visible workspace",
     );
     assert.deepEqual(
       memberWorkspaces[0]?.agentPool,
       [],
       "agent pools remain hidden from members",
+    );
+    assert.equal(
+      "defaults" in (memberWorkspaces[0] ?? {}),
+      false,
+      "workspace integration and deployment defaults remain owner-only",
+    );
+    assert.deepEqual(
+      (await workspaceService.listWorkspaces(false, agentViewer)).map(({ slug }) => slug),
+      [],
+      "browser-authenticated agents cannot receive workspace identity data",
     );
 
     const ownerWorkspaces = await workspaceService.listWorkspaces(false, owner);

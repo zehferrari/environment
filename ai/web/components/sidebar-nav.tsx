@@ -273,7 +273,7 @@ export default function SidebarNav({
     null;
   const selectedWorkspace = workspaces.find((workspace) => workspace.slug === selectedWorkspaceSlug) ?? null;
   const activeWorkspace = workspaces.find((workspace) => workspace.slug === activeWorkspaceSlug) ?? null;
-  const soleWorkspace = !isOwner && workspaces.length === 1 ? workspaces[0] : null;
+  const soleWorkspace = workspaces.length === 1 ? workspaces[0] : null;
   // The current route wins; the persisted selection is only a fallback for
   // pages that don't imply a workspace (e.g. /agents). Otherwise a stale pin
   // shadows the workspace/project you just navigated into.
@@ -417,11 +417,11 @@ export default function SidebarNav({
 
       <nav className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 text-body">
         <div className="space-y-1">
-          {isOwner || workspaces.length > 1 ? (
+          {workspaces.length > 1 ? (
             <NavItem
               href="/workspaces"
               icon={icons.workspaces}
-              label={isOwner ? "Manage workspaces" : "Workspaces"}
+              label="Workspaces"
               color={NAV_COLORS.workspaces}
               collapsed={collapsed}
               active={isWorkspacesActive}
@@ -658,7 +658,7 @@ export default function SidebarNav({
 
             <section aria-labelledby="mobile-workspaces-heading" className="space-y-1">
               <h3 id="mobile-workspaces-heading" className="px-2 text-nano font-semibold uppercase tracking-wider text-text-muted">Workspaces</h3>
-              {isOwner || workspaces.length > 1 ? (
+              {workspaces.length > 1 ? (
                 <NavSheetLink href="/workspaces" icon={icons.workspaces} label="All workspaces" color={NAV_COLORS.workspaces} active={isWorkspacesActive} onNavigate={closeMobileMenu} />
               ) : null}
               {workspaces.length === 0 ? (

@@ -5,6 +5,7 @@ import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel/runs";
 import { verifyEpicWorkflowToken } from "@/lib/agents/workflow/token/epic";
 import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
+import { hasActiveOwnerOrigin } from "@/lib/agents/owner-origin";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName } from "@/lib/work-items/branches";
@@ -74,6 +75,7 @@ async function promoteBacklogTasks(args: {
       parentTaskId: null,
       archivedAt: null,
       deletedAt: null,
+      private: false,
       status: "Backlog",
     },
     orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
@@ -149,6 +151,7 @@ export async function POST(
       agentSlug: true,
       targetType: true,
       targetValue: true,
+      senderUserId: true,
     },
   });
   if (!original || original.epicId !== epicId) {
@@ -163,6 +166,9 @@ export async function POST(
   if (!verifyEpicWorkflowToken(messageId, epicId, grantAgentSlug, token)) {
     return NextResponse.json({ error: "Invalid workflow token" }, { status: 403 });
   }
+  if (!(await hasActiveOwnerOrigin(original.senderUserId))) {
+    return NextResponse.json({ error: "Workflow grant is no longer authorized" }, { status: 403 });
+  }
 
   const [agent, epic] = await Promise.all([
     db.agent.findUnique({
@@ -173,8 +179,8 @@ export async function POST(
         user: { select: { id: true, username: true, status: true } },
       },
     }),
-    db.epic.findUnique({
-      where: { id: epicId },
+    db.epic.findFirst({
+      where: { id: epicId, private: false },
       select: {
         id: true,
         title: true,

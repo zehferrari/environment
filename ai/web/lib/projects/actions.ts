@@ -352,7 +352,7 @@ export async function restoreProject(formData: FormData) {
 }
 
 export async function archiveProject(formData: FormData) {
-  const actor = await requireActor();
+  const actor = await requireOwner();
   const slug = String(formData.get("projectSlug") ?? "");
   if (!slug) return;
 
@@ -385,7 +385,7 @@ export async function archiveProject(formData: FormData) {
 }
 
 export async function unarchiveProject(formData: FormData) {
-  const actor = await requireActor();
+  const actor = await requireOwner();
   const slug = String(formData.get("projectSlug") ?? "");
   if (!slug) return;
 

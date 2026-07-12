@@ -19,6 +19,7 @@ import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel/jobs"
 import { appendPmChannelStreamEventForTarget } from "@/lib/agents/pm-channel/stream-log";
 import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel/rate-limit";
 import { isSilentPmReplyText } from "@/lib/agents/ops/pm-silence";
+import { isAuthorizedPmChannelCallbackTarget } from "@/lib/agents/pm-channel/target-authorization";
 
 export type PmChannelStreamTransportMode = "http" | "inproc" | "uds";
 
@@ -143,6 +144,10 @@ export async function applyPmChannelStreamCallback(args: {
 
   if (await pmChannelTargetIsCanceled(target)) {
     return { status: 200, body: { ok: true, canceled: true, ignored: true } };
+  }
+
+  if (!(await isAuthorizedPmChannelCallbackTarget(target))) {
+    return { status: 403, body: { error: "Stream target is not authorized" } };
   }
 
   if (args.rateLimit !== false) {

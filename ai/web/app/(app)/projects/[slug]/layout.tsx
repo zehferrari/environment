@@ -64,7 +64,7 @@ export default async function ProjectLayout({
       <ProjectTabs
         slug={project.slug}
         hasSummary={hasSummary}
-        hasCode={hasCode}
+        hasCode={viewer.isOwner && hasCode}
         hasBin={hasBin}
         canAccessSettings={viewer.isOwner}
       />

@@ -67,7 +67,10 @@ export default async function EpicsListPage({
   const view = normalizeView(rawView ?? (status?.toLowerCase() === "archive" ? "archive" : undefined));
   const selectedStatuses = parseBoardStatuses(statuses, status);
 
-  const principals = await listAssignablePrincipals(viewer);
+  const principals = viewer.isOwner ? await listAssignablePrincipals(viewer) : [];
+  const epicGridClass = viewer.isOwner
+    ? "grid grid-cols-[minmax(0,1fr)_6rem_4rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3"
+    : "grid grid-cols-[minmax(0,1fr)_6rem_4rem_3rem_5rem_2rem] items-center gap-3";
 
   const archivedCount = await db.epic.count({
     where: accessibleEpicWhere(viewer, { projectId: project.id, archivedAt: { not: null }, deletedAt: null }),
@@ -152,12 +155,12 @@ export default async function EpicsListPage({
         </p>
       ) : (
         <div className="overflow-hidden rounded-panel border border-line bg-panel shadow-sm">
-          <div className="grid grid-cols-[minmax(0,1fr)_6rem_4rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3 border-b border-line px-card py-control-y text-nano font-semibold uppercase tracking-wider text-text-muted">
+          <div className={`${epicGridClass} border-b border-line px-card py-control-y text-nano font-semibold uppercase tracking-wider text-text-muted`}>
             <span>Epic</span>
             <span>Status</span>
             <span>Deploy</span>
-            <span>Report by</span>
-            <span>Acting mgr</span>
+            {viewer.isOwner ? <span>Report by</span> : null}
+            {viewer.isOwner ? <span>Acting mgr</span> : null}
             <span className="text-right">Tasks</span>
             <span className="text-right">Created At</span>
             <span className="sr-only">Bin</span>
@@ -170,7 +173,7 @@ export default async function EpicsListPage({
                   className="absolute inset-0 z-0"
                   aria-label={`Open ${e.title}`}
                 />
-                <div className="grid grid-cols-[minmax(0,1fr)_6rem_4rem_9rem_9rem_3rem_5rem_2rem] items-center gap-3 px-card py-control-y.5 text-body">
+                <div className={`${epicGridClass} px-card py-control-y.5 text-body`}>
                   <span className="min-w-0">
                     {e.workItemKey ? (
                       <span className="mb-0.5 inline-flex rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-nano font-semibold text-text-muted">
@@ -190,14 +193,14 @@ export default async function EpicsListPage({
                     </span>
                   </span>
                   <DeploymentIndicator status={e.deploymentStatus} />
-                  <span className="flex min-w-0 items-center gap-2 text-caption text-text-muted">
+                  {viewer.isOwner ? <span className="flex min-w-0 items-center gap-2 text-caption text-text-muted">
                     {serializeVisibleActor(e.reporter, actorVisibility) ? <MessageAvatar actor={serializeVisibleActor(e.reporter, actorVisibility)!} size="sm" /> : null}
                     <span className="truncate">{serializeVisibleActor(e.reporter, actorVisibility) ? actorDisplayName(serializeVisibleActor(e.reporter, actorVisibility)!) : "—"}</span>
-                  </span>
-                  <span className="flex min-w-0 items-center gap-2 text-caption text-text-muted">
+                  </span> : null}
+                  {viewer.isOwner ? <span className="flex min-w-0 items-center gap-2 text-caption text-text-muted">
                     {serializeVisibleActor(e.actingManager, actorVisibility) ? <MessageAvatar actor={serializeVisibleActor(e.actingManager, actorVisibility)!} size="sm" /> : null}
                     <span className="truncate">{serializeVisibleActor(e.actingManager, actorVisibility) ? actorDisplayName(serializeVisibleActor(e.actingManager, actorVisibility)!) : "—"}</span>
-                  </span>
+                  </span> : null}
                   <span className="text-right text-caption tabular-nums">
                     {e._count.tasks}
                   </span>
@@ -229,8 +232,8 @@ export default async function EpicsListPage({
 
       <NewEpicFab
         projectSlug={slug}
-        principals={principals}
-        canAssignAgents={viewer.isOwner}
+        principals={viewer.isOwner ? principals : []}
+        canManageAssignments={viewer.isOwner}
         canSetPrivate={viewer.isOwner}
         createEpicAction={createEpic}
       />

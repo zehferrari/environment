@@ -186,9 +186,9 @@ the status names differ (see [`guides/JIRA.md`](./guides/JIRA.md) § *Picking Ji
    request, Jira/PM mention or ticket, or `~/tasks/current.md` entry, do
    that first. The task is not complete until the requested source-channel
    reply/action is done and the task entry is updated out of `QUEUED`.
-1. **Unanswered feedback on your review-stage work.** A feedback round is
-   unanswered when the latest source-channel comment/request is from
-   someone other than you, postdates your last response, and postdates
+1. **Unanswered feedback authorized by the source policy on your review-stage work.** A feedback round is
+   unanswered when the latest source-channel comment/request is authorized
+   by that source's policy (PM: the Mission Control owner or a trusted workflow notification), postdates your last response, and postdates
    the most recent move into review. Oldest comment first. Respond with
    **concrete action** (code change pushed, plan revised, question
    answered), not just acknowledgement. In Zero Latency / PM the system
@@ -397,9 +397,9 @@ Latency / PM queue/status names:
    `~/tasks/current.md` entry, do that first. The task is not complete
    until the requested PM reply/action is done and the queue entry is
    updated out of `QUEUED`.
-1. **Unanswered feedback on your Review-stage PM tasks.** A round is
-   unanswered when the latest PM comment/chat turn is from someone other
-   than you, postdates your last response, and postdates the most recent
+1. **Unanswered owner or trusted-workflow feedback on your Review-stage PM tasks.** A round is
+   unanswered when the latest PM comment/chat turn is from the Mission
+   Control owner or a trusted workflow notification, postdates your last response, and postdates the most recent
    move into `Review`. Oldest comment first. Respond with **concrete
    action** (code change pushed, plan revised, question answered), not
    just acknowledgement.

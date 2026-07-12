@@ -5,6 +5,7 @@ import { verifyTaskChatReplyToken } from "@/lib/agents/workflow/chat/task/token"
 import { sendTaskCommentNotifications } from "@/lib/agents/workflow/notifications/task";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { tryCompleteTaskFromReviewerComment } from "@/lib/tasks/review-automation";
+import { hasAuthorizedTaskAgentOrigin } from "@/lib/agents/owner-origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -91,11 +92,28 @@ export async function POST(
       baseArchiveId: true,
       originChannel: true,
       originCommentId: true,
+      senderUserId: true,
+      sender: { select: { kind: true, status: true } },
       project: { select: { slug: true } },
-      task: { select: { deletedAt: true } },
+      task: {
+        select: {
+          deletedAt: true,
+          private: true,
+          epic: { select: { private: true } },
+          parent: { select: { private: true, epic: { select: { private: true } } } },
+        },
+      },
     },
   });
-  if (!original || original.taskId !== taskId || original.task?.deletedAt) {
+  if (
+    !original ||
+    original.taskId !== taskId ||
+    original.task?.deletedAt ||
+    original.task?.private ||
+    original.task?.epic?.private ||
+    original.task?.parent?.private ||
+    original.task?.parent?.epic?.private
+  ) {
     return NextResponse.json({ error: "Message not found" }, { status: 404 });
   }
 
@@ -120,6 +138,16 @@ export async function POST(
 
   if (!verified) {
     return NextResponse.json({ error: "Invalid reply token" }, { status: 403 });
+  }
+
+  if (!(await hasAuthorizedTaskAgentOrigin({
+    taskId,
+    messageId,
+    targetAgentSlug: agentSlug,
+    senderUserId: original.senderUserId,
+    sender: original.sender,
+  }))) {
+    return NextResponse.json({ error: "Reply grant is no longer authorized" }, { status: 403 });
   }
 
   const agent = await db.agent.findUnique({

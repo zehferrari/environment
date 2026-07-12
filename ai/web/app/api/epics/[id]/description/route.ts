@@ -43,6 +43,7 @@ export async function POST(
       senderUserId: true,
       allowDescriptionEdit: true,
       editGrantUsedAt: true,
+      sender: { select: { kind: true, status: true, isOwner: true } },
     },
   });
   if (!grant) {
@@ -57,6 +58,12 @@ export async function POST(
   if (!grant.allowDescriptionEdit) {
     return NextResponse.json(
       { error: "Message did not grant description edit" },
+      { status: 403 },
+    );
+  }
+  if (grant.sender?.kind !== "human" || grant.sender.status !== "active" || !grant.sender.isOwner) {
+    return NextResponse.json(
+      { error: "Description edit grants must originate from the Mission Control owner" },
       { status: 403 },
     );
   }
@@ -100,8 +107,8 @@ export async function POST(
     );
   }
 
-  const epic = await db.epic.findUnique({
-    where: { id: epicId },
+  const epic = await db.epic.findFirst({
+    where: { id: epicId, private: false },
     select: {
       id: true,
       projectId: true,

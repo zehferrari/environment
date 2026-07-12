@@ -11,13 +11,20 @@
 //     truncation because the two tables are separate.
 
 import { parsePmEvent, type PmEvent } from "@/lib/pm-events";
+import { isEffectivelyPublicPmEvent } from "@/lib/pm-events/visibility";
 import { handleDeploymentApproved } from "@/lib/deploy/monitor";
-import { PM_CHANNEL_BUS_SCHEMA_VERSION } from "@/lib/agents/pm-channel/bus";
+import {
+  PM_CHANNEL_BUS_SCHEMA_VERSION,
+  pmChannelRunTargetKey,
+} from "@/lib/agents/pm-channel/bus";
 import {
   dispatchOpenClawPmChannelTurnViaHttp,
   parsePmChannelReplyTarget,
   type SendPmChannelTurnArgs,
 } from "@/lib/agents/pm-channel/openclaw";
+import { isAuthorizedPmChannelDispatchTarget } from "@/lib/agents/pm-channel/target-authorization";
+import { isOwnerUserId } from "@/lib/auth/permissions";
+import { db } from "@/lib/db";
 import { dedupeKeyFor } from "./dedupe-key";
 import { createTargetResolver, type TargetResolver } from "./target";
 import {
@@ -32,6 +39,8 @@ import { wakeAgent } from "./gateway-client";
 export type HandleOutcome =
   | { kind: "delivered"; dedupeKey: string; targetSlug: string }
   | { kind: "skipped-duplicate"; dedupeKey: string }
+  | { kind: "skipped-private"; dedupeKey: string }
+  | { kind: "skipped-unauthorized"; dedupeKey: string }
   | { kind: "unmatched"; dedupeKey: string }
   | { kind: "failed"; dedupeKey: string; error: string }
   | { kind: "rejected"; error: string };
@@ -52,6 +61,11 @@ export function createHandler(opts: HandlerOptions = {}) {
     const pmChannelTurn = parsePmChannelBusTurn(raw);
     if (pmChannelTurn.ok) {
       const dedupeKey = `openclaw.pm_channel_turn:${pmChannelTurn.id}`;
+      // The native envelope is only a transport representation. Bind it to
+      // the persisted run/job and source message before it can reach an agent.
+      if (!(await isAuthorizedPmChannelDispatchTarget(pmChannelTurn.args))) {
+        return { kind: "skipped-unauthorized", dedupeKey };
+      }
       // Insert-once before dispatch so a re-published turn (retry after a
       // false-negative publisher timeout) is suppressed here instead of running
       // the agent a second time. Unlike PmEvents, native turns have an explicit
@@ -100,6 +114,17 @@ export function createHandler(opts: HandlerOptions = {}) {
     }
 
     const dedupeKey = dedupeKeyFor(event);
+    // Human-authored legacy wake events are valid only while the actor is the
+    // active Mission Control owner. Agent/system events remain available for
+    // explicit workflow continuations such as task acknowledgement handling.
+    if (!(await hasAuthorizedLegacyEventOrigin(event))) {
+      return { kind: "skipped-unauthorized", dedupeKey };
+    }
+    // Legacy events contain task/Epic titles. Never persist their envelope or
+    // wake an agent unless the referenced work is still effectively public.
+    if (!(await isEffectivelyPublicPmEvent(event))) {
+      return { kind: "skipped-private", dedupeKey };
+    }
 
     if (event.kind === "deployment.approved") {
       const append = await appendDelivery({
@@ -251,6 +276,7 @@ function parsePmChannelBusTurn(raw: unknown): ParsedPmChannelBusTurn {
   const gatewayPort = typeof payload.gatewayPort === "number" && Number.isFinite(payload.gatewayPort)
     ? payload.gatewayPort
     : null;
+  const eventTarget = parsePmChannelReplyTarget(event.target);
   const target = parsePmChannelReplyTarget(payload.replyTarget);
   const actorRaw = payload.actor && typeof payload.actor === "object"
     ? payload.actor as Record<string, unknown>
@@ -262,7 +288,14 @@ function parsePmChannelBusTurn(raw: unknown): ParsedPmChannelBusTurn {
 
   if (!agentSlug) return { ok: false, error: "PM channel bus: missing agentSlug" };
   if (!sessionKey) return { ok: false, error: "PM channel bus: missing sessionKey" };
+  if (!eventTarget) return { ok: false, error: "PM channel bus: invalid target" };
   if (!target) return { ok: false, error: "PM channel bus: invalid replyTarget" };
+  if (pmChannelRunTargetKey(eventTarget) !== pmChannelRunTargetKey(target)) {
+    return { ok: false, error: "PM channel bus: target does not match replyTarget" };
+  }
+  if (id !== pmChannelRunTargetKey(target)) {
+    return { ok: false, error: "PM channel bus: id does not match target" };
+  }
   if (kind !== "direct" && kind !== "task-chat" && kind !== "task-comment" && kind !== "epic-chat") {
     return { ok: false, error: "PM channel bus: invalid turn kind" };
   }
@@ -290,6 +323,39 @@ function parsePmChannelBusTurn(raw: unknown): ParsedPmChannelBusTurn {
         : undefined,
     },
   };
+}
+
+async function hasAuthorizedLegacyEventOrigin(event: PmEvent): Promise<boolean> {
+  if (event.actor.kind === "human") {
+    return isOwnerUserId(event.actor.id);
+  }
+  if (event.actor.kind !== "agent" || !event.actor.id) return false;
+
+  // The only legacy agent-origin wake is the task acknowledgement
+  // continuation. Bind it to the state transition persisted before dispatch
+  // and the task's assigned agent; an arbitrary raw envelope cannot
+  // impersonate an agent merely by naming an active agent id.
+  if (event.kind !== "task.ack_ready") return false;
+  const [agent, workflow, task] = await Promise.all([
+    db.user.findFirst({
+      where: { id: event.actor.id, kind: "agent", status: "active" },
+      select: { id: true },
+    }),
+    db.activityLog.findFirst({
+      where: {
+        taskId: event.task.id,
+        userId: event.actor.id,
+        kind: "task.ack.auto",
+        payload: { contains: `"pmEventId":"${event.id}"` },
+      },
+      select: { id: true },
+    }),
+    db.task.findUnique({
+      where: { id: event.task.id },
+      select: { assigneeId: true },
+    }),
+  ]);
+  return Boolean(agent && workflow && task?.assigneeId === agent.id);
 }
 
 function wakeText(event: PmEvent): string {

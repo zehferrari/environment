@@ -20,6 +20,7 @@ import {
   buildTaskAssigned,
 } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
+import { isEffectivelyPublicTask } from "@/lib/pm-events/visibility";
 import {
   sendTaskCommentNotifications,
   sendTaskWorkflowNotification,
@@ -80,9 +81,9 @@ import {
   actorDisplayName,
   MessageAvatar,
   MessageTimestamp,
-  type MessageActor,
 } from "@/components/message-avatar";
 import DescriptionField from "@/components/description-field";
+import PrivateToggle from "@/components/private-toggle";
 import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
 import PmOptions from "@/components/pm-options";
 import { findPmOptionResolution, parsePmOptions, isPmOptionsTargetedAtCurrentUser } from "@/lib/pm-options";
@@ -115,18 +116,6 @@ type ActorRow = {
   avatarUpdatedAt: Date | string | null;
   agent: { slug: string; name: string; avatar: string | null } | null;
 };
-
-function ReadOnlyPrincipal({ label, actor }: { label: string; actor: MessageActor | null }) {
-  return (
-    <div>
-      <div className="mb-1 text-micro font-semibold uppercase tracking-wider text-text-muted">{label}</div>
-      <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 py-1.5 text-caption">
-        {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
-        <span className="truncate">{actor ? actorDisplayName(actor) : "None"}</span>
-      </div>
-    </div>
-  );
-}
 
 function mentionedUsername(body: string, username: string | null | undefined) {
   if (!username) return false;
@@ -187,6 +176,9 @@ async function updateTask(formData: FormData) {
   const newBlockedById = blockedRaw === "" ? null : blockedRaw;
   const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
   const hasPrivateField = formData.has("privateSubmitted");
+  if (!actor.isOwner && (hasAssigneeField || hasReviewerField || hasReporterField)) {
+    throw new Error("Only the Mission Control owner can change task roles.");
+  }
   if ((hasPrivateField || formData.has("private")) && !actor.isOwner) throw new Error("Not authorized");
   const newPrivate = formData.get("private") === "on";
 
@@ -234,7 +226,7 @@ async function updateTask(formData: FormData) {
 
   const data: Prisma.TaskUpdateInput = {};
   const activity: { kind: string; payload: string }[] = [];
-  const canTriggerAgents = actor.isOwner || actor.kind === "agent";
+  const canTriggerAgents = actor.isOwner;
   let assignmentTarget: { id: string; kind: string; username: string } | null =
     null;
   let assignmentChanged = false;
@@ -536,7 +528,15 @@ async function updateTask(formData: FormData) {
   revalidatePath(`/projects/${slug}`);
   publishBoardTouch(task.projectId);
 
-  if (canTriggerAgents && deploymentAllowed && deploymentRaw === "Deployment Approved" && task.deploymentStatus !== "Deployment Approved") {
+  const shouldEmitLegacyTaskEvent = canTriggerAgents && (
+    (deploymentAllowed && deploymentRaw === "Deployment Approved" && task.deploymentStatus !== "Deployment Approved")
+    || assignmentChanged
+  );
+  const canEmitLegacyTaskEvent = shouldEmitLegacyTaskEvent
+    ? await isEffectivelyPublicTask(task.id)
+    : false;
+
+  if (canEmitLegacyTaskEvent && deploymentAllowed && deploymentRaw === "Deployment Approved" && task.deploymentStatus !== "Deployment Approved") {
     await notifyDispatch(
       buildDeploymentApproved(
         {
@@ -552,7 +552,7 @@ async function updateTask(formData: FormData) {
 
   // Assignment wake fires after the commit, non-throwing (mirrors the old
   // standalone assignTask path).
-  if (canTriggerAgents && assignmentChanged) {
+  if (canEmitLegacyTaskEvent && assignmentChanged) {
     await notifyDispatch(
       buildTaskAssigned(
         {
@@ -879,7 +879,7 @@ async function createComment(formData: FormData) {
 async function deleteComment(formData: FormData) {
   "use server";
   const actor = await requireActor();
-  if (actor.kind !== "human") return;
+  if (!actor.isOwner) return;
   const commentId = String(formData.get("commentId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
   const taskId = String(formData.get("taskId") ?? "");
@@ -939,7 +939,7 @@ async function deleteComment(formData: FormData) {
 async function restoreComment(formData: FormData) {
   "use server";
   const actor = await requireActor();
-  if (actor.kind !== "human") return;
+  if (!actor.isOwner) return;
   const commentId = String(formData.get("commentId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
   const taskId = String(formData.get("taskId") ?? "");
@@ -1306,6 +1306,7 @@ function discussionTargetValue(
 
 const DEVELOPMENT_TAB = "Development";
 const TASK_TABS = ["Description", "Action Plan", "Sub-Tasks", "Attachments", "Comments", "Activities", DEVELOPMENT_TAB, "Changes"] as const;
+const OWNER_ONLY_TASK_TABS = new Set(["Action Plan", "Activities", DEVELOPMENT_TAB, "Changes"]);
 
 function tabParam(tab: string) {
   return tab
@@ -1355,17 +1356,23 @@ export default async function TaskDetailPage({
   const task = taskShell ? { ...taskShell, comments, attachments } : null;
   if (!task || task.project.slug !== slug || task.deletedAt) notFound();
   const actorVisibility = await getActorVisibility(viewer);
-  const showDeploymentTab = canShowDeploymentTab(task);
-  const taskTabs = (showDeploymentTab ? [...TASK_TABS] : TASK_TABS.filter((name) => name !== DEVELOPMENT_TAB))
-    .filter((name) => viewer.isOwner || name !== "Action Plan");
-  if (!showDeploymentTab && selectedTab === DEVELOPMENT_TAB) selectedTab = "Description";
-  if (!viewer.isOwner && selectedTab === "Action Plan") selectedTab = "Description";
+  const visibleAttachments = task.attachments.map((attachment) => ({
+    ...attachment,
+    uploader: !viewer.isOwner && attachment.uploader?.kind === "agent"
+      ? (actorVisibility.owner ? { username: actorVisibility.owner.username } : null)
+      : attachment.uploader,
+  }));
+  const hasDeploymentTab = canShowDeploymentTab(task);
+  const showDeploymentTab = viewer.isOwner && hasDeploymentTab;
+  const taskTabs = (hasDeploymentTab ? [...TASK_TABS] : TASK_TABS.filter((name) => name !== DEVELOPMENT_TAB))
+    .filter((name) => viewer.isOwner || !OWNER_ONLY_TASK_TABS.has(name));
+  if (!taskTabs.some((name) => name === selectedTab)) selectedTab = "Description";
 
-  // Only human viewers get comment-delete controls (see deleteComment).
-  const canDeleteComments = viewer.kind === "human";
+  // Comment moderation is exclusive to the Mission Control owner.
+  const canDeleteComments = viewer.isOwner;
 
   const [principals, cachedProjectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify, allActivity, targetedCommentRows] = await Promise.all([
-    listAssignablePrincipals(viewer),
+    viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
     getCachedProjectEpics(task.project.id),
     db.user.findMany({ select: { username: true, kind: true } }),
     getCachedRecentTaskChatMessages(task.id),
@@ -1456,7 +1463,7 @@ export default async function TaskDetailPage({
     }))
     .filter((message, index, all) => all.findIndex((item) => item.agentSlug === message.agentSlug) === index)
     .slice(0, 4);
-  const deploymentPullRequests: DeploymentPrRow[] = showDeploymentTab
+  const deploymentPullRequests: DeploymentPrRow[] = showDeploymentTab && selectedTab === DEVELOPMENT_TAB
     ? await db.deploymentPullRequest.findMany({
         where: { taskId: task.id },
         orderBy: { updatedAt: "desc" },
@@ -1798,6 +1805,13 @@ export default async function TaskDetailPage({
                 aria-label="Task title"
               />
             </label>
+            {viewer.isOwner ? (
+              <PrivateToggle
+                formId="taskMain"
+                defaultChecked={task.private}
+                includeSubmittedField
+              />
+            ) : null}
             <div className="min-w-[12rem] flex-[0_1_16rem]">
               <span className="mb-0.5 block text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Epic
@@ -1914,20 +1928,6 @@ export default async function TaskDetailPage({
           <form id="taskMain" action={updateTask} />
           <input form="taskMain" type="hidden" name="taskId" value={task.id} />
           <input form="taskMain" type="hidden" name="projectSlug" value={slug} />
-          {viewer.isOwner ? (
-            <label className="flex w-fit items-center gap-2 text-caption text-text-muted">
-              <input form="taskMain" type="hidden" name="privateSubmitted" value="1" />
-              <input
-                form="taskMain"
-                type="checkbox"
-                name="private"
-                defaultChecked={task.private}
-                className="h-4 w-4 accent-accent"
-              />
-              Private
-            </label>
-          ) : null}
-
           {/* Tabbed content */}
           <TabsProvider defaultTab={selectedTab}>
             <TabsNav
@@ -1944,8 +1944,8 @@ export default async function TaskDetailPage({
                     defaultValue={task.description ?? ""}
                     projectSlug={slug}
                     taskId={task.id}
-                    aiTargets={aiTargetOptions}
-                    defaultAiTarget={defaultAiTarget}
+                    aiTargets={viewer.isOwner ? aiTargetOptions : []}
+                    defaultAiTarget={viewer.isOwner ? defaultAiTarget : ""}
                     descriptionLabel="Task"
                     draftDescription={draftDescription}
                     aiRunning={viewer.isOwner && isAiDescriptionRunning}
@@ -2044,34 +2044,22 @@ export default async function TaskDetailPage({
                       </dl>
                     </div>
 
-                    <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
-                      {!viewer.isOwner && task.reporter?.kind === "agent" ? (
-                        <ReadOnlyPrincipal label="Report by" actor={serializeActor(task.reporter, actorVisibility)} />
-                      ) : (
+                    {viewer.isOwner ? <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                         <label className="block">
                           <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Report by</span>
                           <AvatarCombobox formId="taskMain" name="reporterId" defaultValue={task.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Report by" />
                         </label>
-                      )}
-                      {!viewer.isOwner && task.assignee?.kind === "agent" ? (
-                        <ReadOnlyPrincipal label="Assignee" actor={serializeActor(task.assignee, actorVisibility)} />
-                      ) : (
                         <label className="block">
                           <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Assignee</span>
                           <AvatarCombobox formId="taskMain" name="assigneeId" defaultValue={task.assigneeId ?? ""} options={principalOptions} emptyLabel="Unassigned" ariaLabel="Assignee" />
                         </label>
-                      )}
-                      {!viewer.isOwner && task.actingManager?.kind === "agent" ? (
-                        <ReadOnlyPrincipal label="Reviewer" actor={serializeActor(task.actingManager, actorVisibility)} />
-                      ) : (
                         <label className="block">
                           <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Reviewer</span>
                           <AvatarCombobox formId="taskMain" name="actingManagerId" defaultValue={task.actingManagerId ?? ""} options={principalOptions} emptyLabel="No reviewer" ariaLabel="Reviewer" />
                         </label>
-                      )}
-                    </div>
+                    </div> : null}
 
-                    {showDeploymentTab ? (
+                    {hasDeploymentTab ? (
                       <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                         <DeploymentStatusSelect formId="taskMain" defaultValue={task.deploymentStatus} />
                       </div>
@@ -2253,7 +2241,7 @@ export default async function TaskDetailPage({
             </span>
           </div>
           <AttachmentList
-            attachments={task.attachments}
+            attachments={visibleAttachments}
             projectSlug={slug}
             deleteAction={deleteAttachment}
           />
@@ -2380,11 +2368,11 @@ export default async function TaskDetailPage({
                 </div>
               </TabPanel>
 
-              <TabPanel name="Activities">
+              {viewer.isOwner ? <TabPanel name="Activities">
                 <div className="pt-2">
                   <ActivityTimeline rows={visibleActivity} />
                 </div>
-              </TabPanel>
+              </TabPanel> : null}
 
               {showDeploymentTab ? (
                 <TabPanel name={DEVELOPMENT_TAB}>
@@ -2407,7 +2395,7 @@ export default async function TaskDetailPage({
                 </TabPanel>
               ) : null}
 
-              <TabPanel name="Changes">
+              {viewer.isOwner ? <TabPanel name="Changes">
                 <TaskChangesPanel
                   changes={taskChanges}
                   branchName={task.branchName ?? task.epic?.branchName ?? null}
@@ -2416,7 +2404,7 @@ export default async function TaskDetailPage({
                   baseHref={`/projects/${slug}/tasks/${task.id}`}
                   selectedDiff={selectedDiff}
                 />
-              </TabPanel>
+              </TabPanel> : null}
             </div>
           </TabsProvider>
         </section>

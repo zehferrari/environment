@@ -16,8 +16,9 @@
 //     messageId);
 //   - the slug's Agent + seeded User must be active.
 // On success: persist the proposal, stamp the grant used, write an
-// ActivityLog row as the agent. Direct-chat human grants auto-apply after
-// validation; discussion grants remain pending except narrow workflow
+// ActivityLog row as the agent. Only grants authored by the active Mission
+// Control owner are accepted; direct owner grants auto-apply after validation.
+// Discussion grants remain pending except narrow workflow
 // auto-apply cases such as Epic-manager task breakdowns. Re-using the grant
 // returns 410. Re-using the same planId returns the existing proposal
 // (idempotent).
@@ -47,7 +48,7 @@ type WorkItemGrant =
       projectId: string | null;
       allowWorkItemManagement: boolean;
       workItemGrantUsedAt: Date | null;
-      sender: { kind: string; status: string } | null;
+      sender: { kind: string; status: string; isOwner: boolean } | null;
       taskId?: null;
       epicId?: null;
     }
@@ -59,6 +60,7 @@ type WorkItemGrant =
       projectId: string;
       allowWorkItemManagement: boolean;
       workItemGrantUsedAt: Date | null;
+      sender: { kind: string; status: string; isOwner: boolean } | null;
       taskId: string | null;
       epicId: string | null;
     };
@@ -89,6 +91,37 @@ async function findDiscussionGrantRun(projectId: string, grantMessageId: string,
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isActiveOwnerGrant(grant: WorkItemGrant): boolean {
+  return Boolean(
+    grant.sender
+      && grant.sender.kind === "human"
+      && grant.sender.status === "active"
+      && grant.sender.isOwner,
+  );
+}
+
+async function discussionGrantIsPrivate(grant: Extract<WorkItemGrant, { source: "discussion" }>) {
+  if (grant.taskId) {
+    const task = await db.task.findUnique({
+      where: { id: grant.taskId },
+      select: {
+        private: true,
+        epic: { select: { private: true } },
+        parent: { select: { private: true, epic: { select: { private: true } } } },
+      },
+    });
+    return Boolean(task?.private || task?.epic?.private || task?.parent?.private || task?.parent?.epic?.private);
+  }
+  if (grant.epicId) {
+    const epic = await db.epic.findUnique({
+      where: { id: grant.epicId },
+      select: { private: true },
+    });
+    return Boolean(epic?.private);
+  }
+  return false;
 }
 
 function isEpicManagerTaskBreakdown(operations: unknown[], epicId: string) {
@@ -222,27 +255,6 @@ export async function POST(
     );
   }
 
-  // Idempotency: a retried agent turn re-uses planId. Return the stored
-  // proposal instead of creating a duplicate.
-  const existing = await db.workItemProposal.findUnique({
-    where: { planId },
-    select: { id: true, projectId: true, status: true },
-  });
-  if (existing) {
-    if (existing.projectId !== projectId) {
-      return NextResponse.json(
-        { error: "planId already used in another project" },
-        { status: 409 },
-      );
-    }
-    return NextResponse.json({
-      ok: true,
-      proposalId: existing.id,
-      status: existing.status,
-      idempotent: true,
-    });
-  }
-
   const directGrant = await db.directAgentChatMessage.findUnique({
     where: { id: grantMessageId },
     select: {
@@ -251,7 +263,7 @@ export async function POST(
       projectId: true,
       allowWorkItemManagement: true,
       workItemGrantUsedAt: true,
-      sender: { select: { kind: true, status: true } },
+      sender: { select: { kind: true, status: true, isOwner: true } },
     },
   });
   let grant: WorkItemGrant | null = directGrant
@@ -268,6 +280,7 @@ export async function POST(
         epicId: true,
         allowWorkItemManagement: true,
         workItemGrantUsedAt: true,
+        sender: { select: { kind: true, status: true, isOwner: true } },
       },
     });
     if (discussionGrant) {
@@ -300,23 +313,48 @@ export async function POST(
       { status: 403 },
     );
   }
-  if (grant.workItemGrantUsedAt) {
-    return NextResponse.json({ error: "Grant already used" }, { status: 410 });
-  }
   if (
     grant.source === "direct"
     && !verifyWorkItemGrantToken(projectId, grant.agentSlug, grantMessageId, token)
   ) {
     return NextResponse.json({ error: "Invalid grant token" }, { status: 403 });
   }
-  if (
-    grant.source === "direct" &&
-    (grant.sender?.kind !== "human" || grant.sender.status !== "active")
-  ) {
+  if (!isActiveOwnerGrant(grant)) {
     return NextResponse.json(
-      { error: "Direct work-item execution requires an active human requester" },
+      { error: "Work-item execution requires an active Mission Control owner requester" },
       { status: 403 },
     );
+  }
+  if (grant.source === "discussion" && await discussionGrantIsPrivate(grant)) {
+    return NextResponse.json(
+      { error: "Discussion work-item execution is unavailable for private work" },
+      { status: 403 },
+    );
+  }
+
+  // Authenticate the grant before returning an idempotent proposal. Otherwise
+  // a legacy non-owner grant could keep receiving a successful retry response
+  // merely by reusing a stored planId.
+  const existing = await db.workItemProposal.findUnique({
+    where: { planId },
+    select: { id: true, projectId: true, status: true },
+  });
+  if (existing) {
+    if (existing.projectId !== projectId) {
+      return NextResponse.json(
+        { error: "planId already used in another project" },
+        { status: 409 },
+      );
+    }
+    return NextResponse.json({
+      ok: true,
+      proposalId: existing.id,
+      status: existing.status,
+      idempotent: true,
+    });
+  }
+  if (grant.workItemGrantUsedAt) {
+    return NextResponse.json({ error: "Grant already used" }, { status: 410 });
   }
 
   const agent = await db.agent.findUnique({
@@ -353,14 +391,14 @@ export async function POST(
     );
   }
 
-  const autoApplyDirectHumanRequest = grant.source === "direct";
+  const autoApplyDirectOwnerRequest = grant.source === "direct" && isActiveOwnerGrant(grant);
   const autoApplyEpicManagerBreakdown = await canAutoApplyEpicManagerTaskBreakdown({
     grant,
     projectId,
     agentUserId,
     operations,
   });
-  const autoApply = autoApplyDirectHumanRequest || autoApplyEpicManagerBreakdown;
+  const autoApply = autoApplyDirectOwnerRequest || autoApplyEpicManagerBreakdown;
   const publicOrigin =
     await storedPublicOriginForGrant(grant) ??
     requestedPublicOrigin ??
@@ -433,8 +471,8 @@ export async function POST(
           proposalId: created.id,
           status: "applied",
           autoApplied: true,
-          autoApplyReason: autoApplyDirectHumanRequest
-            ? "direct_human_request"
+          autoApplyReason: autoApplyDirectOwnerRequest
+            ? "direct_owner_request"
             : "epic_manager_task_breakdown",
           validation,
           result: applied.counts,

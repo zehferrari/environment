@@ -2,6 +2,7 @@ import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { verifyDirectChatReplyToken } from "@/lib/agents/chat/direct/token";
+import { hasActiveOwnerOrigin } from "@/lib/agents/owner-origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,7 +36,7 @@ export async function POST(
   const [original, agent] = await Promise.all([
     db.directAgentChatMessage.findUnique({
       where: { id: messageId },
-      select: { id: true, agentSlug: true, archiveId: true, baseArchiveId: true },
+      select: { id: true, agentSlug: true, senderUserId: true, archiveId: true, baseArchiveId: true },
     }),
     db.agent.findUnique({
       where: { slug: agentId },
@@ -52,6 +53,9 @@ export async function POST(
   }
   if (!agent?.user || agent.deactivatedAt || agent.user.status !== "active") {
     return NextResponse.json({ error: "Agent not active" }, { status: 403 });
+  }
+  if (!(await hasActiveOwnerOrigin(original.senderUserId))) {
+    return NextResponse.json({ error: "Reply grant is no longer authorized" }, { status: 403 });
   }
 
   const reply = await db.$transaction(async (tx) => {

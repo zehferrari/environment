@@ -115,6 +115,13 @@ async function createTask(formData: FormData) {
   const projectSlug = String(formData.get("projectSlug") ?? "");
   const description = String(formData.get("description") ?? "").trim() || null;
   const epicRaw = String(formData.get("epicId") ?? "");
+  if (!actor.isOwner && (
+    formData.has("reporterId") ||
+    formData.has("assigneeId") ||
+    formData.has("actingManagerId")
+  )) {
+    throw new Error("Only the Mission Control owner can set task roles.");
+  }
   const assigneeRaw = String(formData.get("assigneeId") ?? "");
   const reviewerRaw = String(formData.get("actingManagerId") ?? "");
   if (formData.has("private") && !actor.isOwner) throw new Error("Not authorized");
@@ -404,7 +411,7 @@ export default async function ProjectBoardPage({
     .map((task) => task.blockedById)
     .filter((id): id is string => Boolean(id));
   const [principals, epicOptions, taskActivityRows, busyAgentSlugs, actorVisibility, visibleBlockers] = await Promise.all([
-    listAssignablePrincipals(viewer),
+    viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
     db.epic.findMany({
       where: accessibleEpicWhere(viewer, { projectId: project.id, archivedAt: null, deletedAt: null }),
       orderBy: [{ status: "asc" }, { title: "asc" }],
@@ -506,8 +513,9 @@ export default async function ProjectBoardPage({
           agentAvatar: p.agentAvatar,
         }))}
         epics={epicOptions}
-        defaultAssigneeId={principals.some((p) => p.id === project.defaultAssigneeId) ? project.defaultAssigneeId : null}
-        defaultReviewerId={principals.some((p) => p.id === project.defaultReviewerId) ? project.defaultReviewerId : null}
+        defaultAssigneeId={viewer.isOwner && principals.some((p) => p.id === project.defaultAssigneeId) ? project.defaultAssigneeId : null}
+        defaultReviewerId={viewer.isOwner && principals.some((p) => p.id === project.defaultReviewerId) ? project.defaultReviewerId : null}
+        canManageAssignments={viewer.isOwner}
         canSetPrivate={viewer.isOwner}
         createTaskAction={createTask}
       />

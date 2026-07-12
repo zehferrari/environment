@@ -1,4 +1,5 @@
 import type { MessageActor } from "@/components/message-avatar";
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import type { Viewer } from "@/lib/auth/permissions";
 
@@ -19,7 +20,7 @@ export type ActorVisibility = {
 export type VisibleMessageActor = Omit<MessageActor, "id"> & { id: string };
 
 export async function getActorVisibility(viewer: Viewer): Promise<ActorVisibility> {
-  if (viewer.isOwner || viewer.kind === "agent") {
+  if (viewer.isOwner) {
     return { maskAgents: false, owner: null };
   }
 
@@ -66,6 +67,32 @@ export function serializeVisibleActor(
 }
 
 const AGENT_SESSION_ACTIVITY = /(^agent\.|^pm\.|\.action_plan(?:\.|$)|\.chat(?:\.|$)|\.comment(?:\.|$)|\.dispatch(?:_|\.|$)|\.stream(?:_|\.|$)|\.workflow(?:\.|$)|\.wake(?:\.|$))/;
+
+/**
+ * SQL counterpart of visibleActivityRows. Apply it before pagination so
+ * hidden agent/session rows cannot consume a member's activity-feed limit.
+ */
+export function visibleActivityWhere(viewer: Viewer): Prisma.ActivityLogWhereInput {
+  if (viewer.isOwner) return {};
+  return {
+    AND: [
+      { targetAgent: null },
+      {
+        NOT: [
+          { kind: { startsWith: "agent." } },
+          { kind: { startsWith: "pm." } },
+          { kind: { contains: ".action_plan" } },
+          { kind: { contains: ".chat" } },
+          { kind: { contains: ".comment" } },
+          { kind: { contains: ".dispatch" } },
+          { kind: { contains: ".stream" } },
+          { kind: { contains: ".workflow" } },
+          { kind: { contains: ".wake" } },
+        ],
+      },
+    ],
+  };
+}
 
 type ActivityRowWithActor = {
   kind: string;

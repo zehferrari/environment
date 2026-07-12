@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
+import PrivateToggle from "@/components/private-toggle";
 
 type Principal = {
   id: string;
@@ -25,6 +26,7 @@ export default function AddTaskFab({
   epics,
   defaultAssigneeId,
   defaultReviewerId,
+  canManageAssignments = false,
   canSetPrivate = false,
   createTaskAction,
 }: {
@@ -34,6 +36,7 @@ export default function AddTaskFab({
   epics: EpicOption[];
   defaultAssigneeId: string | null;
   defaultReviewerId: string | null;
+  canManageAssignments?: boolean;
   canSetPrivate?: boolean;
   createTaskAction: (formData: FormData) => Promise<void>;
 }) {
@@ -99,14 +102,7 @@ export default function AddTaskFab({
             />
 
             {canSetPrivate ? (
-              <label className="flex items-center justify-between gap-3 rounded-lg border border-line bg-bg px-3 py-2 text-caption">
-                <span>Private</span>
-                <input
-                  type="checkbox"
-                  name="private"
-                  className="h-4 w-4 accent-accent"
-                />
-              </label>
+              <PrivateToggle />
             ) : null}
 
             <label className="block text-caption">
@@ -127,34 +123,36 @@ export default function AddTaskFab({
               </select>
             </label>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <label className="text-caption">
-                <span className="mb-1 block text-text-muted">
-                  Assignee
-                </span>
-                <AvatarCombobox
-                  formId="newTaskForm"
-                  name="assigneeId"
-                  defaultValue={defaultAssigneeId ?? ""}
-                  options={principalOptions}
-                  emptyLabel="Unassigned"
-                  ariaLabel="Assignee"
-                />
-              </label>
-              <label className="text-caption">
-                <span className="mb-1 block text-text-muted">
-                  Reviewer
-                </span>
-                <AvatarCombobox
-                  formId="newTaskForm"
-                  name="actingManagerId"
-                  defaultValue={defaultReviewerId ?? ""}
-                  options={principalOptions}
-                  emptyLabel="No reviewer"
-                  ariaLabel="Reviewer"
-                />
-              </label>
-            </div>
+            {canManageAssignments ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="text-caption">
+                  <span className="mb-1 block text-text-muted">
+                    Assignee
+                  </span>
+                  <AvatarCombobox
+                    formId="newTaskForm"
+                    name="assigneeId"
+                    defaultValue={defaultAssigneeId ?? ""}
+                    options={principalOptions}
+                    emptyLabel="Unassigned"
+                    ariaLabel="Assignee"
+                  />
+                </label>
+                <label className="text-caption">
+                  <span className="mb-1 block text-text-muted">
+                    Reviewer
+                  </span>
+                  <AvatarCombobox
+                    formId="newTaskForm"
+                    name="actingManagerId"
+                    defaultValue={defaultReviewerId ?? ""}
+                    options={principalOptions}
+                    emptyLabel="No reviewer"
+                    ariaLabel="Reviewer"
+                  />
+                </label>
+              </div>
+            ) : null}
 
             <div className="flex justify-end gap-2 pt-1">
               <button

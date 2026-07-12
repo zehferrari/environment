@@ -4,6 +4,7 @@
 // push for agent-authored origin messages (agent-to-agent turns).
 
 import { db } from "@/lib/db";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 import type { PmChannelReplyTarget } from "@/lib/agents/pm-channel/openclaw";
 import { sendWebPushToUser, webPushConfigured, type WebPushPayload } from "@/lib/push/web-push";
 import { stripChatMarkdown } from "@/lib/text";
@@ -29,7 +30,7 @@ async function resolveRecipient(target: PmChannelReplyTarget): Promise<Recipient
       where: { id: target.messageId },
       select: { senderUserId: true, sender: { select: { kind: true } } },
     });
-    if (!original || original.sender.kind === "agent") return null;
+    if (!original || original.sender.kind === "agent" || !(await isOwnerUserId(original.senderUserId))) return null;
     return { userId: original.senderUserId, url: `/agents/${target.agentSlug}/chat` };
   }
 
@@ -43,7 +44,12 @@ async function resolveRecipient(target: PmChannelReplyTarget): Promise<Recipient
       project: { select: { slug: true } },
     },
   });
-  if (!original || original.sender.kind === "agent" || !original.project?.slug) return null;
+  if (
+    !original ||
+    original.sender.kind === "agent" ||
+    !original.project?.slug ||
+    !(await isOwnerUserId(original.senderUserId))
+  ) return null;
 
   if (target.kind === "epic-chat" && original.epicId) {
     return { userId: original.senderUserId, url: `/projects/${original.project.slug}/epics/${original.epicId}` };

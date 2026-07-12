@@ -73,6 +73,9 @@ export async function POST(
     where: { status: next },
     _max: { rank: true },
   });
+  // Bind the downstream legacy envelope to its durable workflow action. The
+  // consumer rechecks this id before honoring an agent-origin event.
+  const pmEventId = randomUUID();
   await db.$transaction([
     db.task.update({
       where: { id: task.id },
@@ -88,7 +91,7 @@ export async function POST(
         taskId: task.id,
         userId,
         kind: "task.ack.auto",
-        payload: JSON.stringify({ from: task.status, to: next }),
+        payload: JSON.stringify({ from: task.status, to: next, pmEventId }),
       },
     }),
   ]);
@@ -103,7 +106,7 @@ export async function POST(
   await notifyDispatch(
     buildTaskAckReady(
       {
-        id: randomUUID(),
+        id: pmEventId,
         occurredAt: new Date().toISOString(),
         actor: { id: userId, kind },
         task: {

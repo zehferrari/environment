@@ -8,6 +8,7 @@ import {
   accessibleTaskWhere,
   requireViewer,
 } from "@/lib/auth/permissions";
+import { getActorVisibility } from "@/lib/users/actor-visibility";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,7 @@ export default async function ProjectLibraryPage({
   params: Promise<{ slug: string }>;
 }) {
   const viewer = await requireViewer();
+  const actorVisibility = await getActorVisibility(viewer);
   const { slug } = await params;
   const project = await db.project.findFirst({
     where: accessibleProjectWhere(viewer, { slug, deletedAt: null }),
@@ -38,7 +40,7 @@ export default async function ProjectLibraryPage({
     },
     orderBy: { createdAt: "desc" },
     include: {
-      uploader: { select: { username: true } },
+      uploader: { select: { username: true, kind: true } },
       task: { select: { id: true, title: true, deletedAt: true } },
       epic: { select: { id: true, title: true, deletedAt: true } },
     },
@@ -72,6 +74,9 @@ export default async function ProjectLibraryPage({
                 : `/projects/${slug}`;
             return {
               ...a,
+              uploader: !viewer.isOwner && a.uploader?.kind === "agent"
+                ? (actorVisibility.owner ? { username: actorVisibility.owner.username } : null)
+                : a.uploader,
               contextLabel,
               contextHref,
             };

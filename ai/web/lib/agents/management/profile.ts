@@ -92,15 +92,15 @@ export async function readAgentProfile(agent: string): Promise<{ agent: string; 
   return { agent, files: await Promise.all(PROFILE_FILES.map((file) => readProfileFile(agent, file))) };
 }
 
-export async function canEditProfile(actor: { name?: string | null; kind?: string | null } | undefined, agent: string): Promise<boolean> {
+export async function canEditProfile(actor: { name?: string | null; kind?: string | null } | undefined, _agent: string): Promise<boolean> {
   if (!actor?.name) return false;
   const owner = await db.user.findUnique({
     where: { username: actor.name },
     select: { kind: true, status: true, isOwner: true },
   });
-  if (owner?.kind === "human" && owner.status === "active" && owner.isOwner) return true;
-  if (actor.kind === "agent" && actor.name === agent) return true;
-  return false;
+  // Agent-management APIs are owner-only. Browser-authenticated agents use
+  // scoped runtime APIs rather than this administrative surface.
+  return owner?.kind === "human" && owner.status === "active" && owner.isOwner;
 }
 
 function unifiedDiff(oldText: string, newText: string, file: string): string {

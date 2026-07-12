@@ -41,7 +41,7 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
   const showingArchived = params?.archived === "1";
   const viewer = await requireViewer();
   const visibleProjects = accessibleProjectWhere(viewer);
-  const [workspaces, archivedCount] = await Promise.all([
+  const [workspaces, archivedCount, activeWorkspaces] = await Promise.all([
     db.workspace.findMany({
       where: {
         AND: [
@@ -56,9 +56,14 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
       },
     }),
     db.workspace.count({ where: { AND: [{ archivedAt: { not: null } }, workspaceAccessWhere(viewer)] } }),
+    db.workspace.findMany({
+      where: { AND: [{ archivedAt: null }, workspaceAccessWhere(viewer)] },
+      select: { slug: true },
+      take: 2,
+    }),
   ]);
-  if (!viewer.isOwner && !showingArchived && workspaces.length === 1) {
-    redirect(`/workspaces/${workspaces[0].slug}`);
+  if (!showingArchived && activeWorkspaces.length === 1) {
+    redirect(`/workspaces/${activeWorkspaces[0].slug}`);
   }
 
   return (

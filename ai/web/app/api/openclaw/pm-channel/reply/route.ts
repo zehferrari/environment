@@ -28,6 +28,7 @@ import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache
 import { revalidateEpicReplyScope } from "@/lib/epics/cache";
 import { tryCompleteTaskFromReviewerComment } from "@/lib/tasks/review-automation";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import { isAuthorizedPmChannelCallbackTarget } from "@/lib/agents/pm-channel/target-authorization";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -501,6 +502,10 @@ export async function POST(req: NextRequest) {
 
   if (await pmChannelTargetIsCanceled(target)) {
     return NextResponse.json({ ok: true, canceled: true, ignored: true });
+  }
+
+  if (!(await isAuthorizedPmChannelCallbackTarget(target))) {
+    return NextResponse.json({ error: "Reply target is not authorized" }, { status: 403 });
   }
 
   const rateLimit = checkPmChannelCallbackRateLimit({

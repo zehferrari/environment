@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
+import PrivateToggle from "@/components/private-toggle";
 
 type Principal = {
   id: string;
@@ -20,13 +21,13 @@ type Principal = {
 export default function NewEpicFab({
   projectSlug,
   principals,
-  canAssignAgents,
+  canManageAssignments,
   canSetPrivate,
   createEpicAction,
 }: {
   projectSlug: string;
   principals: Principal[];
-  canAssignAgents: boolean;
+  canManageAssignments: boolean;
   canSetPrivate: boolean;
   createEpicAction: (formData: FormData) => Promise<void>;
 }) {
@@ -90,10 +91,7 @@ export default function NewEpicFab({
               className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body leading-relaxed outline-none focus:border-accent"
             />
             {canSetPrivate ? (
-              <label className="flex items-center justify-between gap-3 rounded-lg border border-line bg-bg px-3 py-2 text-caption">
-                <span>Private</span>
-                <input type="checkbox" name="private" className="h-4 w-4 accent-accent" />
-              </label>
+              <PrivateToggle />
             ) : null}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label className="text-caption">
@@ -120,7 +118,7 @@ export default function NewEpicFab({
               </label>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {canAssignAgents ? (
+              {canManageAssignments ? (
                 <label className="text-caption">
                   <span className="mb-1 block text-text-muted">Worker pool</span>
                   <AvatarCombobox
@@ -134,18 +132,20 @@ export default function NewEpicFab({
                   />
                 </label>
               ) : null}
-              <label className="text-caption">
-                <span className="mb-1 block text-text-muted">Acting manager</span>
-                <AvatarCombobox
-                  formId="newEpicForm"
-                  name="actingManagerId"
-                  defaultValue=""
-                  options={principalOptions}
-                  emptyLabel="No acting manager"
-                  ariaLabel="Acting manager"
-                />
-              </label>
-              {canAssignAgents ? (
+              {canManageAssignments ? (
+                <label className="text-caption">
+                  <span className="mb-1 block text-text-muted">Acting manager</span>
+                  <AvatarCombobox
+                    formId="newEpicForm"
+                    name="actingManagerId"
+                    defaultValue=""
+                    options={principalOptions}
+                    emptyLabel="No acting manager"
+                    ariaLabel="Acting manager"
+                  />
+                </label>
+              ) : null}
+              {canManageAssignments ? (
                 <label className="text-caption">
                   <span className="mb-1 block text-text-muted">Deploy reviewer</span>
                   <AvatarCombobox

@@ -50,13 +50,15 @@ export async function isOwnerUserId(userId: string | null | undefined): Promise<
 }
 
 export function hasGlobalProjectAccess(viewer: Viewer): boolean {
-  return viewer.isOwner || viewer.kind === "agent";
+  return viewer.isOwner;
 }
 
 export function projectAccessWhere(viewer: Viewer): Prisma.ProjectWhereInput {
-  return hasGlobalProjectAccess(viewer)
-    ? {}
-    : { members: { some: { userId: viewer.id } } };
+  if (viewer.isOwner) return {};
+  // Browser-authenticated agent accounts are never PM viewers. Native agent
+  // workflows use their scoped bearer/token APIs instead of this session path.
+  if (viewer.kind === "agent") return { id: { equals: "__no-browser-agent-access__" } };
+  return { members: { some: { userId: viewer.id } } };
 }
 
 export function accessibleProjectWhere(
@@ -68,8 +70,8 @@ export function accessibleProjectWhere(
 }
 
 /**
- * Browser-visible Epics. Agent sessions retain access so the native workflow
- * can continue operating on private work without exposing it to human members.
+ * Private Epics are owner-only. This applies to agent contexts as well as
+ * human member sessions so private work cannot be inferred through workflows.
  */
 export function accessibleEpicWhere(
   viewer: Viewer,
@@ -78,7 +80,7 @@ export function accessibleEpicWhere(
   const access = projectAccessWhere(viewer);
   const clauses: Prisma.EpicWhereInput[] = [where];
   if (Object.keys(access).length > 0) clauses.push({ project: access });
-  if (!viewer.isOwner && viewer.kind === "human") clauses.push({ private: false });
+  if (!viewer.isOwner) clauses.push({ private: false });
   return clauses.length === 1 ? where : { AND: clauses };
 }
 
@@ -93,12 +95,17 @@ export function accessibleTaskWhere(
   const access = projectAccessWhere(viewer);
   const clauses: Prisma.TaskWhereInput[] = [where];
   if (Object.keys(access).length > 0) clauses.push({ project: access });
-  if (!viewer.isOwner && viewer.kind === "human") {
+  if (!viewer.isOwner) {
     clauses.push({
       private: false,
       AND: [
         { OR: [{ epicId: null }, { epic: { private: false } }] },
-        { OR: [{ parentTaskId: null }, { parent: { private: false } }] },
+        {
+          OR: [
+            { parentTaskId: null },
+            { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
+          ],
+        },
       ],
     });
   }
@@ -109,7 +116,10 @@ export async function accessibleActivityWhere(
   viewer: Viewer,
   where: Prisma.ActivityLogWhereInput = {},
 ): Promise<Prisma.ActivityLogWhereInput> {
-  if (hasGlobalProjectAccess(viewer)) return where;
+  if (viewer.isOwner) return where;
+  if (viewer.kind === "agent") {
+    return { AND: [where, { id: { in: [] } }] };
+  }
 
   const visibleEpicIds = (await db.epic.findMany({
     where: accessibleEpicWhere(viewer),
@@ -148,9 +158,18 @@ export async function accessibleActivityWhere(
 
 export function workspaceAccessWhere(viewer: Viewer): Prisma.WorkspaceWhereInput {
   if (hasGlobalProjectAccess(viewer)) return {};
+  if (viewer.kind === "agent") {
+    return { id: { equals: "__no-browser-agent-workspace-access__" } };
+  }
   return {
     projects: {
-      some: { project: { members: { some: { userId: viewer.id } } } },
+      some: {
+        project: {
+          deletedAt: null,
+          archivedAt: null,
+          members: { some: { userId: viewer.id } },
+        },
+      },
     },
   };
 }
@@ -206,7 +225,7 @@ export async function assertAgentAssignmentAllowed(
   viewer: Viewer,
   targetUserIds: Array<string | null | undefined>,
 ): Promise<void> {
-  if (viewer.isOwner || viewer.kind === "agent") return;
+  if (viewer.isOwner) return;
   const ids = [...new Set(targetUserIds.filter((id): id is string => Boolean(id)))];
   if (ids.length === 0) return;
   const agent = await db.user.findFirst({

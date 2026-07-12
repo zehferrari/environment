@@ -1,6 +1,11 @@
 import { auth, signOut } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { hashPassword, verifyPassword } from "@/lib/auth/password";
+import {
+  MAX_PASSWORD_LENGTH,
+  hashPassword,
+  passwordLengthError,
+  verifyPassword,
+} from "@/lib/auth/password";
 import { redirect } from "next/navigation";
 
 async function rotateAction(formData: FormData) {
@@ -12,7 +17,10 @@ async function rotateAction(formData: FormData) {
   const next = String(formData.get("next") ?? "");
   const confirm = String(formData.get("confirm") ?? "");
 
-  if (next.length < 12) {
+  if (current.length > MAX_PASSWORD_LENGTH || passwordLengthError(next) === "long" || confirm.length > MAX_PASSWORD_LENGTH) {
+    redirect("/rotate-password?error=long");
+  }
+  if (passwordLengthError(next) === "short") {
     redirect("/rotate-password?error=short");
   }
   if (next !== confirm) {
@@ -52,6 +60,7 @@ export default async function RotatePasswordPage({
 
   const errors: Record<string, string> = {
     short: "Password must be at least 12 characters.",
+    long: `Password must be ${MAX_PASSWORD_LENGTH} characters or fewer.`,
     mismatch: "New password and confirmation do not match.",
     wrongcurrent: "Current password is incorrect.",
   };
@@ -76,6 +85,7 @@ export default async function RotatePasswordPage({
           name="current"
           type="password"
           required
+          maxLength={MAX_PASSWORD_LENGTH}
           autoComplete="current-password"
           className="w-full rounded-lg border border-line bg-panel px-3 py-2 mb-3 outline-none focus:border-accent"
         />
@@ -86,6 +96,7 @@ export default async function RotatePasswordPage({
           type="password"
           required
           minLength={12}
+          maxLength={MAX_PASSWORD_LENGTH}
           autoComplete="new-password"
           className="w-full rounded-lg border border-line bg-panel px-3 py-2 mb-3 outline-none focus:border-accent"
         />
@@ -96,6 +107,7 @@ export default async function RotatePasswordPage({
           type="password"
           required
           minLength={12}
+          maxLength={MAX_PASSWORD_LENGTH}
           autoComplete="new-password"
           className="w-full rounded-lg border border-line bg-panel px-3 py-2 mb-4 outline-none focus:border-accent"
         />

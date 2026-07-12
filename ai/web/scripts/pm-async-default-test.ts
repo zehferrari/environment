@@ -41,7 +41,9 @@ async function main() {
     sessionKey: `test:${nonce}`,
     kind: "direct" as const,
     text: "hello",
-    actor: { id: "human-test", kind: "human" as const },
+    // This test exercises the internal retry path, which is agent-originated
+    // rather than a browser human turn subject to owner revalidation.
+    actor: { id: "internal-test-agent", kind: "agent" as const },
     replyTarget: target,
   };
 

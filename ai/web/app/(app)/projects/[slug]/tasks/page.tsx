@@ -132,12 +132,15 @@ export default async function ProjectTasksPage({
   if (!project) notFound();
 
   const view = single(sp.view) === "archive" ? "archive" : "board";
-  const reporterIds = multi(sp.reporterId);
-  const assigneeIds = multi(sp.assigneeId);
-  const reviewerIds = multi(sp.reviewerId);
+  const reporterIds = viewer.isOwner ? multi(sp.reporterId) : [];
+  const assigneeIds = viewer.isOwner ? multi(sp.assigneeId) : [];
+  const reviewerIds = viewer.isOwner ? multi(sp.reviewerId) : [];
   const status = single(sp.status) ?? "";
   const pageSize = parsePageSize(sp.pageSize);
   const take = pageSize === "all" ? undefined : Number(pageSize);
+  const taskGridClass = viewer.isOwner
+    ? "grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 xl:min-w-0"
+    : "grid min-w-[48rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_5.5rem_5.5rem_5.5rem] items-center gap-3 xl:min-w-0";
 
   const where = accessibleTaskWhere(viewer, {
     projectId: project.id,
@@ -151,7 +154,7 @@ export default async function ProjectTasksPage({
   });
 
   const [principals, tasks, totalCount, archivedCount, busyAgentSlugs, actorVisibility] = await Promise.all([
-    listAssignablePrincipals(viewer),
+    viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
     db.task.findMany({
       where,
       orderBy: { updatedAt: "desc" },
@@ -182,7 +185,7 @@ export default async function ProjectTasksPage({
     getActorVisibility(viewer),
   ]);
   const taskIds = tasks.map((task) => task.id);
-  const activityRows = taskIds.length > 0
+  const activityRows = viewer.isOwner && taskIds.length > 0
     ? await db.activityLog.findMany({
         where: { taskId: { in: taskIds } },
         orderBy: { createdAt: "desc" },
@@ -216,7 +219,7 @@ export default async function ProjectTasksPage({
     return (
       <li
         key={task.id}
-        className={`grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2 text-body transition hover:bg-panel xl:min-w-0 ${statusRowClass(task.status)}`}
+        className={`${taskGridClass} px-3 py-2 text-body transition hover:bg-panel ${statusRowClass(task.status)}`}
       >
         <Link href={`/projects/${slug}/tasks/${task.id}`} className="min-w-0 hover:underline">
           <span className="mb-0.5 flex min-w-0 items-center gap-2">
@@ -238,13 +241,13 @@ export default async function ProjectTasksPage({
         </Link>
         <StatusPill status={task.status} />
         {canShowDeploymentForTask(task) ? <DeploymentIndicator status={deploymentStatus} /> : <span aria-hidden="true" />}
-        <PersonCell actor={serializeActor(task.reporter, actorVisibility)} emptyLabel="none" />
-        <PersonCell
+        {viewer.isOwner ? <PersonCell actor={serializeActor(task.reporter, actorVisibility)} emptyLabel="none" /> : null}
+        {viewer.isOwner ? <PersonCell
           actor={serializeActor(task.assignee, actorVisibility)}
           emptyLabel="unassigned"
           busy={task.status === "In Progress" && Boolean(task.assignee?.agent?.slug && busyAgentSlugs.has(task.assignee.agent.slug))}
-        />
-        <PersonCell actor={serializeActor(task.actingManager, actorVisibility)} emptyLabel="none" />
+        /> : null}
+        {viewer.isOwner ? <PersonCell actor={serializeActor(task.actingManager, actorVisibility)} emptyLabel="none" /> : null}
         <ElapsedCell
           status={task.status}
           createdAt={task.createdAt}
@@ -254,12 +257,12 @@ export default async function ProjectTasksPage({
         />
         <DateActorCell
           iso={task.createdAt.toISOString()}
-          actor={activityActors.createdBy.get(task.id) ?? serializeActor(task.reporter, actorVisibility)}
+          actor={activityActors.createdBy.get(task.id) ?? (viewer.isOwner ? serializeActor(task.reporter, actorVisibility) : null)}
           dateOnly
         />
         <DateActorCell
           iso={task.updatedAt.toISOString()}
-          actor={activityActors.updatedBy.get(task.id) ?? activityActors.createdBy.get(task.id) ?? serializeActor(task.reporter, actorVisibility)}
+          actor={activityActors.updatedBy.get(task.id) ?? activityActors.createdBy.get(task.id) ?? (viewer.isOwner ? serializeActor(task.reporter, actorVisibility) : null)}
         />
       </li>
     );
@@ -303,13 +306,13 @@ export default async function ProjectTasksPage({
   }
 
   const TASK_HEADER_GRID = (
-    <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 border-b border-line px-3 py-2 text-nano font-semibold uppercase tracking-wider text-text-muted xl:min-w-0">
+    <div className={`${taskGridClass} border-b border-line px-3 py-2 text-nano font-semibold uppercase tracking-wider text-text-muted`}>
       <span>Task</span>
       <span>Status</span>
       <span>Deploy</span>
-      <span>Reporter</span>
-      <span>Assignee</span>
-      <span>Reviewer</span>
+      {viewer.isOwner ? <span>Reporter</span> : null}
+      {viewer.isOwner ? <span>Assignee</span> : null}
+      {viewer.isOwner ? <span>Reviewer</span> : null}
       <span className="text-right">Elapsed</span>
       <span className="text-right">Created At</span>
       <span className="text-right">Updated</span>
@@ -353,10 +356,10 @@ export default async function ProjectTasksPage({
 
       <form
         id="taskFilters"
-        className="grid gap-3 rounded-card border border-line bg-panel p-3 text-body md:grid-cols-3 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto]"
+        className={`grid gap-3 rounded-card border border-line bg-panel p-3 text-body ${viewer.isOwner ? "md:grid-cols-3 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto]" : "md:grid-cols-2 xl:grid-cols-[repeat(2,minmax(0,1fr))_auto]"}`}
       >
         <input type="hidden" name="view" value={view} />
-        <FilterField label="Reporter">
+        {viewer.isOwner ? <FilterField label="Reporter">
           <AvatarCombobox
             formId="taskFilters"
             name="reporterId"
@@ -366,8 +369,8 @@ export default async function ProjectTasksPage({
             emptyLabel="All reporters"
             ariaLabel="Reporter filter"
           />
-        </FilterField>
-        <FilterField label="Assignee">
+        </FilterField> : null}
+        {viewer.isOwner ? <FilterField label="Assignee">
           <AvatarCombobox
             formId="taskFilters"
             name="assigneeId"
@@ -377,8 +380,8 @@ export default async function ProjectTasksPage({
             emptyLabel="All assignees"
             ariaLabel="Assignee filter"
           />
-        </FilterField>
-        <FilterField label="Reviewer">
+        </FilterField> : null}
+        {viewer.isOwner ? <FilterField label="Reviewer">
           <AvatarCombobox
             formId="taskFilters"
             name="reviewerId"
@@ -388,7 +391,7 @@ export default async function ProjectTasksPage({
             emptyLabel="All reviewers"
             ariaLabel="Reviewer filter"
           />
-        </FilterField>
+        </FilterField> : null}
         <FilterSelect label="Status" name="status" value={status}>
           <option value="">All statuses</option>
           {COLUMN_IDS.map((column) => (
@@ -445,7 +448,7 @@ export default async function ProjectTasksPage({
               className="group overflow-hidden rounded-lg border border-line bg-panel-soft"
             >
               <summary className="cursor-pointer list-none border-b border-line bg-panel [&::-webkit-details-marker]:hidden">
-                <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1.6fr)_6rem_4rem_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_minmax(7rem,0.9fr)_5.5rem_5.5rem_5.5rem] items-center gap-3 px-3 py-2.5 text-body xl:min-w-0">
+                <div className={`${taskGridClass} px-3 py-2.5 text-body`}>
                   <span className="flex min-w-0 items-center gap-2 font-semibold">
                     <ChevronIcon />
                     <span className="truncate">{group.title}</span>
@@ -465,13 +468,13 @@ export default async function ProjectTasksPage({
                   ) : (
                     <span aria-hidden="true" />
                   )}
-                  <PersonCell actor={serializeActor(group.epic?.reporter ?? null, actorVisibility)} emptyLabel="—" />
-                  {/* Assignee column intentionally blank at the epic level. */}
-                  <span aria-hidden="true" />
-                  <PersonCell
+                  {viewer.isOwner ? <PersonCell actor={serializeActor(group.epic?.reporter ?? null, actorVisibility)} emptyLabel="—" /> : null}
+                  {/* Assignee column intentionally blank at the Epic level. */}
+                  {viewer.isOwner ? <span aria-hidden="true" /> : null}
+                  {viewer.isOwner ? <PersonCell
                     actor={serializeActor(group.epic?.actingManager ?? group.epic?.reporter ?? null, actorVisibility)}
                     emptyLabel="—"
-                  />
+                  /> : null}
                   <span className="flex items-center justify-end gap-1.5 text-caption tabular-nums text-text-muted">
                     <TimerIcon />
                     <span>{formatElapsed(elapsedMs)}</span>

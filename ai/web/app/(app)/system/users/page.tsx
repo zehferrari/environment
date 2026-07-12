@@ -8,10 +8,12 @@ import {
   updateHumanProfile,
   updateHumanProjectAccess,
 } from "@/lib/users/actions";
+import { getHumanUserRemovalStatus } from "@/lib/users/removal";
 import {
   absolutePublicUrl,
   publicOriginFromHeaders,
 } from "@/lib/http/public-origin";
+import UserLifecycleControls from "./user-lifecycle-controls";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +46,11 @@ export default async function SystemUsersPage({
       select: { id: true, name: true, slug: true, archivedAt: true },
     }),
   ]);
+  const removalStatuses = new Map(
+    await Promise.all(
+      users.map(async (user) => [user.id, await getHumanUserRemovalStatus(user.id)] as const),
+    ),
+  );
 
   const invitePath = invite
     ? `/set-password?token=${encodeURIComponent(invite)}`
@@ -138,6 +145,8 @@ export default async function SystemUsersPage({
         </div>
         {users.map((user) => {
           const grantedIds = new Set(user.projectMembers.map((membership) => membership.projectId));
+          const removalStatus = removalStatuses.get(user.id);
+          const protectedAccount = user.isOwner || user.id === viewer.id;
           return (
             <article key={user.id} className="rounded-panel border border-line bg-panel p-card-lg shadow-sm">
               <div className="flex flex-wrap items-start gap-card">
@@ -153,7 +162,7 @@ export default async function SystemUsersPage({
                   <div className="flex flex-wrap items-center gap-2">
                     <h3 className="text-base font-semibold tracking-tight">{user.name ?? user.username}</h3>
                     {user.isOwner ? <Badge tone="owner">Owner</Badge> : null}
-                    <Badge tone={user.status === "active" ? "active" : "pending"}>{user.status}</Badge>
+                    <Badge tone={user.status === "active" ? "active" : user.status === "deactivated" ? "disabled" : "pending"}>{user.status}</Badge>
                   </div>
                   <p className="mt-1 truncate text-caption text-text-muted">@{user.username} · {user.email}</p>
                 </div>
@@ -199,6 +208,15 @@ export default async function SystemUsersPage({
                   </form>
                 )}
               </div>
+
+              <UserLifecycleControls
+                userId={user.id}
+                username={user.username}
+                status={user.status}
+                protectedAccount={protectedAccount}
+                removable={Boolean(removalStatus?.removable) && !protectedAccount}
+                removalBlockers={removalStatus?.blockers ?? []}
+              />
             </article>
           );
         })}
@@ -247,11 +265,13 @@ function ProjectGrantGrid({
   );
 }
 
-function Badge({ children, tone }: { children: React.ReactNode; tone: "owner" | "active" | "pending" }) {
+function Badge({ children, tone }: { children: React.ReactNode; tone: "owner" | "active" | "pending" | "disabled" }) {
   const className = tone === "owner"
     ? "border-accent/40 bg-accent-soft text-accent"
     : tone === "active"
       ? "border-ok/40 bg-ok/10 text-ok"
-      : "border-amber-500/40 bg-amber-500/10 text-amber-700";
+      : tone === "disabled"
+        ? "border-crit/40 bg-crit/10 text-crit"
+        : "border-amber-500/40 bg-amber-500/10 text-amber-700";
   return <span className={`rounded-full border px-2 py-0.5 text-nano font-semibold uppercase tracking-wider ${className}`}>{children}</span>;
 }

@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import VisualCode from "@/components/visual-code";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { requireViewer } from "@/lib/auth/permissions";
 import {
   canReadRepository,
   canWriteRepositoryFile,
@@ -37,6 +37,8 @@ export default async function ProjectCodePage({
     params,
     searchParams ?? Promise.resolve({} as CodeSearchParams),
   ]);
+  const viewer = await requireViewer();
+  if (!viewer.isOwner) notFound();
   const project = await db.project.findUnique({
     where: { slug },
     select: {
@@ -49,8 +51,7 @@ export default async function ProjectCodePage({
   });
   if (!project || project.deletedAt || !project.repositoryPath) notFound();
 
-  const session = await auth();
-  const canWriteSession = Boolean(session?.user?.id && session.user.kind !== "agent");
+  const canWriteSession = viewer.isOwner;
   const sources = await listCodeSources(project.repositoryPath);
   const source = chooseCodeSource(sources, sp.source);
   if (!source) notFound();

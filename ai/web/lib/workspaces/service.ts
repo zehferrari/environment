@@ -129,8 +129,71 @@ const workspaceInclude = {
 
 type WorkspaceWithRelations = Prisma.WorkspaceGetPayload<{ include: typeof workspaceInclude }>;
 
-export function serializeWorkspace(workspace: WorkspaceWithRelations, includeAgents = true) {
-  return {
+type WorkspaceProjectSummary = {
+  id: string;
+  slug: string;
+  name: string;
+  archivedAt: string | null;
+  deletedAt: string | null;
+};
+
+type WorkspaceAgentSummary = {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
+  deactivatedAt: string | null;
+};
+
+type WorkspaceDefaultsSummary = {
+  defaultGitUserName: string | null;
+  defaultGitUserEmail: string | null;
+  doneTtlDays: number | null;
+  deploymentProvider: string | null;
+  deploymentProductionBranch: string | null;
+  deploymentPrTargetBranch: string | null;
+  deploymentMode: string | null;
+  deploymentOnMerge: string | null;
+  deploymentPipelineName: string | null;
+  deploymentHost: string | null;
+  deploymentEnvironment: string | null;
+  deploymentBitbucketWorkspace: string | null;
+  deploymentBitbucketRepoSlug: string | null;
+  integrationDefaults: string | null;
+};
+
+type SerializedWorkspaceBase = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  type: string;
+  archivedAt: string | null;
+  logo: {
+    url: string;
+    mimeType: string | null;
+    sizeBytes: number | null;
+    updatedAt: string | null;
+  } | null;
+  projects: WorkspaceProjectSummary[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SerializedWorkspace = SerializedWorkspaceBase & {
+  agentPool: WorkspaceAgentSummary[];
+  defaults: WorkspaceDefaultsSummary;
+};
+
+export type MemberSerializedWorkspace = SerializedWorkspaceBase & {
+  agentPool: [];
+};
+
+export function serializeWorkspace(workspace: WorkspaceWithRelations, includeOwnerDetails?: true): SerializedWorkspace;
+export function serializeWorkspace(workspace: WorkspaceWithRelations, includeOwnerDetails: false): MemberSerializedWorkspace;
+export function serializeWorkspace(workspace: WorkspaceWithRelations, includeOwnerDetails: boolean): SerializedWorkspace | MemberSerializedWorkspace;
+export function serializeWorkspace(workspace: WorkspaceWithRelations, includeOwnerDetails = true): SerializedWorkspace | MemberSerializedWorkspace {
+  const base: SerializedWorkspaceBase = {
     id: workspace.id,
     slug: workspace.slug,
     name: workspace.name,
@@ -152,13 +215,20 @@ export function serializeWorkspace(workspace: WorkspaceWithRelations, includeAge
       archivedAt: project.archivedAt?.toISOString() ?? null,
       deletedAt: project.deletedAt?.toISOString() ?? null,
     })),
-    agentPool: includeAgents ? workspace.agentPool.map(({ agent }) => ({
+    createdAt: workspace.createdAt.toISOString(),
+    updatedAt: workspace.updatedAt.toISOString(),
+  };
+  if (!includeOwnerDetails) return { ...base, agentPool: [] };
+
+  return {
+    ...base,
+    agentPool: workspace.agentPool.map(({ agent }) => ({
       id: agent.id,
       slug: agent.slug,
       name: agent.name,
       role: agent.role,
       deactivatedAt: agent.deactivatedAt?.toISOString() ?? null,
-    })) : [],
+    })),
     defaults: {
       defaultGitUserName: workspace.defaultGitUserName,
       defaultGitUserEmail: workspace.defaultGitUserEmail,
@@ -175,8 +245,6 @@ export function serializeWorkspace(workspace: WorkspaceWithRelations, includeAge
       deploymentBitbucketRepoSlug: workspace.deploymentBitbucketRepoSlug,
       integrationDefaults: workspace.integrationDefaults,
     },
-    createdAt: workspace.createdAt.toISOString(),
-    updatedAt: workspace.updatedAt.toISOString(),
   };
 }
 
@@ -190,7 +258,12 @@ export async function selectableWorkspaceAgents() {
 
 export async function listWorkspaces(includeArchived = false, viewer?: Viewer) {
   const access = viewer ? workspaceAccessWhere(viewer) : {};
-  const projectAccess = viewer ? accessibleProjectWhere(viewer) : {};
+  const projectAccess = viewer
+    ? accessibleProjectWhere(
+        viewer,
+        viewer.isOwner ? {} : { archivedAt: null, deletedAt: null },
+      )
+    : {};
   const rows = await db.workspace.findMany({
     where: { AND: [includeArchived ? {} : { archivedAt: null }, access] },
     include: {
@@ -208,7 +281,12 @@ export async function listWorkspaces(includeArchived = false, viewer?: Viewer) {
 
 export async function getWorkspaceBySlug(slug: string, viewer?: Viewer) {
   const access = viewer ? workspaceAccessWhere(viewer) : {};
-  const projectAccess = viewer ? accessibleProjectWhere(viewer) : {};
+  const projectAccess = viewer
+    ? accessibleProjectWhere(
+        viewer,
+        viewer.isOwner ? {} : { archivedAt: null, deletedAt: null },
+      )
+    : {};
   return db.workspace.findFirst({
     where: { AND: [{ slug }, access] },
     include: {

@@ -3,7 +3,7 @@ import Credentials from "next-auth/providers/credentials";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { verifyPassword } from "@/lib/auth/password";
+import { MAX_PASSWORD_LENGTH, verifyPassword } from "@/lib/auth/password";
 import {
   checkLoginRateLimit,
   clientIpFromRequest,
@@ -11,7 +11,7 @@ import {
 
 const CredentialsSchema = z.object({
   username: z.string().min(1).max(64),
-  password: z.string().min(1).max(256),
+  password: z.string().min(1).max(MAX_PASSWORD_LENGTH),
 });
 
 export const { handlers, auth, signIn, signOut } = NextAuth({

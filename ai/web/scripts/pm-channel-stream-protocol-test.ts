@@ -57,14 +57,59 @@ assert.equal(state.lifecycleStatus, "working", "legacy status events can carry t
 assert.equal(state.runStatus, "accepted");
 
 async function assertCallbackProtocolBoundary() {
-  const nonce = `stream-protocol-${Date.now()}`;
+  const agentSlug = `stream-${Date.now().toString(36)}`;
+  const agent = await db.agent.create({
+    data: { slug: agentSlug, name: "Stream Protocol Agent", role: "coding" },
+  });
+  const agentUser = await db.user.create({
+    data: {
+      username: agentSlug,
+      email: `${agentSlug}@stream-test.local`,
+      kind: "agent",
+      agentId: agent.id,
+      status: "active",
+    },
+  });
+  const owner = await db.user.create({
+    data: {
+      username: `${agentSlug}-owner`,
+      email: `${agentSlug}-owner@stream-test.local`,
+      kind: "human",
+      status: "active",
+      isOwner: true,
+      mustRotatePassword: false,
+    },
+  });
+  const original = await db.directAgentChatMessage.create({
+    data: { agentSlug, senderUserId: owner.id, body: "stream protocol test" },
+    select: { id: true },
+  });
   const callbackTarget = {
     kind: "direct" as const,
-    agentSlug: "proto-agent",
-    messageId: nonce,
+    agentSlug,
+    messageId: original.id,
   };
+  const forged = await applyPmChannelStreamCallback({
+    payload: {
+      target: { kind: "direct", agentSlug, messageId: "unissued-stream-turn" },
+      event: "status",
+    },
+    rateLimit: false,
+    transportMode: "http",
+  });
+  assert.equal(forged.status, 403, "stream callback must reject a target without a dispatched run");
   const targetKey = pmChannelRunTargetKey(callbackTarget);
-  await db.pmChannelRun.deleteMany({ where: { targetKey } });
+  await db.pmChannelRun.create({
+    data: {
+      targetKey,
+      kind: "direct",
+      agentSlug,
+      messageId: original.id,
+      status: "accepted",
+      acceptedAt: new Date(),
+      lastEventAt: new Date(),
+    },
+  });
 
   const post = (payload: Record<string, unknown>) => applyPmChannelStreamCallback({
     payload: { target: callbackTarget, ...payload },
@@ -117,6 +162,10 @@ async function assertCallbackProtocolBoundary() {
   assert.equal(finalState?.text, "hello", "callback-persisted token events replay as streamed text");
 
   await db.pmChannelRun.deleteMany({ where: { targetKey } });
+  await db.directAgentChatMessage.deleteMany({ where: { agentSlug } });
+  await db.user.delete({ where: { id: agentUser.id } });
+  await db.user.delete({ where: { id: owner.id } });
+  await db.agent.delete({ where: { id: agent.id } });
 }
 
 assertCallbackProtocolBoundary()

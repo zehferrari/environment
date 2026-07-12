@@ -22,6 +22,9 @@ export async function GET(
   try { viewer = await requireViewer(); } catch {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
   }
+  if (!viewer.isOwner) {
+    return NextResponse.json({ error: "not_found" }, { status: 404 });
+  }
 
   const { slug } = await ctx.params;
   const project = await db.project.findFirst({

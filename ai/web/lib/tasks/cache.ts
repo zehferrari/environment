@@ -204,7 +204,7 @@ export function getCachedTaskAttachments(taskId: string) {
     async () => db.attachment.findMany({
       where: { taskId },
       orderBy: { createdAt: "desc" },
-      include: { uploader: { select: { username: true } } },
+      include: { uploader: { select: { username: true, kind: true } } },
     }),
     ["task-attachments", taskId],
     { tags: [taskCacheTag.attachments(taskId)] },

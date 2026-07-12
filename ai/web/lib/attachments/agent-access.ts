@@ -54,6 +54,53 @@ function chatAddressWhere(
   return conditions;
 }
 
+function effectivePublicTaskWhere(taskId: string): Prisma.TaskWhereInput {
+  return {
+    id: taskId,
+    archivedAt: null,
+    deletedAt: null,
+    private: false,
+    AND: [
+      { OR: [{ epicId: null }, { epic: { private: false } }] },
+      {
+        OR: [
+          { parentTaskId: null },
+          { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
+        ],
+      },
+    ],
+  };
+}
+
+function publicEpicChildTaskWhere(epicId: string): Prisma.TaskWhereInput {
+  return {
+    epicId,
+    archivedAt: null,
+    deletedAt: null,
+    private: false,
+    OR: [
+      { parentTaskId: null },
+      { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
+    ],
+  };
+}
+
+async function isEffectivelyPublicTask(taskId: string) {
+  const task = await db.task.findFirst({
+    where: effectivePublicTaskWhere(taskId),
+    select: { id: true },
+  });
+  return Boolean(task);
+}
+
+async function isPublicEpic(epicId: string) {
+  const epic = await db.epic.findFirst({
+    where: { id: epicId, archivedAt: null, deletedAt: null, private: false },
+    select: { id: true },
+  });
+  return Boolean(epic);
+}
+
 async function hasCommentMention(
   scope: { taskId: string } | { epicId: string },
   agent: AgentPrincipal,
@@ -82,7 +129,7 @@ async function hasChatAddress(
 
 async function taskRelationReason(taskId: string, agent: AgentPrincipal) {
   const task = await db.task.findFirst({
-    where: { id: taskId, archivedAt: null, deletedAt: null },
+    where: effectivePublicTaskWhere(taskId),
     select: {
       assigneeId: true,
       actingManagerId: true,
@@ -117,7 +164,7 @@ async function taskMentionReason(taskId: string, agent: AgentPrincipal) {
 
 async function epicRelationReason(epicId: string, agent: AgentPrincipal) {
   const epic = await db.epic.findFirst({
-    where: { id: epicId, archivedAt: null, deletedAt: null },
+    where: { id: epicId, archivedAt: null, deletedAt: null, private: false },
     select: {
       actingManagerId: true,
       workers: { where: { userId: agent.id }, select: { userId: true }, take: 1 },
@@ -129,12 +176,14 @@ async function epicRelationReason(epicId: string, agent: AgentPrincipal) {
 
   const childRoleCount = await db.task.count({
     where: {
-      epicId,
-      archivedAt: null,
-      deletedAt: null,
-      OR: [
-        { assigneeId: agent.id },
-        { actingManagerId: agent.id },
+      AND: [
+        publicEpicChildTaskWhere(epicId),
+        {
+          OR: [
+            { assigneeId: agent.id },
+            { actingManagerId: agent.id },
+          ],
+        },
       ],
     },
   });
@@ -149,7 +198,7 @@ async function epicMentionReason(epicId: string, agent: AgentPrincipal) {
 
   const taskMentionCount = await db.comment.count({
     where: {
-      task: { is: { epicId, archivedAt: null, deletedAt: null } },
+      task: { is: publicEpicChildTaskWhere(epicId) },
       deletedAt: null,
       OR: commentMentionWhere(agent),
     },
@@ -158,7 +207,7 @@ async function epicMentionReason(epicId: string, agent: AgentPrincipal) {
 
   const taskAddressCount = await db.agentChatMessage.count({
     where: {
-      task: { is: { epicId, archivedAt: null, deletedAt: null } },
+      task: { is: publicEpicChildTaskWhere(epicId) },
       deletedAt: null,
       OR: chatAddressWhere(agent),
     },
@@ -202,6 +251,9 @@ export async function checkAgentAttachmentReadAccess(args: {
   };
 
   if (attachment.taskId) {
+    if (!(await isEffectivelyPublicTask(attachment.taskId))) {
+      return { allowed: false, reason: "forbidden" };
+    }
     const relationReason = await taskRelationReason(attachment.taskId, principal);
     if (relationReason) return { allowed: true, reason: relationReason };
     const mentionReason = await taskMentionReason(attachment.taskId, principal);
@@ -209,6 +261,9 @@ export async function checkAgentAttachmentReadAccess(args: {
   }
 
   if (attachment.epicId) {
+    if (!(await isPublicEpic(attachment.epicId))) {
+      return { allowed: false, reason: "forbidden" };
+    }
     const relationReason = await epicRelationReason(attachment.epicId, principal);
     if (relationReason) return { allowed: true, reason: relationReason };
     const mentionReason = await epicMentionReason(attachment.epicId, principal);

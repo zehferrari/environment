@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
+import { requireViewer } from "@/lib/auth/permissions";
 import { MessageTimestamp } from "@/components/message-avatar";
 import GitDiffPanel from "@/components/git-diff-panel";
 import { listRepoBranches, getRepoBranchCommits, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
@@ -30,6 +31,8 @@ export default async function ProjectChangesPage({
   searchParams: Promise<{ branch?: string | string[]; commit?: string | string[]; file?: string | string[] }>;
 }) {
   const [{ slug }, sp] = await Promise.all([params, searchParams]);
+  const viewer = await requireViewer();
+  if (!viewer.isOwner) notFound();
   const project = await db.project.findUnique({
     where: { slug, deletedAt: null },
     select: { repositoryPath: true },

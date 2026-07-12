@@ -22,6 +22,7 @@ import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignTaskAfterPlanApproval } from "@/lib/tasks/reviewer-assignment";
 import { isProtectedBranch, parseProtectedBranches } from "@/lib/projects/protected-branches";
+import { hasAuthorizedTaskAgentOrigin } from "@/lib/agents/owner-origin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -166,6 +167,8 @@ export async function POST(
       targetType: true,
       targetValue: true,
       originCommentId: true,
+      senderUserId: true,
+      sender: { select: { kind: true, status: true } },
     },
   });
   if (!original || original.taskId !== taskId) {
@@ -180,6 +183,15 @@ export async function POST(
   if (!verifyTaskWorkflowToken(messageId, taskId, grantAgentSlug, token)) {
     return NextResponse.json({ error: "Invalid workflow token" }, { status: 403 });
   }
+  if (!(await hasAuthorizedTaskAgentOrigin({
+    taskId,
+    messageId,
+    targetAgentSlug: grantAgentSlug,
+    senderUserId: original.senderUserId,
+    sender: original.sender,
+  }))) {
+    return NextResponse.json({ error: "Workflow grant is no longer authorized" }, { status: 403 });
+  }
 
   const [agent, task] = await Promise.all([
     db.agent.findUnique({
@@ -190,8 +202,20 @@ export async function POST(
         user: { select: { id: true, username: true, status: true } },
       },
     }),
-    db.task.findUnique({
-      where: { id: taskId },
+    db.task.findFirst({
+      where: {
+        id: taskId,
+        private: false,
+        AND: [
+          { OR: [{ epicId: null }, { epic: { private: false } }] },
+          {
+            OR: [
+              { parentTaskId: null },
+              { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
+            ],
+          },
+        ],
+      },
       select: {
         id: true,
         title: true,
@@ -207,7 +231,15 @@ export async function POST(
         workItemKey: true,
         deletedAt: true,
         blockedById: true,
-        blockedBy: { select: { workItemKey: true, status: true } },
+        blockedBy: {
+          select: {
+            workItemKey: true,
+            status: true,
+            private: true,
+            epic: { select: { private: true } },
+            parent: { select: { private: true, epic: { select: { private: true } } } },
+          },
+        },
         project: {
           select: {
             slug: true,
@@ -250,8 +282,12 @@ export async function POST(
     // Hard dependency (ENV-62): can't start while a blocker is still open.
     if (task.blockedById && task.blockedBy && task.blockedBy.status !== "Done") {
       return NextResponse.json({
-        error: `Task is blocked by ${task.blockedBy.workItemKey ?? "another task"}, which must reach Done first.`,
-        blockedBy: task.blockedBy.workItemKey ?? null,
+        error: task.blockedBy.private || task.blockedBy.epic?.private || task.blockedBy.parent?.private || task.blockedBy.parent?.epic?.private
+          ? "Task is blocked by another task, which must reach Done first."
+          : `Task is blocked by ${task.blockedBy.workItemKey ?? "another task"}, which must reach Done first.`,
+        blockedBy: task.blockedBy.private || task.blockedBy.epic?.private || task.blockedBy.parent?.private || task.blockedBy.parent?.epic?.private
+          ? null
+          : task.blockedBy.workItemKey ?? null,
       }, { status: 409 });
     }
     if (task.status === "Review") {

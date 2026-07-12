@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { getViewer } from "@/lib/auth/permissions";
 
 // Serves a human user's uploaded avatar (resized PNG stored on the User
 // row). Auth-gated by middleware — only authenticated sessions can fetch
@@ -10,6 +11,12 @@ export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  // Middleware only verifies the JWT signature. Check the database-backed
+  // viewer as well so a disabled account cannot keep fetching avatars with a
+  // stale token before its browser cookie is cleared.
+  if (!(await getViewer())) {
+    return new NextResponse(null, { status: 401 });
+  }
   const { id } = await params;
   const user = await db.user.findUnique({
     where: { id },

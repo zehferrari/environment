@@ -37,9 +37,9 @@ import {
   actorDisplayName,
   MessageAvatar,
   MessageTimestamp,
-  type MessageActor,
 } from "@/components/message-avatar";
 import DescriptionField from "@/components/description-field";
+import PrivateToggle from "@/components/private-toggle";
 import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import AddEpicTaskFab from "./add-epic-task-fab";
@@ -73,18 +73,6 @@ type ActorRow = {
   avatarUpdatedAt: Date | string | null;
   agent: { slug: string; name: string; avatar: string | null } | null;
 };
-
-function ReadOnlyPrincipal({ label, actor }: { label: string; actor: MessageActor | null }) {
-  return (
-    <div>
-      <div className="mb-1 text-micro font-semibold uppercase tracking-wider text-text-muted">{label}</div>
-      <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 py-1.5 text-caption">
-        {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
-        <span className="truncate">{actor ? actorDisplayName(actor) : "None"}</span>
-      </div>
-    </div>
-  );
-}
 
 const actorSelect = {
   id: true,
@@ -315,6 +303,7 @@ function settledAgentSlugsForMessage(
 
 const DEVELOPMENT_TAB = "Development";
 const EPIC_TABS = ["Description", "Action Plan", "Tasks", "Attachments", "Comments", "Activities", DEVELOPMENT_TAB, "Changes"] as const;
+const OWNER_ONLY_EPIC_TABS = new Set(["Action Plan", "Activities", DEVELOPMENT_TAB, "Changes"]);
 
 function tabParam(tab: string) {
   return tab
@@ -493,7 +482,7 @@ export default async function EpicDetailPage({
       },
       attachments: {
         orderBy: { createdAt: "desc" },
-        include: { uploader: { select: { username: true } } },
+        include: { uploader: { select: { username: true, kind: true } } },
       },
       comments: {
         // Soft-deleted comments (HOMELAB-41 / item 2) stay on the
@@ -520,12 +509,12 @@ export default async function EpicDetailPage({
   });
   if (!epic || epic.project.slug !== slug || epic.deletedAt) notFound();
 
-  const canDeleteComments = viewer.kind !== "agent";
-  if (!viewer.isOwner && selectedTab === "Action Plan") selectedTab = "Description";
-  const epicTabs = EPIC_TABS.filter((name) => viewer.isOwner || name !== "Action Plan");
+  const canDeleteComments = viewer.isOwner;
+  const epicTabs = EPIC_TABS.filter((name) => viewer.isOwner || !OWNER_ONLY_EPIC_TABS.has(name));
+  if (!epicTabs.some((name) => name === selectedTab)) selectedTab = "Description";
   const taskIds = epic.tasks.map((task) => task.id);
   const [principals, recentReplyActivity, allActivity, taskActivityRows, deploymentPullRequests, busyAgentSlugs, actorVisibility, agentUsers] = await Promise.all([
-    listAssignablePrincipals(viewer),
+    viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
     db.activityLog.findMany({
       where: {
         projectId: epic.project.id,
@@ -570,11 +559,13 @@ export default async function EpicDetailPage({
           },
         })
       : Promise.resolve([]),
-    db.deploymentPullRequest.findMany({
-      where: { OR: [{ epicId: epic.id }, ...(taskIds.length ? [{ taskId: { in: taskIds } }] : [])] },
-      orderBy: [{ taskId: "asc" }, { updatedAt: "desc" }],
-      include: { task: { select: { workItemKey: true, title: true } } },
-    }) as Promise<DeploymentPrRow[]>,
+    viewer.isOwner && selectedTab === DEVELOPMENT_TAB
+      ? db.deploymentPullRequest.findMany({
+          where: { OR: [{ epicId: epic.id }, ...(taskIds.length ? [{ taskId: { in: taskIds } }] : [])] },
+          orderBy: [{ taskId: "asc" }, { updatedAt: "desc" }],
+          include: { task: { select: { workItemKey: true, title: true } } },
+        }) as Promise<DeploymentPrRow[]>
+      : Promise.resolve([]),
     viewer.isOwner ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
     getActorVisibility(viewer),
     viewer.isOwner
@@ -582,6 +573,12 @@ export default async function EpicDetailPage({
       : db.user.findMany({ where: { kind: "agent" }, select: { username: true } }),
   ]);
   const visibleTaskIds = new Set(taskIds);
+  const visibleAttachments = epic.attachments.map((attachment) => ({
+    ...attachment,
+    uploader: !viewer.isOwner && attachment.uploader?.kind === "agent"
+      ? (actorVisibility.owner ? { username: actorVisibility.owner.username } : null)
+      : attachment.uploader,
+  }));
   const visibleActivity = visibleActivityRows(
     allActivity.filter((row) => (
       viewer.isOwner || (row.taskId ? visibleTaskIds.has(row.taskId) : !row.kind.startsWith("task."))
@@ -1049,17 +1046,11 @@ export default async function EpicDetailPage({
           <input form="epicMain" type="hidden" name="epicId" value={epic.id} />
           <input form="epicMain" type="hidden" name="projectSlug" value={slug} />
           {viewer.isOwner ? (
-            <label className="flex w-fit items-center gap-2 text-caption text-text-muted">
-              <input form="epicMain" type="hidden" name="privateSubmitted" value="1" />
-              <input
-                form="epicMain"
-                type="checkbox"
-                name="private"
-                defaultChecked={epic.private}
-                className="h-4 w-4 accent-accent"
-              />
-              Private
-            </label>
+            <PrivateToggle
+              formId="epicMain"
+              defaultChecked={epic.private}
+              includeSubmittedField
+            />
           ) : null}
 
           {/* Tabbed content */}
@@ -1078,8 +1069,8 @@ export default async function EpicDetailPage({
                     defaultValue={epic.description ?? ""}
                     projectSlug={slug}
                     epicId={epic.id}
-                    aiTargets={aiTargetOptions}
-                    defaultAiTarget={defaultAiTarget}
+                    aiTargets={viewer.isOwner ? aiTargetOptions : []}
+                    defaultAiTarget={viewer.isOwner ? defaultAiTarget : ""}
                     descriptionLabel="Epic"
                     draftDescription={draftDescription}
                     aiRunning={viewer.isOwner && isAiDescriptionRunning}
@@ -1175,41 +1166,25 @@ export default async function EpicDetailPage({
                       </dl>
                     </div>
 
-                    <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
-                      {!viewer.isOwner && epic.reporter?.kind === "agent" ? (
-                        <ReadOnlyPrincipal label="Report by" actor={serializeActor(epic.reporter, actorVisibility)} />
-                      ) : (
+                    {viewer.isOwner ? <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                         <label className="block">
                           <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Report by</span>
                           <AvatarCombobox formId="epicMain" name="reporterId" defaultValue={epic.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Report by" />
                         </label>
-                      )}
-                      {viewer.isOwner ? (
                         <label className="block">
                           <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Worker pool</span>
                           <AvatarCombobox formId="epicMain" name="assigneeId" defaultValues={workerIds} options={workerOptions} emptyLabel="No workers" ariaLabel="Worker pool" multiple />
                           <input form="epicMain" type="hidden" name="workerPoolSubmitted" value="1" />
                         </label>
-                      ) : workerIds.length > 0 ? (
-                        <ReadOnlyPrincipal label="Worker pool" actor={serializeVisibleActor(actorVisibility.owner, actorVisibility)} />
-                      ) : null}
-                      {!viewer.isOwner && epic.actingManager?.kind === "agent" ? (
-                        <ReadOnlyPrincipal label="Acting manager" actor={serializeActor(epic.actingManager, actorVisibility)} />
-                      ) : (
                         <label className="block">
                           <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Acting manager</span>
                           <AvatarCombobox formId="epicMain" name="actingManagerId" defaultValue={epic.actingManagerId ?? ""} options={principalOptions} emptyLabel="No acting manager" ariaLabel="Acting manager" />
                         </label>
-                      )}
-                      {viewer.isOwner ? (
                         <label className="block">
                           <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Deploy reviewer</span>
                           <AvatarCombobox formId="epicMain" name="deployReviewerId" defaultValue={epic.deployReviewerId ?? ""} options={workerOptions} emptyLabel="Use Monitor Agent" ariaLabel="Deploy reviewer" />
                         </label>
-                      ) : epic.deployReviewer ? (
-                        <ReadOnlyPrincipal label="Deploy reviewer" actor={serializeActor(epic.deployReviewer, actorVisibility)} />
-                      ) : null}
-                    </div>
+                    </div> : null}
 
                     <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                       <DeploymentStatusSelect formId="epicMain" defaultValue={epic.deploymentStatus} />
@@ -1376,19 +1351,20 @@ export default async function EpicDetailPage({
                 statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
                 approvedOn: t.approvedOn?.toISOString() ?? null,
                 archivedAt: t.archivedAt?.toISOString() ?? null,
-                reporter: serializeActor(t.reporter, actorVisibility),
-                assignee: serializeActor(t.assignee, actorVisibility),
-                reviewer: serializeActor(t.actingManager, actorVisibility),
-                createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
-                updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
-                assigneeName: serializeActor(t.assignee, actorVisibility)?.username ?? null,
-                reviewerName: serializeActor(t.actingManager, actorVisibility)?.username ?? null,
+                reporter: viewer.isOwner ? serializeActor(t.reporter, actorVisibility) : null,
+                assignee: viewer.isOwner ? serializeActor(t.assignee, actorVisibility) : null,
+                reviewer: viewer.isOwner ? serializeActor(t.actingManager, actorVisibility) : null,
+                createdBy: viewer.isOwner ? (taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility)) : null,
+                updatedBy: viewer.isOwner ? (taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility)) : null,
+                assigneeName: viewer.isOwner ? (serializeActor(t.assignee, actorVisibility)?.username ?? null) : null,
+                reviewerName: viewer.isOwner ? (serializeActor(t.actingManager, actorVisibility)?.username ?? null) : null,
                 updatedAt: t.updatedAt.toISOString(),
                 activeWorking: t.status === "In Progress" && Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug)),
               }))}
               projectSlug={slug}
               reorderEpicTasks={reorderEpicTasks}
               epicId={epic.id}
+              showTaskRoles={viewer.isOwner}
             />
           )}
 
@@ -1417,7 +1393,7 @@ export default async function EpicDetailPage({
             </span>
           </div>
           <AttachmentList
-            attachments={epic.attachments}
+          attachments={visibleAttachments}
             projectSlug={slug}
             deleteAction={deleteAttachment}
           />
@@ -1518,13 +1494,13 @@ export default async function EpicDetailPage({
                 </div>
               </TabPanel>
 
-              <TabPanel name="Activities">
+              {viewer.isOwner ? <TabPanel name="Activities">
                 <div className="pt-2">
                   <ActivityTimeline rows={visibleActivity} />
                 </div>
-              </TabPanel>
+              </TabPanel> : null}
 
-              <TabPanel name={DEVELOPMENT_TAB}>
+              {viewer.isOwner ? <TabPanel name={DEVELOPMENT_TAB}>
                 <DeploymentTab
                   mode="epic"
                   title={epic.title}
@@ -1541,9 +1517,9 @@ export default async function EpicDetailPage({
                   approveLocalChangesAction={approveDeploymentLocalChanges}
                   approveAndMergeAction={approveAndMergeDeploymentPullRequest}
                 />
-              </TabPanel>
+              </TabPanel> : null}
 
-              <TabPanel name="Changes">
+              {viewer.isOwner ? <TabPanel name="Changes">
                 <TaskChangesPanel
                   changes={epicChanges}
                   branchName={epicChangeBranchName}
@@ -1553,7 +1529,7 @@ export default async function EpicDetailPage({
                   baseHref={`/projects/${slug}/epics/${epic.id}`}
                   selectedDiff={selectedDiff}
                 />
-              </TabPanel>
+              </TabPanel> : null}
             </div>
           </TabsProvider>
         </section>

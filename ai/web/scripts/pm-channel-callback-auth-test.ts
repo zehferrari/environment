@@ -80,7 +80,7 @@ assert.equal(
 async function routeBoundaryTests() {
   await cleanupDirectAgent(ROUTE_AGENT);
   const seeded = await seedDirectAgentMessage(ROUTE_AGENT);
-  const secondMessageId = await addDirectMessage(ROUTE_AGENT, seeded.agentUserId);
+  const secondMessageId = await addDirectMessage(ROUTE_AGENT, seeded.ownerUserId);
   const target = { kind: "direct", agentSlug: ROUTE_AGENT, messageId: seeded.messageId };
 
   try {

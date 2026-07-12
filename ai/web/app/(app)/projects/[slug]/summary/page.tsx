@@ -9,7 +9,7 @@ import {
   accessibleProjectWhere,
   requireViewer,
 } from "@/lib/auth/permissions";
-import { getActorVisibility, visibleActivityRows } from "@/lib/users/actor-visibility";
+import { getActorVisibility, visibleActivityRows, visibleActivityWhere } from "@/lib/users/actor-visibility";
 
 export const dynamic = "force-dynamic";
 
@@ -43,9 +43,10 @@ export default async function ProjectSummaryPage({
   const readme = await readRepoReadme(project.repositoryPath);
   if (readme === null) notFound();
 
+  const activityWhere = await accessibleActivityWhere(viewer, { projectId: project.id });
   const [activity, actorVisibility] = await Promise.all([
     db.activityLog.findMany({
-      where: await accessibleActivityWhere(viewer, { projectId: project.id }),
+      where: { AND: [activityWhere, visibleActivityWhere(viewer)] },
       orderBy: { createdAt: "desc" },
       take: ACTIVITY_FEED_LIMIT,
       include: {

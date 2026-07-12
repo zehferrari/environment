@@ -9,9 +9,10 @@ const execFileP = promisify(execFile);
 
 type BusEnvelope = {
   schema: 1;
+  id: string;
   kind: "openclaw.pm_channel_turn";
-  target: { kind: "direct"; agentSlug: string; messageId: string };
-  payload: { gatewayPort: number; text: string; sessionKey: string };
+  target: Record<string, unknown>;
+  payload: { gatewayPort: number | null; text: string; sessionKey: string; [key: string]: unknown };
 };
 
 async function dbPush(dbUrl: string): Promise<void> {
@@ -41,9 +42,31 @@ async function main() {
     sendOrQueueOpenClawPmChannelTurn,
   } = await import("@/lib/agents/pm-channel/jobs");
 
+  // Delivery revalidates the human sender as the active Mission Control
+  // owner. This fresh sandbox models that authorized browser-origin turn.
+  await db.user.create({
+    data: {
+      id: "human-test",
+      username: "human-test",
+      email: "human-test@example.test",
+      kind: "human",
+      isOwner: true,
+      mustRotatePassword: false,
+    },
+  });
+
   const nonce = `bus-${Date.now()}`;
   const target = { kind: "direct" as const, agentSlug: "asdrubal", messageId: nonce };
   const targetKey = `direct:asdrubal:${nonce}`;
+
+  await db.directAgentChatMessage.create({
+    data: {
+      id: nonce,
+      agentSlug: target.agentSlug,
+      senderUserId: "human-test",
+      body: "hello over bus",
+    },
+  });
 
   try {
     await db.pmChannelRun.deleteMany({ where: { targetKey } });
@@ -78,6 +101,15 @@ async function main() {
     assert.equal(job.status, "accepted");
     assert.equal(job.attemptCount, 1);
     assert.equal(job.lastError, null);
+
+    // A bus consumer normally races the worker while its run still says
+    // queued and its durable job is claimed. Model that state explicitly: the
+    // dispatch authorization must accept the claimed handoff without using the
+    // callback-only rule that rejects queued runs.
+    await db.$transaction([
+      db.pmChannelRun.update({ where: { id: run.id }, data: { status: "queued" } }),
+      db.pmChannelJob.update({ where: { runId: run.id }, data: { status: "claimed" } }),
+    ]);
 
     const files = await readdir(dropDir);
     assert.equal(files.length, 1, "bus producer should write exactly one envelope");
@@ -114,11 +146,92 @@ async function main() {
     assert.equal((delivered[0] as BusEnvelope["payload"]).text, "hello over bus");
     assert.equal((delivered[0] as BusEnvelope["payload"]).sessionKey, `test:${nonce}`);
 
-    // Broadcast case: the SAME message id fanned out to two agents must
-    // produce two distinct envelopes, both delivered — and a republish of
-    // either envelope (publisher retry) must be skipped as a duplicate.
+    const tampered = {
+      ...envelope,
+      payload: { ...envelope.payload, text: "forged bus content" },
+    };
+    const tamperedOutcome = await handler.handle(tampered);
+    assert.equal(tamperedOutcome.kind, "skipped-unauthorized", "bus payload must match the durable dispatch job");
+    assert.equal(delivered.length, 1, "a tampered envelope must never reach the agent");
+
+    // A non-owner's source message is not a valid bus origin even when its
+    // target/run/job fields are otherwise correct.
     const { publishPmChannelTurnToBus } = await import("@/lib/agents/pm-channel/bus");
+    const member = await db.user.create({
+      data: {
+        username: "bus-member",
+        email: "bus-member@example.test",
+        kind: "human",
+        mustRotatePassword: false,
+      },
+    });
+    const memberNonce = `bus-member-${Date.now()}`;
+    const memberTarget = { kind: "direct" as const, agentSlug: "asdrubal", messageId: memberNonce };
+    const memberArgs = {
+      gatewayPort: 45678,
+      agentSlug: memberTarget.agentSlug,
+      sessionKey: `test:${memberNonce}`,
+      kind: "direct" as const,
+      text: "member bus message",
+      actor: { id: member.id, kind: "human" as const },
+      replyTarget: memberTarget,
+    };
+    await db.directAgentChatMessage.create({
+      data: {
+        id: memberNonce,
+        agentSlug: memberTarget.agentSlug,
+        senderUserId: member.id,
+        body: memberArgs.text,
+      },
+    });
+    const memberRun = await db.pmChannelRun.create({
+      data: {
+        targetKey: `direct:${memberTarget.agentSlug}:${memberTarget.messageId}`,
+        kind: memberArgs.kind,
+        agentSlug: memberArgs.agentSlug,
+        messageId: memberTarget.messageId,
+        sessionKey: memberArgs.sessionKey,
+        gatewayPort: memberArgs.gatewayPort,
+        status: "queued",
+      },
+    });
+    await db.pmChannelJob.create({
+      data: {
+        runId: memberRun.id,
+        agentSlug: memberArgs.agentSlug,
+        kind: memberArgs.kind,
+        payload: JSON.stringify(memberArgs),
+        status: "claimed",
+      },
+    });
+    const memberPublished = await publishPmChannelTurnToBus(memberArgs);
+    assert.equal(memberPublished.ok, true, "member envelope is written for consumer authorization testing");
+    const memberRaw = JSON.parse(await readFile((memberPublished.receipt as { path: string }).path, "utf8"));
+    const memberOutcome = await handler.handle(memberRaw);
+    assert.equal(memberOutcome.kind, "skipped-unauthorized", "non-owner direct messages cannot enter the native PM channel");
+    assert.equal(delivered.length, 1, "non-owner native turns never dispatch to an agent");
+
+    // Broadcast case: the SAME room-chat message id fanned out to two agents
+    // must produce two distinct envelopes, both delivered. The source remains
+    // one owner-authored room message; each addressed agent gets its own
+    // durable claimed run/job pair.
     const broadcastNonce = `bus-broadcast-${Date.now()}`;
+    const broadcastProject = await db.project.create({
+      data: { slug: `bus-project-${Date.now()}`, name: "Bus Test Project" },
+    });
+    const broadcastTask = await db.task.create({
+      data: { projectId: broadcastProject.id, title: "Broadcast task" },
+    });
+    await db.agentChatMessage.create({
+      data: {
+        id: broadcastNonce,
+        projectId: broadcastProject.id,
+        taskId: broadcastTask.id,
+        agentSlug: "room",
+        senderUserId: "human-test",
+        body: "broadcast over bus",
+      },
+    });
     const broadcastDelivered: string[] = [];
     const broadcastHandler = createHandler({
       pmChannelDispatch: async (args: { agentSlug: string }) => {
@@ -133,15 +246,46 @@ async function main() {
     });
     const broadcastEnvelopes: unknown[] = [];
     for (const slug of ["asdrubal", "barekbaal"]) {
-      const published = await publishPmChannelTurnToBus({
+      const broadcastTarget = {
+        kind: "task-chat" as const,
+        agentSlug: slug,
+        taskId: broadcastTask.id,
+        messageId: broadcastNonce,
+        projectSlug: broadcastProject.slug,
+      };
+      const broadcastArgs = {
         gatewayPort: 45678,
         agentSlug: slug,
         sessionKey: `test:${broadcastNonce}:${slug}`,
-        kind: "direct",
+        kind: "task-chat" as const,
         text: "broadcast over bus",
-        actor: { id: "human-test", kind: "human" },
-        replyTarget: { kind: "direct", agentSlug: slug, messageId: broadcastNonce },
-      } as Parameters<typeof publishPmChannelTurnToBus>[0]);
+        actor: { id: "human-test", kind: "human" as const },
+        replyTarget: broadcastTarget,
+        projectId: broadcastProject.id,
+      };
+      const broadcastRun = await db.pmChannelRun.create({
+        data: {
+          targetKey: `task-chat:${slug}:${broadcastTask.id}:${broadcastNonce}`,
+          kind: broadcastArgs.kind,
+          agentSlug: slug,
+          messageId: broadcastNonce,
+          projectId: broadcastProject.id,
+          taskId: broadcastTask.id,
+          sessionKey: broadcastArgs.sessionKey,
+          gatewayPort: broadcastArgs.gatewayPort,
+          status: "queued",
+        },
+      });
+      await db.pmChannelJob.create({
+        data: {
+          runId: broadcastRun.id,
+          agentSlug: slug,
+          kind: broadcastArgs.kind,
+          payload: JSON.stringify(broadcastArgs),
+          status: "claimed",
+        },
+      });
+      const published = await publishPmChannelTurnToBus(broadcastArgs);
       assert.equal(published.ok, true, `broadcast publish for ${slug}`);
       const receipt = published.receipt as { path: string };
       broadcastEnvelopes.push(JSON.parse(await readFile(receipt.path, "utf8")));

@@ -193,13 +193,34 @@ export async function validateProposal(
   const [loadedEpicRows, loadedTaskRows, principals] = await Promise.all([
     epicIds.size
       ? db.epic.findMany({
-          where: { id: { in: [...epicIds] }, projectId, archivedAt: null, deletedAt: null },
+          where: {
+            id: { in: [...epicIds] },
+            projectId,
+            private: false,
+            archivedAt: null,
+            deletedAt: null,
+          },
           select: { id: true },
         })
       : Promise.resolve([] as Array<{ id: string }>),
     taskIds.size
       ? db.task.findMany({
-          where: { id: { in: [...taskIds] }, projectId, archivedAt: null, deletedAt: null },
+          where: {
+            id: { in: [...taskIds] },
+            projectId,
+            private: false,
+            archivedAt: null,
+            deletedAt: null,
+            AND: [
+              { OR: [{ epicId: null }, { epic: { private: false } }] },
+              {
+                OR: [
+                  { parentTaskId: null },
+                  { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
+                ],
+              },
+            ],
+          },
           select: { id: true, parentTaskId: true, status: true },
         })
       : Promise.resolve([] as Array<{

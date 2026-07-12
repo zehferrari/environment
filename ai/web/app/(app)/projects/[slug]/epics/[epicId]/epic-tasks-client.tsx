@@ -11,11 +11,13 @@ export default function EpicTasksClient({
   projectSlug,
   reorderEpicTasks,
   epicId,
+  showTaskRoles = false,
 }: {
   initialTasks: any[];
   projectSlug: string;
   reorderEpicTasks: (orderedIds: string[]) => Promise<void>;
   epicId: string;
+  showTaskRoles?: boolean;
 }) {
   const router = useRouter();
   const [tasks, setTasks] = useState(initialTasks);
@@ -229,9 +231,9 @@ export default function EpicTasksClient({
           reorderAction={reorderEpicTasks}
           tableLayout
           showStatusBadge
-          showReporterAvatar
-          showAssignee
-          showReviewer
+          showReporterAvatar={showTaskRoles}
+          showAssignee={showTaskRoles}
+          showReviewer={showTaskRoles}
           showCreated
           showUpdated
           projectSlug={projectSlug}

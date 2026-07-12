@@ -15,8 +15,14 @@ import path from "path";
 import { createHash, randomBytes } from "crypto";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
-import { hashPassword } from "@/lib/auth/password";
+import {
+  MAX_PASSWORD_LENGTH,
+  hashPassword,
+  passwordLengthError,
+} from "@/lib/auth/password";
 import { requireOwner } from "@/lib/auth/permissions";
+import { revokeDisabledHumanAccountAccess } from "@/lib/users/lifecycle";
+import { getHumanUserRemovalStatus } from "@/lib/users/removal";
 
 const execFileAsync = promisify(execFile);
 const AVATAR_SIZE = 256;
@@ -32,6 +38,33 @@ function normalizedUsername(value: FormDataEntryValue | null): string {
 
 function selectedProjectIds(formData: FormData): string[] {
   return [...new Set(formData.getAll("projectId").map(String).filter(Boolean))];
+}
+
+export type UserManagementActionState = {
+  ok: boolean;
+  error: string | null;
+  message: string | null;
+};
+
+function actionSuccess(message: string): UserManagementActionState {
+  return { ok: true, error: null, message };
+}
+
+function actionFailure(error: unknown): UserManagementActionState {
+  if (error instanceof Error) {
+    if (error.message === "Not authorized" || error.message === "Unauthenticated") {
+      return { ok: false, error: "Not authorized.", message: null };
+    }
+    return { ok: false, error: error.message, message: null };
+  }
+  return { ok: false, error: "The account could not be updated.", message: null };
+}
+
+function removalBlockerSummary(blockers: Array<{ label: string; count: number }>): string {
+  return blockers
+    .slice(0, 3)
+    .map(({ label, count }) => `${count} ${label}`)
+    .join(", ");
 }
 
 async function validateProjectIds(projectIds: string[]): Promise<void> {
@@ -234,12 +267,194 @@ export async function resetHumanPassword(formData: FormData) {
   );
 }
 
+/**
+ * Set a temporary password directly. This invalidates the target's existing
+ * session through passwordSetAt and requires them to rotate the supplied
+ * password on their next sign-in. It intentionally does not re-enable a
+ * deactivated account.
+ */
+export async function updateHumanPassword(
+  _previousState: UserManagementActionState,
+  formData: FormData,
+): Promise<UserManagementActionState> {
+  try {
+    const owner = await requireOwner();
+    const userId = String(formData.get("userId") ?? "");
+    const password = String(formData.get("password") ?? "");
+    const confirmation = String(formData.get("passwordConfirmation") ?? "");
+
+    if (!userId) throw new Error("User is required.");
+    const lengthError = passwordLengthError(password);
+    if (lengthError === "short") throw new Error("Password must be at least 12 characters.");
+    if (lengthError === "long") throw new Error(`Password must be ${MAX_PASSWORD_LENGTH} characters or fewer.`);
+    if (password !== confirmation) throw new Error("Passwords do not match.");
+
+    // Hash before opening the transaction so an Argon2 run does not hold the
+    // SQLite write lock longer than necessary.
+    const passwordHash = await hashPassword(password);
+    const now = new Date();
+
+    await db.$transaction(async (tx) => {
+      const target = await tx.user.findUnique({
+        where: { id: userId },
+        select: { id: true, username: true, kind: true, status: true },
+      });
+      if (!target || target.kind !== "human") throw new Error("Human user not found.");
+
+      await tx.passwordResetToken.updateMany({
+        where: { userId, usedAt: null },
+        data: { usedAt: now },
+      });
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          passwordHash,
+          passwordSetAt: now,
+          mustRotatePassword: true,
+          // A first owner-set password activates an invitation. A disabled
+          // account remains disabled until the owner explicitly re-enables it.
+          ...(target.status === "invited" ? { status: "active" } : {}),
+        },
+      });
+      await tx.activityLog.create({
+        data: {
+          userId: owner.id,
+          kind: "user.password.update",
+          payload: JSON.stringify({ targetUserId: target.id, targetUsername: target.username }),
+        },
+      });
+    });
+
+    revalidatePath("/system/users");
+    revalidatePath("/", "layout");
+    return actionSuccess("Password updated. The user must rotate it after their next sign-in.");
+  } catch (error) {
+    return actionFailure(error);
+  }
+}
+
+/** Disable or re-enable a non-owner human account. */
+export async function setHumanUserStatus(
+  _previousState: UserManagementActionState,
+  formData: FormData,
+): Promise<UserManagementActionState> {
+  try {
+    const owner = await requireOwner();
+    const userId = String(formData.get("userId") ?? "");
+    const action = String(formData.get("accountAction") ?? "");
+    if (!userId) throw new Error("User is required.");
+    if (action !== "deactivate" && action !== "activate") throw new Error("Invalid account action.");
+
+    const desiredStatus = action === "deactivate" ? "deactivated" : "active";
+    const now = new Date();
+
+    const outcome = await db.$transaction(async (tx) => {
+      const target = await tx.user.findUnique({
+        where: { id: userId },
+        select: { id: true, username: true, kind: true, isOwner: true, status: true },
+      });
+      if (!target || target.kind !== "human") throw new Error("Human user not found.");
+      if (target.isOwner || target.id === owner.id) {
+        throw new Error("The Mission Control owner cannot be disabled.");
+      }
+      if (target.status === desiredStatus) return { changed: false, username: target.username };
+
+      if (action === "deactivate") {
+        await revokeDisabledHumanAccountAccess(tx, userId, now);
+      }
+      await tx.user.update({
+        where: { id: userId },
+        // Rotating this session epoch on disable prevents a JWT issued before
+        // deactivation from becoming valid again after a later re-enable.
+        data: action === "deactivate"
+          ? { status: desiredStatus, passwordSetAt: now }
+          : { status: desiredStatus },
+      });
+      await tx.activityLog.create({
+        data: {
+          userId: owner.id,
+          kind: `user.account.${action}`,
+          payload: JSON.stringify({ targetUserId: target.id, targetUsername: target.username }),
+        },
+      });
+      return { changed: true, username: target.username };
+    });
+
+    revalidatePath("/system/users");
+    revalidatePath("/", "layout");
+    if (!outcome.changed) {
+      return actionSuccess(`@${outcome.username} is already ${desiredStatus}.`);
+    }
+    return actionSuccess(
+      action === "deactivate"
+        ? `@${outcome.username} has been disabled and signed out.`
+        : `@${outcome.username} has been enabled. Create a password reset link if they need a new password.`,
+    );
+  } catch (error) {
+    return actionFailure(error);
+  }
+}
+
+/**
+ * Permanently remove a history-free human account. Project memberships and
+ * credentials are cleanup data; workflow and conversation history is guarded
+ * by getHumanUserRemovalStatus and keeps the account undeletable instead.
+ */
+export async function removeHumanUser(
+  _previousState: UserManagementActionState,
+  formData: FormData,
+): Promise<UserManagementActionState> {
+  try {
+    const owner = await requireOwner();
+    const userId = String(formData.get("userId") ?? "");
+    if (!userId) throw new Error("User is required.");
+
+    const username = await db.$transaction(async (tx) => {
+      const status = await getHumanUserRemovalStatus(userId, tx);
+      if (!status.exists || !status.isHuman) throw new Error("Human user not found.");
+      if (status.isOwner || status.id === owner.id) {
+        throw new Error("The Mission Control owner cannot be removed.");
+      }
+      if (!status.removable) {
+        throw new Error(
+          `This account cannot be removed because it has ${removalBlockerSummary(status.blockers)}.`,
+        );
+      }
+
+      // These rows are account-local rather than shared history. Clear them
+      // explicitly because ChatReadCursor and WebPushSubscription intentionally
+      // have no FK to User.
+      await tx.passwordResetToken.deleteMany({ where: { userId } });
+      await tx.projectMember.deleteMany({ where: { userId } });
+      await tx.chatReadCursor.deleteMany({ where: { userId } });
+      await tx.webPushSubscription.deleteMany({ where: { userId } });
+      await tx.activityLog.create({
+        data: {
+          userId: owner.id,
+          kind: "user.account.remove",
+          payload: JSON.stringify({ targetUserId: status.id, targetUsername: status.username }),
+        },
+      });
+      await tx.user.delete({ where: { id: userId } });
+      return status.username;
+    });
+
+    revalidatePath("/system/users");
+    revalidatePath("/", "layout");
+    return actionSuccess(`@${username} has been removed.`);
+  } catch (error) {
+    return actionFailure(error);
+  }
+}
+
 export async function setPasswordFromToken(formData: FormData) {
   const token = String(formData.get("token") ?? "");
   const password = String(formData.get("password") ?? "");
   const confirmation = String(formData.get("passwordConfirmation") ?? "");
   if (!token) throw new Error("Password token is missing.");
-  if (password.length < 12) throw new Error("Password must be at least 12 characters.");
+  const lengthError = passwordLengthError(password);
+  if (lengthError === "short") throw new Error("Password must be at least 12 characters.");
+  if (lengthError === "long") throw new Error(`Password must be ${MAX_PASSWORD_LENGTH} characters or fewer.`);
   if (password !== confirmation) throw new Error("Passwords do not match.");
 
   const invitation = await db.passwordResetToken.findUnique({
@@ -272,8 +487,15 @@ export async function setPasswordFromToken(formData: FormData) {
     });
     if (claimed.count !== 1) throw new Error("This password link has already been used.");
 
-    await tx.user.update({
-      where: { id: invitation.userId },
+    // Re-check status inside the write transaction. A disable action can run
+    // after the initial token lookup; it must win rather than letting this
+    // redemption reactivate the account.
+    const activated = await tx.user.updateMany({
+      where: {
+        id: invitation.userId,
+        kind: "human",
+        status: { in: ["active", "invited"] },
+      },
       data: {
         passwordHash,
         passwordSetAt: now,
@@ -281,6 +503,9 @@ export async function setPasswordFromToken(formData: FormData) {
         status: "active",
       },
     });
+    if (activated.count !== 1) {
+      throw new Error("This password link is invalid or has expired.");
+    }
     await tx.passwordResetToken.updateMany({
       where: { userId: invitation.userId, usedAt: null },
       data: { usedAt: now },
