@@ -30,9 +30,8 @@ function keyFromName(value: string) {
   return /^[A-Z][A-Z0-9]{1,9}$/.test(key) ? key : "";
 }
 
-// Floating "+" button + modal for creating a project. Mirrors the New Task /
-// New Epic modals (HOMELAB-41) but the fields are the project's own settings
-// (repo path, project key, git identity, picker defaults, auto archive age).
+// Project creation modal. The visible trigger lives in the dashboard header
+// so owners do not need to discover a floating action button.
 export default function AddProjectFab({
   principals,
   workspaces,
@@ -258,10 +257,10 @@ export default function AddProjectFab({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        aria-label="Add project"
-        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90"
+        className="inline-flex items-center gap-2 rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-white shadow-sm hover:opacity-90"
       >
-        <span className="-mt-0.5">+</span>
+        <span aria-hidden="true" className="text-lg leading-none">+</span>
+        <span>New project</span>
       </button>
     </>
   );

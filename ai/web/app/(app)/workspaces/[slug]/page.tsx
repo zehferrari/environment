@@ -357,12 +357,20 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
             ) : null}
           </div>
           {viewer.isOwner ? (
-            <Link
-              href={`/workspaces/${workspace.slug}/settings`}
-              className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent"
-            >
-              Workspace settings
-            </Link>
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                href="/"
+                className="rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-white shadow-sm hover:opacity-90"
+              >
+                New project
+              </Link>
+              <Link
+                href={`/workspaces/${workspace.slug}/settings`}
+                className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent"
+              >
+                Workspace settings
+              </Link>
+            </div>
           ) : null}
         </div>
       </header>

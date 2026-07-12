@@ -421,6 +421,13 @@ export default async function ProjectsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {viewer.isOwner ? (
+            <AddProjectFab
+              principals={principals.map((p) => ({ id: p.id, name: p.name }))}
+              workspaces={workspaces.map((workspace) => ({ id: workspace.id, name: workspace.name }))}
+              createProjectAction={createProject}
+            />
+          ) : null}
           <Link
             href="/projects/archive"
             className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent"
@@ -469,13 +476,6 @@ export default async function ProjectsPage() {
         </div>
       )}
 
-      {viewer.isOwner ? (
-        <AddProjectFab
-          principals={principals.map((p) => ({ id: p.id, name: p.name }))}
-          workspaces={workspaces.map((workspace) => ({ id: workspace.id, name: workspace.name }))}
-          createProjectAction={createProject}
-        />
-      ) : null}
     </div>
   );
 }
