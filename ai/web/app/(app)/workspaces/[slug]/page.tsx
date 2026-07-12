@@ -359,7 +359,7 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
           {viewer.isOwner ? (
             <div className="flex flex-wrap items-center gap-2">
               <Link
-                href="/"
+                href="/?newProject=1"
                 className="rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-white shadow-sm hover:opacity-90"
               >
                 New project

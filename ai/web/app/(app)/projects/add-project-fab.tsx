@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useState } from "react";
 
 type Principal = { id: string; name: string };
 type Workspace = { id: string; name: string };
@@ -48,6 +48,15 @@ export default function AddProjectFab({
   const [key, setKey] = useState("");
   const [slugTouched, setSlugTouched] = useState(false);
   const [keyTouched, setKeyTouched] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("newProject") !== "1") return;
+    setOpen(true);
+    params.delete("newProject");
+    const query = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+  }, []);
 
   const labelCls =
     "mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted";
