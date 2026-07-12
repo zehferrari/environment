@@ -1,8 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useActionState, useState } from "react";
 
 type Principal = { id: string; name: string };
+type Workspace = { id: string; name: string };
+
+export type CreateProjectState = {
+  ok: boolean;
+  error: string | null;
+};
+
+const initialState: CreateProjectState = { ok: false, error: null };
 
 function slugFromName(value: string) {
   return value
@@ -27,12 +35,15 @@ function keyFromName(value: string) {
 // (repo path, project key, git identity, picker defaults, auto archive age).
 export default function AddProjectFab({
   principals,
+  workspaces,
   createProjectAction,
 }: {
   principals: Principal[];
-  createProjectAction: (formData: FormData) => Promise<void>;
+  workspaces: Workspace[];
+  createProjectAction: (state: CreateProjectState, formData: FormData) => Promise<CreateProjectState>;
 }) {
   const [open, setOpen] = useState(false);
+  const [state, formAction, isPending] = useActionState(createProjectAction, initialState);
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [key, setKey] = useState("");
@@ -52,8 +63,7 @@ export default function AddProjectFab({
           onClick={() => setOpen(false)}
         >
           <form
-            action={createProjectAction}
-            onSubmit={() => setOpen(false)}
+            action={formAction}
             onClick={(e) => e.stopPropagation()}
             className="max-h-[85vh] w-full max-w-lg space-y-3 overflow-y-auto rounded-panel border border-line bg-panel p-card-lg shadow-2xl"
           >
@@ -70,6 +80,12 @@ export default function AddProjectFab({
                 ×
               </button>
             </div>
+
+            {state.error ? (
+              <p role="alert" className="rounded-lg border border-crit/40 bg-crit/10 px-3 py-2 text-body text-crit">
+                {state.error}
+              </p>
+            ) : null}
 
             <label className="block">
               <span className={labelCls}>Name</span>
@@ -99,6 +115,23 @@ export default function AddProjectFab({
                 className={inputCls}
               />
             </label>
+
+            {workspaces.length === 1 ? (
+              <input type="hidden" name="workspaceId" value={workspaces[0]!.id} />
+            ) : workspaces.length > 1 ? (
+              <label className="block">
+                <span className={labelCls}>Workspace</span>
+                <select name="workspaceId" required defaultValue={workspaces[0]!.id} className={inputCls}>
+                  {workspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <p role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-caption text-amber-700">
+                Create an active workspace before adding a project.
+              </p>
+            )}
 
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-[35fr_15fr_50fr]">
               <label className="block">
@@ -205,15 +238,17 @@ export default function AddProjectFab({
               <button
                 type="button"
                 onClick={() => setOpen(false)}
+                disabled={isPending}
                 className="rounded-lg border border-line px-control-x py-control-y text-body font-medium text-text-muted hover:text-text"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="rounded-lg bg-accent px-4 py-1.5 text-body font-medium text-bg hover:opacity-90"
+                disabled={isPending || workspaces.length === 0}
+                className="rounded-lg bg-accent px-4 py-1.5 text-body font-medium text-bg hover:opacity-90 disabled:cursor-wait disabled:opacity-60"
               >
-                Create project
+                {isPending ? "Creating..." : "Create project"}
               </button>
             </div>
           </form>

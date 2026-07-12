@@ -9,7 +9,7 @@ import { normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
 import { DEPLOYMENT_STATUSES } from "@/lib/deploy/deployment-status";
 import { emptyDeploymentRollup, getDeploymentRollupsByProject, mergeDeploymentRollup, type DeploymentRollup } from "@/lib/workspaces/deployment-rollup";
 import ActivityAgenda from "@/components/activity-agenda";
-import AddProjectFab from "./add-project-fab";
+import AddProjectFab, { type CreateProjectState } from "./add-project-fab";
 import {
   accessibleEpicWhere,
   accessibleProjectWhere,
@@ -75,58 +75,85 @@ type WorkspaceDashboardGroup = {
 
 // Create a project with its settings up front (mirrors the task/epic "new"
 // modal: one form, the project's own fields).
-async function createProject(formData: FormData) {
+async function createProject(
+  _previousState: CreateProjectState,
+  formData: FormData,
+): Promise<CreateProjectState> {
   "use server";
-  await requireOwner();
-  const name = String(formData.get("name") ?? "").trim();
-  if (!name || name.length > 200) return;
-  const description = String(formData.get("description") ?? "").trim() || null;
-  const slug = String(formData.get("slug") ?? "").trim().toLowerCase();
-  if (!slug || !/^[a-zA-Z0-9\-_]+$/.test(slug)) {
-    throw new Error("Project slug is required and may only contain letters, numbers, hyphens, and underscores.");
-  }
-  const repositoryPath = String(formData.get("repositoryPath") ?? "").trim();
-  if (!repositoryPath) throw new Error("Repository folder is required");
-  const rawWorkItemKeyPrefix = String(formData.get("workItemKeyPrefix") ?? "").trim();
-  const workItemKeyPrefix = normalizeWorkItemKeyPrefix(rawWorkItemKeyPrefix);
-  if (!workItemKeyPrefix) {
-    throw new Error("Project key must start with a letter and contain only 2-10 letters or numbers.");
-  }
-  const defaultGitUserName =
-    String(formData.get("defaultGitUserName") ?? "").trim() || null;
-  const defaultGitUserEmail =
-    String(formData.get("defaultGitUserEmail") ?? "").trim() || null;
-  const defaultAssigneeId =
-    String(formData.get("defaultAssigneeId") ?? "").trim() || null;
-  const defaultReviewerId =
-    String(formData.get("defaultReviewerId") ?? "").trim() || null;
-  const doneTtlRaw = String(formData.get("doneTtlDays") ?? "").trim();
-  const doneTtlDays =
-    doneTtlRaw === "" ? null : Math.max(1, Math.min(365, Number(doneTtlRaw) || 5));
+  let destination: { projectSlug: string; workspaceSlug: string };
+  try {
+    await requireOwner();
+    const name = String(formData.get("name") ?? "").trim();
+    if (!name || name.length > 200) throw new Error("Project name is required and must be 200 characters or fewer.");
+    const description = String(formData.get("description") ?? "").trim() || null;
+    const slug = String(formData.get("slug") ?? "").trim().toLowerCase();
+    if (!slug || !/^[a-zA-Z0-9\-_]+$/.test(slug)) {
+      throw new Error("Project slug is required and may only contain letters, numbers, hyphens, and underscores.");
+    }
+    const workspaceId = String(formData.get("workspaceId") ?? "").trim();
+    const workspace = workspaceId
+      ? await db.workspace.findFirst({
+          where: { id: workspaceId, archivedAt: null },
+          select: { id: true, slug: true },
+        })
+      : null;
+    if (!workspace) throw new Error("Choose an active workspace for this project.");
 
-  if (await db.project.findUnique({ where: { slug }, select: { id: true } })) {
-    throw new Error("Project slug is already in use.");
-  }
-  if (await db.project.findUnique({ where: { workItemKeyPrefix }, select: { id: true } })) {
-    throw new Error("Project key is already in use.");
+    const repositoryPath = String(formData.get("repositoryPath") ?? "").trim();
+    if (!repositoryPath) throw new Error("Repository folder is required.");
+    const rawWorkItemKeyPrefix = String(formData.get("workItemKeyPrefix") ?? "").trim();
+    const workItemKeyPrefix = normalizeWorkItemKeyPrefix(rawWorkItemKeyPrefix);
+    if (!workItemKeyPrefix) {
+      throw new Error("Project key must start with a letter and contain only 2-10 letters or numbers.");
+    }
+    const defaultGitUserName =
+      String(formData.get("defaultGitUserName") ?? "").trim() || null;
+    const defaultGitUserEmail =
+      String(formData.get("defaultGitUserEmail") ?? "").trim() || null;
+    const defaultAssigneeId =
+      String(formData.get("defaultAssigneeId") ?? "").trim() || null;
+    const defaultReviewerId =
+      String(formData.get("defaultReviewerId") ?? "").trim() || null;
+    const doneTtlRaw = String(formData.get("doneTtlDays") ?? "").trim();
+    const doneTtlDays =
+      doneTtlRaw === "" ? null : Math.max(1, Math.min(365, Number(doneTtlRaw) || 5));
+
+    if (await db.project.findUnique({ where: { slug }, select: { id: true } })) {
+      throw new Error("Project slug is already in use.");
+    }
+    if (await db.project.findUnique({ where: { workItemKeyPrefix }, select: { id: true } })) {
+      throw new Error("Project key is already in use.");
+    }
+
+    const project = await db.project.create({
+      data: {
+        slug,
+        name,
+        description,
+        repositoryPath,
+        workItemKeyPrefix,
+        defaultGitUserName,
+        defaultGitUserEmail,
+        defaultAssigneeId,
+        defaultReviewerId,
+        doneTtlDays,
+        workspaces: { create: { workspaceId: workspace.id } },
+      },
+      select: { slug: true },
+    });
+    destination = { projectSlug: project.slug, workspaceSlug: workspace.slug };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Project could not be created.",
+    };
   }
 
-  await db.project.create({
-    data: {
-      slug,
-      name,
-      description,
-      repositoryPath,
-      workItemKeyPrefix,
-      defaultGitUserName,
-      defaultGitUserEmail,
-      defaultAssigneeId,
-      defaultReviewerId,
-      doneTtlDays,
-    },
-  });
+  revalidatePath("/");
   revalidatePath("/projects");
-  redirect(`/projects/${slug}`);
+  revalidatePath("/workspaces");
+  revalidatePath(`/workspaces/${destination.workspaceSlug}`);
+  redirect(`/projects/${destination.projectSlug}`);
 }
 
 function emptyStats(): ProjectDashboardStats {
@@ -445,6 +472,7 @@ export default async function ProjectsPage() {
       {viewer.isOwner ? (
         <AddProjectFab
           principals={principals.map((p) => ({ id: p.id, name: p.name }))}
+          workspaces={workspaces.map((workspace) => ({ id: workspace.id, name: workspace.name }))}
           createProjectAction={createProject}
         />
       ) : null}
