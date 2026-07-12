@@ -1,7 +1,11 @@
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { subscribeBoardTouch } from "@/lib/pm/board-events";
 import { normalizeWorkspaceSlug } from "@/lib/workspaces/service";
+import {
+  accessibleProjectWhere,
+  requireViewer,
+  workspaceAccessWhere,
+} from "@/lib/auth/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,8 +16,8 @@ export async function GET(
   req: Request,
   ctx: { params: Promise<{ slug: string }> },
 ) {
-  const session = await auth();
-  if (!session?.user?.id) return new Response("Unauthorized", { status: 401 });
+  let viewer;
+  try { viewer = await requireViewer(); } catch { return new Response("Unauthorized", { status: 401 }); }
 
   const { slug: rawSlug } = await ctx.params;
   let slug: string;
@@ -23,12 +27,12 @@ export async function GET(
     return new Response("Not found", { status: 404 });
   }
 
-  const workspace = await db.workspace.findUnique({
-    where: { slug },
+  const workspace = await db.workspace.findFirst({
+    where: { AND: [{ slug }, workspaceAccessWhere(viewer)] },
     select: {
       id: true,
       projects: {
-        where: { project: { deletedAt: null, archivedAt: null } },
+        where: { project: accessibleProjectWhere(viewer, { deletedAt: null, archivedAt: null }) },
         select: { projectId: true },
       },
     },

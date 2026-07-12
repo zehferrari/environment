@@ -64,6 +64,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           // the purpose of workflow rule enforcement (HOMELAB-44).
           kind: user.kind === "agent" ? ("agent" as const) : ("human" as const),
           mustRotatePassword: user.mustRotatePassword,
+          passwordSetAt: user.passwordSetAt?.toISOString() ?? null,
         };
       },
     }),
@@ -74,6 +75,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.uid = user.id;
         token.kind = user.kind;
         token.mustRotatePassword = user.mustRotatePassword;
+        token.passwordSetAt = user.passwordSetAt ?? null;
+      } else if (token.uid) {
+        const current = await db.user.findUnique({
+          where: { id: token.uid },
+          select: { status: true, passwordSetAt: true },
+        });
+        const currentPasswordSetAt = current?.passwordSetAt?.toISOString() ?? null;
+        if (!current || current.status !== "active" || currentPasswordSetAt !== (token.passwordSetAt ?? null)) {
+          return {};
+        }
       }
       return token;
     },

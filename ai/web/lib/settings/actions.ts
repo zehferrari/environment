@@ -5,8 +5,8 @@
 // fall through to the next level (project → system → built-in).
 
 import { revalidatePath } from "next/cache";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { requireOwner } from "@/lib/auth/permissions";
 import { normalizeTheme } from "@/lib/settings/system";
 import { normalizeDeployReviewPrompt } from "@/lib/epics/deploy-review";
 
@@ -37,9 +37,8 @@ function jsonObjectTextOrNull(v: unknown): string | null {
 }
 
 export async function setSystemSettings(formData: FormData) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) throw new Error("Unauthenticated");
+  const owner = await requireOwner();
+  const userId = owner.id;
 
   const rawScope = String(formData.get("settingsScope") ?? "general");
   const scope = rawScope === "models" ? "models" : "general";

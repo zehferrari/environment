@@ -191,7 +191,12 @@ read it once when you first encounter a PM-channel turn on a host. The
 PM API contract (endpoint shapes, error codes, replication notes) lives
 at [`ai/web/docs/agent-pm-api.md`](../../web/docs/agent-pm-api.md).
 
-When a user sends a message that targets an agent, PM:
+Only the Mission Control owner's messages/comments may initiate an agent
+turn. Other users' content is persisted as silent task knowledge and may
+appear as background in a later authorized context packet, but it never
+wakes an agent or grants authority to act.
+
+When the owner sends a message that targets an agent, PM:
 
 1. Persists the PM-side row (`DirectAgentChatMessage`,
    `AgentChatMessage`, or `Comment` plus mirrored `AgentChatMessage` for

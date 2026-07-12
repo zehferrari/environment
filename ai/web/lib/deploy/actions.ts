@@ -8,7 +8,7 @@
 import { open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import { auth } from "@/lib/auth";
+import { requireOwner, requireProjectAccess, requireViewer } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
 import { readSwitchState } from "@/lib/deploy/worktrees";
@@ -81,8 +81,7 @@ export async function requestWorktreeSwitch(
   target: string,
   opts: { rebuild?: boolean } = {},
 ): Promise<{ id: string }> {
-  const session = await auth();
-  if (!session?.user?.id || session.user.kind === "agent") throw new Error("Forbidden");
+  const owner = await requireOwner();
 
   const project = getSwitchProject(repoKey);
   if (!project) throw new Error(`No worktree switcher configured for ${repoKey}.`);
@@ -105,7 +104,7 @@ export async function requestWorktreeSwitch(
     action: "serve",
     target: wt.name,
     rebuild,
-    requestedBy: session.user.name ?? session.user.id,
+    requestedBy: owner.username,
     requestedAt: new Date().toISOString(),
   });
   return { id };
@@ -127,8 +126,7 @@ export async function requestLocalWorktreeRemoval(
   projectSlug: string,
   target: string,
 ): Promise<{ id: string }> {
-  const session = await auth();
-  if (!session?.user?.id || session.user.kind === "agent") throw new Error("Forbidden");
+  const owner = await requireOwner();
 
   const projectRecord = await db.project.findUnique({
     where: { slug: projectSlug },
@@ -142,8 +140,6 @@ export async function requestLocalWorktreeRemoval(
     },
   });
   if (!projectRecord || projectRecord.deletedAt) throw new Error("Project not found.");
-  if (session.user.name !== "zeh") throw new Error("Only the admin can remove local worktrees.");
-
   const repoKey = worktreeRepoKey(projectRecord.repositoryPath);
   const project = getSwitchProject(repoKey);
   if (!project || !repoKey) throw new Error("This project has no managed local worktrees.");
@@ -171,13 +167,13 @@ export async function requestLocalWorktreeRemoval(
     action: "remove",
     target: worktree.name,
     protectedBranches,
-    requestedBy: session.user.name ?? session.user.id,
+    requestedBy: owner.username,
     requestedAt: new Date().toISOString(),
   });
   await db.activityLog.create({
     data: {
       projectId: projectRecord.id,
-      userId: session.user.id,
+      userId: owner.id,
       kind: "project.worktree_remove_requested",
       payload: JSON.stringify({ worktree: worktree.name, branch: worktree.branch, remote: false }),
     },
@@ -193,8 +189,7 @@ export async function setSiteActive(
   repoKey: string,
   active: boolean,
 ): Promise<{ id: string }> {
-  const session = await auth();
-  if (!session?.user?.id || session.user.kind === "agent") throw new Error("Forbidden");
+  const owner = await requireOwner();
 
   const project = getSwitchProject(repoKey);
   if (!project) throw new Error(`No worktree switcher configured for ${repoKey}.`);
@@ -211,16 +206,16 @@ export async function setSiteActive(
     id,
     action: active ? "on" : "off",
     target: state.served ?? null,
-    requestedBy: session.user.name ?? session.user.id,
+    requestedBy: owner.username,
     requestedAt: new Date().toISOString(),
   });
   return { id };
 }
 
 async function requireHumanActor() {
-  const session = await auth();
-  if (!session?.user?.id || session.user.kind === "agent") throw new Error("Forbidden");
-  return { id: session.user.id };
+  const viewer = await requireViewer();
+  if (viewer.kind === "agent") throw new Error("Forbidden");
+  return viewer;
 }
 
 async function loadDeploymentActionRow(rowId: string) {
@@ -255,6 +250,7 @@ export async function approveDeploymentLocalChanges(formData: FormData) {
   if (!rowId) return;
   const row = await loadDeploymentActionRow(rowId);
   if (!row || row.status !== DEPLOYMENT_LOCAL_CHANGES_PENDING) return;
+  await requireProjectAccess(actor, { id: row.projectId });
   if (!canActOnDeploymentRow(row, actor.id)) throw new Error("Only the reporter or reviewer can approve deployment local changes.");
 
   await approveLocalChangesAndOpenDeploymentPr({
@@ -270,6 +266,7 @@ export async function approveAndMergeDeploymentPullRequest(formData: FormData) {
   if (!rowId) return;
   const row = await loadDeploymentActionRow(rowId);
   if (!row || row.status !== "open") return;
+  await requireProjectAccess(actor, { id: row.projectId });
   if (!canActOnDeploymentRow(row, actor.id)) throw new Error("Only the reporter or reviewer can approve and merge deployment pull requests.");
 
   const result = await approveAndMergeBitbucketPullRequest(row);

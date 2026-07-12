@@ -6,12 +6,12 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { isValidClientMessageId } from "@/lib/agents/ops/client-message-id";
 import { revalidatePath } from "next/cache";
-import { auth } from "@/lib/auth";
+import { requireOwner } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import { stripChatMarkdown as compactText, truncateSummary } from "@/lib/text";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, rename, rm, stat, writeFile, readdir, readFile, chmod, chown } from "node:fs/promises";
+import { mkdir, rename, rm, stat, writeFile, chmod, chown } from "node:fs/promises";
 import {
   getOrCreateAgentSessionBinding,
   type AgentSessionBinding,
@@ -32,8 +32,12 @@ import {
   directChatArchiveChainLimit,
   directChatArchiveContextMessages,
   directChatContextMessages,
-  intEnv,
 } from "@/lib/agents/context/caps";
+import {
+  appendFilesContext,
+  getAgentChatUploadDir,
+  getConversationFolderIds,
+} from "@/lib/agents/chat/direct/files";
 
 const execFileAsync = promisify(execFile);
 const MONITOR_DIRECT_CHAT_CONTEXT = [
@@ -47,11 +51,8 @@ const MONITOR_DIRECT_CHAT_CONTEXT = [
 ].join("\n");
 
 async function requireUserId() {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) throw new Error("Unauthenticated");
-  const userKind = session.user.kind === "agent" ? "agent" : "human";
-  return { userId, userName: session.user.name ?? "PM user", userKind };
+  const viewer = await requireOwner();
+  return { userId: viewer.id, userName: viewer.username, userKind: viewer.kind };
 }
 
 function agentCallbackBaseUrl() {
@@ -94,78 +95,6 @@ function shouldIncludeDirectFilesContext(args: {
   if (process.env.PM_DIRECT_CHAT_ALWAYS_INCLUDE_FILES_CONTEXT === "1") return true;
   if (args.projectId) return false;
   return /\b(attach(?:ed|ment|ments)?|file|files|document|context|folder|upload|readme|logs?)\b/i.test(args.body);
-}
-
-export async function getAgentChatUploadDir(agentSlug: string, chatId: string): Promise<string> {
-  const basePattern = process.env.PM_AGENT_SAMBA_ROOT ?? "/srv/samba/shared/[agent]";
-  const baseDir = basePattern.replace("[agent]", agentSlug);
-  return path.join(baseDir, "chats", chatId);
-}
-
-export async function getConversationFolderIds(agentSlug: string, baseArchiveId: string | null): Promise<string[]> {
-  const folders: string[] = [];
-  let currentId = baseArchiveId;
-  const seen = new Set<string>();
-  while (currentId && !seen.has(currentId)) {
-    seen.add(currentId);
-    const archive = await db.directAgentChatArchive.findFirst({
-      where: { id: currentId, agentSlug, deletedAt: null },
-      select: { id: true, parentArchiveId: true },
-    });
-    if (!archive) break;
-    folders.push(archive.id);
-    currentId = archive.parentArchiveId;
-  }
-  return folders;
-}
-
-export async function appendFilesContext(agentSlug: string, folderIds: string[]): Promise<string> {
-  const lines: string[] = [];
-  const limit = intEnv("PM_AGENT_CONTEXT_ATTACHMENT_TEXT_MAX_BYTES", 98304, 1024, 512 * 1024);
-  let totalBytes = 0;
-
-  for (const folderId of folderIds) {
-    const dir = await getAgentChatUploadDir(agentSlug, folderId);
-    if (!existsSync(dir)) continue;
-
-    try {
-      const entries = await readdir(dir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isFile()) continue;
-        const filePath = path.join(dir, entry.name);
-        const stats = await stat(filePath);
-        
-        lines.push(`- File: ${entry.name} (${stats.size} bytes)`);
-        lines.push(`  Path: ${filePath}`);
-
-        // Read content if it's text-like and within limits
-        const ext = path.extname(entry.name).toLowerCase();
-        const isText = [".txt", ".md", ".js", ".ts", ".py", ".json", ".csv", ".yml", ".yaml", ".sh", ".html", ".css"].includes(ext);
-        if (isText && stats.size < 50000 && totalBytes + stats.size < limit) {
-          try {
-            const content = await readFile(filePath, "utf8");
-            lines.push("  Content:");
-            lines.push("  ```");
-            lines.push(content.slice(0, 10000));
-            lines.push("  ```");
-            totalBytes += stats.size;
-          } catch {
-            lines.push("  [Error reading content]");
-          }
-        }
-        lines.push("");
-      }
-    } catch (e) {
-      console.error(`Error reading files context for ${dir}`, e);
-    }
-  }
-
-  if (lines.length === 0) return "";
-  return [
-    "ATTACHED CONTEXT FILES (accessible in your local environment):",
-    ...lines,
-    "",
-  ].join("\n");
 }
 
 function formatTranscript(

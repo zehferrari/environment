@@ -1,17 +1,21 @@
 import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { createWorkspace, restoreWorkspace } from "@/lib/workspaces/service";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
+import {
+  accessibleProjectWhere,
+  requireOwner,
+  requireViewer,
+  workspaceAccessWhere,
+} from "@/lib/auth/permissions";
 
 export const dynamic = "force-dynamic";
 
 async function createWorkspaceAction(formData: FormData) {
   "use server";
-  const session = await auth();
-  if (!session?.user?.id) throw new Error("Unauthenticated");
+  await requireOwner();
   const workspace = await createWorkspace({
     name: String(formData.get("name") ?? ""),
     slug: String(formData.get("slug") ?? ""),
@@ -24,8 +28,7 @@ async function createWorkspaceAction(formData: FormData) {
 
 async function restoreWorkspaceAction(formData: FormData) {
   "use server";
-  const session = await auth();
-  if (!session?.user?.id) throw new Error("Unauthenticated");
+  await requireOwner();
   const slug = String(formData.get("slug") ?? "");
   await restoreWorkspace(slug);
   revalidatePath("/workspaces");
@@ -36,17 +39,27 @@ async function restoreWorkspaceAction(formData: FormData) {
 export default async function WorkspacesPage({ searchParams }: { searchParams?: Promise<{ archived?: string }> }) {
   const params = await searchParams;
   const showingArchived = params?.archived === "1";
+  const viewer = await requireViewer();
+  const visibleProjects = accessibleProjectWhere(viewer);
   const [workspaces, archivedCount] = await Promise.all([
     db.workspace.findMany({
-      where: showingArchived ? { archivedAt: { not: null } } : { archivedAt: null },
+      where: {
+        AND: [
+          showingArchived ? { archivedAt: { not: null } } : { archivedAt: null },
+          workspaceAccessWhere(viewer),
+        ],
+      },
       orderBy: showingArchived ? [{ archivedAt: "desc" }, { name: "asc" }] : [{ type: "asc" }, { name: "asc" }],
       include: {
-        projects: { select: { projectId: true } },
+        projects: { where: { project: visibleProjects }, select: { projectId: true } },
         agentPool: { select: { agentId: true } },
       },
     }),
-    db.workspace.count({ where: { archivedAt: { not: null } } }),
+    db.workspace.count({ where: { AND: [{ archivedAt: { not: null } }, workspaceAccessWhere(viewer)] } }),
   ]);
+  if (!viewer.isOwner && !showingArchived && workspaces.length === 1) {
+    redirect(`/workspaces/${workspaces[0].slug}`);
+  }
 
   return (
     <div className="space-y-5">
@@ -56,11 +69,13 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
           <p className="mt-1 text-body text-text-muted">
             {showingArchived
               ? "Restore inactive workspaces without deleting their projects, tasks, or history."
-              : "Group projects and coding-agent pools into operating contexts."}
+              : viewer.isOwner
+                ? "Group projects and coding-agent pools into operating contexts."
+                : "Workspaces containing projects available to your account."}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {!showingArchived ? (
+          {!showingArchived && viewer.isOwner ? (
             <a href="#new-workspace" className="rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-white shadow-sm hover:opacity-90">
               New workspace
             </a>
@@ -78,7 +93,7 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
       </div>
 
 
-      {!showingArchived ? (
+      {!showingArchived && viewer.isOwner ? (
         <form id="new-workspace" action={createWorkspaceAction} className="rounded-panel border border-line bg-panel p-card shadow-sm">
           <div className="mb-4">
             <h2 className="text-base font-semibold tracking-tight">Create workspace</h2>
@@ -163,13 +178,15 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
                       <dt className="text-nano uppercase tracking-wider">Projects</dt>
                       <dd className="text-body font-semibold text-text">{workspace.projects.length}</dd>
                     </div>
-                    <div className="rounded-xl border border-line bg-bg px-3 py-2">
-                      <dt className="text-nano uppercase tracking-wider">Agent pool</dt>
-                      <dd className="text-body font-semibold text-text">{workspace.agentPool.length}</dd>
-                    </div>
+                    {viewer.isOwner ? (
+                      <div className="rounded-xl border border-line bg-bg px-3 py-2">
+                        <dt className="text-nano uppercase tracking-wider">Agent pool</dt>
+                        <dd className="text-body font-semibold text-text">{workspace.agentPool.length}</dd>
+                      </div>
+                    ) : null}
                   </dl>
                 </Link>
-                {showingArchived ? (
+                {showingArchived && viewer.isOwner ? (
                   <form action={restoreWorkspaceAction}>
                     <input type="hidden" name="slug" value={workspace.slug} />
                     <button type="submit" className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent">

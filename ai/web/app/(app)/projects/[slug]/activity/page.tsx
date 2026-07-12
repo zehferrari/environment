@@ -2,6 +2,12 @@ import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { describeActivity } from "@/lib/activity";
 import ActivityAgenda from "@/components/activity-agenda";
+import {
+  accessibleActivityWhere,
+  accessibleProjectWhere,
+  requireViewer,
+} from "@/lib/auth/permissions";
+import { getActorVisibility, visibleActivityRows } from "@/lib/users/actor-visibility";
 
 export const dynamic = "force-dynamic";
 
@@ -21,23 +27,27 @@ export default async function ProjectActivityPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const project = await db.project.findUnique({
-    where: { slug, deletedAt: null },
+  const viewer = await requireViewer();
+  const project = await db.project.findFirst({
+    where: accessibleProjectWhere(viewer, { slug, deletedAt: null }),
     select: { id: true },
   });
   if (!project) notFound();
 
-  const activity = await db.activityLog.findMany({
-    where: { projectId: project.id },
-    orderBy: { createdAt: "desc" },
-    take: ACTIVITY_FEED_LIMIT,
-    include: {
-      user: { select: actorSelect },
-      task: { select: { title: true } },
-    },
-  });
+  const [activity, actorVisibility] = await Promise.all([
+    db.activityLog.findMany({
+      where: await accessibleActivityWhere(viewer, { projectId: project.id }),
+      orderBy: { createdAt: "desc" },
+      take: ACTIVITY_FEED_LIMIT,
+      include: {
+        user: { select: actorSelect },
+        task: { select: { title: true } },
+      },
+    }),
+    getActorVisibility(viewer),
+  ]);
 
-  const feed = activity.map((row) => ({
+  const feed = visibleActivityRows(activity, actorVisibility).map((row) => ({
     id: row.id,
     createdAt: row.createdAt.toISOString(),
     label: describeActivity({

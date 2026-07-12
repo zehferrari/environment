@@ -11,7 +11,21 @@ const SEED_PASSWORD = process.env.PM_SEED_ZEH_PASSWORD ?? "password1"; // Stage 
  */
 export async function seedZehUser(): Promise<{ seeded: boolean }> {
   const existing = await db.user.findUnique({ where: { username: SEED_USERNAME } });
-  if (existing) return { seeded: false };
+  if (existing) {
+    const ownerExists = await db.user.findFirst({
+      where: { kind: "human", isOwner: true },
+      select: { id: true },
+    });
+    if (!ownerExists && existing.kind === "human") {
+      await db.user.update({ where: { id: existing.id }, data: { isOwner: true } });
+    }
+    return { seeded: false };
+  }
+
+  const ownerExists = await db.user.findFirst({
+    where: { kind: "human", isOwner: true },
+    select: { id: true },
+  });
 
   await db.user.create({
     data: {
@@ -21,6 +35,7 @@ export async function seedZehUser(): Promise<{ seeded: boolean }> {
       passwordHash: await hashPassword(SEED_PASSWORD),
       passwordSetAt: new Date(),
       mustRotatePassword: true,
+      isOwner: !ownerExists,
     },
   });
   return { seeded: true };

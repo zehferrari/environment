@@ -8,11 +8,13 @@ export default function ProjectTabs({
   hasSummary = false,
   hasCode = false,
   hasBin = false,
+  canAccessSettings = false,
 }: {
   slug: string;
   hasSummary?: boolean;
   hasCode?: boolean;
   hasBin?: boolean;
+  canAccessSettings?: boolean;
 }) {
   const pathname = usePathname() ?? "";
   const base = `/projects/${slug}`;
@@ -28,7 +30,7 @@ export default function ProjectTabs({
     { href: "/library", label: "Library" },
     ...(hasCode ? [{ href: "/code", label: "Code" }] : []),
     ...(hasCode ? [{ href: "/changes", label: "Changes" }] : []),
-    { href: "/settings", label: "Settings" },
+    ...(canAccessSettings ? [{ href: "/settings", label: "Settings" }] : []),
     ...(hasSummary ? [] : [{ href: "/activity", label: "Activity" }]),
     ...(hasBin ? [{ href: "/bin", label: "Bin" }] : []),
   ];

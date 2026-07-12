@@ -7,6 +7,12 @@ import { actorDisplayName, MessageAvatar, type MessageActor } from "@/components
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import { formatGridDate } from "@/lib/date-format";
 import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
+import { accessibleProjectWhere, accessibleTaskWhere, requireViewer } from "@/lib/auth/permissions";
+import {
+  getActorVisibility,
+  serializeVisibleActor,
+  type ActorVisibility,
+} from "@/lib/users/actor-visibility";
 
 export const dynamic = "force-dynamic";
 
@@ -45,25 +51,17 @@ const systemActor: MessageActor = {
   agent: null,
 };
 
-function serializeActor(actor: ActorRow | null): MessageActor | null {
-  if (!actor) return null;
-  return {
-    id: actor.id,
-    username: actor.username,
-    kind: actor.kind,
-    name: actor.name,
-    avatarUpdatedAt: actor.avatarUpdatedAt?.toISOString() ?? null,
-    agent: actor.agent,
-  };
+function serializeActor(actor: ActorRow | null, visibility: ActorVisibility): MessageActor | null {
+  return serializeVisibleActor(actor, visibility);
 }
 
-function buildTaskActivityActorMaps(rows: TaskActivityActorRow[]) {
+function buildTaskActivityActorMaps(rows: TaskActivityActorRow[], visibility: ActorVisibility) {
   const createdBy = new Map<string, MessageActor>();
   const updatedBy = new Map<string, MessageActor>();
 
   for (const row of rows) {
     if (!row.taskId) continue;
-    const actor = serializeActor(row.user) ?? systemActor;
+    const actor = serializeActor(row.user, visibility) ?? systemActor;
     if (!updatedBy.has(row.taskId)) updatedBy.set(row.taskId, actor);
     if (row.kind === "task.create" && !createdBy.has(row.taskId)) {
       createdBy.set(row.taskId, actor);
@@ -126,8 +124,9 @@ export default async function ProjectTasksPage({
   }>;
 }) {
   const [{ slug }, sp] = await Promise.all([params, searchParams]);
-  const project = await db.project.findUnique({
-    where: { slug, deletedAt: null },
+  const viewer = await requireViewer();
+  const project = await db.project.findFirst({
+    where: accessibleProjectWhere(viewer, { slug, deletedAt: null }),
     select: { id: true, name: true },
   });
   if (!project) notFound();
@@ -140,7 +139,7 @@ export default async function ProjectTasksPage({
   const pageSize = parsePageSize(sp.pageSize);
   const take = pageSize === "all" ? undefined : Number(pageSize);
 
-  const where = {
+  const where = accessibleTaskWhere(viewer, {
     projectId: project.id,
     deletedAt: null,
     parentTaskId: null,
@@ -149,10 +148,10 @@ export default async function ProjectTasksPage({
     ...(assigneeIds.length ? { assigneeId: { in: assigneeIds } } : {}),
     ...(reviewerIds.length ? { actingManagerId: { in: reviewerIds } } : {}),
     ...(status ? { status } : {}),
-  };
+  });
 
-  const [principals, tasks, totalCount, archivedCount, busyAgentSlugs] = await Promise.all([
-    listAssignablePrincipals(),
+  const [principals, tasks, totalCount, archivedCount, busyAgentSlugs, actorVisibility] = await Promise.all([
+    listAssignablePrincipals(viewer),
     db.task.findMany({
       where,
       orderBy: { updatedAt: "desc" },
@@ -177,9 +176,10 @@ export default async function ProjectTasksPage({
     }),
     db.task.count({ where }),
     db.task.count({
-      where: { projectId: project.id, deletedAt: null, parentTaskId: null, archivedAt: { not: null } },
+      where: accessibleTaskWhere(viewer, { projectId: project.id, deletedAt: null, parentTaskId: null, archivedAt: { not: null } }),
     }),
-    readBusyAgentSlugs(),
+    viewer.isOwner ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
+    getActorVisibility(viewer),
   ]);
   const taskIds = tasks.map((task) => task.id);
   const activityRows = taskIds.length > 0
@@ -193,7 +193,7 @@ export default async function ProjectTasksPage({
         },
       })
     : [];
-  const activityActors = buildTaskActivityActorMaps(activityRows);
+  const activityActors = buildTaskActivityActorMaps(activityRows, actorVisibility);
 
   // People filters carry avatars and allow multiple selection.
   const principalFilterOptions: AvatarComboboxOption[] = principals.map((p) => ({
@@ -238,13 +238,13 @@ export default async function ProjectTasksPage({
         </Link>
         <StatusPill status={task.status} />
         {canShowDeploymentForTask(task) ? <DeploymentIndicator status={deploymentStatus} /> : <span aria-hidden="true" />}
-        <PersonCell actor={serializeActor(task.reporter)} emptyLabel="none" />
+        <PersonCell actor={serializeActor(task.reporter, actorVisibility)} emptyLabel="none" />
         <PersonCell
-          actor={serializeActor(task.assignee)}
+          actor={serializeActor(task.assignee, actorVisibility)}
           emptyLabel="unassigned"
           busy={task.status === "In Progress" && Boolean(task.assignee?.agent?.slug && busyAgentSlugs.has(task.assignee.agent.slug))}
         />
-        <PersonCell actor={serializeActor(task.actingManager)} emptyLabel="none" />
+        <PersonCell actor={serializeActor(task.actingManager, actorVisibility)} emptyLabel="none" />
         <ElapsedCell
           status={task.status}
           createdAt={task.createdAt}
@@ -254,12 +254,12 @@ export default async function ProjectTasksPage({
         />
         <DateActorCell
           iso={task.createdAt.toISOString()}
-          actor={activityActors.createdBy.get(task.id) ?? serializeActor(task.reporter)}
+          actor={activityActors.createdBy.get(task.id) ?? serializeActor(task.reporter, actorVisibility)}
           dateOnly
         />
         <DateActorCell
           iso={task.updatedAt.toISOString()}
-          actor={activityActors.updatedBy.get(task.id) ?? activityActors.createdBy.get(task.id) ?? serializeActor(task.reporter)}
+          actor={activityActors.updatedBy.get(task.id) ?? activityActors.createdBy.get(task.id) ?? serializeActor(task.reporter, actorVisibility)}
         />
       </li>
     );
@@ -465,11 +465,11 @@ export default async function ProjectTasksPage({
                   ) : (
                     <span aria-hidden="true" />
                   )}
-                  <PersonCell actor={serializeActor(group.epic?.reporter ?? null)} emptyLabel="—" />
+                  <PersonCell actor={serializeActor(group.epic?.reporter ?? null, actorVisibility)} emptyLabel="—" />
                   {/* Assignee column intentionally blank at the epic level. */}
                   <span aria-hidden="true" />
                   <PersonCell
-                    actor={serializeActor(group.epic?.actingManager ?? group.epic?.reporter ?? null)}
+                    actor={serializeActor(group.epic?.actingManager ?? group.epic?.reporter ?? null, actorVisibility)}
                     emptyLabel="—"
                   />
                   <span className="flex items-center justify-end gap-1.5 text-caption tabular-nums text-text-muted">

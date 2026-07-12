@@ -14,6 +14,7 @@
 // "(agent)" suffixes are consistent.
 
 import { db } from "@/lib/db";
+import type { Viewer } from "@/lib/auth/permissions";
 
 export interface AssignablePrincipal {
   id: string;
@@ -29,19 +30,24 @@ export interface AssignablePrincipal {
   agentAvatar: string | null;
 }
 
-export async function listAssignablePrincipals(): Promise<
+export async function listAssignablePrincipals(viewer?: Viewer): Promise<
   AssignablePrincipal[]
 > {
+  // Internal agent/context callers intentionally omit a browser viewer and
+  // need the complete workflow pool. Human UI callers pass their Viewer.
+  const canAssignAgents = !viewer || viewer.isOwner || viewer.kind === "agent";
   const rows = await db.user.findMany({
     where: {
       status: "active",
-      OR: [
-        { kind: "human" },
-        {
-          kind: "agent",
-          agent: { is: { role: "coding", deactivatedAt: null } },
-        },
-      ],
+      OR: canAssignAgents
+        ? [
+            { kind: "human" },
+            {
+              kind: "agent",
+              agent: { is: { role: "coding", deactivatedAt: null } },
+            },
+          ]
+        : [{ kind: "human" }],
     },
     orderBy: [{ kind: "asc" }, { username: "asc" }],
     select: {

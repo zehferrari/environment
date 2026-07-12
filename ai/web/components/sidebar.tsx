@@ -1,5 +1,11 @@
-import { auth, signOut } from "@/lib/auth";
+import { signOut } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { redirect } from "next/navigation";
+import {
+  accessibleProjectWhere,
+  getViewer,
+  workspaceAccessWhere,
+} from "@/lib/auth/permissions";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 import SidebarNav, {
   type SidebarAgent,
@@ -51,9 +57,12 @@ function statusFor(
 }
 
 export default async function Sidebar() {
-  const [session, agents, snapshot, projects, workspaces, latestAgentMsgs] = await Promise.all([
-    auth(),
-    db.agent.findMany({
+  const viewer = await getViewer();
+  if (!viewer) redirect("/login");
+  const projectWhere = accessibleProjectWhere(viewer, { archivedAt: null, deletedAt: null });
+  const workspaceWhere = workspaceAccessWhere(viewer);
+  const [agents, snapshot, projects, workspaces, latestAgentMsgs] = await Promise.all([
+    viewer.isOwner ? db.agent.findMany({
       where: {
         deactivatedAt: null,
         user: { is: { status: "active" } },
@@ -67,15 +76,15 @@ export default async function Sidebar() {
         deactivatedAt: true,
         user: { select: { username: true, status: true } },
       },
-    }),
-    readSnapshot(),
+    }) : Promise.resolve([]),
+    viewer.isOwner ? readSnapshot() : Promise.resolve(null),
     db.project.findMany({
-      where: { archivedAt: null, deletedAt: null },
+      where: projectWhere,
       orderBy: { name: "asc" },
       select: { slug: true, name: true },
     }),
     db.workspace.findMany({
-      where: { archivedAt: null },
+      where: { AND: [{ archivedAt: null }, workspaceWhere] },
       orderBy: { name: "asc" },
       select: {
         slug: true,
@@ -83,6 +92,7 @@ export default async function Sidebar() {
         logoPath: true,
         logoUpdatedAt: true,
         projects: {
+          where: { project: projectWhere },
           orderBy: { createdAt: "asc" },
           select: {
             project: {
@@ -98,18 +108,15 @@ export default async function Sidebar() {
     }),
     // Newest agent-authored direct-chat message per agent — paired with the
     // viewer's read cursor below to decide the unread red dot.
-    db.directAgentChatMessage.groupBy({
+    viewer.isOwner ? db.directAgentChatMessage.groupBy({
       by: ["agentSlug"],
       where: { deletedAt: null, sender: { is: { kind: "agent" } } },
       _max: { createdAt: true },
-    }),
+    }) : Promise.resolve([]),
   ]);
-  const user = session?.user as
-    | { id?: string; name?: string; kind?: string }
-    | undefined;
-  const readCursors = user?.id
+  const readCursors = viewer.isOwner
     ? await db.chatReadCursor.findMany({
-        where: { userId: user.id },
+        where: { userId: viewer.id },
         select: { agentSlug: true, lastReadAt: true },
       })
     : [];
@@ -119,13 +126,10 @@ export default async function Sidebar() {
   );
   // Human display name + avatar for the chip below (session.user.name is the
   // username; the editable display name lives on the User row).
-  const me = user?.id
-    ? await db.user.findUnique({
-        where: { id: user.id },
-        select: { name: true, username: true, avatarUpdatedAt: true },
-      })
-    : null;
-  const isAdmin = user?.name === "zeh";
+  const me = await db.user.findUnique({
+    where: { id: viewer.id },
+    select: { name: true, username: true, avatarUpdatedAt: true },
+  });
   const liveAgents = snapshot?.agents ?? {};
 
   // Surface the most active agents first: Busy → Live → Idle → Stale, then
@@ -175,7 +179,7 @@ export default async function Sidebar() {
       .map(({ project }) => project)
       .filter((project) => !project.archivedAt && !project.deletedAt)
       .map((project) => ({ slug: project.slug, name: project.name })),
-    agentSlugs: workspace.agentPool.map(({ agent }) => agent.slug),
+    agentSlugs: viewer.isOwner ? workspace.agentPool.map(({ agent }) => agent.slug) : [],
   }));
 
   async function signOutAction() {
@@ -185,13 +189,14 @@ export default async function Sidebar() {
 
   return (
     <SidebarNav
-      isAdmin={isAdmin}
+      isOwner={viewer.isOwner}
+      canViewAgents={viewer.isOwner}
       agents={navAgents}
       projects={navProjects}
       workspaces={navWorkspaces}
-      meName={me?.name ?? me?.username ?? user?.name ?? "?"}
-      meKind={user?.kind ?? null}
-      userId={user?.id ?? null}
+      meName={me?.name ?? me?.username ?? viewer.username}
+      meKind={viewer.kind}
+      userId={viewer.id}
       userAvatarVersion={me?.avatarUpdatedAt ? me.avatarUpdatedAt.getTime() : null}
       signOutAction={signOutAction}
     />

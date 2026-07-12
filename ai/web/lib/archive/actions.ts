@@ -1,16 +1,18 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { auth } from "@/lib/auth";
+import {
+  requireEpicAccess,
+  requireProjectAccess,
+  requireTaskAccess,
+  requireViewer,
+} from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 
 async function requireActor() {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) throw new Error("Unauthenticated");
-  return { id };
+  return requireViewer();
 }
 
 export async function archiveTask(formData: FormData) {
@@ -18,6 +20,8 @@ export async function archiveTask(formData: FormData) {
   const taskId = String(formData.get("taskId") ?? "");
   const projectSlug = String(formData.get("projectSlug") ?? "");
   if (!taskId || !projectSlug) return;
+  await requireTaskAccess(actor, taskId);
+  await requireProjectAccess(actor, { slug: projectSlug });
 
   const task = await db.task.findUnique({
     where: { id: taskId },
@@ -61,6 +65,8 @@ export async function unarchiveTask(formData: FormData) {
   const taskId = String(formData.get("taskId") ?? "");
   const projectSlug = String(formData.get("projectSlug") ?? "");
   if (!taskId || !projectSlug) return;
+  await requireTaskAccess(actor, taskId);
+  await requireProjectAccess(actor, { slug: projectSlug });
 
   const task = await db.task.findUnique({
     where: { id: taskId },
@@ -103,6 +109,8 @@ export async function archiveEpic(formData: FormData) {
   const epicId = String(formData.get("epicId") ?? "");
   const projectSlug = String(formData.get("projectSlug") ?? "");
   if (!epicId || !projectSlug) return;
+  await requireEpicAccess(actor, epicId);
+  await requireProjectAccess(actor, { slug: projectSlug });
 
   const epic = await db.epic.findUnique({
     where: { id: epicId },
@@ -143,6 +151,8 @@ export async function unarchiveEpic(formData: FormData) {
   const epicId = String(formData.get("epicId") ?? "");
   const projectSlug = String(formData.get("projectSlug") ?? "");
   if (!epicId || !projectSlug) return;
+  await requireEpicAccess(actor, epicId);
+  await requireProjectAccess(actor, { slug: projectSlug });
 
   const epic = await db.epic.findUnique({
     where: { id: epicId },

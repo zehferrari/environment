@@ -23,9 +23,9 @@ async function loginAction(formData: FormData) {
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; next?: string }>;
+  searchParams: Promise<{ error?: string; next?: string; invited?: string; reset?: string }>;
 }) {
-  const { error, next } = await searchParams;
+  const { error, next, invited, reset } = await searchParams;
 
   return (
     <main className="min-h-screen flex items-center justify-center px-4">
@@ -43,6 +43,16 @@ export default async function LoginPage({
             Invalid username or password.
           </p>
         )}
+        {invited === "1" ? (
+          <p className="mb-3 rounded-lg border border-ok/40 bg-ok/10 px-3 py-2 text-body text-ok">
+            Account activated. Sign in with your new password.
+          </p>
+        ) : null}
+        {reset === "1" ? (
+          <p className="mb-3 rounded-lg border border-ok/40 bg-ok/10 px-3 py-2 text-body text-ok">
+            Password updated. Sign in with your new password.
+          </p>
+        ) : null}
 
         <input type="hidden" name="next" value={next ?? "/projects"} />
 

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
+import type { Prisma } from "@prisma/client";
 import { describeActivity } from "@/lib/activity";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
@@ -9,6 +10,15 @@ import { DEPLOYMENT_STATUSES } from "@/lib/deploy/deployment-status";
 import { emptyDeploymentRollup, getDeploymentRollupsByProject, mergeDeploymentRollup, type DeploymentRollup } from "@/lib/workspaces/deployment-rollup";
 import ActivityAgenda from "@/components/activity-agenda";
 import AddProjectFab from "./add-project-fab";
+import {
+  accessibleEpicWhere,
+  accessibleProjectWhere,
+  accessibleTaskWhere,
+  requireOwner,
+  requireViewer,
+  workspaceAccessWhere,
+} from "@/lib/auth/permissions";
+import { getActorVisibility, serializeVisibleActor, visibleActivityRows } from "@/lib/users/actor-visibility";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +77,7 @@ type WorkspaceDashboardGroup = {
 // modal: one form, the project's own fields).
 async function createProject(formData: FormData) {
   "use server";
+  await requireOwner();
   const name = String(formData.get("name") ?? "").trim();
   if (!name || name.length > 200) return;
   const description = String(formData.get("description") ?? "").trim() || null;
@@ -179,9 +190,12 @@ function mergeStats(target: ProjectDashboardStats, source: ProjectDashboardStats
 }
 
 export default async function ProjectsPage() {
+  const viewer = await requireViewer();
+  const actorVisibility = await getActorVisibility(viewer);
+  const activeProjectWhere = accessibleProjectWhere(viewer, { archivedAt: null, deletedAt: null });
   const [workspaces, deletedCount, archivedCount, principals] = await Promise.all([
     db.workspace.findMany({
-      where: { archivedAt: null },
+      where: { AND: [{ archivedAt: null }, workspaceAccessWhere(viewer)] },
       orderBy: { name: "asc" },
       select: {
         id: true,
@@ -190,7 +204,7 @@ export default async function ProjectsPage() {
         description: true,
         type: true,
         projects: {
-          where: { project: { archivedAt: null, deletedAt: null } },
+          where: { project: activeProjectWhere },
           orderBy: { createdAt: "asc" },
           select: {
             project: {
@@ -209,46 +223,77 @@ export default async function ProjectsPage() {
         },
       },
     }),
-    db.project.count({ where: { deletedAt: { not: null } } }),
-    db.project.count({ where: { archivedAt: { not: null }, deletedAt: null } }),
-    listAssignablePrincipals(),
+    db.project.count({ where: accessibleProjectWhere(viewer, { deletedAt: { not: null } }) }),
+    db.project.count({ where: accessibleProjectWhere(viewer, { archivedAt: { not: null }, deletedAt: null }) }),
+    listAssignablePrincipals(viewer),
   ]);
 
   const projects = workspaces.flatMap((workspace) => workspace.projects.map(({ project }) => project));
   const projectIds = projects.map((p) => p.id);
   const statsByProject = new Map(projects.map((p) => [p.id, emptyStats()]));
+  const visibleEpicIds = viewer.isOwner || projectIds.length === 0
+    ? []
+    : (await db.epic.findMany({
+        where: accessibleEpicWhere(viewer, { projectId: { in: projectIds } }),
+        select: { id: true },
+      })).map((epic) => epic.id);
+  const memberNonTaskActivity: Prisma.ActivityLogWhereInput = {
+    taskId: null,
+    NOT: { kind: { startsWith: "task." } },
+    AND: visibleEpicIds.length > 0
+      ? [{
+          OR: [
+            { NOT: { kind: { startsWith: "epic." } } },
+            {
+              AND: [
+                { kind: { startsWith: "epic." } },
+                { OR: visibleEpicIds.map((id) => ({ payload: { contains: id } })) },
+              ],
+            },
+          ],
+        }]
+      : [{ NOT: { kind: { startsWith: "epic." } } }],
+  };
+  const activityVisibilityWhere: Prisma.ActivityLogWhereInput = viewer.isOwner
+    ? {}
+    : {
+        OR: [
+          { task: { is: accessibleTaskWhere(viewer) } },
+          memberNonTaskActivity,
+        ],
+      };
 
   const [taskStatusCounts, epicStatusCounts, blockedCounts, recentProjectActivity, activity, deploymentRollups] =
     projectIds.length > 0
       ? await Promise.all([
           db.task.groupBy({
             by: ["projectId", "status"],
-            where: { projectId: { in: projectIds }, deletedAt: null, archivedAt: null, parentTaskId: null },
+            where: accessibleTaskWhere(viewer, { projectId: { in: projectIds }, deletedAt: null, archivedAt: null, parentTaskId: null }),
             _count: { _all: true },
           }),
           db.epic.groupBy({
             by: ["projectId", "status"],
-            where: { projectId: { in: projectIds }, deletedAt: null, archivedAt: null },
+            where: accessibleEpicWhere(viewer, { projectId: { in: projectIds }, deletedAt: null, archivedAt: null }),
             _count: { _all: true },
           }),
           db.task.groupBy({
             by: ["projectId"],
-            where: {
+            where: accessibleTaskWhere(viewer, {
               projectId: { in: projectIds },
               deletedAt: null,
               archivedAt: null,
               parentTaskId: null,
               blockedBy: { is: { deletedAt: null, status: { not: "Done" } } },
-            },
+            }),
             _count: { _all: true },
           }),
-          db.activityLog.groupBy({
-            by: ["projectId"],
-            where: { projectId: { in: projectIds } },
-            _max: { createdAt: true },
-          }),
+          Promise.all(projectIds.map((projectId) => db.activityLog.findFirst({
+            where: { AND: [{ projectId }, activityVisibilityWhere] },
+            orderBy: { createdAt: "desc" },
+            select: { projectId: true, createdAt: true },
+          }))),
           db.activityLog.findMany({
-            where: { projectId: { in: projectIds } },
+            where: { AND: [{ projectId: { in: projectIds } }, activityVisibilityWhere] },
             orderBy: { createdAt: "desc" },
             take: ACTIVITY_FEED_LIMIT,
             include: {
@@ -257,7 +302,10 @@ export default async function ProjectsPage() {
               task: { select: { title: true } },
             },
           }),
-          getDeploymentRollupsByProject(db, projectIds),
+          getDeploymentRollupsByProject(db, projectIds, {
+            epic: accessibleEpicWhere(viewer),
+            task: accessibleTaskWhere(viewer),
+          }),
         ])
       : [[], [], [], [], [], new Map<string, DeploymentRollup>()] as const;
 
@@ -278,8 +326,9 @@ export default async function ProjectsPage() {
     if (stats) stats.blocked = row._count._all;
   }
   for (const row of recentProjectActivity) {
+    if (!row) continue;
     const stats = row.projectId ? statsByProject.get(row.projectId) : null;
-    if (stats) stats.recentActivityAt = row._max.createdAt ?? null;
+    if (stats) stats.recentActivityAt = row.createdAt;
   }
   for (const [projectId, deployment] of deploymentRollups) {
     const stats = statsByProject.get(projectId);
@@ -318,26 +367,20 @@ export default async function ProjectsPage() {
     { workspaces: workspaceGroups.length, projects: projectIds.length, tasks: 0, active: 0, review: 0, blocked: 0, epics: 0 },
   );
 
-  const feed = activity.map((row) => ({
-    id: row.id,
-    createdAt: row.createdAt.toISOString(),
-    label: `${row.project?.name ?? "Project"}: ${describeActivity({
-      kind: row.kind,
-      payload: row.payload,
-      actorName: row.user?.username ?? null,
-      taskTitle: row.task?.title ?? null,
-    })}`,
-    actor: row.user
-      ? {
-          id: row.user.id,
-          username: row.user.username,
-          kind: row.user.kind,
-          name: row.user.name,
-          avatarUpdatedAt: row.user.avatarUpdatedAt?.toISOString() ?? null,
-          agent: row.user.agent,
-        }
-      : null,
-  }));
+  const feed = visibleActivityRows(activity, actorVisibility).map((row) => {
+    const actor = serializeVisibleActor(row.user, actorVisibility);
+    return {
+      id: row.id,
+      createdAt: row.createdAt.toISOString(),
+      label: `${row.project?.name ?? "Project"}: ${describeActivity({
+        kind: row.kind,
+        payload: row.payload,
+        actorName: actor?.username ?? null,
+        taskTitle: row.task?.title ?? null,
+      })}`,
+      actor,
+    };
+  });
 
   return (
     <div className="space-y-6">
@@ -397,10 +440,12 @@ export default async function ProjectsPage() {
         </div>
       )}
 
-      <AddProjectFab
-        principals={principals.map((p) => ({ id: p.id, name: p.name }))}
-        createProjectAction={createProject}
-      />
+      {viewer.isOwner ? (
+        <AddProjectFab
+          principals={principals.map((p) => ({ id: p.id, name: p.name }))}
+          createProjectAction={createProject}
+        />
+      ) : null}
     </div>
   );
 }

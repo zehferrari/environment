@@ -20,10 +20,14 @@ type Principal = {
 export default function NewEpicFab({
   projectSlug,
   principals,
+  canAssignAgents,
+  canSetPrivate,
   createEpicAction,
 }: {
   projectSlug: string;
   principals: Principal[];
+  canAssignAgents: boolean;
+  canSetPrivate: boolean;
   createEpicAction: (formData: FormData) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
@@ -85,6 +89,12 @@ export default function NewEpicFab({
               placeholder="Description (optional) — markdown supported"
               className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body leading-relaxed outline-none focus:border-accent"
             />
+            {canSetPrivate ? (
+              <label className="flex items-center justify-between gap-3 rounded-lg border border-line bg-bg px-3 py-2 text-caption">
+                <span>Private</span>
+                <input type="checkbox" name="private" className="h-4 w-4 accent-accent" />
+              </label>
+            ) : null}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label className="text-caption">
                 <span className="mb-1 block text-text-muted">
@@ -110,24 +120,22 @@ export default function NewEpicFab({
               </label>
             </div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {canAssignAgents ? (
+                <label className="text-caption">
+                  <span className="mb-1 block text-text-muted">Worker pool</span>
+                  <AvatarCombobox
+                    formId="newEpicForm"
+                    name="assigneeId"
+                    defaultValues={[]}
+                    options={workerOptions}
+                    emptyLabel="No workers"
+                    ariaLabel="Worker pool"
+                    multiple
+                  />
+                </label>
+              ) : null}
               <label className="text-caption">
-                <span className="mb-1 block text-text-muted">
-                  Worker pool
-                </span>
-                <AvatarCombobox
-                  formId="newEpicForm"
-                  name="assigneeId"
-                  defaultValues={[]}
-                  options={workerOptions}
-                  emptyLabel="No workers"
-                  ariaLabel="Worker pool"
-                  multiple
-                />
-              </label>
-              <label className="text-caption">
-                <span className="mb-1 block text-text-muted">
-                  Acting manager
-                </span>
+                <span className="mb-1 block text-text-muted">Acting manager</span>
                 <AvatarCombobox
                   formId="newEpicForm"
                   name="actingManagerId"
@@ -137,19 +145,19 @@ export default function NewEpicFab({
                   ariaLabel="Acting manager"
                 />
               </label>
-              <label className="text-caption">
-                <span className="mb-1 block text-text-muted">
-                  Deploy reviewer
-                </span>
-                <AvatarCombobox
-                  formId="newEpicForm"
-                  name="deployReviewerId"
-                  defaultValue=""
-                  options={workerOptions}
-                  emptyLabel="Use Monitor Agent"
-                  ariaLabel="Deploy reviewer"
-                />
-              </label>
+              {canAssignAgents ? (
+                <label className="text-caption">
+                  <span className="mb-1 block text-text-muted">Deploy reviewer</span>
+                  <AvatarCombobox
+                    formId="newEpicForm"
+                    name="deployReviewerId"
+                    defaultValue=""
+                    options={workerOptions}
+                    emptyLabel="Use Monitor Agent"
+                    ariaLabel="Deploy reviewer"
+                  />
+                </label>
+              ) : null}
             </div>
 
             <div className="flex justify-end gap-2 pt-1">

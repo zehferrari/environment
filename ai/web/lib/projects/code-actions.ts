@@ -5,7 +5,7 @@ import { access, lstat, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { promisify } from "node:util";
 import { revalidatePath } from "next/cache";
-import { auth } from "@/lib/auth";
+import { requireProjectAccess, requireViewer, type Viewer } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import {
   chooseCodeSource,
@@ -44,7 +44,7 @@ type MergeCodeSourceInput = CodeActionInput & {
 export async function saveCodeFile(input: SaveCodeFileInput): Promise<CodeActionResult> {
   try {
     const actor = await requireHumanActor();
-    const { project, source, relPath } = await resolveActionSource(input);
+    const { project, source, relPath } = await resolveActionSource(actor, input);
     if (!relPath) throw new Error("Choose a file before saving.");
     if (input.content.includes("\0")) throw new Error("Cannot save content containing NUL bytes.");
     const size = Buffer.byteLength(input.content, "utf8");
@@ -76,7 +76,7 @@ export async function saveCodeFile(input: SaveCodeFileInput): Promise<CodeAction
 export async function commitCodeFile(input: CommitCodeFileInput): Promise<CodeActionResult> {
   try {
     const actor = await requireHumanActor();
-    const { project, source, relPath } = await resolveActionSource(input);
+    const { project, source, relPath } = await resolveActionSource(actor, input);
     if (!relPath) throw new Error("Choose a file before committing.");
     const message = input.message.trim();
     if (!message) throw new Error("Commit message is required.");
@@ -105,7 +105,7 @@ export async function commitCodeFile(input: CommitCodeFileInput): Promise<CodeAc
 export async function pushCodeSource(input: CodeActionInput): Promise<CodeActionResult> {
   try {
     const actor = await requireHumanActor();
-    const { project, source, relPath } = await resolveActionSource(input);
+    const { project, source, relPath } = await resolveActionSource(actor, input);
     if (!source.branch || source.branch === "HEAD") throw new Error("Selected source is not on a named branch.");
 
     const pushed = await git(source.path, ["push", "origin", `HEAD:${source.branch}`], { timeout: 90_000 });
@@ -125,7 +125,7 @@ export async function pushCodeSource(input: CodeActionInput): Promise<CodeAction
 export async function mergeCodeSource(input: MergeCodeSourceInput): Promise<CodeActionResult> {
   try {
     const actor = await requireHumanActor();
-    const { project, source, sources, relPath } = await resolveActionSource(input);
+    const { project, source, sources, relPath } = await resolveActionSource(actor, input);
     const targetBranch = input.targetBranch.trim() || "main";
     if (source.branch === targetBranch) throw new Error("Selected source is already the target branch.");
     const target = sources.find((item) => item.branch === targetBranch);
@@ -160,18 +160,23 @@ export async function mergeCodeSource(input: MergeCodeSourceInput): Promise<Code
 }
 
 async function requireHumanActor() {
-  const session = await auth();
-  if (!session?.user?.id || session.user.kind === "agent") throw new Error("Forbidden");
+  const viewer = await requireViewer();
+  if (viewer.kind === "agent") throw new Error("Forbidden");
+  const user = await db.user.findUnique({
+    where: { id: viewer.id },
+    select: { name: true, email: true },
+  });
   return {
-    id: session.user.id,
-    name: session.user.name || session.user.email || session.user.id,
-    email: session.user.email || `${session.user.id}@local.pm`,
+    ...viewer,
+    name: user?.name || user?.email || viewer.username,
+    email: user?.email || `${viewer.username}@local.pm`,
   };
 }
 
-async function resolveActionSource(input: CodeActionInput) {
+async function resolveActionSource(viewer: Viewer, input: CodeActionInput) {
   const slug = input.slug.trim();
   if (!slug) throw new Error("Project slug is required.");
+  await requireProjectAccess(viewer, { slug });
   const project = await db.project.findUnique({
     where: { slug, deletedAt: null },
     select: { id: true, slug: true, repositoryPath: true },

@@ -13,6 +13,13 @@ the canonical task / epic / project state, every PM-channel turn must carry
 the same surface-agnostic context contract, and operators are expected to
 keep the loopback read endpoints working as described here.
 
+Human-originated PM authority belongs only to the Mission Control owner.
+Messages and comments from other human users are stored and may be returned as
+context, but they are knowledge in silence: they must not initiate a dispatch,
+grant, reply, workflow mutation, assignment, review, or implementation action.
+Trusted system workflow envelopes and authenticated agent callback turns remain
+actionable independently of human comment authorship.
+
 ## At a glance
 
 ```

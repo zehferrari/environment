@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 import { canEditProfile } from "@/lib/agents/management/profile";
 import { db } from "@/lib/db";
 
@@ -8,9 +9,14 @@ export const dynamic = "force-dynamic";
 
 const ALLOWED = new Set(["jira", "bitbucket", "gmail", "openaiAuth", "webhook"]);
 
-async function allowedFor(agentId: string) {
+async function allowedFor(agentId: string, ownerOnly = false) {
   const session = await auth();
   if (!session?.user) return { ok: false as const, status: 401, error: "unauth" };
+  if (ownerOnly) {
+    const isOwner = await isOwnerUserId(session.user.id);
+    if (!isOwner) return { ok: false as const, status: 404, error: "not found" };
+    return { ok: true as const, userId: session.user.id };
+  }
   const ok = await canEditProfile({ name: session.user.name, kind: session.user.kind }, agentId);
   if (!ok) return { ok: false as const, status: 403, error: "forbidden" };
   return { ok: true as const, userId: session.user.id };
@@ -18,7 +24,7 @@ async function allowedFor(agentId: string) {
 
 export async function GET(request: Request, { params }: { params: Promise<{ agentId: string }> }) {
   const { agentId } = await params;
-  const gate = await allowedFor(agentId);
+  const gate = await allowedFor(agentId, true);
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
   const integration = new URL(request.url).searchParams.get("integration") ?? "";
   if (!ALLOWED.has(integration)) return NextResponse.json({ error: "unknown integration" }, { status: 400 });

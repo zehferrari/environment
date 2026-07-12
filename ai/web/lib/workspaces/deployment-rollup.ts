@@ -1,5 +1,6 @@
 import { DEPLOYMENT_STATUSES, type DeploymentStatus } from "@/lib/deploy/deployment-status";
 import type { db as appDb } from "@/lib/db";
+import type { Prisma } from "@prisma/client";
 
 export type DeploymentRollupCounts = Record<DeploymentStatus, number>;
 
@@ -47,24 +48,38 @@ export function deploymentRollupsByProject(projectIds: string[], rows: Deploymen
   return rollups;
 }
 
-export async function getDeploymentRollupsByProject(db: DeploymentDb, projectIds: string[]) {
+export async function getDeploymentRollupsByProject(
+  db: DeploymentDb,
+  projectIds: string[],
+  visibility: { epic?: Prisma.EpicWhereInput; task?: Prisma.TaskWhereInput } = {},
+) {
   const rollups = new Map(projectIds.map((projectId) => [projectId, emptyDeploymentRollup()]));
   if (projectIds.length === 0) return rollups;
 
   const [epicRows, standaloneTaskRows] = await Promise.all([
     db.epic.groupBy({
       by: ["projectId", "deploymentStatus"],
-      where: { projectId: { in: projectIds }, deletedAt: null, archivedAt: null },
+      where: {
+        AND: [
+          { projectId: { in: projectIds }, deletedAt: null, archivedAt: null },
+          visibility.epic ?? {},
+        ],
+      },
       _count: { _all: true },
     }),
     db.task.groupBy({
       by: ["projectId", "deploymentStatus"],
       where: {
-        projectId: { in: projectIds },
-        deletedAt: null,
-        archivedAt: null,
-        parentTaskId: null,
-        epicId: null,
+        AND: [
+          {
+            projectId: { in: projectIds },
+            deletedAt: null,
+            archivedAt: null,
+            parentTaskId: null,
+            epicId: null,
+          },
+          visibility.task ?? {},
+        ],
       },
       _count: { _all: true },
     }),

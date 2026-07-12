@@ -12,14 +12,12 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { Prisma } from "@prisma/client";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { randomUUID } from "crypto";
 import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import {
   checkActingManager,
-  type ActorKind,
 } from "@/lib/workflow";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
@@ -30,6 +28,15 @@ import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/dep
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
 import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
+import {
+  accessibleEpicWhere,
+  accessibleTaskWhere,
+  assertAgentAssignmentAllowed,
+  requireEpicAccess,
+  requireProjectAccess,
+  requireViewer,
+  type Viewer,
+} from "@/lib/auth/permissions";
 
 const EPIC_STATUSES = ["Backlog", "In Progress", "Ready to Deploy", "Done"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
@@ -41,17 +48,25 @@ function isEpicStatus(value: unknown): value is EpicStatus {
   );
 }
 
-async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) throw new Error("Unauthenticated");
-  const kind: ActorKind = session.user?.kind === "agent" ? "agent" : "human";
-  return { id, kind };
+async function assertEpicTaskCascadeAllowed(
+  actor: Viewer,
+  where: Prisma.TaskWhereInput,
+): Promise<void> {
+  if (actor.isOwner || actor.kind === "agent") return;
+  const [allCount, visibleCount] = await Promise.all([
+    db.task.count({ where }),
+    db.task.count({ where: accessibleTaskWhere(actor, where) }),
+  ]);
+  if (allCount !== visibleCount) throw new Error("Not authorized");
 }
 
-async function loadEpicScoped(epicId: string, slug: string) {
-  return db.epic.findUnique({
-    where: { id: epicId },
+async function requireActor(): Promise<Viewer> {
+  return requireViewer();
+}
+
+async function loadEpicScoped(actor: Viewer, epicId: string, slug: string) {
+  return db.epic.findFirst({
+    where: accessibleEpicWhere(actor, { id: epicId }),
     include: {
       project: { select: { id: true, slug: true } },
       workers: { select: { userId: true, user: { select: { username: true } } } },
@@ -68,8 +83,9 @@ function getWorkerIds(formData: FormData) {
     .filter(Boolean))];
 }
 
-async function validateEpicWorkerIds(actor: { id: string; kind: ActorKind }, workerIds: string[]) {
+async function validateEpicWorkerIds(actor: Viewer, workerIds: string[]) {
   if (workerIds.length === 0) return [];
+  await assertAgentAssignmentAllowed(actor, workerIds);
   if (actor.kind === "agent" && workerIds.includes(actor.id)) {
     throw new Error("Agents cannot add themselves to an Epic worker pool.");
   }
@@ -89,8 +105,9 @@ async function validateEpicWorkerIds(actor: { id: string; kind: ActorKind }, wor
   return workerIds.map((id) => ({ id, username: byId.get(id)! }));
 }
 
-async function validateDeployReviewerId(deployReviewerId: string | null) {
+async function validateDeployReviewerId(actor: Viewer, deployReviewerId: string | null) {
   if (deployReviewerId === null) return null;
+  await assertAgentAssignmentAllowed(actor, [deployReviewerId]);
   const row = await db.user.findUnique({
     where: { id: deployReviewerId },
     select: {
@@ -178,6 +195,8 @@ export async function createEpic(formData: FormData) {
   const branchName = branchRaw === "" ? null : branchRaw;
   const commitRaw = String(formData.get("commitPrefix") ?? "").trim();
   const commitPrefix = commitRaw === "" ? null : commitRaw;
+  if (formData.has("private") && !actor.isOwner) throw new Error("Not authorized");
+  const isPrivate = actor.isOwner && formData.get("private") === "on";
   if (!slug || !title) return;
   if (title.length > 200) return;
   if (branchName !== null && branchName.length > 200) return;
@@ -188,10 +207,12 @@ export async function createEpic(formData: FormData) {
     select: { id: true },
   });
   if (!project) return;
+  await requireProjectAccess(actor, { id: project.id });
 
   // Acting manager picker on the create form follows the same
   // server-side rule as the edit picker — agents can't self-set.
   if (actingManagerId !== null) {
+    await assertAgentAssignmentAllowed(actor, [actingManagerId]);
     const check = checkActingManager({
       actor,
       newActingManagerId: actingManagerId,
@@ -207,7 +228,7 @@ export async function createEpic(formData: FormData) {
   }
 
   const workers = await validateEpicWorkerIds(actor, workerIds);
-  await validateDeployReviewerId(deployReviewerId);
+  await validateDeployReviewerId(actor, deployReviewerId);
 
   const epic = await db.epic.create({
     data: {
@@ -215,6 +236,7 @@ export async function createEpic(formData: FormData) {
       workItemKey: await allocateWorkItemKey(project.id),
       title,
       description: description || null,
+      private: isPrivate,
       actingManagerId,
       deployReviewerId,
       workers: {
@@ -262,8 +284,9 @@ export async function renameEpic(formData: FormData) {
   if (!slug || !epicId || !title) return;
   if (title.length > 200) return;
 
-  const epic = await loadEpicScoped(epicId, slug);
+  const epic = await loadEpicScoped(actor, epicId, slug);
   if (!epic || epic.project.slug !== slug) return;
+  await requireProjectAccess(actor, { id: epic.project.id });
 
   const newDescription = description === "" ? null : description;
   if (epic.title === title && (epic.description ?? null) === newDescription) {
@@ -309,12 +332,14 @@ export async function setEpicActingManager(formData: FormData) {
   const newActingManagerId = raw === "" ? null : raw;
   if (!slug || !epicId) return;
 
-  const epic = await loadEpicScoped(epicId, slug);
+  const epic = await loadEpicScoped(actor, epicId, slug);
   if (!epic || epic.project.slug !== slug) return;
+  await requireProjectAccess(actor, { id: epic.project.id });
   if (epic.actingManagerId === newActingManagerId) return;
 
   const check = checkActingManager({ actor, newActingManagerId });
   if (!check.ok) throw new Error(check.message);
+  await assertAgentAssignmentAllowed(actor, [epic.actingManagerId, newActingManagerId]);
 
   let toUsername: string | null = null;
   if (newActingManagerId !== null) {
@@ -389,10 +414,13 @@ export async function updateEpic(formData: FormData) {
   const status = String(formData.get("status") ?? "");
   const hasAssigneeField = formData.has("assigneeId") || formData.has("workerPoolSubmitted");
   const workerIds = getWorkerIds(formData);
+  const hasActingManagerField = formData.has("actingManagerId");
   const acmRaw = String(formData.get("actingManagerId") ?? "");
   const newActingManagerId = acmRaw === "" ? null : acmRaw;
+  const hasDeployReviewerField = formData.has("deployReviewerId");
   const deployReviewerRaw = String(formData.get("deployReviewerId") ?? "");
   const newDeployReviewerId = deployReviewerRaw === "" ? null : deployReviewerRaw;
+  const hasReporterField = formData.has("reporterId");
   const reporterRaw = String(formData.get("reporterId") ?? "");
   const newReporterId = reporterRaw === "" ? null : reporterRaw;
   const branchRaw = String(formData.get("branchName") ?? "").trim();
@@ -400,14 +428,18 @@ export async function updateEpic(formData: FormData) {
   const commitRaw = String(formData.get("commitPrefix") ?? "").trim();
   const newCommitPrefix = commitRaw === "" ? null : commitRaw;
   const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
+  const hasPrivateField = formData.has("privateSubmitted");
+  if ((hasPrivateField || formData.has("private")) && !actor.isOwner) throw new Error("Not authorized");
+  const newPrivate = formData.get("private") === "on";
 
   if (status !== "" && !isEpicStatus(status)) return;
   if (deploymentRaw !== "" && !isDeploymentStatus(deploymentRaw)) return;
   if (newBranchName !== null && newBranchName.length > 200) return;
   if (newCommitPrefix !== null && newCommitPrefix.length > 200) return;
 
-  const epic = await loadEpicScoped(epicId, slug);
+  const epic = await loadEpicScoped(actor, epicId, slug);
   if (!epic || epic.project.slug !== slug) return;
+  await requireProjectAccess(actor, { id: epic.project.id });
   const existingWorkerIds = epic.workers.map((worker) => worker.userId);
   const newWorkerIds = hasAssigneeField
     ? workerIds
@@ -415,6 +447,14 @@ export async function updateEpic(formData: FormData) {
 
   const data: Prisma.EpicUpdateInput = {};
   const activity: { kind: string; payload: string }[] = [];
+
+  if (hasPrivateField && newPrivate !== epic.private) {
+    data.private = newPrivate;
+    activity.push({
+      kind: "epic.privacy",
+      payload: JSON.stringify({ epicId, from: epic.private, to: newPrivate }),
+    });
+  }
 
   // Title / description
   if (
@@ -456,6 +496,7 @@ export async function updateEpic(formData: FormData) {
   const workerPoolChanged = hasAssigneeField && !sameIds(existingWorkerIds, newWorkerIds);
   let newWorkers: Array<{ id: string; username: string }> = [];
   if (workerPoolChanged) {
+    await assertAgentAssignmentAllowed(actor, existingWorkerIds);
     newWorkers = await validateEpicWorkerIds(actor, newWorkerIds);
     data.approvedOn = null;
     data.approvedBy = { disconnect: true };
@@ -480,7 +521,8 @@ export async function updateEpic(formData: FormData) {
   }
 
   // Acting manager (no agent self-set; target must be active)
-  if (newActingManagerId !== epic.actingManagerId) {
+  if (hasActingManagerField && newActingManagerId !== epic.actingManagerId) {
+    await assertAgentAssignmentAllowed(actor, [epic.actingManagerId, newActingManagerId]);
     const check = checkActingManager({ actor, newActingManagerId });
     if (!check.ok) throw new Error(check.message);
     let toUsername: string | null = null;
@@ -521,8 +563,9 @@ export async function updateEpic(formData: FormData) {
 
   // Deploy reviewer (optional active coding agent; Ready-to-Deploy auto-trigger
   // falls back to Monitor Agent when this is unset).
-  if (newDeployReviewerId !== epic.deployReviewerId) {
-    const toUsername = await validateDeployReviewerId(newDeployReviewerId);
+  if (hasDeployReviewerField && newDeployReviewerId !== epic.deployReviewerId) {
+    await assertAgentAssignmentAllowed(actor, [epic.deployReviewerId]);
+    const toUsername = await validateDeployReviewerId(actor, newDeployReviewerId);
     data.deployReviewer =
       newDeployReviewerId === null
         ? { disconnect: true }
@@ -557,7 +600,8 @@ export async function updateEpic(formData: FormData) {
   }
 
   // Reporter (active User/Agent row; defaults to creator on new epics)
-  if (newReporterId !== epic.reporterId) {
+  if (hasReporterField && newReporterId !== epic.reporterId) {
+    await assertAgentAssignmentAllowed(actor, [epic.reporterId, newReporterId]);
     let toUsername: string | null = null;
     if (newReporterId !== null) {
       const row = await db.user.findUnique({
@@ -606,7 +650,24 @@ export async function updateEpic(formData: FormData) {
 
   // When an epic moves to Done, archive all of its live child tasks.
   const archiveChildrenOnDone = statusChanged && status === "Done";
-  const shouldStartDeployReview = statusChanged && status === "Ready to Deploy";
+  const canTriggerAgents = actor.isOwner || actor.kind === "agent";
+  const shouldStartDeployReview = statusChanged && status === "Ready to Deploy" && canTriggerAgents;
+
+  if (taskCascade) {
+    await assertEpicTaskCascadeAllowed(actor, {
+      epicId,
+      archivedAt: null,
+      deletedAt: null,
+      status: { not: "Done" },
+    });
+  }
+  if (archiveChildrenOnDone) {
+    await assertEpicTaskCascadeAllowed(actor, {
+      epicId,
+      archivedAt: null,
+      deletedAt: null,
+    });
+  }
 
   let openAssignment: any = null;
   await db.$transaction(async (tx) => {
@@ -633,14 +694,19 @@ export async function updateEpic(formData: FormData) {
     }
     if (taskCascade) {
       await tx.task.updateMany({
-        where: { epicId, archivedAt: null, deletedAt: null, status: { not: "Done" } },
+        where: accessibleTaskWhere(actor, {
+          epicId,
+          archivedAt: null,
+          deletedAt: null,
+          status: { not: "Done" },
+        }),
         data: {
           status: taskCascade,
           statusChangedAt,
-          ...(status === "In Progress" ? { assigneeId: null } : {}),
+          ...(status === "In Progress" && canTriggerAgents ? { assigneeId: null } : {}),
         },
       });
-      if (status === "In Progress") {
+      if (status === "In Progress" && canTriggerAgents) {
         openAssignment = await assignFirstOpenEpicTask(tx, {
           epicId,
           projectId: epic.project.id,
@@ -652,7 +718,7 @@ export async function updateEpic(formData: FormData) {
     }
     if (archiveChildrenOnDone) {
       await tx.task.updateMany({
-        where: { epicId, archivedAt: null, deletedAt: null },
+        where: accessibleTaskWhere(actor, { epicId, archivedAt: null, deletedAt: null }),
         data: { archivedAt: statusChangedAt, archivedById: actor.id },
       });
     }
@@ -704,8 +770,9 @@ export async function updateEpic(formData: FormData) {
   revalidatePath(`/projects/${slug}/epics/${epicId}`);
   revalidatePath(`/projects/${slug}/epics`);
   revalidatePath(`/projects/${slug}`);
+  publishBoardTouch(epic.project.id);
 
-  if (deploymentRaw === "Deployment Approved" && epic.deploymentStatus !== "Deployment Approved") {
+  if (canTriggerAgents && deploymentRaw === "Deployment Approved" && epic.deploymentStatus !== "Deployment Approved") {
     await notifyDispatch(
       buildDeploymentApproved(
         {
@@ -729,11 +796,14 @@ export async function createTaskInEpic(
   const epicId = String(formData.get("epicId") ?? "");
   const title = String(formData.get("title") ?? "").trim();
   const description = String(formData.get("description") ?? "").trim() || null;
+  if (formData.has("private") && !actor.isOwner) {
+    return { ok: false, error: "Only the Mission Control owner can create private tasks." };
+  }
   if (!slug || !epicId || !title) return { ok: false, error: "Task title is required." };
   if (title.length > 200) return { ok: false, error: "Task title must be 200 characters or fewer." };
 
-  const epic = await db.epic.findUnique({
-    where: { id: epicId },
+  const epic = await db.epic.findFirst({
+    where: accessibleEpicWhere(actor, { id: epicId }),
     select: {
       id: true,
       title: true,
@@ -744,6 +814,7 @@ export async function createTaskInEpic(
       actingManagerId: true,
       reporterId: true,
       deletedAt: true,
+      private: true,
       _count: {
         select: {
           tasks: { where: { deletedAt: null, parentTaskId: null } },
@@ -760,6 +831,7 @@ export async function createTaskInEpic(
   if (!epic || epic.project.slug !== slug || epic.deletedAt) {
     return { ok: false, error: "Epic is no longer available." };
   }
+  await requireProjectAccess(actor, { id: epic.projectId });
   if (actor.kind !== "human" && actor.id !== epic.actingManagerId) {
     return { ok: false, error: "Only the Epic acting manager can create the initial Epic task breakdown." };
   }
@@ -768,6 +840,15 @@ export async function createTaskInEpic(
   }
 
   const branchName = effectiveEpicBranchName(epic);
+  const defaultReviewer = epic.project.defaultReviewerId
+    ? await db.user.findUnique({
+        where: { id: epic.project.defaultReviewerId },
+        select: { id: true, kind: true },
+      })
+    : null;
+  const defaultReviewerId = defaultReviewer?.kind === "agent" && !actor.isOwner && actor.kind !== "agent"
+    ? null
+    : defaultReviewer?.id ?? null;
 
   const task = await db.$transaction(async (tx) => {
     if (!epic.branchName) {
@@ -797,11 +878,12 @@ export async function createTaskInEpic(
         epicId: epic.id,
         title: numberedTitle,
         description,
+        private: actor.isOwner && formData.get("private") === "on",
         status: "Backlog",
         rank: (maxRank._max.rank ?? 0) + 1,
         statusChangedAt: new Date(),
         assigneeId: null,
-        actingManagerId: actor.kind === "human" ? epic.project.defaultReviewerId ?? null : null,
+        actingManagerId: actor.kind === "human" ? defaultReviewerId : null,
         reporterId: actor.kind === "human" ? actor.id : epic.reporterId ?? null,
         branchName,
         commitPrefix: epic.commitPrefix ?? null,
@@ -834,8 +916,9 @@ export async function setEpicStatus(formData: FormData) {
   const status = String(formData.get("status") ?? "");
   if (!slug || !epicId || !isEpicStatus(status)) return;
 
-  const epic = await loadEpicScoped(epicId, slug);
+  const epic = await loadEpicScoped(actor, epicId, slug);
   if (!epic || epic.project.slug !== slug) return;
+  await requireProjectAccess(actor, { id: epic.project.id });
   if (epic.status === status) return;
 
   const statusChangedAt = new Date();
@@ -846,6 +929,22 @@ export async function setEpicStatus(formData: FormData) {
         ? "To Do"
         : null;
 
+  if (taskCascade) {
+    await assertEpicTaskCascadeAllowed(actor, {
+      epicId,
+      archivedAt: null,
+      deletedAt: null,
+      status: { not: "Done" },
+    });
+  }
+  if (status === "Done") {
+    await assertEpicTaskCascadeAllowed(actor, {
+      epicId,
+      archivedAt: null,
+      deletedAt: null,
+    });
+  }
+
   let openAssignment: any = null;
   await db.$transaction(async (tx) => {
     await tx.epic.update({
@@ -854,14 +953,21 @@ export async function setEpicStatus(formData: FormData) {
     });
     if (taskCascade) {
       await tx.task.updateMany({
-        where: { epicId, archivedAt: null, deletedAt: null, status: { not: "Done" } },
+        where: accessibleTaskWhere(actor, {
+          epicId,
+          archivedAt: null,
+          deletedAt: null,
+          status: { not: "Done" },
+        }),
         data: {
           status: taskCascade,
           statusChangedAt,
-          ...(status === "In Progress" ? { assigneeId: null } : {}),
+          ...(status === "In Progress" && (actor.isOwner || actor.kind === "agent")
+            ? { assigneeId: null }
+            : {}),
         },
       });
-      if (status === "In Progress") {
+      if (status === "In Progress" && (actor.isOwner || actor.kind === "agent")) {
         openAssignment = await assignFirstOpenEpicTask(tx, {
           epicId,
           projectId: epic.project.id,
@@ -874,7 +980,7 @@ export async function setEpicStatus(formData: FormData) {
     // Moving an epic to Done archives all of its live child tasks.
     if (status === "Done") {
       await tx.task.updateMany({
-        where: { epicId, archivedAt: null, deletedAt: null },
+        where: accessibleTaskWhere(actor, { epicId, archivedAt: null, deletedAt: null }),
         data: { archivedAt: statusChangedAt, archivedById: actor.id },
       });
     }
@@ -921,8 +1027,8 @@ export async function createEpicComment(formData: FormData) {
   if (!slug || !epicId || !body) return;
   if (body.length > 8000) return;
 
-  const epic = await db.epic.findUnique({
-    where: { id: epicId },
+  const epic = await db.epic.findFirst({
+    where: accessibleEpicWhere(actor, { id: epicId }),
     select: {
       id: true,
       projectId: true,
@@ -931,6 +1037,7 @@ export async function createEpicComment(formData: FormData) {
     },
   });
   if (!epic || epic.project.slug !== slug || epic.deletedAt) return;
+  await requireProjectAccess(actor, { id: epic.projectId });
 
   await db.$transaction([
     db.comment.create({ data: { epicId, userId: actor.id, body } }),
@@ -968,6 +1075,8 @@ export async function deleteEpicComment(formData: FormData) {
   if (!comment || comment.epicId !== epicId || comment.epic?.project.slug !== slug) {
     return;
   }
+  await requireEpicAccess(actor, epicId);
+  await requireProjectAccess(actor, { id: comment.epic.projectId });
   if (comment.deletedAt) return; // already soft-deleted
 
   // Soft delete (HOMELAB-41 / item 2). Mirrors the task page rule:
@@ -1012,6 +1121,8 @@ export async function restoreEpicComment(formData: FormData) {
   if (!comment || comment.epicId !== epicId || comment.epic?.project.slug !== slug) {
     return;
   }
+  await requireEpicAccess(actor, epicId);
+  await requireProjectAccess(actor, { id: comment.epic.projectId });
   if (!comment.deletedAt) return; // already restored
 
   await db.$transaction([

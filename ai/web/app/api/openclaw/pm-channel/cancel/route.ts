@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 import {
   parsePmChannelReplyTarget,
   resolvePmChannelToken,
@@ -27,6 +28,9 @@ export async function POST(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id || session.user.kind === "agent") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  if (!(await isOwnerUserId(session.user.id))) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
   let payload: Record<string, unknown>;

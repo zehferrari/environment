@@ -1,4 +1,5 @@
 import { auth } from "@/lib/auth";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import {
   parsePmChannelReplyTarget,
@@ -98,6 +99,9 @@ function lastEventSeq(req: Request, params: URLSearchParams) {
 export async function GET(req: Request) {
   const session = await auth();
   if (!session?.user?.id) return new Response("Unauthorized", { status: 401 });
+  if (!(await isOwnerUserId(session.user.id))) {
+    return new Response("Not found", { status: 404 });
+  }
 
   const params = new URL(req.url).searchParams;
   const target = targetFromSearch(params);

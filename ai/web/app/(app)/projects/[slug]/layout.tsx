@@ -3,6 +3,12 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { repoHasReadme } from "@/lib/projects/repo-readme";
 import ProjectTabs from "./project-tabs";
+import {
+  accessibleEpicWhere,
+  accessibleProjectWhere,
+  accessibleTaskWhere,
+  requireViewer,
+} from "@/lib/auth/permissions";
 
 export default async function ProjectLayout({
   children,
@@ -12,8 +18,9 @@ export default async function ProjectLayout({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const project = await db.project.findUnique({
-    where: { slug },
+  const viewer = await requireViewer();
+  const project = await db.project.findFirst({
+    where: accessibleProjectWhere(viewer, { slug }),
     select: {
       id: true,
       slug: true,
@@ -30,8 +37,8 @@ export default async function ProjectLayout({
 
   // The Bin tab only appears when something is actually in the bin.
   const [binnedEpics, binnedTasks] = await Promise.all([
-    db.epic.count({ where: { projectId: project.id, deletedAt: { not: null } } }),
-    db.task.count({ where: { projectId: project.id, deletedAt: { not: null } } }),
+    db.epic.count({ where: accessibleEpicWhere(viewer, { projectId: project.id, deletedAt: { not: null } }) }),
+    db.task.count({ where: accessibleTaskWhere(viewer, { projectId: project.id, deletedAt: { not: null } }) }),
   ]);
   const hasBin = binnedEpics + binnedTasks > 0;
 
@@ -54,7 +61,13 @@ export default async function ProjectLayout({
           <span>{project.slug}</span>
         </div>
       </header>
-      <ProjectTabs slug={project.slug} hasSummary={hasSummary} hasCode={hasCode} hasBin={hasBin} />
+      <ProjectTabs
+        slug={project.slug}
+        hasSummary={hasSummary}
+        hasCode={hasCode}
+        hasBin={hasBin}
+        canAccessSettings={viewer.isOwner}
+      />
       {children}
     </div>
   );

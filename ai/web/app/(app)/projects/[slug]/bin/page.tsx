@@ -3,6 +3,12 @@ import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { restoreTask, restoreEpic } from "@/lib/bin/actions";
 import EmptyBinButton from "./empty-bin-button";
+import {
+  accessibleEpicWhere,
+  accessibleProjectWhere,
+  accessibleTaskWhere,
+  requireViewer,
+} from "@/lib/auth/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -29,28 +35,29 @@ export default async function BinPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
+  const viewer = await requireViewer();
 
-  const project = await db.project.findUnique({
-    where: { slug },
+  const project = await db.project.findFirst({
+    where: accessibleProjectWhere(viewer, { slug }),
     select: { id: true, name: true },
   });
   if (!project) notFound();
 
   const [deletedEpics, deletedTasks] = await Promise.all([
     db.epic.findMany({
-      where: { projectId: project.id, deletedAt: { not: null } },
+      where: accessibleEpicWhere(viewer, { projectId: project.id, deletedAt: { not: null } }),
       orderBy: { deletedAt: "desc" },
       include: {
         deletedBy: { select: { username: true, kind: true } },
         _count: {
           select: {
-            tasks: { where: { deletedAt: { not: null } } },
+            tasks: { where: accessibleTaskWhere(viewer, { deletedAt: { not: null } }) },
           },
         },
       },
     }),
     db.task.findMany({
-      where: { projectId: project.id, deletedAt: { not: null } },
+      where: accessibleTaskWhere(viewer, { projectId: project.id, deletedAt: { not: null } }),
       orderBy: { deletedAt: "desc" },
       include: {
         deletedBy: { select: { username: true, kind: true } },
@@ -58,7 +65,7 @@ export default async function BinPage({
         parent: { select: { id: true, title: true } },
         _count: {
           select: {
-            subtasks: { where: { deletedAt: { not: null } } },
+            subtasks: { where: accessibleTaskWhere(viewer, { deletedAt: { not: null } }) },
           },
         },
       },
@@ -73,7 +80,7 @@ export default async function BinPage({
           Soft-deleted Epics and Tasks. Anything left here for more than{" "}
           {PURGE_TTL_DAYS} days is hard-deleted by the hourly purge job.
         </p>
-        <EmptyBinButton projectSlug={slug} disabled={!hasDeletedRows} />
+        {viewer.isOwner ? <EmptyBinButton projectSlug={slug} disabled={!hasDeletedRows} /> : null}
       </div>
 
       {!hasDeletedRows ? (

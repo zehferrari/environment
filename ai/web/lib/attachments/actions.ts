@@ -9,7 +9,12 @@
 // the same bytes are uploaded twice.
 
 import { revalidatePath } from "next/cache";
-import { auth } from "@/lib/auth";
+import {
+  requireEpicAccess,
+  requireProjectAccess,
+  requireTaskAccess,
+  requireViewer,
+} from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import {
   assertOneTarget,
@@ -20,13 +25,6 @@ import {
 import { normalizeAttachmentMimeType } from "@/lib/attachments/mime";
 import { revalidateTaskAttachments } from "@/lib/tasks/cache";
 
-async function requireActorId(): Promise<string> {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) throw new Error("Unauthenticated");
-  return id;
-}
-
 function uploadedFiles(formData: FormData): File[] {
   return [...formData.getAll("files"), ...formData.getAll("file")].filter(
     (entry): entry is File => entry instanceof File && entry.size > 0,
@@ -34,7 +32,7 @@ function uploadedFiles(formData: FormData): File[] {
 }
 
 export async function uploadAttachment(formData: FormData) {
-  const actorId = await requireActorId();
+  const actor = await requireViewer();
   const slug = String(formData.get("projectSlug") ?? "");
   const taskIdRaw = String(formData.get("taskId") ?? "");
   const epicIdRaw = String(formData.get("epicId") ?? "");
@@ -43,6 +41,7 @@ export async function uploadAttachment(formData: FormData) {
   const files = uploadedFiles(formData);
   if (!slug) throw new Error("Missing project slug");
   if (files.length === 0) throw new Error("No files were selected to upload");
+  await requireProjectAccess(actor, { slug });
 
   const project = await db.project.findUnique({
     where: { slug },
@@ -51,6 +50,8 @@ export async function uploadAttachment(formData: FormData) {
   if (!project) throw new Error(`Unknown project: ${slug}`);
 
   assertOneTarget({ projectId: project.id, taskId, epicId });
+  if (taskId) await requireTaskAccess(actor, taskId);
+  if (epicId) await requireEpicAccess(actor, epicId);
 
   // Scope-check the target lives in the same project as the slug.
   if (taskId) {
@@ -107,7 +108,7 @@ export async function uploadAttachment(formData: FormData) {
         projectId: project.id,
         taskId,
         epicId,
-        uploaderId: actorId,
+        uploaderId: actor.id,
         filename,
         storagePath: written.storagePath,
         mimeType: written.mimeType,
@@ -121,7 +122,7 @@ export async function uploadAttachment(formData: FormData) {
       data: {
         projectId: project.id,
         taskId,
-        userId: actorId,
+        userId: actor.id,
         kind: taskId ? "task.attachment.add" : "epic.attachment.add",
         payload: JSON.stringify({
           attachmentId: row.id,
@@ -142,16 +143,19 @@ export async function uploadAttachment(formData: FormData) {
 }
 
 export async function deleteAttachment(formData: FormData) {
-  const actorId = await requireActorId();
+  const actor = await requireViewer();
   const slug = String(formData.get("projectSlug") ?? "");
   const attachmentId = String(formData.get("attachmentId") ?? "");
   if (!slug || !attachmentId) return;
+  await requireProjectAccess(actor, { slug });
 
   const row = await db.attachment.findUnique({
     where: { id: attachmentId },
     include: { project: { select: { slug: true } } },
   });
   if (!row || row.project.slug !== slug) return;
+  if (row.taskId) await requireTaskAccess(actor, row.taskId);
+  if (row.epicId) await requireEpicAccess(actor, row.epicId);
 
   const otherRefs = await db.attachment.count({
     where: { storagePath: row.storagePath, id: { not: row.id } },
@@ -163,7 +167,7 @@ export async function deleteAttachment(formData: FormData) {
       data: {
         projectId: row.projectId,
         taskId: row.taskId,
-        userId: actorId,
+        userId: actor.id,
         kind: row.taskId ? "task.attachment.delete" : "epic.attachment.delete",
         payload: JSON.stringify({
           attachmentId,

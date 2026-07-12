@@ -5,6 +5,7 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 import { isLoopbackRequest } from "@/lib/agents/context/api/auth";
 import { runDbMaintenance } from "@/lib/db-maintenance";
 import { db } from "@/lib/db";
@@ -14,7 +15,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   const session = await auth();
-  const isAdmin = session?.user?.name === "zeh";
+  const isAdmin = await isOwnerUserId(session?.user?.id);
   if (!isAdmin && !isLoopbackRequest(req)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }

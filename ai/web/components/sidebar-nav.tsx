@@ -33,7 +33,8 @@ export type SidebarWorkspace = {
 };
 
 type SidebarNavProps = {
-  isAdmin: boolean;
+  isOwner: boolean;
+  canViewAgents: boolean;
   agents: SidebarAgent[];
   projects: SidebarProject[];
   workspaces: SidebarWorkspace[];
@@ -211,7 +212,8 @@ function NavItem({
 }
 
 export default function SidebarNav({
-  isAdmin,
+  isOwner,
+  canViewAgents,
   agents,
   projects,
   workspaces,
@@ -271,10 +273,11 @@ export default function SidebarNav({
     null;
   const selectedWorkspace = workspaces.find((workspace) => workspace.slug === selectedWorkspaceSlug) ?? null;
   const activeWorkspace = workspaces.find((workspace) => workspace.slug === activeWorkspaceSlug) ?? null;
+  const soleWorkspace = !isOwner && workspaces.length === 1 ? workspaces[0] : null;
   // The current route wins; the persisted selection is only a fallback for
   // pages that don't imply a workspace (e.g. /agents). Otherwise a stale pin
   // shadows the workspace/project you just navigated into.
-  const workspaceFilter = activeWorkspace ?? selectedWorkspace;
+  const workspaceFilter = activeWorkspace ?? selectedWorkspace ?? soleWorkspace;
   const activeWorkspaceAgentSlugs = workspaceFilter?.agentSlugs ?? [];
   const visibleAgents = workspaceFilter && activeWorkspaceAgentSlugs.length > 0
     ? agents.filter((agent) => activeWorkspaceAgentSlugs.includes(agent.slug))
@@ -285,10 +288,12 @@ export default function SidebarNav({
   const filteredWorkspaceProjects = workspaceFilter ? workspaceFilter.projects : unassignedProjects;
   const expandedWorkspaceSet = new Set(expandedWorkspaceSlugs);
   const mobilePrimaryItems = [
-    { href: "/workspaces", icon: icons.workspaces, label: "Workspaces", active: isWorkspacesActive || isProjectsActive },
-    { href: "/agents", icon: icons.agents, label: "Agents", active: isAgentsActive, badge: hasUnreadAgents },
-    { href: "/system/activity", icon: icons.activity, label: "Activity", active: isActivityActive },
-    { href: "/system/settings", icon: icons.settings, label: "Settings", active: isSettingsActive },
+    { href: soleWorkspace ? `/workspaces/${soleWorkspace.slug}` : "/workspaces", icon: icons.workspaces, label: "Workspaces", active: isWorkspacesActive || isProjectsActive },
+    ...(isOwner ? [
+      { href: "/agents", icon: icons.agents, label: "Agents", active: isAgentsActive, badge: hasUnreadAgents },
+      { href: "/system/activity", icon: icons.activity, label: "Activity", active: isActivityActive },
+      { href: "/system/settings", icon: icons.settings, label: "Settings", active: isSettingsActive },
+    ] : []),
   ];
 
   function toggleWorkspace(slug: string) {
@@ -412,14 +417,16 @@ export default function SidebarNav({
 
       <nav className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 text-body">
         <div className="space-y-1">
-          <NavItem
-            href="/workspaces"
-            icon={icons.workspaces}
-            label="Manage workspaces"
-            color={NAV_COLORS.workspaces}
-            collapsed={collapsed}
-            active={isWorkspacesActive}
-          />
+          {isOwner || workspaces.length > 1 ? (
+            <NavItem
+              href="/workspaces"
+              icon={icons.workspaces}
+              label={isOwner ? "Manage workspaces" : "Workspaces"}
+              color={NAV_COLORS.workspaces}
+              collapsed={collapsed}
+              active={isWorkspacesActive}
+            />
+          ) : null}
           {workspaceFilter || filteredWorkspaceProjects.length > 0 ? (
             <WorkspaceNavGroup
               workspace={{ slug: workspaceFilter?.slug ?? "__unassigned", name: workspaceFilter?.name ?? "Other projects", logoSrc: workspaceFilter?.logoSrc ?? null, projects: filteredWorkspaceProjects, agentSlugs: workspaceFilter?.agentSlugs ?? [] }}
@@ -428,7 +435,7 @@ export default function SidebarNav({
               active={Boolean(workspaceFilter && activeWorkspaceSlug === workspaceFilter.slug)}
               pathname={pathname}
               onToggle={() => toggleWorkspace(workspaceFilter?.slug ?? "__unassigned")}
-              workspaceChoices={workspaceFilter ? workspaces : undefined}
+              workspaceChoices={workspaceFilter && workspaces.length > 1 ? workspaces : undefined}
               selectedWorkspaceSlug={workspaceFilter?.slug ?? ""}
               onSelectWorkspace={selectWorkspace}
             />
@@ -437,8 +444,8 @@ export default function SidebarNav({
           ) : null}
         </div>
 
+        {canViewAgents ? <>
         <div className="my-4 border-t border-line" />
-
         <div className="space-y-1">
           <NavItem
             href="/agents"
@@ -511,9 +518,10 @@ export default function SidebarNav({
             );
           })}
         </div>
+        </> : null}
       </nav>
 
-      <div className="space-y-1 border-t border-line px-3 py-3 text-body">
+      {isOwner ? <div className="space-y-1 border-t border-line px-3 py-3 text-body">
         <NavItem
           href="/system/settings"
           icon={icons.settings}
@@ -530,16 +538,14 @@ export default function SidebarNav({
           collapsed={collapsed}
           active={isActivityActive}
         />
-        {isAdmin ? (
-          <NavItem
-            href="/system/users"
-            icon={icons.users}
-            label="Users"
-            color={NAV_COLORS.users}
-            collapsed={collapsed}
-          />
-        ) : null}
-      </div>
+        <NavItem
+          href="/system/users"
+          icon={icons.users}
+          label="Users"
+          color={NAV_COLORS.users}
+          collapsed={collapsed}
+        />
+      </div> : null}
 
       <form action={signOutAction} className="border-t border-line px-3 py-3">
         <button
@@ -574,7 +580,7 @@ export default function SidebarNav({
       aria-label="Mobile primary navigation"
       className="fixed inset-x-3 bottom-3 z-40 rounded-3xl border border-line bg-panel/95 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 shadow-2xl shadow-black/20 backdrop-blur md:hidden"
     >
-      <div className="grid grid-cols-4 gap-1">
+      <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${mobilePrimaryItems.length}, minmax(0, 1fr))` }}>
         {mobilePrimaryItems.map((item) => (
           <Link
             key={item.href}
@@ -652,7 +658,9 @@ export default function SidebarNav({
 
             <section aria-labelledby="mobile-workspaces-heading" className="space-y-1">
               <h3 id="mobile-workspaces-heading" className="px-2 text-nano font-semibold uppercase tracking-wider text-text-muted">Workspaces</h3>
-              <NavSheetLink href="/workspaces" icon={icons.workspaces} label="All workspaces" color={NAV_COLORS.workspaces} active={isWorkspacesActive} onNavigate={closeMobileMenu} />
+              {isOwner || workspaces.length > 1 ? (
+                <NavSheetLink href="/workspaces" icon={icons.workspaces} label="All workspaces" color={NAV_COLORS.workspaces} active={isWorkspacesActive} onNavigate={closeMobileMenu} />
+              ) : null}
               {workspaces.length === 0 ? (
                 <div className="rounded-2xl px-3 py-2.5 text-caption text-text-muted">No active workspaces yet.</div>
               ) : (
@@ -686,7 +694,7 @@ export default function SidebarNav({
 
             <div className="my-4 border-t border-line" />
 
-            <section aria-labelledby="mobile-agents-heading" className="space-y-1">
+            {canViewAgents ? <section aria-labelledby="mobile-agents-heading" className="space-y-1">
               <h3 id="mobile-agents-heading" className="px-2 text-nano font-semibold uppercase tracking-wider text-text-muted">Agents</h3>
               <NavSheetLink href="/agents" icon={icons.agents} label="All agents" color={NAV_COLORS.agents} active={isAgentsActive} badge={hasUnreadAgents} onNavigate={closeMobileMenu} />
               {visibleAgents.map((agent) => {
@@ -722,15 +730,18 @@ export default function SidebarNav({
                   </Link>
                 );
               })}
-            </section>
+            </section> : null}
 
-            <div className="my-4 border-t border-line" />
-
-            <section aria-label="System navigation" className="space-y-1">
-              <NavSheetLink href="/system/activity" icon={icons.activity} label="Logs & Activity" color={NAV_COLORS.activity} active={isActivityActive} onNavigate={closeMobileMenu} />
-              <NavSheetLink href="/system/settings" icon={icons.settings} label="Settings" color={NAV_COLORS.settings} active={isSettingsActive} onNavigate={closeMobileMenu} />
-              {isAdmin ? <NavSheetLink href="/system/users" icon={icons.users} label="Users" color={NAV_COLORS.users} active={pathname === "/system/users"} onNavigate={closeMobileMenu} /> : null}
-            </section>
+            {isOwner ? (
+              <>
+                <div className="my-4 border-t border-line" />
+                <section aria-label="System navigation" className="space-y-1">
+                  <NavSheetLink href="/system/activity" icon={icons.activity} label="Logs & Activity" color={NAV_COLORS.activity} active={isActivityActive} onNavigate={closeMobileMenu} />
+                  <NavSheetLink href="/system/settings" icon={icons.settings} label="Settings" color={NAV_COLORS.settings} active={isSettingsActive} onNavigate={closeMobileMenu} />
+                  <NavSheetLink href="/system/users" icon={icons.users} label="Users" color={NAV_COLORS.users} active={pathname === "/system/users"} onNavigate={closeMobileMenu} />
+                </section>
+              </>
+            ) : null}
 
             <form action={signOutAction} className="mt-4 border-t border-line pt-4">
               <button type="submit" className="flex min-h-11 w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-body font-medium text-text-muted hover:bg-accent-soft hover:text-accent">

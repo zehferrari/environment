@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 import { extractMentions } from "@/lib/markdown";
 import {
   buildTaskAgentUserMessage,
@@ -257,6 +258,9 @@ export async function sendTaskWorkflowNotification(args: {
   reason: TaskWorkflowNotificationReason;
   body: string;
 }) {
+  if (args.actor.kind === "human" && !(await isOwnerUserId(args.actor.id))) {
+    return null;
+  }
   const [task, actorUser, targetUser] = await Promise.all([
     db.task.findUnique({
       where: { id: args.taskId },
@@ -492,6 +496,7 @@ export async function sendTaskCommentNotifications(args: {
   actor: Actor;
   excludeAgentSlugs?: string[];
 }) {
+  if (!(await isOwnerUserId(args.actor.id))) return [];
   const task = await db.task.findUnique({
     where: { id: args.taskId },
     select: {

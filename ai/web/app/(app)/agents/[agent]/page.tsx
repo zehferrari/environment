@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import { canEditProfile, ProfileError, readAgentProfile } from "@/lib/agents/management/profile";
 import { readAgentModelSettings } from "@/lib/agents/management/model-settings";
@@ -177,7 +178,7 @@ export default async function AgentProfilePage({
   const canEdit = await canEditProfile({ name: session?.user?.name, kind: session?.user?.kind }, slug);
   // Deletion is admin-only (matches the /api/agents/remove guard) and never
   // offered for protected accounts.
-  const canRemove = session?.user?.name === "zeh" && !PROTECTED_AGENTS.has(slug);
+  const canRemove = await isOwnerUserId(session?.user?.id) && !PROTECTED_AGENTS.has(slug);
   const deletionSummary = canRemove ? await summarizeAgentDeletion(slug) : null;
   const [audit, activity, modelSettings] = await Promise.all([
     db.activityLog.findMany({

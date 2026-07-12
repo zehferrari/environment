@@ -15,7 +15,6 @@
 
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
 import { revalidateEpicReplyScope } from "@/lib/epics/cache";
@@ -59,13 +58,17 @@ import {
 } from "@/lib/agents/context/speculative";
 import { stripChatMarkdown as compactText, truncateSummary } from "@/lib/text";
 import { publicOriginFromHeaders } from "@/lib/http/public-origin";
+import {
+  requireProjectAccess,
+  requireEpicAccess,
+  requireOwner,
+  requireTaskAccess,
+  requireViewer,
+  type Viewer,
+} from "@/lib/auth/permissions";
 
-async function requireActor(): Promise<{ id: string; kind: "human" | "agent" }> {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) throw new Error("Unauthenticated");
-  const kind = session.user?.kind === "agent" ? "agent" : "human";
-  return { id, kind };
+async function requireActor(): Promise<Viewer> {
+  return requireViewer();
 }
 
 function agentCallbackBaseUrl() {
@@ -190,7 +193,8 @@ function appendAttachmentLinks(
 
 
 export async function prebuildAgentChatContext(formData: FormData) {
-  await requireActor();
+  const actor = await requireActor();
+  if (!actor.isOwner) return { scheduled: false };
   const projectSlug = String(formData.get("projectSlug") ?? "");
   const taskIdRaw = String(formData.get("taskId") ?? "");
   const epicIdRaw = String(formData.get("epicId") ?? "");
@@ -224,6 +228,7 @@ export async function prebuildAgentChatContext(formData: FormData) {
 export async function sendAgentChatMessage(formData: FormData) {
   const publicOrigin = publicOriginFromHeaders(await headers());
   const actor = await requireActor();
+  const canTriggerAgents = actor.isOwner;
   const slug = String(formData.get("projectSlug") ?? "");
   const taskIdRaw = String(formData.get("taskId") ?? "");
   const epicIdRaw = String(formData.get("epicId") ?? "");
@@ -239,17 +244,19 @@ export async function sendAgentChatMessage(formData: FormData) {
         .filter(Boolean),
     ),
   );
-  const selectedTargets = requestedTargets.includes("all-coders")
-    ? ["all-coders"]
-    : requestedTargets.filter((value) => value !== "all-coders");
+  const selectedTargets = !canTriggerAgents
+    ? []
+    : requestedTargets.includes("all-coders")
+      ? ["all-coders"]
+      : requestedTargets.filter((value) => value !== "all-coders");
   const requestedBaseArchiveId = String(formData.get("baseArchiveId") ?? "").trim() || null;
   const requestedOriginChannel = String(formData.get("originChannel") ?? "").trim();
   const originChannel = requestedOriginChannel === "description" ? "description" : "chat";
   const decisionForMessageId = String(formData.get("decisionForMessageId") ?? "").trim() || null;
   const decisionOption = String(formData.get("decisionOption") ?? "").trim() || null;
   const requestedMessageId = String(formData.get("messageId") ?? "").trim() || null;
-  const allowDescriptionEdit = actor.kind === "human";
-  const allowWorkItemManagement = actor.kind === "human";
+  const allowDescriptionEdit = actor.kind === "human" && canTriggerAgents;
+  const allowWorkItemManagement = actor.kind === "human" && canTriggerAgents;
 
   if (!slug || (!bodyRaw && files.length === 0)) return;
   if ((taskId === null) === (epicId === null)) {
@@ -265,6 +272,9 @@ export async function sendAgentChatMessage(formData: FormData) {
     select: { id: true },
   });
   if (!project) return;
+  await requireProjectAccess(actor, { id: project.id });
+  if (taskId) await requireTaskAccess(actor, taskId);
+  if (epicId) await requireEpicAccess(actor, epicId);
 
   if (requestedMessageId) {
     const existing = await db.agentChatMessage.findUnique({
@@ -444,15 +454,16 @@ export async function sendAgentChatMessage(formData: FormData) {
     }
   }
 
-  const mentions = extractMentions(
-    bodyRaw,
-    users.map((u) => ({ username: u.username })),
-  );
-  for (const user of users) {
-    if (mentions.includes(user.username)) addAgentTarget(user);
+  const mentions = canTriggerAgents
+    ? extractMentions(bodyRaw, users.map((u) => ({ username: u.username })))
+    : [];
+  if (canTriggerAgents) {
+    for (const user of users) {
+      if (mentions.includes(user.username)) addAgentTarget(user);
+    }
   }
 
-  if (!targetType) {
+  if (canTriggerAgents && !targetType) {
     if (task) {
       for (const candidate of [task.actingManager, task.assignee]) {
         const target = principalTarget(candidate);
@@ -784,7 +795,7 @@ export async function sendAgentChatMessage(formData: FormData) {
 
 
 export async function getAgentChatRoomMessages(formData: FormData) {
-  await requireActor();
+  const actor = await requireOwner();
   const slug = String(formData.get("projectSlug") ?? "");
   const taskIdRaw = String(formData.get("taskId") ?? "");
   const epicIdRaw = String(formData.get("epicId") ?? "");
@@ -796,14 +807,15 @@ export async function getAgentChatRoomMessages(formData: FormData) {
   const target = taskId
     ? await db.task.findUnique({
         where: { id: taskId },
-        select: { id: true, deletedAt: true, project: { select: { slug: true } } },
+        select: { id: true, projectId: true, deletedAt: true, project: { select: { slug: true } } },
       })
     : await db.epic.findUnique({
         where: { id: epicId! },
-        select: { id: true, deletedAt: true, project: { select: { slug: true } } },
+        select: { id: true, projectId: true, deletedAt: true, project: { select: { slug: true } } },
       });
 
   if (!target || target.project.slug !== slug || target.deletedAt) return [];
+  await requireProjectAccess(actor, { id: target.projectId });
 
   const messages = await db.agentChatMessage.findMany({
     where: {
@@ -837,10 +849,7 @@ export async function getAgentChatRoomMessages(formData: FormData) {
 }
 
 export async function archiveChatRoom(formData: FormData) {
-  const actor = await requireActor();
-  if (actor.kind !== "human") {
-    throw new Error("Only human users can archive or delete chat rooms.");
-  }
+  const actor = await requireOwner();
 
   const slug = String(formData.get("projectSlug") ?? "");
   const taskIdRaw = String(formData.get("taskId") ?? "");
@@ -878,6 +887,7 @@ export async function archiveChatRoom(formData: FormData) {
       });
 
   if (!target || target.project.slug !== slug || target.deletedAt) return;
+  await requireProjectAccess(actor, { id: target.projectId });
 
   const scopeWhere = taskId
     ? {
@@ -963,7 +973,7 @@ export async function archiveChatRoom(formData: FormData) {
 // so deleted content never reaches an agent. Repeat-deleting a row is a
 // no-op so the action stays idempotent. Scope is project-slug enforced.
 export async function deleteChatMessage(formData: FormData) {
-  const actor = await requireActor();
+  const actor = await requireOwner();
   const slug = String(formData.get("projectSlug") ?? "");
   const messageId = String(formData.get("messageId") ?? "");
   if (!slug || !messageId) return;
@@ -973,6 +983,7 @@ export async function deleteChatMessage(formData: FormData) {
     include: { project: { select: { slug: true } } },
   });
   if (!msg || msg.project.slug !== slug) return;
+  await requireProjectAccess(actor, { id: msg.projectId });
   if (msg.deletedAt) return; // already soft-deleted
 
   await db.$transaction([
@@ -1006,7 +1017,7 @@ export async function deleteChatMessage(formData: FormData) {
 // context. Idempotent on already-restored rows. Scope is project-slug
 // enforced like its sibling.
 export async function restoreChatMessage(formData: FormData) {
-  const actor = await requireActor();
+  const actor = await requireOwner();
   const slug = String(formData.get("projectSlug") ?? "");
   const messageId = String(formData.get("messageId") ?? "");
   if (!slug || !messageId) return;
@@ -1016,6 +1027,7 @@ export async function restoreChatMessage(formData: FormData) {
     include: { project: { select: { slug: true } } },
   });
   if (!msg || msg.project.slug !== slug) return;
+  await requireProjectAccess(actor, { id: msg.projectId });
   if (!msg.deletedAt) return; // already restored / never deleted
 
   await db.$transaction([

@@ -6,8 +6,8 @@
 
 import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { accessibleTaskWhere, getViewer } from "@/lib/auth/permissions";
 import {
   autoTransitionOnAck,
   type ActorKind,
@@ -22,16 +22,16 @@ export async function POST(
   _req: Request,
   ctx: { params: Promise<{ id: string }> },
 ) {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) {
+  const viewer = await getViewer();
+  if (!viewer) {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
   }
-  const kind: ActorKind = session.user?.kind === "agent" ? "agent" : "human";
+  const userId = viewer.id;
+  const kind: ActorKind = viewer.kind;
 
   const { id } = await ctx.params;
-  const task = await db.task.findUnique({
-    where: { id },
+  const task = await db.task.findFirst({
+    where: accessibleTaskWhere(viewer, { id }),
     select: {
       id: true,
       status: true,

@@ -18,43 +18,52 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { auth } from "@/lib/auth";
+import {
+  accessibleEpicWhere,
+  accessibleTaskWhere,
+  requireEpicAccess,
+  requireOwner,
+  requireProjectAccess,
+  requireTaskAccess,
+  requireViewer,
+  type Viewer,
+} from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import { deleteAttachmentFile } from "@/lib/attachments/storage";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { cleanupEpicGitRefs } from "@/lib/bin/git-cleanup";
 
-async function requireActorId(): Promise<string> {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) throw new Error("Unauthenticated");
-  return id;
-}
-
-async function requireHumanActorId(): Promise<string> {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) throw new Error("Unauthenticated");
-  if (session.user?.kind === "agent") throw new Error("Only human users can move work items to the bin");
-  return id;
+async function requireHumanActor(): Promise<Viewer> {
+  const viewer = await requireViewer();
+  if (viewer.kind === "agent") throw new Error("Only human users can move work items to the bin");
+  return viewer;
 }
 
 // ---- Delete --------------------------------------------------------
 
 export async function binTask(formData: FormData): Promise<void> {
-  const actorId = await requireHumanActorId();
+  const actor = await requireHumanActor();
   const slug = String(formData.get("projectSlug") ?? "");
   const taskId = String(formData.get("taskId") ?? "");
   if (!slug || !taskId) return;
+  await requireTaskAccess(actor, taskId);
+  await requireProjectAccess(actor, { slug });
 
-  const task = await db.task.findUnique({
-    where: { id: taskId },
+  const task = await db.task.findFirst({
+    where: accessibleTaskWhere(actor, { id: taskId }),
     include: {
       project: { select: { slug: true } },
-      subtasks: { where: { deletedAt: null }, select: { id: true } },
+      subtasks: {
+        where: accessibleTaskWhere(actor, { deletedAt: null }),
+        select: { id: true },
+      },
     },
   });
   if (!task || task.project.slug !== slug || task.deletedAt) return;
+  if (!actor.isOwner) {
+    const allChildCount = await db.task.count({ where: { parentTaskId: task.id, deletedAt: null } });
+    if (allChildCount !== task.subtasks.length) throw new Error("Not authorized");
+  }
 
   const now = new Date();
   const subtaskIds = task.subtasks.map((s) => s.id);
@@ -62,13 +71,13 @@ export async function binTask(formData: FormData): Promise<void> {
   await db.$transaction([
     db.task.updateMany({
       where: { id: { in: [taskId, ...subtaskIds] }, deletedAt: null },
-      data: { deletedAt: now, deletedById: actorId },
+      data: { deletedAt: now, deletedById: actor.id },
     }),
     db.activityLog.create({
       data: {
         projectId: task.projectId,
         taskId,
-        userId: actorId,
+        userId: actor.id,
         kind: "task.delete",
         payload: JSON.stringify({
           cascadedSubtaskIds: subtaskIds,
@@ -96,22 +105,44 @@ export async function deleteTask(formData: FormData) {
 }
 
 export async function binEpic(formData: FormData): Promise<void> {
-  const actorId = await requireHumanActorId();
+  const actor = await requireHumanActor();
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
   if (!slug || !epicId) return;
+  await requireEpicAccess(actor, epicId);
+  await requireProjectAccess(actor, { slug });
 
-  const epic = await db.epic.findUnique({
-    where: { id: epicId },
+  const epic = await db.epic.findFirst({
+    where: accessibleEpicWhere(actor, { id: epicId }),
     include: {
       project: { select: { slug: true } },
       tasks: {
-        where: { deletedAt: null },
-        include: { subtasks: { where: { deletedAt: null }, select: { id: true } } },
+        where: accessibleTaskWhere(actor, { deletedAt: null }),
+        include: {
+          subtasks: {
+            where: accessibleTaskWhere(actor, { deletedAt: null }),
+            select: { id: true },
+          },
+        },
       },
     },
   });
   if (!epic || epic.project.slug !== slug || epic.deletedAt) return;
+  if (!actor.isOwner) {
+    const allTaskCount = await db.task.count({ where: { epicId: epic.id, deletedAt: null } });
+    if (allTaskCount !== epic.tasks.length) throw new Error("Not authorized");
+    const visibleParentIds = epic.tasks.map((task) => task.id);
+    const allChildCount = visibleParentIds.length > 0
+      ? await db.task.count({
+          where: { parentTaskId: { in: visibleParentIds }, deletedAt: null },
+        })
+      : 0;
+    const visibleChildCount = epic.tasks.reduce(
+      (count, task) => count + task.subtasks.length,
+      0,
+    );
+    if (allChildCount !== visibleChildCount) throw new Error("Not authorized");
+  }
 
   const now = new Date();
   const taskIds = epic.tasks.map((t) => t.id);
@@ -121,16 +152,16 @@ export async function binEpic(formData: FormData): Promise<void> {
   await db.$transaction([
     db.epic.update({
       where: { id: epicId },
-      data: { deletedAt: now, deletedById: actorId },
+      data: { deletedAt: now, deletedById: actor.id },
     }),
     db.task.updateMany({
       where: { id: { in: allTaskIds }, deletedAt: null },
-      data: { deletedAt: now, deletedById: actorId },
+      data: { deletedAt: now, deletedById: actor.id },
     }),
     db.activityLog.create({
       data: {
         projectId: epic.projectId,
-        userId: actorId,
+        userId: actor.id,
         kind: "epic.delete",
         payload: JSON.stringify({
           epicId,
@@ -159,17 +190,26 @@ export async function deleteEpic(formData: FormData) {
 // ---- Restore -------------------------------------------------------
 
 export async function restoreTask(formData: FormData) {
-  const actorId = await requireActorId();
+  const actor = await requireViewer();
   const slug = String(formData.get("projectSlug") ?? "");
   const taskId = String(formData.get("taskId") ?? "");
   const withChildren = formData.get("withChildren") === "true";
   if (!slug || !taskId) return;
+  await requireTaskAccess(actor, taskId);
+  await requireProjectAccess(actor, { slug });
 
   const task = await db.task.findUnique({
     where: { id: taskId },
     include: { project: { select: { slug: true } } },
   });
   if (!task || task.project.slug !== slug || !task.deletedAt) return;
+  if (withChildren && !actor.isOwner) {
+    const allChildCount = await db.task.count({ where: { parentTaskId: task.id, deletedAt: task.deletedAt } });
+    const visibleChildCount = await db.task.count({
+      where: accessibleTaskWhere(actor, { parentTaskId: task.id, deletedAt: task.deletedAt }),
+    });
+    if (allChildCount !== visibleChildCount) throw new Error("Not authorized");
+  }
 
   const cascadeTs = task.deletedAt;
   let restoredChildren: string[] = [];
@@ -199,7 +239,7 @@ export async function restoreTask(formData: FormData) {
       data: {
         projectId: task.projectId,
         taskId,
-        userId: actorId,
+        userId: actor.id,
         kind: "task.restore",
         payload: JSON.stringify({ restoredChildren, withChildren }),
       },
@@ -212,17 +252,26 @@ export async function restoreTask(formData: FormData) {
 }
 
 export async function restoreEpic(formData: FormData) {
-  const actorId = await requireActorId();
+  const actor = await requireViewer();
   const slug = String(formData.get("projectSlug") ?? "");
   const epicId = String(formData.get("epicId") ?? "");
   const withChildren = formData.get("withChildren") === "true";
   if (!slug || !epicId) return;
+  await requireEpicAccess(actor, epicId);
+  await requireProjectAccess(actor, { slug });
 
   const epic = await db.epic.findUnique({
     where: { id: epicId },
     include: { project: { select: { slug: true } } },
   });
   if (!epic || epic.project.slug !== slug || !epic.deletedAt) return;
+  if (withChildren && !actor.isOwner) {
+    const allTaskCount = await db.task.count({ where: { epicId, deletedAt: epic.deletedAt } });
+    const visibleTaskCount = await db.task.count({
+      where: accessibleTaskWhere(actor, { epicId, deletedAt: epic.deletedAt }),
+    });
+    if (allTaskCount !== visibleTaskCount) throw new Error("Not authorized");
+  }
 
   const cascadeTs = epic.deletedAt;
   let restoredTasks: string[] = [];
@@ -257,7 +306,7 @@ export async function restoreEpic(formData: FormData) {
     await tx.activityLog.create({
       data: {
         projectId: epic.projectId,
-        userId: actorId,
+        userId: actor.id,
         kind: "epic.restore",
         payload: JSON.stringify({ epicId, restoredTasks, withChildren }),
       },
@@ -273,9 +322,10 @@ export async function restoreEpic(formData: FormData) {
 // ---- Manual purge --------------------------------------------------
 
 export async function emptyProjectBin(formData: FormData) {
-  const actorId = await requireActorId();
+  const actor = await requireOwner();
   const slug = String(formData.get("projectSlug") ?? "");
   if (!slug) return;
+  await requireProjectAccess(actor, { slug });
 
   const project = await db.project.findUnique({
     where: { slug },
@@ -363,7 +413,7 @@ export async function emptyProjectBin(formData: FormData) {
     .create({
       data: {
         projectId: project.id,
-        userId: actorId,
+        userId: actor.id,
         kind: "bin.purge",
         payload: JSON.stringify(result),
       },
@@ -378,16 +428,25 @@ export async function emptyProjectBin(formData: FormData) {
 }
 
 export async function bulkBinTasks(taskIds: string[], slug: string): Promise<void> {
-  const actorId = await requireActorId();
+  const actor = await requireViewer();
   if (!slug || !taskIds || taskIds.length === 0) return;
+  await requireProjectAccess(actor, { slug });
 
+  const requestedIds = [...new Set(taskIds)];
   const tasks = await db.task.findMany({
-    where: { id: { in: taskIds }, project: { slug } },
+    where: accessibleTaskWhere(actor, { id: { in: requestedIds }, project: { slug } }),
     include: {
-      subtasks: { where: { deletedAt: null }, select: { id: true } },
+      subtasks: { where: accessibleTaskWhere(actor, { deletedAt: null }), select: { id: true } },
     },
   });
-  if (tasks.length === 0) return;
+  if (tasks.length !== requestedIds.length) throw new Error("Not authorized");
+  if (!actor.isOwner) {
+    const allChildCount = await db.task.count({
+      where: { parentTaskId: { in: requestedIds }, deletedAt: null },
+    });
+    const visibleChildCount = tasks.reduce((count, task) => count + task.subtasks.length, 0);
+    if (allChildCount !== visibleChildCount) throw new Error("Not authorized");
+  }
 
   const now = new Date();
   const allSubtaskIds = tasks.flatMap((t) => t.subtasks.map((s) => s.id));
@@ -396,12 +455,12 @@ export async function bulkBinTasks(taskIds: string[], slug: string): Promise<voi
   await db.$transaction([
     db.task.updateMany({
       where: { id: { in: idsToBin }, deletedAt: null },
-      data: { deletedAt: now, deletedById: actorId },
+      data: { deletedAt: now, deletedById: actor.id },
     }),
     db.activityLog.create({
       data: {
         projectId: tasks[0].projectId,
-        userId: actorId,
+        userId: actor.id,
         kind: "task.delete",
         payload: JSON.stringify({
           bulkIds: tasks.map((t) => t.id),

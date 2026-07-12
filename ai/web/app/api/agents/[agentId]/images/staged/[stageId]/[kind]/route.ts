@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 import {
   AgentImageError,
   assertAgentImageKind,
@@ -24,7 +25,10 @@ export async function GET(
   { params }: { params: Promise<{ agentId: string; stageId: string; kind: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) return NextResponse.json({ error: "unauth" }, { status: 401 });
+  if (!session?.user?.id) return NextResponse.json({ error: "unauth" }, { status: 401 });
+  if (!(await isOwnerUserId(session.user.id))) {
+    return NextResponse.json({ error: "not found" }, { status: 404 });
+  }
 
   try {
     const { agentId, stageId, kind } = await params;

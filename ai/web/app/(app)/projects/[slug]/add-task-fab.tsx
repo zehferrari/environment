@@ -25,6 +25,7 @@ export default function AddTaskFab({
   epics,
   defaultAssigneeId,
   defaultReviewerId,
+  canSetPrivate = false,
   createTaskAction,
 }: {
   projectId: string;
@@ -33,6 +34,7 @@ export default function AddTaskFab({
   epics: EpicOption[];
   defaultAssigneeId: string | null;
   defaultReviewerId: string | null;
+  canSetPrivate?: boolean;
   createTaskAction: (formData: FormData) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
@@ -95,6 +97,17 @@ export default function AddTaskFab({
               placeholder="Description (optional) — markdown supported"
               className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body leading-relaxed outline-none focus:border-accent"
             />
+
+            {canSetPrivate ? (
+              <label className="flex items-center justify-between gap-3 rounded-lg border border-line bg-bg px-3 py-2 text-caption">
+                <span>Private</span>
+                <input
+                  type="checkbox"
+                  name="private"
+                  className="h-4 w-4 accent-accent"
+                />
+              </label>
+            ) : null}
 
             <label className="block text-caption">
               <span className="mb-1 block text-text-muted">

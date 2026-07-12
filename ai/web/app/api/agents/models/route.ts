@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 import { getProvider, type ProviderModel } from "@/lib/agents/management/providers";
 import { getSystemSettings } from "@/lib/settings/system";
 
@@ -14,7 +15,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  if (session.user.name !== "zeh") return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  if (!(await isOwnerUserId(session.user.id))) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const providerId = req.nextUrl.searchParams.get("provider") ?? "";
   const filter = req.nextUrl.searchParams.get("filter") ?? "";

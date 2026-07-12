@@ -220,7 +220,7 @@ export function getCachedProjectEpics(projectId: string) {
         deletedAt: null,
       },
       orderBy: [{ status: "asc" }, { title: "asc" }],
-      select: { id: true, title: true, status: true },
+      select: { id: true, title: true, status: true, private: true },
     }),
     ["project-epics", projectId],
     { tags: [taskCacheTag.projectEpics(projectId)] },

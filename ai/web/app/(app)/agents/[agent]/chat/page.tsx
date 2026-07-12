@@ -7,9 +7,11 @@ import {
   archiveDirectAgentChat,
   deleteDirectAgentArchive,
   deleteDirectAgentMessage,
+} from "@/lib/agents/chat/direct/actions";
+import {
   getConversationFolderIds,
   getAgentChatUploadDir,
-} from "@/lib/agents/chat/direct/actions";
+} from "@/lib/agents/chat/direct/files";
 import { getPmChannelRunSnapshot } from "@/lib/agents/pm-channel/runs";
 import { messageSenderSelect, serializeSender } from "@/lib/agents/chat/message-sender";
 import ChatLayoutClient from "./chat-layout-client";

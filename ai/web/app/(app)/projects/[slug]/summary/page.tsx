@@ -4,6 +4,12 @@ import { renderFullMarkdown } from "@/lib/markdown";
 import { readRepoReadme } from "@/lib/projects/repo-readme";
 import { describeActivity } from "@/lib/activity";
 import ActivityAgenda from "@/components/activity-agenda";
+import {
+  accessibleActivityWhere,
+  accessibleProjectWhere,
+  requireViewer,
+} from "@/lib/auth/permissions";
+import { getActorVisibility, visibleActivityRows } from "@/lib/users/actor-visibility";
 
 export const dynamic = "force-dynamic";
 
@@ -27,8 +33,9 @@ export default async function ProjectSummaryPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const project = await db.project.findUnique({
-    where: { slug },
+  const viewer = await requireViewer();
+  const project = await db.project.findFirst({
+    where: accessibleProjectWhere(viewer, { slug }),
     select: { id: true, repositoryPath: true, deletedAt: true },
   });
   if (!project || project.deletedAt) notFound();
@@ -36,17 +43,20 @@ export default async function ProjectSummaryPage({
   const readme = await readRepoReadme(project.repositoryPath);
   if (readme === null) notFound();
 
-  const activity = await db.activityLog.findMany({
-    where: { projectId: project.id },
-    orderBy: { createdAt: "desc" },
-    take: ACTIVITY_FEED_LIMIT,
-    include: {
-      user: { select: actorSelect },
-      task: { select: { title: true } },
-    },
-  });
+  const [activity, actorVisibility] = await Promise.all([
+    db.activityLog.findMany({
+      where: await accessibleActivityWhere(viewer, { projectId: project.id }),
+      orderBy: { createdAt: "desc" },
+      take: ACTIVITY_FEED_LIMIT,
+      include: {
+        user: { select: actorSelect },
+        task: { select: { title: true } },
+      },
+    }),
+    getActorVisibility(viewer),
+  ]);
 
-  const feed = activity.map((row) => ({
+  const feed = visibleActivityRows(activity, actorVisibility).map((row) => ({
     id: row.id,
     createdAt: row.createdAt.toISOString(),
     label: describeActivity({

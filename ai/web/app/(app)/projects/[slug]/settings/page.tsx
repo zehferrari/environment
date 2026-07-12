@@ -9,6 +9,7 @@ import {
 } from "@/lib/projects/actions";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { auth } from "@/lib/auth";
+import { accessibleTaskWhere, getViewer, isOwnerUserId } from "@/lib/auth/permissions";
 import { readSwitchState } from "@/lib/deploy/worktrees";
 import { getSwitchProject } from "@/lib/deploy/switch-registry";
 import { displayWorktreesForRepo, worktreeRepoKey } from "@/lib/deploy/repo-key";
@@ -48,6 +49,8 @@ export default async function ProjectSettingsPage({
     params,
     searchParams ?? Promise.resolve({} as { tab?: string | string[] }),
   ]);
+  const viewer = await getViewer();
+  if (!viewer?.isOwner) notFound();
   const activeTab = parseSettingsTab(sp.tab);
   const session = await auth();
   const project = await db.project.findUnique({
@@ -65,7 +68,7 @@ export default async function ProjectSettingsPage({
   // whose repo is a git checkout exposed to the shared worktree approach.
   // Scope the worktree options to THIS project's repo, and hide the block
   // entirely when that repo has no worktrees to choose from.
-  const isAdmin = session?.user?.name === "zeh";
+  const isAdmin = await isOwnerUserId(session?.user?.id);
   const isHuman = Boolean(session?.user?.id && session.user.kind !== "agent");
   const canEditDeployment = isHuman || isAdmin || project.members.some((member) => member.role === "owner");
   const canRemoveWorktrees = isAdmin;
@@ -78,7 +81,7 @@ export default async function ProjectSettingsPage({
   const [effectiveSettings, projectTaskBranches] = await Promise.all([
     resolveEffectiveProjectSettings(project),
     db.task.findMany({
-      where: { projectId: project.id, deletedAt: null, branchName: { not: null } },
+      where: accessibleTaskWhere(viewer, { projectId: project.id, deletedAt: null, branchName: { not: null } }),
       distinct: ["branchName"],
       orderBy: { branchName: "asc" },
       select: { branchName: true },
@@ -91,7 +94,7 @@ export default async function ProjectSettingsPage({
     project.deploymentPrTargetBranch ?? project.deploymentProductionBranch ?? "main",
     ...projectTaskBranches.map((row) => row.branchName ?? ""),
   ];
-  const principals = await listAssignablePrincipals();
+  const principals = await listAssignablePrincipals(viewer);
   const codingAgentPrincipals = principals.filter((p) => p.kind === "agent" && p.agentRole === "coding");
   const managerAssignableUserIds = new Set(project.managerAssignableAgents.map((row) => row.userId));
 
@@ -544,7 +547,7 @@ export default async function ProjectSettingsPage({
             </section>
 
             {/* Delete — soft-delete to the 30-day bin, cascades to children. */}
-            <form
+            {isAdmin ? <form
               action={deleteProject}
               className="space-y-2 rounded-panel border border-crit bg-panel p-card shadow-sm"
             >
@@ -562,7 +565,7 @@ export default async function ProjectSettingsPage({
               >
                 Delete project
               </button>
-            </form>
+            </form> : null}
           </div>
         ) : null}
     </div>

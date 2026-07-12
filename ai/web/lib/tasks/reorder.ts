@@ -1,8 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { accessibleTaskWhere, requireViewer } from "@/lib/auth/permissions";
 
 // Generic rank-only reorder. The caller is responsible for sending a
 // list of ids that belong to a single logical group (column, parent
@@ -14,12 +14,16 @@ export async function reorderTasks(
   orderedIds: string[],
   revalidatePathHint?: string,
 ): Promise<void> {
-  const session = await auth();
-  if (!session?.user?.id) throw new Error("Unauthenticated");
-  if (orderedIds.length === 0) return;
+  const viewer = await requireViewer();
+  const ids = [...new Set(orderedIds)];
+  if (ids.length === 0) return;
+  const visibleCount = await db.task.count({
+    where: accessibleTaskWhere(viewer, { id: { in: ids } }),
+  });
+  if (visibleCount !== ids.length) throw new Error("Not authorized");
 
   await db.$transaction(
-    orderedIds.map((id, index) =>
+    ids.map((id, index) =>
       db.task.update({
         where: { id },
         data: { rank: index },

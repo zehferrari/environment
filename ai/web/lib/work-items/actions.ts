@@ -5,15 +5,12 @@
 // lives in lib/work-items/apply.ts (auth-free, unit-testable).
 
 import { revalidatePath } from "next/cache";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { commitProposal } from "@/lib/work-items/apply";
+import { requireOwner } from "@/lib/auth/permissions";
 
 async function requireUserId(): Promise<string> {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) throw new Error("Unauthenticated");
-  return id;
+  return (await requireOwner()).id;
 }
 
 export async function applyWorkItemProposal(formData: FormData) {

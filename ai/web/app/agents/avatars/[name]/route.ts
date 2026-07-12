@@ -3,6 +3,8 @@ import { mkdir, readFile, stat } from "fs/promises";
 import path from "path";
 import { promisify } from "util";
 import { NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 
 const PICTURES_ROOT = "/srv/agents/Pictures";
 const THUMB_ROOT = "/tmp/pm-web-agent-avatars";
@@ -43,6 +45,10 @@ async function readThumbnail(source: string, name: string, mtimeMs: number, sour
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ name: string }> }) {
+  const session = await auth();
+  if (!(await isOwnerUserId(session?.user?.id))) {
+    return NextResponse.json({ error: "not found" }, { status: 404 });
+  }
   const { name } = await params;
   if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(name)) {
     return NextResponse.json({ error: "invalid avatar name" }, { status: 400 });

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { getViewer } from "@/lib/auth/permissions";
 import { readSwitchState } from "@/lib/deploy/worktrees";
 import { getSwitchProject } from "@/lib/deploy/switch-registry";
 
@@ -10,8 +10,8 @@ export const dynamic = "force-dynamic";
 // the project identified by ?repoKey=. Each project has its own spool, so the
 // caller must say which one it wants.
 export async function GET(req: NextRequest) {
-  const session = await auth();
-  if (!session?.user?.id || session.user.kind === "agent") {
+  const viewer = await getViewer();
+  if (!viewer?.isOwner) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
   const repoKey = req.nextUrl.searchParams.get("repoKey");

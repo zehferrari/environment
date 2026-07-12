@@ -6,6 +6,7 @@ declare module "next-auth" {
     id: string;
     kind?: ActorKind;
     mustRotatePassword?: boolean;
+    passwordSetAt?: string | null;
   }
   interface Session {
     user: DefaultSession["user"] & {
@@ -21,5 +22,6 @@ declare module "next-auth/jwt" {
     uid?: string;
     kind?: ActorKind;
     mustRotatePassword?: boolean;
+    passwordSetAt?: string | null;
   }
 }

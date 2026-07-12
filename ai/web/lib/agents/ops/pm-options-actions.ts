@@ -1,18 +1,15 @@
 "use server";
 
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { requireOwner } from "@/lib/auth/permissions";
 import { parsePmOptions } from "@/lib/pm-options";
 import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
 import { sendTaskCommentNotifications } from "@/lib/agents/workflow/notifications/task";
 import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
 
 async function requireHumanActor() {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) throw new Error("Unauthenticated");
-  if (session.user?.kind === "agent") throw new Error("Only human users can choose decision options.");
-  return { id };
+  const owner = await requireOwner();
+  return { id: owner.id };
 }
 
 export async function submitPmOptionDecision(formData: FormData) {

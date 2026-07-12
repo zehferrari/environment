@@ -2,13 +2,15 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { canEditProfile } from "@/lib/agents/management/profile";
 import { readAgentModelSettings, updateAgentModelSettings } from "@/lib/agents/management/model-settings";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ agentId: string }> }) {
   const session = await auth();
-  if (!session?.user) return NextResponse.json({ error: "unauth" }, { status: 401 });
+  if (!session?.user?.id) return NextResponse.json({ error: "unauth" }, { status: 401 });
+  if (!(await isOwnerUserId(session.user.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   const { agentId } = await params;
   const settings = await readAgentModelSettings(agentId);
   return NextResponse.json(settings);

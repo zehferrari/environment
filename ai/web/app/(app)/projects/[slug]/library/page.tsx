@@ -2,6 +2,12 @@ import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { deleteAttachment } from "@/lib/attachments/actions";
 import AttachmentList from "@/components/attachment-list";
+import {
+  accessibleEpicWhere,
+  accessibleProjectWhere,
+  accessibleTaskWhere,
+  requireViewer,
+} from "@/lib/auth/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -10,9 +16,10 @@ export default async function ProjectLibraryPage({
 }: {
   params: Promise<{ slug: string }>;
 }) {
+  const viewer = await requireViewer();
   const { slug } = await params;
-  const project = await db.project.findUnique({
-    where: { slug, deletedAt: null },
+  const project = await db.project.findFirst({
+    where: accessibleProjectWhere(viewer, { slug, deletedAt: null }),
     select: { id: true },
   });
   if (!project) notFound();
@@ -25,8 +32,8 @@ export default async function ProjectLibraryPage({
     where: {
       projectId: project.id,
       OR: [
-        { task: { deletedAt: null } },
-        { epic: { deletedAt: null } },
+        { task: accessibleTaskWhere(viewer, { deletedAt: null }) },
+        { epic: accessibleEpicWhere(viewer, { deletedAt: null }) },
       ],
     },
     orderBy: { createdAt: "desc" },

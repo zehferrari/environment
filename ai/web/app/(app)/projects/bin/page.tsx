@@ -1,6 +1,12 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { restoreProject } from "@/lib/projects/actions";
+import {
+  accessibleEpicWhere,
+  accessibleProjectWhere,
+  accessibleTaskWhere,
+  requireViewer,
+} from "@/lib/auth/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -24,16 +30,24 @@ function daysLeft(deletedAt: Date): number {
 }
 
 export default async function ProjectBinPage() {
+  const viewer = await requireViewer();
   const projects = await db.project.findMany({
-    where: { deletedAt: { not: null } },
+    where: accessibleProjectWhere(viewer, { deletedAt: { not: null } }),
     orderBy: { deletedAt: "desc" },
     include: {
       deletedBy: { select: { username: true } },
       _count: {
         select: {
-          epics: true,
-          tasks: true,
-          attachments: true,
+          epics: { where: accessibleEpicWhere(viewer) },
+          tasks: { where: accessibleTaskWhere(viewer) },
+          attachments: {
+            where: {
+              OR: [
+                { task: { is: accessibleTaskWhere(viewer) } },
+                { epic: { is: accessibleEpicWhere(viewer) } },
+              ],
+            },
+          },
         },
       },
     },
@@ -75,7 +89,7 @@ export default async function ProjectBinPage() {
                   {p.deletedAt ? `${daysLeft(p.deletedAt)}d left` : ""}
                 </div>
               </div>
-              <form action={restoreProject}>
+              {viewer.isOwner ? <form action={restoreProject}>
                 <input type="hidden" name="projectSlug" value={p.slug} />
                 <button
                   type="submit"
@@ -83,7 +97,7 @@ export default async function ProjectBinPage() {
                 >
                   Restore
                 </button>
-              </form>
+              </form> : null}
             </li>
           ))}
         </ul>

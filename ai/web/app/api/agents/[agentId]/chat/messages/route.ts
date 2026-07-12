@@ -3,6 +3,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { messageSenderSelect, serializeSender } from "@/lib/agents/chat/message-sender";
 import { directChatCursorWhere, parseDirectChatCursor } from "@/lib/agents/chat/direct/cursor";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,6 +15,9 @@ export async function GET(
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!(await isOwnerUserId(session.user.id))) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
   const { agentId } = await ctx.params;

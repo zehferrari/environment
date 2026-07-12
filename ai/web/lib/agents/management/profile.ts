@@ -94,7 +94,11 @@ export async function readAgentProfile(agent: string): Promise<{ agent: string; 
 
 export async function canEditProfile(actor: { name?: string | null; kind?: string | null } | undefined, agent: string): Promise<boolean> {
   if (!actor?.name) return false;
-  if (actor.name === "zeh") return true;
+  const owner = await db.user.findUnique({
+    where: { username: actor.name },
+    select: { kind: true, status: true, isOwner: true },
+  });
+  if (owner?.kind === "human" && owner.status === "active" && owner.isOwner) return true;
   if (actor.kind === "agent" && actor.name === agent) return true;
   return false;
 }

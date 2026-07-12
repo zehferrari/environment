@@ -1,6 +1,11 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
+import {
+  accessibleProjectWhere,
+  workspaceAccessWhere,
+  type Viewer,
+} from "@/lib/auth/permissions";
 
 const WORKSPACE_TYPES = new Set(["internal", "client", "personal", "other"]);
 const slugPattern = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
@@ -124,7 +129,7 @@ const workspaceInclude = {
 
 type WorkspaceWithRelations = Prisma.WorkspaceGetPayload<{ include: typeof workspaceInclude }>;
 
-export function serializeWorkspace(workspace: WorkspaceWithRelations) {
+export function serializeWorkspace(workspace: WorkspaceWithRelations, includeAgents = true) {
   return {
     id: workspace.id,
     slug: workspace.slug,
@@ -147,13 +152,13 @@ export function serializeWorkspace(workspace: WorkspaceWithRelations) {
       archivedAt: project.archivedAt?.toISOString() ?? null,
       deletedAt: project.deletedAt?.toISOString() ?? null,
     })),
-    agentPool: workspace.agentPool.map(({ agent }) => ({
+    agentPool: includeAgents ? workspace.agentPool.map(({ agent }) => ({
       id: agent.id,
       slug: agent.slug,
       name: agent.name,
       role: agent.role,
       deactivatedAt: agent.deactivatedAt?.toISOString() ?? null,
-    })),
+    })) : [],
     defaults: {
       defaultGitUserName: workspace.defaultGitUserName,
       defaultGitUserEmail: workspace.defaultGitUserEmail,
@@ -183,17 +188,38 @@ export async function selectableWorkspaceAgents() {
   });
 }
 
-export async function listWorkspaces(includeArchived = false) {
+export async function listWorkspaces(includeArchived = false, viewer?: Viewer) {
+  const access = viewer ? workspaceAccessWhere(viewer) : {};
+  const projectAccess = viewer ? accessibleProjectWhere(viewer) : {};
   const rows = await db.workspace.findMany({
-    where: includeArchived ? {} : { archivedAt: null },
-    include: workspaceInclude,
+    where: { AND: [includeArchived ? {} : { archivedAt: null }, access] },
+    include: {
+      projects: {
+        where: { project: projectAccess },
+        include: workspaceInclude.projects.include,
+        orderBy: workspaceInclude.projects.orderBy,
+      },
+      agentPool: workspaceInclude.agentPool,
+    },
     orderBy: [{ archivedAt: "asc" }, { name: "asc" }],
   });
-  return rows.map(serializeWorkspace);
+  return rows.map((workspace) => serializeWorkspace(workspace, viewer?.isOwner ?? true));
 }
 
-export async function getWorkspaceBySlug(slug: string) {
-  return db.workspace.findUnique({ where: { slug }, include: workspaceInclude });
+export async function getWorkspaceBySlug(slug: string, viewer?: Viewer) {
+  const access = viewer ? workspaceAccessWhere(viewer) : {};
+  const projectAccess = viewer ? accessibleProjectWhere(viewer) : {};
+  return db.workspace.findFirst({
+    where: { AND: [{ slug }, access] },
+    include: {
+      projects: {
+        where: { project: projectAccess },
+        include: workspaceInclude.projects.include,
+        orderBy: workspaceInclude.projects.orderBy,
+      },
+      agentPool: workspaceInclude.agentPool,
+    },
+  });
 }
 
 export async function createWorkspace(payload: WorkspacePayload) {

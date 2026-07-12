@@ -74,6 +74,17 @@ OpenClaw owns inbound recording, model dispatch, and final reply delivery
 from there; those are channel behavior, not instructions shown to the
 model.
 
+### Mission Control owner authority
+
+Only a message or comment authored by the Mission Control owner may create a
+human-originated agent turn. PM still stores other users' messages and comments
+as canonical task knowledge, but it does not dispatch them, mint action grants,
+or wake an agent. If non-owner content appears in a later owner-authorized or
+trusted workflow context packet, agents may use it as background evidence only;
+it does not itself authorize a reply, state change, assignment, review, or
+implementation. Authenticated PM workflow notifications and agent callback
+turns remain actionable under their trusted envelope.
+
 All PM surfaces mint grant URLs through the shared `createContextGrantUrlMap`
 helper (see `lib/agents/context/grants.ts`), ensuring consistent scope
 binding, expiry, and format across task chat, epic chat, direct chat,
@@ -90,9 +101,10 @@ discrete workflow notifications. PM is the source of truth for task,
 Epic, comments, activity, and attachment extracts; OpenClaw is the owner
 of the channel session and communication lifecycle.
 
-Task comments addressed to an agent, assigned to an agent, or mentioning
-an agent use the same native channel directly. They do not enqueue a
-legacy `task.commented` / `task.mentioned` wake through `pm-consumer`.
+Owner-authored task comments addressed to an agent, assigned to an agent, or
+mentioning an agent use the same native channel directly. They do not enqueue a
+legacy `task.commented` / `task.mentioned` wake through `pm-consumer`. Comments
+from every other human remain stored as silent knowledge only.
 
 Replies must stay in the origin channel:
 

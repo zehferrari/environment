@@ -21,12 +21,14 @@ export default function AddEpicTaskFab({
   createTaskAction,
   canCreateTask,
   actingManagerName,
+  canSetPrivate = false,
 }: {
   projectSlug: string;
   epicId: string;
   createTaskAction: (state: AddEpicTaskState, formData: FormData) => Promise<AddEpicTaskState>;
   canCreateTask: boolean;
   actingManagerName: string | null;
+  canSetPrivate?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [state, formAction, isPending] = useActionState(createTaskAction, initialState);
@@ -89,6 +91,12 @@ export default function AddEpicTaskFab({
               disabled={isPending}
               className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body leading-relaxed outline-none focus:border-accent disabled:cursor-wait disabled:opacity-70"
             />
+            {canSetPrivate ? (
+              <label className="flex items-center justify-between gap-3 rounded-lg border border-line bg-bg px-3 py-2 text-caption">
+                <span>Private</span>
+                <input type="checkbox" name="private" className="h-4 w-4 accent-accent" disabled={isPending} />
+              </label>
+            ) : null}
             <p className="rounded-lg border border-line bg-panel-soft px-3 py-2 text-caption text-text-muted">
               This task will be linked to the current Epic and inherit the Epic branch / commit prefix defaults.
             </p>

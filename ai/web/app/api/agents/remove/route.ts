@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/lib/auth";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 import { db } from "@/lib/db";
 import { readAgentIndex } from "@/lib/agents/management/index-loader";
 import { syncAgents } from "@/lib/agents/management/sync";
@@ -19,7 +20,7 @@ const RemoveSchema = z.object({
 export async function POST(request: Request) {
   const session = await auth();
   if (!session?.user) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
-  if (session.user.name !== "zeh") return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  if (!(await isOwnerUserId(session.user.id))) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const body = await request.json().catch(() => null);
   const parsed = RemoveSchema.safeParse(body);

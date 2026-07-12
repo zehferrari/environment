@@ -8,6 +8,7 @@ import {
   writeProfileFile,
 } from "@/lib/agents/management/profile";
 import { queueAgentRestart } from "@/lib/agents/ops/restart";
+import { isOwnerUserId } from "@/lib/auth/permissions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,7 +18,8 @@ export async function GET(
   { params }: { params: Promise<{ agentId: string; file: string }> },
 ) {
   const session = await auth();
-  if (!session?.user) return NextResponse.json({ error: "unauth" }, { status: 401 });
+  if (!session?.user?.id) return NextResponse.json({ error: "unauth" }, { status: 401 });
+  if (!(await isOwnerUserId(session.user.id))) return NextResponse.json({ error: "not found" }, { status: 404 });
   try {
     const { agentId, file } = await params;
     assertProfileFile(file);

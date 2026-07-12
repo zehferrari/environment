@@ -80,20 +80,20 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/(app)/projects/[slug]/changes` | repo branch/commit activity. |
 | `app/(app)/projects/[slug]/activity` | project activity stream (own tab only when there is no Summary). |
 | `app/(app)/projects/[slug]/library` | project library — every attachment under the project (task- + epic-anchored) in one list; excludes files whose parent is in the bin. |
-| `app/(app)/projects/[slug]/settings` | project settings — repository path, default git identity, default assignee/reviewer for pickers, Done-card TTL, and project delete; plus a recent-activity agenda. For admin (`zeh`) on git/worktree-exposed projects, also a **Worktree live preview** switcher (build a worktree + flip which one `pm.service` serves; currently shared-service-scoped — see TODO). |
+| `app/(app)/projects/[slug]/settings` | owner-only project settings — repository path, default git identity, default assignee/reviewer for pickers, Done-card TTL, and project delete; plus a recent-activity agenda. On git/worktree-exposed projects this also includes the **Worktree live preview** switcher (build a worktree + flip which one `pm.service` serves; currently shared-service-scoped — see TODO). |
 | `app/(app)/projects/[slug]/bin` | soft-delete bin — lists deleted Epics + Tasks with per-row Restore and "Restore + N children" actions. |
-| `app/(app)/agents` | agents grid; merges PM DB rows with Atlas live snapshot. Admin (`zeh`) gets `Add Agent` + per-card `Edit`/`Delete` lifecycle controls (`agent-management-controls.tsx`). |
+| `app/(app)/agents` | owner-only agents grid; merges PM DB rows with Atlas live snapshot and provides `Add Agent` + per-card `Edit`/`Delete` lifecycle controls (`agent-management-controls.tsx`). |
 | `app/(app)/agents/[agent]` | per-agent deck, four tabs (`?tab=`): **Profile & controls** (Atlas controls, profile editor, audit), **Images** (profile/avatar image staging + theme), **Operations** (models, tickets, current task, lifecycle, listeners), **Activity** (recent activity-log stream). |
 | `app/(app)/agents/[agent]/chat` | direct per-agent chat opened from the global sidebar CHAT section. |
 | `app/(app)/system/activity` | system-wide ActivityLog stream. |
 | `app/(app)/system/settings` | system-wide setting defaults. |
-| `app/(app)/system/users` | user administration (admin/`zeh` only). |
+| `app/(app)/system/users` | owner-only human-user invitations, profiles, project visibility grants, and one-time password reset links. Workspace visibility is derived from granted projects. |
 | `app/(app)/workspaces` | workspace list + create; the sidebar groups projects by workspace. |
 | `app/(app)/workspaces/[slug]` | cross-project workspace board. |
 | `app/(app)/workspaces/[slug]/settings` | workspace-level defaults (git identity, deployment, Done-card TTL) inherited by member projects — the layer between project settings and system settings. |
 | `app/api/system/worktree-switch/status` | admin-only poll of the runner-maintained worktree-switch state (served worktree, inventory, current job). Drives the per-project **Worktree live preview** panel. |
 | `app/api/auth/[...nextauth]` | NextAuth route. |
-| `app/api/debug/sync` | manual trigger for the agent sync (auth-only). |
+| `app/api/debug/sync` | owner-only manual trigger for the agent sync. |
 | `app/api/tasks/[id]/ack` | agent ack endpoint — auto To Do → In Progress, emits `task.ack_ready`. |
 | `app/api/tasks/[id]/description` | agent description write-back. One-shot grant validated against the `allowDescriptionEdit` chat message. |
 | `app/api/epics/[id]/description` | agent description write-back for Epics. Same one-shot model. |
@@ -107,7 +107,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/api/agents/[agentId]/models` | model settings read/write. |
 | `app/api/agents/[agentId]/services/{toggle,restart}` | Atlas service controls. |
 | `app/api/agents/[agentId]/registry/toggle` | activate/deactivate registry entry. |
-| `app/api/agents/{add,edit,remove}` | admin-only (`zeh`) agent lifecycle. Validate + allocate UID/ports + render config, then provision through the root `openclaw-manage-user` helper (sudo); reconcile the PM DB (`syncAgents`) and write an `agent.registry.{add,edit,remove}` audit row. See [Agent lifecycle](#agent-lifecycle-create--edit--remove). |
+| `app/api/agents/{add,edit,remove}` | owner-only agent lifecycle. Validate + allocate UID/ports + render config, then provision through the root `openclaw-manage-user` helper (sudo); reconcile the PM DB (`syncAgents`) and write an `agent.registry.{add,edit,remove}` audit row. See [Agent lifecycle](#agent-lifecycle-create--edit--remove). |
 | `app/api/agents/models` | admin-only live model-list refresh for the agent form. Per `?provider=` it queries Ollama (`/api/tags` + curated popular), OpenRouter (`/api/v1/models`, `?filter=free\|popular`), Anthropic (if keyed), or returns Codex/seed lists; always falls back to the provider's seed list. |
 | `app/api/agents/[agentId]/integrations/credentials` | per-agent credential surface. |
 | `app/api/agents/context/{task,epic,project}/[id]` | loopback-only live PM read API for agents; scoped `?grant=` URLs are preferred, with bearer fallback only while enabled. |
@@ -311,12 +311,16 @@ route then reconciles the PM DB with `syncAgents()` and writes an
 ## Capability map
 
 **Auth & identity.** Password-only (Credentials provider + argon2id). No
-Google SSO in v1 — deferred to v1.1+. Seeded `zeh` plus one agent user
-per `codeOwner`-matched entry in `/etc/openclaw/agents.json`. Login rate
-limit is in-process sliding-fixed-window: 10/5min per IP + 5/5min per
-username. Forced password rotation on first login is enforced by
-`middleware.ts`. Behind nginx the middleware uses `x-forwarded-host` to
-keep the secure cookie + redirect host correct.
+Google SSO in v1 — deferred to v1.1+. The first human is stored explicitly as
+the Mission Control owner (`User.isOwner`) and has global access. The owner can
+invite additional humans, grant exact project visibility, and issue one-time
+password reset links that revoke older password sessions; workspace visibility
+follows those project grants. Agent
+users continue to mirror `codeOwner`-matched registry entries. Login rate limit
+is in-process sliding-fixed-window: 10/5min per IP + 5/5min per username.
+Forced password rotation on first login is enforced by `middleware.ts`. Behind
+nginx the middleware uses `x-forwarded-host` to keep the secure cookie +
+redirect host correct.
 
 **Projects + board (Stage 2 / HOMELAB-44; board layout reworked in
 HOMELAB-48).** Five verbatim task statuses — Backlog · To Do · In
@@ -612,8 +616,10 @@ contract.
 The full agent-facing guide lives in
 [docs/agent-interaction.md](./docs/agent-interaction.md).
 
-When a user sends a direct chat message, task chat message, Epic chat
-message, or task comment that targets an agent, PM:
+Only the Mission Control owner's messages/comments may initiate an agent turn;
+other users' rows are retained as silent task knowledge. When the owner sends a
+direct chat message, task chat message, Epic chat message, or task comment that
+targets an agent, PM:
 
 1. Persists the PM-side row (`DirectAgentChatMessage`, `AgentChatMessage`,
    or `Comment` plus mirrored `AgentChatMessage` for comment origins).
@@ -736,13 +742,17 @@ the consumer service when the PM checkout is present.
 `prisma/schema.prisma` is the source of truth. Key tables:
 
 - `User` / `RolePermission` / `PasswordResetToken` — auth and identity.
-  `User.kind` is `"human" | "agent"`; agent users link to `Agent` via
-  `agentId`.
+  `User.kind` is `"human" | "agent"`; `User.isOwner` marks the Mission
+  Control owner; agent users link to `Agent` via `agentId`. Password tokens
+  serve both invitation activation and one-time owner-issued resets.
 - `Agent` — system-managed mirror of `/etc/openclaw/agents.json`. Carries
   slug, role, `codeOwner`, `gatewayPort`, last-seen `rawJson`, and a
   `deactivatedAt` tombstone.
 - `Project` / `ProjectMember` / `Epic` / `Task` / `Comment` / `SubTask` —
-  board data. `SubTask` (ENV-60/61) is a task's lightweight progress checklist
+  board data. `Epic.private` and `Task.private` default off and restrict human
+  browser/API visibility to the Mission Control owner. Trusted agent-runtime
+  access remains available so owner-assigned private work can execute. `SubTask`
+  (ENV-60/61) is a task's lightweight progress checklist
   (`taskId` + `text` + `completedAt` + `minutesSpent` + `rank`); it replaced the
   old self-referential `Task.parentTaskId` sub-task hierarchy (column kept
   dormant). `minutesSpent` is optional self-reported effort, summed per task for

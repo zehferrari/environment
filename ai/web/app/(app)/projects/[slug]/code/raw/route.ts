@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { accessibleProjectWhere, requireViewer } from "@/lib/auth/permissions";
 import {
   canReadRepository,
   chooseCodeSource,
@@ -18,14 +18,14 @@ export async function GET(
   req: NextRequest,
   ctx: { params: Promise<{ slug: string }> },
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
+  let viewer;
+  try { viewer = await requireViewer(); } catch {
     return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
   }
 
   const { slug } = await ctx.params;
-  const project = await db.project.findUnique({
-    where: { slug },
+  const project = await db.project.findFirst({
+    where: accessibleProjectWhere(viewer, { slug }),
     select: { repositoryPath: true, deletedAt: true },
   });
   if (!project || project.deletedAt || !project.repositoryPath) {

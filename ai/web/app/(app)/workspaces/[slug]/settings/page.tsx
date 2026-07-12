@@ -3,10 +3,13 @@ import { notFound } from "next/navigation";
 import { db } from "@/lib/db";
 import { getWorkspaceBySlug, normalizeWorkspaceSlug, serializeWorkspace } from "@/lib/workspaces/service";
 import WorkspaceSettingsClient from "./workspace-settings-client";
+import { getViewer } from "@/lib/auth/permissions";
 
 export const dynamic = "force-dynamic";
 
 export default async function WorkspaceSettingsPage({ params }: { params: Promise<{ slug: string }> }) {
+  const viewer = await getViewer();
+  if (!viewer?.isOwner) notFound();
   const { slug: rawSlug } = await params;
   const slug = normalizeWorkspaceSlug(rawSlug);
   const [workspaceRow, projects, agents] = await Promise.all([

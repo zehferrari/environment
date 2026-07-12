@@ -9,6 +9,13 @@ import { formatGridDate } from "@/lib/date-format";
 import { deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 import NewEpicFab from "./new-epic-fab";
 import EpicStatusFilter from "./epic-status-filter";
+import {
+  accessibleEpicWhere,
+  accessibleProjectWhere,
+  accessibleTaskWhere,
+  requireViewer,
+} from "@/lib/auth/permissions";
+import { getActorVisibility, serializeVisibleActor } from "@/lib/users/actor-visibility";
 
 export const dynamic = "force-dynamic";
 
@@ -47,10 +54,12 @@ export default async function EpicsListPage({
   searchParams: Promise<{ view?: string; statuses?: string; status?: string }>;
 }) {
   const { slug } = await params;
+  const viewer = await requireViewer();
+  const actorVisibility = await getActorVisibility(viewer);
   const { view: rawView, statuses, status } = await searchParams;
 
-  const project = await db.project.findUnique({
-    where: { slug },
+  const project = await db.project.findFirst({
+    where: accessibleProjectWhere(viewer, { slug }),
     select: { id: true, name: true },
   });
   if (!project) notFound();
@@ -58,26 +67,26 @@ export default async function EpicsListPage({
   const view = normalizeView(rawView ?? (status?.toLowerCase() === "archive" ? "archive" : undefined));
   const selectedStatuses = parseBoardStatuses(statuses, status);
 
-  const principals = await listAssignablePrincipals();
+  const principals = await listAssignablePrincipals(viewer);
 
   const archivedCount = await db.epic.count({
-    where: { projectId: project.id, archivedAt: { not: null }, deletedAt: null },
+    where: accessibleEpicWhere(viewer, { projectId: project.id, archivedAt: { not: null }, deletedAt: null }),
   });
 
   const epics = await db.epic.findMany({
-    where: {
+    where: accessibleEpicWhere(viewer, {
       projectId: project.id,
       archivedAt: view === "archive" ? { not: null } : null,
       ...(view === "board" ? { status: { in: selectedStatuses } } : {}),
       deletedAt: null,
-    },
+    }),
     orderBy: { updatedAt: "desc" },
     include: {
       actingManager: { select: actorSelect },
       reporter: { select: actorSelect },
       _count: {
         select: {
-          tasks: { where: { deletedAt: null, parentTaskId: null } },
+          tasks: { where: accessibleTaskWhere(viewer, { deletedAt: null, parentTaskId: null }) },
         },
       },
     },
@@ -182,12 +191,12 @@ export default async function EpicsListPage({
                   </span>
                   <DeploymentIndicator status={e.deploymentStatus} />
                   <span className="flex min-w-0 items-center gap-2 text-caption text-text-muted">
-                    {e.reporter ? <MessageAvatar actor={e.reporter} size="sm" /> : null}
-                    <span className="truncate">{e.reporter ? actorDisplayName(e.reporter) : "—"}</span>
+                    {serializeVisibleActor(e.reporter, actorVisibility) ? <MessageAvatar actor={serializeVisibleActor(e.reporter, actorVisibility)!} size="sm" /> : null}
+                    <span className="truncate">{serializeVisibleActor(e.reporter, actorVisibility) ? actorDisplayName(serializeVisibleActor(e.reporter, actorVisibility)!) : "—"}</span>
                   </span>
                   <span className="flex min-w-0 items-center gap-2 text-caption text-text-muted">
-                    {e.actingManager ? <MessageAvatar actor={e.actingManager} size="sm" /> : null}
-                    <span className="truncate">{e.actingManager ? actorDisplayName(e.actingManager) : "—"}</span>
+                    {serializeVisibleActor(e.actingManager, actorVisibility) ? <MessageAvatar actor={serializeVisibleActor(e.actingManager, actorVisibility)!} size="sm" /> : null}
+                    <span className="truncate">{serializeVisibleActor(e.actingManager, actorVisibility) ? actorDisplayName(serializeVisibleActor(e.actingManager, actorVisibility)!) : "—"}</span>
                   </span>
                   <span className="text-right text-caption tabular-nums">
                     {e._count.tasks}
@@ -218,7 +227,13 @@ export default async function EpicsListPage({
         </div>
       )}
 
-      <NewEpicFab projectSlug={slug} principals={principals} createEpicAction={createEpic} />
+      <NewEpicFab
+        projectSlug={slug}
+        principals={principals}
+        canAssignAgents={viewer.isOwner}
+        canSetPrivate={viewer.isOwner}
+        createEpicAction={createEpic}
+      />
     </div>
   );
 }

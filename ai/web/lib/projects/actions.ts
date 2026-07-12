@@ -4,18 +4,20 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import type { ActorKind } from "@/lib/workflow";
 import type { Prisma } from "@prisma/client";
 import { normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
 import { cleanDeployReviewPrompt } from "@/lib/epics/deploy-review";
 import { serializeProtectedBranches } from "@/lib/projects/protected-branches";
+import {
+  assertAgentAssignmentAllowed,
+  requireProjectAccess,
+  requireOwner,
+  requireViewer,
+  type Viewer,
+} from "@/lib/auth/permissions";
 
-async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) throw new Error("Unauthenticated");
-  const kind: ActorKind = session.user?.kind === "agent" ? "agent" : "human";
-  return { id, kind };
+async function requireActor(): Promise<Viewer> {
+  return requireViewer();
 }
 
 function trimOrNull(v: unknown): string | null {
@@ -54,7 +56,7 @@ function jsonObjectTextOrNull(value: unknown): string | null {
 }
 
 export async function setProjectSettings(formData: FormData) {
-  const actor = await requireActor();
+  const actor = await requireOwner();
   const slug = String(formData.get("projectSlug") ?? "");
   if (!slug) return;
   const rawScope = String(formData.get("settingsScope") ?? "all");
@@ -78,15 +80,19 @@ export async function setProjectSettings(formData: FormData) {
       deploymentBitbucketRepoSlug: true,
       agentChangeBlockedBranches: true,
       deployReviewPrompt: true,
+      defaultAssigneeId: true,
+      defaultReviewerId: true,
+      defaultAssignee: { select: { kind: true } },
+      defaultReviewer: { select: { kind: true } },
       members: { where: { userId: actor.id }, select: { role: true } },
     },
   });
   if (!project || project.deletedAt) return;
+  await requireProjectAccess(actor, { id: project.id });
 
-  const actorUser = await db.user.findUnique({ where: { id: actor.id }, select: { username: true } });
   const canEditDeployment =
     actor.kind === "human" ||
-    actorUser?.username === "zeh" ||
+    actor.isOwner ||
     project.members.some((member) => member.role === "owner");
   const data: Prisma.ProjectUpdateInput = {};
   const payload: Record<string, unknown> = { scope };
@@ -140,14 +146,21 @@ export async function setProjectSettings(formData: FormData) {
     const onlyReportersCanApproveActionPlans = formData.get("onlyReportersCanApproveActionPlans") === "on";
     const onlyReportersCanSetTasksDone = formData.get("onlyReportersCanSetTasksDone") === "on";
     const onlyReportersCanApprovePullRequests = formData.get("onlyReportersCanApprovePullRequests") === "on";
-    const defaultAssigneeId = trimOrNull(formData.get("defaultAssigneeId"));
-    const defaultReviewerId = trimOrNull(formData.get("defaultReviewerId"));
+    let defaultAssigneeId = trimOrNull(formData.get("defaultAssigneeId"));
+    let defaultReviewerId = trimOrNull(formData.get("defaultReviewerId"));
+    if (!actor.isOwner && project.defaultAssignee?.kind === "agent") {
+      defaultAssigneeId = project.defaultAssigneeId;
+    }
+    if (!actor.isOwner && project.defaultReviewer?.kind === "agent") {
+      defaultReviewerId = project.defaultReviewerId;
+    }
+    await assertAgentAssignmentAllowed(actor, [defaultAssigneeId, defaultReviewerId]);
     const rawManagerAssignableAgentIds = formData
       .getAll("managerAssignableAgentId")
       .map((value) => (typeof value === "string" ? value.trim() : ""))
       .filter(Boolean);
-    managerAssignableAgentIds = [...new Set(rawManagerAssignableAgentIds)];
-    if (managerAssignableAgentIds.length > 0) {
+    managerAssignableAgentIds = actor.isOwner ? [...new Set(rawManagerAssignableAgentIds)] : null;
+    if (managerAssignableAgentIds && managerAssignableAgentIds.length > 0) {
       const validUsers = await db.user.findMany({
         where: {
           id: { in: managerAssignableAgentIds },
@@ -187,7 +200,7 @@ export async function setProjectSettings(formData: FormData) {
       deployReviewPrompt,
     });
     Object.assign(payload, data);
-    payload.managerAssignableAgentCount = managerAssignableAgentIds.length;
+    if (managerAssignableAgentIds) payload.managerAssignableAgentCount = managerAssignableAgentIds.length;
   }
 
   if (scope === "deployment" || scope === "all") {
@@ -253,7 +266,7 @@ export async function setProjectSettings(formData: FormData) {
 }
 
 export async function deleteProject(formData: FormData) {
-  const actor = await requireActor();
+  const actor = await requireOwner();
   if (actor.kind !== "human") throw new Error("Only human users can move projects to the bin");
   const slug = String(formData.get("projectSlug") ?? "");
   if (!slug) return;
@@ -263,6 +276,7 @@ export async function deleteProject(formData: FormData) {
     select: { id: true, name: true, deletedAt: true },
   });
   if (!project || project.deletedAt) return;
+  await requireProjectAccess(actor, { id: project.id });
 
   const now = new Date();
   // Single timestamp anchors the cascade — same trick as Epic→Task
@@ -295,7 +309,7 @@ export async function deleteProject(formData: FormData) {
 }
 
 export async function restoreProject(formData: FormData) {
-  const actor = await requireActor();
+  const actor = await requireOwner();
   const slug = String(formData.get("projectSlug") ?? "");
   if (!slug) return;
 
@@ -304,6 +318,7 @@ export async function restoreProject(formData: FormData) {
     select: { id: true, deletedAt: true },
   });
   if (!project || !project.deletedAt) return;
+  await requireProjectAccess(actor, { id: project.id });
 
   // Restore only the rows that share the project's exact deletedAt
   // (the cascade-batch anchor). Children deleted independently before
@@ -346,6 +361,7 @@ export async function archiveProject(formData: FormData) {
     select: { id: true, name: true, archivedAt: true, deletedAt: true },
   });
   if (!project || project.deletedAt || project.archivedAt) return;
+  await requireProjectAccess(actor, { id: project.id });
 
   // Archive is project-level only: the board/epics/tasks stay intact, the
   // project just drops out of the active lists until it is unarchived. This
@@ -378,6 +394,7 @@ export async function unarchiveProject(formData: FormData) {
     select: { id: true, name: true, archivedAt: true },
   });
   if (!project || !project.archivedAt) return;
+  await requireProjectAccess(actor, { id: project.id });
 
   await db.$transaction([
     db.project.update({

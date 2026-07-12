@@ -1,6 +1,12 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
 import { unarchiveProject } from "@/lib/projects/actions";
+import {
+  accessibleEpicWhere,
+  accessibleProjectWhere,
+  accessibleTaskWhere,
+  requireViewer,
+} from "@/lib/auth/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -13,15 +19,23 @@ function timeAgo(d: Date): string {
 }
 
 export default async function ProjectArchivePage() {
+  const viewer = await requireViewer();
   const projects = await db.project.findMany({
-    where: { archivedAt: { not: null }, deletedAt: null },
+    where: accessibleProjectWhere(viewer, { archivedAt: { not: null }, deletedAt: null }),
     orderBy: { archivedAt: "desc" },
     include: {
       _count: {
         select: {
-          epics: true,
-          tasks: true,
-          attachments: true,
+          epics: { where: accessibleEpicWhere(viewer) },
+          tasks: { where: accessibleTaskWhere(viewer) },
+          attachments: {
+            where: {
+              OR: [
+                { task: { is: accessibleTaskWhere(viewer) } },
+                { epic: { is: accessibleEpicWhere(viewer) } },
+              ],
+            },
+          },
         },
       },
     },

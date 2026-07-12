@@ -1,9 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { checkStatusTransition, type ActorKind, type WorkflowErrorCode } from "@/lib/workflow";
+import { checkStatusTransition, type WorkflowErrorCode } from "@/lib/workflow";
 import { reorderTasks } from "@/lib/tasks/reorder";
 import { binTask } from "@/lib/bin/actions";
 import { publishBoardTouch } from "@/lib/pm/board-events";
@@ -16,6 +15,20 @@ import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 import Board from "../../projects/[slug]/board-client";
 import { COLUMNS, COLUMN_IDS } from "../../projects/[slug]/columns";
 import type { MoveTaskResult } from "../../projects/[slug]/page";
+import {
+  accessibleProjectWhere,
+  accessibleTaskWhere,
+  requireProjectAccess,
+  requireTaskAccess,
+  requireViewer,
+  workspaceAccessWhere,
+  type Viewer,
+} from "@/lib/auth/permissions";
+import {
+  getActorVisibility,
+  serializeVisibleActor,
+  type ActorVisibility,
+} from "@/lib/users/actor-visibility";
 
 type ActorRow = {
   id: string;
@@ -55,16 +68,8 @@ async function readBusyAgentSlugs(): Promise<Set<string>> {
   }
 }
 
-function serializeActor(actor: ActorRow | null) {
-  if (!actor) return null;
-  return {
-    id: actor.id,
-    username: actor.username,
-    kind: actor.kind,
-    name: actor.name,
-    avatarUpdatedAt: actor.avatarUpdatedAt?.toISOString() ?? null,
-    agent: actor.agent,
-  };
+function serializeActor(actor: ActorRow | null, visibility: ActorVisibility) {
+  return serializeVisibleActor(actor, visibility);
 }
 
 type SerializedActor = NonNullable<ReturnType<typeof serializeActor>>;
@@ -74,13 +79,13 @@ type TaskActivityActorRow = {
   user: ActorRow | null;
 };
 
-function buildTaskActivityActorMaps(rows: TaskActivityActorRow[]) {
+function buildTaskActivityActorMaps(rows: TaskActivityActorRow[], visibility: ActorVisibility) {
   const createdBy = new Map<string, SerializedActor>();
   const updatedBy = new Map<string, SerializedActor>();
 
   for (const row of rows) {
     if (!row.taskId || !row.user) continue;
-    const actor = serializeActor(row.user);
+    const actor = serializeActor(row.user, visibility);
     if (!actor) continue;
     if (!updatedBy.has(row.taskId)) updatedBy.set(row.taskId, actor);
     if (row.kind === "task.create" && !createdBy.has(row.taskId)) {
@@ -91,12 +96,8 @@ function buildTaskActivityActorMaps(rows: TaskActivityActorRow[]) {
   return { createdBy, updatedBy };
 }
 
-async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) throw new Error("Unauthenticated");
-  const kind: ActorKind = session.user?.kind === "agent" ? "agent" : "human";
-  return { id, kind };
+async function requireActor(): Promise<Viewer> {
+  return requireViewer();
 }
 
 async function moveTask(taskId: string, status: string, workspaceSlug: string): Promise<MoveTaskResult> {
@@ -105,8 +106,8 @@ async function moveTask(taskId: string, status: string, workspaceSlug: string): 
   if (!COLUMN_IDS.includes(status)) {
     return { ok: false, code: "UNKNOWN_COLUMN", message: `Unknown column: ${status}` };
   }
-  const current = await db.task.findUnique({
-    where: { id: taskId },
+  const current = await db.task.findFirst({
+    where: accessibleTaskWhere(actor, { id: taskId }),
     select: {
       id: true,
       title: true,
@@ -122,6 +123,15 @@ async function moveTask(taskId: string, status: string, workspaceSlug: string): 
     },
   });
   if (!current || current.deletedAt) return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
+  await requireProjectAccess(actor, { id: current.projectId });
+  const workspaceProject = await db.workspaceProject.findFirst({
+    where: {
+      projectId: current.projectId,
+      workspace: { slug: workspaceSlug, AND: [workspaceAccessWhere(actor)] },
+    },
+    select: { id: true },
+  });
+  if (!workspaceProject) return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
   if (current.status === status) return { ok: true };
 
   if (actor.kind !== "human") {
@@ -136,7 +146,7 @@ async function moveTask(taskId: string, status: string, workspaceSlug: string): 
     };
   }
 
-  if (current.status === "Review" && status === "Done") {
+  if (current.status === "Review" && status === "Done" && (actor.isOwner || actor.kind === "agent")) {
     const actorUser = await db.user.findUnique({ where: { id: actor.id }, select: { username: true } });
     const completion = await completeReviewedTaskAndAssignNext({
       taskId,
@@ -221,6 +231,7 @@ async function moveTask(taskId: string, status: string, workspaceSlug: string): 
 export const dynamic = "force-dynamic";
 
 export default async function WorkspaceBoardPage({ params }: { params: Promise<{ slug: string }> }) {
+  const viewer = await requireViewer();
   const { slug: rawSlug } = await params;
   let slug: string;
   try {
@@ -229,22 +240,23 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
     notFound();
   }
 
-  const workspace = await db.workspace.findUnique({
-    where: { slug },
+  const workspace = await db.workspace.findFirst({
+    where: { AND: [{ slug }, workspaceAccessWhere(viewer)] },
     include: {
       projects: {
-        where: { project: { deletedAt: null, archivedAt: null } },
+        where: { project: accessibleProjectWhere(viewer, { deletedAt: null, archivedAt: null }) },
         include: { project: { select: { id: true, slug: true, name: true } } },
         orderBy: { createdAt: "asc" },
       },
     },
   });
   if (!workspace) notFound();
+  const workspaceId = workspace.id;
 
   const projectIds = workspace.projects.map(({ project }) => project.id);
   const tasks = projectIds.length > 0
     ? await db.task.findMany({
-        where: { projectId: { in: projectIds }, deletedAt: null, archivedAt: null, parentTaskId: null },
+        where: accessibleTaskWhere(viewer, { projectId: { in: projectIds }, deletedAt: null, archivedAt: null, parentTaskId: null }),
         orderBy: [{ status: "asc" }, { rank: "asc" }],
         include: {
           project: { select: { slug: true, name: true } },
@@ -259,13 +271,15 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
             },
           },
           checklist: { select: { completedAt: true, minutesSpent: true } },
-          blockedBy: { select: { workItemKey: true, status: true } },
         },
       })
     : [];
 
   const taskIds = tasks.map((task) => task.id);
-  const [taskActivityRows, busyAgentSlugs] = await Promise.all([
+  const blockerIds = tasks
+    .map((task) => task.blockedById)
+    .filter((id): id is string => Boolean(id));
+  const [taskActivityRows, busyAgentSlugs, actorVisibility, visibleBlockers] = await Promise.all([
     taskIds.length > 0
       ? db.activityLog.findMany({
           where: { taskId: { in: taskIds } },
@@ -273,16 +287,42 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
           select: { taskId: true, kind: true, user: { select: actorSelect } },
         })
       : Promise.resolve([]),
-    readBusyAgentSlugs(),
+    viewer.isOwner ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
+    getActorVisibility(viewer),
+    blockerIds.length > 0
+      ? db.task.findMany({
+          where: accessibleTaskWhere(viewer, { id: { in: blockerIds } }),
+          select: { id: true, workItemKey: true, status: true },
+        })
+      : Promise.resolve([]),
   ]);
-  const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows);
+  const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows, actorVisibility);
+  const visibleBlockerById = new Map(visibleBlockers.map((task) => [task.id, task]));
 
   const workspaceProjectNames = workspace.projects.map(({ project }) => project.name).join(", ");
   const isArchivedWorkspace = workspace.archivedAt != null;
   async function reorderWorkspaceTasks(orderedIds: string[]): Promise<void> {
     "use server";
-    await reorderTasks(orderedIds);
-    for (const id of orderedIds) revalidateTaskShell(id);
+    const actor = await requireViewer();
+    const ids = [...new Set(orderedIds)];
+    const allowedWorkspace = await db.workspace.findFirst({
+      where: { AND: [{ id: workspaceId }, workspaceAccessWhere(actor)] },
+      select: {
+        projects: {
+          where: { project: accessibleProjectWhere(actor, { deletedAt: null, archivedAt: null }) },
+          select: { projectId: true },
+        },
+      },
+    });
+    if (!allowedWorkspace) throw new Error("Not authorized");
+    const allowedProjectIds = allowedWorkspace.projects.map((row) => row.projectId);
+    const visibleCount = await db.task.count({
+      where: accessibleTaskWhere(actor, { id: { in: ids }, projectId: { in: allowedProjectIds } }),
+    });
+    if (visibleCount !== ids.length) throw new Error("Not authorized");
+    await Promise.all(ids.map((id) => requireTaskAccess(actor, id)));
+    await reorderTasks(ids);
+    for (const id of ids) revalidateTaskShell(id);
     revalidatePath(`/workspaces/${slug}`);
   }
 
@@ -316,12 +356,14 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
               </div>
             ) : null}
           </div>
-          <Link
-            href={`/workspaces/${workspace.slug}/settings`}
-            className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent"
-          >
-            Workspace settings
-          </Link>
+          {viewer.isOwner ? (
+            <Link
+              href={`/workspaces/${workspace.slug}/settings`}
+              className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent"
+            >
+              Workspace settings
+            </Link>
+          ) : null}
         </div>
       </header>
 
@@ -330,34 +372,37 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
         boardStreamUrl={`/api/workspaces/${workspace.slug}/board/stream`}
         hideWorkflowFocus
         columns={COLUMNS}
-        tasks={tasks.map((t) => ({
-          id: t.id,
-          workItemKey: t.workItemKey ?? null,
-          title: t.title,
-          status: t.status,
-          rank: t.rank,
-          createdAt: t.createdAt.toISOString(),
-          updatedAt: t.updatedAt.toISOString(),
-          statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
-          approvedOn: t.approvedOn?.toISOString() ?? null,
-          deploymentStatus: t.epic?.deploymentStatus ?? t.deploymentStatus,
-          epicId: t.epicId,
-          reporter: serializeActor(t.reporter),
-          assignee: serializeActor(t.assignee),
-          reviewer: serializeActor(t.actingManager),
-          manager: serializeActor(t.epic?.actingManager ?? null),
-          createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter),
-          updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter),
-          epicTitle: t.epic?.title ?? null,
-          subtaskTotal: t.checklist.length,
-          subtaskDone: t.checklist.filter((c) => c.completedAt !== null).length,
-          subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
-          blockedByKey: t.blockedBy && t.blockedBy.status !== "Done" ? t.blockedBy.workItemKey ?? null : null,
-          activeWorking:
-            (t.status === "In Progress" && Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||
-            (t.status === "Review" && Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug))),
-          project: { slug: t.project.slug, name: t.project.name },
-        }))}
+        tasks={tasks.map((t) => {
+          const blocker = t.blockedById ? visibleBlockerById.get(t.blockedById) : null;
+          return {
+            id: t.id,
+            workItemKey: t.workItemKey ?? null,
+            title: t.title,
+            status: t.status,
+            rank: t.rank,
+            createdAt: t.createdAt.toISOString(),
+            updatedAt: t.updatedAt.toISOString(),
+            statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
+            approvedOn: t.approvedOn?.toISOString() ?? null,
+            deploymentStatus: t.epic?.deploymentStatus ?? t.deploymentStatus,
+            epicId: t.epicId,
+            reporter: serializeActor(t.reporter, actorVisibility),
+            assignee: serializeActor(t.assignee, actorVisibility),
+            reviewer: serializeActor(t.actingManager, actorVisibility),
+            manager: serializeActor(t.epic?.actingManager ?? null, actorVisibility),
+            createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
+            updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
+            epicTitle: t.epic?.title ?? null,
+            subtaskTotal: t.checklist.length,
+            subtaskDone: t.checklist.filter((c) => c.completedAt !== null).length,
+            subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
+            blockedByKey: blocker && blocker.status !== "Done" ? blocker.workItemKey ?? null : null,
+            activeWorking:
+              (t.status === "In Progress" && Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||
+              (t.status === "Review" && Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug))),
+            project: { slug: t.project.slug, name: t.project.name },
+          };
+        })}
         moveTaskAction={moveTask}
         reorderTasksAction={reorderWorkspaceTasks}
         deleteTaskAction={binTask}

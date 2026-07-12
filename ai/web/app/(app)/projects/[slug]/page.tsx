@@ -1,10 +1,8 @@
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import {
   checkStatusTransition,
-  type ActorKind,
   type WorkflowErrorCode,
 } from "@/lib/workflow";
 import { reorderTasks } from "@/lib/tasks/reorder";
@@ -20,6 +18,20 @@ import { revalidateTaskShell } from "@/lib/tasks/cache";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
 import { COLUMNS, COLUMN_IDS } from "./columns";
+import {
+  accessibleEpicWhere,
+  accessibleTaskWhere,
+  assertAgentAssignmentAllowed,
+  requireTaskAccess,
+  requireProjectAccess,
+  requireViewer,
+  type Viewer,
+} from "@/lib/auth/permissions";
+import {
+  getActorVisibility,
+  serializeVisibleActor,
+  type ActorVisibility,
+} from "@/lib/users/actor-visibility";
 
 type ActorRow = {
   id: string;
@@ -61,16 +73,8 @@ async function readBusyAgentSlugs(): Promise<Set<string>> {
   }
 }
 
-function serializeActor(actor: ActorRow | null) {
-  if (!actor) return null;
-  return {
-    id: actor.id,
-    username: actor.username,
-    kind: actor.kind,
-    name: actor.name,
-    avatarUpdatedAt: actor.avatarUpdatedAt?.toISOString() ?? null,
-    agent: actor.agent,
-  };
+function serializeActor(actor: ActorRow | null, visibility: ActorVisibility) {
+  return serializeVisibleActor(actor, visibility);
 }
 
 type SerializedActor = NonNullable<ReturnType<typeof serializeActor>>;
@@ -80,13 +84,13 @@ type TaskActivityActorRow = {
   user: ActorRow | null;
 };
 
-function buildTaskActivityActorMaps(rows: TaskActivityActorRow[]) {
+function buildTaskActivityActorMaps(rows: TaskActivityActorRow[], visibility: ActorVisibility) {
   const createdBy = new Map<string, SerializedActor>();
   const updatedBy = new Map<string, SerializedActor>();
 
   for (const row of rows) {
     if (!row.taskId || !row.user) continue;
-    const actor = serializeActor(row.user);
+    const actor = serializeActor(row.user, visibility);
     if (!actor) continue;
     if (!updatedBy.has(row.taskId)) updatedBy.set(row.taskId, actor);
     if (row.kind === "task.create" && !createdBy.has(row.taskId)) {
@@ -97,12 +101,8 @@ function buildTaskActivityActorMaps(rows: TaskActivityActorRow[]) {
   return { createdBy, updatedBy };
 }
 
-async function requireActor(): Promise<{ id: string; kind: ActorKind }> {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) throw new Error("Unauthenticated");
-  const kind: ActorKind = session.user?.kind === "agent" ? "agent" : "human";
-  return { id, kind };
+async function requireActor(): Promise<Viewer> {
+  return requireViewer();
 }
 
 async function createTask(formData: FormData) {
@@ -117,6 +117,8 @@ async function createTask(formData: FormData) {
   const epicRaw = String(formData.get("epicId") ?? "");
   const assigneeRaw = String(formData.get("assigneeId") ?? "");
   const reviewerRaw = String(formData.get("actingManagerId") ?? "");
+  if (formData.has("private") && !actor.isOwner) throw new Error("Not authorized");
+  const isPrivate = actor.isOwner && formData.get("private") === "on";
 
   const maxRank = await db.task.aggregate({
     where: { projectId, status: "Backlog", archivedAt: null, deletedAt: null },
@@ -129,7 +131,7 @@ async function createTask(formData: FormData) {
   let epicDefaults: { branchName: string | null; commitPrefix: string | null } | null = null;
   if (epicId) {
     const epic = await db.epic.findFirst({
-      where: { id: epicId, projectId, archivedAt: null, deletedAt: null },
+      where: accessibleEpicWhere(actor, { id: epicId, projectId, archivedAt: null, deletedAt: null }),
       select: { id: true, branchName: true, commitPrefix: true },
     });
     if (!epic) epicId = null;
@@ -141,6 +143,8 @@ async function createTask(formData: FormData) {
   // the modal, so the submitted value is authoritative. Empty = unset.
   const assigneeId = assigneeRaw === "" ? null : assigneeRaw;
   const actingManagerId = reviewerRaw === "" ? null : reviewerRaw;
+  await requireProjectAccess(actor, { id: projectId });
+  await assertAgentAssignmentAllowed(actor, [assigneeId, actingManagerId]);
 
   const task = await db.task.create({
     data: {
@@ -148,6 +152,7 @@ async function createTask(formData: FormData) {
       workItemKey: await allocateWorkItemKey(projectId),
       title: taskTitle,
       description,
+      private: isPrivate,
       status: "Backlog",
       rank: (maxRank._max.rank ?? 0) + 1,
       statusChangedAt: new Date(),
@@ -224,8 +229,8 @@ async function moveTask(
       message: `Unknown column: ${status}`,
     };
   }
-  const current = await db.task.findUnique({
-    where: { id: taskId },
+  const current = await db.task.findFirst({
+    where: accessibleTaskWhere(actor, { id: taskId }),
     select: {
       id: true,
       title: true,
@@ -242,6 +247,7 @@ async function moveTask(
   if (!current || current.deletedAt) {
     return { ok: false, code: "UNKNOWN_COLUMN", message: "Task not found" };
   }
+  await requireProjectAccess(actor, { id: current.projectId });
   if (current.status === status) return { ok: true };
 
   // Browser-session human moves are authoritative. Workflow policy still
@@ -265,7 +271,7 @@ async function moveTask(
     };
   }
 
-  if (current.status === "Review" && status === "Done") {
+  if (current.status === "Review" && status === "Done" && (actor.isOwner || actor.kind === "agent")) {
     const actorUser = await db.user.findUnique({
       where: { id: actor.id },
       select: { username: true },
@@ -366,11 +372,12 @@ export default async function ProjectBoardPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
+  const viewer = await requireViewer();
   const project = await db.project.findUnique({
     where: { slug, deletedAt: null },
     include: {
       tasks: {
-        where: { deletedAt: null, archivedAt: null, parentTaskId: null },
+        where: accessibleTaskWhere(viewer, { deletedAt: null, archivedAt: null, parentTaskId: null }),
         orderBy: [{ status: "asc" }, { rank: "asc" }],
         include: {
           reporter: { select: actorSelect },
@@ -384,7 +391,6 @@ export default async function ProjectBoardPage({
             },
           },
           checklist: { select: { completedAt: true, minutesSpent: true } },
-          blockedBy: { select: { workItemKey: true, status: true } },
         },
       },
     },
@@ -394,10 +400,13 @@ export default async function ProjectBoardPage({
   // Data for the New Task modal: principals for assignee/reviewer pickers,
   // live epics for the Epic combobox.
   const filteredTaskIds = project.tasks.map((task) => task.id);
-  const [principals, epicOptions, taskActivityRows, busyAgentSlugs] = await Promise.all([
-    listAssignablePrincipals(),
+  const blockerIds = project.tasks
+    .map((task) => task.blockedById)
+    .filter((id): id is string => Boolean(id));
+  const [principals, epicOptions, taskActivityRows, busyAgentSlugs, actorVisibility, visibleBlockers] = await Promise.all([
+    listAssignablePrincipals(viewer),
     db.epic.findMany({
-      where: { projectId: project.id, archivedAt: null, deletedAt: null },
+      where: accessibleEpicWhere(viewer, { projectId: project.id, archivedAt: null, deletedAt: null }),
       orderBy: [{ status: "asc" }, { title: "asc" }],
       select: { id: true, title: true },
     }),
@@ -412,15 +421,31 @@ export default async function ProjectBoardPage({
           },
         })
       : Promise.resolve([]),
-    readBusyAgentSlugs(),
+    viewer.isOwner ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
+    getActorVisibility(viewer),
+    blockerIds.length > 0
+      ? db.task.findMany({
+          where: accessibleTaskWhere(viewer, { id: { in: blockerIds } }),
+          select: { id: true, workItemKey: true, status: true },
+        })
+      : Promise.resolve([]),
   ]);
-  const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows);
+  const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows, actorVisibility);
+  const visibleBlockerById = new Map(visibleBlockers.map((task) => [task.id, task]));
 
   const projectId = project.id;
   async function reorderBoardTasks(orderedIds: string[]): Promise<void> {
     "use server";
-    await reorderTasks(orderedIds);
-    for (const id of orderedIds) revalidateTaskShell(id);
+    const actor = await requireViewer();
+    await requireProjectAccess(actor, { id: projectId });
+    const ids = [...new Set(orderedIds)];
+    const taskCount = await db.task.count({
+      where: accessibleTaskWhere(actor, { id: { in: ids }, projectId }),
+    });
+    if (taskCount !== ids.length) throw new Error("Not authorized");
+    await Promise.all(ids.map((id) => requireTaskAccess(actor, id)));
+    await reorderTasks(ids);
+    for (const id of ids) revalidateTaskShell(id);
     revalidatePath(`/projects/${slug}`);
     publishBoardTouch(projectId);
   }
@@ -430,43 +455,39 @@ export default async function ProjectBoardPage({
       <Board
         projectSlug={project.slug}
         columns={COLUMNS}
-        tasks={project.tasks.map((t) => ({
-          id: t.id,
-          workItemKey: t.workItemKey ?? null,
-          title: t.title,
-          status: t.status,
-          rank: t.rank,
-          createdAt: t.createdAt.toISOString(),
-          updatedAt: t.updatedAt.toISOString(),
-          statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
-          approvedOn: t.approvedOn?.toISOString() ?? null,
-          deploymentStatus: t.epic?.deploymentStatus ?? t.deploymentStatus,
-          epicId: t.epicId,
-          reporter: serializeActor(t.reporter),
-          assignee: serializeActor(t.assignee),
-          reviewer: serializeActor(t.actingManager),
-          manager: serializeActor(t.epic?.actingManager ?? null),
-          createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter),
-          updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter),
-          epicTitle: t.epic?.title ?? null,
-          // Progress checklist (ENV-60/61): how far the task is from done +
-          // rolled-up self-reported effort.
-          subtaskTotal: t.checklist.length,
-          subtaskDone: t.checklist.filter((c) => c.completedAt !== null).length,
-          subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
-          // Show the lock only while the blocker is still open (not yet Done).
-          blockedByKey:
-            t.blockedBy && t.blockedBy.status !== "Done" ? t.blockedBy.workItemKey ?? null : null,
-          // An agent is "working" on a task when it is In Progress and its
-          // assignee is a busy agent, OR in Review and its reviewer is a busy
-          // agent (live snapshot) — both pulse the shown avatar (ENV-61).
-          activeWorking:
-            (t.status === "In Progress" &&
-              Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||
-            (t.status === "Review" &&
-              Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug))),
-          project: null,
-        }))}
+        tasks={project.tasks.map((t) => {
+          const blocker = t.blockedById ? visibleBlockerById.get(t.blockedById) : null;
+          return {
+            id: t.id,
+            workItemKey: t.workItemKey ?? null,
+            title: t.title,
+            status: t.status,
+            rank: t.rank,
+            createdAt: t.createdAt.toISOString(),
+            updatedAt: t.updatedAt.toISOString(),
+            statusChangedAt: t.statusChangedAt?.toISOString() ?? null,
+            approvedOn: t.approvedOn?.toISOString() ?? null,
+            deploymentStatus: t.epic?.deploymentStatus ?? t.deploymentStatus,
+            epicId: t.epicId,
+            reporter: serializeActor(t.reporter, actorVisibility),
+            assignee: serializeActor(t.assignee, actorVisibility),
+            reviewer: serializeActor(t.actingManager, actorVisibility),
+            manager: serializeActor(t.epic?.actingManager ?? null, actorVisibility),
+            createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
+            updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
+            epicTitle: t.epic?.title ?? null,
+            subtaskTotal: t.checklist.length,
+            subtaskDone: t.checklist.filter((c) => c.completedAt !== null).length,
+            subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
+            blockedByKey: blocker && blocker.status !== "Done" ? blocker.workItemKey ?? null : null,
+            activeWorking:
+              (t.status === "In Progress" &&
+                Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||
+              (t.status === "Review" &&
+                Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug))),
+            project: null,
+          };
+        })}
         moveTaskAction={moveTask}
         reorderTasksAction={reorderBoardTasks}
         deleteTaskAction={binTask}
@@ -485,8 +506,9 @@ export default async function ProjectBoardPage({
           agentAvatar: p.agentAvatar,
         }))}
         epics={epicOptions}
-        defaultAssigneeId={project.defaultAssigneeId}
-        defaultReviewerId={project.defaultReviewerId}
+        defaultAssigneeId={principals.some((p) => p.id === project.defaultAssigneeId) ? project.defaultAssigneeId : null}
+        defaultReviewerId={principals.some((p) => p.id === project.defaultReviewerId) ? project.defaultReviewerId : null}
+        canSetPrivate={viewer.isOwner}
         createTaskAction={createTask}
       />
     </div>

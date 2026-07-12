@@ -2,7 +2,6 @@ import { randomUUID } from "crypto";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { Prisma } from "@prisma/client";
 import {
@@ -14,7 +13,6 @@ import {
   checkAssignment,
   checkActingManager,
   checkStatusTransition,
-  type ActorKind,
 } from "@/lib/workflow";
 import { COLUMN_IDS } from "../../columns";
 import {
@@ -82,6 +80,7 @@ import {
   actorDisplayName,
   MessageAvatar,
   MessageTimestamp,
+  type MessageActor,
 } from "@/components/message-avatar";
 import DescriptionField from "@/components/description-field";
 import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
@@ -91,6 +90,22 @@ import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-c
 import TaskEpicPicker from "./task-epic-picker";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, canShowDeploymentTab, type DeploymentPrRow } from "@/components/deployment-tab";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
+import {
+  accessibleEpicWhere,
+  accessibleTaskWhere,
+  assertAgentAssignmentAllowed,
+  canAccessTask,
+  requireProjectAccess,
+  requireTaskAccess,
+  requireViewer,
+  type Viewer,
+} from "@/lib/auth/permissions";
+import {
+  getActorVisibility,
+  serializeVisibleActor,
+  visibleActivityRows,
+  type ActorVisibility,
+} from "@/lib/users/actor-visibility";
 
 type ActorRow = {
   id: string;
@@ -101,30 +116,30 @@ type ActorRow = {
   agent: { slug: string; name: string; avatar: string | null } | null;
 };
 
+function ReadOnlyPrincipal({ label, actor }: { label: string; actor: MessageActor | null }) {
+  return (
+    <div>
+      <div className="mb-1 text-micro font-semibold uppercase tracking-wider text-text-muted">{label}</div>
+      <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 py-1.5 text-caption">
+        {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
+        <span className="truncate">{actor ? actorDisplayName(actor) : "None"}</span>
+      </div>
+    </div>
+  );
+}
+
 function mentionedUsername(body: string, username: string | null | undefined) {
   if (!username) return false;
   const escaped = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(^|[^A-Za-z0-9_])@${escaped}(?![A-Za-z0-9_])`, "i").test(body);
 }
 
-function serializeActor(actor: ActorRow | null) {
-  if (!actor) return null;
-  return {
-    id: actor.id,
-    username: actor.username,
-    kind: actor.kind,
-    name: actor.name,
-    avatarUpdatedAt: dateIso(actor.avatarUpdatedAt),
-    agent: actor.agent,
-  };
+function serializeActor(actor: ActorRow | null, visibility: ActorVisibility) {
+  return serializeVisibleActor(actor, visibility);
 }
 
-async function requireActor(): Promise<{ id: string; username: string; kind: ActorKind }> {
-  const session = await auth();
-  const id = session?.user?.id;
-  if (!id) throw new Error("Unauthenticated");
-  const kind: ActorKind = session.user?.kind === "agent" ? "agent" : "human";
-  return { id, username: session.user?.name ?? "", kind };
+async function requireActor(): Promise<Viewer> {
+  return requireViewer();
 }
 
 async function requireActorId(): Promise<string> {
@@ -158,28 +173,36 @@ async function updateTask(formData: FormData) {
   const newBranch = branchRaw === "" ? null : branchRaw;
   const commitRaw = String(formData.get("commitPrefix") ?? "").trim();
   const newCommitPrefix = commitRaw === "" ? null : commitRaw;
+  const hasAssigneeField = formData.has("assigneeId");
   const assigneeRaw = String(formData.get("assigneeId") ?? "");
   const newAssigneeId = assigneeRaw === "" ? null : assigneeRaw;
+  const hasReviewerField = formData.has("actingManagerId");
   const reviewerRaw = String(formData.get("actingManagerId") ?? "");
   const newActingManagerId = reviewerRaw === "" ? null : reviewerRaw;
+  const hasReporterField = formData.has("reporterId");
   const reporterRaw = String(formData.get("reporterId") ?? "");
   const newReporterId = reporterRaw === "" ? null : reporterRaw;
+  const hasBlockedByField = formData.has("blockedById");
   const blockedRaw = String(formData.get("blockedById") ?? "");
   const newBlockedById = blockedRaw === "" ? null : blockedRaw;
   const deploymentRaw = String(formData.get("deploymentStatus") ?? "");
+  const hasPrivateField = formData.has("privateSubmitted");
+  if ((hasPrivateField || formData.has("private")) && !actor.isOwner) throw new Error("Not authorized");
+  const newPrivate = formData.get("private") === "on";
 
   if (newStatus !== "" && !COLUMN_IDS.includes(newStatus)) return;
   if (deploymentRaw !== "" && !isDeploymentStatus(deploymentRaw)) return;
   if (newBranch !== null && newBranch.length > 200) return;
   if (newCommitPrefix !== null && newCommitPrefix.length > 200) return;
 
-  const task = await db.task.findUnique({
-    where: { id: taskId },
+  const task = await db.task.findFirst({
+    where: accessibleTaskWhere(actor, { id: taskId }),
     select: {
       id: true,
       projectId: true,
       title: true,
       description: true,
+      private: true,
       status: true,
       epicId: true,
       branchName: true,
@@ -207,15 +230,25 @@ async function updateTask(formData: FormData) {
     },
   });
   if (!task || task.project.slug !== slug) return;
+  await requireProjectAccess(actor, { id: task.projectId });
 
   const data: Prisma.TaskUpdateInput = {};
   const activity: { kind: string; payload: string }[] = [];
+  const canTriggerAgents = actor.isOwner || actor.kind === "agent";
   let assignmentTarget: { id: string; kind: string; username: string } | null =
     null;
   let assignmentChanged = false;
   let reviewerPlanTargetId: string | null = null;
   let statusChangedTo: string | null = null;
   let completeReviewAfterSave = false;
+
+  if (hasPrivateField && newPrivate !== task.private) {
+    data.private = newPrivate;
+    activity.push({
+      kind: "task.privacy",
+      payload: JSON.stringify({ from: task.private, to: newPrivate }),
+    });
+  }
 
   // Title / description
   const titleChanged = task.title !== titleRaw;
@@ -250,7 +283,7 @@ async function updateTask(formData: FormData) {
     if (actor.kind !== "human" && newStatus === "In Progress" && !task.approvedOn) {
       throw new Error("Action Plan must be approved before this task can move to In Progress.");
     }
-    if (task.status === "Review" && newStatus === "Done") {
+    if (task.status === "Review" && newStatus === "Done" && canTriggerAgents) {
       completeReviewAfterSave = true;
     } else {
       const maxRank = await db.task.aggregate({
@@ -280,8 +313,8 @@ async function updateTask(formData: FormData) {
   if (newEpicId !== task.epicId) {
     let newEpicTitle: string | null = null;
     if (newEpicId !== null) {
-      const target = await db.epic.findUnique({
-        where: { id: newEpicId },
+      const target = await db.epic.findFirst({
+        where: accessibleEpicWhere(actor, { id: newEpicId }),
         select: { id: true, title: true, projectId: true, branchName: true, commitPrefix: true },
       });
       if (!target || target.projectId !== task.projectId) {
@@ -305,17 +338,19 @@ async function updateTask(formData: FormData) {
   }
 
   // Blocked-by dependency (ENV-62): same-project, cycle-guarded.
-  if (newBlockedById !== task.blockedById) {
+  const canEditBlockedBy = !task.blockedById || await canAccessTask(actor, task.blockedById);
+  if (hasBlockedByField && canEditBlockedBy && newBlockedById !== task.blockedById) {
     let toKey: string | null = null;
     if (newBlockedById !== null) {
+      await requireTaskAccess(actor, newBlockedById);
       const check = await validateBlockedBy({
         taskId: task.id,
         projectId: task.projectId,
         blockerId: newBlockedById,
       });
       if (!check.ok) throw new Error(check.message);
-      const blocker = await db.task.findUnique({
-        where: { id: newBlockedById },
+      const blocker = await db.task.findFirst({
+        where: accessibleTaskWhere(actor, { id: newBlockedById }),
         select: { workItemKey: true },
       });
       toKey = blocker?.workItemKey ?? null;
@@ -353,7 +388,8 @@ async function updateTask(formData: FormData) {
   }
 
   // Assignee (no agent self-assign; target must be active)
-  if (newAssigneeId !== task.assigneeId) {
+  if (hasAssigneeField && newAssigneeId !== task.assigneeId) {
+    await assertAgentAssignmentAllowed(actor, [task.assigneeId, newAssigneeId]);
     const check = checkAssignment({ actor, newAssigneeId });
     if (!check.ok) throw new Error(check.message);
     if (newAssigneeId !== null) {
@@ -391,7 +427,8 @@ async function updateTask(formData: FormData) {
   }
 
   // Reviewer / acting manager (no agent self-review; target must be active)
-  if (newActingManagerId !== task.actingManagerId) {
+  if (hasReviewerField && newActingManagerId !== task.actingManagerId) {
+    await assertAgentAssignmentAllowed(actor, [task.actingManagerId, newActingManagerId]);
     const check = checkActingManager({ actor, newActingManagerId });
     if (!check.ok) throw new Error(check.message);
     let toUsername: string | null = null;
@@ -440,7 +477,8 @@ async function updateTask(formData: FormData) {
   }
 
   // Reporter (active User/Agent row; defaults to creator on new tasks)
-  if (newReporterId !== task.reporterId) {
+  if (hasReporterField && newReporterId !== task.reporterId) {
+    await assertAgentAssignmentAllowed(actor, [task.reporterId, newReporterId]);
     let toUsername: string | null = null;
     if (newReporterId !== null) {
       const target = await db.user.findUnique({
@@ -498,7 +536,7 @@ async function updateTask(formData: FormData) {
   revalidatePath(`/projects/${slug}`);
   publishBoardTouch(task.projectId);
 
-  if (deploymentAllowed && deploymentRaw === "Deployment Approved" && task.deploymentStatus !== "Deployment Approved") {
+  if (canTriggerAgents && deploymentAllowed && deploymentRaw === "Deployment Approved" && task.deploymentStatus !== "Deployment Approved") {
     await notifyDispatch(
       buildDeploymentApproved(
         {
@@ -514,7 +552,7 @@ async function updateTask(formData: FormData) {
 
   // Assignment wake fires after the commit, non-throwing (mirrors the old
   // standalone assignTask path).
-  if (assignmentChanged) {
+  if (canTriggerAgents && assignmentChanged) {
     await notifyDispatch(
       buildTaskAssigned(
         {
@@ -630,6 +668,7 @@ async function approveTaskActionPlan(formData: FormData) {
   const taskId = String(formData.get("taskId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
   if (!taskId || !slug) return;
+  await requireTaskAccess(actor, taskId);
 
   const task = await db.task.findUnique({
     where: { id: taskId },
@@ -648,6 +687,8 @@ async function approveTaskActionPlan(formData: FormData) {
     },
   });
   if (!task || task.deletedAt || task.project.slug !== slug) return;
+  await requireProjectAccess(actor, { id: task.projectId });
+  if (!actor.isOwner) throw new Error("Not authorized");
 
   if (actor.kind !== "human" && !canApproveActionPlanForActor(task, actor.id)) {
     throw new Error(task.project.onlyReportersCanApproveActionPlans
@@ -758,12 +799,14 @@ async function approveTaskActionPlan(formData: FormData) {
 
 async function createComment(formData: FormData) {
   "use server";
-  const actorId = await requireActorId();
+  const viewer = await requireActor();
+  const actorId = viewer.id;
   const taskId = String(formData.get("taskId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
   const body = String(formData.get("body") ?? "").trim();
   if (!taskId || !slug || !body) return;
   if (body.length > 8000) return;
+  await requireTaskAccess(viewer, taskId);
 
   const task = await db.task.findUnique({
     where: { id: taskId },
@@ -775,6 +818,7 @@ async function createComment(formData: FormData) {
     },
   });
   if (!task || task.project.slug !== slug) return;
+  await requireProjectAccess(viewer, { id: task.projectId });
 
   const users = await db.user.findMany({
     select: {
@@ -809,6 +853,7 @@ async function createComment(formData: FormData) {
   });
 
   revalidateTaskReplyScope(taskId, "comment");
+  if (!viewer.isOwner) return;
 
   const actor = {
     id: actorId,
@@ -839,6 +884,7 @@ async function deleteComment(formData: FormData) {
   const slug = String(formData.get("projectSlug") ?? "");
   const taskId = String(formData.get("taskId") ?? "");
   if (!commentId || !slug || !taskId) return;
+  await requireTaskAccess(actor, taskId);
 
   const comment = await db.comment.findUnique({
     where: { id: commentId },
@@ -862,6 +908,7 @@ async function deleteComment(formData: FormData) {
   ) {
     return;
   }
+  await requireProjectAccess(actor, { id: comment.task.projectId });
   if (comment.deletedAt) return; // already soft-deleted
 
   // Soft delete (HOMELAB-41 / item 2): keep the row so the frontend can
@@ -897,6 +944,7 @@ async function restoreComment(formData: FormData) {
   const slug = String(formData.get("projectSlug") ?? "");
   const taskId = String(formData.get("taskId") ?? "");
   if (!commentId || !slug || !taskId) return;
+  await requireTaskAccess(actor, taskId);
 
   const comment = await db.comment.findUnique({
     where: { id: commentId },
@@ -914,6 +962,7 @@ async function restoreComment(formData: FormData) {
   ) {
     return;
   }
+  await requireProjectAccess(actor, { id: comment.task.projectId });
   if (!comment.deletedAt) return; // already restored
 
   await db.$transaction([
@@ -942,11 +991,13 @@ async function restoreComment(formData: FormData) {
 // through the native workflow endpoint, but a browser-session agent may too).
 async function resolveChecklistContext(taskId: string, slug: string) {
   const actor = await requireActor();
+  await requireTaskAccess(actor, taskId);
   const task = await db.task.findUnique({
     where: { id: taskId },
     select: { id: true, projectId: true, assigneeId: true, project: { select: { slug: true } } },
   });
   if (!task || task.project.slug !== slug) return null;
+  await requireProjectAccess(actor, { id: task.projectId });
   if (actor.kind !== "human" && actor.id !== task.assigneeId) return null;
   return { actor, task };
 }
@@ -1293,6 +1344,9 @@ export default async function TaskDetailPage({
     ? "Action Plan"
     : tabFromSearchParam(tab, TASK_TABS) ?? "Description";
 
+  const viewer = await requireActor();
+  if (!(await canAccessTask(viewer, taskId))) notFound();
+
   const [taskShell, comments, attachments] = await Promise.all([
     getCachedTaskDetailShell(taskId),
     getCachedTaskComments(taskId),
@@ -1300,18 +1354,20 @@ export default async function TaskDetailPage({
   ]);
   const task = taskShell ? { ...taskShell, comments, attachments } : null;
   if (!task || task.project.slug !== slug || task.deletedAt) notFound();
+  const actorVisibility = await getActorVisibility(viewer);
   const showDeploymentTab = canShowDeploymentTab(task);
-  const taskTabs = showDeploymentTab ? TASK_TABS : TASK_TABS.filter((name) => name !== DEVELOPMENT_TAB);
+  const taskTabs = (showDeploymentTab ? [...TASK_TABS] : TASK_TABS.filter((name) => name !== DEVELOPMENT_TAB))
+    .filter((name) => viewer.isOwner || name !== "Action Plan");
   if (!showDeploymentTab && selectedTab === DEVELOPMENT_TAB) selectedTab = "Description";
+  if (!viewer.isOwner && selectedTab === "Action Plan") selectedTab = "Description";
 
   // Only human viewers get comment-delete controls (see deleteComment).
-  const viewer = await requireActor();
   const canDeleteComments = viewer.kind === "human";
 
-  const [principals, projectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify, allActivity] = await Promise.all([
-    listAssignablePrincipals(),
+  const [principals, cachedProjectEpics, mentionableUsers, recentTaskChatMessages, recentReplyActivity, latestRepoVerify, allActivity, targetedCommentRows] = await Promise.all([
+    listAssignablePrincipals(viewer),
     getCachedProjectEpics(task.project.id),
-    db.user.findMany({ select: { username: true } }),
+    db.user.findMany({ select: { username: true, kind: true } }),
     getCachedRecentTaskChatMessages(task.id),
     getCachedTaskActivity(task.id),
     // Latest monitor-verifier branch row, if any. Used by the Review-state
@@ -1333,16 +1389,46 @@ export default async function TaskDetailPage({
         },
       },
     }) as Promise<ActivityTimelineRow[]>,
+    viewer.isOwner || task.comments.length === 0
+      ? Promise.resolve([])
+      : db.agentChatMessage.findMany({
+          where: { originCommentId: { in: task.comments.map((comment) => comment.id) } },
+          distinct: ["originCommentId"],
+          select: { originCommentId: true },
+        }),
   ]);
+  const projectEpics = cachedProjectEpics.filter((epic) => viewer.isOwner || !epic.private);
+  const visibleActivity = visibleActivityRows(allActivity, actorVisibility);
 
   // Candidate blockers for the "Blocked by" picker: other live tasks in this
   // project. Cycles are rejected server-side on save (lib/tasks/blocking.ts).
   const blockerCandidates = await db.task.findMany({
-    where: { projectId: task.project.id, deletedAt: null, archivedAt: null, id: { not: task.id } },
+    where: accessibleTaskWhere(viewer, {
+      projectId: task.project.id,
+      id: { not: task.id },
+      OR: [
+        { deletedAt: null, archivedAt: null },
+        ...(task.blockedById ? [{ id: task.blockedById }] : []),
+      ],
+    }),
     orderBy: [{ status: "asc" }, { workItemKey: "asc" }],
     select: { id: true, workItemKey: true, title: true, status: true },
   });
-  const mentionables = mentionableUsers.map((u) => ({ username: u.username }));
+  const currentBlockerVisible = !task.blockedById || blockerCandidates.some((candidate) => candidate.id === task.blockedById);
+  const agentUsernames = mentionableUsers.filter((user) => user.kind === "agent").map((user) => user.username);
+  const targetedCommentIds = new Set(targetedCommentRows.map((row) => row.originCommentId).filter(Boolean));
+  const mentionables = mentionableUsers
+    .filter((user) => viewer.isOwner || user.kind !== "agent")
+    .map((user) => ({ username: user.username }));
+  const visibleTaskComments = viewer.isOwner
+    ? task.comments
+    : task.comments.filter((comment) => (
+        comment.user.kind !== "agent" &&
+        !(
+          comment.user.id === actorVisibility.owner?.id &&
+          (targetedCommentIds.has(comment.id) || agentUsernames.some((username) => mentionedUsername(comment.body, username)))
+        )
+      ));
   const settledMessageIds = activityMessageIds(recentReplyActivity);
   const recentCommentMessages = recentTaskChatMessages.filter((message) => (
     message.originChannel === "comment"
@@ -1608,8 +1694,8 @@ export default async function TaskDetailPage({
         ...principalOptions,
         {
           value: task.reporter.id,
-          label: actorDisplayName(serializeActor(task.reporter)!),
-          actor: serializeActor(task.reporter),
+          label: actorDisplayName(serializeActor(task.reporter, actorVisibility)!),
+          actor: serializeActor(task.reporter, actorVisibility),
         },
       ]
       : principalOptions;
@@ -1637,11 +1723,11 @@ export default async function TaskDetailPage({
   const canApproveActionPlan =
     !task.approvedOn &&
     (viewer.kind === "human" || canApproveActionPlanForActor(task, viewer.id));
-  const doneActivity = allActivity.find((row) =>
+  const doneActivity = visibleActivity.find((row) =>
     row.kind === "task.move" && payloadValue(row.payload, "to") === "Done"
   );
-  const createdActivity = [...allActivity].reverse().find((row) => row.kind === "task.create");
-  const updatedActivity = allActivity.find((row) => (
+  const createdActivity = [...visibleActivity].reverse().find((row) => row.kind === "task.create");
+  const updatedActivity = visibleActivity.find((row) => (
     row.kind === "task.update" ||
     row.kind === "task.move" ||
     row.kind === "task.assign" ||
@@ -1828,13 +1914,26 @@ export default async function TaskDetailPage({
           <form id="taskMain" action={updateTask} />
           <input form="taskMain" type="hidden" name="taskId" value={task.id} />
           <input form="taskMain" type="hidden" name="projectSlug" value={slug} />
+          {viewer.isOwner ? (
+            <label className="flex w-fit items-center gap-2 text-caption text-text-muted">
+              <input form="taskMain" type="hidden" name="privateSubmitted" value="1" />
+              <input
+                form="taskMain"
+                type="checkbox"
+                name="private"
+                defaultChecked={task.private}
+                className="h-4 w-4 accent-accent"
+              />
+              Private
+            </label>
+          ) : null}
 
           {/* Tabbed content */}
           <TabsProvider defaultTab={selectedTab}>
             <TabsNav
               tabs={taskTabs}
               sticky
-              badges={{ "Action Plan": unreadActionPlanMessages.length }}
+              badges={viewer.isOwner ? { "Action Plan": unreadActionPlanMessages.length } : undefined}
             />
             <div className="pt-4">
               <TabPanel name="Description">
@@ -1849,9 +1948,9 @@ export default async function TaskDetailPage({
                     defaultAiTarget={defaultAiTarget}
                     descriptionLabel="Task"
                     draftDescription={draftDescription}
-                    aiRunning={isAiDescriptionRunning}
-                    runningMessageId={runningDescriptionRun?.messageId ?? null}
-                    runningAgentSlug={runningDescriptionRun?.agentSlug ?? null}
+                    aiRunning={viewer.isOwner && isAiDescriptionRunning}
+                    runningMessageId={viewer.isOwner ? runningDescriptionRun?.messageId ?? null : null}
+                    runningAgentSlug={viewer.isOwner ? runningDescriptionRun?.agentSlug ?? null : null}
                     // Sub-tasks (parentTaskId !== null) get a taller editor —
                     // they're where most of the day-to-day work detail lands,
                     // so the larger box matches actual use (HOMELAB-48).
@@ -1878,7 +1977,7 @@ export default async function TaskDetailPage({
                             {createdActivity?.user ? (
                               <MessageAvatar actor={createdActivity.user} size="sm" />
                             ) : task.reporter ? (
-                              <MessageAvatar actor={serializeActor(task.reporter)!} size="sm" />
+                              <MessageAvatar actor={serializeActor(task.reporter, actorVisibility)!} size="sm" />
                             ) : null}
                           </dd>
                         </div>
@@ -1908,7 +2007,7 @@ export default async function TaskDetailPage({
                               >
                                 {timeAgo(task.approvedOn)}
                               </time>
-                              {task.approvedBy ? <MessageAvatar actor={serializeActor(task.approvedBy)!} size="sm" /> : null}
+                              {task.approvedBy ? <MessageAvatar actor={serializeActor(task.approvedBy, actorVisibility)!} size="sm" /> : null}
                             </dd>
                           </div>
                         ) : null}
@@ -1938,7 +2037,7 @@ export default async function TaskDetailPage({
                               >
                                 {timeAgo(task.archivedAt)}
                               </time>
-                              {task.archivedBy ? <MessageAvatar actor={serializeActor(task.archivedBy)!} size="sm" /> : null}
+                              {task.archivedBy ? <MessageAvatar actor={serializeActor(task.archivedBy, actorVisibility)!} size="sm" /> : null}
                             </dd>
                           </div>
                         ) : null}
@@ -1946,45 +2045,30 @@ export default async function TaskDetailPage({
                     </div>
 
                     <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
-                      <label className="block">
-                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
-                          Report by
-                        </span>
-                        <AvatarCombobox
-                          formId="taskMain"
-                          name="reporterId"
-                          defaultValue={task.reporterId ?? ""}
-                          options={reporterOptions}
-                          emptyLabel="No reporter"
-                          ariaLabel="Report by"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
-                          Assignee
-                        </span>
-                        <AvatarCombobox
-                          formId="taskMain"
-                          name="assigneeId"
-                          defaultValue={task.assigneeId ?? ""}
-                          options={principalOptions}
-                          emptyLabel="Unassigned"
-                          ariaLabel="Assignee"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
-                          Reviewer
-                        </span>
-                        <AvatarCombobox
-                          formId="taskMain"
-                          name="actingManagerId"
-                          defaultValue={task.actingManagerId ?? ""}
-                          options={principalOptions}
-                          emptyLabel="No reviewer"
-                          ariaLabel="Reviewer"
-                        />
-                      </label>
+                      {!viewer.isOwner && task.reporter?.kind === "agent" ? (
+                        <ReadOnlyPrincipal label="Report by" actor={serializeActor(task.reporter, actorVisibility)} />
+                      ) : (
+                        <label className="block">
+                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Report by</span>
+                          <AvatarCombobox formId="taskMain" name="reporterId" defaultValue={task.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Report by" />
+                        </label>
+                      )}
+                      {!viewer.isOwner && task.assignee?.kind === "agent" ? (
+                        <ReadOnlyPrincipal label="Assignee" actor={serializeActor(task.assignee, actorVisibility)} />
+                      ) : (
+                        <label className="block">
+                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Assignee</span>
+                          <AvatarCombobox formId="taskMain" name="assigneeId" defaultValue={task.assigneeId ?? ""} options={principalOptions} emptyLabel="Unassigned" ariaLabel="Assignee" />
+                        </label>
+                      )}
+                      {!viewer.isOwner && task.actingManager?.kind === "agent" ? (
+                        <ReadOnlyPrincipal label="Reviewer" actor={serializeActor(task.actingManager, actorVisibility)} />
+                      ) : (
+                        <label className="block">
+                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Reviewer</span>
+                          <AvatarCombobox formId="taskMain" name="actingManagerId" defaultValue={task.actingManagerId ?? ""} options={principalOptions} emptyLabel="No reviewer" ariaLabel="Reviewer" />
+                        </label>
+                      )}
                     </div>
 
                     {showDeploymentTab ? (
@@ -2026,7 +2110,7 @@ export default async function TaskDetailPage({
                     </div>
 
                     {/* Blocked by — hard dependency on another task (ENV-62). */}
-                    <div className="space-y-1 rounded-card border border-line bg-panel-soft p-card">
+                    {currentBlockerVisible ? <div className="space-y-1 rounded-card border border-line bg-panel-soft p-card">
                       <label className="block">
                         <span className="mb-1 flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wider text-text-muted">
                           <LockIcon />
@@ -2050,7 +2134,7 @@ export default async function TaskDetailPage({
                       <p className="text-nano text-text-muted">
                         This task waits until the chosen task is Done. Circular blocks are rejected.
                       </p>
-                    </div>
+                    </div> : null}
 
                     <form
                       action={task.archivedAt ? unarchiveTask : archiveTask}
@@ -2103,7 +2187,7 @@ export default async function TaskDetailPage({
               </TabPanel>
 
 
-              <TabPanel name="Action Plan">
+              {viewer.isOwner ? <TabPanel name="Action Plan">
                 <div className="space-y-3 pt-2">
                   {canApproveActionPlan ? (
                     <form action={approveTaskActionPlan} className="flex justify-end">
@@ -2137,7 +2221,7 @@ export default async function TaskDetailPage({
                     pendingProposals={pendingProposals}
                   />
                 </div>
-              </TabPanel>
+              </TabPanel> : null}
 
               <TabPanel name="Sub-Tasks">
                 <TaskChecklist
@@ -2189,18 +2273,18 @@ export default async function TaskDetailPage({
                     Comments
                   </h2>
                   <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-          {task.comments.length === 0 ? (
+          {visibleTaskComments.length === 0 ? (
             <p className="text-caption text-text-muted">
               No comments yet.
             </p>
           ) : (
             <ul className="space-y-3">
-              {task.comments.map((c, index) => {
+              {visibleTaskComments.map((c, index) => {
                 const parsedPmOptions = parsePmOptions(c.body);
                 const mentionedCurrentUser = mentionedUsername(c.body, viewer.username);
                 const resolvedPmOption = findPmOptionResolution(
                   parsedPmOptions.options,
-                  task.comments.slice(index + 1).filter((later) => !later.deletedAt).map((later) => later.body),
+                  visibleTaskComments.slice(index + 1).filter((later) => !later.deletedAt).map((later) => later.body),
                 );
                 if (c.deletedAt) {
                   // Soft-deleted (HOMELAB-41 / item 2): render as a
@@ -2257,7 +2341,7 @@ export default async function TaskDetailPage({
                           surface="task-comment"
                           options={parsedPmOptions.options}
                           resolvedOption={resolvedPmOption}
-                          interactive={isPmOptionsTargetedAtCurrentUser({ currentUserId: viewer.id })}
+                          interactive={viewer.isOwner && isPmOptionsTargetedAtCurrentUser({ currentUserId: viewer.id })}
                         />
                       ) : null}
                     </div>
@@ -2269,18 +2353,18 @@ export default async function TaskDetailPage({
 
           <TaskCommentStreams
             taskId={task.id}
-            messages={pendingCommentMessages.map((message) => ({
+            messages={(viewer.isOwner ? pendingCommentMessages : []).map((message) => ({
               id: message.id,
               agentSlug: message.agentSlug,
             }))}
           />
-          {task.comments.length > 0 || pendingCommentMessages.length > 0 ? (
+          {visibleTaskComments.length > 0 || (viewer.isOwner && pendingCommentMessages.length > 0) ? (
             <AutoScrollToLatest
               whenTab="Comments"
               watchKey={[
-                task.comments.length,
-                task.comments.at(-1)?.id ?? "",
-                pendingCommentMessages.map((message) => message.id).join(","),
+                visibleTaskComments.length,
+                visibleTaskComments.at(-1)?.id ?? "",
+                viewer.isOwner ? pendingCommentMessages.map((message) => message.id).join(",") : "",
               ].join(":")}
             />
           ) : null}
@@ -2298,7 +2382,7 @@ export default async function TaskDetailPage({
 
               <TabPanel name="Activities">
                 <div className="pt-2">
-                  <ActivityTimeline rows={allActivity} />
+                  <ActivityTimeline rows={visibleActivity} />
                 </div>
               </TabPanel>
 

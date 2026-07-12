@@ -18,6 +18,12 @@ import {
 import { checkAgentAttachmentReadAccess } from "@/lib/attachments/agent-access";
 import { attachmentAbsolutePath } from "@/lib/attachments/storage";
 import { normalizeAttachmentMimeType } from "@/lib/attachments/mime";
+import {
+  canAccessEpic,
+  canAccessProject,
+  canAccessTask,
+  getViewer,
+} from "@/lib/auth/permissions";
 
 type AttachmentGrantScope = { type: "task" | "epic"; id: string };
 
@@ -117,10 +123,23 @@ async function grantScopeCanReachAttachment(
 async function authorizeAttachmentRead(
   req: NextRequest,
   attachmentId: string,
-  scope: { taskId: string | null; epicId: string | null },
+  scope: { projectId: string; taskId: string | null; epicId: string | null },
 ) {
   const session = await auth();
-  if (session?.user?.id) return { ok: true as const };
+  if (session?.user?.id) {
+    const viewer = await getViewer();
+    const canAccessItem = viewer
+      ? scope.taskId
+        ? await canAccessTask(viewer, scope.taskId)
+        : scope.epicId
+          ? await canAccessEpic(viewer, scope.epicId)
+          : false
+      : false;
+    if (viewer && canAccessItem && await canAccessProject(viewer, { id: scope.projectId })) {
+      return { ok: true as const };
+    }
+    return { ok: false as const, status: 404, error: "Not found" };
+  }
 
   if (!isLoopbackRequest(req)) {
     return { ok: false as const, status: 401, error: "Unauthenticated" };
@@ -177,6 +196,7 @@ export async function GET(
   const row = await db.attachment.findUnique({
     where: { id },
     select: {
+      projectId: true,
       taskId: true,
       epicId: true,
       filename: true,
@@ -189,6 +209,7 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
   const authorization = await authorizeAttachmentRead(req, id, {
+    projectId: row.projectId,
     taskId: row.taskId,
     epicId: row.epicId,
   });
