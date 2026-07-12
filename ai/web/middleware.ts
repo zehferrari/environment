@@ -79,15 +79,38 @@ function isOpenClawPmChannelEvents(path: string) {
   return path === "/api/openclaw/pm-channel/events";
 }
 
-function forwardedProtocol(req: NextRequest): "http" | "https" {
+type Protocol = "http" | "https";
+
+function forwardedProtocol(req: NextRequest): Protocol {
   const forwarded = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
   if (forwarded === "https" || forwarded === "http") return forwarded;
   return req.nextUrl.protocol === "https:" ? "https" : "http";
 }
 
+function configuredPublicProtocol(): Protocol | null {
+  const publicUrl = process.env.AUTH_URL ?? process.env.NEXTAUTH_URL ?? process.env.APP_URL;
+  if (!publicUrl) return null;
+
+  try {
+    const protocol = new URL(publicUrl).protocol;
+    if (protocol === "https:") return "https";
+    if (protocol === "http:") return "http";
+  } catch {
+    // Fall through to request headers when the optional URL is malformed.
+  }
+
+  return null;
+}
+
+// TLS may terminate before an internal HTTP reverse proxy. Prefer the
+// configured public origin so secure Auth.js cookies are read consistently.
+function publicProtocol(req: NextRequest): Protocol {
+  return configuredPublicProtocol() ?? forwardedProtocol(req);
+}
+
 function forwardedUrl(req: NextRequest, pathname: string) {
   const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? req.nextUrl.host;
-  return new URL(pathname, `${forwardedProtocol(req)}://${host}`);
+  return new URL(pathname, `${publicProtocol(req)}://${host}`);
 }
 
 export async function middleware(req: NextRequest) {
@@ -106,7 +129,7 @@ export async function middleware(req: NextRequest) {
   const token = await getToken({
     req,
     secret: process.env.AUTH_SECRET,
-    secureCookie: forwardedProtocol(req) === "https",
+    secureCookie: publicProtocol(req) === "https",
   });
   if (!token) {
     const url = forwardedUrl(req, "/login");

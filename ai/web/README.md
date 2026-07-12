@@ -317,8 +317,8 @@ follows those project grants. Agent
 users continue to mirror `codeOwner`-matched registry entries. Login rate limit
 is in-process sliding-fixed-window: 10/5min per IP + 5/5min per username.
 Passwords are active immediately; no account is forced through a rotation
-flow. Behind nginx the middleware uses `x-forwarded-host` to keep the secure
-cookie + redirect host correct.
+flow. Behind nginx the middleware uses the configured public Auth.js URL for
+the secure-cookie protocol and `x-forwarded-host` for the redirect host.
 
 **Projects + board (Stage 2 / HOMELAB-44; board layout reworked in
 HOMELAB-48).** Five verbatim task statuses — Backlog · To Do · In

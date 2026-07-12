@@ -58,6 +58,7 @@
     "test:user-lifecycle-controls": "tsx scripts/user-lifecycle-controls-test.tsx",
     "test:password-policy": "tsx scripts/password-policy-test.ts",
     "test:password-rotation-policy": "tsx scripts/password-rotation-policy-test.ts",
+    "test:middleware-public-protocol": "tsx scripts/middleware-public-protocol-test.ts",
     "test:work-item-proposal-authorization": "tsx scripts/work-item-proposal-authorization-test.ts",
     "test:pm-event-privacy": "tsx scripts/pm-event-privacy-test.ts",
     "test:client-recovery": "tsx scripts/client-recovery-test.ts",
