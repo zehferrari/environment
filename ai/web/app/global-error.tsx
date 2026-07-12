@@ -46,7 +46,7 @@ export default function GlobalError({
             textTransform: "uppercase",
             color: "#667085",
           }}>
-            Zero Latency
+            Mission Control
           </p>
           <h1 style={{ margin: 0, fontSize: "24px", lineHeight: 1.2 }}>
             {staleBuild ? "Refreshing the app" : "Application error"}

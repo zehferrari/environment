@@ -45,14 +45,14 @@ Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied in
 | `AGENT_FILES.md` | No | Per-agent unique files (not in repo) and what each is for. |
 | [`JIRA.md`](./ai/openclaw/guides/JIRA.md) | No | Jira-specific workflow (comments, mentions, queue, assignment, working a ticket). |
 | [`BITBUCKET.md`](./ai/openclaw/guides/BITBUCKET.md) | No | Bitbucket-specific workflow (branches, commits, Smart Commits, review, PR boundary). |
-| [`ZEROLATENCY.md`](./ai/openclaw/guides/ZEROLATENCY.md) | No | Zero Latency / `ai/web` PM **interface guide** (routes, tabs, fields, agent runtime contract). Workflow behaviour is in `WORKFLOW.md`. |
+| [`MISSION_CONTROL.md`](./ai/openclaw/guides/MISSION_CONTROL.md) | No | Mission Control / `ai/web` PM **interface guide** (routes, tabs, fields, agent runtime contract). Workflow behaviour is in `WORKFLOW.md`. |
 | `YOGA510.md` | No | yoga510 agent host install notes. |
 | `README.md` | No | Folder overview, layout, editing/host-install notes. |
 | `install.sh` | No | Host bootstrap/reconcile script for OpenClaw services + PM hooks. |
 | `agent-defaults.json` | No | Derived service/capability defaults schema (`core`/`byRole`/`byIntegration`). |
 | `index.example.json` | No | Single-record agent registry template. |
 
-### `ai/web/` — PM webapp (Zero Latency)
+### `ai/web/` — PM webapp (Mission Control)
 
 | File | Purpose |
 |---|---|
@@ -139,7 +139,7 @@ deeper docs before acting:
   `WORKFLOW.md` (single workflow authority for Jira + PM),
   `guides/CODE_REPOS.md`, `guides/SERVICES.md`, `guides/MONITORING.md`,
   `guides/BITBUCKET.md`, `guides/INCIDENT_HANDLING.md`, `guides/JIRA.md`
-  (Jira-specific workflow), `guides/ZEROLATENCY.md`
+  (Jira-specific workflow), `guides/MISSION_CONTROL.md`
   (the `ai/web` PM interface guide).
 - **PM webapp deploy:** [`ai/web/deploy/README.md`](./ai/web/deploy/README.md)
 

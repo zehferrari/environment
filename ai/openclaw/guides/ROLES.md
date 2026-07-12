@@ -46,7 +46,7 @@ When acting as coordinator:
   in implementation order (see `WORKFLOW.md` § *Subtasks and Epic
   task ordering*).
 - Jira and PM differ here. In Jira, move assignable work to the normal
-  implementation-ready column. In Zero Latency / PM, assigning a
+  implementation-ready column. In Mission Control / PM, assigning a
   **Backlog** ticket asks the agent for a plan/opinion only; moving it to
   **To Do** is the approval-to-execute signal.
 - Review work for correctness, risk, and acceptance-criteria fit.
@@ -84,8 +84,8 @@ When acting as implementer:
   (move to In Progress before real work; commit with ticket key; push
   branch; concise completion comment with branch, commit, tests, and
   residual risk).
-- For Zero Latency / PM, follow `WORKFLOW.md` § *Working a Zero
-  Latency task* (`ZEROLATENCY.md` is the interface doc): Backlog
+- For Mission Control / PM, follow `WORKFLOW.md` § *Working a Mission
+  Control task* (`MISSION_CONTROL.md` is the interface doc): Backlog
   assignment is a mandatory plan/opinion comment only, `To Do` means
   start immediately (after Action Plan approval), `In Progress` is
   active work, and `Review` is completed-work review.
@@ -129,7 +129,7 @@ You **do**:
   when zeh would want to know.
 - Use `openclaw-control wake-agent <user>` and `openclaw-control
   restart-and-wake <user>` to nudge stalled coding agents.
-- Enforce Zero Latency / PM workflow drift surfaced by ai-monitor:
+- Enforce Mission Control / PM workflow drift surfaced by ai-monitor:
   missing Backlog plans, stale To Do/In Progress work, Review waiting on
   reviewer or assignee feedback, and tasks blocked by non-Open Epics.
   These PM workflow kinds normally bypass your judgment path; ai-monitor

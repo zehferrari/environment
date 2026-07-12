@@ -125,7 +125,7 @@ async function main() {
         kind,
         trustedPrompt: [
           `You have a directed PM policy update addressed to @${agent.slug}.`,
-          "Read it carefully and apply it to future Zero Latency / PM tasks.",
+          "Read it carefully and apply it to future Mission Control / PM tasks.",
           `If you have no concrete blocker applying the policy, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
           "Create a visible reply only for a concrete blocker.",
         ].join("\n"),

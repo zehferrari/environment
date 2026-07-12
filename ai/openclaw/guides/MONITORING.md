@@ -92,7 +92,7 @@ the entry-point overview.
   considered successful while the same Gmail messageId is still `QUEUED`.
   `openclaw-control` also clears stale non-running `pendingFinalDelivery*`
   state before each wake so CLI system events cannot wedge the next turn.
-- **Zero Latency / PM workflow drift**. `probe_pm_workflow` opens the PM
+- **Mission Control / PM workflow drift**. `probe_pm_workflow` opens the PM
   SQLite database read-only and checks Mission Control rules without
   mutating rows. It alerts/wakes for missing Backlog implementation
   plans, `To Do` tasks not moved to `In Progress`, stale `In Progress`

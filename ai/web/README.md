@@ -22,9 +22,8 @@ Served by one host-wide `pm.service` standalone Next process at
 mission-control page (HOMELAB-42) sat next to this README until HOMELAB-52
 folded it into the live `/agents` deck.
 
-> **Naming.** The web UI is branded **Zero Latency** (workspace title)
-> with a **Mission Control** subtitle and a `Z` mark. *PM* remains the
-> internal codename everywhere else — the `pm.service` /
+> **Naming.** The web UI is branded **Mission Control**. *PM* remains the
+> internal codename everywhere else: the `pm.service` /
 > `pm-consumer.service` units, the `pm-web` package, the `PM_*` env
 > vars, and the OpenClaw `pm` channel — so the rename is display-only.
 

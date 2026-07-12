@@ -19,12 +19,12 @@ older doc conflicts with this file, this file wins.
 | Receive a direct mention or addressed comment | [Receiving a mention](#receiving-a-mention) |
 | Pick your next task after finishing one | [Picking your next task](#picking-your-next-task) |
 | Start work on an assigned Jira issue | [`guides/JIRA.md`](./guides/JIRA.md) § *Working a Jira ticket* |
-| Start work on an assigned Zero Latency / PM task | [Working a Zero Latency task](#working-a-zero-latency-task) |
-| Understand the PM webapp interface (routes, tabs, fields) | [`guides/ZEROLATENCY.md`](./guides/ZEROLATENCY.md) |
+| Start work on an assigned Mission Control / PM task | [Working a Mission Control task](#working-a-mission-control-task) |
+| Understand the PM webapp interface (routes, tabs, fields) | [`guides/MISSION_CONTROL.md`](./guides/MISSION_CONTROL.md) |
 | See unassigned work or want to assign work | [Assignment and ownership](#assignment-and-ownership) |
 | Approve an Action Plan | [Action Plan approval](#action-plan-approval) |
 | Decompose an Epic into tasks or a task into subtasks | [Subtasks and Epic task ordering](#subtasks-and-epic-task-ordering) |
-| Operate or debug Zero Latency workflow automation | [Zero Latency workflow enforcement](#zero-latency-workflow-enforcement) |
+| Operate or debug Mission Control workflow automation | [Mission Control workflow enforcement](#mission-control-workflow-enforcement) |
 | Push code, prepare a branch, or think a PR is needed | [`guides/BITBUCKET.md`](./guides/BITBUCKET.md) and [Code and PR boundary](#code-and-pr-boundary) |
 | Shared `/srv/Code` checkout mechanics and `claim-branch` | [`guides/CODE_REPOS.md`](./guides/CODE_REPOS.md) |
 | Hand off work to another agent | [Task handoff](#task-handoff) |
@@ -152,7 +152,7 @@ Mandatory even for short / urgent / acknowledgement messages.
 If you are directly mentioned or explicitly addressed in a work item,
 comment thread, chat, email, or webhook wake, you **must** reply in the
 source channel. Silence is not an option. This is the default rule for
-every source system — Jira, Zero Latency / PM, email, Telegram.
+every source system — Jira, Mission Control / PM, email, Telegram.
 
 - **You can help**: do the work, reply with results, sign when the
   channel calls for the signature rule.
@@ -178,8 +178,8 @@ it fires crit. See [`guides/JIRA.md`](./guides/JIRA.md) § *Jira @-mentions*.
 
 After completing a work item, email, or Telegram task, pick the next task
 using this **fixed priority order**. Tier 1 must be exhausted before
-tier 2 or 3. The order applies to both Jira and Zero Latency / PM; only
-the status names differ (see [`guides/JIRA.md`](./guides/JIRA.md) § *Picking Jira work* and [`guides/ZEROLATENCY.md`](./guides/ZEROLATENCY.md) § *Picking Zero Latency work* for the source-specific names).
+tier 2 or 3. The order applies to both Jira and Mission Control / PM; only
+the status names differ (see [`guides/JIRA.md`](./guides/JIRA.md) § *Picking Jira work* and [`guides/MISSION_CONTROL.md`](./guides/MISSION_CONTROL.md) § *Picking Mission Control work* for the source-specific names).
 
 0. **Explicit wake/system-event task.** If the current turn says to
    process a specific queued source-channel item, email, Telegram
@@ -191,7 +191,7 @@ the status names differ (see [`guides/JIRA.md`](./guides/JIRA.md) § *Picking Ji
    by that source's policy (PM: the Mission Control owner or a trusted workflow notification), postdates your last response, and postdates
    the most recent move into review. Oldest comment first. Respond with
    **concrete action** (code change pushed, plan revised, question
-   answered), not just acknowledgement. In Zero Latency / PM the system
+   answered), not just acknowledgement. In Mission Control / PM the system
    backs this rule: you hold at most one active task per project
    (To Do / In Progress / Review — no new automated assignment while one
    is active), and reviewer `review_feedback` returns the task to the
@@ -201,7 +201,7 @@ the status names differ (see [`guides/JIRA.md`](./guides/JIRA.md) § *Picking Ji
 3. **Directly assigned work that is not yet in an approved ready state.**
    Start only when the source-specific rules allow it.
 4. **Backlog/deferred work**: follow source-specific rules. In Jira this
-   normally means skip unless zeh overrides. In Zero Latency / PM, a
+   normally means skip unless zeh overrides. In Mission Control / PM, a
    Backlog assignment is actionable only as a plan/opinion comment and
    does not authorize implementation.
 5. **Unassigned work**: do not claim it. If one looks important, report
@@ -305,16 +305,16 @@ Two distinct decomposition levels, each with its own creator and gate:
 
 ---
 
-## Working a Zero Latency task
+## Working a Mission Control task
 
-Zero Latency / PM-specific workflow. Use this section together with
-[`guides/ZEROLATENCY.md`](./guides/ZEROLATENCY.md) (the interface guide:
+Mission Control / PM-specific workflow. Use this section together with
+[`guides/MISSION_CONTROL.md`](./guides/MISSION_CONTROL.md) (the interface guide:
 routes, tabs, fields, runtime contract) and
 [`guides/BITBUCKET.md`](./guides/BITBUCKET.md) / [`guides/CODE_REPOS.md`](./guides/CODE_REPOS.md)
 for code-host mechanics. For the Jira equivalent, see
 [`guides/JIRA.md`](./guides/JIRA.md).
 
-### Zero Latency statuses
+### Mission Control statuses
 
 ```text
 Backlog | To Do | In Progress | Review | Done
@@ -322,7 +322,7 @@ Backlog | To Do | In Progress | Review | Done
 
 ### PM comments and chat
 
-Zero Latency talks to agents through the native OpenClaw `pm` channel.
+Mission Control talks to agents through the native OpenClaw `pm` channel.
 The normal channels are direct PM chat (`/agents/<slug>/chat`), task chat
 on a task editor, and task comments that target an agent.
 
@@ -383,10 +383,10 @@ Agents must not write directly to the Prisma SQLite database, infer
 hidden endpoints, reuse scoped tokens outside the message/action they
 were issued for, or bypass PM workflow rules through filesystem access.
 
-Full runtime contract: [`guides/ZEROLATENCY.md`](./guides/ZEROLATENCY.md)
+Full runtime contract: [`guides/MISSION_CONTROL.md`](./guides/MISSION_CONTROL.md)
 § *Agent runtime contract* and `ai/web/docs/agent-interaction.md`.
 
-### Picking Zero Latency work
+### Picking Mission Control work
 
 After completing a PM task, email, or Telegram task, pick the next PM
 task using the [fixed priority order](#picking-your-next-task). Zero
@@ -422,7 +422,7 @@ Latency / PM queue/status names:
 7. **Nothing actionable**: send `HEARTBEAT_OK` and stop. The next PM
    event, email, or Telegram request will wake you.
 
-### Working a Zero Latency task
+### Working a Mission Control task
 
 1. Read the full PM task context: description, comments, task chat,
    attachments, activity, parent/subtasks, Epic, assignee, reviewer, and
@@ -518,7 +518,7 @@ Latency / PM queue/status names:
 
 ### Work-item proposals
 
-Zero Latency supports grant-scoped **propose -> approve** work-item
+Mission Control supports grant-scoped **propose -> approve** work-item
 planning from direct PM chat, Task/Epic Action Plan turns, and
 human-authored task comments that wake an agent.
 
@@ -565,7 +565,7 @@ database directly. Use the grant-scoped endpoint only when PM supplied a
 grant for that message. Agent-authored comments and PM workflow
 notifications do not grant work-item management.
 
-### Zero Latency workflow enforcement
+### Mission Control workflow enforcement
 
 The durable workflow contract for the local PM workflow.
 
@@ -822,7 +822,7 @@ branch is serving the website, and only then wakes the resolved reviewer.
 Non-code Review work can wake the reviewer directly. Do not approve or
 `review_done` a code task before `pm.repo.verify.ok` is present.
 
-Output: concise and findings-first. In Zero Latency / PM, if the review
+Output: concise and findings-first. In Mission Control / PM, if the review
 is satisfied, move the task to `Done` through the workflow endpoint
 (`review_done`) and do not post an approval-only comment. The keyword
 `looks good, ship it` in an approval comment also triggers PM

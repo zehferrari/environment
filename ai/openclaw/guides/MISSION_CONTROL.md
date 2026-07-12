@@ -1,6 +1,6 @@
-# ZEROLATENCY.md
+# Mission Control Interface Guide
 
-Zero Latency is the local project-management web UI for the OpenClaw
+Mission Control is the local project-management web UI for the OpenClaw
 agent fleet — the branded name for the **PM webapp** that lives in
 [`../../web`](../../web) and is served at `agents.vixi.au`. "PM" remains
 the internal codename for services, env vars, database tables, and the
@@ -10,7 +10,7 @@ This file is the **agent-facing interface guide**: what surfaces exist,
 what fields agents read/write, and how PM-channel turns flow. Workflow
 *behaviour* rules (picking work, status transitions, Action Plans,
 reviewing, chat etiquette, proposals, enforcement) live in
-[`../WORKFLOW.md`](../WORKFLOW.md) § *Working a Zero Latency task* — the
+[`../WORKFLOW.md`](../WORKFLOW.md) § *Working a Mission Control task* — the
 single workflow authority. If this file and `WORKFLOW.md` ever conflict,
 `WORKFLOW.md` wins.
 
@@ -22,19 +22,19 @@ schema, env vars, deployment, library layout), see
 
 | When you are about to... | Read |
 |---|---|
-| Reply in PM chat or task comments | [`../WORKFLOW.md`](../WORKFLOW.md) § *Working a Zero Latency task* |
+| Reply in PM chat or task comments | [`../WORKFLOW.md`](../WORKFLOW.md) § *Working a Mission Control task* |
 | Choose the next PM task | [`../WORKFLOW.md`](../WORKFLOW.md) § *Picking your next task* |
-| Start an assigned PM task | [`../WORKFLOW.md`](../WORKFLOW.md) § *Working a Zero Latency task* |
+| Start an assigned PM task | [`../WORKFLOW.md`](../WORKFLOW.md) § *Working a Mission Control task* |
 | Assign, review, or mutate PM work | [`../WORKFLOW.md`](../WORKFLOW.md) § *Assignment and ownership* |
 | Propose new PM work items | [`../WORKFLOW.md`](../WORKFLOW.md) § *Work-item proposals* |
-| Operate or debug PM workflow automation | [`../WORKFLOW.md`](../WORKFLOW.md) § *Zero Latency workflow enforcement* |
+| Operate or debug PM workflow automation | [`../WORKFLOW.md`](../WORKFLOW.md) § *Mission Control workflow enforcement* |
 | Understand the PM webapp routes / tabs / fields | [Surfaces](#surfaces) below |
 | Read the full agent runtime contract | [Agent runtime contract](#agent-runtime-contract) below |
 | Read the full agent PM API contract | [`ai/web/docs/agent-pm-api.md`](../../web/docs/agent-pm-api.md) |
 | Read the full agent interaction contract | [`ai/web/docs/agent-interaction.md`](../../web/docs/agent-interaction.md) |
 | Deploy or operate the PM webapp | [`ai/web/README.md`](../../web/README.md) · [`ai/web/deploy/README.md`](../../web/deploy/README.md) |
 
-## Zero Latency statuses
+## Mission Control statuses
 
 Task:
 
@@ -54,7 +54,7 @@ deployment flow (see [Deployment](#deployment) below). Agents cannot set
 or change Epic status — humans (and the deploy flow) move Epics.
 
 See [`../WORKFLOW.md`](../WORKFLOW.md) § *Picking your next task* and
-§ *Working a Zero Latency task* for what each status authorises.
+§ *Working a Mission Control task* for what each status authorises.
 
 ---
 

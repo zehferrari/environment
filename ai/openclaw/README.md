@@ -31,7 +31,7 @@ For broader context:
 │   ├── INCIDENT_HANDLING.md  Karen's incident triage protocol
 │   ├── JIRA.md            Jira-specific workflow (comments, mentions, queue, assignment, working a ticket)
 │   ├── BITBUCKET.md       Bitbucket-specific workflow (branches, commits, Smart Commits, review, PR boundary)
-│   └── ZEROLATENCY.md     Zero Latency / ai/web PM interface guide (routes, tabs, fields, agent runtime contract)
+│   └── MISSION_CONTROL.md Mission Control / ai/web PM interface guide (routes, tabs, fields, agent runtime contract)
 └── skills/
     ├── agent-self.js      registry-driven identity resolver (reads /etc/openclaw/agents.json by os.userInfo().username)
     ├── jira/              Jira API helpers (jira-comment.js, jira-transition.js, lib.js, …)

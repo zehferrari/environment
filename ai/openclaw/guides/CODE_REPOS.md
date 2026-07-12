@@ -75,7 +75,7 @@ created via `claim-branch`.
 
 The implementer flow is:
 
-1. Read the Jira or Zero Latency ticket, note the designated branch (e.g. `feature/HOMELAB-12-foo`).
+1. Read the Jira or Mission Control ticket, note the designated branch (e.g. `feature/HOMELAB-12-foo`).
 2. `claim-branch <repo> <branch>` — checks if the branch exists on origin and creates a worktree on it. If it does not exist, it automatically creates it on origin from `origin/master` (or `origin/main` on origin) and checks out locally.
 3. `cd "$(claim-branch <repo> <branch>)"` and work there.
 4. Make sure the git user name and email match the project settings.

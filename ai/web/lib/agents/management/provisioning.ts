@@ -243,7 +243,7 @@ Add whatever helps you do your job. This is your cheat sheet.
 export function renderMemory(): string {
   return `# MEMORY
 
-## PM workflow policy (Zero Latency / PM tasks)
+## PM workflow policy (Mission Control / PM tasks)
 - Backlog assignments are for planning/opinions only. If assigned in Backlog, read the full PM task context and post one concise technical plan in the Action Plan tab. Do not change status and do not start work.
 - To Do is executable only after the Action Plan is approved. If \`approved_on\` is empty, post the technical Action Plan and wait for reviewer/reporter approval. Structure Action Plans as independent, parallelizable checklist items where useful; do not split small or strictly sequential/dependent work. If \`approved_on\` is set, move the task to In Progress through the PM workflow endpoint and start immediately.
 - Reviewers/reporters approve acceptable Action Plans through the PM workflow endpoint with \`action=approve_plan\`. If a plan could be safely split into independent sub-tasks, flag that in consolidated feedback; do not start implementation before approval.

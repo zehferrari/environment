@@ -457,7 +457,7 @@ Expected listeners on `thinkpad` (concrete `user → port` map is in `agents.jso
 | `18789–1879N` (one per coding agent) | Coding agent | OpenClaw gateway |
 | `18791, 18792, …` (one per coding agent) | Coding agent | OpenClaw browser sidecar |
 | `18793` | Monitoring agent (`karen`) | OpenClaw gateway |
-| `3000` | Project Manager (`karen`) | PM (Zero Latency) web server, Next.js loopback |
+| `3000` | Project Manager (`karen`) | PM (Mission Control) web server, Next.js loopback |
 | `3014` | Monitoring agent (`karen`) | OpenClaw Jira webhook receiver |
 | `3015` | Monitoring agent (`karen`) | OpenClaw Bitbucket webhook receiver |
 | Per-agent project resources (e.g. `3001, 3002, …`) | Coding agent | Declared in that agent's `~/.local/openclaw/monitor.json` (e.g. WDT Next.js standalone, loopback). Each resource's `enabled` flag controls both whether it runs and whether it's monitored. |
@@ -466,13 +466,13 @@ Expected listeners on `thinkpad` (concrete `user → port` map is in `agents.jso
 
 The exact port numbers per registered user live in `agents.json` (`listeners[].host:port`); `openclaw-registry-check --runtime` validates that the listed ports are actually bound.
 
-### Project Manager (Zero Latency) Services
+### Project Manager (Mission Control) Services
 
-The Project Manager (Zero Latency) web interface and queue processor run as host-wide system-level services on `thinkpad` under user `karen`.
+The Project Manager (Mission Control) web interface and queue processor run as host-wide system-level services on `thinkpad` under user `karen`.
 
 - **`pm.service`**: A system-wide `systemd` service running the Next.js production standalone server on `127.0.0.1:3000`.
   - Env configuration loads from `/etc/default/pm`.
-  - Serves the Zero Latency web interface at `https://agents.vixi.au` (via Nginx reverse proxy).
+  - Serves the Mission Control web interface at `https://agents.vixi.au` (via Nginx reverse proxy).
   - Background intervals (periodic agent sync, hourly soft-delete bin purges, and orphaned attachment cleanup) are scheduled in-process via Next.js `instrumentation.node.ts` scheduler.
 - **`pm-consumer.service`**: A system-wide `systemd` service that watches for events dropped by the web application into `/var/lib/pm/drop/`.
   - Runs in a loop using `pnpm tsx` to execute `scripts/pm-consumer-loop.ts`.

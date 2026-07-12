@@ -2,9 +2,9 @@
 
 Bitbucket-specific workflow for OpenClaw agents working in shared code
 repositories. Use this with [`../WORKFLOW.md`](../WORKFLOW.md)
-(the single workflow authority for both Jira and Zero Latency / PM) and
+(the single workflow authority for both Jira and Mission Control / PM) and
 [`./CODE_REPOS.md`](./CODE_REPOS.md). For the PM webapp interface, see
-[`./ZEROLATENCY.md`](./ZEROLATENCY.md).
+[`./MISSION_CONTROL.md`](./MISSION_CONTROL.md).
 
 ## Scope
 
@@ -28,7 +28,7 @@ target branch before implementation starts.
 
 - For Jira tasks, the target Bitbucket branch must be named in the Jira
   ticket.
-- For Zero Latency tasks, use the task's `branchName` field or the
+- For Mission Control tasks, use the task's `branchName` field or the
   explicit branch supplied by the PM context/human.
 - If no target branch is named for a shared repo, the task is blocked.
   Ask in the source channel instead of inventing one.
@@ -68,7 +68,7 @@ again after every fix requested during review.
 - Keep commit messages concise and traceable.
 - Include the work item key or source-system commit prefix.
 - For Jira, include the Jira key (`PROJECT-123`) in every commit message.
-- For Zero Latency, prepend the task's `commitPrefix` when it is set.
+- For Mission Control, prepend the task's `commitPrefix` when it is set.
   If no prefix is provided and the project has no convention, ask in the
   PM task/comment thread before committing shared-repo work.
 - Do not include secrets, tokens, private logs, or irrelevant terminal

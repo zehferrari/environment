@@ -4,8 +4,8 @@ import { getSystemSettings, type SystemTheme } from "@/lib/settings/system";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Zero Latency — Mission Control",
-  description: "Zero Latency — Mission Control for zehferrari/environment",
+  title: "Mission Control",
+  description: "Mission Control for zehferrari/environment",
 };
 
 export default async function RootLayout({

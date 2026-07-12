@@ -403,7 +403,7 @@ Jira routing uses a central monitor-owned webhook dispatcher:
 
 | Service | Port | Run User | Purpose |
 |---|---|---|---|
-| `pm.service` | `3000` | `monitor-agent` | Standalone Next.js web application (Zero Latency) |
+| `pm.service` | `3000` | `monitor-agent` | Standalone Next.js web application (Mission Control) |
 | `pm-consumer.service` | | `monitor-agent` | Queue consumer triggering loopback wake events |
 | `pm-switch-runner.service` | | `monitor-agent` | Builds a chosen worktree and flips which one `pm.service` serves (monitor-driven live preview); decoupled from `pm.service`. Drives the per-project "Worktree live preview" panel. |
 | `pm-verify-runner.service` | | `monitor-agent` | Watches `/var/lib/pm/branch-verify/` for jobs dropped by the PM workflow endpoint on `ready_for_review` (when the task touched the repo), runs `git fetch + log` against the local clone, and posts a `pm.repo.verify.{ok,fail}` task comment so the reviewer sees whether `origin/<branch>` reflects the work. Decoupled from `pm.service`. |
