@@ -19,8 +19,8 @@ export type SeededAgentCredential = {
  * out of the file). If not, generates a new strong password, writes it,
  * and returns the new credential.
  *
- * Never logged, never committed. Read by the agent process out-of-band
- * to perform its own first login + rotation.
+ * Never logged or committed. Read by the agent process out-of-band for
+ * authenticated access.
  */
 export async function ensureAgentCredential(agent: string): Promise<SeededAgentCredential> {
   await fs.mkdir(DIR, { recursive: true, mode: 0o700 }).catch(() => undefined);

@@ -2,6 +2,7 @@ import { auth, signOut } from "@/lib/auth";
 import { db } from "@/lib/db";
 import {
   MAX_PASSWORD_LENGTH,
+  MIN_PASSWORD_LENGTH,
   hashPassword,
   passwordLengthError,
   verifyPassword,
@@ -41,12 +42,10 @@ async function rotateAction(formData: FormData) {
     data: {
       passwordHash: await hashPassword(next),
       passwordSetAt: new Date(),
-      mustRotatePassword: false,
     },
   });
 
-  // Force re-auth so JWT picks up new mustRotatePassword=false.
-  await signOut({ redirectTo: "/login?rotated=1" });
+  await signOut({ redirectTo: "/login?reset=1" });
 }
 
 export default async function RotatePasswordPage({
@@ -59,7 +58,7 @@ export default async function RotatePasswordPage({
   const { error } = await searchParams;
 
   const errors: Record<string, string> = {
-    short: "Password must be at least 12 characters.",
+    short: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`,
     long: `Password must be ${MAX_PASSWORD_LENGTH} characters or fewer.`,
     mismatch: "New password and confirmation do not match.",
     wrongcurrent: "Current password is incorrect.",
@@ -71,9 +70,9 @@ export default async function RotatePasswordPage({
         action={rotateAction}
         className="w-full max-w-sm rounded-panel border border-line bg-panel p-6 shadow-sm"
       >
-        <h1 className="text-heading font-semibold mb-1">Set a new password</h1>
+        <h1 className="text-heading font-semibold mb-1">Change password</h1>
         <p className="text-body text-text-muted mb-4">
-          Your seeded password must be rotated before you can use PM.
+          Choose a new password for your account.
         </p>
 
         {error && errors[error] && (
@@ -90,12 +89,12 @@ export default async function RotatePasswordPage({
           className="w-full rounded-lg border border-line bg-panel px-3 py-2 mb-3 outline-none focus:border-accent"
         />
 
-        <label className="block text-body mb-1">New password (min 12 chars)</label>
+        <label className="block text-body mb-1">New password (min {MIN_PASSWORD_LENGTH} chars)</label>
         <input
           name="next"
           type="password"
           required
-          minLength={12}
+          minLength={MIN_PASSWORD_LENGTH}
           maxLength={MAX_PASSWORD_LENGTH}
           autoComplete="new-password"
           className="w-full rounded-lg border border-line bg-panel px-3 py-2 mb-3 outline-none focus:border-accent"
@@ -106,7 +105,7 @@ export default async function RotatePasswordPage({
           name="confirm"
           type="password"
           required
-          minLength={12}
+          minLength={MIN_PASSWORD_LENGTH}
           maxLength={MAX_PASSWORD_LENGTH}
           autoComplete="new-password"
           className="w-full rounded-lg border border-line bg-panel px-3 py-2 mb-4 outline-none focus:border-accent"
@@ -116,7 +115,7 @@ export default async function RotatePasswordPage({
           type="submit"
           className="w-full rounded-lg bg-accent text-white font-medium py-2 shadow-sm hover:opacity-95"
         >
-          Rotate password
+          Update password
         </button>
       </form>
     </main>

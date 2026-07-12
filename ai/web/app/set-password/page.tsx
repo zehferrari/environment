@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
-import { MAX_PASSWORD_LENGTH } from "@/lib/auth/password";
+import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from "@/lib/auth/password";
 import { setPasswordFromToken } from "@/lib/users/actions";
 
 export const dynamic = "force-dynamic";
@@ -55,12 +55,12 @@ export default async function SetPasswordPage({
             </div>
             <label className="block text-body">
               <span className="mb-1 block text-text-muted">New password</span>
-              <input name="password" type="password" minLength={12} maxLength={MAX_PASSWORD_LENGTH} required autoComplete="new-password" className="w-full rounded-lg border border-line bg-bg px-3 py-2 outline-none focus:border-accent" />
-              <span className="mt-1 block text-caption text-text-muted">At least 12 characters.</span>
+              <input name="password" type="password" minLength={MIN_PASSWORD_LENGTH} maxLength={MAX_PASSWORD_LENGTH} required autoComplete="new-password" className="w-full rounded-lg border border-line bg-bg px-3 py-2 outline-none focus:border-accent" />
+              <span className="mt-1 block text-caption text-text-muted">At least {MIN_PASSWORD_LENGTH} characters.</span>
             </label>
             <label className="block text-body">
               <span className="mb-1 block text-text-muted">Confirm password</span>
-              <input name="passwordConfirmation" type="password" minLength={12} maxLength={MAX_PASSWORD_LENGTH} required autoComplete="new-password" className="w-full rounded-lg border border-line bg-bg px-3 py-2 outline-none focus:border-accent" />
+              <input name="passwordConfirmation" type="password" minLength={MIN_PASSWORD_LENGTH} maxLength={MAX_PASSWORD_LENGTH} required autoComplete="new-password" className="w-full rounded-lg border border-line bg-bg px-3 py-2 outline-none focus:border-accent" />
             </label>
             <button type="submit" className="w-full rounded-lg bg-accent py-2 font-medium text-white shadow-sm hover:opacity-95">
               {isInvitation ? "Activate account" : "Set new password"}

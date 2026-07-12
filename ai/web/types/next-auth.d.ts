@@ -5,14 +5,12 @@ declare module "next-auth" {
   interface User {
     id: string;
     kind?: ActorKind;
-    mustRotatePassword?: boolean;
     passwordSetAt?: string | null;
   }
   interface Session {
     user: DefaultSession["user"] & {
       id?: string;
       kind?: ActorKind;
-      mustRotatePassword?: boolean;
     };
   }
 }
@@ -21,7 +19,6 @@ declare module "next-auth/jwt" {
   interface JWT {
     uid?: string;
     kind?: ActorKind;
-    mustRotatePassword?: boolean;
     passwordSetAt?: string | null;
   }
 }

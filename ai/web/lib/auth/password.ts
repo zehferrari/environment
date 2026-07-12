@@ -1,6 +1,6 @@
 import { hash, verify } from "@node-rs/argon2";
 
-export const MIN_PASSWORD_LENGTH = 12;
+export const MIN_PASSWORD_LENGTH = 6;
 export const MAX_PASSWORD_LENGTH = 256;
 
 // Argon2id parameters — OWASP 2024 recommendation, conservative for v1.

@@ -63,7 +63,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           // than the literal "agent" is treated as a human actor for
           // the purpose of workflow rule enforcement (HOMELAB-44).
           kind: user.kind === "agent" ? ("agent" as const) : ("human" as const),
-          mustRotatePassword: user.mustRotatePassword,
           passwordSetAt: user.passwordSetAt?.toISOString() ?? null,
         };
       },
@@ -74,7 +73,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (user) {
         token.uid = user.id;
         token.kind = user.kind;
-        token.mustRotatePassword = user.mustRotatePassword;
         token.passwordSetAt = user.passwordSetAt ?? null;
       } else if (token.uid) {
         const current = await db.user.findUnique({
@@ -92,7 +90,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (token?.uid && session.user) {
         session.user.id = token.uid;
         session.user.kind = token.kind;
-        session.user.mustRotatePassword = Boolean(token.mustRotatePassword);
       }
       return session;
     },

@@ -504,11 +504,11 @@ or temporary hook failures.
 
 ## Seeded credentials
 
-- **Bootstrap human user** — password `password1`, `must_rotate_password=1`. First login forces rotation.
+- **Bootstrap human user** — configured through the bootstrap-owner environment
+  variables. Its password is active immediately and is never forced to rotate.
 - **Each co-located agent** — random password written to
   `/etc/openclaw/pm-agent-credentials/<agent>.json` (mode `0600`, owner
-  `<pm-app-user>`). The credential is host-private, never
-  logged, and used only for the agent's first login + forced rotation flow.
+  `<pm-app-user>`). The credential is host-private and never logged.
 
 The boot-time sync (in `instrumentation.node.ts`) reads
 `/etc/openclaw/agents.json` by default,
@@ -520,7 +520,7 @@ same path also runs on a 5-minute interval — see `AGENT_SYNC_INTERVAL_MIN`.
 After install:
 
 1. `curl -I https://<pm-hostname>/login` -> `200 OK`.
-2. Sign in as the bootstrap admin user -> forced to `/rotate-password`.
+2. Sign in as the bootstrap owner -> the requested workspace opens directly.
 3. `/agents` lists each configured local agent, including the monitor agent.
 4. Create a project → /projects/<slug> board loads with 5 columns.
 5. Add a task → drag across columns → reload, position persisted.

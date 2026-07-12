@@ -132,7 +132,7 @@ async function ensureAgentUser(
     return { seeded: false };
   }
 
-  // First-time seed: generate temp credential, write it to disk, persist hash.
+  // First-time seed: generate a host-private credential and persist its hash.
   const credential = await ensureAgentCredential(agent.user);
   const passwordHash = await hashPassword(credential.password);
 
@@ -143,7 +143,7 @@ async function ensureAgentUser(
       kind: "agent",
       passwordHash,
       passwordSetAt: new Date(),
-      mustRotatePassword: true,
+      mustRotatePassword: false,
       agentId: row.id,
     },
   });

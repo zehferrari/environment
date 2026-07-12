@@ -17,6 +17,7 @@ import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import {
   MAX_PASSWORD_LENGTH,
+  MIN_PASSWORD_LENGTH,
   hashPassword,
   passwordLengthError,
 } from "@/lib/auth/password";
@@ -285,7 +286,7 @@ export async function updateHumanPassword(
 
     if (!userId) throw new Error("User is required.");
     const lengthError = passwordLengthError(password);
-    if (lengthError === "short") throw new Error("Password must be at least 12 characters.");
+    if (lengthError === "short") throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
     if (lengthError === "long") throw new Error(`Password must be ${MAX_PASSWORD_LENGTH} characters or fewer.`);
     if (password !== confirmation) throw new Error("Passwords do not match.");
 
@@ -453,7 +454,7 @@ export async function setPasswordFromToken(formData: FormData) {
   const confirmation = String(formData.get("passwordConfirmation") ?? "");
   if (!token) throw new Error("Password token is missing.");
   const lengthError = passwordLengthError(password);
-  if (lengthError === "short") throw new Error("Password must be at least 12 characters.");
+  if (lengthError === "short") throw new Error(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
   if (lengthError === "long") throw new Error(`Password must be ${MAX_PASSWORD_LENGTH} characters or fewer.`);
   if (password !== confirmation) throw new Error("Passwords do not match.");
 

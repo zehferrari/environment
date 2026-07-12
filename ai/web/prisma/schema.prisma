@@ -27,7 +27,9 @@ model User {
   avatarUpdatedAt    DateTime?
   passwordHash       String?
   passwordSetAt      DateTime?
-  mustRotatePassword Boolean         @default(true)
+  // Retained for backwards-compatible database reads. No account is forced
+  // through a password-rotation flow.
+  mustRotatePassword Boolean         @default(false)
   status             String          @default("active") // "invited" | "active" | "deactivated"
   // The first human account owns Mission Control. This is an explicit,
   // immutable capability rather than a username convention.

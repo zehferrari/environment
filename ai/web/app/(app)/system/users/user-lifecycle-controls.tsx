@@ -58,7 +58,7 @@ export default function UserLifecycleControls({
               <input
                 name="password"
                 type="password"
-                minLength={12}
+                minLength={6}
                 maxLength={256}
                 required
                 autoComplete="new-password"
@@ -71,7 +71,7 @@ export default function UserLifecycleControls({
               <input
                 name="passwordConfirmation"
                 type="password"
-                minLength={12}
+                minLength={6}
                 maxLength={256}
                 required
                 autoComplete="new-password"

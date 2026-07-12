@@ -114,16 +114,10 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  // Force password rotation only for accounts explicitly marked as requiring it.
-  if (token.mustRotatePassword && pathname !== "/rotate-password") {
-    const url = forwardedUrl(req, "/rotate-password");
-    return NextResponse.redirect(url);
-  }
-
   return NextResponse.next();
 }
 
 export const config = {
-  // Avoid running middleware on Next internals + the rotate page itself + the events streaming route.
+  // Avoid running middleware on Next internals and the events streaming route.
   matcher: ["/((?!_next/static|_next/image|favicon.ico|api/auth|api/openclaw/pm-channel/events).*)"],
 };

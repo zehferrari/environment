@@ -65,7 +65,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 
 | Route | Purpose |
 | --- | --- |
-| `app/login`, `app/rotate-password` | unauthenticated routes (forced rotation on first login). |
+| `app/login`, `app/rotate-password` | authentication and optional signed-in password-change routes. |
 | `app/(app)/projects` | projects list + inline create. |
 | `app/(app)/projects/bin` | project-level soft-delete bin — restores whole projects within the 30-day TTL. |
 | `app/(app)/projects/[slug]` | kanban board (four workflow columns + a separate Backlog table, drag-and-drop, Backlog show/hide toggle); per-project tab bar (`project-tabs.tsx` in `layout.tsx`: Summary · Board · Epics · Tasks · Library · Code · Changes · Settings · Activity · Bin — Summary/Code/Changes only with a configured repo, Activity only when there is no Summary, Bin only when non-empty). Done cards older than `doneTtlDays` drop off the board. Task cards show the current workflow actor + `updated` time; Done cards show the reporter. |
@@ -190,7 +190,7 @@ user.
 | `openclaw-pm-channel/` | external OpenClaw channel plugin that receives PM chat/comment turns, streams partial replies, and posts final replies back through the native channel lifecycle. |
 | `lib/db.ts` | Prisma singleton. |
 | `instrumentation.node.ts` | boot hook (Node runtime only); runs seed + first sync, then schedules the periodic agent sync and the two hourly purge jobs (Task/Epic bin + project bin). |
-| `middleware.ts` | auth gate + `mustRotatePassword` redirect + forwarded-host handling. Excludes SSE routes to prevent Edge proxy response buffering. |
+| `middleware.ts` | auth gate + forwarded-host handling. Excludes SSE routes to prevent Edge proxy response buffering. |
 | `prisma/schema.prisma` | full schema (Stage 1 + Stage 2 + HOMELAB-46 delivery log). |
 | `prisma/migrations/` | committed migration history; applied via `prisma migrate deploy`. |
 | `deploy/` | systemd unit, nginx vhost, env file template. |
@@ -316,9 +316,9 @@ password reset links that revoke older password sessions; workspace visibility
 follows those project grants. Agent
 users continue to mirror `codeOwner`-matched registry entries. Login rate limit
 is in-process sliding-fixed-window: 10/5min per IP + 5/5min per username.
-Forced password rotation on first login is enforced by `middleware.ts`. Behind
-nginx the middleware uses `x-forwarded-host` to keep the secure cookie +
-redirect host correct.
+Passwords are active immediately; no account is forced through a rotation
+flow. Behind nginx the middleware uses `x-forwarded-host` to keep the secure
+cookie + redirect host correct.
 
 **Projects + board (Stage 2 / HOMELAB-44; board layout reworked in
 HOMELAB-48).** Five verbatim task statuses — Backlog · To Do · In
@@ -1026,8 +1026,8 @@ deliberately not repeated below.
 - Tests are smoke scripts under `scripts/`, not a test runner. Fine for
   a solo skeleton, but the most consequence-laden file in the repo
   (`lib/workflow.ts`) runs on faith between manual smokes.
-- `User.mustRotatePassword` defaults `true`. Right for the seeded flow,
-  sharp edge for any future programmatic user-creation path.
+- `User.mustRotatePassword` is retained only for backwards-compatible database
+  reads; it defaults to `false` and is not enforced.
 - `Task.rank` is a plain `Int` with a "simple Int for v1" comment. The
   rebalance day will come; the comment is honest about it.
 - `ActivityLog` is accumulating denormalized audit fields (`targetAgent`,
