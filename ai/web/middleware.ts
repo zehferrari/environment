@@ -79,12 +79,15 @@ function isOpenClawPmChannelEvents(path: string) {
   return path === "/api/openclaw/pm-channel/events";
 }
 
+function forwardedProtocol(req: NextRequest): "http" | "https" {
+  const forwarded = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  if (forwarded === "https" || forwarded === "http") return forwarded;
+  return req.nextUrl.protocol === "https:" ? "https" : "http";
+}
+
 function forwardedUrl(req: NextRequest, pathname: string) {
   const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? req.nextUrl.host;
-  const proto = host === "agents.vixi.au"
-    ? "https"
-    : req.headers.get("x-forwarded-proto") ?? req.nextUrl.protocol.replace(":", "");
-  return new URL(pathname, `${proto}://${host}`);
+  return new URL(pathname, `${forwardedProtocol(req)}://${host}`);
 }
 
 export async function middleware(req: NextRequest) {
@@ -103,7 +106,7 @@ export async function middleware(req: NextRequest) {
   const token = await getToken({
     req,
     secret: process.env.AUTH_SECRET,
-    secureCookie: req.headers.get("x-forwarded-host") === "agents.vixi.au" || req.headers.get("host") === "agents.vixi.au",
+    secureCookie: forwardedProtocol(req) === "https",
   });
   if (!token) {
     const url = forwardedUrl(req, "/login");
@@ -111,7 +114,7 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  // Force password rotation on first login for seeded accounts (must_rotate_password).
+  // Force password rotation only for accounts explicitly marked as requiring it.
   if (token.mustRotatePassword && pathname !== "/rotate-password") {
     const url = forwardedUrl(req, "/rotate-password");
     return NextResponse.redirect(url);

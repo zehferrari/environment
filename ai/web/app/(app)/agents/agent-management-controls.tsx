@@ -119,8 +119,8 @@ function blankForm(defaultPrompt = DEFAULT_PROFILE_IMAGE_PROMPT): AgentFormData 
   };
 }
 
-const KAREN_NAMES = ["Mildred", "Basil", "Daphne", "Percival", "Gwendolyn", "Rupert", "Beatrix", "Nigel", "Prudence", "Milton"];
-const KAREN_SURNAMES = ["Wobbleworth", "Pickleford", "Spreadsheet", "Fuzzbutton", "Ticklebank", "Puddington", "Quibbleton", "Snickerdash", "Bumblewick", "Noodleman"];
+const PROFILE_NAMES = ["Alex", "Casey", "Jordan", "Morgan", "Riley", "Taylor", "Avery", "Cameron", "Drew", "Emerson"];
+const PROFILE_SURNAMES = ["Reed", "Parker", "Morgan", "Quinn", "Hayes", "Rowan", "Blake", "Ellis", "Lane", "Sutton"];
 const BIO_BITS = [
   "keeps meeting notes alphabetized by emotional temperature",
   "claims every problem can be solved with a tidy checklist and a tiny biscuit",
@@ -133,9 +133,9 @@ function pick<T>(items: T[]): T {
   return items[Math.floor(Math.random() * items.length)];
 }
 
-function suggestKarenProfile(user: string) {
-  const fullName = `${pick(KAREN_NAMES)} ${pick(KAREN_SURNAMES)}`;
-  const bio = `${fullName} is @${user || "agent"}'s corporate alter ego: a fictional AI agent who ${pick(BIO_BITS)}.`;
+function suggestProfile(user: string) {
+  const fullName = `${pick(PROFILE_NAMES)} ${pick(PROFILE_SURNAMES)}`;
+  const bio = `${fullName} is @${user || "agent"}'s professional profile: a fictional AI agent who ${pick(BIO_BITS)}.`;
   return { fullName, bio };
 }
 
@@ -408,7 +408,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                     type="text"
                     required
                     disabled={isEdit || busy}
-                    placeholder="e.g. carmen"
+                    placeholder="e.g. build-agent"
                     value={form.user}
                     onChange={(e) => setForm({ ...form, user: e.target.value.toLowerCase().trim() })}
                     className={inputCls}
@@ -420,7 +420,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                     type="text"
                     required
                     disabled={busy}
-                    placeholder="e.g. Carmen Perfecta"
+                    placeholder="e.g. Build Agent"
                     value={form.name}
                     onChange={(e) => setForm({ ...form, name: e.target.value })}
                     className={inputCls}
@@ -447,7 +447,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                     type="email"
                     required
                     disabled={busy}
-                    placeholder="carmen@host"
+                    placeholder="agent@example.com"
                     value={form.email}
                     onChange={(e) => setForm({ ...form, email: e.target.value.trim() })}
                     className={inputCls}
@@ -502,7 +502,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                           onChange={() => {
                             const suggestion =
                               mode === "Custom" && !form.image_full_name.trim() && !form.image_bio.trim()
-                                ? suggestKarenProfile(form.user)
+                                ? suggestProfile(form.user)
                                 : null;
                             setForm({
                               ...form,
@@ -557,7 +557,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                               type="button"
                               disabled={busy}
                               onClick={() => {
-                                const suggestion = suggestKarenProfile(form.user);
+                                const suggestion = suggestProfile(form.user);
                                 setForm({
                                   ...form,
                                   image_full_name: suggestion.fullName,
@@ -566,7 +566,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                               }}
                               className="shrink-0 rounded-card border border-line px-3 py-2 text-caption font-medium hover:border-accent disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              Karen suggest
+                              Suggest profile
                             </button>
                           </div>
                         </div>
@@ -727,7 +727,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                       <input
                         type="text"
                         disabled={busy}
-                        placeholder="@carmen_bot"
+                        placeholder="@agent_bot"
                         value={form.telegram.bot}
                         onChange={(e) => setForm({ ...form, telegram: { ...form.telegram, bot: e.target.value.trim() } })}
                         className={inputCls}

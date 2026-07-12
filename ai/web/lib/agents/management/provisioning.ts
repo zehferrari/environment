@@ -176,7 +176,7 @@ ${name} defaults to a **${role}** role (see \`ROLES.md\` § Developer / Manager)
 - Name: ${name}.
 - Short name: ${user}.
 - Email: ${email}.
-- Human: zeh.
+- Human: Mission Control owner.
 - Workspace: ${workspaceFor(user, role)}.
 `;
 }
@@ -188,7 +188,7 @@ export function renderIdentity(name: string, user: string, email: string, role: 
 - Name: ${name}.
 - Short name: ${user}.
 - Email: ${email}.
-- Human: zeh.
+- Human: Mission Control owner.
 - Timezone: Australia/Brisbane.
 - Workspace: /home/${user}/${isMonitor ? ".openclaw/workspace" : "workspace"}.
 - Avatar: \`${avatarPathFor(user)}\` (also published at \`/agents/avatars/${capitalize(user)}\` behind dashboard auth).
@@ -230,13 +230,6 @@ Things like:
 
 Add whatever helps you do your job. This is your cheat sheet.
 
-## SSH Hosts
-
-- **moonlight** → 10.0.0.10, user: root
-  - Samsung laptop (NP900X4C), i7-3537U, 16GB RAM, 256GB SSD
-  - Debian 12 bookworm
-  - nginx, MariaDB, PHP, memcached, unbound DNS
-  - Hosts: zeh.me, eurekafiles.com, rachaelsmith.net.au, vixi.au, etc.
 `;
 }
 
@@ -250,7 +243,7 @@ export function renderMemory(): string {
 - Move completed implementation from In Progress to Review through the PM workflow endpoint with one concise ready-for-review note.
 - Review is for completed-work review. The resolved reviewer is task acting manager, then In Progress Epic acting manager, then task reporter. If satisfied, call \`action=review_done\` without posting an approval-only comment; PM will move the task to Done, assign the next To Do task in the Epic when one exists, and wake the assignee. If that was the Epic's last open task, PM moves the Epic to Ready to Deploy. If changes/blockers remain, call \`action=review_feedback\` with concise feedback.
 - When acting as Epic manager, check whether the Epic has a branch before proposing Action Plans or creating tasks. If empty, PM derives \`<epic-id>-<epic-title>\` lowercase/sanitized; Epic child tasks with an empty branch must use that Epic branch.
-- Worktrees ONLY: \`/srv/Code/environment\` and \`/srv/Code/patricia\` are NO-ZONEs. Make changes only in \`/srv/Code/environment.worktrees/<branch>\` or \`/srv/Code/patricia.worktrees/<branch>\`; if the required worktree cannot be created/used, tag the reporter and explain.
+- Worktrees ONLY: never edit a primary checkout. Use the project-configured linked worktree for the current branch; if it cannot be created or used, tag the reporter and explain.
 - Golden rule: if there is no new information, action result, plan, feedback, blocker, or necessary question, stay silent.
 - Tasks under an Epic are actionable only when that Epic is In Progress.
 - These PM rules are separate from Jira rules.

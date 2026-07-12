@@ -18,6 +18,7 @@ import {
   normalizeProfileImagePrompt,
 } from "@/lib/agents/management/profile-image-options";
 import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/management/profile-image-themes";
+import { isProtectedAgentUsername } from "@/lib/agents/management/protected-usernames";
 import {
   allocatePorts,
   buildAgentEntry,
@@ -28,7 +29,6 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const PROTECTED_USERS = ["root", "zeh", "karen", "system", "admin", "daemon", "bin", "sys", "code-agents"];
 const APP_ROOT_SUFFIX = "/ai/web";
 
 const EditSchema = z.object({
@@ -90,7 +90,7 @@ export async function POST(request: Request) {
   const reasoning = normalizeAgentReasoning(data.reasoning);
 
   // Protected/system identities are not editable through this surface.
-  if (PROTECTED_USERS.includes(data.user)) {
+  if (isProtectedAgentUsername(data.user)) {
     return NextResponse.json({ error: "protected_user" }, { status: 400 });
   }
 

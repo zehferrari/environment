@@ -59,11 +59,10 @@ function shortModel(ref?: string | null) {
 }
 
 function accentFor(slug: string) {
-  if (slug === "barekbaal") return "#0a7c66";
-  if (slug === "asdrubal") return "#4f63ff";
-  if (slug === "karen") return "#b34dd2";
-  if (slug === "carmen") return "#ea580c";
-  return "#6b7280";
+  const accents = ["#0a7c66", "#4f63ff", "#b34dd2", "#ea580c", "#6b7280"];
+  let hash = 0;
+  for (const character of slug) hash = (hash * 31 + character.charCodeAt(0)) | 0;
+  return accents[Math.abs(hash) % accents.length]!;
 }
 
 function formatIdle(seconds?: number | null) {
@@ -792,4 +791,3 @@ function Kpi({ label, value, foot }: { label: string; value: string; foot: strin
     </div>
   );
 }
-

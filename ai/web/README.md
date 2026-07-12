@@ -1,9 +1,7 @@
 # ai/web — PM workspace
 
-Single-host Next.js project manager for the OpenClaw agent fleet. Started as
-the Stage 1 walking skeleton for
-[HOMELAB-43](https://zeh-ferrari.atlassian.net/browse/HOMELAB-43); current
-state is post-Stage-2 with the HOMELAB-46 dispatch seam wired, the
+Single-host Next.js project manager for the OpenClaw agent fleet. Current
+state includes the HOMELAB-46 dispatch seam, the
 HOMELAB-52 agent control surface mounted on `/agents`, the HOMELAB-47
 work item editor (Epic CRUD, attachments, principal pool, redesigned task
 detail), and HOMELAB-48 on top of it (soft-delete + 7-day bin, taller
@@ -17,10 +15,9 @@ Most recently, agents can **propose work items** from a project-attached
 direct chat — a grant-gated change-set of epics/tasks/sub-tasks the human
 reviews and applies (propose → approve).
 
-Served by one host-wide `pm.service` standalone Next process at
-`agents.vixi.au` — see [deploy/README.md](./deploy/README.md). The legacy static `agents.html`
-mission-control page (HOMELAB-42) sat next to this README until HOMELAB-52
-folded it into the live `/agents` deck.
+Served by one host-wide `pm.service` standalone Next process at the configured
+Mission Control host — see [deploy/README.md](./deploy/README.md). The legacy
+static `agents.html` page was superseded by the live `/agents` deck.
 
 > **Naming.** The web UI is branded **Mission Control**. *PM* remains the
 > internal codename everywhere else: the `pm.service` /
@@ -43,11 +40,13 @@ pnpm prisma migrate dev   # applies committed migrations, regenerates client
 pnpm dev
 ```
 
-The Next.js app boots → `instrumentation.node.ts` seeds the `zeh` user
-and runs the first agent sync against `$AGENT_INDEX_PATH` (default
-`/etc/openclaw/agents.json`). On a dev box where that file is absent, the
-boot sync logs an error and continues — log in as `zeh` / `password1`
-and rotate the password, then visit `/agents` to see the (empty) table.
+The Next.js app boots → `instrumentation.node.ts` runs the initial owner
+bootstrap and the first agent sync against `$AGENT_INDEX_PATH` (default
+`/etc/openclaw/agents.json`). For a fresh database, set all of
+`PM_BOOTSTRAP_OWNER_USERNAME`, `PM_BOOTSTRAP_OWNER_EMAIL`, and
+`PM_BOOTSTRAP_OWNER_PASSWORD` before starting the app. The bootstrap never
+changes an installation that already has a Mission Control owner. On a dev box
+where the agent index is absent, the boot sync logs an error and continues.
 
 Other useful scripts:
 
@@ -141,11 +140,11 @@ user.
 | `lib/agents/auth/credentials.ts` | per-agent host-private credential seeding. |
 | `lib/agents/management/profile.ts` | shared agent profile read/write + ACL. |
 | `lib/agents/management/profile-images.ts` | profile/avatar image metadata, upload conversion, delete, and ACL enforcement for `/srv/agents/Pictures/<Agent>/`. |
-| `lib/agents/management/profile-image-generation.ts` | sends non-manual image-generation requests to the Confy/ComfyUI service (`PM_PROFILE_IMAGE_CONFY_URL`, default `http://10.0.0.17:8188`). Profiles use FLUX.1-dev FP8; Avatars use the Profile as a PuLID-FLUX identity reference. Default saved generations use 20 steps (`PM_PROFILE_IMAGE_STEPS`); staged previews use 18 steps (`PM_PROFILE_IMAGE_PREVIEW_STEPS`). |
+| `lib/agents/management/profile-image-generation.ts` | sends non-manual image-generation requests to the configured Confy/ComfyUI service (`PM_PROFILE_IMAGE_CONFY_URL`). Profiles use FLUX.1-dev FP8; Avatars use the Profile as a PuLID-FLUX identity reference. Default saved generations use 20 steps (`PM_PROFILE_IMAGE_STEPS`); staged previews use 18 steps (`PM_PROFILE_IMAGE_PREVIEW_STEPS`). |
 | `lib/agents/management/profile-image-themes.ts` | Add Agent character-theme combobox options; first option is `Manually Uploaded`. |
 | `lib/agents/management/model-settings.ts` | shared model-config store (HOMELAB-52). |
 | `lib/agents/ops/restart.ts` | systemd restart fan-out via Atlas gateway. |
-| `lib/agents/auth/seed-zeh.ts` | idempotent seeder for the `zeh` human user. |
+| `lib/agents/auth/bootstrap-owner.ts` | opt-in bootstrap for the initial Mission Control owner on a fresh database. |
 | `lib/workflow.ts` | HOMELAB-44 rule library (transition / assignment / hierarchy / acting-manager). |
 | `lib/principals.ts` | assignable-principal resolver — active humans + agents with `Agent.role='coding'`. Used by every Task/Epic picker. |
 | `lib/agents/chat/targets.ts` | broader chat-only resolver — all active agents regardless of role (includes monitors). |
@@ -207,41 +206,41 @@ its own behaviours off `Agent.role`.
 
 ```mermaid
 graph TD
-    User([zeh · human]) --> PM[PM webapp<br/>agents.vixi.au]
+    User([Mission Control owner]) --> PM[Mission Control]
 
     PM -->|principal pool — coding only<br/>lib/principals.ts| Coders
     PM -->|chat targets — any active agent<br/>lib/agents/chat/targets.ts| Coders
-    PM -->|chat targets| Karen
+    PM -->|chat targets| Monitor
 
     subgraph Coders["Coders · role=coding · can_modify_code"]
-        A[Asdrubal Irwin<br/>gw 18789]
-        B[Barekbaal Irwin<br/>gw 18790]
+        A[Coding agent A]
+        B[Coding agent B]
     end
 
     subgraph Mon["Monitor · role=monitor · never edits code"]
-        Karen[Karen Sideye · gw 18793<br/>wake · restart · triage · alert<br/>Jira + Bitbucket webhook receivers]
+        Monitor[Monitoring agent<br/>wake · restart · triage · alert]
     end
 
     PM -. native pm channel · /pm-channel/ingest .-> Coders
     PM -. generic wake · /hooks/wake .-> Coders
-    Incidents[ai-monitor incidents] --> Karen
-    Karen -->|wakes / restarts| Coders
-    Karen -->|alerts| TG([Telegram])
+    Incidents[monitoring incidents] --> Monitor
+    Monitor -->|wakes / restarts| Coders
+    Monitor -->|alerts| Notifications
 ```
 
-**Coders (`role = coding`).** Asdrubal and Barekbaal. Capability
-`can_modify_code`; they work Jira tickets, edit code, and push branches,
+**Coders (`role = coding`).** Coding agents have the capability
+`can_modify_code`; they work tickets, edit code, and push branches,
 and never participate in monitoring. In PM they are the only agents in
 the **assignable principal pool** (`lib/principals.ts`) — eligible as
 Task assignee / reviewer and Epic assignee / acting-manager — and they
 receive chat/comment turns over the native `pm` channel plus generic
 `/hooks/wake` automation.
 
-**Monitor (`role = monitor`).** Karen Sideye. Capabilities
+**Monitor (`role = monitor`).** Monitoring agents have capabilities such as
 `can_wake_agents`, `can_restart_agents`, `can_triage_incidents`, and
-alerting to Telegram; she runs the inbound Jira + Bitbucket webhook
-receivers (ports 3014 / 3015) and triages `ai-monitor` incidents, waking
-or restarting coders as needed. Karen never modifies code, so she is
+alerting; they may run inbound integration webhook receivers and triage
+monitoring incidents, waking or restarting coders as needed. A monitor never
+modifies code, so it is
 **excluded from the principal pool** — but she is reachable through the
 broader chat-target resolver (`lib/agents/chat/targets.ts`), and her
 `openclaw-control wake-agent` bridge is the degraded fallback PM uses
@@ -249,7 +248,7 @@ when a coder's gateway hooks are unavailable.
 
 ### Agent lifecycle (create / edit / remove)
 
-Admin (`zeh`) provisions the fleet from the **Agents** page — `Add Agent`,
+The Mission Control owner provisions the fleet from the **Agents** page — `Add Agent`,
 per-card `Edit`, and `Delete` (`agent-management-controls.tsx`). These post to
 `/api/agents/{add,edit,remove}`, which are **route-centric**: the web app
 (running as the monitor user) validates input, allocates the next free UID
@@ -260,14 +259,14 @@ into `/var/lib/pm/agent-provision/` and polls for a result; **`openclaw-agent-ru
 (the monitor's system identity, `NoNewPrivileges=no`) runs the single privileged
 boundary `/usr/local/sbin/openclaw-manage-user`: the system user, Samba/sudoers,
 per-agent files, doc symlinks (to the active PM worktree root supplied in the
-payload), gateway + PM-channel install, and the registry write. The helper may
-validate a payload `repoRoot` under `/srv/Code/environment.worktrees/<name>`;
-do not stage lifecycle changes by editing `/srv/Code/environment` directly. The
+payload), gateway + PM-channel install, and the registry write. The helper
+validates the configured worktree root; do not stage lifecycle changes by
+editing a primary checkout directly. The
 route then reconciles the PM DB with `syncAgents()` and writes an
 `agent.registry.{add,edit,remove}` audit row.
 
-- **Guards.** Protected accounts (`root`, `zeh`, the monitor, system users,
-  `code-agents`) cannot be created, edited, or removed — enforced in both the
+- **Guards.** Reserved system accounts and active monitor identities cannot be
+  created, edited, or removed — enforced in both the
   route and the helper. A failed create is rolled back (helper `delete`).
 - **Ports.** Port allocation is not registry-only. `allocatePorts()` treats an
   OpenClaw gateway as a port pair (`gatewayPort` and the browser/control
@@ -634,12 +633,12 @@ targets an agent, PM:
 {
   "version": 1,
   "kind": "direct | task-chat | task-comment | epic-chat",
-  "agentSlug": "asdrubal",
+  "agentSlug": "<agent-slug>",
   "sessionKey": "pm:...",
   "text": "<latest user message>",
   "contextText": "<compact PM context packet or null>",
   "systemPrompt": "<channel guidance>",
-  "actor": { "id": "usr_...", "username": "zeh", "kind": "human" },
+  "actor": { "id": "usr_...", "username": "<owner-username>", "kind": "human" },
   "replyTarget": { "kind": "direct | task-chat | task-comment | epic-chat", "...": "origin metadata" },
   "callbackUrl": "http://127.0.0.1:3000/api/openclaw/pm-channel/reply",
   "streamUrl": "http://127.0.0.1:3000/api/openclaw/pm-channel/stream"
@@ -662,7 +661,7 @@ consumption stamp.
 
 `/hooks/wake` remains installed for generic PM events such as assignment
 and ack-ready automation. It is no longer the normal chat/comment path.
-The same-host Karen bridge remains only as a degraded fallback for old
+The same-host monitor bridge remains only as a degraded fallback for old
 hosts or temporary gateway hook failures.
 
 `openclaw/install.sh` is the host install path for the PM/OpenClaw
@@ -672,7 +671,7 @@ integration. With a PM checkout present it must:
   on the PM host matches the consumer side for non-chat PM events.
 - Install and enable the one host-wide `pm.service` and `pm-consumer.service`
   as system services with runtime `User=` / `Group=` set to the configured
-  PM app user/group (`karen` on thinkpad by default). These are **not**
+  configured PM app user/group. These are **not**
   per-agent user units; stale
   `/home/<agent>/.config/systemd/user/pm*.service` files should be
   removed so a coding agent cannot accidentally own the PM port or
@@ -948,7 +947,7 @@ See `.env.example` for the full list. Highlights:
 
 ## Deployment
 
-Manual bootstrap on `agents.vixi.au`; the full playbook lives in
+Manual bootstrap on the configured Mission Control host; the full playbook lives in
 [deploy/README.md](./deploy/README.md). After Stage 1:
 
 - Schema changes — generate with `pnpm prisma migrate dev --name <change>`

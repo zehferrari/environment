@@ -34,7 +34,7 @@ const pmChannelConfigJsonSchema = {
 };
 
 const pmChannelConfigSchema = buildJsonChannelConfigSchema(pmChannelConfigJsonSchema, {
-  cacheKey: "vixi-pm-channel",
+  cacheKey: "mission-control-pm-channel",
   uiHints: {
     token: { label: "Ingress token", sensitive: true },
     callbackToken: { label: "PM callback token", sensitive: true },
@@ -201,8 +201,8 @@ function createPmStreamPublisher({ account, target, logger }) {
   const streamSocketPath = typeof target.streamSocketPath === "string" && target.streamSocketPath.trim()
     ? target.streamSocketPath.trim()
     : "";
-  const inprocCallback = typeof globalThis.__vixiPmChannelStreamCallback === "function"
-    ? globalThis.__vixiPmChannelStreamCallback
+  const inprocCallback = typeof globalThis.__missionControlPmChannelStreamCallback === "function"
+    ? globalThis.__missionControlPmChannelStreamCallback
     : null;
   if (!streamUrl && !(streamTransport === "uds" && streamSocketPath) && !(streamTransport === "inproc" && inprocCallback)) {
     if (streamTransport !== "http") {
@@ -576,7 +576,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
       untrustedContext: typeof payload.contextText === "string" && payload.contextText.trim()
         ? [{
             label: "PM context packet",
-            source: "vixi-pm",
+            source: "mission-control-pm",
             type: payload.kind,
             payload: payload.contextText,
           }]
@@ -759,7 +759,7 @@ const pmPlugin = createChatChannelPlugin({
       selectionLabel: "PM",
       docsPath: "/plugins/pm-channel",
       docsLabel: "PM Channel",
-      blurb: "Local Vixi PM chat and task-comment channel.",
+      blurb: "Local Mission Control chat and task-comment channel.",
       markdownCapable: true,
       showInSetup: false,
       exposure: {

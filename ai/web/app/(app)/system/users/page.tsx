@@ -215,7 +215,6 @@ export default async function SystemUsersPage({
                 status={user.status}
                 protectedAccount={protectedAccount}
                 removable={Boolean(removalStatus?.removable) && !protectedAccount}
-                removalBlockers={removalStatus?.blockers ?? []}
               />
             </article>
           );

@@ -21,12 +21,9 @@ import AgentDangerZone from "./agent-danger-zone";
 import { readAgentImagesState } from "@/lib/agents/management/profile-images";
 import { summarizeAgentDeletion } from "@/lib/agents/management/deletion-summary";
 import { getSystemSettings } from "@/lib/settings/system";
+import { isProtectedAgentUsername } from "@/lib/agents/management/protected-usernames";
 
 export const dynamic = "force-dynamic";
-
-// Mirrors PROTECTED_USERS in /api/agents/remove: accounts that must never be
-// deprovisioned from the UI (operator, the monitor running this service, system).
-const PROTECTED_AGENTS = new Set(["root", "zeh", "karen", "system", "admin", "daemon", "bin", "sys", "code-agents"]);
 
 type SnapshotAgent = {
   name?: string;
@@ -178,7 +175,7 @@ export default async function AgentProfilePage({
   const canEdit = await canEditProfile({ name: session?.user?.name, kind: session?.user?.kind }, slug);
   // Deletion is admin-only (matches the /api/agents/remove guard) and never
   // offered for protected accounts.
-  const canRemove = await isOwnerUserId(session?.user?.id) && !PROTECTED_AGENTS.has(slug);
+  const canRemove = await isOwnerUserId(session?.user?.id) && !isProtectedAgentUsername(slug);
   const deletionSummary = canRemove ? await summarizeAgentDeletion(slug) : null;
   const [audit, activity, modelSettings] = await Promise.all([
     db.activityLog.findMany({

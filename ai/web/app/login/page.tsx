@@ -35,7 +35,7 @@ export default async function LoginPage({
       >
         <h1 className="text-heading font-semibold mb-1">Sign in</h1>
         <p className="text-body text-text-muted mb-4">
-          Mission Control workspace for zehferrari/environment
+          Mission Control workspace
         </p>
 
         {error === "invalid" && (

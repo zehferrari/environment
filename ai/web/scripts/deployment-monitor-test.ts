@@ -16,8 +16,8 @@ async function branchVerificationPushesReporterAuthoredCommit() {
     const repo = path.join(dir, "repo");
     execFileSync("git", ["init", "--bare", bare]);
     execFileSync("git", ["init", repo]);
-    git(repo, ["config", "user.name", "Zeh Ferrari"]);
-    git(repo, ["config", "user.email", "e@zeh.me"]);
+    git(repo, ["config", "user.name", "Example Owner"]);
+    git(repo, ["config", "user.email", "owner@example.test"]);
     git(repo, ["remote", "add", "origin", bare]);
     await import("node:fs/promises").then((fs) => fs.writeFile(path.join(repo, "README.md"), "base\n"));
     git(repo, ["add", "README.md"]);
@@ -33,7 +33,7 @@ async function branchVerificationPushesReporterAuthoredCommit() {
       repositoryPath: repo,
       branchName: "feature/deploy",
       commitPrefix: "ENV-18",
-      reporter: { userId: "u1", name: "Zeh Ferrari", email: "e@zeh.me" },
+      reporter: { userId: "u1", name: "Example Owner", email: "owner@example.test" },
       targetBranch: "main",
     });
 
@@ -62,7 +62,7 @@ async function missingReporterEmailReturnsPrompt() {
           epicId: null,
           deletedAt: null,
           archivedAt: null,
-          reporter: { id: "u1", username: "zeh", name: "Zeh Ferrari", email: null },
+          reporter: { id: "u1", username: "owner", name: "Example Owner", email: null },
           project: {
             id: "p1",
             slug: "environment",
@@ -92,8 +92,8 @@ async function dirtyDeploymentApprovalRecordsPendingLocalChanges() {
     const repo = path.join(dir, "repo");
     execFileSync("git", ["init", "--bare", bare]);
     execFileSync("git", ["init", repo]);
-    git(repo, ["config", "user.name", "Zeh Ferrari"]);
-    git(repo, ["config", "user.email", "e@zeh.me"]);
+    git(repo, ["config", "user.name", "Example Owner"]);
+    git(repo, ["config", "user.email", "owner@example.test"]);
     git(repo, ["remote", "add", "origin", bare]);
     await import("node:fs/promises").then((fs) => fs.writeFile(path.join(repo, "README.md"), "base\n"));
     git(repo, ["add", "README.md"]);
@@ -114,7 +114,7 @@ async function dirtyDeploymentApprovalRecordsPendingLocalChanges() {
           epicId: null,
           deletedAt: null,
           archivedAt: null,
-          reporter: { id: "u1", username: "zeh", name: "Zeh Ferrari", email: "e@zeh.me" },
+          reporter: { id: "u1", username: "owner", name: "Example Owner", email: "owner@example.test" },
           project: {
             id: "p1",
             slug: "environment",
@@ -177,8 +177,8 @@ async function approvingLocalChangesCommitsPushesAndOpensPr() {
       targetBranch: "main",
       latestCommitSha: git(repo, ["rev-parse", "feature/deploy"]),
       reporterUserId: "u1",
-      reporterName: "Zeh Ferrari",
-      reporterEmail: "e@zeh.me",
+      reporterName: "Example Owner",
+      reporterEmail: "owner@example.test",
       status: "local_changes_pending_approval",
       project: {
         id: "p1",
@@ -210,7 +210,7 @@ async function approvingLocalChangesCommitsPushesAndOpensPr() {
           epicId: null,
           deletedAt: null,
           archivedAt: null,
-          reporter: { id: "u1", username: "zeh", name: "Zeh Ferrari", email: "e@zeh.me" },
+          reporter: { id: "u1", username: "owner", name: "Example Owner", email: "owner@example.test" },
           project: row.project,
         }),
       },
@@ -238,8 +238,8 @@ async function approvingLocalChangesCommitsPushesAndOpensPr() {
     assert.equal(row.localChangeApprovedById, "u1");
     assert.equal(git(repo, ["status", "--porcelain"]), "");
     const [authorName, authorEmail, subject] = git(repo, ["log", "-1", "--format=%an%x00%ae%x00%s", "feature/deploy"]).split("\0");
-    assert.equal(authorName, "Zeh Ferrari");
-    assert.equal(authorEmail, "e@zeh.me");
+    assert.equal(authorName, "Example Owner");
+    assert.equal(authorEmail, "owner@example.test");
     assert.match(subject, /^ENV-19/);
     assert.equal(git(repo, ["ls-remote", "--heads", "origin", "feature/deploy"]).split(/\s+/)[0], row.latestCommitSha);
   } finally {
@@ -261,8 +261,8 @@ async function mergedScriptSuccessWritesReporterReport() {
     targetBranch: "main",
     latestCommitSha: "abc",
     reporterUserId: "u1",
-    reporterName: "Zeh Ferrari",
-    reporterEmail: "e@zeh.me",
+    reporterName: "Example Owner",
+    reporterEmail: "owner@example.test",
     status: "open",
     project: { repositoryPath: "/repo", deploymentMode: "script", deploymentOnMerge: "deploy.sh", deploymentBitbucketWorkspace: "workspace", deploymentBitbucketRepoSlug: "repo" },
   }];
@@ -292,7 +292,7 @@ async function mergedScriptSuccessWritesReporterReport() {
 async function nonZeroScriptIsDeploymentErrorAndIdempotent() {
   let commentCount = 0;
   const rows: any[] = [{
-    id: "pr1", projectId: "p1", taskId: "task1", epicId: null, provider: "bitbucket", providerPrId: "12", url: "url", sourceBranch: "feature", targetBranch: "main", latestCommitSha: "abc", reporterUserId: "u1", reporterName: "Zeh", reporterEmail: "e@zeh.me", status: "open",
+    id: "pr1", projectId: "p1", taskId: "task1", epicId: null, provider: "bitbucket", providerPrId: "12", url: "url", sourceBranch: "feature", targetBranch: "main", latestCommitSha: "abc", reporterUserId: "u1", reporterName: "Owner", reporterEmail: "owner@example.test", status: "open",
     project: { repositoryPath: "/repo", deploymentMode: "script", deploymentOnMerge: "deploy.sh", deploymentBitbucketWorkspace: "workspace", deploymentBitbucketRepoSlug: "repo" },
   }];
   const mockDb = {
@@ -314,7 +314,7 @@ async function nonZeroScriptIsDeploymentErrorAndIdempotent() {
 
 async function declinedAndPipelineFailureFailDeployment() {
   for (const providerState of [{ state: "declined" as const, mergeSha: null }, { state: "open" as const, mergeSha: null, pipelineFailed: true }]) {
-    const rows: any[] = [{ id: Math.random().toString(), projectId: "p1", taskId: "task1", epicId: null, provider: "bitbucket", providerPrId: "12", url: "url", sourceBranch: "feature", targetBranch: "main", latestCommitSha: "abc", reporterUserId: "u1", reporterName: "Zeh", reporterEmail: "e@zeh.me", status: "open", project: { repositoryPath: "/repo", deploymentMode: "pr-only", deploymentOnMerge: null } }];
+    const rows: any[] = [{ id: Math.random().toString(), projectId: "p1", taskId: "task1", epicId: null, provider: "bitbucket", providerPrId: "12", url: "url", sourceBranch: "feature", targetBranch: "main", latestCommitSha: "abc", reporterUserId: "u1", reporterName: "Owner", reporterEmail: "owner@example.test", status: "open", project: { repositoryPath: "/repo", deploymentMode: "pr-only", deploymentOnMerge: null } }];
     let status = "";
     const mockDb = {
       deploymentPullRequest: { findMany: async (q: any) => q.where?.status === "open" ? rows.filter((r) => r.status === "open") : rows, findUnique: async () => ({ status: rows[0].status }), update: async ({ data }: any) => { Object.assign(rows[0], data); } },
@@ -330,8 +330,8 @@ async function declinedAndPipelineFailureFailDeployment() {
 
 async function epicChildRollupWaitsForAllChildren() {
   const rows: any[] = [
-    { id: "pr1", projectId: "p1", taskId: "t1", epicId: "e1", provider: "bitbucket", providerPrId: "1", url: "url1", sourceBranch: "b1", targetBranch: "main", latestCommitSha: "a", reporterUserId: "u1", reporterName: "Zeh", reporterEmail: "e@zeh.me", status: "open", project: { repositoryPath: "/repo", deploymentMode: "pr-only", deploymentOnMerge: null } },
-    { id: "pr2", projectId: "p1", taskId: "t2", epicId: "e1", provider: "bitbucket", providerPrId: "2", url: "url2", sourceBranch: "b2", targetBranch: "main", latestCommitSha: "b", reporterUserId: "u1", reporterName: "Zeh", reporterEmail: "e@zeh.me", status: "open", project: { repositoryPath: "/repo", deploymentMode: "pr-only", deploymentOnMerge: null } },
+    { id: "pr1", projectId: "p1", taskId: "t1", epicId: "e1", provider: "bitbucket", providerPrId: "1", url: "url1", sourceBranch: "b1", targetBranch: "main", latestCommitSha: "a", reporterUserId: "u1", reporterName: "Owner", reporterEmail: "owner@example.test", status: "open", project: { repositoryPath: "/repo", deploymentMode: "pr-only", deploymentOnMerge: null } },
+    { id: "pr2", projectId: "p1", taskId: "t2", epicId: "e1", provider: "bitbucket", providerPrId: "2", url: "url2", sourceBranch: "b2", targetBranch: "main", latestCommitSha: "b", reporterUserId: "u1", reporterName: "Owner", reporterEmail: "owner@example.test", status: "open", project: { repositoryPath: "/repo", deploymentMode: "pr-only", deploymentOnMerge: null } },
   ];
   const epicUpdates: string[] = [];
   const mockDb = {

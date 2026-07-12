@@ -1,12 +1,12 @@
 import type { MetadataRoute } from "next";
 
-// Web App Manifest — makes agents.vixi.au installable as a PWA. Installability
+// Web App Manifest — makes Mission Control installable as a PWA. Installability
 // is also what unlocks reliable closed-app Web Push on mobile (notably iOS,
 // which only delivers push to home-screen-installed web apps).
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Vixi PM — Agents",
-    short_name: "Vixi PM",
+    name: "Mission Control",
+    short_name: "Mission Control",
     description: "Chat with your OpenClaw agents and manage work items.",
     start_url: "/",
     scope: "/",

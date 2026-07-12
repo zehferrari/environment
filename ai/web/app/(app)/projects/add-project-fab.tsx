@@ -154,7 +154,7 @@ export default function AddProjectFab({
                   }}
                   pattern="[a-zA-Z0-9\-_]+"
                   title="Only letters, numbers, hyphens, and underscores are allowed"
-                  placeholder="patricia"
+                  placeholder="my-project"
                   className={inputCls}
                 />
               </label>
@@ -170,7 +170,7 @@ export default function AddProjectFab({
                   }}
                   pattern="[a-zA-Z][a-zA-Z0-9]{1,9}"
                   title="Start with a letter; use 2-10 letters or numbers"
-                  placeholder="PH"
+                  placeholder="PRJ"
                   className={`${inputCls} font-mono`}
                 />
               </label>
@@ -179,7 +179,7 @@ export default function AddProjectFab({
                 <input
                   name="repositoryPath"
                   required
-                  placeholder="/srv/Code/environment"
+                  placeholder="/path/to/repository"
                   className={`${inputCls} font-mono`}
                 />
               </label>
@@ -190,7 +190,7 @@ export default function AddProjectFab({
                 <span className={labelCls}>Default git user</span>
                 <input
                   name="defaultGitUserName"
-                  placeholder="Zeh Ferrari"
+                  placeholder="Your Name"
                   className={inputCls}
                 />
               </label>
@@ -199,7 +199,7 @@ export default function AddProjectFab({
                 <input
                   type="email"
                   name="defaultGitUserEmail"
-                  placeholder="e@zeh.me"
+                  placeholder="you@example.com"
                   className={inputCls}
                 />
               </label>

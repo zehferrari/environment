@@ -161,7 +161,7 @@ async function main(): Promise<void> {
       agentIndexPath,
       JSON.stringify({
         version: 1,
-        codeOwner: "zeh",
+        codeOwner: "owner",
         agents: [
           {
             user: "barekbaal",

@@ -2,7 +2,7 @@
   "name": "pm-web",
   "version": "0.1.0",
   "private": true,
-  "description": "PM walking skeleton — agents + projects + kanban for zehferrari/environment",
+  "description": "Mission Control project workspace for agents, projects, and kanban",
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build && node scripts/copy-standalone-assets.mjs",
@@ -55,6 +55,7 @@
     "test:workspace-api": "tsx scripts/workspace-api-test.ts",
     "test:user-access-control": "tsx scripts/user-access-control-test.ts",
     "test:user-lifecycle": "tsx scripts/user-lifecycle-test.ts",
+    "test:user-lifecycle-controls": "tsx scripts/user-lifecycle-controls-test.tsx",
     "test:password-policy": "tsx scripts/password-policy-test.ts",
     "test:work-item-proposal-authorization": "tsx scripts/work-item-proposal-authorization-test.ts",
     "test:pm-event-privacy": "tsx scripts/pm-event-privacy-test.ts",

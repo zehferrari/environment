@@ -1,4 +1,4 @@
-const { jiraSearch } = require('./lib');
+const { jiraBrowseUrl, jiraSearch } = require('./lib');
 
 async function main() {
   try {
@@ -14,7 +14,7 @@ async function main() {
         status: i.fields.status.name,
         priority: i.fields.priority?.name || 'None',
         updated: i.fields.updated,
-        url: `https://zeh-ferrari.atlassian.net/browse/${i.key}`
+        url: jiraBrowseUrl(i.key)
       }))
     }, null, 2));
   } catch (err) {

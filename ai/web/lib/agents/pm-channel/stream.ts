@@ -55,7 +55,7 @@ interface StreamStore {
 }
 
 type GlobalWithStreamStore = typeof globalThis & {
-  __vixiPmChannelStreamStore?: StreamStore;
+  __missionControlPmChannelStreamStore?: StreamStore;
 };
 
 const MAX_STREAM_CHARS = 40_000;
@@ -63,11 +63,11 @@ const STREAM_TTL_MS = 10 * 60 * 1000;
 
 function store(): StreamStore {
   const globalStore = globalThis as GlobalWithStreamStore;
-  globalStore.__vixiPmChannelStreamStore ??= {
+  globalStore.__missionControlPmChannelStreamStore ??= {
     states: new Map(),
     subscribers: new Map(),
   };
-  return globalStore.__vixiPmChannelStreamStore;
+  return globalStore.__missionControlPmChannelStreamStore;
 }
 
 function clip(value: string) {

@@ -268,9 +268,9 @@ export async function resetHumanPassword(formData: FormData) {
 }
 
 /**
- * Set a temporary password directly. This invalidates the target's existing
- * session through passwordSetAt and requires them to rotate the supplied
- * password on their next sign-in. It intentionally does not re-enable a
+ * Set a human user's password directly. This invalidates the target's
+ * existing session through passwordSetAt, without requiring a reset-link or
+ * a follow-up password rotation. It intentionally does not re-enable a
  * deactivated account.
  */
 export async function updateHumanPassword(
@@ -310,7 +310,7 @@ export async function updateHumanPassword(
         data: {
           passwordHash,
           passwordSetAt: now,
-          mustRotatePassword: true,
+          mustRotatePassword: false,
           // A first owner-set password activates an invitation. A disabled
           // account remains disabled until the owner explicitly re-enables it.
           ...(target.status === "invited" ? { status: "active" } : {}),
@@ -327,7 +327,7 @@ export async function updateHumanPassword(
 
     revalidatePath("/system/users");
     revalidatePath("/", "layout");
-    return actionSuccess("Password updated. The user must rotate it after their next sign-in.");
+    return actionSuccess("Password updated.");
   } catch (error) {
     return actionFailure(error);
   }
@@ -388,7 +388,7 @@ export async function setHumanUserStatus(
     return actionSuccess(
       action === "deactivate"
         ? `@${outcome.username} has been disabled and signed out.`
-        : `@${outcome.username} has been enabled. Create a password reset link if they need a new password.`,
+        : `@${outcome.username} has been enabled. Set a password if they need a new one.`,
     );
   } catch (error) {
     return actionFailure(error);

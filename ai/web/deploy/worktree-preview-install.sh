@@ -176,7 +176,7 @@ EOF
   systemctl enable "worktree-preview@$key.service" >/dev/null || warn "could not enable served unit (it will still be started by the first successful switch)"
   systemctl enable --now "worktree-switch-runner@$key.service"
   systemctl restart "worktree-switch-runner@$key.service"
-  ok "WDT runner active. nginx wdt.vixi.au already proxies 127.0.0.1:3001."
+  ok "WDT runner active. Configure the deployment reverse proxy for its service port."
   warn "First switch builds the worktree before the served unit can come up; pick a worktree in the PM/WDT switch UI (or: sudo -u $WT_MONITOR_USER worktree-switch $key <branch>)."
 }
 
@@ -205,7 +205,7 @@ WORKTREES_ROOT=$wtroot
 SPOOL_DIR=$spool
 WORKTREE_LOCK_FILE=$lock_file
 APP_SUBDIR=
-# nginx 'root' for patricia.vixi.au; repointed per switch, removed on 'off'.
+# nginx document root; repointed per switch and removed when the site is off.
 CURRENT_SYMLINK=$link
 RELOAD_CMD='nginx -s reload'
 # off = project COMPLETELY off (symlink removed). To serve a maintenance page

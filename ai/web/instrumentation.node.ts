@@ -1,4 +1,4 @@
-import { seedZehUser } from "@/lib/agents/auth/seed-zeh";
+import { bootstrapOwner } from "@/lib/agents/auth/bootstrap-owner";
 import { syncAgents } from "@/lib/agents/management/sync";
 import { purgeBin } from "@/lib/bin/purge";
 import { purgeProjectBin } from "@/lib/bin/purge-projects";
@@ -79,9 +79,9 @@ function startPmChannelWorkerPoll() {
 }
 
 try {
-  const zeh = await seedZehUser();
+  const ownerBootstrap = await bootstrapOwner();
   const result = await syncAgents();
-  console.log("[pm] boot sync:", JSON.stringify({ zeh, result }));
+  console.log("[pm] boot sync:", JSON.stringify({ ownerBootstrap, result }));
 } catch (err) {
   console.error("[pm] boot sync failed:", err);
 }

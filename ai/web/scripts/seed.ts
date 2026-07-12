@@ -1,10 +1,10 @@
-import { seedZehUser } from "@/lib/agents/auth/seed-zeh";
+import { bootstrapOwner } from "@/lib/agents/auth/bootstrap-owner";
 import { syncAgents } from "@/lib/agents/management/sync";
 import { seedDefaultWorkspaceFromProjects } from "@/lib/workspaces/service";
 
 async function main() {
-  const zeh = await seedZehUser();
-  console.log("[seed] zeh:", zeh.seeded ? "seeded" : "already present");
+  const ownerBootstrap = await bootstrapOwner();
+  console.log("[seed] owner bootstrap:", ownerBootstrap.status);
 
   const sync = await syncAgents();
   console.log("[seed] agent sync:", sync);

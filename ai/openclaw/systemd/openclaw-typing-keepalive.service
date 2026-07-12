@@ -1,7 +1,6 @@
 [Unit]
 Description=OpenClaw Telegram typing keepalive (claude-cli sidecar, all agents)
 After=network.target
-Documentation=https://bitbucket.org/zehferrari/environment
 
 [Service]
 Type=simple

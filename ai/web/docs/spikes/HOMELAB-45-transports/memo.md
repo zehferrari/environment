@@ -1,15 +1,14 @@
 # HOMELAB-45 — Zero-latency agent trigger architecture (spike)
 
 Status: research/decision only. No Stage 3 implementation, no PR.
-Owner: Barekbaal Irwin. Reviewer: Asdrubal Irwin.
-Branch: `spike/HOMELAB-45-transports`. Commits as `Zeh Ferrari <e@zeh.me>`.
+Owner and reviewer identities redacted.
+Branch: `spike/HOMELAB-45-transports`. Commit identity redacted.
 Spike root: `ai/web/docs/spikes/HOMELAB-45-transports/`.
 
 ## Goal
 
-Zeh's ask, verbatim: *"triggers acting directly in the agents structure. Zero
-latency for action!"* Before HOMELAB-46 lands the Stage 3 dispatcher, pick the
-transport for PM → agent wake. Production bias toward Unix socket was named
+Original request: choose the transport for Mission Control → agent wake before
+the Stage 3 dispatcher lands. Production bias toward Unix socket was named
 in the parent ticket; this spike validates that bias and surfaces residual
 risks.
 

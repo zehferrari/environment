@@ -73,7 +73,7 @@ export default async function SystemSettingsPage({
                 type="text"
                 name="defaultGitUserName"
                 defaultValue={settings.defaultGitUserName ?? ""}
-                placeholder="Zeh Ferrari"
+                placeholder="Your Name"
                 className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>
@@ -86,7 +86,7 @@ export default async function SystemSettingsPage({
                 type="email"
                 name="defaultGitUserEmail"
                 defaultValue={settings.defaultGitUserEmail ?? ""}
-                placeholder="e@zeh.me"
+                placeholder="you@example.com"
                 className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>
@@ -214,7 +214,7 @@ export default async function SystemSettingsPage({
                   type="text"
                   name="openRouterTitle"
                   defaultValue={settings.openRouterTitle ?? ""}
-                  placeholder="Vixi Agents"
+                  placeholder="Mission Control"
                   className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
                 />
               </SettingsRow>

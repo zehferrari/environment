@@ -7,19 +7,19 @@
 // The host-side runner reads the matching values from its own env file; this
 // module is the web-side mirror of that contract.
 //
-// Pure string/data logic only (no node builtins) so it is safe to import from
-// client components, exactly like repo-key.ts.
+// The registry is supplied by the deployment through
+// PM_WORKTREE_PREVIEW_REGISTRY. Keeping it out of source code prevents one
+// installation's repository paths and services from leaking into another.
 
 // How a project is served, and therefore how a switch + on/off behave.
-//   node-service  — a managed systemd unit serving a port (Next.js: build →
-//                   fork DB → flip WorkingDirectory → restart). on/off =
-//                   systemctl start/stop, which genuinely frees the port and
-//                   process. PM (environment) and WDT use this.
+//   node-service  — a managed systemd unit serving a port (build → fork DB →
+//                   flip WorkingDirectory → restart). on/off = systemctl
+//                   start/stop, which genuinely frees the port and process.
 //   nginx-docroot — nginx + PHP-FPM served from a docroot symlink. switch =
 //                   atomically repoint the symlink + reload. on/off = toggle a
 //                   maintenance/deny rewrite; it gates ACCESS but cannot free
 //                   resources, because PHP-FPM is a shared pool with no
-//                   per-project process to stop. Patricia uses this.
+//                   per-project process to stop.
 export type SwitchDriver = "node-service" | "nginx-docroot";
 
 export type SwitchProject = {
@@ -34,8 +34,8 @@ export type SwitchProject = {
   driver: SwitchDriver;
   /**
    * Sub-path from the worktree root to the buildable/served app dir.
-   * PM lives at `<root>/ai/web`; WDT and Patricia are served from the repo
-   * root, so this is "". Used so the generic scripts don't assume `ai/web`.
+   * Some applications live below the repository root while others are served
+   * from it. Used so the generic scripts do not assume a layout.
    */
   appSubdir: string;
   /**
@@ -48,63 +48,69 @@ export type SwitchProject = {
    * Whether each branch deployment serves its OWN database (forked once from
    * the canonical seed by the switch scripts, so schema and data can drift
    * between branches) or all worktrees share one database. Mirrors the host
-   * env contract: DB_ENGINE=sqlite → per-branch fork (environment, wdt);
-   * DB_ENGINE=none → the switcher never touches a DB, so every branch serves
-   * the same database the app is configured against (patricia). Drives the
-   * honest copy in the switcher UI.
+   * env contract: DB_ENGINE=sqlite → per-branch fork; DB_ENGINE=none → the
+   * switcher never touches a DB, so every branch serves the same configured
+   * database. Drives the honest copy in the switcher UI.
    */
   branchDatabases: boolean;
   /**
    * Whether this project's spool is served by a runner that understands the
-   * on/off lifecycle (worktree-switch-runner). False for `environment`, which
-   * still runs on the legacy pm-switch-runner that ignores action:off|on — so
-   * the UI hides the on/off control there rather than expose a misleading
-   * production switch, until the supervised PM migration (WS6) moves it onto
-   * the templated runner.
+   * on/off lifecycle (worktree-switch-runner). Set false for runners that do
+   * not implement on/off so the UI never exposes a misleading control.
    */
   lifecycleControl: boolean;
 };
 
-// Registry, keyed by canonical repoKey. Adding a project = one entry here plus
-// a matching host runner env file (/etc/worktree-preview/<key>.env). PM keeps
-// its existing /var/lib/pm/switch spool so the live board is zero-touch until
-// the supervised PM migration; new projects use the uniform layout.
-const PROJECTS: SwitchProject[] = [
-  {
-    key: "environment",
-    repoKey: "/srv/Code/environment",
-    worktreesRoot: "/srv/Code/environment.worktrees",
-    spoolDir: "/var/lib/pm/switch",
-    driver: "node-service",
-    appSubdir: "ai/web",
-    offFreesResources: true,
-    branchDatabases: true,
-    // Legacy pm-switch-runner — no on/off support yet (see WS6 migration).
-    lifecycleControl: false,
-  },
-  {
-    key: "wdt",
-    repoKey: "/srv/Code/whitsunday-discovery-trail",
-    worktreesRoot: "/srv/Code/whitsunday-discovery-trail.worktrees",
-    spoolDir: "/var/lib/worktree-switch/wdt",
-    driver: "node-service",
-    appSubdir: "",
-    offFreesResources: true,
-    branchDatabases: true,
-    lifecycleControl: true,
-  },
-  {
-    key: "patricia",
-    repoKey: "/srv/Code/patricia",
-    worktreesRoot: "/srv/Code/patricia.worktrees",
-    spoolDir: "/var/lib/worktree-switch/patricia",
-    driver: "nginx-docroot",
-    appSubdir: "",
-    offFreesResources: false,
-    branchDatabases: false,
-    lifecycleControl: true,
-  },
-];
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function parseProject(value: unknown): SwitchProject | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entry = value as Record<string, unknown>;
+  const key = nonEmptyString(entry.key);
+  const repoKey = nonEmptyString(entry.repoKey);
+  const worktreesRoot = nonEmptyString(entry.worktreesRoot);
+  const spoolDir = nonEmptyString(entry.spoolDir);
+  const appSubdir = typeof entry.appSubdir === "string" ? entry.appSubdir.trim() : null;
+  const driver = entry.driver;
+  if (!key || !repoKey || !worktreesRoot || !spoolDir || appSubdir === null) return null;
+  if (driver !== "node-service" && driver !== "nginx-docroot") return null;
+  if (
+    typeof entry.offFreesResources !== "boolean" ||
+    typeof entry.branchDatabases !== "boolean" ||
+    typeof entry.lifecycleControl !== "boolean"
+  ) return null;
+  return {
+    key,
+    repoKey: repoKey.replace(/\/+$/, ""),
+    worktreesRoot,
+    spoolDir,
+    driver,
+    appSubdir,
+    offFreesResources: entry.offFreesResources,
+    branchDatabases: entry.branchDatabases,
+    lifecycleControl: entry.lifecycleControl,
+  };
+}
+
+export function parseSwitchProjectRegistry(raw = process.env.PM_WORKTREE_PREVIEW_REGISTRY): SwitchProject[] {
+  if (!raw?.trim()) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const byRepoKey = new Map<string, SwitchProject>();
+    for (const item of parsed) {
+      const project = parseProject(item);
+      if (project) byRepoKey.set(project.repoKey, project);
+    }
+    return [...byRepoKey.values()];
+  } catch {
+    return [];
+  }
+}
+
+const PROJECTS = parseSwitchProjectRegistry();
 
 const BY_REPO_KEY = new Map(PROJECTS.map((p) => [p.repoKey, p]));
 

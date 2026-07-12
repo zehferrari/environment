@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { syncAgents } from "@/lib/agents/management/sync";
-import { seedZehUser } from "@/lib/agents/auth/seed-zeh";
+import { bootstrapOwner } from "@/lib/agents/auth/bootstrap-owner";
 import { getViewer } from "@/lib/auth/permissions";
 
 export const runtime = "nodejs";
@@ -12,7 +12,7 @@ export async function GET() {
   const viewer = await getViewer();
   if (!viewer?.isOwner) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
-  const zeh = await seedZehUser();
+  const ownerBootstrap = await bootstrapOwner();
   const result = await syncAgents();
-  return NextResponse.json({ zeh, result });
+  return NextResponse.json({ ownerBootstrap, result });
 }

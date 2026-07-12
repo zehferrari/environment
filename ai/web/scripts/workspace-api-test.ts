@@ -34,7 +34,7 @@ async function main() {
     db = dbMod.db as PrismaClient;
     const prisma = db;
 
-    const user = await prisma.user.create({ data: { username: "zeh-test", email: "zeh-test@example.test", kind: "human", mustRotatePassword: false } });
+    const user = await prisma.user.create({ data: { username: "owner-test", email: "owner-test@example.test", kind: "human", mustRotatePassword: false } });
     const agent = await prisma.agent.create({ data: { slug: "asdrubal-test", name: "Asdrubal Test", role: "coding" } });
     await prisma.user.create({ data: { username: "asdrubal-test", email: "asdrubal-test@example.test", kind: "agent", mustRotatePassword: false, agentId: agent.id } });
     const inactive = await prisma.agent.create({ data: { slug: "inactive-test", name: "Inactive", role: "coding", deactivatedAt: new Date() } });

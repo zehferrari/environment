@@ -108,10 +108,7 @@ async function main() {
       },
       select: { id: true, username: true, kind: true },
     }) ?? db.user.findFirst({
-      where: { username: "zeh", status: "active" },
-      select: { id: true, username: true, kind: true },
-    }) ?? db.user.findFirst({
-      where: { kind: "human", status: "active" },
+      where: { kind: "human", status: "active", isOwner: true },
       orderBy: { createdAt: "asc" },
       select: { id: true, username: true, kind: true },
     }),

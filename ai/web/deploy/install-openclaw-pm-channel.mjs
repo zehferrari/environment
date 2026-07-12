@@ -6,14 +6,12 @@ import { chmod, chown, copyFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-const DEFAULT_AGENTS = ["asdrubal", "barekbaal", "karen", "carmen"];
 const DEFAULT_AGENT_ROOT = "/srv/agents/openclaw";
 const DEFAULT_REGISTRY = "/etc/openclaw/agents.json";
 const DEFAULT_TOKEN_FILE = "/etc/openclaw/pm-channel-tokens.json";
 const DEFAULT_CALLBACK_URL = "http://127.0.0.1:3000/api/openclaw/pm-channel/reply";
 const DEFAULT_OPENCLAW_BIN = "/usr/local/bin/openclaw";
 const DEFAULT_DEPLOY_PATH = "/usr/local/share/openclaw/plugins/pm-channel";
-const DEFAULT_TOKEN_GROUP = "karen";
 const PLUGIN_FILES = [
   "index.js",
   "openclaw.plugin.json",
@@ -242,16 +240,22 @@ const tokenFile = argValue("--token-file", process.env.PM_OPENCLAW_CHANNEL_TOKEN
 const callbackUrl = argValue("--callback-url", process.env.PM_OPENCLAW_CHANNEL_CALLBACK_URL ?? DEFAULT_CALLBACK_URL);
 const openclawBin = argValue("--openclaw-bin", process.env.OPENCLAW_BIN ?? DEFAULT_OPENCLAW_BIN);
 const deployPath = path.resolve(argValue("--deploy-path", process.env.PM_OPENCLAW_CHANNEL_DEPLOY_PATH ?? DEFAULT_DEPLOY_PATH));
-const tokenGroup = argValue("--token-group", process.env.PM_OPENCLAW_CHANNEL_TOKEN_GROUP ?? DEFAULT_TOKEN_GROUP);
+const tokenGroup = argValue("--token-group", process.env.PM_OPENCLAW_CHANNEL_TOKEN_GROUP ?? process.env.PM_APP_GROUP ?? "");
 const requestedAgents = parseAgentList(argValue("--agents", process.env.PM_CHANNEL_AGENTS));
 const registryAgents = agentsFromRegistry(registryPath);
 const registryHomes = new Map(registryAgents.map((agent) => [agent.user, agent.home]));
 const agents = requestedAgents.length ? requestedAgents : registryAgents.map((agent) => agent.user);
-const uniqueAgents = [...new Set(agents.length ? agents : DEFAULT_AGENTS)];
+const uniqueAgents = [...new Set(agents)];
 const restart = hasFlag("--restart");
 
 if (!existsSync(pluginPath)) {
   throw new Error(`Plugin path does not exist: ${pluginPath}`);
+}
+if (!tokenGroup) {
+  throw new Error("PM channel token group is not configured. Set PM_OPENCLAW_CHANNEL_TOKEN_GROUP or pass --token-group.");
+}
+if (uniqueAgents.length === 0) {
+  throw new Error("No enabled agents were found in the registry. Set PM_CHANNEL_AGENTS or pass --agents.");
 }
 
 const installedPluginPath = await stagePlugin(pluginPath, deployPath);

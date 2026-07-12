@@ -654,7 +654,7 @@ export default function AgentImagesPanel({
         ))}
 
         {!canEdit ? (
-          <p className="text-caption text-warn sm:col-span-2">Read-only: agents can edit only themselves; zeh can edit all.</p>
+          <p className="text-caption text-warn sm:col-span-2">Read-only: agents can edit only themselves; the Mission Control owner can edit all.</p>
         ) : draftManual ? (
           <p className="text-caption text-text-muted sm:col-span-2">
             Manual uploads are staged locally until Save. Saved files are normalized to 256x256 PNGs.

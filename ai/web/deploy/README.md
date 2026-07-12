@@ -45,7 +45,7 @@ the operator sees exactly what changes on the host.
 | `worktree-preview-install.sh` | run as root | — | idempotent installer for the generic switcher (scripts, units, sudoers, spools, `/etc/worktree-preview/<key>.env`). |
 | `worktree-preview.env.example` | copy -> `/etc/worktree-preview/<key>.env` | root | per-project env contract template (driver, repo, spool, build/serve/migrate commands, DB engine). |
 | `systemd/pm-consumer-monitor-home.conf` | `/etc/systemd/system/pm-consumer.service.d/30-monitor-home.conf` | root | keeps the monitor home readable for SSH while redirecting pnpm dirs (see Service Model). |
-| `nginx-agents.vixi.au.conf` | `/etc/nginx/sites-available/agents.vixi.au` | root | PM vhost incl. the graceful-502 rebuilding-page block. |
+| `nginx-mission-control.conf` | `/etc/nginx/sites-available/<pm-hostname>` | root | PM vhost incl. the graceful-502 rebuilding-page block. |
 | `install-openclaw-pm-channel.mjs` | run as root (node) | — | stages the native PM channel plugin, writes per-agent tokens, links gateways (see Native OpenClaw PM channel). |
 
 ## Worktree switcher (live preview)
@@ -129,7 +129,7 @@ Two pieces, both in this directory:
 
 - `rebuilding.html` — the static page. `install-pm-switch.sh` copies it to
   `/var/www/pm-maintenance/rebuilding.html` (root-owned, world-readable).
-- `nginx-agents.vixi.au.conf` — the `error_page 502 503 504 /rebuilding.html;`
+- `nginx-mission-control.conf` — the `error_page 502 503 504 /rebuilding.html;`
   block plus the `internal` `location = /rebuilding.html` and
   `proxy_intercept_errors on;` in `location /`.
 
@@ -137,7 +137,7 @@ Apply on the host:
 
 ```sh
 sudo PM_MONITOR_USER=<monitor-user> ai/web/deploy/install-pm-switch.sh   # stages the page
-sudo cp ai/web/deploy/nginx-agents.vixi.au.conf /etc/nginx/sites-available/agents.vixi.au
+sudo cp ai/web/deploy/nginx-mission-control.conf /etc/nginx/sites-available/<pm-hostname>
 sudo nginx -t && sudo systemctl reload nginx
 ```
 

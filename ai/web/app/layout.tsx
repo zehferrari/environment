@@ -5,7 +5,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Mission Control",
-  description: "Mission Control for zehferrari/environment",
+  description: "Mission Control project workspace",
 };
 
 export default async function RootLayout({

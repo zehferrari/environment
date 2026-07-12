@@ -41,7 +41,7 @@ say "Install rebuilding page → /var/www/pm-maintenance/rebuilding.html"
 # Static maintenance page nginx serves (error_page 502/503/504) while pm.service
 # is down mid-switch. Lives outside the build tree so a `next build` can't wipe
 # it and nginx can always read it. Pair with the error_page block in
-# nginx-agents.vixi.au.conf, then `nginx -t && systemctl reload nginx`.
+# nginx-mission-control.conf, then `nginx -t && systemctl reload nginx`.
 install -d -o root -g root -m 0755 /var/www/pm-maintenance
 install -o root -g root -m 0644 "$HERE/rebuilding.html" /var/www/pm-maintenance/rebuilding.html
 

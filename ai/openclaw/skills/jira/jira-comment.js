@@ -1,6 +1,6 @@
 const fs = require('fs');
 const self = require('../agent-self');
-const { jiraRequest } = require('./lib');
+const { jiraBrowseUrl, jiraRequest } = require('./lib');
 
 // ─── Markdown → ADF ─────────────────────────────────────────────────────────
 //
@@ -404,7 +404,7 @@ async function main() {
       success: true,
       commentId: result.id,
       issueKey,
-      url: `https://zeh-ferrari.atlassian.net/browse/${issueKey}?focusedCommentId=${result.id}`,
+      url: `${jiraBrowseUrl(issueKey)}?focusedCommentId=${encodeURIComponent(result.id)}`,
     }, null, 2));
   } catch (err) {
     console.error(JSON.stringify({ error: err.message }, null, 2));

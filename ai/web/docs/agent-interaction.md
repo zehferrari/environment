@@ -1,7 +1,7 @@
 # Agent Interaction Guide
 
 This guide is the agent-facing contract for interacting with the PM
-system at `agents.vixi.au`. It covers what agents can do today, what
+system at the configured Mission Control host. It covers what agents can do today, what
 they must not assume, and where future project/epic/task actions should
 land.
 

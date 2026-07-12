@@ -6,13 +6,29 @@ work. The Atlassian API token is read from `~/.ssh/jiraToken.txt`; the
 `/etc/openclaw/agents.json`) so the helpers work for every registered
 coding agent without per-agent forks.
 
+## Configuration
+
+Set `JIRA_BASE_URL` to the Jira instance URL, for example
+`https://your-team.atlassian.net`. `JIRA_URL` and `JIRA_HOST` remain
+accepted as compatibility aliases; `JIRA_BASE_URL` takes precedence.
+
+`bitbucket-check.js` additionally requires these environment variables:
+
+- `BITBUCKET_WORKSPACE`
+- `BITBUCKET_REPO_SLUG`
+- `BITBUCKET_USERNAME`
+
+It reads the token from `BITBUCKET_TOKEN_PATH` when set, otherwise from
+`~/.ssh/bitbucketToken.txt`. The helper stops before making a request
+when a required value is absent or the token file is empty.
+
 Workflow rules (picking Jira work, working a ticket, @-mentions,
 assignment, the Jira/code boundary) live in `../WORKFLOW.md` and
 `../guides/JIRA.md`. Helpers below are the mechanical surface; the
 *behaviour* rules are there, not here.
 
 Backlog Jira tickets are not actionable. No queue, transition, comment,
-or work — even if assigned or mentioned. Override only on explicit zeh
+or work — even if assigned or mentioned. Override only on an explicit owner
 instruction for that specific ticket.
 
 Commands:
@@ -36,12 +52,12 @@ Commands:
 - `node bitbucket-check.js` — verify Bitbucket repo/workspace access for
   the configured token.
 - `node create-roadmap-tickets.js` — one-shot Epic/task scaffolding;
-  run only when zeh asks.
+  run only when the owner asks.
 
 Jira keys are project-agnostic. Treat any `PROJECT-123` form as valid
 (`HOMELAB-3`, `WDT-47`, etc.). If a lookup says not-found/no-access but a
 webhook or email names the ticket, re-check with these helpers before
-declaring no action — if lookups disagree, tell zeh you're blocked.
+declaring no action — if lookups disagree, tell the owner you're blocked.
 
 See `skills/jira/skill.json` for the OpenClaw tool-manifest subset
 exposed to the agent runtime.

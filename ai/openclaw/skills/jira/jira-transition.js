@@ -1,4 +1,4 @@
-const { jiraRequest } = require('./lib');
+const { jiraBrowseUrl, jiraRequest } = require('./lib');
 
 async function main() {
   const issueKey = process.argv[2];
@@ -43,7 +43,7 @@ async function main() {
       success: true,
       issueKey,
       newStatus: transition.to.name,
-      url: `https://zeh-ferrari.atlassian.net/browse/${issueKey}`
+      url: jiraBrowseUrl(issueKey)
     }, null, 2));
   } catch (err) {
     console.error(JSON.stringify({ error: err.message }, null, 2));

@@ -570,7 +570,7 @@ absent.
 
 ## Future Phase 2 (not yet done)
 
-- **OpenClaw `vixi-pm` plugin** that registers these endpoints as native
+- **OpenClaw `mission-control-pm` plugin** that registers these endpoints as native
   tools so the model can call `pm_read_task(id)` instead of constructing
   a curl. Today's curl-from-prompt approach works for Claude / Codex CLI
   backends but isn't elegant.

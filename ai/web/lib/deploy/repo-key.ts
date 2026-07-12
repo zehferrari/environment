@@ -2,9 +2,9 @@
 // worktrees that belong to a given project's repository. Pure string logic
 // (no fs/node builtins) so it's safe to import in client components too.
 //
-//   /srv/Code/environment                      -> /srv/Code/environment
-//   /srv/Code/environment.worktrees/feat_x      -> /srv/Code/environment
-//   /srv/Code/environment.worktrees/feat_x/sub  -> /srv/Code/environment
+//   /path/to/repository                         -> /path/to/repository
+//   /path/to/repository.worktrees/feature       -> /path/to/repository
+//   /path/to/repository.worktrees/feature/subdir -> /path/to/repository
 export function worktreeRepoKey(p: string | null | undefined): string | null {
   if (!p) return null;
   const norm = p.replace(/\/+$/, "");

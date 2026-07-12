@@ -1,6 +1,5 @@
 [Unit]
 Description=PM worktree switch runner (monitor-driven build + serve flip)
-Documentation=https://zeh-ferrari.atlassian.net/browse/HOMELAB-41
 After=network-online.target
 Wants=network-online.target
 

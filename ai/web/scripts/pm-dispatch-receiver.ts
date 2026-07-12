@@ -40,7 +40,7 @@ function synthEvent(): PmEvent {
     {
       id: randomUUID(),
       occurredAt: new Date().toISOString(),
-      actor: { id: "zeh", kind: "human", name: "Zeh" },
+      actor: { id: "owner", kind: "human", name: "Mission Control owner" },
       task: {
         id: "t-1",
         key: "HOMELAB-99",

@@ -25,14 +25,11 @@ const body = [
 
 async function main() {
   const sender = await db.user.findFirst({
-    where: { username: "zeh", status: "active" },
-    select: { id: true, username: true, kind: true },
-  }) ?? await db.user.findFirst({
-    where: { kind: "human", status: "active" },
+    where: { kind: "human", status: "active", isOwner: true },
     select: { id: true, username: true, kind: true },
     orderBy: { createdAt: "asc" },
   });
-  if (!sender) throw new Error("No active human sender found for policy broadcast");
+  if (!sender) throw new Error("No active Mission Control owner found for policy broadcast");
 
   const agents = await db.agent.findMany({
     where: {

@@ -1,9 +1,9 @@
 {
-  "name": "@vixi/openclaw-pm-channel",
+  "name": "@mission-control/openclaw-pm-channel",
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "Native OpenClaw channel for the Vixi PM webapp",
+  "description": "Native OpenClaw channel for the Mission Control webapp",
   "peerDependencies": {
     "openclaw": ">=2026.5.22"
   },

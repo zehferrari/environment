@@ -2,9 +2,50 @@ const fs = require('fs');
 const path = require('path');
 const self = require('../agent-self');
 
-const JIRA_URL = 'https://zeh-ferrari.atlassian.net';
 const TOKEN_PATH = path.join(process.env.HOME, '.ssh', 'jiraToken.txt');
 const USERNAME = self.email;
+
+function envValue(name) {
+  return typeof process.env[name] === 'string' ? process.env[name].trim() : '';
+}
+
+function getJiraUrl() {
+  const configuredUrl =
+    envValue('JIRA_BASE_URL') ||
+    envValue('JIRA_URL') ||
+    envValue('JIRA_HOST');
+
+  if (!configuredUrl) {
+    throw new Error(
+      'Jira base URL is not configured. Set JIRA_BASE_URL to a URL such as https://your-team.atlassian.net. JIRA_URL and JIRA_HOST are accepted compatibility aliases.'
+    );
+  }
+
+  const candidate = /^https?:\/\//i.test(configuredUrl)
+    ? configuredUrl
+    : `https://${configuredUrl}`;
+
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error(`Invalid Jira base URL: ${configuredUrl}`);
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Jira base URL must use http or https: ${configuredUrl}`);
+  }
+
+  if (parsed.search || parsed.hash) {
+    throw new Error(`Jira base URL must not include a query or fragment: ${configuredUrl}`);
+  }
+
+  return parsed.toString().replace(/\/$/, '');
+}
+
+function jiraBrowseUrl(issueKey) {
+  return `${getJiraUrl()}/browse/${encodeURIComponent(issueKey)}`;
+}
 
 function getAuth() {
   if (!fs.existsSync(TOKEN_PATH)) {
@@ -35,7 +76,7 @@ function assertAllowedMutation(endpoint, options = {}) {
   if (method === 'PUT' && /^\/issue\/[^/]+\/assignee(?:\?|$)/.test(endpoint)) {
     const targetAccountId = body?.accountId || null;
     if (targetAccountId && self.jiraAccountId && targetAccountId === self.jiraAccountId) {
-      throw new Error('Policy guard: agents may not assign Jira tickets to themselves. Ask zeh or use an explicit manager-to-developer handoff.');
+      throw new Error('Policy guard: agents may not assign Jira tickets to themselves. Ask the owner or use an explicit manager-to-developer handoff.');
     }
   }
 }
@@ -43,7 +84,7 @@ function assertAllowedMutation(endpoint, options = {}) {
 async function jiraRequest(endpoint, options = {}) {
   assertAllowedMutation(endpoint, options);
   const auth = getAuth();
-  const url = `${JIRA_URL}/rest/api/3${endpoint}`;
+  const url = `${getJiraUrl()}/rest/api/3${endpoint}`;
 
   const response = await fetch(url, {
     ...options,
@@ -69,7 +110,7 @@ async function jiraRequest(endpoint, options = {}) {
 
 async function jiraSearch(jql, maxResults = 20) {
   const auth = getAuth();
-  const url = `${JIRA_URL}/rest/api/3/search/jql`;
+  const url = `${getJiraUrl()}/rest/api/3/search/jql`;
 
   const response = await fetch(url, {
     method: 'POST',
@@ -93,4 +134,13 @@ async function jiraSearch(jql, maxResults = 20) {
   return response.json();
 }
 
-module.exports = { JIRA_URL, getAuth, jiraRequest, jiraSearch };
+module.exports = {
+  get JIRA_URL() {
+    return getJiraUrl();
+  },
+  getJiraUrl,
+  jiraBrowseUrl,
+  getAuth,
+  jiraRequest,
+  jiraSearch,
+};

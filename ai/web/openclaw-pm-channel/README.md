@@ -1,6 +1,6 @@
 # OpenClaw PM Channel
 
-Native local OpenClaw channel for the Vixi PM webapp.
+Native local OpenClaw channel for the Mission Control webapp.
 
 PM sends direct chat, task chat, task-comment, and epic chat turns to each
 agent's local OpenClaw gateway at `/pm-channel/ingest`. The plugin runs the

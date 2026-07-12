@@ -109,7 +109,7 @@ model PasswordResetToken {
 
 model Agent {
   id            String    @id @default(cuid())
-  // slug from index.json (e.g. "asdrubal", "barekbaal", "karen")
+  // slug from index.json (for example, "coding-agent-a")
   slug          String    @unique
   name          String
   email         String?
@@ -138,7 +138,7 @@ model Project {
   slug                                String                          @unique
   name                                String
   description                         String?
-  // On-disk README for the project (zeh decision in HOMELAB-44 / Stage 2):
+  // On-disk README for the project (Stage 2 design decision):
   // points at /srv/Data/projects/<id>/README.md (deploy/runtime path,
   // outside the app source tree). Server renders via lib/markdown.
   readmePath                          String?

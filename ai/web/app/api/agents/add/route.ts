@@ -17,6 +17,7 @@ import {
   normalizeProfileImagePrompt,
 } from "@/lib/agents/management/profile-image-options";
 import { MANUAL_IMAGE_THEME, normalizeProfileImageTheme } from "@/lib/agents/management/profile-image-themes";
+import { isProtectedAgentUsername } from "@/lib/agents/management/protected-usernames";
 import {
   allocatePorts,
   allocateUid,
@@ -28,7 +29,6 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const PROTECTED_USERS = ["root", "zeh", "karen", "system", "admin", "daemon", "bin", "sys", "code-agents"];
 const APP_ROOT_SUFFIX = "/ai/web";
 
 const ModelConfigSchema = z.object({
@@ -91,7 +91,7 @@ export async function POST(request: Request) {
   const imageBio = normalizeProfileImageContextText(data.image_bio, 500);
   const reasoning = normalizeAgentReasoning(data.reasoning);
 
-  if (PROTECTED_USERS.includes(data.user)) {
+  if (isProtectedAgentUsername(data.user)) {
     return NextResponse.json({ error: "protected_user" }, { status: 400 });
   }
 

@@ -427,14 +427,20 @@ install_gateway() {
 install_pm_channel() {
   [[ "${OPENCLAW_SANDBOX_TESTING:-}" == "true" ]] && return 0
   local user="$1"
-  "$NODE_BIN" "$REPO_ROOT/ai/web/deploy/install-openclaw-pm-channel.mjs" "--agents=$user" --restart
+  local token_group="${PM_OPENCLAW_CHANNEL_TOKEN_GROUP:-}"
+  local env_file="${PM_ENV_FILE:-/etc/default/pm}"
+  if [[ -z "$token_group" && -r "$env_file" ]]; then
+    token_group="$(sed -n -E 's/^PM_OPENCLAW_CHANNEL_TOKEN_GROUP=//p' "$env_file" | tail -n 1)"
+  fi
+  [[ -n "$token_group" ]] || die "PM channel token group is not configured"
+  "$NODE_BIN" "$REPO_ROOT/ai/web/deploy/install-openclaw-pm-channel.mjs" "--agents=$user" "--token-group=$token_group" --restart
 }
 
 upsert_registry_entry() {
   # upsert_registry_entry <payload-file> — replace-or-append .entry by .user.
   local pf="$1"
   [[ -f "$REGISTRY" ]] || {
-    printf '%s\n' '{"version":1,"codeOwner":"zeh","agents":[]}' > "$REGISTRY"
+    printf '%s\n' '{"version":1,"codeOwner":"owner","agents":[]}' > "$REGISTRY"
     fix_registry_permissions
   }
   local entry euser

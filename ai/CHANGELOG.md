@@ -43,7 +43,7 @@ A consolidated note of decisions and changes since the last full rewrite of this
 ## 2026-05-10
 
 Second consolidated note covering changes since the 2026-05-08 entry. Each bullet names current paths.
-- **Shared docs + skills now live in the unified environment repo** (bitbucket.org:zehferrari/environment.git, working tree /srv/Code/environment). OpenClaw shared files are under /srv/Code/environment/ai/openclaw/; dashboard HTML is under /srv/Code/environment/ai/web/. Agent workspace files and shared skills symlink directly to those paths, and edits land through the environment repo root.
+- **Shared docs + skills now live in the unified environment repo** (repository URL redacted; working tree `/srv/Code/environment`). OpenClaw shared files are under `/srv/Code/environment/ai/openclaw/`; dashboard HTML is under `/srv/Code/environment/ai/web/`. Agent workspace files and shared skills symlink directly to those paths, and edits land through the environment repo root.
 
 - **`/etc/openclaw/agents.json` is now a symlink** → `/srv/agents/index.json` (the live runtime registry, kept *outside* the git working tree at `/srv/Code/environment/ai/openclaw/` so dashboard toggle writes don't pollute `git diff`). ai-monitor, the dashboard, registry-check and the webhook receiver all read through the symlink transparently. The single-record template `/srv/Code/environment/ai/openclaw/index.example.json` stays in git as the in-repo reference; copy it to `/srv/agents/index.json` and edit when bootstrapping a new host. nginx alias for `/agents/registry.json` and the dashboard's `setRegistryFlag()` write target both point at the live file directly.
 

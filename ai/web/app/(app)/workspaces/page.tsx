@@ -107,11 +107,11 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
           <div className="grid gap-card md:grid-cols-[1fr_14rem_11rem_auto]">
             <label className="space-y-1">
               <span className="block text-nano font-semibold uppercase tracking-wider text-text-muted">Name</span>
-              <input name="name" required maxLength={200} placeholder="Environment" className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent" />
+              <input name="name" required maxLength={200} placeholder="Product Team" className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent" />
             </label>
             <label className="space-y-1">
               <span className="block text-nano font-semibold uppercase tracking-wider text-text-muted">Slug</span>
-              <input name="slug" required pattern="[a-z0-9]+([._-][a-z0-9]+)*" placeholder="environment" className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y font-mono text-body outline-none focus:border-accent" />
+              <input name="slug" required pattern="[a-z0-9]+([._-][a-z0-9]+)*" placeholder="product-team" className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y font-mono text-body outline-none focus:border-accent" />
             </label>
             <label className="space-y-1">
               <span className="block text-nano font-semibold uppercase tracking-wider text-text-muted">Type</span>

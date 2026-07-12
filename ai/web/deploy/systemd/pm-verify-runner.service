@@ -1,6 +1,5 @@
 [Unit]
 Description=PM branch-verify runner (monitor post-Review push check)
-Documentation=https://zeh-ferrari.atlassian.net/browse/HOMELAB-41
 After=network-online.target pm.service
 Wants=network-online.target
 

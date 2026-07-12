@@ -6,7 +6,7 @@ const base = {
   agentSlug: "asdrubal",
   sessionKey: "pm:test",
   text: "hello",
-  actor: { id: "u1", username: "zeh", kind: "human" as const },
+  actor: { id: "u1", username: "owner", kind: "human" as const },
 };
 
 const directMetrics = buildPmChannelDispatchMetrics({

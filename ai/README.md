@@ -805,7 +805,7 @@ Create a shared group for agent-readable repo files, then clone the environment 
 groupadd -f code-agents
 usermod -aG code-agents <owner> <code-agent-1> <code-agent-2> <monitor-agent>
 install -d -m 2775 -o <owner> -g code-agents /home/<owner>/Code
-sudo -u <owner> git clone git@bitbucket.org:zehferrari/environment.git /home/<owner>/Code/environment
+sudo -u <owner> git clone <repository-url> /home/<owner>/Code/environment
 chgrp -R code-agents /home/<owner>/Code/environment
 find /home/<owner>/Code/environment -type d -exec chmod g+rws {} +
 find /home/<owner>/Code/environment -type f -exec chmod g+rw {} +

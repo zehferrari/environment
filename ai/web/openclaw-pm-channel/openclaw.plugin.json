@@ -15,7 +15,7 @@
   "channelConfigs": {
     "pm": {
       "label": "PM",
-      "description": "Local Vixi PM channel.",
+      "description": "Local Mission Control channel.",
       "schema": {
         "type": "object",
         "additionalProperties": true,

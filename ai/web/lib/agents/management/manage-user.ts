@@ -7,7 +7,7 @@ import { randomBytes } from "crypto";
  *
  * pm.service runs `NoNewPrivileges=true`, so the web app cannot `sudo`. Instead
  * it spools a request into a directory watched by `openclaw-agent-runner`
- * (the monitor agent's system identity, NoNewPrivileges=no, with karen's
+ * (the monitor agent's system identity, NoNewPrivileges=no, with the
  * NOPASSWD grant for `openclaw-manage-user`). That runner is the deterministic
  * executor — the only command it ever runs is the single privileged boundary,
  * `openclaw-manage-user` — and it writes back a result we poll for here, so the

@@ -129,7 +129,7 @@ export default async function ProjectSettingsPage({
           <div className="grid grid-cols-1 gap-card lg:grid-cols-[35fr_15fr_50fr]">
             <SettingsRow
               label="Project slug"
-              hint="URL slug, for example patricia."
+              hint="URL slug, for example my-project."
             >
               <input
                 type="text"
@@ -152,7 +152,7 @@ export default async function ProjectSettingsPage({
                 name="workItemKeyPrefix"
                 defaultValue={project.workItemKeyPrefix ?? ""}
                 required
-                placeholder="PH"
+                placeholder="PRJ"
                 pattern="[a-zA-Z][a-zA-Z0-9]{1,9}"
                 title="Start with a letter; use 2-10 letters or numbers"
                 className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y font-mono text-body uppercase outline-none focus:border-accent"
@@ -168,7 +168,7 @@ export default async function ProjectSettingsPage({
                 name="repositoryPath"
                 defaultValue={project.repositoryPath ?? ""}
                 required
-                placeholder="/srv/Code/environment"
+                placeholder="/path/to/repository"
                 className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y font-mono text-body outline-none focus:border-accent"
               />
             </SettingsRow>
@@ -189,7 +189,7 @@ export default async function ProjectSettingsPage({
                 type="text"
                 name="defaultGitUserName"
                 defaultValue={project.defaultGitUserName ?? ""}
-                placeholder="Zeh Ferrari"
+                placeholder="Your Name"
                 className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>
@@ -202,7 +202,7 @@ export default async function ProjectSettingsPage({
                 type="email"
                 name="defaultGitUserEmail"
                 defaultValue={project.defaultGitUserEmail ?? ""}
-                placeholder="e@zeh.me"
+                placeholder="you@example.com"
                 className="w-full rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent"
               />
             </SettingsRow>

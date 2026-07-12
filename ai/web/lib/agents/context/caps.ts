@@ -1,16 +1,16 @@
 // Context-packet caps, driven by the recipient agent's role.
 //
-// Coding agents (asdrubal, barekbaal, carmen — role=="coding", capability
+// Coding agents (role=="coding", capability
 // can_modify_code=true) receive the FULL packet — sized for 1M-token
 // model windows (Claude Opus 4.7, OpenAI gpt-5.5). They need every
 // comment, every discussion bubble, full descriptions and attachment
 // content because they're proposing work-item changes and writing code.
 //
-// Monitor agents (karen — role=="monitor") receive a smaller packet
+// Monitor agents (role=="monitor") receive a smaller packet
 // sized for 256k tokens. Monitors triage/route — they don't need the
 // full repository conversation history to decide who to escalate to.
-// The smaller packet also fits comfortably in karen's deepseek-v4-pro
-// primary (128k) without overflow.
+// The smaller packet also fits comfortably in a monitoring model's context
+// budget without overflow.
 //
 // Both profiles only set ROW COUNTS and PER-ITEM CLIP CEILINGS. Real
 // content is far shorter than these clips, so realistic packet sizes

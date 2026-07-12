@@ -65,7 +65,7 @@ follows Slice 1. Until that lands:
 - failed sends are logged and surfaced via `DispatchResult.ok=false`
   so observability is in place from day one.
 
-Surface this prereq to zeh as a follow-up before any agent-wake roll-out.
+Surface this prerequisite to the Mission Control owner before any agent-wake roll-out.
 
 ## Smoke harness
 

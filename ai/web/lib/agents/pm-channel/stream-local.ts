@@ -3,14 +3,14 @@ import { dirname } from "path";
 import { createServer, type Server } from "net";
 import { applyPmChannelStreamCallback } from "@/lib/agents/pm-channel/stream-callback";
 
-const GLOBAL_CALLBACK = "__vixiPmChannelStreamCallback";
-const GLOBAL_UDS_SERVER = "__vixiPmChannelStreamUdsServer";
+const GLOBAL_CALLBACK = "__missionControlPmChannelStreamCallback";
+const GLOBAL_UDS_SERVER = "__missionControlPmChannelStreamUdsServer";
 
 declare global {
   // Direct in-process callback used when the OpenClaw PM channel runtime and
   // PM web server are hosted in the same Node process.
-  var __vixiPmChannelStreamCallback: ((payload: Record<string, unknown>) => Promise<unknown>) | undefined;
-  var __vixiPmChannelStreamUdsServer: Server | undefined;
+  var __missionControlPmChannelStreamCallback: ((payload: Record<string, unknown>) => Promise<unknown>) | undefined;
+  var __missionControlPmChannelStreamUdsServer: Server | undefined;
 }
 
 function socketPathFromEnv(env: NodeJS.ProcessEnv = process.env) {

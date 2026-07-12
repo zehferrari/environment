@@ -1,5 +1,5 @@
-// Read side of the "switchable single site" feature. The web app (runs as
-// karen) is intentionally UNPRIVILEGED here: it only reads a state file and
+// Read side of the "switchable single site" feature. The web app is
+// intentionally unprivileged here: it only reads a state file and
 // writes a request file under a per-project spool dir. The privileged build +
 // service flip is done by the separate worktree switch runner (runs as the
 // monitor, decoupled from the served unit). See deploy/MULTI_AGENT_WORKTREES.md.
@@ -10,9 +10,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-// Legacy default spool for the environment/PM project. Kept so PM behaves
-// identically until its supervised migration; the registry points the
-// `environment` entry at this same path. New projects use their own spool.
+// Legacy default spool for deployments that use the PM switcher. Registry
+// entries supply their own spool path for all other projects.
 export const SWITCH_DIR = process.env.PM_SWITCH_DIR ?? "/var/lib/pm/switch";
 
 export function stateFilePath(spoolDir: string): string {

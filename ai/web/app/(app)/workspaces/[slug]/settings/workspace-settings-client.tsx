@@ -309,10 +309,10 @@ export default function WorkspaceSettingsClient({
           <div className="space-y-4">
             <div className="grid gap-card md:grid-cols-2">
               <SettingsField label="Workspace name" hint="Display name shown in workspace lists.">
-                <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={200} className={inputClass} placeholder="Environment" />
+                <input value={name} onChange={(event) => setName(event.target.value)} required maxLength={200} className={inputClass} placeholder="Product Team" />
               </SettingsField>
               <SettingsField label="Workspace slug" hint="Lowercase URL slug. Dots, underscores, and hyphens are allowed.">
-                <input value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase())} required pattern="[a-z0-9]+([._-][a-z0-9]+)*" className={`${inputClass} font-mono`} placeholder="environment" />
+                <input value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase())} required pattern="[a-z0-9]+([._-][a-z0-9]+)*" className={`${inputClass} font-mono`} placeholder="product-team" />
               </SettingsField>
             </div>
             <SettingsField label="Workspace type" hint="Used for grouping and filtering workspaces.">

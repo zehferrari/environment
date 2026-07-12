@@ -2,7 +2,7 @@
 
 // Write side of the switchable-single-site feature. Human-triggered browser
 // actions write a request file into the spool dir; the privileged
-// pm-switch-runner (as zeh) picks it up. The web app never builds or restarts
+// pm-switch-runner (as the configured service account) picks it up. The web app never builds or restarts
 // anything itself.
 
 import { open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";

@@ -7,9 +7,9 @@ function assert(condition: unknown, message: string) {
 const staleBuildSamples = [
   new Error("ChunkLoadError: Loading chunk app/projects failed."),
   new Error("Loading CSS chunk 281 failed."),
-  new Error("Failed to fetch dynamically imported module: https://agents.vixi.au/_next/static/chunks/app.js"),
+  new Error("Failed to fetch dynamically imported module: https://mission-control.example.com/_next/static/chunks/app.js"),
   "error loading dynamically imported module",
-  "https://agents.vixi.au/_next/static/chunks/abc123.js",
+  "https://mission-control.example.com/_next/static/chunks/abc123.js",
 ];
 
 for (const sample of staleBuildSamples) {

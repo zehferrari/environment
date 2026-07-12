@@ -33,7 +33,7 @@ assert(reviewAutomation.includes('status: "Ready to Deploy"'), "last Epic task c
 assert(reviewAutomation.includes("remainingOpenTasks === 0"), "Ready to Deploy promotion must only happen on the last open Epic task");
 
 const taskNotifications = readFileSync(join(root, "lib/agents/workflow/notifications/task.ts"), "utf8");
-assert(taskNotifications.includes("/srv/Code/environment` and `/srv/Code/patricia` are NO-ZONEs"), "worktree no-zone guidance must name both repositories");
+assert(taskNotifications.includes("never edit a primary checkout"), "worktree guidance must prohibit primary-checkout edits");
 assert(taskNotifications.includes("tag the reporter"), "worktree failure guidance must tell agents to tag the reporter");
 assert(taskNotifications.includes("do not demand splitting for small or strictly sequential/dependent work"), "reviewer split-feedback rule must preserve small/sequential exception");
 

@@ -168,7 +168,7 @@ function workflowPrompt(args: {
       "COMMIT HYGIENE (this task touches the repository):",
       `- Repository: ${args.repositoryPath}`,
       `- Branch: ${args.branchName}`,
-      "- Worktrees ONLY, no exceptions: `/srv/Code/environment` and `/srv/Code/patricia` are NO-ZONEs. Make changes only under `/srv/Code/environment.worktrees/<branch>` or `/srv/Code/patricia.worktrees/<branch>` as applicable.",
+      "- Worktrees ONLY, no exceptions: never edit a primary checkout. Use the project-configured linked worktree for the current branch.",
       "- If the required worktree cannot be created or used for any reason, tag the reporter in a task comment and explain the blocker before making changes.",
       identityConfigured
         ? `- Required Git identity: ${args.expectedGitUserName} <${args.expectedGitUserEmail}>. Set it in the task worktree before editing or committing:`

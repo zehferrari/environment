@@ -1,6 +1,5 @@
 [Unit]
-Description=PM (agents.vixi.au) - Next.js project workspace
-Documentation=https://zeh-ferrari.atlassian.net/browse/HOMELAB-43
+Description=Mission Control - Next.js project workspace
 After=network-online.target
 Wants=network-online.target
 

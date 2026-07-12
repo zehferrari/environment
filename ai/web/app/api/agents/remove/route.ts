@@ -7,11 +7,10 @@ import { readAgentIndex } from "@/lib/agents/management/index-loader";
 import { syncAgents } from "@/lib/agents/management/sync";
 import { runManageUser } from "@/lib/agents/management/manage-user";
 import { summarizeAgentDeletion } from "@/lib/agents/management/deletion-summary";
+import { isProtectedAgentUsername } from "@/lib/agents/management/protected-usernames";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const PROTECTED_USERS = ["root", "zeh", "karen", "system", "admin", "daemon", "bin", "sys", "code-agents"];
 
 const RemoveSchema = z.object({
   user: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/),
@@ -29,9 +28,9 @@ export async function POST(request: Request) {
   }
   const { user } = parsed.data;
 
-  // Never deprovision the operator, the monitor that runs this service, or a
-  // system account. (The root helper enforces this too — defence in depth.)
-  if (PROTECTED_USERS.includes(user)) {
+  // Never deprovision a deployment-reserved or system account. The root helper
+  // enforces the same rule as defense in depth.
+  if (isProtectedAgentUsername(user)) {
     return NextResponse.json({ error: "protected_user" }, { status: 400 });
   }
 

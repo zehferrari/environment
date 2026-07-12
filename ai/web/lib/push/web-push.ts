@@ -25,13 +25,14 @@ export function webPushConfigured(): boolean {
   if (configured !== null) return configured;
   const publicKey = process.env.PM_WEB_PUSH_VAPID_PUBLIC_KEY;
   const privateKey = process.env.PM_WEB_PUSH_VAPID_PRIVATE_KEY;
-  if (!publicKey || !privateKey) {
+  const contact = process.env.PM_WEB_PUSH_CONTACT?.trim();
+  if (!publicKey || !privateKey || !contact) {
     configured = false;
     return configured;
   }
   try {
     webpush.setVapidDetails(
-      process.env.PM_WEB_PUSH_CONTACT || "mailto:pm@vixi.au",
+      contact,
       publicKey,
       privateKey,
     );

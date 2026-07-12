@@ -15,7 +15,7 @@ import {
 } from "@/lib/agents/management/profile-image-options";
 import { MANUAL_IMAGE_THEME } from "@/lib/agents/management/profile-image-themes";
 
-const CONFY_BASE_URL = (process.env.PM_PROFILE_IMAGE_CONFY_URL ?? "http://10.0.0.17:8188").replace(/\/+$/, "");
+const CONFY_BASE_URL = process.env.PM_PROFILE_IMAGE_CONFY_URL?.trim().replace(/\/+$/, "") || null;
 const CONFY_MODEL = process.env.PM_PROFILE_IMAGE_CONFY_MODEL ?? "flux1-dev-fp8.safetensors";
 const IMAGE_SIZE = 256;
 const STEPS = positiveIntEnv("PM_PROFILE_IMAGE_STEPS", 20);
@@ -212,6 +212,9 @@ function workflow(args: {
 }
 
 async function comfyFetch(path: string, init?: RequestInit) {
+  if (!CONFY_BASE_URL) {
+    throw new Error("Profile image generation is not configured. Set PM_PROFILE_IMAGE_CONFY_URL to enable it.");
+  }
   const res = await fetch(`${CONFY_BASE_URL}${path}`, init);
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -506,6 +509,9 @@ export async function queueProfileImageGenerationRequest(args: {
   if (theme === MANUAL_IMAGE_THEME) {
     return { requested: false, reason: "manual_upload" };
   }
+  if (!CONFY_BASE_URL) {
+    return { requested: false, reason: "not_configured" };
+  }
 
   await db.activityLog.create({
     data: {
@@ -581,6 +587,9 @@ export async function queuePlushImageGenerationRequest(args: {
   const steps = args.steps ?? PREVIEW_STEPS;
   if (theme === MANUAL_IMAGE_THEME) {
     return { requested: false, reason: "manual_upload" };
+  }
+  if (!CONFY_BASE_URL) {
+    return { requested: false, reason: "not_configured" };
   }
   if (args.sourceProfileBytes.byteLength <= 0) {
     return { requested: false, reason: "missing_profile_source" };

@@ -37,8 +37,9 @@ async function main() {
     },
     select: { id: true },
   }) ?? await db.user.findFirst({
-    where: { username: "zeh", status: "active" },
+    where: { kind: "human", status: "active", isOwner: true },
     select: { id: true },
+    orderBy: { createdAt: "asc" },
   });
   if (!monitor) throw new Error("No monitor/human user available for self-assignment guard logs");
 
