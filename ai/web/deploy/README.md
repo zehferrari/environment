@@ -156,10 +156,11 @@ into `/var/lib/pm/branch-verify/<jobId>.json`. The repo-fetch-user
 reading `pm.service`'s `WorkingDirectory`), and runs the TS verifier
 (`ai/web/scripts/pm-verify-branch-pushed.ts`) inside it. The verifier:
 
-- `git -C <repositoryPath> fetch --quiet origin <branchName>` on the local
-  clone — the remote IS Bitbucket, but the runner reuses the SSH credentials
-  configured for `PM_VERIFY_RUN_USER` on the local clone (no Bitbucket REST in
-  this pass);
+- `git -C <repositoryPath> fetch --quiet origin main <branchName>` on the local
+  clone, then verifies current `origin/main` is an ancestor of
+  `origin/<branchName>` — the remote IS Bitbucket, but the runner reuses the
+  SSH credentials configured for `PM_VERIFY_RUN_USER` on the local clone (no
+  Bitbucket REST in this pass);
 - resolves the local branch worktree when available and fails fast if it still
   has uncommitted changes;
 - pushes clean local branch commits to `origin/<branchName>` when the local

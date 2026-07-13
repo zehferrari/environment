@@ -9,8 +9,9 @@ worktree by reading pm.service's WorkingDirectory and runs the TS verifier
 script (scripts/pm-verify-branch-pushed.ts) inside it via `pnpm exec tsx`.
 
 The TS script:
-  * `git fetch origin <branchName>` on the local clone at the project's
-    repositoryPath,
+  * `git fetch origin main <branchName>` on the local clone at the project's
+    repositoryPath, then verifies current `origin/main` is an ancestor of
+    `origin/<branchName>`,
   * confirms HEAD + a recent commit starting with COMMIT_PREFIX,
   * posts a PM_MONITOR_USER-authored task Comment plus a
     pm.repo.verify.{ok,fail} ActivityLog row,

@@ -817,8 +817,10 @@ repository (`pm.repo.verify.ok`). Moving a code-touching task to `Review`
 wakes the monitor agent first; the monitor rejects dirty worktrees,
 pushes clean local branch commits when it can, verifies the remote
 branch/prefix/git author and committer against the project git identity
-or global git identity fallback, rebuilds the live PM worktree if that
-branch is serving the website, and only then wakes the resolved reviewer.
+or global git identity fallback, verifies the current `origin/main` is an
+ancestor of the task branch, rebuilds the live PM worktree if that branch
+is serving the website, and only then wakes the resolved reviewer. A stale
+branch fails this gate until it is updated or recreated from `origin/main`.
 Non-code Review work can wake the reviewer directly. Do not approve or
 `review_done` a code task before `pm.repo.verify.ok` is present.
 

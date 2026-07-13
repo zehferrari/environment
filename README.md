@@ -181,8 +181,9 @@ deeper docs before acting:
   which agent committed.
 - The **primary checkout (`/srv/Code/<repo>/`) never carries feature commits.**
   All ticket work happens in per-branch worktrees created with
-  **`claim-branch <repo> <branch>`** (one implementer per branch; a pre-commit
-  hook enforces this).
+  **`claim-branch <repo> <branch>`** (one implementer per branch; every new
+  branch is created from freshly fetched `origin/main`; a pre-commit hook
+  enforces the worktree boundary).
 - **Agents never create or merge pull requests — humans (zeh) only.** An agent's
   job ends at "branch pushed, ready for review."
 - **Agent-facing docs propagate through the active OpenClaw install:** each

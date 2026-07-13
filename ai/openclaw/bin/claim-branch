@@ -1,0 +1,206 @@
+#!/bin/bash
+# claim-branch — create or attach a git worktree for a /srv/Code/<repo>
+# on a specific branch. Every newly-created branch is based on the freshly
+# fetched origin/main. Existing origin branches are attached at their remote
+# tip.
+#
+# Two modes:
+#   --review     attaches a *detached HEAD* worktree at origin/<branch>
+#                so a different agent can read/run-tests on the same
+#                branch concurrently with the implementer (git only
+#                allows one worktree per branch ref; review mode
+#                sidesteps that with --detach).
+#   (default)    a normal branch worktree (the implementer's tree).
+#
+# Usage:
+#   claim-branch <repo> <branch>                 # attach or create from origin/main
+#   claim-branch <repo> <branch> --review        # reviewer worktree (detached HEAD)
+#   claim-branch --release <repo> <branch>       # tear down implementer worktree
+#   claim-branch --release <repo> <branch> --review  # tear down reviewer worktree
+#   claim-branch --list <repo>                   # show worktrees for repo
+#
+# There is deliberately no --from override. Allowing callers to choose a
+# local or stale ref is how an apparently valid worktree can be created from
+# an outdated checkout instead of the current integration branch.
+#
+# Output (claim path): the absolute worktree path on stdout, so the caller
+# can `cd "$(claim-branch v23 feature/foo)"`.
+#
+# Filesystem layout:
+#   /srv/Code/<repo>                              primary worktree (default branch)
+#   /srv/Code/<repo>.worktrees/<branch>           implementer worktree (on branch)
+#   /srv/Code/<repo>.worktrees/<branch>__review   reviewer worktree (detached HEAD)
+
+set -euo pipefail
+
+CODE_ROOT="/srv/Code"
+
+die() { printf 'claim-branch: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  sed -n '2,/^set/{ /^set/!{ s/^# \?//; p } }' "$0" | head -n 30 >&2
+  exit 2
+}
+
+slugify() { printf '%s' "$1" | tr '/' '_'; }
+
+# Path of the implementer or reviewer worktree for a given (repo, branch).
+worktree_path() {
+  local repo="$1" branch="$2" review="$3"
+  local slug; slug=$(slugify "$branch")
+  if [ "$review" = true ]; then
+    printf '%s\n' "$CODE_ROOT/${repo}.worktrees/${slug}__review"
+  else
+    printf '%s\n' "$CODE_ROOT/${repo}.worktrees/${slug}"
+  fi
+}
+
+cmd_list() {
+  local repo="$1"
+  local repo_root="$CODE_ROOT/$repo"
+  [ -d "$repo_root/.git" ] || die "no repo at $repo_root"
+  git -C "$repo_root" worktree list
+}
+
+cmd_release() {
+  local repo="$1" branch="$2" review="$3"
+  local repo_root="$CODE_ROOT/$repo"
+  local wt; wt=$(worktree_path "$repo" "$branch" "$review")
+  [ -d "$repo_root/.git" ] || die "no repo at $repo_root"
+  if [ -d "$wt" ]; then
+    git -C "$repo_root" worktree remove --force "$wt"
+    printf 'released %s\n' "$wt" >&2
+  else
+    git -C "$repo_root" worktree prune
+    printf 'no worktree at %s (pruned stale entries)\n' "$wt" >&2
+  fi
+}
+
+write_expected_identity() {
+  local repo_root="$1" branch="$2" review="$3"
+  local wt_slug; wt_slug=$(slugify "$branch")
+  if [ "$review" = true ]; then
+    wt_slug="${wt_slug}__review"
+  fi
+  local wt_gitdir="$repo_root/.git/worktrees/$wt_slug"
+  local agents_json="/etc/openclaw/agents.json"
+  if [ -f "$agents_json" ] && hash jq 2>/dev/null && [ -d "$wt_gitdir" ]; then
+    local def_name; def_name=$(jq -r '.gitName // empty' "$agents_json")
+    local def_email; def_email=$(jq -r '.gitEmail // empty' "$agents_json")
+    if [ -n "$def_name" ] && [ -n "$def_email" ]; then
+      printf '{"name": "%s", "email": "%s"}\n' "$def_name" "$def_email" > "$wt_gitdir/expected-identity"
+      chmod 0664 "$wt_gitdir/expected-identity" 2>/dev/null || true
+    fi
+  fi
+}
+
+cmd_claim() {
+  local repo="$1" branch="$2"
+  local repo_root="$CODE_ROOT/$repo"
+  [ -d "$repo_root/.git" ] || die "no repo at $repo_root"
+
+  local wt; wt=$(worktree_path "$repo" "$branch" false)
+
+  if git -C "$repo_root" worktree list --porcelain | grep -qE "^worktree ${wt}\$"; then
+    printf '%s\n' "$wt"
+    return 0
+  fi
+
+  git -C "$repo_root" worktree prune
+  # Fetch the integration branch explicitly. Do not use a local main/master
+  # checkout or a repository-specific default branch as the creation base.
+  git -C "$repo_root" fetch --quiet origin main
+  git -C "$repo_root" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null || \
+    die "origin/main was not fetched; cannot create branch '${branch}' safely"
+  mkdir -p "$CODE_ROOT/${repo}.worktrees"
+
+  if git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null; then
+    git -C "$repo_root" worktree add -B "$branch" "$wt" "origin/${branch}" >&2
+  else
+    printf 'Branch %s not found on origin. Creating it from origin/main...\n' "$branch" >&2
+    git -C "$repo_root" worktree add -b "$branch" "$wt" origin/main >&2
+    git -C "$wt" push -u origin "$branch" >&2
+  fi
+
+  write_expected_identity "$repo_root" "$branch" false
+
+  printf '%s\n' "$wt"
+}
+
+cmd_claim_review() {
+  local repo="$1" branch="$2"
+  local repo_root="$CODE_ROOT/$repo"
+  [ -d "$repo_root/.git" ] || die "no repo at $repo_root"
+
+  local wt; wt=$(worktree_path "$repo" "$branch" true)
+
+  if git -C "$repo_root" worktree list --porcelain | grep -qE "^worktree ${wt}\$"; then
+    printf '%s\n' "$wt"
+    return 0
+  fi
+
+  git -C "$repo_root" worktree prune
+  git -C "$repo_root" fetch --quiet origin "$branch"
+  git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null || \
+    die "branch '${branch}' not found on origin — nothing to review yet"
+
+  mkdir -p "$CODE_ROOT/${repo}.worktrees"
+  # --detach attaches at origin/<branch> with no branch ref, so the
+  # implementer's worktree on the same branch is undisturbed.
+  git -C "$repo_root" worktree add --detach "$wt" "origin/${branch}" >&2
+
+  write_expected_identity "$repo_root" "$branch" true
+
+  printf '%s\n' "$wt"
+}
+
+# ─── Arg parsing ─────────────────────────────────────────────────────────
+[ $# -ge 1 ] || usage
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    ;;
+  --list)
+    [ $# -eq 2 ] || usage
+    cmd_list "$2"
+    ;;
+  --release)
+    shift
+    review=false
+    repo=""; branch=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --review) review=true; shift ;;
+        -*) die "unknown arg: $1" ;;
+        *)
+          if [ -z "$repo" ]; then repo="$1"
+          elif [ -z "$branch" ]; then branch="$1"
+          else die "extra arg: $1"
+          fi
+          shift
+          ;;
+      esac
+    done
+    [ -n "$repo" ] && [ -n "$branch" ] || usage
+    cmd_release "$repo" "$branch" "$review"
+    ;;
+  *)
+    repo="${1:-}"; branch="${2:-}"
+    [ -n "$repo" ] && [ -n "$branch" ] || usage
+    shift 2
+    review=false
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --review) review=true; shift ;;
+        --from) die "--from is disabled: every newly-created branch must start from origin/main" ;;
+        *) die "unknown arg: $1" ;;
+      esac
+    done
+    if [ "$review" = true ]; then
+      cmd_claim_review "$repo" "$branch"
+    else
+      cmd_claim "$repo" "$branch"
+    fi
+    ;;
+esac

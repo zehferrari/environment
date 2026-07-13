@@ -5,9 +5,10 @@
 //   1. resolve the branch's local worktree when available;
 //   2. fail if that worktree still has uncommitted changes;
 //   3. push clean local branch commits that have not reached origin yet;
-//   4. verify origin/<branch> contains the task prefix with the right identity;
-//   5. if this branch is the currently served PM worktree, rebuild/restart it;
-//   6. wake the reviewer only after the gate passes, otherwise wake the assignee.
+//   4. verify origin/main is an ancestor of origin/<branch>;
+//   5. verify origin/<branch> contains the task prefix with the right identity;
+//   6. if this branch is the currently served PM worktree, rebuild/restart it;
+//   7. wake the reviewer only after the gate passes, otherwise wake the assignee.
 //
 // Invoked as: pnpm exec tsx scripts/pm-verify-branch-pushed.ts <job-file>
 
@@ -43,6 +44,13 @@ type IdentityMismatch = {
   expected: ExpectedIdentity;
   author: string;
   committer: string;
+};
+type BranchBaseValidation = {
+  ok: boolean;
+  originMainSha: string | null;
+  branchSha: string | null;
+  mergeBaseSha: string | null;
+  error: string | null;
 };
 type WorktreeRecord = {
   path: string;
@@ -163,11 +171,50 @@ async function currentBranch(repo: string) {
 
 async function fetchBranch(repo: string, branch: string): Promise<string | null> {
   try {
-    await git(repo, ["fetch", "--quiet", "origin", branch], { timeout: 60_000 });
+    const refs = branch === "main" ? ["main"] : ["main", branch];
+    await git(repo, ["fetch", "--quiet", "origin", ...refs], { timeout: 60_000 });
     return null;
   } catch (err) {
     return trimError(err, 400);
   }
+}
+
+async function validateOriginMainBase(repo: string, branch: string): Promise<BranchBaseValidation> {
+  const originMainSha = await gitOrNull(repo, ["rev-parse", "--verify", "refs/remotes/origin/main"], { timeout: 10_000 });
+  const branchRef = `origin/${branch}`;
+  const branchSha = await gitOrNull(repo, ["rev-parse", "--verify", `refs/remotes/${branchRef}`], { timeout: 10_000 });
+
+  if (!originMainSha) {
+    return {
+      ok: false,
+      originMainSha: null,
+      branchSha,
+      mergeBaseSha: null,
+      error: "origin/main is unavailable after the monitor fetch",
+    };
+  }
+  if (!branchSha) {
+    return {
+      ok: false,
+      originMainSha,
+      branchSha: null,
+      mergeBaseSha: null,
+      error: `${branchRef} is unavailable after the monitor fetch`,
+    };
+  }
+
+  const mergeBaseSha = await gitOrNull(repo, ["merge-base", "origin/main", branchRef], { timeout: 10_000 });
+  if (mergeBaseSha !== originMainSha) {
+    return {
+      ok: false,
+      originMainSha,
+      branchSha,
+      mergeBaseSha,
+      error: `${branchRef} does not contain the current origin/main; recreate or update the branch from origin/main before review`,
+    };
+  }
+
+  return { ok: true, originMainSha, branchSha, mergeBaseSha, error: null };
 }
 
 async function readLog(repo: string, branch: string): Promise<{ commits: GitCommit[]; error: string | null }> {
@@ -315,6 +362,7 @@ function renderOkBody(args: {
   match: GitCommit;
   commitPrefix: string | null;
   expectedIdentity: ExpectedIdentity | null;
+  baseValidation: BranchBaseValidation;
   state: LocalState;
   rebuild: RebuildResult;
 }): string {
@@ -336,6 +384,9 @@ function renderOkBody(args: {
   } else {
     lines.push("- No COMMIT_PREFIX configured on task/epic; HEAD treated as the verified state.");
   }
+  lines.push(
+    `- Base verified: origin/main \`${args.baseValidation.originMainSha?.slice(0, 10)}\` is an ancestor of \`origin/${args.branchName}\`.`,
+  );
   if (args.state.pushed) {
     lines.push(`- Monitor pushed the clean local branch to \`origin/${args.branchName}\`.`);
   }
@@ -370,6 +421,7 @@ function renderFailBody(args: {
   fetchError: string | null;
   logError: string | null;
   identityMismatch: IdentityMismatch | null;
+  baseValidation: BranchBaseValidation;
   state: LocalState;
   rebuild: RebuildResult | null;
 }): string {
@@ -384,7 +436,7 @@ function renderFailBody(args: {
       "```",
     );
   }
-  if (args.fetchError) lines.push(`- \`git fetch origin ${args.branchName}\` failed: \`${args.fetchError}\``);
+  if (args.fetchError) lines.push(`- Fetching origin/main and origin/${args.branchName} failed: ${args.fetchError}`);
   if (args.state.pushError) lines.push(`- Monitor could not push \`${args.branchName}\` to origin: \`${args.state.pushError}\``);
   if (args.logError) lines.push(`- \`git log\` failed: \`${args.logError}\``);
   if (args.state.localSha && args.state.remoteSha && args.state.localSha !== args.state.remoteSha) {
@@ -405,6 +457,14 @@ function renderFailBody(args: {
         );
       }
     }
+  }
+  if (!args.baseValidation.ok) {
+    lines.push(
+      `- Branch-base validation failed: ${args.baseValidation.error}.`,
+      `  - origin/main: ${args.baseValidation.originMainSha?.slice(0, 10) ?? "unavailable"}`,
+      `  - origin/${args.branchName}: ${args.baseValidation.branchSha?.slice(0, 10) ?? "unavailable"}`,
+      `  - merge base: ${args.baseValidation.mergeBaseSha?.slice(0, 10) ?? "unavailable"}`,
+    );
   }
   if (args.identityMismatch) {
     lines.push(
@@ -550,6 +610,7 @@ async function main() {
   const fetchError = await fetchBranch(job.repositoryPath, job.branchName);
   const state = await localState(job, fetchError);
   const { commits, error: logError } = await readLog(job.repositoryPath, job.branchName);
+  const baseValidation = await validateOriginMainBase(job.repositoryPath, job.branchName);
   const head = commits[0] ?? null;
   const match = job.commitPrefix
     ? commits.find((c) => c.subject.startsWith(job.commitPrefix!)) ?? null
@@ -564,6 +625,7 @@ async function main() {
     !state.dirtyStatus &&
     !state.dirtyError &&
     !state.pushError &&
+    baseValidation.ok &&
     branchSynced &&
     head !== null &&
     match !== null &&
@@ -576,8 +638,8 @@ async function main() {
   const kind = reviewReady ? "pm.repo.verify.ok" : "pm.repo.verify.fail";
 
   const body = reviewReady
-    ? renderOkBody({ branchName: job.branchName, head: head!, match: match!, commitPrefix: job.commitPrefix, expectedIdentity: requiredIdentity, state, rebuild: rebuild! })
-    : renderFailBody({ branchName: job.branchName, head, match, commitPrefix: job.commitPrefix, fetchError, logError, identityMismatch: mismatch, state, rebuild });
+    ? renderOkBody({ branchName: job.branchName, head: head!, match: match!, commitPrefix: job.commitPrefix, expectedIdentity: requiredIdentity, baseValidation, state, rebuild: rebuild! })
+    : renderFailBody({ branchName: job.branchName, head, match, commitPrefix: job.commitPrefix, fetchError, logError, identityMismatch: mismatch, baseValidation, state, rebuild });
 
   const actor = await monitorActor();
   await db.$transaction([
@@ -599,6 +661,7 @@ async function main() {
           expectedGitUserName: job.expectedGitUserName,
           expectedGitUserEmail: job.expectedGitUserEmail,
           identityMismatch: mismatch,
+          baseValidation,
           fetchError,
           logError,
           localCheckPath: state.checkPath,
@@ -638,6 +701,7 @@ async function main() {
         dirty: Boolean(state.dirtyStatus),
         pushed: state.pushed,
         identityMismatch: mismatch,
+        baseValidation,
         fetchError,
         pushError: state.pushError,
         logError,

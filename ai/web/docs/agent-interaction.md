@@ -480,12 +480,13 @@ to an allowed branch and retry.
 
 For allowed branches, PM drops a JSON job into
 `/var/lib/pm/branch-verify/<jobId>.json`. The branch-verify runner
-(`pm-verify-runner.service`) runs as `PM_VERIFY_RUN_USER`, executes
-`git -C <repositoryPath> fetch origin <branchName>` on the already-cloned
-repo, looks for commits whose subject starts with the COMMIT_PREFIX on
-`origin/<branchName>`, and posts a `pm.repo.verify.ok` task comment
-(with HEAD sha, the latest prefix-matching commit, push timestamp) or
-`pm.repo.verify.fail` (no push found / no prefix match / protected branch /
+(`pm-verify-runner.service`) runs as `PM_VERIFY_RUN_USER`, fetches the current
+`origin/main` and `origin/<branchName>` on the already-cloned repo, and
+requires `origin/main` to be an ancestor of the task branch before it checks
+the COMMIT_PREFIX on `origin/<branchName>`. It posts a `pm.repo.verify.ok`
+task comment (with HEAD sha, the verified base, the latest prefix-matching
+commit, and push timestamp) or `pm.repo.verify.fail` (no push found / no
+prefix match / protected branch / stale or unrelated origin/main base /
 verifier credential failure) as `PM_MONITOR_USER`. The Review transition for
 allowed branches itself is NOT blocked — the verifier publishes its result
 asynchronously and the reviewer reads it before approving.
@@ -494,11 +495,13 @@ The reviewer's `review_requested` workflow turn adds a **Review
 verification** block instructing them to read the latest
 `pm.repo.verify.*` comment first: on `ok` proceed; on fail because no
 branch/no commit/no prefix match, send `review_feedback` asking the
-assignee to push with the prefix before review. On fail because the
-monitor verifier cannot fetch the remote (`Unauthorized`, permission
-denied, cannot read from remote), treat it as monitor credential
-configuration, not an assignee push problem. If neither has appeared,
-wait briefly for the monitor verifier.
+assignee to push with the prefix before review. On a stale or unrelated
+`origin/main` base, send `review_feedback` asking the assignee to update or
+recreate the task branch from the current `origin/main`. On fail because the
+monitor verifier cannot fetch the remote (`Unauthorized`, permission denied,
+cannot read from remote), treat it as monitor credential configuration, not
+an assignee push problem. If neither has appeared, wait briefly for the
+monitor verifier.
 
 ## Future Agent Actions
 

@@ -176,6 +176,57 @@ export default async function ProjectSettingsPage({
           </SettingsCard>
 
           <SettingsCard
+            title="Agent workflow restrictions"
+            hint="Reserve sensitive workflow decisions for the Task reporter."
+            tone="warn"
+          >
+            <div className="grid gap-3 lg:grid-cols-3">
+              <label className="flex items-start gap-3 text-body">
+                <input
+                  type="checkbox"
+                  name="onlyReportersCanApproveActionPlans"
+                  defaultChecked={project.onlyReportersCanApproveActionPlans}
+                  className="mt-1 h-4 w-4 rounded border-line accent-accent"
+                />
+                <span>
+                  <span className="block font-medium">Only reporter can approve Action Plans</span>
+                  <span className="block text-caption text-text-muted">
+                    When enabled, only the Task reporter can approve an Action Plan. Reviewers and acting managers can still comment and provide feedback.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 text-body">
+                <input
+                  type="checkbox"
+                  name="onlyReportersCanSetTasksDone"
+                  defaultChecked={project.onlyReportersCanSetTasksDone}
+                  className="mt-1 h-4 w-4 rounded border-line accent-accent"
+                />
+                <span>
+                  <span className="block font-medium">Only reporter can move Tasks to Done</span>
+                  <span className="block text-caption text-text-muted">
+                    When enabled, reviewers can review and provide feedback, but only the Task reporter can complete it.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 text-body">
+                <input
+                  type="checkbox"
+                  name="onlyReportersCanApprovePullRequests"
+                  defaultChecked={project.onlyReportersCanApprovePullRequests}
+                  className="mt-1 h-4 w-4 rounded border-line accent-accent"
+                />
+                <span>
+                  <span className="block font-medium">Only reporter can approve deployment pull requests</span>
+                  <span className="block text-caption text-text-muted">
+                    When enabled, only the Task or Epic reporter can approve its deployment pull request.
+                  </span>
+                </span>
+              </label>
+            </div>
+          </SettingsCard>
+
+          <SettingsCard
             title="Git defaults"
             hint={`Authorship used for commits agents make in this project. Effective source: ${settingSourceLabel(effectiveSettings.gitIdentity.name.source)}${effectiveSettings.workspace ? ` (${effectiveSettings.workspace.name})` : ""}.`}
             tone="neutral"
@@ -322,57 +373,6 @@ export default async function ProjectSettingsPage({
                 No active coding agents are available.
               </p>
             )}
-          </SettingsCard>
-
-          <SettingsCard
-            title="Agent workflow"
-            hint="Reserve sensitive transitions for the reporter."
-            tone="warn"
-          >
-            <div className="grid gap-3 lg:grid-cols-3">
-              <label className="flex items-start gap-3 text-body">
-                <input
-                  type="checkbox"
-                  name="onlyReportersCanApproveActionPlans"
-                  defaultChecked={project.onlyReportersCanApproveActionPlans}
-                  className="mt-1 h-4 w-4 rounded border-line accent-accent"
-                />
-                <span>
-                  <span className="block font-medium">Can Approve Plan of Actions</span>
-                  <span className="block text-caption text-text-muted">
-                    Agent reviewers and acting managers can comment on plans but cannot approve them.
-                  </span>
-                </span>
-              </label>
-              <label className="flex items-start gap-3 text-body">
-                <input
-                  type="checkbox"
-                  name="onlyReportersCanSetTasksDone"
-                  defaultChecked={project.onlyReportersCanSetTasksDone}
-                  className="mt-1 h-4 w-4 rounded border-line accent-accent"
-                />
-                <span>
-                  <span className="block font-medium">Can Set Tasks to Done</span>
-                  <span className="block text-caption text-text-muted">
-                    Agent review can still happen normally; the final Done transition is reserved for the reporter.
-                  </span>
-                </span>
-              </label>
-              <label className="flex items-start gap-3 text-body">
-                <input
-                  type="checkbox"
-                  name="onlyReportersCanApprovePullRequests"
-                  defaultChecked={project.onlyReportersCanApprovePullRequests}
-                  className="mt-1 h-4 w-4 rounded border-line accent-accent"
-                />
-                <span>
-                  <span className="block font-medium">Can Approve Pull Requests</span>
-                  <span className="block text-caption text-text-muted">
-                    Agent deployment PR approval is reserved for the reporter when this policy is enabled.
-                  </span>
-                </span>
-              </label>
-            </div>
           </SettingsCard>
 
           <div className="flex justify-end pt-1">

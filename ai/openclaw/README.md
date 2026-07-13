@@ -46,6 +46,10 @@ not standing personas. `monitor` remains a standing operational role for Karen.
 One unique source per concern: identity baseline (`AGENTS.md`), task-role
 behaviour (`guides/ROLES.md`), task workflow (`WORKFLOW.md`).
 
+The versioned `bin/claim-branch` helper is installed by `install.sh` as
+`/usr/local/bin/claim-branch`; it is the only supported way for agents to
+create or attach shared repository worktrees.
+
 ## How agents see this repo
 
 Per-agent symlinks point into the active OpenClaw checkout that ran

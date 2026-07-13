@@ -53,13 +53,14 @@ thinkpad uses systemd timers for active automation. Cron references in old migra
   unit, `User=karen` on thinkpad). Watches `/var/lib/pm/branch-verify/*.json` job
   files dropped by the PM workflow endpoint when an assignee moves a
   code-touching task to Review (with `repoTouched: true`). For each job runs
-  `git -C <repositoryPath> fetch origin <branchName>` then `git log
-  origin/<branchName>` on the already-cloned local repo, looks for commits
-  whose subject starts with the task/epic `commitPrefix`, and writes a monitor-authored
-  authored task `Comment` plus a `pm.repo.verify.ok` or `pm.repo.verify.fail`
-  `ActivityLog` row. No sudo / no privileged step — DB writes go through
-  `DATABASE_URL` from `/etc/default/pm`. Decoupled from `pm.service` like the
-  switch runner. Installed by `ai/web/deploy/install-pm-verify.sh`.
+  fetches the current `origin/main` and `origin/<branchName>` on the already-
+  cloned local repo, requires `origin/main` to be an ancestor of the task
+  branch, then reads `origin/<branchName>` and looks for commits whose subject
+  starts with the task/epic `commitPrefix`. It writes a monitor-authored task
+  `Comment` plus a `pm.repo.verify.ok` or `pm.repo.verify.fail` `ActivityLog`
+  row. No sudo / no privileged step — DB writes go through `DATABASE_URL` from
+  `/etc/default/pm`. Decoupled from `pm.service` like the switch runner.
+  Installed by `ai/web/deploy/install-pm-verify.sh`.
 - OpenClaw Control UIs: per-agent gateway dashboards exposed through nginx behind basic auth. thinkpad exposes primary, secondary, and monitoring gateway dashboards through role-based nginx routes. OpenClaw uses trusted-proxy auth with `X-Forwarded-User` from nginx, so nginx basic auth is the browser login. Gateway ports bind to LAN but remain blocked from direct network access by firewalld. This is an admin surface; do not expose without auth.
   - OpenClaw 2026.5.7 dashboard note: nginx also sends X-OpenClaw-Scopes: operator.admin. Coding agents set gateway.controlUi.dangerouslyDisableDeviceAuth=true so trusted-proxy WebSocket sessions keep operator scope; this depends on nginx basic auth and firewalld remaining in place.
   - No-slash dashboard paths redirect to trailing-slash paths. Do not proxy exact no-slash paths directly, or OpenClaw emits root-relative assets (/assets/...) that 404.

@@ -22,6 +22,9 @@ assert(workflowRoute.includes("protectedBranches: parseProtectedBranches"), "rea
 
 const verifier = readFileSync("scripts/pm-verify-branch-pushed.ts", "utf8");
 assert(verifier.includes('reason: "protected-agent-branch"'), "monitor verifier must report protected branch failures distinctly");
+assert(verifier.includes("validateOriginMainBase"), "monitor verifier must validate task branches against origin/main");
+assert(verifier.includes('"merge-base", "origin/main"'), "monitor verifier must compare the task branch merge base with origin/main");
+assert(verifier.includes("baseValidation.ok"), "origin/main validation must be part of the monitor review gate");
 
 const settingsPage = readFileSync("app/(app)/projects/[slug]/settings/page.tsx", "utf8");
 assert(settingsPage.includes("<BranchMultiCombobox"), "Project Settings deployment tab should render the branch multi-select combobox");

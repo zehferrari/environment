@@ -38,9 +38,9 @@ Workflow:
 1. Read the source work item and note the designated branch
    (for example `feature/HOMELAB-12-foo`).
 2. Run `claim-branch <repo> <branch>` to check out the branch locally.
-   If the branch does not exist on origin, `claim-branch` automatically cuts
-   it from `origin/master` (or `origin/main` on origin), pushes it, and sets
-   up upstream tracking.
+   The helper first fetches `origin/main`. If the branch does not exist on
+   origin, it cuts it from that freshly fetched `origin/main`, pushes it, and
+   sets up upstream tracking. It rejects caller-supplied `--from` refs.
 3. Work inside the path printed by `claim-branch`. Never edit the
    primary `/srv/Code/<repo>/` tree directly for task work. You MUST configure
    the local worktree's git identity (user.name and user.email) to match the
@@ -137,10 +137,10 @@ Concurrent review while the implementer is still iterating:
    `/srv/Code/<repo>.worktrees/<branch>__review/` using the latest pushed
    commit.
 3. If the reviewer wants to propose fixups, they create a sibling branch
-   from the reviewed branch, for example:
+   from the current integration branch, for example:
 
 ```bash
-claim-branch <repo> <branch>-review-fixes --from origin/<branch>
+claim-branch <repo> <branch>-review-fixes
 ```
 
 4. When done, release with
@@ -187,9 +187,8 @@ merge the PR.
 # attach an existing origin branch (implementer; common case)
 claim-branch <repo> <branch>
 
-# create a brand-new branch off a known ref only when the task explicitly
-# says to create branch X off Y rather than naming an existing one
-claim-branch <repo> <branch> --from <ref>
+# create a brand-new branch from the freshly fetched integration branch
+claim-branch <repo> <branch>
 
 # attach a detached-HEAD review worktree
 claim-branch <repo> <branch> --review
@@ -206,3 +205,8 @@ The script lives at `/usr/local/bin/claim-branch`. It writes worktrees
 under `/srv/Code/<repo>.worktrees/`. A repeated
 `claim-branch <repo> <branch>` is a no-op: it just prints the existing
 path.
+
+New branches are always created from the freshly fetched `origin/main`.
+Existing origin branches are attached at their remote tip; they are not
+silently rebased. Do not use raw `git worktree add -b` or a local `main`
+checkout for task branches.

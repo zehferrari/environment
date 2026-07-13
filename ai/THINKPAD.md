@@ -406,7 +406,7 @@ Jira routing uses a central monitor-owned webhook dispatcher:
 | `pm.service` | `3000` | `monitor-agent` | Standalone Next.js web application (Mission Control) |
 | `pm-consumer.service` | | `monitor-agent` | Queue consumer triggering loopback wake events |
 | `pm-switch-runner.service` | | `monitor-agent` | Builds a chosen worktree and flips which one `pm.service` serves (monitor-driven live preview); decoupled from `pm.service`. Drives the per-project "Worktree live preview" panel. |
-| `pm-verify-runner.service` | | `monitor-agent` | Watches `/var/lib/pm/branch-verify/` for jobs dropped by the PM workflow endpoint on `ready_for_review` (when the task touched the repo), runs `git fetch + log` against the local clone, and posts a `pm.repo.verify.{ok,fail}` task comment so the reviewer sees whether `origin/<branch>` reflects the work. Decoupled from `pm.service`. |
+| `pm-verify-runner.service` | | `monitor-agent` | Watches `/var/lib/pm/branch-verify/` for jobs dropped by the PM workflow endpoint on `ready_for_review` (when the task touched the repo), fetches `origin/main` plus the task branch, verifies the task branch contains the current `origin/main`, then runs `git log` and posts a `pm.repo.verify.{ok,fail}` task comment so the reviewer sees whether `origin/<branch>` reflects the work. Decoupled from `pm.service`. |
 | `openclaw-agent-runner.service` | | `monitor-agent` | Deterministic agent provisioning executor: watches `/var/lib/pm/agent-provision/`, runs `sudo openclaw-manage-user` for the web app's add/edit/remove (pm.service can't sudo). `NoNewPrivileges=no`. |
 | `agent-dashboard.service` | `3013` | `root` | System activity dashboard (HTTP + SSE) |
 | `openclaw-typing-keepalive.service` | | `root` | Telegram typing status manager |

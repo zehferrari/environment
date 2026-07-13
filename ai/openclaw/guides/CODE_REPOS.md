@@ -76,7 +76,11 @@ created via `claim-branch`.
 The implementer flow is:
 
 1. Read the Jira or Mission Control ticket, note the designated branch (e.g. `feature/HOMELAB-12-foo`).
-2. `claim-branch <repo> <branch>` — checks if the branch exists on origin and creates a worktree on it. If it does not exist, it automatically creates it on origin from `origin/master` (or `origin/main` on origin) and checks out locally.
+2. `claim-branch <repo> <branch>` — fetches `origin/main`, checks if the
+   branch exists on origin, and creates a worktree on it. If it does not
+   exist, it creates and pushes the branch from the freshly fetched
+   `origin/main`. New branches must never be based on a local checkout or a
+   caller-supplied ref; `claim-branch` rejects `--from`.
 3. `cd "$(claim-branch <repo> <branch>)"` and work there.
 4. Make sure the git user name and email match the project settings.
    - If the project settings define a custom git identity, you MUST configure them locally in the worktree:
@@ -133,9 +137,10 @@ no shared branch ref:
 2. They read / grep / run tests there. The implementer keeps
    committing on the branch worktree without conflict.
 3. If the reviewer wants to propose fixups, they cut a sibling branch
-   (`claim-branch <repo> <branch>-review-fixes --from origin/<branch>`).
-   The helper already did the initial `git push -u origin` for the new
-   branch on creation, so the branch exists on Bitbucket immediately.
+   (`claim-branch <repo> <branch>-review-fixes`). New branches still start
+   from the freshly fetched `origin/main`; the helper already did the
+   initial `git push -u origin` for the new branch on creation, so the branch
+   exists on Bitbucket immediately.
    Subsequent commits still need an explicit `git push` to land on
    origin where the implementer and zeh can see them.
    Detached HEAD itself doesn't accept commits without checking out
@@ -164,7 +169,7 @@ This applies to every form of merge that lands the PR:
 Agents **may** freely:
 
 - Merge or rebase the integration branch *into their own feature
-  branch* to resolve conflicts (`git merge origin/master` from a
+  branch* to resolve conflicts (`git merge origin/main` from a
   feature-branch worktree, then push the feature branch). This is
   preparing the change, not landing it.
 - Push and force-push to their own feature branch.
@@ -183,10 +188,8 @@ boundary.
 # attach an existing origin branch (implementer; common case)
 claim-branch <repo> <branch>
 
-# create a brand-new branch off a known ref (only when the ticket
-# explicitly says "create branch X off Y" rather than naming an existing one)
-claim-branch <repo> <branch> --from <ref>
-   # e.g. claim-branch v23 HOMELAB-12-bug --from origin/master
+# create a brand-new branch from the current integration branch
+claim-branch <repo> <branch>
 
 # attach a detached-HEAD review worktree (concurrent with implementer)
 claim-branch <repo> <branch> --review
@@ -202,6 +205,11 @@ claim-branch --release <repo> <branch> --review   # reviewer worktree
 The script lives at `/usr/local/bin/claim-branch`. It writes the
 worktree path to **stdout** and progress messages to stderr, so it
 composes cleanly with `cd "$(...)"`.
+
+For a new branch, the helper first fetches `origin/main` and uses that exact
+remote-tracking ref as the creation base. It has no `--from` override. If a
+branch already exists on origin, the helper attaches it at its existing
+remote tip; it does not recreate or rebase that branch.
 
 A repeated `claim-branch <repo> <branch>` is a no-op — it just prints
 the existing worktree's path. So agents can run it freely to find
