@@ -38,6 +38,10 @@ import {
   getAgentChatUploadDir,
   getConversationFolderIds,
 } from "@/lib/agents/chat/direct/files";
+import {
+  boundDirectChatProjectContexts,
+  normalizeDirectChatProjectIds,
+} from "@/lib/agents/chat/direct/projects";
 
 const execFileAsync = promisify(execFile);
 const MONITOR_DIRECT_CHAT_CONTEXT = [
@@ -391,14 +395,15 @@ function unique(values: string[]) {
   return [...new Set(values.filter(Boolean))];
 }
 
-async function inferProjectIdFromPmWorkItemLinks(body: string) {
+async function inferProjectIdsFromPmWorkItemLinks(body: string) {
   const slugs = unique(extractPmWorkItemRefs(body).map((ref) => ref.projectSlug));
-  if (slugs.length !== 1) return null;
-  const project = await db.project.findFirst({
-    where: { slug: slugs[0], deletedAt: null },
-    select: { id: true },
+  if (slugs.length === 0) return [];
+  const projects = await db.project.findMany({
+    where: { slug: { in: slugs }, deletedAt: null },
+    select: { id: true, slug: true },
   });
-  return project?.id ?? null;
+  const idBySlug = new Map(projects.map((project) => [project.slug, project.id]));
+  return slugs.map((slug) => idBySlug.get(slug)).filter((id): id is string => Boolean(id));
 }
 
 function directlyRequestsWorkItemManagement(body: string) {
@@ -674,6 +679,7 @@ async function handleDirectAgentMessage(args: {
   gatewayPort: number | null;
   sessionBinding: AgentSessionBinding;
   projectId: string | null;
+  projectIds: string[];
   allowWorkItemManagement: boolean;
   attachmentCount: number;
   publicOrigin: string | null;
@@ -709,10 +715,9 @@ async function handleDirectAgentMessage(args: {
   mark("filesContextMs", stepStartedAt);
   sizes.filesContextChars = filesContext.length;
 
-  // Project-scoped planning: when a project is attached, include its
-  // environment packet; when the user also granted work-item management,
-  // hand the agent the propose endpoint + a one-shot grant token bound to
-  // this message (the sanctioned write-action pattern).
+  // Project-scoped planning: every attached project gets its own environment,
+  // live-context grant URLs and (when explicitly requested) independent
+  // one-shot work-item proposal token bound to this message.
   const systemPromptParts = [
     `Direct PM chat message for @${args.agentSlug} from ${args.actorName}.`,
     `OpenClaw session key: ${args.sessionBinding.openclawSessionKey}`,
@@ -725,36 +730,46 @@ async function handleDirectAgentMessage(args: {
   }
   let projectContextText = "";
   stepStartedAt = Date.now();
-  if (args.projectId) {
-    const env = await buildProjectEnvContext(args.projectId);
-    if (env) {
-      projectContextText = env.text;
+  if (args.projectIds.length > 0) {
+    const projectContexts = await Promise.all(args.projectIds.map(async (projectId) => {
+      const env = await buildProjectEnvContext(projectId);
+      if (!env) return null;
       const liveContextBlock = await buildDirectLiveContextAccess({
         agentSlug: args.agentSlug,
         messageId: args.messageId,
-        projectId: args.projectId,
+        projectId,
         body: args.body,
       });
-      systemPromptParts.push("", liveContextBlock);
+      let planningPrompt = "";
       if (args.allowWorkItemManagement) {
-        const token = createWorkItemGrantToken(args.projectId, args.agentSlug, args.messageId);
+        const token = createWorkItemGrantToken(projectId, args.agentSlug, args.messageId);
         const proposeUrl = new URL(
-          `/api/agent/projects/${args.projectId}/proposals`,
+          `/api/agent/projects/${projectId}/proposals`,
           agentCallbackBaseUrl(),
         ).toString();
-        systemPromptParts.push(
-          "",
-          buildWorkItemPlanningPrompt({
-            agentSlug: args.agentSlug,
-            projectSlug: env.projectSlug,
-            proposeUrl,
-            grantMessageId: args.messageId,
-            token,
-            autoApply: true,
-            publicOrigin: args.publicOrigin,
-          }),
-        );
+        planningPrompt = buildWorkItemPlanningPrompt({
+          agentSlug: args.agentSlug,
+          projectSlug: env.projectSlug,
+          proposeUrl,
+          grantMessageId: args.messageId,
+          token,
+          autoApply: true,
+          publicOrigin: args.publicOrigin,
+        });
       }
+      return { env, liveContextBlock, planningPrompt };
+    }));
+    const availableContexts = projectContexts.filter((context): context is NonNullable<typeof context> => Boolean(context));
+    projectContextText = boundDirectChatProjectContexts(
+      availableContexts.map((context) => context.env.text),
+    ).join("\n\n");
+    for (const context of availableContexts) {
+      systemPromptParts.push(
+        "",
+        `PROJECT CONTEXT: ${context.env.projectSlug}`,
+        context.liveContextBlock,
+      );
+      if (context.planningPrompt) systemPromptParts.push("", context.planningPrompt);
     }
   }
   mark("projectContextMs", stepStartedAt);
@@ -812,6 +827,7 @@ async function handleDirectAgentMessage(args: {
         timings,
         sizes,
         dispatchMetrics,
+        projectIds: args.projectIds,
         includeFilesContext,
         parentFolderCount: parentFolders.length,
       }),
@@ -848,7 +864,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
   const bodyRaw = String(formData.get("body") ?? "").trim();
   const attachments = directChatUploadedFiles(formData);
   const body = appendDirectAttachmentNames(bodyRaw, attachments);
-  const requestedProjectId = String(formData.get("projectId") ?? "").trim() || null;
+  const requestedProjectIds = normalizeDirectChatProjectIds(formData.getAll("projectId"));
   // The client supplies the message id so the optimistic echo can reconcile by
   // id (not fragile body matching) and a double-fire is idempotent.
   const requestedMessageId = String(formData.get("clientMessageId") ?? "").trim() || null;
@@ -874,18 +890,19 @@ export async function sendDirectAgentMessage(formData: FormData) {
   // the human message explicitly asks to manage work items. Otherwise the
   // proposal instructions can pressure agents into sending unsolicited Action
   // Plans/proposals during status/debug conversations.
-  let projectId: string | null = requestedProjectId;
-  if (!projectId) {
-    projectId = await inferProjectIdFromPmWorkItemLinks(bodyRaw);
-  }
-  if (projectId) {
-    const proj = await db.project.findFirst({
-      where: { id: projectId, deletedAt: null },
+  let projectIds = requestedProjectIds.length > 0
+    ? requestedProjectIds
+    : normalizeDirectChatProjectIds(await inferProjectIdsFromPmWorkItemLinks(bodyRaw));
+  if (projectIds.length > 0) {
+    const projects = await db.project.findMany({
+      where: { id: { in: projectIds }, deletedAt: null },
       select: { id: true },
     });
-    if (!proj) projectId = null;
+    const validIds = new Set(projects.map((project) => project.id));
+    projectIds = projectIds.filter((id) => validIds.has(id));
   }
-  const grantWorkItems = userKind === "human" && projectId !== null && directlyRequestsWorkItemManagement(bodyRaw);
+  const projectId = projectIds[0] ?? null;
+  const grantWorkItems = userKind === "human" && projectIds.length > 0 && directlyRequestsWorkItemManagement(bodyRaw);
 
   let baseArchiveId = requestedBaseArchiveId;
   if (baseArchiveId) {
@@ -927,6 +944,12 @@ export async function sendDirectAgentMessage(formData: FormData) {
         body,
         projectId,
         allowWorkItemManagement: grantWorkItems,
+        projects: projectIds.length > 0 ? {
+          create: projectIds.map((linkedProjectId) => ({
+            projectId: linkedProjectId,
+            allowWorkItemManagement: grantWorkItems,
+          })),
+        } : undefined,
       },
       select: { id: true },
     });
@@ -940,6 +963,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
           messageId: created.id,
           baseArchiveId,
           projectId,
+          projectIds,
           allowWorkItemManagement: grantWorkItems,
           publicOrigin,
         }),
@@ -1023,6 +1047,7 @@ export async function sendDirectAgentMessage(formData: FormData) {
     gatewayPort: agent.gatewayPort,
     sessionBinding,
     projectId,
+    projectIds,
     allowWorkItemManagement: grantWorkItems,
     attachmentCount: attachments.length,
     publicOrigin,

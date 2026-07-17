@@ -17,6 +17,8 @@ import {
 export const dynamic = "force-dynamic";
 
 const PAGE_SIZES = ["10", "25", "50", "100", "all"] as const;
+const TASK_VIEWS = ["all", "board", "archive"] as const;
+type TaskView = (typeof TASK_VIEWS)[number];
 
 type ActorRow = {
   id: string;
@@ -109,6 +111,11 @@ function parsePageSize(raw: string | string[] | undefined) {
   return PAGE_SIZES.includes(value as (typeof PAGE_SIZES)[number]) ? value! : "25";
 }
 
+function parseTaskView(raw: string | string[] | undefined): TaskView {
+  const value = single(raw)?.toLowerCase();
+  return TASK_VIEWS.includes(value as TaskView) ? value as TaskView : "board";
+}
+
 export default async function ProjectTasksPage({
   params,
   searchParams,
@@ -131,7 +138,9 @@ export default async function ProjectTasksPage({
   });
   if (!project) notFound();
 
-  const view = single(sp.view) === "archive" ? "archive" : "board";
+  // Keep existing ?view=board|archive links compatible while also allowing an
+  // aggregate view that includes both active and archived tasks.
+  const view = parseTaskView(sp.view);
   const reporterIds = viewer.isOwner ? multi(sp.reporterId) : [];
   const assigneeIds = viewer.isOwner ? multi(sp.assigneeId) : [];
   const reviewerIds = viewer.isOwner ? multi(sp.reviewerId) : [];
@@ -146,14 +155,18 @@ export default async function ProjectTasksPage({
     projectId: project.id,
     deletedAt: null,
     parentTaskId: null,
-    archivedAt: view === "archive" ? { not: null } : null,
+    ...(view === "archive"
+      ? { archivedAt: { not: null } }
+      : view === "board"
+        ? { archivedAt: null }
+        : {}),
     ...(reporterIds.length ? { reporterId: { in: reporterIds } } : {}),
     ...(assigneeIds.length ? { assigneeId: { in: assigneeIds } } : {}),
     ...(reviewerIds.length ? { actingManagerId: { in: reviewerIds } } : {}),
     ...(status ? { status } : {}),
   });
 
-  const [principals, tasks, totalCount, archivedCount, busyAgentSlugs, actorVisibility] = await Promise.all([
+  const [principals, tasks, totalCount, busyAgentSlugs, actorVisibility] = await Promise.all([
     viewer.isOwner ? listAssignablePrincipals(viewer) : Promise.resolve([]),
     db.task.findMany({
       where,
@@ -178,9 +191,6 @@ export default async function ProjectTasksPage({
       },
     }),
     db.task.count({ where }),
-    db.task.count({
-      where: accessibleTaskWhere(viewer, { projectId: project.id, deletedAt: null, parentTaskId: null, archivedAt: { not: null } }),
-    }),
     viewer.isOwner ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
     getActorVisibility(viewer),
   ]);
@@ -268,11 +278,10 @@ export default async function ProjectTasksPage({
     );
   };
 
-  // Both the board and archive views group tasks under their Epic in
+  // All views group tasks under their Epic in
   // collapsible blocks. Tasks with no epic are the "Direct Request" group,
-  // which sorts first and stays expanded. On the board view every group is
-  // expanded by default (it replaces the old flat list); on the archive view
-  // only Direct Request opens by default.
+  // which sorts first and stays expanded. Active and aggregate views expand
+  // every group by default; the archive view opens Direct Request only.
   const DIRECT_REQUEST_KEY = "__direct__";
   type EpicGroup = {
     id: string;
@@ -321,44 +330,24 @@ export default async function ProjectTasksPage({
 
   return (
     <div className="space-y-section-gap">
-      <header className="flex flex-wrap items-center justify-between gap-3">
+      <header>
         <div>
           <h2 className="text-heading font-semibold tracking-tight">Tasks</h2>
           <p className="mt-1 text-body text-text-muted">
             {tasks.length} shown of {totalCount} matching task{totalCount === 1 ? "" : "s"}.
           </p>
         </div>
-        <div className="flex items-center gap-1 rounded-card border border-line bg-panel p-1 text-caption">
-          <Link
-            href={`/projects/${slug}/tasks?view=board`}
-            className={
-              view === "board"
-                ? "rounded-lg bg-accent px-3 py-1 font-medium text-bg"
-                : "rounded-lg px-3 py-1 text-text-muted hover:text-text"
-            }
-          >
-            Board
-          </Link>
-          {view === "archive" || archivedCount > 0 ? (
-            <Link
-              href={`/projects/${slug}/tasks?view=archive`}
-              className={
-                view === "archive"
-                  ? "rounded-lg bg-accent px-3 py-1 font-medium text-bg"
-                  : "rounded-lg px-3 py-1 text-text-muted hover:text-text"
-              }
-            >
-              Archive
-            </Link>
-          ) : null}
-        </div>
       </header>
 
       <form
         id="taskFilters"
-        className={`grid gap-3 rounded-card border border-line bg-panel p-3 text-body ${viewer.isOwner ? "md:grid-cols-3 xl:grid-cols-[repeat(5,minmax(0,1fr))_auto]" : "md:grid-cols-2 xl:grid-cols-[repeat(2,minmax(0,1fr))_auto]"}`}
+        className={`grid gap-3 rounded-card border border-line bg-panel p-3 text-body ${viewer.isOwner ? "md:grid-cols-3 xl:grid-cols-[repeat(6,minmax(0,1fr))_auto]" : "md:grid-cols-2 xl:grid-cols-[repeat(3,minmax(0,1fr))_auto]"}`}
       >
-        <input type="hidden" name="view" value={view} />
+        <FilterSelect label="View" name="view" value={view}>
+          <option value="all">All</option>
+          <option value="board">Board</option>
+          <option value="archive">Archive</option>
+        </FilterSelect>
         {viewer.isOwner ? <FilterField label="Reporter">
           <AvatarCombobox
             formId="taskFilters"
@@ -444,7 +433,7 @@ export default async function ProjectTasksPage({
             return (
             <details
               key={group.id}
-              open={view === "board" || group.id === DIRECT_REQUEST_KEY}
+              open={view !== "archive" || group.id === DIRECT_REQUEST_KEY}
               className="group overflow-hidden rounded-lg border border-line bg-panel-soft"
             >
               <summary className="cursor-pointer list-none border-b border-line bg-panel [&::-webkit-details-marker]:hidden">

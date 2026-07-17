@@ -54,6 +54,7 @@ export type ProposalOp =
       title: string;
       description?: string | null;
       epic?: string | null;
+      blockedBy?: string | null;
       assignee?: PrincipalRef;
       actingManager?: PrincipalRef;
     }
@@ -86,6 +87,7 @@ export type ProposalOp =
       actingManager?: PrincipalRef;
       epic?: string | null;
       parent?: string | null;
+      blockedBy?: string | null;
       status?: string;
     }
   | { op: "comment_task"; target: string; body: string };
@@ -179,13 +181,17 @@ export async function validateProposal(
         }
       }
     }
-    if (op === "create_task") addExistingEpic(raw.epic);
+    if (op === "create_task") {
+      addExistingEpic(raw.epic);
+      addExistingTask(raw.blockedBy);
+    }
     if (op === "create_subtask") addExistingTask(raw.parent);
     if (op === "update_epic") addExistingEpic(raw.target);
     if (op === "update_task") {
       addExistingTask(raw.target);
       addExistingEpic(raw.epic);
       addExistingTask(raw.parent);
+      addExistingTask(raw.blockedBy);
     }
     if (op === "comment_task") addExistingTask(raw.target);
   }
@@ -221,12 +227,13 @@ export async function validateProposal(
               },
             ],
           },
-          select: { id: true, parentTaskId: true, status: true },
+          select: { id: true, parentTaskId: true, status: true, blockedById: true },
         })
       : Promise.resolve([] as Array<{
           id: string;
           parentTaskId: string | null;
           status: string;
+          blockedById: string | null;
         }>),
     listAssignablePrincipals(),
   ]);
@@ -234,6 +241,43 @@ export async function validateProposal(
   const loadedEpics = new Map(loadedEpicRows.map((e) => [e.id, e]));
   const loadedTasks = new Map(loadedTaskRows.map((t) => [t.id, t]));
   const byUsername = new Map(principals.map((p) => [p.username, p]));
+
+  // Match the human edit form's current-blocker guard: an inaccessible
+  // blocker cannot be replaced or cleared through a proposal. Deliberately
+  // omit lifecycle filters here because the form still permits disconnecting
+  // an already-linked public blocker after it is archived/deleted.
+  const blockedByUpdateTargets = new Set(
+    ops
+      .filter((raw) => raw.op === "update_task" && raw.blockedBy !== undefined)
+      .map((raw) => raw.target)
+      .filter((id): id is string => typeof id === "string"),
+  );
+  const currentBlockerIds = [...new Set(
+    loadedTaskRows
+      .filter((task) => blockedByUpdateTargets.has(task.id))
+      .map((task) => task.blockedById)
+      .filter((id): id is string => Boolean(id)),
+  )];
+  const visibleCurrentBlockerRows = currentBlockerIds.length
+    ? await db.task.findMany({
+        where: {
+          id: { in: currentBlockerIds },
+          projectId,
+          private: false,
+          AND: [
+            { OR: [{ epicId: null }, { epic: { private: false } }] },
+            {
+              OR: [
+                { parentTaskId: null },
+                { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
+              ],
+            },
+          ],
+        },
+        select: { id: true },
+      })
+    : [];
+  const visibleCurrentBlockers = new Set(visibleCurrentBlockerRows.map((task) => task.id));
 
   // ---- per-op field validators (closures over the loaded maps) ----
 
@@ -315,6 +359,26 @@ export async function validateProposal(
     }
   };
 
+  // Hard dependency reference for create_task.blockedBy /
+  // update_task.blockedBy. A newly proposed top-level task is valid, but a
+  // checklist-item ref is not a Task and therefore cannot be a blocker.
+  const validateBlockedByLink = (value: unknown, errors: string[]) => {
+    if (value === undefined || value === null) return;
+    if (typeof value !== "string" || !value) {
+      errors.push("blockedBy must be a task ref/id string or null");
+      return;
+    }
+    if (isTempRef(value)) {
+      if (!taskRefs.has(value) || subtaskRefs.has(value)) {
+        errors.push(`blockedBy ref ${value} is not declared by a create_task in this proposal`);
+      }
+    } else if (!loadedTasks.has(value)) {
+      // Intentionally identical for missing, cross-project, private, and
+      // otherwise invisible rows so validation cannot disclose private work.
+      errors.push("blocking task not found in this project");
+    }
+  };
+
   // Existing-id target for update_*/comment_task. Returns the loaded row.
   const requireExistingEpic = (value: unknown, errors: string[]) => {
     if (typeof value !== "string" || !value) {
@@ -383,6 +447,10 @@ export async function validateProposal(
         validateTitle(raw.title, errors, true);
         validateDescription(raw.description, errors);
         validateEpicLink(raw.epic, errors);
+        validateBlockedByLink(raw.blockedBy, errors);
+        if (typeof raw.blockedBy === "string" && raw.blockedBy === raw.ref) {
+          errors.push("A task cannot be blocked by itself.");
+        }
         if (raw.assignee !== undefined && raw.assignee !== null) {
           errors.push("agent-created tasks cannot set an assignee; the requester is recorded as reporter");
         }
@@ -433,10 +501,17 @@ export async function validateProposal(
         break;
       }
       case "update_task": {
-        requireExistingTask(raw.target, errors);
+        const target = requireExistingTask(raw.target, errors);
         validateTitle(raw.title, errors, false);
         validateDescription(raw.description, errors);
         validateEpicLink(raw.epic, errors);
+        validateBlockedByLink(raw.blockedBy, errors);
+        if (raw.blockedBy !== undefined && target?.blockedById && !visibleCurrentBlockers.has(target.blockedById)) {
+          errors.push("blockedBy is not editable for this task");
+        }
+        if (typeof raw.blockedBy === "string" && raw.blockedBy === raw.target) {
+          errors.push("A task cannot be blocked by itself.");
+        }
         if (raw.parent !== undefined) {
           validateParentLink(raw.parent, errors, false);
           if (typeof raw.parent === "string" && raw.parent === raw.target) {
@@ -446,7 +521,6 @@ export async function validateProposal(
         validatePrincipal(raw.assignee, errors, "assignee");
         validatePrincipal(raw.actingManager, errors, "actingManager");
         validateTaskStatus(raw.status, errors);
-        const target = requireExistingTask(raw.target, []);
         if (typeof raw.status === "string" && isTaskStatus(raw.status) && target) {
           const transition = checkStatusTransition({
             from: target.status,
@@ -471,6 +545,74 @@ export async function validateProposal(
 
     return { index, op, ref, ok: errors.length === 0, errors };
   });
+
+  // Simulate the proposal's dependency graph in apply order before it is
+  // stored. This catches cycles spanning several operations (including tmp
+  // refs) that a per-operation DB check cannot see. Existing graph tails are
+  // followed from the database; a pre-existing unrelated cycle is tolerated
+  // like validateBlockedBy(), while a path returning to the changed source is
+  // not.
+  const dependencyChanges = new Map<string, string | null>();
+  const createdDependencies: Array<{ source: string; index: number }> = [];
+  for (const [index, raw] of ops.entries()) {
+    if (raw.op === "create_task" && typeof raw.ref === "string" && isTempRef(raw.ref)) {
+      dependencyChanges.set(raw.ref, typeof raw.blockedBy === "string" ? raw.blockedBy : null);
+      createdDependencies.push({ source: raw.ref, index });
+    }
+  }
+
+  const storedDependency = new Map<string, string | null>();
+  const nextDependency = async (taskRef: string): Promise<string | null> => {
+    if (dependencyChanges.has(taskRef)) return dependencyChanges.get(taskRef) ?? null;
+    if (isTempRef(taskRef)) return null;
+    if (storedDependency.has(taskRef)) return storedDependency.get(taskRef) ?? null;
+    const row = await db.task.findUnique({
+      where: { id: taskRef },
+      select: { blockedById: true },
+    });
+    const next = row?.blockedById ?? null;
+    storedDependency.set(taskRef, next);
+    return next;
+  };
+
+  const validateDependencyPath = async (source: string, index: number) => {
+    if (results[index]?.errors.length) return;
+    const seen = new Set<string>([source]);
+    let current = dependencyChanges.get(source) ?? null;
+    while (current) {
+      if (current === source) {
+        results[index]?.errors.push(
+          "That would create a circular block — the chosen task already depends on this one.",
+        );
+        return;
+      }
+      if (seen.has(current)) return;
+      seen.add(current);
+      current = await nextDependency(current);
+    }
+  };
+
+  // All create_task operations are committed before updates, with tmp blocker
+  // refs treated as creation dependencies. Validate that initial graph first.
+  for (const change of createdDependencies) {
+    await validateDependencyPath(change.source, change.index);
+  }
+
+  // Updates are then committed in operation order. Model each edge before
+  // validating it so even a transient cycle in a multi-update proposal is
+  // rejected exactly where commitProposal() would reject it.
+  for (const [index, raw] of ops.entries()) {
+    if (
+      raw.op !== "update_task"
+      || typeof raw.target !== "string"
+      || raw.blockedBy === undefined
+      || (typeof raw.blockedBy !== "string" && raw.blockedBy !== null)
+    ) continue;
+    dependencyChanges.set(raw.target, raw.blockedBy);
+    await validateDependencyPath(raw.target, index);
+  }
+
+  for (const result of results) result.ok = result.errors.length === 0;
 
   return {
     ok: results.every((r) => r.ok),

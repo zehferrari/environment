@@ -252,8 +252,11 @@ bounded use count.
 The per-turn system prompt includes ready-to-curl URLs with the grant
 already attached. Agents should call those URLs directly and should not
 need to read or repeat their long-lived PM-channel bearer token. Direct
-project-scoped chats also receive a project context grant; when the user
-pastes same-project Task or Epic links, PM additionally mints grants for
+project-scoped chats receive one project context grant per selected project;
+each project also receives its own independently consumable proposal token
+when the human requests work-item changes. Direct chat accepts at most eight
+linked projects per turn to keep prompt and grant construction bounded. When the user pastes same-project
+Task or Epic links, PM additionally mints grants for
 those linked items so the agent can fetch the authoritative item context
 instead of trying to open the public browser URL.
 
@@ -641,3 +644,15 @@ Two operational notes surfaced during this pass:
 ### Reporter alert flag
 
 Task update proposals may include `alert_reporter` (or `alertReporter`) as `true`/`1` when a task is blocked in a way agents cannot resolve and a human/reporter must intervene. The PM UI highlights those task rows/cards with a low-opacity red background until the flag is cleared. Do not use it for ordinary reviewer feedback, routine review waits, or agent-actionable blockers.
+
+### Hard task dependencies
+
+Work-item proposals may set `blockedBy` on both `create_task` and
+`update_task`. The value is either an existing visible task id, a
+same-proposal `create_task` `tmp:` ref, or `null`; `null` clears the dependency
+on `update_task`, while an omitted field leaves it unchanged. Submission and
+approval both enforce project scope, live/non-private visibility, self-block
+prevention, and full-chain cycle prevention. A hidden current blocker cannot
+be replaced or cleared by an agent proposal, and validation errors never
+return private task metadata. Applied changes write the same
+`task.blocked_by` activity kind as the human task editor.

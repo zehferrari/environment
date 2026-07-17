@@ -5,6 +5,8 @@ import MaximizableTextarea from "@/components/maximizable-textarea";
 import { useDirectChatOptimistic } from "@/components/direct-chat-optimistic-provider";
 import { generateClientMessageId } from "@/lib/agents/ops/client-message-id";
 import React, { useEffect, useRef, useState } from "react";
+import AvatarCombobox from "@/components/avatar-combobox";
+import { MAX_DIRECT_CHAT_PROJECTS } from "@/lib/agents/chat/direct/projects";
 
 function isNextRedirectError(err: unknown) {
   return typeof (err as { digest?: unknown } | null)?.digest === "string"
@@ -18,7 +20,7 @@ interface ChatInputProps {
   selectedArchiveId?: string | null;
   activeBaseArchiveId?: string | null;
   projects?: Array<{ id: string; name: string }>;
-  attachedProjectId?: string | null;
+  attachedProjectIds?: string[];
 }
 
 export default function ChatInput({
@@ -28,7 +30,7 @@ export default function ChatInput({
   selectedArchiveId,
   activeBaseArchiveId,
   projects = [],
-  attachedProjectId = null,
+  attachedProjectIds = [],
 }: ChatInputProps) {
   const { addOptimistic, markFailed } = useDirectChatOptimistic();
   const formRef = useRef<HTMLFormElement>(null);
@@ -38,12 +40,14 @@ export default function ChatInput({
   const [composerOpen, setComposerOpen] = useState(false);
   const [selectedFilesCount, setSelectedFilesCount] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Keep project scope above the conditional composer. Closing it while a
+  // server action is in flight must not discard the user's attempted scope if
+  // the send fails and they reopen the form.
+  const [selectedProjectIds, setSelectedProjectIds] = useState(() => (
+    attachedProjectIds.slice(0, MAX_DIRECT_CHAT_PROJECTS)
+  ));
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canSend = messageText.trim().length > 0 || selectedFilesCount > 0;
-
-  // Project attachment is carried forward across the conversation. Human
-  // project-scoped requests automatically carry the one-shot proposal capability.
-  const [projectId, setProjectId] = useState(attachedProjectId ?? "");
 
   useEffect(() => {
     const openNewChatComposer = (event: Event) => {
@@ -134,6 +138,7 @@ export default function ChatInput({
           onClick={closeComposer}
         >
           <form
+            id="directChatComposer"
             ref={formRef}
             action={actionHandler}
             encType="multipart/form-data"
@@ -197,22 +202,26 @@ export default function ChatInput({
             ) : null}
 
             {projects.length > 0 ? (
-              <label className="flex flex-wrap items-center gap-2 text-caption text-text-muted">
-                <span className="select-none font-semibold">Project</span>
-                <select
+              <div className="space-y-1.5 text-caption text-text-muted">
+                <span className="select-none font-semibold">Projects</span>
+                <AvatarCombobox
+                  formId="directChatComposer"
                   name="projectId"
-                  value={projectId}
-                  onChange={(e) => setProjectId(e.target.value)}
-                  className="rounded-lg border border-line bg-bg px-2 py-1 text-caption text-text outline-none focus:border-accent"
-                >
-                  <option value="">No project</option>
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  options={projects.map((project) => ({
+                    value: project.id,
+                    label: project.name,
+                  }))}
+                  emptyLabel="No projects"
+                  ariaLabel="Linked projects"
+                  multiple
+                  defaultValues={selectedProjectIds}
+                  onChangeMultiple={setSelectedProjectIds}
+                  maxSelections={MAX_DIRECT_CHAT_PROJECTS}
+                />
+                <p className="text-nano text-text-muted">
+                  Select up to {MAX_DIRECT_CHAT_PROJECTS}. The agent receives context and scoped authorization for each one.
+                </p>
+              </div>
             ) : null}
 
             <div className="flex flex-wrap items-center justify-between gap-3">

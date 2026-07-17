@@ -195,6 +195,7 @@ model Project {
   chatMessages           AgentChatMessage[]
   chatRoomArchives       AgentChatRoomArchive[]
   directChatMessages     DirectAgentChatMessage[] @relation("DirectChatProject")
+  directChatProjectLinks DirectAgentChatMessageProject[]
   workItemProposals      WorkItemProposal[]
   deploymentPullRequests DeploymentPullRequest[]
 
@@ -920,6 +921,7 @@ model DirectAgentChatMessage {
   // stamps it single-use once a proposal is stored.
   projectId               String?
   project                 Project?                @relation("DirectChatProject", fields: [projectId], references: [id], onDelete: SetNull)
+  projects                DirectAgentChatMessageProject[]
   allowWorkItemManagement Boolean                 @default(false)
   workItemGrantUsedAt     DateTime?
   createdAt               DateTime                @default(now())
@@ -940,6 +942,22 @@ model DirectAgentChatMessage {
   @@index([projectId])
   @@index([deletedAt])
   @@index([deletedById])
+}
+
+// Multi-project context attached to one direct-chat turn. projectId on the
+// message remains the primary/backward-compatible project; these rows are the
+// authoritative selected set and carry independent one-shot proposal grants.
+model DirectAgentChatMessageProject {
+  messageId               String
+  message                 DirectAgentChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  projectId               String
+  project                 Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  allowWorkItemManagement Boolean                @default(false)
+  workItemGrantUsedAt     DateTime?
+  createdAt               DateTime               @default(now())
+
+  @@id([messageId, projectId])
+  @@index([projectId])
 }
 
 model DirectAgentChatArchive {

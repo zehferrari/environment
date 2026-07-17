@@ -981,7 +981,7 @@ export default async function EpicDetailPage({
       {/* ----- Main -------------------------------------------------- */}
       <div className="min-w-0">
         <section className="space-y-section-gap rounded-panel border border-line bg-panel p-card-lg shadow-sm">
-          {/* Sticky one-row editor header: title, status and save stay visible. */}
+          {/* Sticky one-row editor header: title, privacy, status and save stay visible. */}
           <div className="sticky top-0 z-30 -mx-5 -mt-5 flex flex-wrap items-end gap-3 rounded-t-2xl border-b border-line bg-panel px-5 py-2 shadow-sm xl:flex-nowrap">
             <label className="min-w-[18rem] flex-1">
               <span className="mb-0.5 block text-nano font-semibold uppercase tracking-wider text-text-muted">
@@ -1002,6 +1002,15 @@ export default async function EpicDetailPage({
                 aria-label="Epic title"
               />
             </label>
+            {viewer.isOwner ? (
+              <div className="flex h-9 shrink-0 items-center rounded-lg border border-line bg-bg px-2.5">
+                <PrivateToggle
+                  formId="epicMain"
+                  defaultChecked={epic.private}
+                  includeSubmittedField
+                />
+              </div>
+            ) : null}
             <label className="w-32 shrink-0">
               <span className="mb-0.5 block text-left text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Status
@@ -1045,13 +1054,6 @@ export default async function EpicDetailPage({
           <form id="epicMain" action={updateEpic} />
           <input form="epicMain" type="hidden" name="epicId" value={epic.id} />
           <input form="epicMain" type="hidden" name="projectSlug" value={slug} />
-          {viewer.isOwner ? (
-            <PrivateToggle
-              formId="epicMain"
-              defaultChecked={epic.private}
-              includeSubmittedField
-            />
-          ) : null}
 
           {/* Tabbed content */}
           <TabsProvider defaultTab={selectedTab}>

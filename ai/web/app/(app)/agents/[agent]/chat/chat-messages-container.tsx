@@ -377,6 +377,14 @@ export default function ChatMessagesContainer({
                   <ConfirmedDeleteButton
                     action={deleteDirectAgentMessage}
                     fields={{ agentSlug: slug, messageId: m.id }}
+                    onSuccess={() => {
+                      const deletedAt = new Date().toISOString();
+                      setLiveMessages((current) => current.map((message) => (
+                        message.id === m.id
+                          ? { ...message, deletedAt }
+                          : message
+                      )));
+                    }}
                     label="×"
                     title="Delete message"
                     description="The bubble will be hidden behind a collapsed dotted divider that humans can expand. Agents will never see it in their context again."

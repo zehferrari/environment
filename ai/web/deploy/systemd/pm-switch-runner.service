@@ -9,14 +9,18 @@ Type=simple
 # ends by restarting pm.service, so it must not live in pm.service's cgroup.
 # Installer (install-pm-switch.sh) substitutes __PM_MONITOR_USER__.
 User=__PM_MONITOR_USER__
-Group=code-agents
-Environment=HOME=/home/__PM_MONITOR_USER__
+Group=__PM_CODE_GROUP__
+Environment=HOME=__PM_MONITOR_HOME__
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=PM_SWITCH_DIR=/var/lib/pm/switch
+Environment=PM_SWITCH_DIR=__PM_SWITCH_DIR__
 Environment=PM_SWITCH_SCRIPT=/usr/local/sbin/pm-switch
-Environment=ENV_REPO=/srv/Code/environment
-Environment=PM_WORKTREES_ROOT=/srv/Code/environment.worktrees
-Environment=PM_WORKTREE_LOCK=/var/lib/worktree-locks/environment.lock
+Environment=ENV_REPO=__PM_REPO_ROOT__
+Environment=PM_WORKTREES_ROOT=__PM_WORKTREES_ROOT__
+Environment=PM_WORKTREE_LOCK=__PM_LOCK_FILE__
+# Non-secret, root-owned host path defaults rendered by install-pm-switch.sh.
+# Explicit Environment= values above remain backwards-compatible; the
+# PM_DEPLOY_* names in this file are used when a host overrides them.
+EnvironmentFile=-/etc/default/pm-deploy
 ExecStart=/usr/local/sbin/pm-switch-runner
 Restart=on-failure
 RestartSec=5s

@@ -16,22 +16,43 @@
 # See deploy/MULTI_AGENT_WORKTREES.md.
 set -euo pipefail
 
-WT_DIR="${PM_WORKTREES_ROOT:-/srv/Code/environment.worktrees}"
-PNPM="${PM_PNPM:-/usr/local/bin/pnpm}"
+die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+load_deploy_contract() {
+  local config=/etc/default/pm-deploy owner mode
+  [[ -e "$config" ]] || return 0
+  [[ -f "$config" && ! -L "$config" ]] || die "deployment contract is not a regular file: $config"
+  owner="$(stat -c '%u' "$config")"
+  mode="$(stat -c '%a' "$config")"
+  [[ "$owner" == 0 && $((8#$mode & 8#022)) -eq 0 ]] \
+    || die "deployment contract must be root-owned and not group/other-writable: $config"
+  # shellcheck disable=SC1091 -- fixed, root-owned host contract.
+  . "$config"
+}
+
+load_deploy_contract
+
+WT_DIR="${PM_WORKTREES_ROOT:-${PM_DEPLOY_WORKTREES_ROOT:-/srv/Code/environment.worktrees}}"
+PNPM="${PM_PNPM:-${PM_DEPLOY_PNPM_BIN:-/usr/local/bin/pnpm}}"
 PORT="${PORT:-3000}"
 HOST="${PM_HOST:-127.0.0.1}"
-PM_ENV_FILE="${PM_SYSTEM_ENV_FILE:-/etc/default/pm}"
+PM_ENV_FILE="${PM_SYSTEM_ENV_FILE:-${PM_DEPLOY_SYSTEM_ENV_FILE:-/etc/default/pm}}"
 APPLY="${PM_APPLY_HELPER:-/usr/local/sbin/pm-apply-worktree}"
-PM_DB_DIR="${PM_DB_DIR:-/srv/Data/pm}"
-PM_CANONICAL_DB="${PM_CANONICAL_DB:-$PM_DB_DIR/pm.db}"
+PM_DB_DIR="${PM_DB_DIR:-${PM_DEPLOY_DB_ROOT:-/srv/Data/pm}}"
+PM_CANONICAL_DB="${PM_CANONICAL_DB:-${PM_DEPLOY_CANONICAL_DB:-$PM_DB_DIR/pm.db}}"
+SWITCH_DIR="${PM_SWITCH_DIR:-${PM_DEPLOY_SWITCH_DIR:-/var/lib/pm/switch}}"
+MAINTENANCE_FILE="$SWITCH_DIR/.maintenance"
 
 log()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
-die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+if [[ -e "$MAINTENANCE_FILE" && "${PM_DEPLOY_MAINTENANCE_BYPASS:-0}" != 1 ]]; then
+  die "PM deployment maintenance is active; retry after $MAINTENANCE_FILE is removed"
+fi
 
 # Serialize switches and local cleanup. The installer creates this regular
 # file under a root-owned parent so shared worktree users cannot replace it.
-LOCK_FILE="${PM_WORKTREE_LOCK:-/var/lib/worktree-locks/environment.lock}"
+LOCK_FILE="${PM_WORKTREE_LOCK:-${PM_DEPLOY_WORKTREE_LOCK:-/var/lib/worktree-locks/environment.lock}}"
 [[ -f "$LOCK_FILE" && ! -L "$LOCK_FILE" ]] || die "worktree operation lock missing: $LOCK_FILE (run install-pm-switch.sh)"
 exec 9<>"$LOCK_FILE"
 flock -x 9
@@ -56,7 +77,7 @@ consumer_worktree() {
 }
 
 active_database_url() {
-  local env_file="${PM_ACTIVE_ENV_FILE:-/etc/default/pm-active-worktree}"
+  local env_file="${PM_ACTIVE_ENV_FILE:-${PM_DEPLOY_ACTIVE_ENV_FILE:-/etc/default/pm-active-worktree}}"
   if [[ -r "$env_file" ]]; then
     sed -n 's/^DATABASE_URL=//p' "$env_file" | tail -1
   elif sudo -n test -r "$env_file" 2>/dev/null; then

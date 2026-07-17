@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 const OPTIONS = ["Backlog", "In Progress", "Ready to Deploy", "Done"] as const;
@@ -15,18 +14,12 @@ export default function EpicStatusFilter({
   disabled?: boolean;
 }) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
   const selected = new Set(selectedStatuses);
-  const label = selectedStatuses.length === OPTIONS.length
-    ? "Backlog, In Progress, Ready to Deploy, Done"
-    : selectedStatuses.length === 0
-      ? "No statuses"
-      : selectedStatuses.join(", ");
 
-  function updateStatus(status: string, checked: boolean) {
+  function toggleStatus(status: string) {
     const next = new Set(selectedStatuses);
-    if (checked) next.add(status);
-    else next.delete(status);
+    if (next.has(status)) next.delete(status);
+    else next.add(status);
     const statuses = OPTIONS.filter((option) => next.has(option));
     const query = statuses.length > 0
       ? `?view=board&statuses=${encodeURIComponent(statuses.join(","))}`
@@ -35,42 +28,30 @@ export default function EpicStatusFilter({
   }
 
   return (
-    <div className="relative inline-block text-body">
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
-        className="flex min-w-64 items-center justify-between gap-3 rounded-card border border-line bg-panel px-3 py-2 text-left text-body text-text shadow-sm transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-45"
-        aria-expanded={open}
-      >
-        <span className="min-w-0">
-          <span className="block text-nano font-semibold uppercase tracking-wider text-text-muted">
-            Status filter
-          </span>
-          <span className="block truncate">{label}</span>
-        </span>
-        <span className="shrink-0 text-text-muted" aria-hidden="true">
-          {open ? "▴" : "▾"}
-        </span>
-      </button>
-      {open && !disabled ? (
-        <div className="absolute left-0 z-30 mt-2 w-full rounded-card border border-line bg-panel p-2 shadow-2xl">
-          {OPTIONS.map((status) => (
-            <label
+    <fieldset className="min-w-0 text-body" disabled={disabled}>
+      <legend className="mb-1.5 text-nano font-semibold uppercase tracking-wider text-text-muted">
+        Status filter
+      </legend>
+      <div className="flex flex-wrap gap-2" aria-label="Filter epics by status">
+        {OPTIONS.map((status) => {
+          const active = selected.has(status);
+          return (
+            <button
               key={status}
-              className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-caption text-text transition hover:bg-panel-soft"
+              type="button"
+              aria-pressed={active}
+              onClick={() => toggleStatus(status)}
+              className={
+                active
+                  ? "min-h-9 rounded-lg border border-accent bg-accent px-3 py-1.5 text-caption font-semibold text-bg shadow-[var(--shadow-xs)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45"
+                  : "min-h-9 rounded-lg border border-line bg-panel px-3 py-1.5 text-caption font-semibold text-text-muted shadow-[var(--shadow-xs)] transition hover:border-line-strong hover:bg-panel-soft hover:text-text disabled:cursor-not-allowed disabled:opacity-45"
+              }
             >
-              <input
-                type="checkbox"
-                checked={selected.has(status)}
-                onChange={(event) => updateStatus(status, event.currentTarget.checked)}
-                className="h-4 w-4 accent-accent"
-              />
-              <span>{status}</span>
-            </label>
-          ))}
-        </div>
-      ) : null}
-    </div>
+              {status}
+            </button>
+          );
+        })}
+      </div>
+    </fieldset>
   );
 }

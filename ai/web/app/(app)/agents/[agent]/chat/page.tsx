@@ -254,6 +254,7 @@ export default async function DirectAgentChatPage({
       include: {
         sender: { select: messageSenderSelect },
         deletedBy: { select: { username: true, name: true, kind: true } },
+        projects: { select: { projectId: true } },
       },
     }),
     db.directAgentChatArchive.findMany({
@@ -289,7 +290,10 @@ export default async function DirectAgentChatPage({
         include: {
           messages: {
             orderBy: { createdAt: "asc" },
-            include: { sender: { select: messageSenderSelect } },
+            include: {
+              sender: { select: messageSenderSelect },
+              deletedBy: { select: { username: true, name: true, kind: true } },
+            },
           },
         },
       })
@@ -302,8 +306,15 @@ export default async function DirectAgentChatPage({
   // The project the active conversation is attached to (carried forward),
   // the project list for the picker, and any pending work-item proposals
   // this agent submitted that are awaiting review.
-  const attachedProjectId =
-    [...activeMessages].reverse().find((m) => m.projectId)?.projectId ?? null;
+  const latestProjectMessage = [...activeMessages].reverse().find((message) => (
+    message.projects.length > 0 || Boolean(message.projectId)
+  ));
+  const attachedProjectIds = latestProjectMessage
+    ? Array.from(new Set([
+        ...(latestProjectMessage.projectId ? [latestProjectMessage.projectId] : []),
+        ...latestProjectMessage.projects.map((project) => project.projectId),
+      ]))
+    : [];
   const [projects, pendingProposalsRaw] = await Promise.all([
     db.project.findMany({
       where: { deletedAt: null },
@@ -381,6 +392,8 @@ export default async function DirectAgentChatPage({
       body: string;
       createdAt: string;
       sender: ReturnType<typeof serializeSender>;
+      deletedAt: string | null;
+      deletedBy: { username: string; name: string | null; kind: string } | null;
     }>;
   }> = [];
 
@@ -392,7 +405,10 @@ export default async function DirectAgentChatPage({
         include: {
           messages: {
             orderBy: { createdAt: "asc" },
-            include: { sender: { select: messageSenderSelect } },
+            include: {
+              sender: { select: messageSenderSelect },
+              deletedBy: { select: { username: true, name: true, kind: true } },
+            },
           },
         },
       });
@@ -405,6 +421,8 @@ export default async function DirectAgentChatPage({
             body: m.body,
             createdAt: m.createdAt.toISOString(),
             sender: serializeSender(m.sender),
+            deletedAt: m.deletedAt?.toISOString() ?? null,
+            deletedBy: m.deletedBy,
           }))
         });
       }
@@ -600,6 +618,8 @@ export default async function DirectAgentChatPage({
                 body: m.body,
                 createdAt: m.createdAt.toISOString(),
                 sender: serializeSender(m.sender),
+                deletedAt: m.deletedAt?.toISOString() ?? null,
+                deletedBy: m.deletedBy,
               }))}
               parentArchives={parentArchivesProp}
               showAgentProcessing={showAgentProcessing}
@@ -663,7 +683,7 @@ export default async function DirectAgentChatPage({
                 selectedArchiveId={selectedArchive?.id}
                 activeBaseArchiveId={activeBaseArchiveId}
                 projects={projects}
-                attachedProjectId={attachedProjectId}
+                attachedProjectIds={attachedProjectIds}
               />
             )}
           </section>

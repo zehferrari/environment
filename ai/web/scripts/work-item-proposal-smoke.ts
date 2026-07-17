@@ -122,10 +122,21 @@ async function main(): Promise<void> {
       },
     });
     const human = await prisma.user.create({
-      data: { username: "smoke-human", email: "smoke-human@smoke.test", kind: "human" },
+      data: {
+        username: "smoke-human",
+        email: "smoke-human@smoke.test",
+        kind: "human",
+        isOwner: true,
+      },
     });
     const project = await prisma.project.create({
       data: { slug: "wip-smoke", name: "WIP Smoke" },
+    });
+    const otherProject = await prisma.project.create({
+      data: { slug: "wip-smoke-other", name: "WIP Smoke Other" },
+    });
+    const otherProjectTask = await prisma.task.create({
+      data: { projectId: otherProject.id, title: "Other-project task" },
     });
     const epic = await prisma.epic.create({
       data: { projectId: project.id, title: "Existing Epic", status: "In Progress" },
@@ -246,6 +257,13 @@ async function main(): Promise<void> {
         grantPayload.systemPrompt.includes(expectedCommentToken),
       grantPayload?.systemPrompt?.slice(-1600),
     );
+    check(
+      "proposal grant documents blockedBy create/update semantics",
+      !!grantPayload?.systemPrompt?.includes("create_task    { ref, title, description?, epic?, blockedBy? }")
+        && grantPayload.systemPrompt.includes("update_task    { target, title?, description?, assignee?, actingManager?, epic?, parent?, blockedBy?, status? }")
+        && grantPayload.systemPrompt.includes("null clears it on update_task"),
+      grantPayload?.systemPrompt?.slice(-2200),
+    );
 
     // --- root-level shape errors ---
     expectRootError("not an array", await validateProposal(P, {} as unknown, actor), "array");
@@ -289,6 +307,30 @@ async function main(): Promise<void> {
     });
     expectOk("existing epic task sequence allows additional planned tasks", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: approvedEpic.id }], actor));
     expectOpError("bogus epic id", await validateProposal(P, [{ op: "create_task", ref: "tmp:t1", title: "X", epic: "c_nope" }], actor), 0, "not found");
+    expectOk("create task may use an existing blocker", await validateProposal(P, [
+      { op: "create_task", ref: "tmp:dependent", title: "Dependent", blockedBy: tDone.id },
+    ], actor));
+    expectOk("create task may use a same-proposal task blocker", await validateProposal(P, [
+      { op: "create_task", ref: "tmp:blocker", title: "Blocker" },
+      { op: "create_task", ref: "tmp:dependent", title: "Dependent", blockedBy: "tmp:blocker" },
+    ], actor));
+    expectOk("update task may use a same-proposal task blocker", await validateProposal(P, [
+      { op: "create_task", ref: "tmp:blocker", title: "Blocker" },
+      { op: "update_task", target: tTodo.id, blockedBy: "tmp:blocker" },
+    ], actor));
+    expectOpError("blockedBy requires a declared task ref", await validateProposal(P, [
+      { op: "create_task", ref: "tmp:dependent", title: "Dependent", blockedBy: "tmp:missing" },
+    ], actor), 0, "not declared by a create_task");
+    expectOpError("create task cannot block itself", await validateProposal(P, [
+      { op: "create_task", ref: "tmp:self", title: "Self", blockedBy: "tmp:self" },
+    ], actor), 0, "blocked by itself");
+    expectOpError("same-proposal task dependency cycle is rejected", await validateProposal(P, [
+      { op: "create_task", ref: "tmp:first", title: "First", blockedBy: "tmp:second" },
+      { op: "create_task", ref: "tmp:second", title: "Second", blockedBy: "tmp:first" },
+    ], actor), 0, "circular block");
+    expectOpError("cross-project blocker is hidden", await validateProposal(P, [
+      { op: "create_task", ref: "tmp:dependent", title: "Dependent", blockedBy: otherProjectTask.id },
+    ], actor), 0, "not found in this project");
     expectOpError("subtask requires parent", await validateProposal(P, [{ op: "create_subtask", ref: "tmp:s1", title: "X" }], actor), 0, "parent");
     expectOk("subtask under new task allowed", await validateProposal(P, [
       { op: "create_task", ref: "tmp:t1", title: "Task", epic: approvedEpic.id },
@@ -322,6 +364,21 @@ async function main(): Promise<void> {
     expectOk("allowed transition To Do→In Progress", await validateProposal(P, [{ op: "update_task", target: tTodo.id, status: "In Progress" }], actor));
     expectOpError("invalid task status", await validateProposal(P, [{ op: "update_task", target: tTodo.id, status: "Frozen" }], actor), 0, "unknown task status");
     expectOpError("update unknown task", await validateProposal(P, [{ op: "update_task", target: "c_nope", status: "In Progress" }], actor), 0, "not found");
+
+    // --- hard dependencies ---
+    expectOk("update task may set an existing blocker", await validateProposal(P, [
+      { op: "update_task", target: tTodo.id, blockedBy: tDone.id },
+    ], actor));
+    expectOk("update task may clear a blocker with null", await validateProposal(P, [
+      { op: "update_task", target: tTodo.id, blockedBy: null },
+    ], actor));
+    expectOpError("update task cannot block itself", await validateProposal(P, [
+      { op: "update_task", target: tTodo.id, blockedBy: tTodo.id },
+    ], actor), 0, "blocked by itself");
+    expectOpError("multi-operation dependency cycle is rejected", await validateProposal(P, [
+      { op: "update_task", target: tTodo.id, blockedBy: tDone.id },
+      { op: "update_task", target: tDone.id, blockedBy: tTodo.id },
+    ], actor), 1, "circular block");
 
     // --- parent + comment rules ---
     expectOpError("self-parent blocked", await validateProposal(P, [{ op: "update_task", target: tTodo.id, parent: tTodo.id }], actor), 0, "own parent");
@@ -370,7 +427,9 @@ async function main(): Promise<void> {
 
     const applyOps = [
       { op: "create_epic", ref: "tmp:e", title: "Smoke Epic", description: "from smoke" },
-      { op: "create_task", ref: "tmp:t", title: "Smoke Task", epic: approvedApplyEpic.id },
+      { op: "create_task", ref: "tmp:blocker", title: "Smoke Blocker", epic: approvedApplyEpic.id },
+      { op: "create_task", ref: "tmp:t", title: "Smoke Task", epic: approvedApplyEpic.id, blockedBy: "tmp:blocker" },
+      { op: "update_task", target: tTodo.id, blockedBy: "tmp:blocker" },
       { op: "create_subtask", ref: "tmp:s", parent: approvedApplyParent.id, title: "Smoke Sub" },
       { op: "comment_task", target: tTodo.id, body: "smoke comment" },
     ];
@@ -388,10 +447,11 @@ async function main(): Promise<void> {
     const applyResult = await commitProposal(applyProposal.id, human.id);
     check("apply ok", applyResult.ok, applyResult);
     check(
-      "apply counts (1 epic, 1 task, 1 subtask, 1 comment)",
+      "apply counts (1 epic, 2 tasks, 1 subtask, 1 update, 1 comment)",
       applyResult.counts.epics === 1 &&
-        applyResult.counts.tasks === 1 &&
+        applyResult.counts.tasks === 2 &&
         applyResult.counts.subtasks === 1 &&
+        applyResult.counts.updates === 1 &&
         applyResult.counts.comments === 1,
       applyResult.counts,
     );
@@ -400,16 +460,32 @@ async function main(): Promise<void> {
     check("epic created", !!createdEpic);
     const createdTask = await prisma.task.findFirst({
       where: { projectId: P, title: { contains: "Smoke Task" } },
-      select: { id: true, epicId: true, assigneeId: true, status: true },
+      select: {
+        id: true,
+        epicId: true,
+        assigneeId: true,
+        status: true,
+        blockedBy: { select: { id: true, title: true } },
+      },
     });
     check("task created in Backlog", createdTask?.status === "Backlog", createdTask);
     check("task linked to approved apply epic", !!createdTask && createdTask.epicId === approvedApplyEpic.id, createdTask);
     check("agent-created task is unassigned", createdTask?.assigneeId === null, createdTask);
-    const createdSub = await prisma.task.findFirst({
-      where: { projectId: P, title: "Smoke Sub" },
-      select: { id: true, parentTaskId: true },
+    check("created task resolves its tmp blocker", createdTask?.blockedBy?.title.includes("Smoke Blocker") === true, createdTask);
+    const createdBlocker = await prisma.task.findFirst({
+      where: { projectId: P, title: { contains: "Smoke Blocker" } },
+      select: { id: true },
     });
-    check("subtask parented under approved task", !!createdSub && createdSub.parentTaskId === approvedApplyParent.id, createdSub);
+    const updatedBlockedTask = await prisma.task.findUnique({
+      where: { id: tTodo.id },
+      select: { blockedById: true },
+    });
+    check("updated task resolves its tmp blocker", !!createdBlocker && updatedBlockedTask?.blockedById === createdBlocker.id, updatedBlockedTask);
+    const createdSub = await prisma.subTask.findFirst({
+      where: { taskId: approvedApplyParent.id, text: { contains: "Smoke Sub" } },
+      select: { id: true, taskId: true },
+    });
+    check("subtask parented under approved task", !!createdSub && createdSub.taskId === approvedApplyParent.id, createdSub);
     const smokeComment = await prisma.comment.findFirst({
       where: { taskId: tTodo.id, body: "smoke comment" },
       select: { userId: true },
@@ -435,6 +511,28 @@ async function main(): Promise<void> {
       select: { id: true },
     });
     check("epic.create activity is the agent's", !!epicCreateActivity);
+    const blockedByActivities = await prisma.activityLog.count({
+      where: { kind: "task.blocked_by", userId: agentUser.id },
+    });
+    check("create and update blockers write task.blocked_by activity", blockedByActivities === 2, blockedByActivities);
+
+    const clearProposal = await prisma.workItemProposal.create({
+      data: {
+        planId: `clear-blocker-${randomUUID()}`,
+        projectId: P,
+        agentSlug: agent.slug,
+        proposedByUserId: agentUser.id,
+        status: "pending",
+        operations: JSON.stringify([{ op: "update_task", target: tTodo.id, blockedBy: null }]),
+      },
+      select: { id: true },
+    });
+    const clearResult = await commitProposal(clearProposal.id, human.id);
+    check("blockedBy null apply clears the dependency", clearResult.ok && clearResult.counts.updates === 1, clearResult);
+    check(
+      "cleared task has no blocker",
+      (await prisma.task.findUnique({ where: { id: tTodo.id }, select: { blockedById: true } }))?.blockedById === null,
+    );
 
     const reapply = await commitProposal(applyProposal.id, human.id);
     check("re-apply blocked (already applied)", !reapply.ok && (reapply.error ?? "").includes("already"), reapply);

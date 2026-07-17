@@ -21,6 +21,9 @@ import DeletedMessageDivider from "@/components/deleted-message-divider";
 import { findPmOptionResolution, parsePmOptions } from "@/lib/pm-options";
 import { generateClientMessageId } from "@/lib/agents/ops/client-message-id";
 import { getMessageGroupState, messageParticipantKey } from "@/lib/agents/chat/message-grouping";
+import DiscussionRecipientPicker, {
+  type DiscussionTarget,
+} from "@/components/discussion-recipient-picker";
 
 interface Message {
   id: string;
@@ -48,13 +51,6 @@ type ComposerDraftSnapshot = {
   body: string;
   files: File[];
 };
-
-interface DiscussionTarget {
-  value: string;
-  label: string;
-  group: "Groups" | "Users" | "Agents";
-  actor?: MessageActor | null;
-}
 
 interface ChatRoomProps {
   projectSlug: string;
@@ -688,13 +684,6 @@ export default function ChatRoom({
     { value: "all-coders", label: "All Coders", group: "Groups" },
     ...discussionTargets,
   ];
-  const selectedTargetOptions = selectedTargets
-    .map((value) => targetOptions.find((target) => target.value === value))
-    .filter((target): target is DiscussionTarget => Boolean(target));
-  const targetButtonLabel = selectedTargetOptions.length === 0
-    ? "Default recipient"
-    : selectedTargetOptions.map((target) => target.label).join(", ");
-
   useEffect(() => {
     if (!composerOpen || viewingArchive || selectedArchiveDeleted) return;
     if (!messageText.trim() && selectedFilesCount === 0) return;
@@ -714,22 +703,6 @@ export default function ChatRoom({
     }, 350);
     return () => window.clearTimeout(timeout);
   }, [composerOpen, draftMessageId, epicId, messageText, projectSlug, selectedArchiveDeleted, selectedFilesCount, selectedTargets, taskId, viewingArchive]);
-
-  function toggleTarget(target: DiscussionTarget) {
-    setSelectedTargets((current) => {
-      if (target.group === "Groups") {
-        return current.includes(target.value) ? [] : [target.value];
-      }
-      const withoutGroups = current.filter((value) => {
-        const option = targetOptions.find((candidate) => candidate.value === value);
-        return option?.group !== "Groups";
-      });
-      if (withoutGroups.includes(target.value)) {
-        return withoutGroups.filter((value) => value !== target.value);
-      }
-      return [...withoutGroups, target.value];
-    });
-  }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1345,82 +1318,13 @@ export default function ChatRoom({
                   </button>
                 </div>
 
-                <div className="relative text-caption text-text-muted">
-                  <div className="mb-1 flex items-center justify-between gap-2">
-                    <span className="font-semibold">To</span>
-                    {selectedTargets.length > 0 ? (
-                      <button
-                        type="button"
-                        onClick={() => setSelectedTargets([])}
-                        className="text-nano font-semibold uppercase tracking-wider text-text-muted hover:text-accent"
-                      >
-                        Clear
-                      </button>
-                    ) : null}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setTargetPickerOpen((open) => !open)}
-                    className="flex min-h-10 w-full items-center justify-between gap-3 rounded-card border border-line bg-bg px-3 py-2 text-left text-caption text-text outline-none transition hover:border-accent"
-                    aria-expanded={targetPickerOpen}
-                  >
-                    <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-                      {selectedTargetOptions.length === 0 ? (
-                        <span className="text-text-muted">Default recipient</span>
-                      ) : selectedTargetOptions.map((target) => (
-                        <span
-                          key={target.value}
-                          className="inline-flex min-w-0 items-center gap-1.5 rounded-full border border-line bg-panel px-2 py-1"
-                        >
-                          {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-11 w-11 place-items-center rounded-full border border-line text-nano font-semibold md:h-7 md:w-7">G</span>}
-                          <span className="max-w-[9rem] truncate">{target.label}</span>
-                        </span>
-                      ))}
-                    </span>
-                    <span className="shrink-0 text-text-muted" aria-hidden="true">
-                      {targetPickerOpen ? "▴" : "▾"}
-                    </span>
-                  </button>
-                  <span className="sr-only">{targetButtonLabel}</span>
-                  {targetPickerOpen ? (
-                    <div className="absolute bottom-full left-0 z-30 mb-2 max-h-72 w-full overflow-y-auto rounded-card border border-line bg-panel p-2 shadow-2xl">
-                      {["Groups", "Users", "Agents"].map((group) => {
-                        const options = targetOptions.filter((target) => target.group === group);
-                        if (options.length === 0) return null;
-                        return (
-                          <div key={group} className="py-1">
-                            <div className="px-2 pb-1 text-nano font-semibold uppercase tracking-wider text-text-muted">
-                              {group}
-                            </div>
-                            <div className="space-y-1">
-                              {options.map((target) => {
-                                const selected = selectedTargets.includes(target.value);
-                                return (
-                                  <button
-                                    key={target.value}
-                                    type="button"
-                                    onClick={() => toggleTarget(target)}
-                                    className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition ${
-                                      selected
-                                        ? "bg-accent/[0.12] text-text"
-                                        : "text-text-muted hover:bg-panel-soft hover:text-text"
-                                    }`}
-                                  >
-                                    {target.actor ? <MessageAvatar actor={target.actor} size="sm" /> : <span className="grid h-11 w-11 place-items-center rounded-full border border-line text-nano font-semibold md:h-7 md:w-7">G</span>}
-                                    <span className="min-w-0 flex-1 truncate">{target.actor ? actorDisplayName(target.actor) : target.label}</span>
-                                    <span className="text-nano font-semibold uppercase tracking-wider">
-                                      {selected ? "Selected" : target.group}
-                                    </span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                </div>
+                <DiscussionRecipientPicker
+                  options={targetOptions}
+                  values={selectedTargets}
+                  onChange={setSelectedTargets}
+                  open={targetPickerOpen}
+                  onOpenChange={setTargetPickerOpen}
+                />
 
                 <MaximizableTextarea
                   ref={textareaRef}

@@ -26,6 +26,7 @@ export default function AvatarCombobox({
   multiple = false,
   defaultValues,
   onChangeMultiple,
+  maxSelections,
 }: {
   name: string;
   formId: string;
@@ -44,6 +45,9 @@ export default function AvatarCombobox({
   multiple?: boolean;
   defaultValues?: string[];
   onChangeMultiple?: (values: string[]) => void;
+  // Optional hard UI limit for bounded multi-select contexts. The server must
+  // enforce the same limit because hidden inputs are user-controlled.
+  maxSelections?: number;
 }) {
   const [value, setValue] = useState(defaultValue ?? "");
   const [values, setValues] = useState<string[]>(defaultValues ?? []);
@@ -134,6 +138,9 @@ export default function AvatarCombobox({
 
   function toggleValue(next: string, checked: boolean) {
     setValues((current) => {
+      if (checked && maxSelections && current.length >= maxSelections && !current.includes(next)) {
+        return current;
+      }
       const updated = checked
         ? current.includes(next) ? current : [...current, next]
         : current.filter((v) => v !== next);
@@ -235,8 +242,14 @@ export default function AvatarCombobox({
                         {emptyLabel}
                       </button>
                     ) : null}
+                    {maxSelections ? (
+                      <div className="px-2 py-1 text-nano text-text-muted">
+                        {values.length} of {maxSelections} selected
+                      </div>
+                    ) : null}
                     {filtered.map((option) => {
                       const checked = selectedSet.has(option.value);
+                      const limitReached = Boolean(maxSelections && values.length >= maxSelections && !checked);
                       return (
                         <label
                           key={option.value}
@@ -249,13 +262,17 @@ export default function AvatarCombobox({
                           <input
                             type="checkbox"
                             checked={checked}
+                            disabled={limitReached}
                             onChange={(event) => toggleValue(option.value, event.currentTarget.checked)}
-                            className="h-6 w-6 accent-text-accent md:h-3.5 md:w-3.5"
+                            className="h-6 w-6 accent-text-accent disabled:cursor-not-allowed disabled:opacity-40 md:h-3.5 md:w-3.5"
                           />
                           {option.actor ? <MessageAvatar actor={option.actor} size="sm" /> : null}
                           <span className="min-w-0 flex-1 truncate">
                             {option.actor ? actorDisplayName(option.actor) : option.label}
                           </span>
+                          {limitReached ? (
+                            <span className="text-nano uppercase tracking-wider text-text-muted">Limit reached</span>
+                          ) : null}
                         </label>
                       );
                     })}

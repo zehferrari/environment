@@ -29,6 +29,7 @@ import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { MAX_SUBTASK_TEXT } from "@/lib/tasks/subtasks";
+import { validateBlockedBy } from "@/lib/tasks/blocking";
 
 type RawOp = Record<string, unknown>;
 
@@ -249,6 +250,7 @@ export async function commitProposal(
       const depsOf = (op: RawOp): string[] => {
         const deps: string[] = [];
         if (op.op === "create_task" && typeof op.epic === "string" && op.epic.startsWith("tmp:")) deps.push(op.epic);
+        if (op.op === "create_task" && typeof op.blockedBy === "string" && op.blockedBy.startsWith("tmp:")) deps.push(op.blockedBy);
         if (op.op === "create_subtask" && typeof op.parent === "string" && op.parent.startsWith("tmp:")) deps.push(op.parent);
         return deps;
       };
@@ -333,6 +335,7 @@ export async function commitProposal(
             });
           } else {
             const epicId = op.epic !== undefined ? resolveRef(op.epic) : null;
+            const blockedById = op.blockedBy !== undefined ? resolveRef(op.blockedBy) : null;
             let inheritedBranchName: string | null = null;
             let inheritedCommitPrefix: string | null = null;
             if (epicId) {
@@ -378,6 +381,44 @@ export async function commitProposal(
               select: { id: true, title: true, assigneeId: true },
             });
             refToId.set(ref, task.id);
+            let blockedByKey: string | null = null;
+            if (blockedById) {
+              // Re-check the proposal visibility/lifecycle rules inside the
+              // write transaction. The blocker may have been archived or made
+              // private after the pre-transaction proposal revalidation.
+              const blocker = await tx.task.findFirst({
+                where: {
+                  id: blockedById,
+                  projectId,
+                  private: false,
+                  archivedAt: null,
+                  deletedAt: null,
+                  AND: [
+                    { OR: [{ epicId: null }, { epic: { private: false } }] },
+                    {
+                      OR: [
+                        { parentTaskId: null },
+                        { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
+                      ],
+                    },
+                  ],
+                },
+                select: { workItemKey: true },
+              });
+              if (!blocker) throw new Error("Blocking task not found in this project");
+              const check = await validateBlockedBy({
+                taskId: task.id,
+                projectId,
+                blockerId: blockedById,
+                client: tx,
+              });
+              if (!check.ok) throw new Error(check.message);
+              blockedByKey = blocker.workItemKey ?? null;
+              await tx.task.update({
+                where: { id: task.id },
+                data: { blockedById },
+              });
+            }
             counts.tasks++;
             createdItems.push({
               kind: "task",
@@ -394,6 +435,17 @@ export async function commitProposal(
                 payload: JSON.stringify({ title: task.title, epicId, proposalId: proposal.id }),
               },
             });
+            if (blockedById) {
+              await tx.activityLog.create({
+                data: {
+                  projectId,
+                  taskId: task.id,
+                  userId: agentId,
+                  kind: "task.blocked_by",
+                  payload: JSON.stringify({ from: null, to: blockedByKey, proposalId: proposal.id }),
+                },
+              });
+            }
           }
           pending.splice(k, 1);
           progressed = true;
@@ -456,8 +508,10 @@ export async function commitProposal(
             select: {
               id: true, title: true, description: true, status: true, epicId: true, parentTaskId: true,
               assigneeId: true, actingManagerId: true, reporterId: true, approvedOn: true, alertReporter: true,
+              blockedById: true,
               assignee: { select: { username: true } },
               actingManager: { select: { username: true } },
+              blockedBy: { select: { workItemKey: true } },
               epic: { select: { status: true, actingManagerId: true } },
             },
           });
@@ -497,6 +551,76 @@ export async function commitProposal(
             if (parentTaskId !== task.parentTaskId) {
               data.parentTaskId = parentTaskId;
               logs.push({ kind: "task.update", payload: { taskId: id, parentTaskId, proposalId: proposal.id } });
+            }
+          }
+          if (op.blockedBy !== undefined) {
+            const blockedById = resolveRef(op.blockedBy);
+            // Match the human editor's hidden-current-blocker guard at the
+            // actual mutation boundary. Lifecycle filters are intentionally
+            // omitted for the current edge so a still-visible archived blocker
+            // may be disconnected, while a newly private edge cannot be
+            // changed by a proposal that was validated before that transition.
+            if (task.blockedById) {
+              const visibleCurrentBlocker = await tx.task.findFirst({
+                where: {
+                  id: task.blockedById,
+                  projectId,
+                  private: false,
+                  AND: [
+                    { OR: [{ epicId: null }, { epic: { private: false } }] },
+                    {
+                      OR: [
+                        { parentTaskId: null },
+                        { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
+                      ],
+                    },
+                  ],
+                },
+                select: { id: true },
+              });
+              if (!visibleCurrentBlocker) throw new Error("blockedBy is not editable for this task");
+            }
+            if (blockedById !== task.blockedById) {
+              let blockedByKey: string | null = null;
+              if (blockedById) {
+                const blocker = await tx.task.findFirst({
+                  where: {
+                    id: blockedById,
+                    projectId,
+                    private: false,
+                    archivedAt: null,
+                    deletedAt: null,
+                    AND: [
+                      { OR: [{ epicId: null }, { epic: { private: false } }] },
+                      {
+                        OR: [
+                          { parentTaskId: null },
+                          { parent: { private: false, OR: [{ epicId: null }, { epic: { private: false } }] } },
+                        ],
+                      },
+                    ],
+                  },
+                  select: { workItemKey: true },
+                });
+                if (!blocker) throw new Error("Blocking task not found in this project");
+                const check = await validateBlockedBy({
+                  taskId: task.id,
+                  projectId,
+                  blockerId: blockedById,
+                  client: tx,
+                });
+                if (!check.ok) throw new Error(check.message);
+                blockedByKey = blocker.workItemKey ?? null;
+              }
+              data.blockedById = blockedById;
+              logs.push({
+                kind: "task.blocked_by",
+                payload: {
+                  from: task.blockedBy?.workItemKey ?? null,
+                  to: blockedByKey,
+                  proposalId: proposal.id,
+                },
+              });
             }
           }
 

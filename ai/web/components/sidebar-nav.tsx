@@ -188,6 +188,7 @@ function NavItem({
   color,
   collapsed,
   active = false,
+  badge = false,
 }: {
   href: string;
   icon: React.ReactNode;
@@ -195,6 +196,7 @@ function NavItem({
   color: TileColor;
   collapsed: boolean;
   active?: boolean;
+  badge?: boolean;
 }) {
   return (
     <Link
@@ -205,7 +207,15 @@ function NavItem({
         active ? "bg-accent-soft text-accent shadow-[inset_3px_0_0_var(--color-accent)]" : "text-text-muted"
       } ${collapsed ? "justify-center px-0" : "px-3"}`}
     >
-      <NavTile icon={icon} color={color} />
+      <span className="relative shrink-0">
+        <NavTile icon={icon} color={color} />
+        {badge ? (
+          <span
+            className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-panel bg-red-500"
+            aria-label="Unread messages"
+          />
+        ) : null}
+      </span>
       {!collapsed ? <span className="truncate">{label}</span> : null}
     </Link>
   );
@@ -282,6 +292,7 @@ export default function SidebarNav({
   const visibleAgents = workspaceFilter && activeWorkspaceAgentSlugs.length > 0
     ? agents.filter((agent) => activeWorkspaceAgentSlugs.includes(agent.slug))
     : agents;
+  const busyAgents = visibleAgents.filter((agent) => agent.status === "busy");
   const hasUnreadAgents = visibleAgents.some((agent) => agent.unread);
   const assignedProjectSlugs = new Set(workspaces.flatMap((workspace) => workspace.projects.map((project) => project.slug)));
   const unassignedProjects = projects.filter((project) => !assignedProjectSlugs.has(project.slug));
@@ -446,7 +457,7 @@ export default function SidebarNav({
 
         {canViewAgents ? <>
         <div className="my-4 border-t border-line" />
-        <div className="space-y-1">
+        <div className="group/agents space-y-1">
           <NavItem
             href="/agents"
             icon={icons.agents}
@@ -454,18 +465,22 @@ export default function SidebarNav({
             color={NAV_COLORS.agents}
             collapsed={collapsed}
             active={isAgentsActive}
+            badge={hasUnreadAgents}
           />
           {visibleAgents.map((agent) => {
             const href = `/agents/${agent.slug}/chat`;
             const active = pathname?.startsWith(`/agents/${agent.slug}`);
+            const busy = agent.status === "busy";
             return (
               <Link
                 key={agent.slug}
                 href={href}
                 title={collapsed ? `${agent.name} · ${agent.status}` : undefined}
-                className={`flex items-center gap-3 rounded-lg py-1.5 transition-[background-color,color,box-shadow] hover:bg-accent-soft hover:text-accent ${
+                className={`items-center gap-3 rounded-lg py-1.5 transition-[background-color,color,box-shadow] hover:bg-accent-soft hover:text-accent ${
                   active ? "bg-accent-soft text-accent shadow-[inset_3px_0_0_var(--color-accent)]" : "text-text-muted"
-                } ${collapsed ? "justify-center px-0" : "px-3"}`}
+                } ${collapsed ? "justify-center px-0" : "px-3"} ${
+                  busy ? "flex" : "hidden group-hover/agents:flex group-focus-within/agents:flex"
+                }`}
               >
                 {/* Avatar: busy → discreet pulsing ring (opacity only, kept
                     within bounds so the collapsed rail never scrolls);
@@ -517,6 +532,11 @@ export default function SidebarNav({
               </Link>
             );
           })}
+          {busyAgents.length === 0 && !collapsed ? (
+            <p className="rounded-lg px-3 py-2 text-caption text-text-muted group-hover/agents:hidden group-focus-within/agents:hidden">
+              {visibleAgents.length === 0 ? "No agents available." : "No agents are busy."}
+            </p>
+          ) : null}
         </div>
         </> : null}
       </nav>

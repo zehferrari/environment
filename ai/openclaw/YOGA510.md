@@ -15,23 +15,90 @@ Yoga510 is a new agent instance. It shares selected operating behaviour with thi
 
 ## Runtime Layout
 
-- Environment repo: `/home/rachael/Code/environment` (kept outside the samba-backed `/srv` tree).
-- Shared OpenClaw docs and skills: `/home/rachael/Code/environment/ai/openclaw`.
-- Agent users access the repo through group/ACL permissions on `/home/rachael/Code`; each agent has `~/Code -> /home/rachael/Code`.
+- Canonical environment checkout: `/srv/Code/environment`.
+- Active managed deployment worktree: `/srv/Code/environment.worktrees/main`.
+  Mission Control and the reconciled OpenClaw files are deployed from this
+  worktree, not from the canonical checkout.
+- The owner checkout `/home/rachael/Code/environment` is also present for
+  owner-side compatibility. It is never the deployment or shared-document
+  reconciliation source.
+- Shared OpenClaw docs and skills in the active deployment:
+  `/srv/Code/environment.worktrees/main/ai/openclaw`.
+- Repository access is shared through the `code-agents` group and ACLs.
 - Agent registry: `/etc/openclaw/agents.json` -> `/srv/agents/index.json`. The live file uses the same registry schema as thinkpad (`version`, `description`, `sharedKnowledgeDir`, `agents`), with yoga510 users and paths.
-- Dashboard config: `/etc/agent-dashboard/config.json`.
-- Dashboard source files and nginx web root: `/home/rachael/Code/environment/ai/web`.
-- Nginx serves `agents.html` directly from the repo checkout; stale `/srv/www/agents*.html` deployment copies are not used on yoga510.
+- Mission Control app source: `/srv/Code/environment.worktrees/main/ai/web`.
+- Mission Control database: `file:/srv/Data/pm/wt-main.db`.
+- Legacy agent-dashboard config: `/etc/agent-dashboard/config.json`.
 - Agent avatars are served by nginx from `/srv/agents/Pictures/<Name>/avatar.png` through `/agents/avatars/<Name>`.
 - Agent workspaces: `/home/{ada,claudia,emery}/workspace`.
 - Agent state: `/home/{ada,claudia,emery}/.openclaw`.
+
+## Mission Control and Legacy Dashboard
+
+Yoga510 deliberately has two different web interfaces:
+
+- **Mission Control** is the current Next.js PM application at
+  `https://agents.eurekafiles.com`. Nginx proxies it to
+  `127.0.0.1:3000`; the host-wide `pm.service` and
+  `pm-consumer.service` both run as `emery` from the active managed
+  worktree.
+- **Agent dashboard** is the older read-only activity page at
+  `https://dev.eurekafiles.com`. It remains available through
+  `agent-dashboard.service` on `127.0.0.1:3013`; it is not the PM UI and
+  must not replace the `agents.eurekafiles.com` upstream.
+
+The application, lockfile, Prisma migration history, service templates,
+worktree switcher, maintenance page, nginx template, and native PM-channel
+installer are all tracked under [`../web/`](../web/). Host secrets remain in
+`/etc/default/pm` and `/etc/openclaw/`; never copy them into the repository.
+The complete first-install procedure is
+[`../web/deploy/README.md`](../web/deploy/README.md).
+
+For a normal yoga510 release, use the guarded root entry point. It runs Git and
+the frozen dependency install as the repository owner, refreshes the installed
+helpers/host contract, and runs the migrate/build/switch as the monitor user:
+
+```bash
+sudo /srv/Code/environment.worktrees/main/ai/web/deploy/update-managed-host.sh \
+  --worktree /srv/Code/environment.worktrees/main \
+  --repo-user rachael --monitor-user emery --branch main
+```
+
+The updater refuses dirty, local-ahead, detached, or diverged worktrees and
+never resets or commits local work. Its final `pm-switch` step applies committed
+Prisma migrations to `/srv/Data/pm/wt-main.db`, builds the standalone
+application, points both PM services at the same worktree/database, restarts
+them, and checks the login page and one hashed asset. Do not run `prisma db
+push` against this database, and do not run `next build` without the
+switch/restart step.
+
+Every local OpenClaw gateway used by Mission Control must bind to loopback.
+Nginx may expose an authenticated gateway control UI, but it must not proxy
+`/hooks`, `/pm-channel`, or any subpath of either internal endpoint.
+
+After a release, verify both the local runtime and public route:
+
+```bash
+/usr/local/sbin/pm-switch status
+systemctl is-active pm.service pm-consumer.service agent-dashboard.service
+curl -fsS -o /dev/null http://127.0.0.1:3000/login
+curl -fsS -o /dev/null https://agents.eurekafiles.com/login
+```
+
+Re-run `ai/openclaw/install.sh` from the active worktree when a release changes
+PM/OpenClaw unit templates, gateway hooks, or the native PM-channel plugin.
+Re-run `deploy/install-pm-switch.sh` whenever a tracked switch helper changes;
+updating only the Git worktree does not refresh its installed
+`/usr/local/sbin` copies.
 
 ## Mail
 
 Yoga510 does not use Gmail/Google watchers. Agent email is local-first:
 
 - Incoming mail: `~/Maildir` via Postfix local delivery.
-- Reading/listing/replying: `~/workspace/mail`, symlinked to `skills/local-mail`.
+- Reading/listing/replying: `~/workspace/mail`, linked from the authoritative
+  active-worktree source at
+  `/srv/Code/environment.worktrees/main/ai/openclaw/skills/local-mail`.
 - Outgoing mail: local Postfix through `/usr/sbin/sendmail -oi -t`.
 - Listener service: `openclaw-mail-listener.service` writes events to `~/.openclaw/mail/events.jsonl` and wakes the agent for unread allowlisted mail through `sudo -n /usr/local/sbin/openclaw-control wake-agent <self>`.
 - Sudoers: `/etc/sudoers.d/openclaw-mail-self-wake` gives `ada`, `claudia`, and `emery` permission to run only their own `wake-agent` command. Keep the broader monitor control rule separate.
@@ -115,6 +182,8 @@ Per agent user services:
 
 Host services:
 
+- `pm.service` on `127.0.0.1:3000` (Mission Control, runtime user `emery`)
+- `pm-consumer.service` (Mission Control event consumer, runtime user `emery`)
 - `agent-dashboard.service` on `127.0.0.1:3013`
 - `openclaw-typing-keepalive.service`
 - `openclaw-backup.timer`
@@ -122,8 +191,8 @@ Host services:
 
 Gateway ports:
 
-- Ada: `18789` on LAN
-- Claudia: `18790` on LAN
+- Ada: `18789` loopback only
+- Claudia: `18790` loopback only
 - Emery: `18793` loopback only
 
 ## Validation
@@ -132,6 +201,10 @@ Run:
 
 ```bash
 /usr/local/bin/openclaw-integrity-check
+/usr/local/sbin/pm-switch status
+systemctl is-active pm.service pm-consumer.service
 ```
 
-Expected result after install: `warn=0 fail=0`.
+Expected integrity result after install: `warn=0 fail=0`. Confirm all three
+gateway ports listen on `127.0.0.1`/`::1`, and confirm the nginx vhosts do not
+route `/hooks`, `/pm-channel`, or any subpath of either endpoint.

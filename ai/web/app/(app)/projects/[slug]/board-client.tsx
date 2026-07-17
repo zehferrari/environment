@@ -1483,7 +1483,7 @@ function MobileTaskCard({
           data-selected={selected ? "true" : "false"}
           className={`${taskCardClass(task, false, compact, false)} min-w-[calc(100%-9rem)] touch-auto`}
         >
-          <div className={`relative z-10 ${compact ? "space-y-1" : "space-y-2"}`}>
+          <div className={`relative z-10 ${compact ? "space-y-0.5" : "space-y-2"}`}>
             <div className="flex items-start justify-between gap-2">
               <div className="flex min-w-0 items-start gap-2">
                 <input
@@ -1502,16 +1502,22 @@ function MobileTaskCard({
                   href={taskHref(task, projectSlug)}
                   className="min-w-0 flex-1 rounded-sm text-text hover:text-accent"
                 >
-                  <ProjectMetaLine task={task} />
-                  <div className="flex min-w-0 items-center gap-1.5 text-micro text-text-muted">
-                    {actor ? <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} /> : null}
-                    <span className="truncate font-mono uppercase tracking-wider">
-                      {task.workItemKey ?? "—"}
-                    </span>
-                    {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
-                  </div>
-                  <div className={`${compact ? "line-clamp-1" : "line-clamp-2"} mt-1 text-body font-medium leading-snug`}>{task.title}</div>
-                  {task.epicTitle ? (
+                  {compact ? (
+                    <CompactTaskMeta task={task} />
+                  ) : (
+                    <>
+                      <ProjectMetaLine task={task} />
+                      <div className="flex min-w-0 items-center gap-1.5 text-micro text-text-muted">
+                        {actor ? <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} /> : null}
+                        <span className="truncate font-mono uppercase tracking-wider">
+                          {task.workItemKey ?? "—"}
+                        </span>
+                        {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
+                      </div>
+                    </>
+                  )}
+                  <div className={`${compact ? "mt-0.5 line-clamp-1 text-caption" : "mt-1 line-clamp-2 text-body"} font-medium leading-snug`}>{task.title}</div>
+                  {!compact && task.epicTitle ? (
                     <div className="mt-1 truncate text-caption text-text-muted">{task.epicTitle}</div>
                   ) : null}
                 </Link>
@@ -1543,7 +1549,12 @@ function MobileTaskCard({
                 </button>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-micro text-text-muted">
+            <div className={`flex min-w-0 items-center text-micro text-text-muted ${compact ? "gap-1.5 overflow-hidden border-t border-line/60 pt-1" : "flex-wrap gap-2"}`}>
+              {compact && actor ? (
+                <span className="min-w-0 flex-1 truncate" title={actorDisplayName(actor)}>
+                  {actorDisplayName(actor)}
+                </span>
+              ) : null}
               <ElapsedClock task={task} now={now} />
               <SubtaskProgress task={task} />
               <time dateTime={task.updatedAt} title={task.updatedAt} className="tabular-nums" suppressHydrationWarning>
@@ -1634,7 +1645,7 @@ function ColumnDroppable({
           {count}
         </span>
       </div>
-      <div className={compact ? "space-y-1.5" : "space-y-2.5"}>
+      <div className={compact ? "space-y-1" : "space-y-2.5"}>
         {children}
         {count === 0 ? (
           <BoardEmptyState
@@ -1705,15 +1716,21 @@ function TaskCard({
               href={taskHref(task, projectSlug)}
               className="min-w-0 flex-1 rounded-md outline-none"
             >
-              <ProjectMetaLine task={task} />
-              <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-caption text-text-muted">
-                {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
-                <span className="truncate font-mono text-micro font-semibold tracking-wide text-text-muted">
-                  {task.workItemKey ?? "—"}
-                </span>
-                {task.epicTitle ? <span className="max-w-full truncate rounded bg-bg-elev px-1.5 py-0.5 text-micro">{task.epicTitle}</span> : null}
-              </div>
-              <div className={`${compact ? "line-clamp-1" : "line-clamp-2"} mt-1 font-medium leading-snug text-text`}>{task.title}</div>
+              {compact ? (
+                <CompactTaskMeta task={task} />
+              ) : (
+                <>
+                  <ProjectMetaLine task={task} />
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-caption text-text-muted">
+                    {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
+                    <span className="truncate font-mono text-micro font-semibold tracking-wide text-text-muted">
+                      {task.workItemKey ?? "—"}
+                    </span>
+                    {task.epicTitle ? <span className="max-w-full truncate rounded bg-bg-elev px-1.5 py-0.5 text-micro">{task.epicTitle}</span> : null}
+                  </div>
+                </>
+              )}
+              <div className={`${compact ? "mt-0.5 line-clamp-1 text-caption" : "mt-1 line-clamp-2"} font-medium leading-snug text-text`}>{task.title}</div>
             </Link>
           </div>
           <button
@@ -1721,23 +1738,23 @@ function TaskCard({
             {...attributes}
             {...listeners}
             onClick={(event) => event.stopPropagation()}
-            className="grid h-8 w-8 shrink-0 cursor-grab touch-none place-items-center rounded-md text-text-dim transition hover:bg-bg-elev hover:text-text active:cursor-grabbing"
+            className={`grid shrink-0 cursor-grab touch-none place-items-center rounded-md text-text-dim transition hover:bg-bg-elev hover:text-text active:cursor-grabbing ${compact ? "h-7 w-7" : "h-8 w-8"}`}
             aria-label={`Drag ${task.title}`}
             title="Drag to reorder or move"
           >
             <DragHandleIcon />
           </button>
         </div>
-        <div className={`${compact ? "mt-2" : "mt-3"} space-y-2 border-t border-line/70 pt-2 text-caption text-text-muted`}>
-          <div className="flex min-w-0 items-center gap-2">
-            {displayedActor ? (
-              <MessageAvatar actor={displayedActor} size="sm" busy={task.activeWorking} />
-            ) : (
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-dashed border-line-strong text-micro">?</span>
-            )}
-            <span className="min-w-0 flex-1 truncate text-micro font-medium">
+        {compact ? (
+          <div className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden border-t border-line/60 pt-1 text-micro text-text-muted">
+            <span className="min-w-0 flex-1 truncate" title={displayedActor ? actorDisplayName(displayedActor) : "Unassigned"}>
               {displayedActor ? actorDisplayName(displayedActor) : "Unassigned"}
             </span>
+            <SubtaskProgress task={task} />
+            <ElapsedClock task={task} now={now} />
+            <time dateTime={task.updatedAt} title={`Updated ${task.updatedAt}`} className="shrink-0 tabular-nums" suppressHydrationWarning>
+              {relativeUpdated(task.updatedAt)}
+            </time>
             <BlockedBadge task={task} />
             <button
               type="button"
@@ -1746,24 +1763,51 @@ function TaskCard({
                 onDeleteRequest();
               }}
               onPointerDown={(event) => event.stopPropagation()}
-              className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
               aria-label={`Move ${task.title} to bin`}
               title="Move to bin"
             >
               <TrashIcon />
             </button>
           </div>
-          <div className="flex flex-wrap items-center gap-2 pl-0 text-micro sm:pl-10">
-            <SubtaskProgress task={task} />
-            <ElapsedClock task={task} now={now} />
-            <span className="inline-flex items-center gap-1">
-              <span className="text-text-dim">Updated</span>
-              <time dateTime={task.updatedAt} title={`Updated ${task.updatedAt}`} className="tabular-nums" suppressHydrationWarning>
-                {relativeUpdated(task.updatedAt)}
-              </time>
-            </span>
+        ) : (
+          <div className="mt-3 space-y-2 border-t border-line/70 pt-2 text-caption text-text-muted">
+            <div className="flex min-w-0 items-center gap-2">
+              {displayedActor ? (
+                <MessageAvatar actor={displayedActor} size="sm" busy={task.activeWorking} />
+              ) : (
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-dashed border-line-strong text-micro">?</span>
+              )}
+              <span className="min-w-0 flex-1 truncate text-micro font-medium">
+                {displayedActor ? actorDisplayName(displayedActor) : "Unassigned"}
+              </span>
+              <BlockedBadge task={task} />
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDeleteRequest();
+                }}
+                onPointerDown={(event) => event.stopPropagation()}
+                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
+                aria-label={`Move ${task.title} to bin`}
+                title="Move to bin"
+              >
+                <TrashIcon />
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 pl-0 text-micro sm:pl-10">
+              <SubtaskProgress task={task} />
+              <ElapsedClock task={task} now={now} />
+              <span className="inline-flex items-center gap-1">
+                <span className="text-text-dim">Updated</span>
+                <time dateTime={task.updatedAt} title={`Updated ${task.updatedAt}`} className="tabular-nums" suppressHydrationWarning>
+                  {relativeUpdated(task.updatedAt)}
+                </time>
+              </span>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -1959,6 +2003,27 @@ function ProjectMetaLine({ task }: { task: Task }) {
   return (
     <div className="mb-0.5 truncate text-micro font-semibold text-text-muted">
       {task.project.name}
+    </div>
+  );
+}
+
+function CompactTaskMeta({ task }: { task: Task }) {
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-micro leading-none text-text-muted">
+      {task.project ? (
+        <span className="min-w-0 truncate font-semibold" title={task.project.name}>
+          {task.project.name}
+        </span>
+      ) : null}
+      {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
+      <span className="shrink-0 font-mono font-semibold tracking-wide">
+        {task.workItemKey ?? "—"}
+      </span>
+      {task.epicTitle ? (
+        <span className="min-w-0 truncate rounded bg-bg-elev px-1 py-0.5" title={task.epicTitle}>
+          {task.epicTitle}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -2159,8 +2224,8 @@ function statusRowClass(status: string) {
 }
 
 function taskCardClass(task: Task, isDragging = false, compact = false, interactive = true) {
-  return `board-task-card group/card relative block w-full select-none overflow-hidden rounded-xl border text-body transition-[transform,border-color,box-shadow,background-color,opacity] active:scale-[0.99] ${
-    compact ? "px-3 py-2" : "p-3"
+  return `board-task-card group/card relative block w-full select-none overflow-hidden border transition-[transform,border-color,box-shadow,background-color,opacity] active:scale-[0.99] ${
+    compact ? "rounded-lg px-2 py-1.5 text-caption" : "rounded-xl p-3 text-body"
   } ${interactive ? "cursor-pointer" : ""} ${isPlanningAssigned(task) ? "board-task-card--planning" : ""} ${
     isDragging ? "opacity-30" : "hover:-translate-y-px"
   }`;

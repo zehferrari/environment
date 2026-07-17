@@ -55,6 +55,7 @@ PM_CONSUMER_TOKEN_FILE="${PM_CONSUMER_TOKEN_FILE:-/etc/openclaw/pm-consumer-toke
 PM_APP_USER="${PM_APP_USER:-${PM_CONSUMER_USER:-karen}}"
 PM_APP_GROUP="${PM_APP_GROUP:-${PM_CONSUMER_GROUP:-$PM_APP_USER}}"
 PM_NODE_BIN="${PM_NODE_BIN:-/usr/bin/node24}"
+PM_PNPM_BIN="${PM_PNPM_BIN:-/usr/local/bin/pnpm}"
 PM_OPENCLAW_CHANNEL_TOKEN_FILE="${PM_OPENCLAW_CHANNEL_TOKEN_FILE:-/etc/openclaw/pm-channel-tokens.json}"
 PM_OPENCLAW_CHANNEL_TOKEN_GROUP="${PM_OPENCLAW_CHANNEL_TOKEN_GROUP:-$PM_APP_GROUP}"
 OPENCLAW_SESSION_FENCE_PATCH="${OPENCLAW_SESSION_FENCE_PATCH:-1}"
@@ -497,6 +498,10 @@ PM_WEB_ROOT="$(cd "$PM_WEB_ROOT" 2>/dev/null && pwd || printf '%s' "$PM_WEB_ROOT
 if [ ! -d "$PM_WEB_ROOT" ]; then
     warn "  PM web root $PM_WEB_ROOT not found; skipping PM web/consumer install"
 else
+    if [ "$DRY" -ne 1 ]; then
+        [ -x "$PM_NODE_BIN" ] || { warn "  node not found/executable at $PM_NODE_BIN"; exit 1; }
+        [ -x "$PM_PNPM_BIN" ] || { warn "  pnpm not found/executable at $PM_PNPM_BIN"; exit 1; }
+    fi
     pm_app_user="$PM_APP_USER"
     pm_app_group="$PM_APP_GROUP"
     pm_user="${PM_CONSUMER_USER:-$pm_app_user}"
@@ -806,6 +811,7 @@ else
                 -e "s|^Environment=PNPM_HOME=.*|Environment=PNPM_HOME=$PM_CONSUMER_PNPM_HOME|" \
                 -e "s|^Environment=NPM_CONFIG_USERCONFIG=.*|Environment=NPM_CONFIG_USERCONFIG=$PM_CONSUMER_PNPM_HOME/.npmrc|" \
                 -e "s|^Environment=npm_config_userconfig=.*|Environment=npm_config_userconfig=$PM_CONSUMER_PNPM_HOME/.npmrc|" \
+                -e "s|^ExecStart=.*|ExecStart=$PM_PNPM_BIN pm-consumer|" \
                 -e "s|^ReadWritePaths=.*|ReadWritePaths=$PM_WEB_ROOT/prisma $PM_DROP_DIR $PM_CONSUMER_PNPM_HOME $PM_CONSUMER_PNPM_CONFIG_HOME $PM_CONSUMER_PNPM_CACHE_HOME|" \
                 "$consumer_unit_src" > "$tmp_unit"
             install -o root -g root -m 0644 "$tmp_unit" /etc/systemd/system/pm-consumer.service

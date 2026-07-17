@@ -10,8 +10,8 @@
 // Auth model (same shape as the description-write grant):
 //   - body.grantMessageId references a DirectAgentChatMessage, or an
 //     AgentChatMessage plus the addressed agent's PmChannelRun, with
-//     allowWorkItemManagement == true, projectId == route projectId, and
-//     the relevant workItemGrantUsedAt == null (single-use);
+//     a matching DirectAgentChatMessageProject (or legacy projectId) with
+//     allowWorkItemManagement == true and workItemGrantUsedAt == null;
 //   - body.token is the HMAC grant token bound to (projectId, agentSlug,
 //     messageId);
 //   - the slug's Agent + seeded User must be active.
@@ -49,6 +49,7 @@ type WorkItemGrant =
       allowWorkItemManagement: boolean;
       workItemGrantUsedAt: Date | null;
       sender: { kind: string; status: string; isOwner: boolean } | null;
+      usesProjectLink: boolean;
       taskId?: null;
       epicId?: null;
     }
@@ -64,6 +65,13 @@ type WorkItemGrant =
       taskId: string | null;
       epicId: string | null;
     };
+
+class GrantAlreadyUsedError extends Error {
+  constructor() {
+    super("Grant already used");
+    this.name = "GrantAlreadyUsedError";
+  }
+}
 
 async function findDiscussionGrantRun(projectId: string, grantMessageId: string, token: string) {
   const agents = await db.agent.findMany({
@@ -264,10 +272,30 @@ export async function POST(
       allowWorkItemManagement: true,
       workItemGrantUsedAt: true,
       sender: { select: { kind: true, status: true, isOwner: true } },
+      projects: {
+        where: { projectId },
+        select: {
+          projectId: true,
+          allowWorkItemManagement: true,
+          workItemGrantUsedAt: true,
+        },
+      },
     },
   });
+  const directProjectGrant = directGrant?.projects[0] ?? null;
   let grant: WorkItemGrant | null = directGrant
-    ? { source: "direct", ...directGrant }
+    ? {
+        source: "direct",
+        id: directGrant.id,
+        agentSlug: directGrant.agentSlug,
+        projectId: directProjectGrant?.projectId ?? directGrant.projectId,
+        allowWorkItemManagement:
+          directProjectGrant?.allowWorkItemManagement ?? directGrant.allowWorkItemManagement,
+        workItemGrantUsedAt:
+          directProjectGrant?.workItemGrantUsedAt ?? directGrant.workItemGrantUsedAt,
+        sender: directGrant.sender,
+        usesProjectLink: Boolean(directProjectGrant),
+      }
     : null;
 
   if (!grant) {
@@ -406,6 +434,40 @@ export async function POST(
 
   try {
     const created = await db.$transaction(async (tx) => {
+      // Claim the advertised one-shot grant in the same transaction as the
+      // proposal. The earlier read gives a fast 410 for normal retries; this
+      // compare-and-set closes the race between distinct concurrent planIds.
+      let consumed = 0;
+      if (grant.source === "direct") {
+        if (grant.usesProjectLink) {
+          consumed = (await tx.directAgentChatMessageProject.updateMany({
+            where: {
+              messageId: grantMessageId,
+              projectId,
+              allowWorkItemManagement: true,
+              workItemGrantUsedAt: null,
+            },
+            data: { workItemGrantUsedAt: new Date() },
+          })).count;
+        } else {
+          consumed = (await tx.directAgentChatMessage.updateMany({
+            where: {
+              id: grantMessageId,
+              projectId,
+              allowWorkItemManagement: true,
+              workItemGrantUsedAt: null,
+            },
+            data: { workItemGrantUsedAt: new Date() },
+          })).count;
+        }
+      } else {
+        consumed = (await tx.pmChannelRun.updateMany({
+          where: { id: grant.runId, workItemGrantUsedAt: null },
+          data: { workItemGrantUsedAt: new Date() },
+        })).count;
+      }
+      if (consumed !== 1) throw new GrantAlreadyUsedError();
+
       const proposal = await tx.workItemProposal.create({
         data: {
           planId,
@@ -420,17 +482,6 @@ export async function POST(
         },
         select: { id: true },
       });
-      if (grant.source === "direct") {
-        await tx.directAgentChatMessage.update({
-          where: { id: grantMessageId },
-          data: { workItemGrantUsedAt: new Date() },
-        });
-      } else {
-        await tx.pmChannelRun.update({
-          where: { id: grant.runId },
-          data: { workItemGrantUsedAt: new Date() },
-        });
-      }
       await tx.activityLog.create({
         data: {
           projectId,
@@ -494,14 +545,38 @@ export async function POST(
       { status: 201 },
     );
   } catch (err) {
+    if (err instanceof GrantAlreadyUsedError) {
+      // A same-plan concurrent retry may have lost the grant CAS only because
+      // its identical proposal committed first. Preserve idempotent semantics
+      // while rejecting a genuinely distinct replay.
+      const winner = await db.workItemProposal.findUnique({
+        where: { planId },
+        select: { id: true, projectId: true, status: true },
+      });
+      if (winner?.projectId === projectId) {
+        return NextResponse.json({
+          ok: true,
+          proposalId: winner.id,
+          status: winner.status,
+          idempotent: true,
+        });
+      }
+      return NextResponse.json({ error: "Grant already used" }, { status: 410 });
+    }
     // Lost the idempotency race: another request with the same planId won
     // the unique index between our findUnique and create. Return theirs.
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
       const winner = await db.workItemProposal.findUnique({
         where: { planId },
-        select: { id: true, status: true },
+        select: { id: true, projectId: true, status: true },
       });
       if (winner) {
+        if (winner.projectId !== projectId) {
+          return NextResponse.json(
+            { error: "planId already used in another project" },
+            { status: 409 },
+          );
+        }
         return NextResponse.json({
           ok: true,
           proposalId: winner.id,

@@ -104,6 +104,131 @@ install_shared() {
   systemctl daemon-reload
 }
 
+# Operation locks coordinate the long-running runner, direct CLI switches, and
+# local cleanup. Preserve an existing lock's inode on reconcile: replacing a
+# file that another process has flocked would briefly create two independent
+# locks for the same project.
+ensure_operation_lock() {
+  local lock_file="$1"
+  if [[ -L "$lock_file" || ( -e "$lock_file" && ! -f "$lock_file" ) ]]; then
+    die "refusing unsafe worktree operation lock: $lock_file"
+  fi
+  if [[ ! -e "$lock_file" ]]; then
+    install -o root -g "$CODE_GROUP" -m 0660 /dev/null "$lock_file"
+    ok "created worktree operation lock $lock_file"
+  else
+    chown root:"$CODE_GROUP" "$lock_file"
+    chmod 0660 "$lock_file"
+    ok "preserved worktree operation lock $lock_file"
+  fi
+}
+
+# Keep these descriptors open while shared executables and project contracts
+# are being replaced. A direct CLI switch/remove takes the same flock, so this
+# waits for any operation that was already in flight and prevents a new one
+# from observing a mixed old/new helper set.
+declare -A HELD_OPERATION_LOCK_FDS=()
+
+acquire_operation_lock() {
+  local key="$1" lock_file="$LOCKDIR/$1.lock" fd
+  ensure_operation_lock "$lock_file"
+  exec {fd}<>"$lock_file"
+  if ! flock -w 30 "$fd"; then
+    exec {fd}>&-
+    die "timed out waiting for the $key worktree operation lock; retry after the active switch/remove finishes"
+  fi
+  HELD_OPERATION_LOCK_FDS["$key"]="$fd"
+  ok "holding $key worktree operation lock during reconciliation"
+}
+
+release_operation_lock() {
+  local key="$1" fd="${HELD_OPERATION_LOCK_FDS[$1]-}"
+  [[ -n "$fd" ]] || return 0
+  exec {fd}>&-
+  unset 'HELD_OPERATION_LOCK_FDS[$key]'
+}
+
+release_all_operation_locks() {
+  local key
+  for key in "${!HELD_OPERATION_LOCK_FDS[@]}"; do
+    release_operation_lock "$key"
+  done
+}
+
+# Replace contracts atomically so a CLI switch cannot source a half-written
+# file while this installer is reconciling a legacy installation.
+write_contract() {
+  local key="$1" target="$ENVDIR/$1.env" tmp
+  tmp="$(mktemp "$ENVDIR/.$key.env.XXXXXX")"
+  if ! cat > "$tmp"; then
+    rm -f "$tmp"
+    die "could not render $target"
+  fi
+  chown root:root "$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$target"
+}
+
+verify_operation_contract() {
+  local key="$1" expected_lock="$2" env_file="$ENVDIR/$1.env"
+  [[ -r "$env_file" ]] || die "missing project contract after install: $env_file"
+  [[ "$(grep -c '^WORKTREE_LOCK_FILE=' "$env_file" || true)" == 1 ]] \
+    || die "$env_file must declare WORKTREE_LOCK_FILE exactly once"
+  grep -Fqx "WORKTREE_LOCK_FILE=$expected_lock" "$env_file" \
+    || die "$env_file does not reference the expected lock $expected_lock"
+  [[ -f "$expected_lock" && ! -L "$expected_lock" ]] \
+    || die "worktree operation lock is missing or unsafe: $expected_lock"
+}
+
+# A pre-removal runner does not understand action=remove and treats it as a
+# switch. Stop that long-running process before replacing helpers or repairing
+# its contract, closing the upgrade window in which a cleanup request could be
+# interpreted by stale code. The project installer starts it again at the end.
+QUIESCED_RUNNERS=()
+
+restore_quiesced_runners() {
+  local status=$? key unit
+  trap - EXIT
+  release_all_operation_locks
+  for key in "${QUIESCED_RUNNERS[@]}"; do
+    unit="worktree-switch-runner@$key.service"
+    if ! systemctl is-active --quiet "$unit"; then
+      if (( status == 0 )); then
+        log "Reloading $unit after shared-helper reconciliation …"
+      else
+        warn "installer exited before $key reconciliation completed; restoring $unit"
+      fi
+      systemctl start "$unit" || warn "could not restore $unit — start it manually after fixing the installer error"
+    fi
+  done
+  exit "$status"
+}
+
+trap restore_quiesced_runners EXIT
+
+quiesce_runner() {
+  local key="$1" unit="worktree-switch-runner@$1.service"
+  if systemctl is-active --quiet "$unit"; then
+    log "Stopping $unit during contract reconciliation …"
+    # Record it before stop: systemctl can report failure after the unit has
+    # already transitioned down, and the EXIT handler must still restore it.
+    QUIESCED_RUNNERS+=("$key")
+    systemctl stop "$unit"
+  fi
+}
+
+# install_shared replaces executables used by every generic runner. Stop all
+# currently supported consumers before that replacement, even for a
+# target-specific contract repair, so no other project keeps an old in-memory
+# runner paired with newly installed helpers.
+quiesce_shared_runners() {
+  quiesce_runner wdt
+  quiesce_runner patricia
+  install -d -m 0750 -o root -g "$CODE_GROUP" "$LOCKDIR"
+  acquire_operation_lock wdt
+  acquire_operation_lock patricia
+}
+
 # ---------------------------------------------------------------------------
 # WDT — node-service (Next.js + per-branch SQLite forked from wdt.main)
 # ---------------------------------------------------------------------------
@@ -119,10 +244,10 @@ install_wdt() {
 
   [[ -d "$repo" ]]   || die "WDT repo missing: $repo"
   [[ -d "$wtroot" ]] || die "WDT worktrees root missing: $wtroot"
-  install -o root -g "$CODE_GROUP" -m 0660 /dev/null "$lock_file"
+  ensure_operation_lock "$lock_file"
 
   log "Writing $ENVDIR/$key.env …"
-  cat > "$ENVDIR/$key.env" <<EOF
+  write_contract "$key" <<EOF
 # WDT — node-service worktree-preview contract (generated by worktree-preview-install.sh)
 KEY=$key
 DRIVER=node-service
@@ -145,7 +270,7 @@ DB_ENGINE=sqlite
 CANONICAL_DB=$canonical
 DB_ROOT=$db_root
 EOF
-  chmod 0644 "$ENVDIR/$key.env"
+  verify_operation_contract "$key" "$lock_file"
   ok "$ENVDIR/$key.env"
 
   log "Creating private spool dir $spool (runner + PM web ACL) …"
@@ -172,6 +297,7 @@ EOF
   fi
 
   log "Enabling served unit + switch runner for $key …"
+  release_operation_lock "$key"
   systemctl daemon-reload
   systemctl enable "worktree-preview@$key.service" >/dev/null || warn "could not enable served unit (it will still be started by the first successful switch)"
   systemctl enable --now "worktree-switch-runner@$key.service"
@@ -193,10 +319,10 @@ install_patricia() {
 
   [[ -d "$repo" ]]   || die "Patricia repo missing: $repo"
   [[ -d "$wtroot" ]] || die "Patricia worktrees root missing: $wtroot"
-  install -o root -g "$CODE_GROUP" -m 0660 /dev/null "$lock_file"
+  ensure_operation_lock "$lock_file"
 
   log "Writing $ENVDIR/$key.env …"
-  cat > "$ENVDIR/$key.env" <<EOF
+  write_contract "$key" <<EOF
 # Patricia — nginx-docroot worktree-preview contract (generated by worktree-preview-install.sh)
 KEY=$key
 DRIVER=nginx-docroot
@@ -214,7 +340,7 @@ RELOAD_CMD='nginx -s reload'
 DB_ENGINE=none
 OFF_MODE=off
 EOF
-  chmod 0644 "$ENVDIR/$key.env"
+  verify_operation_contract "$key" "$lock_file"
   ok "$ENVDIR/$key.env"
 
   log "Creating private spool dir $spool (runner + PM web ACL) …"
@@ -231,6 +357,7 @@ EOF
   fi
 
   log "Enabling switch runner for $key (no served unit; nginx-docroot has no per-project process) …"
+  release_operation_lock "$key"
   systemctl daemon-reload
   systemctl enable --now "worktree-switch-runner@$key.service"
   systemctl restart "worktree-switch-runner@$key.service"
@@ -244,9 +371,9 @@ migrate_pm() {
   local key=environment
   warn "PM is the PRODUCTION environment. This subcommand only STAGES the new"
   warn "contract; it does NOT disturb the running pm.service / pm-switch* setup."
-  install -o root -g "$CODE_GROUP" -m 0660 /dev/null "$LOCKDIR/$key.lock"
+  ensure_operation_lock "$LOCKDIR/$key.lock"
   log "Staging $ENVDIR/$key.env (the generic contract mirroring the PM mechanism) …"
-  cat > "$ENVDIR/$key.env" <<'EOF'
+  write_contract "$key" <<'EOF'
 # PM / environment — node-service contract (STAGED for the supervised cutover).
 # PM keeps its existing pm-switch*/pm-apply-worktree mechanism until cutover is
 # explicitly performed. Do NOT enable worktree-preview@environment until then.
@@ -267,7 +394,7 @@ DB_ENGINE=sqlite
 CANONICAL_DB=/srv/Data/pm/pm.db
 DB_ROOT=/srv/Data/pm
 EOF
-  chmod 0644 "$ENVDIR/$key.env"
+  verify_operation_contract "$key" "$LOCKDIR/$key.lock"
   ok "staged $ENVDIR/$key.env"
   cat <<EOF
 
@@ -285,22 +412,59 @@ EOF
 }
 
 show_status() {
-  log "Installed helpers:";   ls -l "$SBIN"/worktree-switch "$SBIN"/worktree-switch-runner "$SBIN"/worktree-preview-serve "$SBIN"/worktree-preview-apply "$SBIN"/worktree-docroot-apply 2>/dev/null || true
+  local failures=0
+  log "Installed helpers:";   ls -l "$SBIN"/worktree-switch "$SBIN"/worktree-switch-runner "$SBIN"/worktree-remove "$SBIN"/worktree-preview-serve "$SBIN"/worktree-preview-apply "$SBIN"/worktree-docroot-apply 2>/dev/null || true
   log "Env contracts:";       ls -l "$ENVDIR"/ 2>/dev/null || true
   log "Sudoers:";             ls -l /etc/sudoers.d/worktree-preview 2>/dev/null || true
   log "Units:";               systemctl --no-legend list-unit-files 'worktree-preview@*' 'worktree-switch-runner@*' 2>/dev/null || true
   for k in wdt patricia; do
-    systemctl is-enabled "worktree-switch-runner@$k.service" >/dev/null 2>&1 && \
-      printf '  runner %-10s %s\n' "$k" "$(systemctl is-active worktree-switch-runner@$k.service 2>/dev/null)"
+    local env_file="$ENVDIR/$k.env" expected_lock="$LOCKDIR/$k.lock" configured_lock=""
+    if [[ -r "$env_file" ]]; then
+      configured_lock="$(sed -n 's/^WORKTREE_LOCK_FILE=//p' "$env_file")"
+    fi
+    if [[ "$configured_lock" != "$expected_lock" ]]; then
+      warn "$k contract is incomplete: expected WORKTREE_LOCK_FILE=$expected_lock in $env_file"
+      warn "repair with: $0 $k"
+      failures=1
+    elif [[ ! -f "$expected_lock" || -L "$expected_lock" ]]; then
+      warn "$k operation lock is missing or unsafe: $expected_lock"
+      warn "repair with: $0 $k"
+      failures=1
+    else
+      printf '  contract %-8s ok (%s)\n' "$k" "$expected_lock"
+    fi
+
+    if systemctl is-enabled "worktree-switch-runner@$k.service" >/dev/null 2>&1; then
+      local active pid elapsed started latest helper mtime
+      active="$(systemctl is-active "worktree-switch-runner@$k.service" 2>/dev/null || true)"
+      printf '  runner %-10s %s\n' "$k" "$active"
+      if [[ "$active" == active ]]; then
+        pid="$(systemctl show -p MainPID --value "worktree-switch-runner@$k.service" 2>/dev/null || true)"
+        elapsed="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+        latest=0
+        for helper in "$SBIN/worktree-switch-runner" "$SBIN/worktree-switch" "$SBIN/worktree-remove"; do
+          mtime="$(stat -c %Y "$helper" 2>/dev/null || echo 0)"
+          (( mtime > latest )) && latest=$mtime
+        done
+        if [[ "$elapsed" =~ ^[0-9]+$ ]]; then
+          started=$(( $(date +%s) - elapsed ))
+          if (( latest > started )); then
+            warn "$k runner predates an installed helper and has not loaded it; repair with: $0 $k"
+            failures=1
+          fi
+        fi
+      fi
+    fi
   done
+  return "$failures"
 }
 
 case "${1:-all}" in
-  all)        install_shared; install_wdt; install_patricia
+  all)        quiesce_shared_runners; install_shared; install_wdt; install_patricia
               log "Done. PM production untouched (use 'migrate-pm' for that, supervised)." ;;
-  wdt)        install_shared; install_wdt ;;
-  patricia)   install_shared; install_patricia ;;
-  migrate-pm) install_shared; migrate_pm ;;
+  wdt)        quiesce_shared_runners; install_shared; install_wdt ;;
+  patricia)   quiesce_shared_runners; install_shared; install_patricia ;;
+  migrate-pm) quiesce_shared_runners; install_shared; migrate_pm ;;
   status)     show_status ;;
   *) die "usage: $0 [all|wdt|patricia|migrate-pm|status]" ;;
 esac

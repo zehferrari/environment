@@ -16,13 +16,10 @@ import {
   requireViewer,
 } from "@/lib/auth/permissions";
 import { getActorVisibility, serializeVisibleActor } from "@/lib/users/actor-visibility";
+import { parseEpicBoardStatuses } from "@/lib/epics/status-filter";
 
 export const dynamic = "force-dynamic";
 
-const BOARD_STATUSES = ["Backlog", "In Progress", "Ready to Deploy", "Done"] as const;
-// Default board view surfaces in-flight work (Backlog + In Progress) and hides Done
-// until the user opts back into it via the status filter.
-const DEFAULT_BOARD_STATUSES = ["Backlog", "In Progress"] as const;
 const actorSelect = {
   id: true,
   username: true,
@@ -34,16 +31,6 @@ const actorSelect = {
 
 function normalizeView(value: string | undefined) {
   return value?.toLowerCase() === "archive" ? "archive" : "board";
-}
-
-function parseBoardStatuses(statuses: string | undefined, legacyStatus: string | undefined) {
-  if (!statuses && legacyStatus) {
-    const match = BOARD_STATUSES.find((status) => status.toLowerCase() === legacyStatus.toLowerCase());
-    if (match) return [match];
-  }
-  if (statuses === undefined) return [...DEFAULT_BOARD_STATUSES];
-  const requested = statuses.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
-  return BOARD_STATUSES.filter((status) => requested.includes(status.toLowerCase()));
 }
 
 export default async function EpicsListPage({
@@ -65,7 +52,7 @@ export default async function EpicsListPage({
   if (!project) notFound();
 
   const view = normalizeView(rawView ?? (status?.toLowerCase() === "archive" ? "archive" : undefined));
-  const selectedStatuses = parseBoardStatuses(statuses, status);
+  const selectedStatuses = parseEpicBoardStatuses(statuses, status);
 
   const principals = viewer.isOwner ? await listAssignablePrincipals(viewer) : [];
   const epicGridClass = viewer.isOwner
@@ -138,6 +125,7 @@ export default async function EpicsListPage({
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <EpicStatusFilter
+          key={selectedStatuses.join("|")}
           projectSlug={slug}
           selectedStatuses={selectedStatuses}
           disabled={view === "archive"}
@@ -145,7 +133,7 @@ export default async function EpicsListPage({
         <p className="text-caption text-text-muted">
           {view === "archive"
             ? "Showing archived epics."
-            : "Board defaults to Backlog and In Progress epics; add Ready to Deploy or Done from the status filter."}
+            : "Board defaults to In Progress and Ready to Deploy epics; add Backlog or Done from the status filter."}
         </p>
       </div>
 

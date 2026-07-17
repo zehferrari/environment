@@ -504,7 +504,10 @@ Incoming webhooks from Atlassian (Jira/Bitbucket) flow from public URLs through 
 - Secrets stay out of `openclaw.json`; use env/token files only.
 - `karen` runs the monitoring agent's OpenClaw gateway on `127.0.0.1:18793`.
 - `karen` also receives webhooks, updates `/home/<user>/tasks/current.md`, and wakes the target agent via `/usr/local/sbin/openclaw-control`.
-- Shared operational knowledge lives in the active OpenClaw checkout (`/srv/Code/environment.worktrees/<branch>/ai/openclaw` on thinkpad; `/home/<owner>/Code/environment/ai/openclaw` on yoga510).
+- Shared operational knowledge lives in the active OpenClaw worktree at
+  `/srv/Code/environment.worktrees/<branch>/ai/openclaw` on both thinkpad and
+  yoga510. Yoga510's `/home/rachael/Code/environment` checkout is compatibility
+  only; it is never the deployment or document-reconciliation authority.
 - Active monitored-agent registry lives at `/srv/agents/index.json`; `/etc/openclaw/agents.json` is a symlink to it.
 - Webhook routing is derived from `/srv/agents/index.json`: enabled coding agents with `integrations.jira` receive Jira events, and enabled coding agents with `integrations.bitbucket` receive Bitbucket events.
 - The shared docs (`AGENTS.md`, `guides/ROLES.md`, `WORKFLOW.md`, `guides/CODE_REPOS.md`, `USER.md`) are canonical in the active OpenClaw checkout. `openclaw-manage-user` copies them from `$REPO_ROOT/ai/openclaw/` (the worktree that ran the helper) into each agent's `~/workspace/` and `~/.openclaw/workspace/`, overwriting only when content differs, so both the user-facing and OpenClaw internal workspaces see the same content. The monitoring agent (`karen`) has only `~/.openclaw/workspace/`. A doc change reaches agents once it lands in git and the active PM/OpenClaw worktree is reconciled.
@@ -794,33 +797,59 @@ apt-get install -y git curl ca-certificates gnupg sudo rsync unzip tar gcc g++ m
 curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource_setup_24.sh
 bash /tmp/nodesource_setup_24.sh
 apt-get install -y nodejs
-npm install -g openclaw@2026.5.7
+npm install -g openclaw@2026.5.7 pnpm@10.33.0
 printf "%s\n" "#!/bin/sh" "exec /usr/bin/node \"\$@\"" > /usr/bin/node-24
 chmod 0755 /usr/bin/node-24
+ln -sfn /usr/bin/node-24 /usr/bin/node24
+PNPM_REAL="$(command -v pnpm)"
+[ "$PNPM_REAL" = /usr/local/bin/pnpm ] || ln -sfn "$PNPM_REAL" /usr/local/bin/pnpm
+/usr/bin/node24 --version
+/usr/local/bin/pnpm --version
 ```
 
-Create a shared group for agent-readable repo files, then clone the environment repo as the owner/admin user. On yoga510 the checkout lives under the owner home, not under `/srv`, so it stays outside the samba-backed tree while remaining readable by agents:
+Create a shared group for agent-readable repository files, then use the
+standard `/srv/Code` layout on every host. The canonical checkout is a stable
+base; deployment and shared-document reconciliation come from a managed
+worktree under `/srv/Code/environment.worktrees`. Yoga510 also retains
+`/home/rachael/Code/environment` for compatibility, but that checkout is not
+an authority for either operation.
 
 ```bash
 groupadd -f code-agents
 usermod -aG code-agents <owner> <code-agent-1> <code-agent-2> <monitor-agent>
-install -d -m 2775 -o <owner> -g code-agents /home/<owner>/Code
-sudo -u <owner> git clone <repository-url> /home/<owner>/Code/environment
-chgrp -R code-agents /home/<owner>/Code/environment
-find /home/<owner>/Code/environment -type d -exec chmod g+rws {} +
-find /home/<owner>/Code/environment -type f -exec chmod g+rw {} +
+install -d -m 2775 -o <owner> -g code-agents \
+  /srv/Code /srv/Code/environment.worktrees
+sudo -u <owner> git clone <repository-url> /srv/Code/environment
+sudo -u <owner> git -C /srv/Code/environment switch --detach origin/main
+sudo -u <owner> git -C /srv/Code/environment worktree add \
+  /srv/Code/environment.worktrees/main main
+chgrp -R code-agents /srv/Code/environment \
+  /srv/Code/environment.worktrees/main
+find /srv/Code/environment /srv/Code/environment.worktrees/main \
+  -type d -exec chmod g+rws {} +
+find /srv/Code/environment /srv/Code/environment.worktrees/main \
+  -type f -exec chmod g+rw {} +
 ```
 
-If root/admin validation commands use Git in that checkout, add `/home/<owner>/Code/environment` as a safe directory for that account. thinkpad is the legacy exception that still uses `/srv/Code/environment`.
+If root/admin validation commands use Git in these checkouts, add both
+`/srv/Code/environment` and `/srv/Code/environment.worktrees/main` as safe
+directories for that account.
 
 ### 21.3 Build each agent home
 
 For every target agent:
 
 - Create `~/.openclaw`, `~/.openclaw/workspace`, `~/.openclaw/agents/main`, `~/.config/openclaw`, `~/.config/systemd/user`, `~/workspace`, and `~/Maildir/{new,cur,tmp}`.
-- Symlink shared documents from the host checkout (`/home/<owner>/Code/environment/ai/openclaw` on yoga510, `/srv/Code/environment/ai/openclaw` on thinkpad) into both `~/workspace` and `~/.openclaw/workspace`: `AGENTS.md`, `guides/ROLES.md`, `WORKFLOW.md`, `guides/CODE_REPOS.md`, `USER.md`; add `guides/INCIDENT_HANDLING.md`, `guides/MONITORING.md`, and `guides/SERVICES.md` for the monitor agent.
+- Reconcile shared documents from the active worktree's
+  `/srv/Code/environment.worktrees/<branch>/ai/openclaw` directory by running
+  that worktree's `ai/openclaw/install.sh`: `AGENTS.md`, `guides/ROLES.md`,
+  `WORKFLOW.md`, `guides/CODE_REPOS.md`, and `USER.md` for every agent, plus
+  `guides/INCIDENT_HANDLING.md`, `guides/MONITORING.md`, and
+  `guides/SERVICES.md` for the monitor agent. Never sync these from an owner
+  compatibility checkout.
 - Keep persona/runtime files per-user: `SOUL.md`, `IDENTITY.md`, `TOOLS.md`, `MEMORY.md`, `HEARTBEAT.md`.
-- Set `~/Code -> /home/<owner>/Code` for users that should work with the shared repository tree on yoga510.
+- Set `~/Code -> /srv/Code` for users that should work with the shared
+  repository tree.
 - Generate new local secrets; do not copy Telegram, model provider, OAuth, or webhook secrets from thinkpad unless that is explicitly intended.
 - For Telegram, keep the thinkpad-compatible single-account shape under `channels.telegram` with `enabled`, `dmPolicy: pairing`, `groupPolicy: allowlist`, `streaming.mode: partial`, and `tokenFile: /home/<agent>/.config/openclaw/telegram-token`. Do not use `channels.telegram.accounts.*` unless intentionally changing the host convention. Token files must be owned by the agent and mode `0600`.
 
@@ -837,7 +866,10 @@ When the new host already delivers mail locally through Postfix/Dovecot, OpenCla
 - Read state is Maildir-native: move messages from `new/` to `cur/` with `:2,S`.
 - A listener service watches `~/Maildir/new` and writes events to `~/.openclaw/mail/events.jsonl`.
 
-The reusable skill lives at `/home/<owner>/Code/environment/ai/openclaw/skills/local-mail` on yoga510 (`/srv/Code/environment/ai/openclaw/skills/local-mail` on thinkpad). Link it into each agent as `~/workspace/mail`, `~/.openclaw/workspace/mail`, and `~/.openclaw/skills/local-mail`.
+The reusable skill source is the active worktree's
+`/srv/Code/environment.worktrees/<branch>/ai/openclaw/skills/local-mail`.
+Link that source into each agent as `~/workspace/mail`,
+`~/.openclaw/workspace/mail`, and `~/.openclaw/skills/local-mail`.
 
 ### 21.5 Services to enable
 
@@ -857,66 +889,97 @@ Each agent should normally have these user services:
 
 Host-level services/timers to install:
 
-- `agent-dashboard.service` on `127.0.0.1:3013`
+- `pm.service` on `127.0.0.1:3000` and `pm-consumer.service` when the host
+  runs Mission Control; both are host-wide system services owned by the
+  selected monitor/PM runtime user
+- `agent-dashboard.service` on `127.0.0.1:3013` when the legacy read-only
+  activity dashboard is still required
 - `openclaw-typing-keepalive.service` if Telegram/long-turn typing support is required; on Telegram-disabled hosts it can be a harmless registry watcher
 - `openclaw-backup.timer`
 - `openclaw-integrity.timer`
 
 For the monitor user, create a narrow sudoers file modelled after `karen-openclaw-control`, but scoped to the target users and target host services only.
 
-### 21.6 Web dashboard and protection
+### 21.6 Mission Control and the legacy dashboard
 
-The dashboard source pages stay in the checkout at `/home/<owner>/Code/environment/ai/web/` on yoga510 (thinkpad legacy path: `/srv/Code/environment/ai/web/`). On yoga510 nginx serves `agents.html` directly from that checkout as the web root, proxies dashboard API routes to the local dashboard service, and maps `/agents/avatars/<Name>` to `/srv/agents/Pictures/<Name>/avatar.png`:
+Mission Control and `agent-dashboard` are separate applications. A replicated
+host may run both, but they need different hostnames and upstreams:
 
-~~~nginx
-server {
-    listen 80;
-    listen [::]:80;
-    server_name agents.example.com;
+| Interface | Upstream | Purpose |
+|---|---|---|
+| Mission Control | `pm.service` on `127.0.0.1:3000` | Current Next.js project-management UI and agent workflow |
+| Legacy agent dashboard | `agent-dashboard.service` on `127.0.0.1:3013` | Optional read-only activity/SSE page |
 
-    root /home/<owner>/Code/environment/ai/web;
-    index agents.html;
+On yoga510, Mission Control is `https://agents.eurekafiles.com` and runs as
+`emery` from `/srv/Code/environment.worktrees/main/ai/web`, with
+`pm-consumer.service` using the same managed worktree and
+`file:/srv/Data/pm/wt-main.db`. The canonical checkout is
+`/srv/Code/environment`; `/home/rachael/Code/environment` is also present but
+is compatibility-only and is never the deployment or shared-document sync
+source. The legacy dashboard remains at
+`https://dev.eurekafiles.com` through port `3013`.
 
-    auth_basic "Agents";
-    auth_basic_user_file /etc/nginx/.htpasswd;
+Everything portable for a Mission Control install is tracked in the
+repository:
 
-    location = / { try_files /agents.html =404; }
-    location = /agents.html { try_files /agents.html =404; }
-    location ~ ^/agents/avatars/([^/]+)$ {
-        alias /srv/agents/Pictures/$1/avatar.png;
-        default_type image/png;
-        add_header Cache-Control "public, max-age=300";
-    }
+- the application, `pnpm-lock.yaml`, and committed Prisma migrations under
+  `ai/web/`;
+- systemd templates, the host-private env example, nginx template, rebuilding
+  page, worktree switch helpers, and idempotent installers under
+  [`web/deploy/`](web/deploy/);
+- host reconciliation and native OpenClaw PM-channel setup under
+  [`openclaw/install.sh`](openclaw/install.sh) and
+  `web/deploy/install-openclaw-pm-channel.mjs`.
 
-    location = /agents/registry.json {
-        alias /etc/openclaw/agents.json;
-        default_type application/json;
-    }
+Secrets, generated agent tokens, certificates, and live databases stay on the
+host. Create `/etc/default/pm` from `deploy/pm.env.example`; do not commit its
+values. Follow [`web/deploy/README.md`](web/deploy/README.md#first-time-install)
+for the first install, including the required SQLite package, PM env, systemd
+units, gateway hooks/channel plugin, nginx vhost, and initial migration. Use
+the standard `/srv/Code/environment` plus
+`/srv/Code/environment.worktrees/<branch>` layout so the committed switch
+helpers work consistently across hosts. Render
+`deploy/nginx-mission-control.conf` with the target hostname and certificate
+paths; never point the Mission Control hostname at the legacy static page.
+Every OpenClaw gateway used by PM must bind to loopback. Nginx may expose an
+authenticated gateway control UI when required, but it must not proxy
+`/hooks`, `/pm-channel`, or any subpath of either internal endpoint.
 
-    location /agents/ {
-        proxy_pass http://127.0.0.1:3013;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection "";
-        proxy_buffering off;
-        proxy_read_timeout 1h;
-    }
-}
-~~~
-
-For private dashboards, copy the existing nginx password file from thinkpad:
+After initial installation, use the guarded managed-host updater. Replace the
+repository/monitor users and worktree when deploying another host:
 
 ```bash
-scp thinkpad:/etc/nginx/.htpasswd /etc/nginx/.htpasswd
-chown root:root /etc/nginx/.htpasswd
-chmod 0644 /etc/nginx/.htpasswd
-nginx -t && systemctl reload nginx
+sudo /srv/Code/environment.worktrees/main/ai/web/deploy/update-managed-host.sh \
+  --worktree /srv/Code/environment.worktrees/main \
+  --repo-user rachael --monitor-user emery --branch main
 ```
 
-Unauthenticated checks for `/`, `/agents.html`, `/agents/registry.json`, `/agents/snapshot`, and `/agents/events` should all return `401`.
+The updater refuses dirty, local-ahead, detached, or diverged worktrees and
+never resets, rebases, commits, or deletes local work. It refreshes the
+installed `/usr/local/sbin` helper copies and root-owned non-secret deployment
+contract before `pm-switch` applies all pending committed migrations to the
+branch database, builds the standalone bundle, atomically repoints/restarts
+both PM services, and verifies the login page plus a hashed asset. Do not use
+`prisma db push` on a real host and do not run `next build` without the
+immediate switch/restart.
+If a release changes the PM/OpenClaw units, gateway hooks, or native channel
+plugin, also rerun the active worktree's idempotent OpenClaw installer as
+documented in the first-install guide.
+
+Verify a replicated host with:
+
+```bash
+/usr/local/sbin/pm-switch status
+systemctl is-active pm.service pm-consumer.service
+curl -fsS -o /dev/null http://127.0.0.1:3000/login
+curl -fsS -o /dev/null https://agents.example.com/login
+```
+
+If the legacy dashboard is retained, keep it on its own protected vhost,
+proxy only its `/agents/` API/SSE routes to `127.0.0.1:3013`, and continue to
+serve avatars from `/srv/agents/Pictures`. Unauthenticated legacy dashboard
+pages and data routes should return `401`; its explicit health endpoint may
+remain unauthenticated for uptime checks.
 
 ### 21.7 Validation checklist
 
@@ -927,7 +990,8 @@ node --version
 node-24 --version
 npm --version
 openclaw --version
-git -C /home/<owner>/Code/environment status --short
+git -C /srv/Code/environment status --short
+git -C /srv/Code/environment.worktrees/main status --short
 /usr/local/bin/openclaw-integrity-check
 ```
 
@@ -936,6 +1000,11 @@ Also verify:
 - `openclaw config validate` passes as every agent user.
 - `systemctl --user is-active` reports active for each agent service.
 - Local mail delivery works for every agent: send a message, list it, read it, mark it read, and reply through Postfix.
-- `agent-dashboard.service`, `nginx`, `postfix`, and `dovecot` are active where applicable.
-- Gateway ports are listening as intended: code agents may bind LAN, monitor agents should usually bind loopback.
+- `pm.service`, `pm-consumer.service`, `agent-dashboard.service`, `nginx`,
+  `postfix`, and `dovecot` are active where applicable; Mission Control's
+  `/login` responds locally on port `3000` and through its public hostname.
+- Every gateway used by Mission Control listens only on loopback. Confirm
+  nginx does not expose `/hooks`, `/pm-channel`, or any subpath of either
+  endpoint; a non-PM gateway may bind elsewhere only when its threat model and
+  firewall policy explicitly require it.
 - A backup archive exists under `/var/backups/openclaw/`.

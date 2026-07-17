@@ -197,7 +197,7 @@ function main() {
     assert.match(helperSource, /O_NOFOLLOW/);
     assert.doesNotMatch(helperSource, /--force|push/);
     const actionSource = readFileSync(path.resolve(process.cwd(), "lib/deploy/actions.ts"), "utf8");
-    assert.match(actionSource, /Only the admin can remove local worktrees/);
+    assert.match(actionSource, /requestLocalWorktreeRemoval[\s\S]*?const owner = await requireOwner\(\)/);
     assert.match(actionSource, /protectedBranches/);
     assert.match(actionSource, /REQUEST_LOCK_STALE_MS/);
     for (const runner of ["deploy/pm-switch-runner", "deploy/worktree-switch-runner"]) {
@@ -205,6 +205,43 @@ function main() {
       assert.match(source, /action == "remove"/);
       assert.match(source, /worktree-remove/);
     }
+
+    // A generic switcher upgraded from before local cleanup existed may have
+    // neither WORKTREE_LOCK_FILE in its contract nor the lock itself. The
+    // project installer must repair both and restart the long-running runner;
+    // otherwise an attempted removal is misrouted through stale switch code.
+    const genericInstaller = readFileSync(path.resolve(process.cwd(), "deploy/worktree-preview-install.sh"), "utf8");
+    const patriciaInstaller = genericInstaller.slice(
+      genericInstaller.indexOf("install_patricia()"),
+      genericInstaller.indexOf("migrate_pm()"),
+    );
+    assert.match(genericInstaller, /ensure_operation_lock\(\)/);
+    assert.match(genericInstaller, /if \[\[ ! -e "\$lock_file" \]\]/);
+    assert.match(genericInstaller, /else\n\s+chown root:"\$CODE_GROUP" "\$lock_file"/);
+    assert.match(genericInstaller, /write_contract\(\)/);
+    assert.match(genericInstaller, /verify_operation_contract\(\)/);
+    assert.match(patriciaInstaller, /ensure_operation_lock "\$lock_file"/);
+    assert.match(patriciaInstaller, /WORKTREE_LOCK_FILE=\$lock_file/);
+    assert.match(patriciaInstaller, /verify_operation_contract "\$key" "\$lock_file"/);
+    assert.match(patriciaInstaller, /systemctl restart "worktree-switch-runner@\$key\.service"/);
+    assert.match(genericInstaller, /quiesce_shared_runners\(\)/);
+    assert.match(genericInstaller, /quiesce_runner wdt\s+quiesce_runner patricia/);
+    assert.match(genericInstaller, /acquire_operation_lock wdt\s+acquire_operation_lock patricia/);
+    assert.match(genericInstaller, /flock -w 30 "\$fd"/);
+    assert.match(genericInstaller, /release_all_operation_locks/);
+    assert.match(genericInstaller, /if \(\( status == 0 \)\); then\s+log "Reloading \$unit after shared-helper reconciliation/);
+    assert.match(genericInstaller, /patricia\)\s+quiesce_shared_runners; install_shared; install_patricia/);
+    assert.match(genericInstaller, /wdt\)\s+quiesce_shared_runners; install_shared; install_wdt/);
+    assert.match(genericInstaller, /migrate-pm\)\s+quiesce_shared_runners; install_shared; migrate_pm/);
+    assert.match(genericInstaller, /trap restore_quiesced_runners EXIT/);
+    assert.match(genericInstaller, /QUIESCED_RUNNERS\+=\("\$key"\)/);
+    assert.match(genericInstaller, /installer exited before \$key reconciliation completed; restoring \$unit/);
+    const statusCheck = genericInstaller.slice(
+      genericInstaller.indexOf("show_status()"),
+      genericInstaller.indexOf('case "${1:-all}"'),
+    );
+    assert.match(statusCheck, /expected WORKTREE_LOCK_FILE=\$expected_lock/);
+    assert.match(statusCheck, /runner predates an installed helper and has not loaded it/);
 
     console.log("worktree-cleanup-test ok");
   } finally {

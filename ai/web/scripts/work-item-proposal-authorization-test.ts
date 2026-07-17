@@ -100,6 +100,13 @@ async function main() {
     const privateTask = await db.task.create({
       data: { projectId: project.id, title: "Private task", private: true },
     });
+    const publicTaskWithPrivateBlocker = await db.task.create({
+      data: {
+        projectId: project.id,
+        title: "Public task with private blocker",
+        blockedById: privateTask.id,
+      },
+    });
     const publicTaskInPrivateEpic = await db.task.create({
       data: { projectId: project.id, epicId: privateEpic.id, title: "Public task under private epic" },
     });
@@ -272,6 +279,26 @@ async function main() {
       { op: "update_task", target: privateTask.id, title: "No private task update" },
     ], proposalActor);
     assert.equal(privateTaskReference.ok, false, "private Task ids cannot resolve in proposal validation");
+
+    const privateCreateBlockerReference = await proposal.validateProposal(project.id, [
+      { op: "create_task", ref: "tmp:dependent", title: "No private blocker", blockedBy: privateTask.id },
+    ], proposalActor);
+    assert.equal(privateCreateBlockerReference.ok, false, "private Task ids cannot be create_task blockers");
+
+    const privateUpdateBlockerReference = await proposal.validateProposal(project.id, [
+      { op: "update_task", target: publicTask.id, blockedBy: privateTask.id },
+    ], proposalActor);
+    assert.equal(privateUpdateBlockerReference.ok, false, "private Task ids cannot be update_task blockers");
+
+    const hiddenCurrentBlockerClear = await proposal.validateProposal(project.id, [
+      { op: "update_task", target: publicTaskWithPrivateBlocker.id, blockedBy: null },
+    ], proposalActor);
+    assert.equal(hiddenCurrentBlockerClear.ok, false, "agents cannot clear an inaccessible current blocker");
+    assert.equal(
+      hiddenCurrentBlockerClear.results.some((result) => result.errors.some((error) => error.includes(privateTask.id))),
+      false,
+      "hidden-current-blocker validation does not disclose the private blocker id",
+    );
 
     const privateEpicTaskReference = await proposal.validateProposal(project.id, [
       { op: "comment_task", target: publicTaskInPrivateEpic.id, body: "No private-epic comment" },

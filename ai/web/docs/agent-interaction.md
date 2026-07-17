@@ -274,12 +274,14 @@ identified by filename and `/api/attachments/<id>` path.
 
 ## Work-Item Proposals (propose → approve)
 
-Implemented for direct PM chats attached to a project, Task/Epic Action
+Implemented for direct PM chats attached to one or more projects, Task/Epic Action
 Plan messages, and human-authored task comments that wake an agent.
 Every human-authored project-scoped turn in those surfaces carries the
 project environment (repo path, git identity, picker defaults, existing
-epics + open tasks) plus a single-use proposal grant. Direct chats also
-mint short-lived context-read grants for the project and for any
+epics + open tasks) plus a single-use proposal grant. In a multi-project
+direct chat, PM emits a separate environment packet, context-read grants,
+proposal URL/token, and independent single-use grant state for every selected
+project (up to eight projects per turn). Direct chats also mint short-lived context-read grants for any
 same-project Task/Epic links pasted in the human message, so the agent
 can fetch authoritative PM JSON from loopback instead of trying to open a
 public browser URL. In Task/Epic Action Plan and task-comment turns, the
@@ -305,9 +307,18 @@ Content-Type: application/json
 
 Operations: `create_epic`, `create_task`, `create_subtask`,
 `update_epic`, `update_task`, `comment_task`. New items take a `ref`
-that must start with `tmp:` and that later ops reference (epic / parent);
+that must start with `tmp:` and that later ops reference (epic / parent /
+blockedBy);
 existing items are addressed by their real id from the project-environment
 block. `assignee` / `actingManager` are usernames (or `null` to unset).
+`create_task.blockedBy` and `update_task.blockedBy` accept an existing
+visible task id or a `create_task` `tmp:` ref declared in the same proposal.
+Omit the field to leave the dependency unchanged; pass `null` to
+`update_task` to clear it. PM applies the same hard-dependency rules as the
+human task editor: the blocker must be a live, non-private task in the same
+project, a task cannot block itself, and circular dependency chains are
+rejected. If a task's current blocker is private/inaccessible, an agent cannot
+replace or clear that hidden relationship.
 **`create_subtask` no longer creates a child Task** — it appends a
 lightweight checklist item (text + completion) to its `parent` Task for
 progress tracking. It carries no assignee/reviewer/status/key; `title`

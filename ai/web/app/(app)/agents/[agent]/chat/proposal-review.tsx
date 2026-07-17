@@ -77,6 +77,7 @@ function fieldRows(op: Op): Array<{ label: string; value: string }> {
     case "create_task":
       add("Ref", "ref");
       add("Epic", "epic");
+      add("Blocked by", "blockedBy");
       add("Description", "description");
       add("Assignee", "assignee");
       add("Acting manager", "actingManager");
@@ -103,6 +104,7 @@ function fieldRows(op: Op): Array<{ label: string; value: string }> {
       add("Description", "description");
       add("Epic", "epic");
       add("Parent", "parent");
+      add("Blocked by", "blockedBy");
       add("Assignee", "assignee");
       add("Acting manager", "actingManager");
       add("Status", "status");

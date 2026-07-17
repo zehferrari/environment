@@ -164,7 +164,9 @@ Versioned under `ai/web/deploy/` (PM-specific) and `ai/openclaw/` (generic):
 | `ai/web/deploy/pm-switch-runner` | monitor-run runner: watch spool, run pm-switch, publish state |
 | `ai/web/deploy/systemd/pm-switch-runner.service` | runner unit (`User=<monitor>`, templated) |
 | `ai/web/deploy/sudoers.d/pm-switch` | one NOPASSWD rule: monitor → `pm-apply-worktree` |
-| `ai/web/deploy/install-pm-switch.sh` | idempotent installer (scripts, unit, sudoers, spool, RW drop-in) |
+| `ai/web/deploy/pm-deploy.env.example` | non-secret host path/tool contract rendered to `/etc/default/pm-deploy` |
+| `ai/web/deploy/install-pm-switch.sh` | idempotent installer (scripts, host contract, unit, sudoers, spool, RW drop-in) |
+| `ai/web/deploy/update-managed-host.sh` | guarded fast-forward + frozen install + migrate/build/restart release command |
 | `ai/web/lib/deploy/{worktrees.ts,actions.ts,switch-registry.ts,repo-key.ts}` · `app/api/system/worktree-switch/status` · `components/worktree-switcher.tsx` | the browser UI + project registry |
 | `ai/web/deploy/worktree-switch.sh` | generic build-and-flip driver for registered non-PM projects |
 | `ai/web/deploy/worktree-switch-runner` · `systemd/worktree-switch-runner@.service` | generic per-project spool runner (`switch`/`on`/`off`/`remove`) |
@@ -185,8 +187,12 @@ sudo zypper --non-interactive install sqlite3
 sudo PM_MONITOR_USER=<monitor-user> ai/web/deploy/install-pm-switch.sh
 ```
 
-Everything is parameterized (`PM_MONITOR_USER`, `PM_WORKTREES_ROOT`,
-`PM_SWITCH_DIR`) — nothing is hardcoded to a specific host or worktree.
+The installer accepts `PM_MONITOR_USER`, `PM_MONITOR_HOME`, `PM_REPO_ROOT`,
+`PM_WORKTREES_ROOT`, `PM_CODE_GROUP`, `PM_SWITCH_DIR`, lock/database/env paths,
+and `PM_PNPM_BIN`. It records the resolved non-secret layout in the trusted
+root-owned `/etc/default/pm-deploy` contract, so the same values cross the
+monitor-runner and sudo-helper boundary. Runtime credentials remain in
+`/etc/default/pm` and are not part of this contract.
 
 ## 5. Caveats
 

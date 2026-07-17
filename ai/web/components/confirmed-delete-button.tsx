@@ -15,6 +15,7 @@
 // satisfy that.
 
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import ConfirmPopup from "@/components/confirm-popup";
 
 export interface ConfirmedDeleteButtonProps {
@@ -35,6 +36,8 @@ export interface ConfirmedDeleteButtonProps {
   buttonTitle?: string;
   /** Aria-label on the trigger button. */
   ariaLabel?: string;
+  /** Optional optimistic UI update after the server confirms deletion. */
+  onSuccess?: () => void;
 }
 
 export default function ConfirmedDeleteButton({
@@ -47,7 +50,9 @@ export default function ConfirmedDeleteButton({
   className,
   buttonTitle,
   ariaLabel,
+  onSuccess,
 }: ConfirmedDeleteButtonProps) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
 
@@ -57,6 +62,12 @@ export default function ConfirmedDeleteButton({
     startTransition(async () => {
       try {
         await action(fd);
+        onSuccess?.();
+        // Some chat surfaces keep a client-side copy of their server-rendered
+        // messages. Refresh after the mutation so those copies receive the
+        // authoritative deletedAt/deletedBy values instead of leaving the
+        // original bubble visible until a full page reload.
+        router.refresh();
       } finally {
         setOpen(false);
       }
