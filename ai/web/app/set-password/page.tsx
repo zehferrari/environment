@@ -62,7 +62,7 @@ export default async function SetPasswordPage({
               <span className="mb-1 block text-text-muted">Confirm password</span>
               <input name="passwordConfirmation" type="password" minLength={MIN_PASSWORD_LENGTH} maxLength={MAX_PASSWORD_LENGTH} required autoComplete="new-password" className="w-full rounded-lg border border-line bg-bg px-3 py-2 outline-none focus:border-accent" />
             </label>
-            <button type="submit" className="w-full rounded-lg bg-accent py-2 font-medium text-white shadow-sm hover:opacity-95">
+            <button type="submit" className="w-full rounded-lg bg-accent py-2 font-medium text-bg shadow-sm hover:opacity-95">
               {isInvitation ? "Activate account" : "Set new password"}
             </button>
           </form>

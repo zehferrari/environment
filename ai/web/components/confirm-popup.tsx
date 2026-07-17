@@ -22,7 +22,7 @@
 //     onCancel={() => setOpen(false)}
 //   />
 
-import { useEffect } from "react";
+import { useEffect, useId, useRef } from "react";
 import { Button, Surface } from "@/components/ui/primitives";
 
 export interface ConfirmPopupProps {
@@ -50,15 +50,61 @@ export default function ConfirmPopup({
   onConfirm,
   onCancel,
 }: ConfirmPopupProps) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+  const onCancelRef = useRef(onCancel);
+  const busyRef = useRef(busy);
+  const titleId = useId();
+  onCancelRef.current = onCancel;
+  busyRef.current = busy;
+
   // Escape-to-cancel — matches what users expect of a native dialog.
   useEffect(() => {
     if (!open) return;
+    previousFocusRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    const frame = window.requestAnimationFrame(() => {
+      const firstFocusable = dialogRef.current?.querySelector<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      (firstFocusable ?? dialogRef.current)?.focus();
+    });
+
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busy) onCancel();
+      if (event.key === "Escape" && !busyRef.current) {
+        event.preventDefault();
+        onCancelRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = Array.from(
+        dialogRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, busy, onCancel]);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", onKey);
+      previousFocusRef.current?.focus();
+    };
+  }, [open]);
 
   if (!open) return null;
 
@@ -68,16 +114,18 @@ export default function ConfirmPopup({
       onClick={() => !busy && onCancel()}
       role="dialog"
       aria-modal="true"
-      aria-labelledby="confirm-popup-title"
+      aria-labelledby={titleId}
     >
       <Surface
+        ref={dialogRef}
+        tabIndex={-1}
         onClick={(event: React.MouseEvent) => event.stopPropagation()}
         elevated
         className="w-full max-w-md space-y-section-gap p-6 animate-in fade-in zoom-in-95 duration-200"
       >
         <div className="flex items-center justify-between">
           <h3
-            id="confirm-popup-title"
+            id={titleId}
             className={`text-body font-semibold uppercase tracking-wider ${danger ? "text-crit" : "text-text-muted"}`}
           >
             {title}

@@ -789,7 +789,7 @@ export default function AgentManagementControls({ agents, defaultPrompt }: Agent
                     type="button"
                     disabled={busy}
                     onClick={handleDelete}
-                    className="cursor-pointer rounded-lg bg-crit px-card py-control-y text-caption font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                    className="cursor-pointer rounded-lg bg-crit px-card py-control-y text-caption font-semibold text-on-crit hover:opacity-90 disabled:opacity-50"
                   >
                     Delete Agent
                   </button>

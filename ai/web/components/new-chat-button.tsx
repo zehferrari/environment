@@ -227,7 +227,7 @@ export default function NewChatButton({
                       type="button"
                       disabled={isPending}
                       onClick={handleDelete}
-                      className="rounded-lg bg-crit px-4 py-1.5 text-caption font-medium text-white hover:opacity-90 transition disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
+                      className="rounded-lg bg-crit px-4 py-1.5 text-caption font-medium text-on-crit hover:opacity-90 transition disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
                     >
                       {isPending ? (
                         <>

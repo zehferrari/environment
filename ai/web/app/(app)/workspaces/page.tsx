@@ -81,7 +81,7 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {!showingArchived && viewer.isOwner ? (
-            <a href="#new-workspace" className="rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-white shadow-sm hover:opacity-90">
+            <a href="#new-workspace" className="rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-bg shadow-sm hover:opacity-90">
               New workspace
             </a>
           ) : null}
@@ -122,7 +122,7 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
                 <option value="other">Other</option>
               </select>
             </label>
-            <button type="submit" className="self-end rounded-lg bg-accent px-control-x py-control-y text-body font-semibold text-white shadow-sm hover:opacity-90">
+            <button type="submit" className="self-end rounded-lg bg-accent px-control-x py-control-y text-body font-semibold text-bg shadow-sm hover:opacity-90">
               Create
             </button>
           </div>

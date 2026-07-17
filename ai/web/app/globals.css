@@ -1,20 +1,22 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg: #f7f8fb;
-  --color-bg-elev: #f0f2f7;
+  --color-bg: #f4f6fb;
+  --color-bg-elev: #edf1f7;
   --color-panel: #ffffff;
-  --color-panel-soft: #f8fafc;
-  --color-line: #e5e7eb;
-  --color-line-strong: #cbd5e1;
-  --color-text: #111827;
-  --color-text-muted: #64748b;
-  --color-text-dim: #94a3b8;
-  --color-accent: #6c5ce7;
-  --color-accent-soft: #f0efff;
+  --color-panel-soft: #f7f9fc;
+  --color-line: #dfe4ec;
+  --color-line-strong: #bdc6d5;
+  --color-text: #172033;
+  --color-text-muted: #5f6b7d;
+  --color-text-dim: #657184;
+  --color-accent: #6257e8;
+  --color-accent-soft: #eeecff;
+  --color-accent-strong: #4d42d0;
   --color-ok: #16a34a;
   --color-warn: #d97706;
   --color-crit: #dc2626;
+  --color-on-crit: #ffffff;
   --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --spacing-page-x: 1.5rem;
@@ -57,8 +59,18 @@
 
 :root {
   color-scheme: light;
+  --shadow-xs: 0 1px 2px rgb(20 31 55 / 0.05);
+  --shadow-sm: 0 1px 3px rgb(20 31 55 / 0.07), 0 8px 24px rgb(20 31 55 / 0.04);
+  --shadow-md: 0 2px 6px rgb(20 31 55 / 0.08), 0 16px 42px rgb(20 31 55 / 0.08);
+  --shadow-float: 0 18px 50px rgb(20 31 55 / 0.16);
+  --focus-ring: 0 0 0 3px rgb(98 87 232 / 0.2);
+  --status-backlog: #475569;
+  --status-todo: #6040bd;
+  --status-progress: #0369a1;
+  --status-review: #9a5b07;
+  --status-done: #187944;
   /* Data-viz categorical slots (activity stream). Values validated per mode
-     against the panel surface (#ffffff / #1b1d24) with the dataviz palette
+     against the panel surface (#ffffff / #171d27) with the dataviz palette
      checker — swap both modes together, never one side alone. */
   --viz-work: #2a78d6;
   --viz-chat: #1baf7a;
@@ -72,32 +84,105 @@
   --viz-chat: #199e70;
   --viz-agents: #c98500;
   --viz-muted: #777f91;
-  --color-bg: #111217;
-  --color-bg-elev: #171920;
-  --color-panel: #1b1d24;
-  --color-panel-soft: #22242c;
-  --color-line: #303442;
-  --color-line-strong: #4b5163;
-  --color-text: #eef1f7;
-  --color-text-muted: #a7adbb;
-  --color-text-dim: #777f91;
-  --color-accent: #8b7cff;
-  --color-accent-soft: #262344;
+  --color-bg: #0d1118;
+  --color-bg-elev: #121823;
+  --color-panel: #171d27;
+  --color-panel-soft: #1d2531;
+  --color-line: #2c3543;
+  --color-line-strong: #465267;
+  --color-text: #eef2f8;
+  --color-text-muted: #a5afbf;
+  --color-text-dim: #8792a4;
+  --color-accent: #9388ff;
+  --color-accent-soft: #282542;
+  --color-accent-strong: #aca4ff;
   --color-ok: #34d36f;
   --color-warn: #f6b34d;
   --color-crit: #ff6b6b;
+  --color-on-crit: #0d1118;
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.25);
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.28), 0 10px 28px rgb(0 0 0 / 0.12);
+  --shadow-md: 0 2px 8px rgb(0 0 0 / 0.34), 0 18px 48px rgb(0 0 0 / 0.2);
+  --shadow-float: 0 22px 60px rgb(0 0 0 / 0.42);
+  --focus-ring: 0 0 0 3px rgb(147 136 255 / 0.24);
+  --status-backlog: #94a3b8;
+  --status-todo: #a78bfa;
+  --status-progress: #38bdf8;
+  --status-review: #f6b34d;
+  --status-done: #4ade80;
 }
 
 html, body {
-  background: var(--color-bg);
   color: var(--color-text);
   font-family: var(--font-sans);
   min-height: 100vh;
 }
 
+html {
+  background: var(--color-bg);
+}
+
 body {
+  background:
+    radial-gradient(circle at 72% -10%, color-mix(in srgb, var(--color-accent) 10%, transparent), transparent 34rem),
+    radial-gradient(circle at 18% 18%, color-mix(in srgb, #38bdf8 5%, transparent), transparent 28rem),
+    var(--color-bg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+a, button, input, select, textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+[role="button"] {
+  cursor: pointer;
+}
+
+button:disabled,
+[role="button"][aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+:where(a, button, input, select, textarea, summary, [role="button"], [role="link"]):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-text-dim);
+}
+
+* {
+  scrollbar-color: var(--color-line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-none {
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
 }
 
 /* Firefox/Wayland can leave a stale hit-test layer after fixed full-page
@@ -123,6 +208,87 @@ body {
 ::selection {
   background: var(--color-accent-soft);
   color: var(--color-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:focus-within {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Board status treatments share one semantic color hook, supplied by each
+   lane/card through --board-status. Keeping the tint here makes light/dark
+   surfaces consistent and avoids hard-coded light-only utility palettes. */
+.board-lane {
+  background: color-mix(in srgb, var(--board-status) 5%, var(--color-panel-soft));
+  border-color: color-mix(in srgb, var(--board-status) 24%, var(--color-line));
+  box-shadow: var(--shadow-xs);
+}
+
+.board-lane::before {
+  background: var(--board-status);
+  border-radius: 999px;
+  content: "";
+  height: 3px;
+  inset: 0.45rem 0.75rem auto;
+  opacity: 0.8;
+  pointer-events: none;
+  position: absolute;
+}
+
+.board-lane[data-over="true"] {
+  background: color-mix(in srgb, var(--board-status) 10%, var(--color-panel));
+  border-color: color-mix(in srgb, var(--board-status) 58%, var(--color-line));
+  box-shadow: var(--focus-ring), var(--shadow-sm);
+}
+
+.board-status-pill {
+  background: color-mix(in srgb, var(--board-status) 11%, var(--color-panel));
+  border-color: color-mix(in srgb, var(--board-status) 30%, var(--color-line));
+  color: var(--board-status);
+}
+
+.board-task-card {
+  --card-status: var(--board-status, var(--color-accent));
+  background: var(--color-panel);
+  border-color: var(--color-line);
+  box-shadow: var(--shadow-xs);
+}
+
+.board-task-card::before {
+  background: var(--card-status);
+  border-radius: 0 999px 999px 0;
+  content: "";
+  inset: 0.7rem auto 0.7rem 0;
+  opacity: 0.72;
+  pointer-events: none;
+  position: absolute;
+  width: 3px;
+}
+
+.board-task-card:hover {
+  border-color: color-mix(in srgb, var(--card-status) 30%, var(--color-line));
+  box-shadow: var(--shadow-sm);
+}
+
+.board-task-card[data-selected="true"] {
+  background: color-mix(in srgb, var(--color-accent) 5%, var(--color-panel));
+  border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-line));
+  box-shadow: var(--focus-ring), var(--shadow-xs);
+}
+
+.board-task-card--planning {
+  --card-status: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 5%, var(--color-panel));
 }
 
 /* Markdown body — descriptions, chat messages.

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useRef } from "react";
 
 export default function ProjectTabs({
   slug,
@@ -17,6 +18,7 @@ export default function ProjectTabs({
   canAccessSettings?: boolean;
 }) {
   const pathname = usePathname() ?? "";
+  const activeTabRef = useRef<HTMLAnchorElement | null>(null);
   const base = `/projects/${slug}`;
   const sub = pathname.startsWith(base) ? pathname.slice(base.length) : "";
   // Tab order: Summary (repo README) leads when present; Code/Changes sit after
@@ -44,24 +46,38 @@ export default function ProjectTabs({
     }
     return sub === href || sub.startsWith(href + "/");
   }
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      activeTabRef.current?.scrollIntoView({ block: "nearest", inline: "center" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pathname]);
+
   return (
-    <nav className="mb-4 flex items-center gap-1 border-b border-line text-body">
-      {tabs.map((t) => {
-        const active = isActive(t.href);
-        return (
-          <Link
-            key={t.href}
-            href={`${base}${t.href}`}
-            className={
-              active
-                ? "border-b-2 border-accent px-3 py-2 -mb-px font-medium text-text"
-                : "border-b-2 border-transparent px-3 py-2 -mb-px text-text-muted hover:text-text"
-            }
-          >
-            {t.label}
-          </Link>
-        );
-      })}
+    <nav
+      aria-label="Project sections"
+      className="scrollbar-none mb-5 overflow-x-auto rounded-xl border border-line bg-panel/90 p-1.5 text-body shadow-[var(--shadow-sm)] backdrop-blur"
+    >
+      <div className="flex min-w-max items-center gap-1">
+        {tabs.map((t) => {
+          const active = isActive(t.href);
+          return (
+            <Link
+              key={t.href}
+              ref={active ? activeTabRef : undefined}
+              href={`${base}${t.href}`}
+              aria-current={active ? "page" : undefined}
+              className={
+                active
+                  ? "rounded-lg bg-accent px-3 py-2 font-semibold text-bg shadow-[var(--shadow-xs)]"
+                  : "rounded-lg px-3 py-2 font-medium text-text-muted transition hover:bg-panel-soft hover:text-text"
+              }
+            >
+              {t.label}
+            </Link>
+          );
+        })}
+      </div>
     </nav>
   );
 }

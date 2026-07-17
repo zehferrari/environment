@@ -113,7 +113,7 @@ export default async function RotatePasswordPage({
 
         <button
           type="submit"
-          className="w-full rounded-lg bg-accent text-white font-medium py-2 shadow-sm hover:opacity-95"
+          className="w-full rounded-lg bg-accent text-bg font-medium py-2 shadow-sm hover:opacity-95"
         >
           Update password
         </button>

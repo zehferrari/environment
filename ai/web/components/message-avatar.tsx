@@ -70,7 +70,7 @@ export function MessageAvatar({
       <Avatar
         size={size}
         shape="square"
-        className="border-accent bg-accent text-white"
+        className="border-accent bg-accent text-bg"
         title={actorDisplayName(actor)}
         aria-label={`${actorDisplayName(actor)} avatar`}
       >

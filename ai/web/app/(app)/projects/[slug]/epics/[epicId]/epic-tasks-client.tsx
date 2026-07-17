@@ -187,7 +187,7 @@ export default function EpicTasksClient({
             <button
               type="button"
               onClick={bulkDeleteSelected}
-              className="rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-semibold text-crit transition hover:bg-crit hover:text-bg"
+              className="rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-semibold text-crit transition hover:bg-crit hover:text-on-crit"
             >
               Delete selected
             </button>

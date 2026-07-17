@@ -232,7 +232,7 @@ export default function ChatInput({
               <button
                 type="submit"
                 disabled={!canSend}
-                className="rounded-lg bg-accent px-card py-control-y text-body font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
+                className="rounded-lg bg-accent px-card py-control-y text-body font-medium text-bg transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
               >
                 {viewingArchive ? "Start Child Chat" : "Send"}
               </button>

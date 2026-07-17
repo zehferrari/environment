@@ -731,7 +731,7 @@ export default function AgentImagesPanel({
               type="button"
               disabled={!canEdit || pending || !dirty || waitingForStagedImages}
               onClick={save}
-              className="rounded-card bg-accent px-card py-control-y text-body font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-card bg-accent px-card py-control-y text-body font-medium text-bg disabled:cursor-not-allowed disabled:opacity-40"
             >
               {pending ? "Saving..." : "Save"}
             </button>

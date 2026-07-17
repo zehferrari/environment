@@ -276,7 +276,7 @@ export default function WorkspaceSettingsClient({
           <button
             type="submit"
             disabled={saving}
-            className="rounded-lg bg-accent px-control-x py-control-y text-body font-semibold text-white shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-lg bg-accent px-control-x py-control-y text-body font-semibold text-bg shadow-sm hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {saving ? "Saving..." : "Save settings"}
           </button>
@@ -448,7 +448,7 @@ export default function WorkspaceSettingsClient({
         <button
           type="submit"
           disabled={saving}
-          className="rounded-lg bg-accent px-5 py-3 text-body font-semibold text-white shadow-lg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          className="rounded-lg bg-accent px-5 py-3 text-body font-semibold text-bg shadow-lg hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {saving ? "Saving settings..." : "Save workspace settings"}
         </button>

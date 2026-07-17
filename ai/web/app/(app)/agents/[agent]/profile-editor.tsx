@@ -122,7 +122,7 @@ export default function ProfileEditor({ agent, files, canEdit }: { agent: string
           className="w-full rounded-card border border-line bg-bg px-3 py-2 font-mono text-caption outline-none focus:border-accent disabled:opacity-70"
         />
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={save} disabled={!canEdit || !changed || pending} className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-white disabled:cursor-not-allowed disabled:opacity-40">Save</button>
+          <button type="button" onClick={save} disabled={!canEdit || !changed || pending} className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-bg disabled:cursor-not-allowed disabled:opacity-40">Save</button>
           <button type="button" onClick={reload} disabled={pending} className="rounded-lg border border-line px-control-x py-control-y text-body hover:border-accent">Reload</button>
           {!canEdit ? <span className="text-caption text-warn">Read-only: agents can edit only themselves; the Mission Control owner can edit all.</span> : null}
           {state.kind !== "idle" ? <span className={`text-caption ${state.kind === "error" ? "text-crit" : "text-text-muted"}`}>{state.kind === "saving" ? "Saving…" : state.message}</span> : null}

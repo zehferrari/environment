@@ -187,7 +187,7 @@ export default function AtlasControls({ agent, canEdit, integrations, capabiliti
             <p className="mt-3 text-caption text-text-muted">Saved through the Atlas credentials endpoint under the agent’s credential store.</p>
             <div className="mt-4 flex justify-end gap-2">
               <button type="button" onClick={() => setCredIntegration(null)} className="rounded-lg border border-line px-control-x py-control-y text-body">Cancel</button>
-              <button type="button" disabled={busy === `cred:${credIntegration}`} onClick={saveCredentials} className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-white disabled:cursor-not-allowed disabled:opacity-40">Save</button>
+              <button type="button" disabled={busy === `cred:${credIntegration}`} onClick={saveCredentials} className="rounded-lg bg-accent px-control-x py-control-y text-body font-medium text-bg disabled:cursor-not-allowed disabled:opacity-40">Save</button>
             </div>
           </div>
         </div>

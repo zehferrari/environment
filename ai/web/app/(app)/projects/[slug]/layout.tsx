@@ -44,22 +44,22 @@ export default async function ProjectLayout({
 
   return (
     <div>
-      <header className="mb-2">
-        <h1 className="text-display font-semibold tracking-tight">
+      <header className="mb-4">
+        <div className="mb-2 flex items-center gap-2 text-caption font-medium text-text-muted">
+          <Link
+            href="/projects"
+            className="rounded-md px-1.5 py-0.5 transition hover:bg-accent-soft hover:text-accent"
+          >
+            Projects
+          </Link>
+          <span className="text-text-dim">/</span>
+          <span className="truncate font-mono text-micro uppercase tracking-[0.12em]">{project.slug}</span>
+        </div>
+        <h1 className="text-display font-semibold tracking-[-0.035em] text-text">
           <Link href={`/projects/${project.slug}`} className="hover:underline">
             {project.name}
           </Link>
         </h1>
-        <div className="flex items-center gap-1 text-caption text-text-muted">
-          <Link
-            href="/projects"
-            className="hover:text-text hover:underline"
-          >
-            projects
-          </Link>
-          <span>/</span>
-          <span>{project.slug}</span>
-        </div>
       </header>
       <ProjectTabs
         slug={project.slug}

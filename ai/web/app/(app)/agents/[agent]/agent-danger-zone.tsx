@@ -67,7 +67,7 @@ export default function AgentDangerZone({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="mt-3 cursor-pointer rounded-lg bg-crit px-card py-control-y text-caption font-semibold text-white transition hover:opacity-90"
+        className="mt-3 cursor-pointer rounded-lg bg-crit px-card py-control-y text-caption font-semibold text-on-crit transition hover:opacity-90"
       >
         Remove agent
       </button>
@@ -156,7 +156,7 @@ export default function AgentDangerZone({
                 type="button"
                 disabled={busy || !matches}
                 onClick={remove}
-                className="cursor-pointer rounded-lg bg-crit px-card py-control-y text-caption font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                className="cursor-pointer rounded-lg bg-crit px-card py-control-y text-caption font-semibold text-on-crit hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {busy ? "Removing…" : "Remove agent"}
               </button>

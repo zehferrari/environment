@@ -266,7 +266,7 @@ export default function AddProjectFab({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-2 rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-white shadow-sm hover:opacity-90"
+        className="inline-flex items-center gap-2 rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-bg shadow-sm hover:opacity-90"
       >
         <span aria-hidden="true" className="text-lg leading-none">+</span>
         <span>New project</span>

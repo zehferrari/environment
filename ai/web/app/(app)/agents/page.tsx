@@ -765,7 +765,7 @@ export default async function AgentsPage() {
                   <span className="flex-1" />
                   <Link
                     href={`/agents/${a.slug}/chat`}
-                    className="grid h-10 w-10 place-items-center rounded-full border border-accent/30 bg-accent-soft text-accent shadow-sm transition hover:bg-accent hover:text-white"
+                    className="grid h-10 w-10 place-items-center rounded-full border border-accent/30 bg-accent-soft text-accent shadow-sm transition hover:bg-accent hover:text-bg"
                     title={`Chat with ${a.name}`}
                     aria-label={`Chat with ${a.name}`}
                   >

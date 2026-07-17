@@ -15,7 +15,7 @@ export const Card = React.forwardRef<
     <div
       ref={ref}
       className={cn(
-        "rounded-card border border-line",
+        "rounded-card border border-line shadow-[var(--shadow-xs)] transition-[border-color,box-shadow]",
         tone === "panel" && "bg-panel",
         tone === "soft" && "bg-panel-soft",
         tone === "bg" && "bg-bg",
@@ -45,7 +45,7 @@ export const Surface = React.forwardRef<HTMLElement, SurfaceProps>(function Surf
       ref={ref as never}
       className={cn(
         "rounded-panel border border-line bg-panel",
-        elevated ? "shadow-2xl" : "shadow-sm",
+        elevated ? "shadow-[var(--shadow-float)]" : "shadow-[var(--shadow-sm)]",
         padding === "sm" && "p-3",
         padding === "md" && "p-card",
         padding === "lg" && "p-card-lg",
@@ -68,10 +68,10 @@ export const Button = React.forwardRef<
       ref={ref}
       type={type}
       className={cn(
-        "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg font-medium transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45 md:min-h-0 md:active:scale-100 cursor-pointer",
-        variant === "primary" && "bg-accent text-bg hover:opacity-90",
-        variant === "ghost" && "border border-line bg-panel-soft text-text-muted hover:border-accent hover:text-accent",
-        variant === "danger" && "bg-crit text-white hover:opacity-90",
+        "inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg font-medium shadow-[var(--shadow-xs)] transition-[transform,background-color,border-color,color,box-shadow,opacity] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45 md:min-h-0 md:active:scale-100 cursor-pointer",
+        variant === "primary" && "bg-accent text-bg hover:bg-accent-strong hover:shadow-[var(--shadow-sm)]",
+        variant === "ghost" && "border border-line bg-panel text-text-muted hover:border-line-strong hover:bg-panel-soft hover:text-text",
+        variant === "danger" && "bg-crit text-on-crit hover:opacity-90",
         variant === "dangerGhost" && "border border-crit/30 bg-crit/[0.04] text-crit hover:bg-crit/[0.08]",
         variant === "icon" && "text-text-muted hover:bg-panel-soft hover:text-text",
         size === "sm" && "px-3 py-2 text-caption md:py-1",
@@ -93,7 +93,7 @@ export const Input = React.forwardRef<
     <input
       ref={ref}
       className={cn(
-        "min-h-11 w-full rounded-lg border border-line bg-bg px-3 py-2 text-body text-text outline-none transition focus:border-accent disabled:opacity-50 md:min-h-0",
+        "min-h-11 w-full rounded-lg border border-line bg-panel px-3 py-2 text-body text-text shadow-[var(--shadow-xs)] outline-none transition-[border-color,box-shadow] focus:border-accent focus:shadow-[var(--focus-ring)] disabled:opacity-50 md:min-h-0",
         className,
       )}
       {...props}
@@ -109,7 +109,7 @@ export const Textarea = React.forwardRef<
     <textarea
       ref={ref}
       className={cn(
-        "min-h-11 w-full resize-none rounded-lg border border-line bg-bg px-3 py-2 text-body text-text outline-none transition focus:border-accent disabled:opacity-50 md:min-h-0",
+        "min-h-11 w-full resize-none rounded-lg border border-line bg-panel px-3 py-2 text-body text-text shadow-[var(--shadow-xs)] outline-none transition-[border-color,box-shadow] focus:border-accent focus:shadow-[var(--focus-ring)] disabled:opacity-50 md:min-h-0",
         className,
       )}
       {...props}

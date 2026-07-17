@@ -489,7 +489,7 @@ function RoomArchiveButton({
                     type="button"
                     disabled={isPending}
                     onClick={() => runArchive(true)}
-                    className="rounded-lg bg-crit px-4 py-1.5 text-caption font-semibold text-white transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
+                    className="rounded-lg bg-crit px-4 py-1.5 text-caption font-semibold text-on-crit transition hover:opacity-90 disabled:opacity-50 cursor-pointer"
                   >
                     {isPending ? "Deleting..." : "Move to bin"}
                   </button>

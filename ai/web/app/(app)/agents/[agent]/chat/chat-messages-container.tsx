@@ -309,7 +309,7 @@ export default function ChatMessagesContainer({
           {visibleParentsCount < parentArchives.length ? (
             <button
               onClick={() => setVisibleParentsCount((prev) => prev + 1)}
-              className="inline-flex items-center gap-1.5 px-control-x py-control-y rounded-lg border border-accent/20 bg-accent/10 text-caption font-semibold text-accent hover:bg-accent hover:text-white transition cursor-pointer select-none"
+              className="inline-flex items-center gap-1.5 px-control-x py-control-y rounded-lg border border-accent/20 bg-accent/10 text-caption font-semibold text-accent hover:bg-accent hover:text-bg transition cursor-pointer select-none"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>

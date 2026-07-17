@@ -201,8 +201,8 @@ function NavItem({
       href={href}
       title={collapsed ? label : undefined}
       aria-current={active ? "page" : undefined}
-      className={`flex items-center gap-3 rounded-lg py-1.5 font-medium hover:bg-accent-soft hover:text-accent ${
-        active ? "text-accent" : "text-text-muted"
+      className={`relative flex items-center gap-3 rounded-lg py-1.5 font-medium transition-[background-color,color,box-shadow] hover:bg-accent-soft hover:text-accent ${
+        active ? "bg-accent-soft text-accent shadow-[inset_3px_0_0_var(--color-accent)]" : "text-text-muted"
       } ${collapsed ? "justify-center px-0" : "px-3"}`}
     >
       <NavTile icon={icon} color={color} />
@@ -369,11 +369,11 @@ export default function SidebarNav({
   return (
     <>
     <aside
-      className={`sticky top-0 hidden h-screen shrink-0 flex-col border-r border-line bg-panel transition-[width] duration-200 md:flex ${
+      className={`sticky top-0 z-30 hidden h-screen shrink-0 flex-col border-r border-line bg-panel/90 shadow-[8px_0_30px_rgba(20,31,55,0.035)] backdrop-blur-xl transition-[width] duration-200 md:flex ${
         collapsed ? "w-16" : "w-64"
       }`}
     >
-      <div className="border-b border-line px-3 py-4">
+      <div className="border-b border-line bg-gradient-to-br from-accent-soft/55 to-transparent px-3 py-4">
         <div
           className={
             collapsed
@@ -382,7 +382,7 @@ export default function SidebarNav({
           }
         >
           <Link href="/" title={collapsed ? `${meName} / Mission Control` : undefined} className="flex min-w-0 items-center gap-2 rounded-lg hover:text-accent">
-            <AvatarStatus sizeClass="h-8 w-8" roundedClass="rounded-lg" className="bg-accent text-body font-bold text-white shadow-sm">
+            <AvatarStatus sizeClass="h-8 w-8" roundedClass="rounded-lg" className="bg-accent text-body font-bold text-bg shadow-sm">
               {userAvatarVersion != null && userId ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={`/api/users/${userId}/avatar?v=${userAvatarVersion}`} alt="" className="h-full w-full object-cover" />
@@ -463,8 +463,8 @@ export default function SidebarNav({
                 key={agent.slug}
                 href={href}
                 title={collapsed ? `${agent.name} · ${agent.status}` : undefined}
-                className={`flex items-center gap-3 rounded-lg py-1.5 hover:bg-accent-soft hover:text-accent ${
-                  active ? "text-accent" : "text-text-muted"
+                className={`flex items-center gap-3 rounded-lg py-1.5 transition-[background-color,color,box-shadow] hover:bg-accent-soft hover:text-accent ${
+                  active ? "bg-accent-soft text-accent shadow-[inset_3px_0_0_var(--color-accent)]" : "text-text-muted"
                 } ${collapsed ? "justify-center px-0" : "px-3"}`}
               >
                 {/* Avatar: busy → discreet pulsing ring (opacity only, kept
@@ -568,7 +568,7 @@ export default function SidebarNav({
       aria-label="Open full navigation"
       aria-haspopup="dialog"
       aria-expanded={mobileMenuOpen}
-      className="fixed bottom-[calc(env(safe-area-inset-bottom)+5.75rem)] left-4 z-40 grid h-12 w-12 place-items-center rounded-2xl bg-accent text-body font-bold text-white shadow-lg shadow-black/20 md:hidden"
+      className="fixed bottom-[calc(env(safe-area-inset-bottom)+5.75rem)] left-4 z-40 grid h-12 w-12 place-items-center rounded-2xl bg-accent text-body font-bold text-bg shadow-[var(--shadow-float)] transition hover:bg-accent-strong md:hidden"
     >
       {meInitial}
       {hasUnreadAgents ? (
@@ -578,7 +578,7 @@ export default function SidebarNav({
 
     <nav
       aria-label="Mobile primary navigation"
-      className="fixed inset-x-3 bottom-3 z-40 rounded-3xl border border-line bg-panel/95 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 shadow-2xl shadow-black/20 backdrop-blur md:hidden"
+      className="fixed inset-x-3 bottom-3 z-40 rounded-3xl border border-line bg-panel/95 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 shadow-[var(--shadow-float)] backdrop-blur md:hidden"
     >
       <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${mobilePrimaryItems.length}, minmax(0, 1fr))` }}>
         {mobilePrimaryItems.map((item) => (
@@ -588,7 +588,7 @@ export default function SidebarNav({
             aria-label={item.label}
             aria-current={item.active ? "page" : undefined}
             className={`relative flex min-h-12 flex-col items-center justify-center gap-0.5 rounded-2xl px-1 text-nano font-semibold transition-colors hover:bg-accent-soft hover:text-accent ${
-              item.active ? "text-accent" : "text-text-muted"
+              item.active ? "bg-accent-soft text-accent" : "text-text-muted"
             }`}
           >
             <span className="relative grid h-8 w-8 place-items-center">
@@ -624,7 +624,7 @@ export default function SidebarNav({
           <div className="mx-auto mt-3 h-1.5 w-12 rounded-full bg-line" aria-hidden="true" />
           <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-4">
             <div className="flex min-w-0 items-center gap-3">
-              <div className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-2xl bg-accent text-body font-bold text-white shadow-sm">{userAvatarVersion != null && userId ? <img src={`/api/users/${userId}/avatar?v=${userAvatarVersion}`} alt="" className="h-full w-full object-cover" /> : meInitial}</div>
+              <div className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-2xl bg-accent text-body font-bold text-bg shadow-sm">{userAvatarVersion != null && userId ? <img src={`/api/users/${userId}/avatar?v=${userAvatarVersion}`} alt="" className="h-full w-full object-cover" /> : meInitial}</div>
               <div className="min-w-0">
                 <h2 id="mobile-nav-title" className="truncate text-body font-semibold tracking-tight">{meName}</h2>
                 <p className="truncate text-caption text-text-muted">Mission Control</p>
@@ -883,7 +883,7 @@ function WorkspaceNavGroup({
                   onClick={onNavigate}
                   title={collapsed ? project.name : undefined}
                   aria-current={projectActive ? "page" : undefined}
-                  className={`${projectRowClass} ${projectActive ? "text-accent" : "text-text-muted"}`}
+                  className={`${projectRowClass} ${projectActive ? "bg-accent-soft text-accent shadow-[inset_3px_0_0_var(--color-accent)]" : "text-text-muted"}`}
                 >
                   <span
                     className="grid h-6 w-6 shrink-0 place-items-center rounded-md border text-[10px] font-semibold uppercase"

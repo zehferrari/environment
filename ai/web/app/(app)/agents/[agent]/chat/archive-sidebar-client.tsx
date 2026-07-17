@@ -393,8 +393,8 @@ export default function ArchiveSidebarClient({
                   className={`relative h-5.5 w-5.5 rounded-md flex items-center justify-center text-nano font-medium transition-all ${
                     hasChat
                       ? isSelected
-                        ? "bg-accent text-white font-bold"
-                        : "bg-accent/10 text-accent font-semibold border border-accent/20 cursor-pointer hover:bg-accent hover:text-white"
+                        ? "bg-accent text-bg font-bold"
+                        : "bg-accent/10 text-accent font-semibold border border-accent/20 cursor-pointer hover:bg-accent hover:text-bg"
                       : "text-text-muted/60"
                   } ${
                     isHovered || isArchiveHoverActive

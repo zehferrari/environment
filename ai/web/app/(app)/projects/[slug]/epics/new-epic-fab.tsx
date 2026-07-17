@@ -183,9 +183,10 @@ export default function NewEpicFab({
         type="button"
         onClick={() => setOpen(true)}
         aria-label="New epic"
-        className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90"
+        className="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 items-center justify-center gap-2 rounded-2xl bg-accent px-4 text-bg shadow-[var(--shadow-float)] transition-[transform,background-color,box-shadow] hover:-translate-y-0.5 hover:bg-accent-strong md:bottom-6 md:right-6 md:h-12"
       >
-        <span className="-mt-0.5">+</span>
+        <span className="text-2xl leading-none" aria-hidden="true">+</span>
+        <span className="text-body font-semibold">New epic</span>
       </button>
     </>
   );

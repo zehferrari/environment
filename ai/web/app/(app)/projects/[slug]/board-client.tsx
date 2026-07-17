@@ -1,10 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import {
+  closestCenter,
   DndContext,
   DragOverlay,
+  KeyboardSensor,
   PointerSensor,
   pointerWithin,
   rectIntersection,
@@ -18,12 +21,14 @@ import {
 import {
   SortableContext,
   arrayMove,
+  sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { MoveTaskResult } from "./page";
 import {
+  actorDisplayName,
   MessageAvatar,
   type MessageActor,
 } from "@/components/message-avatar";
@@ -68,7 +73,7 @@ function BlockedBadge({ task }: { task: Task }) {
   if (!task.blockedByKey) return null;
   return (
     <span
-      className="ml-auto inline-flex items-center gap-1 text-nano font-semibold text-crit"
+      className="ml-auto inline-flex items-center gap-1 rounded-md bg-crit/[0.07] px-1.5 py-0.5 text-micro font-semibold text-crit"
       title={`Blocked by ${task.blockedByKey} — it must be Done first`}
     >
       <LockGlyph />
@@ -114,15 +119,18 @@ function SubtaskProgress({ task }: { task: Task }) {
       role="img"
       aria-label={`${d} of ${n} sub-tasks done`}
       title={`${d}/${n} sub-tasks done${time}`}
-      className="inline-flex h-1.5 w-16 shrink-0 items-center gap-[2px]"
+      className="inline-flex shrink-0 items-center gap-1.5"
     >
-      {Array.from({ length: n }, (_, i) => (
-        <span
-          key={i}
-          className="h-full min-w-0 flex-1 rounded-pixel"
-          style={{ backgroundColor: i < d ? fill : "var(--color-text-muted)" }}
-        />
-      ))}
+      <span className="inline-flex h-1.5 w-12 items-center gap-[2px]" aria-hidden="true">
+        {Array.from({ length: n }, (_, i) => (
+          <span
+            key={i}
+            className="h-full min-w-0 flex-1 rounded-pixel"
+            style={{ backgroundColor: i < d ? fill : "var(--color-line-strong)" }}
+          />
+        ))}
+      </span>
+      <span className="text-micro font-medium tabular-nums text-text-muted">{d}/{n}</span>
     </span>
   );
 }
@@ -144,12 +152,15 @@ type BoardProps = {
 
 // Per Stage 0 sign-off (HOMELAB-44 description): the Backlog column has a
 // show/hide toggle, defaults to hidden. Preference persists per project in
-// localStorage so each board remembers its own state across reloads.
+// localStorage so each project/workspace board remembers its own state.
 const BACKLOG_VISIBLE_KEY_PREFIX = "pm.board.backlogVisible.";
 
 // Workflow Focus mirrors the Backlog toggle: hidden by default, with the
-// preference persisted per project so each board remembers its own state.
+// preference persisted per board so each board remembers its own state.
 const FOCUS_VISIBLE_KEY_PREFIX = "pm.board.focusVisible.";
+
+const DENSITY_KEY_PREFIX = "pm.board.compact.";
+const DONE_VISIBLE_KEY_PREFIX = "pm.board.doneVisible.";
 
 // Backlog rows are full-width while the four workflow columns are
 // quarter-width. closestCorners can't disambiguate here: a full-width drag
@@ -159,9 +170,10 @@ const FOCUS_VISIBLE_KEY_PREFIX = "pm.board.focusVisible.";
 // drop resolved its `over` back to "Backlog", hit the same-status no-op, and
 // snapped the card back. Pointer-based detection targets whatever sits under
 // the cursor, which is unambiguous regardless of element width; fall back to
-// rectIntersection for the rare frame where the pointer is over a gap.
-// Pointer-only is safe because the board uses just the PointerSensor.
+// rectIntersection for the rare pointer frame where the cursor is over a gap.
+// Keyboard dragging has no pointer coordinates, so it uses closest-center.
 const boardCollisionDetection: CollisionDetection = (args) => {
+  if (!args.pointerCoordinates) return closestCenter(args);
   const pointer = pointerWithin(args);
   return pointer.length > 0 ? pointer : rectIntersection(args);
 };
@@ -169,6 +181,8 @@ const boardCollisionDetection: CollisionDetection = (args) => {
 export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus = false, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
   const router = useRouter();
   const resolvedBoardStreamUrl = boardStreamUrl === undefined ? `/api/projects/${projectSlug}/board/stream` : boardStreamUrl;
+  const preferenceKey = resolvedBoardStreamUrl ?? projectSlug;
+  const legacyPreferenceKey = boardStreamUrl === undefined ? projectSlug : null;
   const isMobileBoard = useIsMobileBoard();
   const [items, setItems] = useState<Task[]>(tasks);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -177,6 +191,7 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
   const [bulkTarget, setBulkTarget] = useState("To Do");
   const [isPending, startTransition] = useTransition();
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
   const [now, setNow] = useState<number | null>(null);
   // Server-render and first client-render both start hidden so React
   // hydration matches; the stored preference (if any) is applied in a
@@ -184,7 +199,11 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
   // hydration mismatch.
   const [backlogVisible, setBacklogVisible] = useState(false);
   const [focusVisible, setFocusVisible] = useState(false);
-  const [prefsHydrated, setPrefsHydrated] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [attentionOnly, setAttentionOnly] = useState(false);
+  const [doneVisible, setDoneVisible] = useState(true);
+  const [compact, setCompact] = useState(false);
+  const [preferencesScope, setPreferencesScope] = useState<string | null>(null);
 
   // Server is the source of truth: when revalidatePath re-renders this
   // page with fresh tasks (status, rank), reset the local optimistic
@@ -279,46 +298,60 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
   useEffect(() => {
     try {
       const stored = window.localStorage.getItem(
-        BACKLOG_VISIBLE_KEY_PREFIX + projectSlug,
-      );
-      if (stored === "true") setBacklogVisible(true);
-      else if (stored === "false") setBacklogVisible(false);
+        BACKLOG_VISIBLE_KEY_PREFIX + preferenceKey,
+      ) ?? (legacyPreferenceKey ? window.localStorage.getItem(BACKLOG_VISIBLE_KEY_PREFIX + legacyPreferenceKey) : null);
+      setBacklogVisible(stored === "true");
       const storedFocus = window.localStorage.getItem(
-        FOCUS_VISIBLE_KEY_PREFIX + projectSlug,
-      );
-      if (hideWorkflowFocus) setFocusVisible(false);
-      else if (storedFocus === "true") setFocusVisible(true);
-      else if (storedFocus === "false") setFocusVisible(false);
+        FOCUS_VISIBLE_KEY_PREFIX + preferenceKey,
+      ) ?? (legacyPreferenceKey ? window.localStorage.getItem(FOCUS_VISIBLE_KEY_PREFIX + legacyPreferenceKey) : null);
+      setFocusVisible(!hideWorkflowFocus && storedFocus === "true");
+      setCompact(window.localStorage.getItem(DENSITY_KEY_PREFIX + preferenceKey) === "true");
+      const storedDone = window.localStorage.getItem(DONE_VISIBLE_KEY_PREFIX + preferenceKey);
+      setDoneVisible(storedDone !== "false");
     } catch {
       // localStorage can throw in private modes or sandboxed iframes —
       // fall back to the default (hidden) silently.
+      setBacklogVisible(false);
+      setFocusVisible(false);
+      setCompact(false);
+      setDoneVisible(true);
     }
-    setPrefsHydrated(true);
-  }, [hideWorkflowFocus, projectSlug]);
+    setPreferencesScope(preferenceKey);
+  }, [hideWorkflowFocus, legacyPreferenceKey, preferenceKey]);
 
   useEffect(() => {
-    if (!prefsHydrated) return;
+    if (preferencesScope !== preferenceKey) return;
     try {
       window.localStorage.setItem(
-        BACKLOG_VISIBLE_KEY_PREFIX + projectSlug,
+        BACKLOG_VISIBLE_KEY_PREFIX + preferenceKey,
         backlogVisible ? "true" : "false",
       );
     } catch {
       // Same fallback as the read: ignore storage failures.
     }
-  }, [backlogVisible, projectSlug, prefsHydrated]);
+  }, [backlogVisible, preferenceKey, preferencesScope]);
 
   useEffect(() => {
-    if (!prefsHydrated) return;
+    if (preferencesScope !== preferenceKey) return;
     try {
       window.localStorage.setItem(
-        FOCUS_VISIBLE_KEY_PREFIX + projectSlug,
+        FOCUS_VISIBLE_KEY_PREFIX + preferenceKey,
         focusVisible ? "true" : "false",
       );
     } catch {
       // Same fallback as the read: ignore storage failures.
     }
-  }, [focusVisible, hideWorkflowFocus, projectSlug, prefsHydrated]);
+  }, [focusVisible, hideWorkflowFocus, preferenceKey, preferencesScope]);
+
+  useEffect(() => {
+    if (preferencesScope !== preferenceKey) return;
+    try {
+      window.localStorage.setItem(DENSITY_KEY_PREFIX + preferenceKey, compact ? "true" : "false");
+      window.localStorage.setItem(DONE_VISIBLE_KEY_PREFIX + preferenceKey, doneVisible ? "true" : "false");
+    } catch {
+      // Preferences are optional; keep the in-memory view if storage is unavailable.
+    }
+  }, [compact, doneVisible, preferenceKey, preferencesScope]);
 
   useEffect(() => {
     setNow(Date.now());
@@ -332,6 +365,7 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
         ? { delay: 180, tolerance: 8 }
         : { distance: 4 },
     }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
   function handleDragStart(e: DragStartEvent) {
@@ -364,6 +398,9 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
     const over = items.find((t) => t.id === overId);
     if (!over) return;
     if (task.status === over.status) {
+      // Done is intentionally newest-first rather than rank-sorted, so a
+      // same-lane reorder would persist a rank change that cannot be seen.
+      if (task.status === "Done") return;
       reorderWithinColumn(task, over);
     } else {
       crossColumnMove(task, over.status);
@@ -372,23 +409,40 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
 
   function crossColumnMove(task: Task, newStatus: string) {
     const previousStatus = task.status;
+    const previousStatusChangedAt = task.statusChangedAt;
+    const previousRank = task.rank;
+    const destinationRank = items
+      .filter((item) => item.status === newStatus && item.id !== task.id)
+      .reduce((max, item) => Math.max(max, item.rank), -1) + 1;
     setItems((prev) =>
       prev.map((t) => (
         t.id === task.id
-          ? { ...t, status: newStatus, statusChangedAt: new Date().toISOString() }
+          ? { ...t, status: newStatus, rank: destinationRank, statusChangedAt: new Date().toISOString() }
           : t
       )),
     );
     setMoveError(null);
     startTransition(async () => {
-      const result = await moveTaskAction(task.id, newStatus, projectSlug);
-      if (!result.ok) {
+      try {
+        const result = await moveTaskAction(task.id, newStatus, projectSlug);
+        if (result.ok) return;
         setItems((prev) =>
           prev.map((t) =>
-            t.id === task.id ? { ...t, status: previousStatus } : t,
+            t.id === task.id
+              ? { ...t, status: previousStatus, rank: previousRank, statusChangedAt: previousStatusChangedAt }
+              : t,
           ),
         );
         setMoveError(result.message);
+      } catch (error) {
+        setItems((prev) =>
+          prev.map((t) =>
+            t.id === task.id
+              ? { ...t, status: previousStatus, rank: previousRank, statusChangedAt: previousStatusChangedAt }
+              : t,
+          ),
+        );
+        setMoveError(error instanceof Error ? error.message : "Task could not be moved.");
       }
     });
   }
@@ -404,8 +458,8 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
 
       if (shiftKey && lastCheckedId) {
         const list = task.status === "Backlog"
-          ? items.filter((t) => t.status === "Backlog")
-          : items.filter((t) => t.status === task.status).sort((a, b) => a.rank - b.rank);
+          ? visibleItems.filter((t) => t.status === "Backlog")
+          : visibleItems.filter((t) => t.status === task.status).sort((a, b) => a.rank - b.rank);
 
         const lastIdx = list.findIndex((t) => t.id === lastCheckedId);
         const currIdx = list.findIndex((t) => t.id === taskId);
@@ -439,24 +493,47 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
     if (movingTasks.length === 0) return;
 
     const previousItems = items;
+    let nextRank = items
+      .filter((task) => task.status === bulkTarget && !selectedIds.has(task.id))
+      .reduce((max, task) => Math.max(max, task.rank), -1) + 1;
+    const optimisticRankById = new Map<string, number>();
+    for (const task of movingTasks) {
+      optimisticRankById.set(task.id, nextRank);
+      nextRank += 1;
+    }
     setItems((prev) =>
       prev.map((task) =>
-        selectedIds.has(task.id)
-          ? { ...task, status: bulkTarget, statusChangedAt: new Date().toISOString() }
+        optimisticRankById.has(task.id)
+          ? { ...task, status: bulkTarget, rank: optimisticRankById.get(task.id)!, statusChangedAt: new Date().toISOString() }
           : task,
       ),
     );
     setMoveError(null);
     startTransition(async () => {
-      for (const task of movingTasks) {
-        const result = await moveTaskAction(task.id, bulkTarget, projectSlug);
-        if (!result.ok) {
-          setItems(previousItems);
-          setMoveError(result.message);
-          return;
+      const succeededIds = new Set<string>();
+      const restoreUnmoved = () => {
+        const previousById = new Map(previousItems.map((task) => [task.id, task]));
+        setItems((current) => current.map((task) => (
+          succeededIds.has(task.id) ? task : previousById.get(task.id) ?? task
+        )));
+      };
+      try {
+        for (const task of movingTasks) {
+          const result = await moveTaskAction(task.id, bulkTarget, projectSlug);
+          if (!result.ok) {
+            restoreUnmoved();
+            setSelectedIds(new Set(movingTasks.filter((item) => !succeededIds.has(item.id)).map((item) => item.id)));
+            setMoveError(result.message);
+            return;
+          }
+          succeededIds.add(task.id);
         }
+        setSelectedIds(new Set());
+      } catch (error) {
+        restoreUnmoved();
+        setSelectedIds(new Set(movingTasks.filter((item) => !succeededIds.has(item.id)).map((item) => item.id)));
+        setMoveError(error instanceof Error ? error.message : "Selected tasks could not be moved.");
       }
-      setSelectedIds(new Set());
     });
   }
 
@@ -466,8 +543,8 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
   }
 
   function performBulkDelete() {
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) {
+    const selectedTasks = items.filter((task) => selectedIds.has(task.id));
+    if (selectedTasks.length === 0) {
       setConfirmDeleteOpen(false);
       return;
     }
@@ -476,14 +553,53 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
     setMoveError(null);
 
     startTransition(async () => {
+      const succeededIds = new Set<string>();
       try {
-        await bulkBinTasks(ids, projectSlug);
+        const idsByProject = new Map<string, string[]>();
+        for (const task of selectedTasks) {
+          const slug = taskProjectSlug(task, projectSlug);
+          idsByProject.set(slug, [...(idsByProject.get(slug) ?? []), task.id]);
+        }
+        for (const [slug, ids] of idsByProject) {
+          await bulkBinTasks(ids, slug);
+          ids.forEach((id) => succeededIds.add(id));
+        }
         setSelectedIds(new Set());
         setConfirmDeleteOpen(false);
       } catch (err) {
-        setItems(previousItems);
+        setItems(previousItems.filter((task) => !succeededIds.has(task.id)));
+        setSelectedIds((current) => new Set([...current].filter((id) => !succeededIds.has(id))));
         setMoveError((err as Error).message);
         setConfirmDeleteOpen(false);
+      }
+    });
+  }
+
+  function performSingleDelete() {
+    const target = deleteTarget;
+    if (!target) return;
+    const previousItems = items;
+    const wasSelected = selectedIds.has(target.id);
+    setItems((current) => current.filter((task) => task.id !== target.id));
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      next.delete(target.id);
+      return next;
+    });
+    setDeleteTarget(null);
+    setMoveError(null);
+    startTransition(async () => {
+      const formData = new FormData();
+      formData.set("projectSlug", taskProjectSlug(target, projectSlug));
+      formData.set("taskId", target.id);
+      try {
+        await deleteTaskAction(formData);
+      } catch (error) {
+        setItems(previousItems);
+        if (wasSelected) {
+          setSelectedIds((current) => new Set(current).add(target.id));
+        }
+        setMoveError(error instanceof Error ? error.message : "Task could not be moved to the bin.");
       }
     });
   }
@@ -500,7 +616,7 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
   }
 
   function toggleSelectAllColumn(columnId: string, checked: boolean) {
-    const colTasks = items.filter((t) => t.status === columnId);
+    const colTasks = visibleItems.filter((t) => t.status === columnId);
     setSelectedIds((current) => {
       const next = new Set(current);
       colTasks.forEach((t) => {
@@ -522,17 +638,69 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
     // Rewrite optimistic ranks 0..N within this column; other columns
     // are untouched. Server-side reorderTasks does the same write.
     const rankByTask = new Map(reordered.map((t, i) => [t.id, i]));
+    const previousRankByTask = new Map(colTasks.map((task) => [task.id, task.rank]));
     setItems((prev) =>
       prev.map((t) =>
         rankByTask.has(t.id) ? { ...t, rank: rankByTask.get(t.id)! } : t,
       ),
     );
-    startTransition(() => {
-      void reorderTasksAction(reordered.map((t) => t.id));
+    startTransition(async () => {
+      try {
+        await reorderTasksAction(reordered.map((t) => t.id));
+      } catch (error) {
+        setItems((current) => current.map((task) => (
+          previousRankByTask.has(task.id)
+            ? { ...task, rank: previousRankByTask.get(task.id)! }
+            : task
+        )));
+        setMoveError(error instanceof Error ? error.message : "Task order could not be saved.");
+      }
     });
   }
 
   const active = items.find((t) => t.id === activeId);
+
+  const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+  const visibleItems = useMemo(
+    () => items.filter((task) => {
+      if (!doneVisible && task.status === "Done") return false;
+      if (attentionOnly && !taskNeedsAttention(task)) return false;
+      if (!normalizedQuery) return true;
+      const actors = [task.assignee, task.reviewer, task.manager, task.reporter]
+        .filter((actor): actor is BoardActor => Boolean(actor))
+        .map((actor) => actorDisplayName(actor));
+      return [
+        task.workItemKey,
+        task.title,
+        task.epicTitle,
+        task.project?.name,
+        ...actors,
+      ].some((value) => value?.toLocaleLowerCase().includes(normalizedQuery));
+    }),
+    [attentionOnly, doneVisible, items, normalizedQuery],
+  );
+  const boardStats = useMemo(() => {
+    const byStatus = Object.fromEntries(columns.map((column) => [column.id, 0])) as Record<string, number>;
+    let blocked = 0;
+    let attention = 0;
+    for (const task of items) {
+      byStatus[task.status] = (byStatus[task.status] ?? 0) + 1;
+      if (task.blockedByKey) blocked += 1;
+      if (taskNeedsAttention(task)) attention += 1;
+    }
+    const done = byStatus.Done ?? 0;
+    const total = items.length;
+    return {
+      total,
+      open: total - done,
+      done,
+      blocked,
+      attention,
+      completion: total > 0 ? Math.round((done / total) * 100) : 0,
+      byStatus,
+    };
+  }, [columns, items]);
+  const filtersActive = Boolean(normalizedQuery || attentionOnly || !doneVisible);
 
   // Backlog is no longer a board column: the four workflow columns render
   // as the board grid, and Backlog renders below as its own card grid
@@ -544,19 +712,20 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
   );
   const backlogTasks = useMemo(
     () =>
-      items
+      visibleItems
         .filter((t) => t.status === "Backlog")
         .sort((a, b) => a.rank - b.rank),
-    [items],
+    [visibleItems],
   );
   const backlogCount = backlogTasks.length;
   const selectedCount = selectedIds.size;
+  const hiddenSelectedCount = selectedCount - visibleItems.filter((task) => selectedIds.has(task.id)).length;
 
   const columnLanes = useMemo(
     () =>
       workflowColumns.map((col) => ({
         col,
-        tasks: items
+        tasks: visibleItems
           .filter((t) => t.status === col.id)
           .sort((a, b) => {
             if (col.id === "Done") {
@@ -565,7 +734,7 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
             return a.rank - b.rank;
           }),
         })),
-    [workflowColumns, items],
+    [workflowColumns, visibleItems],
   );
   const workflowFocus = useMemo(() => {
     const priority: Record<string, number> = {
@@ -574,7 +743,7 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
       "In Progress": 2,
       Backlog: 3,
     };
-    return items
+    return visibleItems
       .filter((task) =>
         task.status === "Review" ||
         task.status === "To Do" ||
@@ -587,7 +756,7 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
         return a.rank - b.rank;
       })
       .slice(0, 6);
-  }, [items]);
+  }, [visibleItems]);
   const mobileBacklogLane = useMemo(
     () => ({ col: { id: "Backlog", label: "Backlog", description: "planning/opinions" }, tasks: backlogTasks }),
     [backlogTasks],
@@ -608,6 +777,7 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
       collisionDetection={boardCollisionDetection}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
+      onDragCancel={() => setActiveId(null)}
     >
       <ConfirmPopup
         open={confirmDeleteOpen}
@@ -619,10 +789,20 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
         onConfirm={performBulkDelete}
         onCancel={() => setConfirmDeleteOpen(false)}
       />
+      <ConfirmPopup
+        open={Boolean(deleteTarget)}
+        title="Move task to bin"
+        description={deleteTarget ? `Move “${deleteTarget.title}” to the bin? You can restore it before the bin TTL elapses.` : ""}
+        confirmLabel="Move to bin"
+        danger
+        busy={isPending}
+        onConfirm={performSingleDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
       {moveError ? (
         <div
           role="alert"
-          className="mb-3 flex items-start justify-between gap-3 rounded border border-danger bg-panel-soft px-3 py-2 text-body"
+          className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-crit/40 bg-crit/[0.07] px-4 py-3 text-body text-crit shadow-[var(--shadow-xs)]"
         >
           <span>{moveError}</span>
           <button
@@ -635,10 +815,148 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
         </div>
       ) : null}
 
+      <section className="mb-5 overflow-hidden rounded-2xl border border-line bg-panel/95 shadow-[var(--shadow-sm)] backdrop-blur">
+        <div className="grid gap-4 px-4 py-4 lg:grid-cols-[minmax(15rem,1fr)_auto] lg:items-center lg:px-5">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-subheading font-semibold tracking-tight text-text">Workflow board</h2>
+              <span className="rounded-full border border-line bg-panel-soft px-2 py-0.5 text-caption font-semibold tabular-nums text-text-muted">
+                {boardStats.open} open
+              </span>
+              {boardStats.blocked > 0 ? (
+                <span className="inline-flex items-center gap-1 rounded-full border border-crit/30 bg-crit/[0.07] px-2 py-0.5 text-caption font-semibold text-crit">
+                  <LockGlyph /> {boardStats.blocked} blocked
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-2 flex max-w-xl items-center gap-3">
+              <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-bg-elev" aria-hidden="true">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-accent to-ok transition-[width]"
+                  style={{ width: `${boardStats.completion}%` }}
+                />
+              </div>
+              <span
+                className="shrink-0 text-caption font-medium tabular-nums text-text-muted"
+                title="Completion among the tasks currently loaded on this board"
+              >
+                {boardStats.completion}% current board
+              </span>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 divide-x divide-line overflow-hidden rounded-xl border border-line bg-panel-soft">
+            <BoardMetric label="To do" value={boardStats.byStatus["To Do"] ?? 0} tone="todo" />
+            <BoardMetric label="Doing" value={boardStats.byStatus["In Progress"] ?? 0} tone="progress" />
+            <BoardMetric label="Review" value={boardStats.byStatus.Review ?? 0} tone="review" />
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-3 border-t border-line bg-panel-soft/70 px-3 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-4">
+          <div className="relative block min-w-0 flex-1 lg:max-w-md">
+            <span className="pointer-events-none absolute inset-y-0 left-3 grid place-items-center text-text-dim">
+              <SearchIcon />
+            </span>
+            <input
+              type="text"
+              role="searchbox"
+              aria-label="Search board"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.currentTarget.value)}
+              placeholder="Search key, task, epic, project or person…"
+              className="min-h-11 w-full rounded-lg border border-line bg-panel py-2 pl-9 pr-10 text-body text-text shadow-[var(--shadow-xs)] outline-none transition focus:border-accent focus:shadow-[var(--focus-ring)] md:min-h-0"
+            />
+            {searchQuery ? (
+              <button
+                type="button"
+                onClick={() => setSearchQuery("")}
+                aria-label="Clear board search"
+                className="absolute inset-y-0 right-1 grid w-9 place-items-center rounded-md text-text-muted hover:bg-accent-soft hover:text-accent"
+              >
+                ×
+              </button>
+            ) : null}
+          </div>
+
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <BoardToggle
+              active={attentionOnly}
+              onClick={() => setAttentionOnly((value) => !value)}
+              label="Attention"
+              count={boardStats.attention}
+              icon={<SparkIcon />}
+            />
+            <BoardToggle
+              active={!doneVisible}
+              onClick={() => setDoneVisible((value) => !value)}
+              label={doneVisible ? "Hide done cards" : "Done cards hidden"}
+              count={boardStats.done}
+              icon={<EyeIcon crossed={!doneVisible} />}
+            />
+            {!hideWorkflowFocus && workflowFocus.length > 0 ? (
+              <BoardToggle
+                active={focusVisible}
+                onClick={() => setFocusVisible((value) => !value)}
+                label="Focus"
+                count={workflowFocus.length}
+                icon={<FocusIcon />}
+              />
+            ) : null}
+            <BoardToggle
+              active={backlogVisible}
+              onClick={() => setBacklogVisible((value) => !value)}
+              label="Backlog"
+              count={boardStats.byStatus.Backlog ?? 0}
+              icon={<BacklogIcon />}
+            />
+            <button
+              type="button"
+              onClick={() => setCompact((value) => !value)}
+              aria-pressed={compact}
+              aria-label={compact ? "Use comfortable board density" : "Use compact board density"}
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 text-caption font-semibold text-text-muted shadow-[var(--shadow-xs)] transition hover:border-line-strong hover:text-text md:min-h-0"
+              title={compact ? "Use comfortable cards" : "Use compact cards"}
+            >
+              <DensityIcon compact={compact} />
+              <span className="hidden xl:inline">{compact ? "Compact" : "Comfortable"}</span>
+            </button>
+            {filtersActive ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery("");
+                  setAttentionOnly(false);
+                  setDoneVisible(true);
+                }}
+                className="min-h-11 rounded-lg px-2.5 py-2 text-caption font-semibold text-accent hover:bg-accent-soft md:min-h-0"
+              >
+                Reset
+              </button>
+            ) : null}
+          </div>
+        </div>
+        {filtersActive ? (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-2 text-caption text-text-muted" role="status">
+            <span>Showing <span className="font-semibold text-text">{visibleItems.length}</span> of {items.length} tasks</span>
+            {!backlogVisible && backlogCount > 0 ? (
+              <button
+                type="button"
+                onClick={() => setBacklogVisible(true)}
+                className="font-semibold text-accent hover:underline"
+              >
+                {backlogCount} matching {backlogCount === 1 ? "task is" : "tasks are"} in the collapsed Backlog · Show
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
+
       {selectedCount > 0 ? (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-panel border border-accent/30 bg-accent/[0.08] px-4 py-3 text-body shadow-sm">
+        <div className="sticky top-3 z-20 mb-4 flex flex-wrap items-center justify-between gap-3 rounded-panel border border-accent/30 bg-panel/95 px-4 py-3 text-body shadow-[var(--shadow-md)] backdrop-blur">
           <span className="font-semibold text-text">
             {selectedCount} selected
+            {hiddenSelectedCount > 0 ? (
+              <span className="ml-2 text-caption font-medium text-text-muted">({hiddenSelectedCount} hidden by filters)</span>
+            ) : null}
           </span>
           <div className="flex flex-wrap items-center gap-2">
             <label className="flex items-center gap-2 text-caption font-semibold uppercase tracking-wider text-text-muted">
@@ -658,14 +976,16 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
             <button
               type="button"
               onClick={bulkMoveSelected}
-              className="rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-bg transition hover:opacity-90"
+              disabled={isPending}
+              className="rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-bg transition hover:opacity-90 disabled:cursor-wait disabled:opacity-50"
             >
               Move selected
             </button>
             <button
               type="button"
               onClick={bulkDeleteSelected}
-              className="rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-semibold text-crit transition hover:bg-crit hover:text-bg"
+              disabled={isPending}
+              className="rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-semibold text-crit transition hover:bg-crit hover:text-on-crit disabled:cursor-wait disabled:opacity-50"
             >
               Delete selected
             </button>
@@ -681,23 +1001,23 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
       ) : null}
 
       {!hideWorkflowFocus && focusVisible && workflowFocus.length > 0 ? (
-        <section className="mb-5 rounded-lg border border-line bg-panel p-3">
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setFocusVisible(false)}
-                className="rounded-card border border-line bg-panel px-3 py-1 text-caption uppercase tracking-wider text-text-muted hover:text-text"
-              >
-                Hide Focus
-              </button>
-              <h2 className="text-caption font-semibold uppercase tracking-wider text-text-muted">
+        <section className="mb-5 rounded-2xl border border-accent/20 bg-accent/[0.045] p-3 shadow-[var(--shadow-xs)]">
+          <div className="mb-3 flex items-center justify-between gap-3 px-1">
+            <div>
+              <h2 className="flex items-center gap-2 text-body font-semibold text-text">
+                <span className="text-accent"><FocusIcon /></span>
                 Workflow focus
               </h2>
+              <p className="mt-0.5 text-caption text-text-muted">Work that needs a decision, review, or next action.</p>
             </div>
-            <span className="text-nano uppercase tracking-wider text-text-muted">
-              feedback → review → start
-            </span>
+            <button
+              type="button"
+              onClick={() => setFocusVisible(false)}
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-text-muted hover:bg-panel hover:text-text"
+              aria-label="Hide workflow focus"
+            >
+              ×
+            </button>
           </div>
           <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
             {workflowFocus.map((task) => (
@@ -712,109 +1032,10 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
         </section>
       ) : null}
 
-      <section className="mb-6">
-        {/* When the Backlog is expanded, the Show Workflow Focus button gets
-            its own row on top of the backlog banner rather than sharing the
-            row with the Backlog heading / Hide Backlog control. */}
-        {!hideWorkflowFocus && backlogVisible && !focusVisible && workflowFocus.length > 0 ? (
-          <div className="mb-3 flex">
-            <button
-              type="button"
-              onClick={() => setFocusVisible(true)}
-              aria-pressed={focusVisible}
-              className="rounded-card border border-line bg-panel px-3 py-1 text-caption uppercase tracking-wider text-text-muted hover:text-text"
-            >
-              Show Workflow Focus
-            </button>
-          </div>
-        ) : null}
-        <div className="mb-3 flex items-center justify-between gap-3">
-          {/* When the Backlog is hidden, the Show Workflow Focus button sits
-              inline at the left, level with the Show Backlog button. */}
-          <div className="flex items-center gap-3">
-            {!hideWorkflowFocus && !backlogVisible && !focusVisible && workflowFocus.length > 0 ? (
-              <button
-                type="button"
-                onClick={() => setFocusVisible(true)}
-                aria-pressed={focusVisible}
-                className="rounded-card border border-line bg-panel px-3 py-1 text-caption uppercase tracking-wider text-text-muted hover:text-text"
-              >
-                Show Workflow Focus
-              </button>
-            ) : null}
-            {backlogVisible ? (
-              <h2 className="text-caption uppercase tracking-wider text-text-muted">
-                Backlog{backlogCount ? ` (${backlogCount})` : ""} · planning/opinions
-              </h2>
-            ) : null}
-          </div>
-          <button
-            type="button"
-            onClick={() => setBacklogVisible((v) => !v)}
-            aria-pressed={backlogVisible}
-            className="rounded-card border border-line bg-panel px-3 py-1 text-caption uppercase tracking-wider text-text-muted hover:text-text"
-          >
-            {backlogVisible ? "Hide Backlog" : "Show Backlog"}
-          </button>
-        </div>
-
-        {backlogVisible && !isMobileBoard ? (
-          <BacklogDroppable>
-            {backlogTasks.length === 0 ? (
-              <p className="px-1 py-6 text-center text-caption text-text-muted">
-                Backlog is empty. Drag a row here or add a task.
-              </p>
-            ) : (
-              <div className="overflow-x-auto">
-                <div className="grid min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 pb-2 text-nano font-semibold uppercase tracking-wider text-text-muted">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={backlogCount > 0 && backlogTasks.every((t) => selectedIds.has(t.id))}
-                      onChange={(e) => toggleSelectAllBacklog(e.target.checked)}
-                      onClick={(e) => e.stopPropagation()}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      className="h-6 w-6 accent-accent md:h-3.5 md:w-3.5"
-                      aria-label="Select all backlog tasks"
-                    />
-                    <span>Task</span>
-                  </div>
-                  <span>Epic</span>
-                  <span>Assignee</span>
-                  <span>Reviewer</span>
-                  <span className="text-right">Elapsed</span>
-                  <span className="text-right">Created At</span>
-                  <span className="text-right">Updated</span>
-                  <span className="sr-only">Bin</span>
-                </div>
-                <div className="max-h-[780px] overflow-y-auto pr-1">
-                  <SortableContext
-                    items={backlogTasks.map((t) => t.id)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    {backlogTasks.map((t) => (
-                      <BacklogRow
-                        key={t.id}
-                        task={t}
-                        projectSlug={projectSlug}
-                        deleteTaskAction={deleteTaskAction}
-                        selected={selectedIds.has(t.id)}
-                        onSelectionChange={toggleTaskSelection}
-                        now={now}
-                      />
-                    ))}
-                  </SortableContext>
-                </div>
-              </div>
-            )}
-          </BacklogDroppable>
-        ) : null}
-      </section>
-
       {isMobileBoard ? (
         <div className="space-y-3 md:hidden">
           <div className="rounded-card border border-line bg-panel-soft px-3 py-2 text-caption text-text-muted">
-            Long-press a card to drag or reorder. Swipe a card left for quick Move/Edit actions.
+            Drag with the grip to reorder. Swipe a card left for quick Move/Edit actions.
           </div>
           {mobileLanes.map(({ col, tasks: colTasks }) => {
             const colTaskIds = colTasks.map((t) => t.id);
@@ -826,6 +1047,8 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
                 label={col.label}
                 description={col.description}
                 count={colTasks.length}
+                totalCount={boardStats.byStatus[col.id] ?? 0}
+                filtered={filtersActive}
                 allSelected={allSelected}
                 onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
               >
@@ -838,8 +1061,9 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
                       key={t.id}
                       task={t}
                       projectSlug={projectSlug}
-                      deleteTaskAction={deleteTaskAction}
+                      onDeleteRequest={() => setDeleteTarget(t)}
                       now={now}
+                      compact={compact}
                       selected={selectedIds.has(t.id)}
                       onSelectionChange={toggleTaskSelection}
                       onMove={(task, status) => crossColumnMove(task, status)}
@@ -852,7 +1076,8 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
           })}
         </div>
       ) : (
-        <div className="grid grid-cols-4 gap-3">
+        <div className="-mx-4 hidden overflow-x-auto px-4 pb-3 sm:-mx-page-x sm:px-page-x md:block lg:-mx-page-x-lg lg:px-page-x-lg xl:mx-0 xl:px-0">
+        <div className="grid min-w-[68rem] grid-cols-4 gap-3">
           {columnLanes.map(({ col, tasks: colTasks }) => {
             const colTaskIds = colTasks.map((t) => t.id);
             const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
@@ -863,6 +1088,9 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
                 label={col.label}
                 description={col.description}
                 count={colTasks.length}
+                totalCount={boardStats.byStatus[col.id] ?? 0}
+                filtered={filtersActive}
+                compact={compact}
                 allSelected={allSelected}
                 onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
               >
@@ -875,8 +1103,9 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
                       key={t.id}
                       task={t}
                       projectSlug={projectSlug}
-                      deleteTaskAction={deleteTaskAction}
+                      onDeleteRequest={() => setDeleteTarget(t)}
                       now={now}
+                      compact={compact}
                       selected={selectedIds.has(t.id)}
                       onSelectionChange={toggleTaskSelection}
                     />
@@ -886,7 +1115,75 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
             );
           })}
         </div>
+        </div>
       )}
+
+      {backlogVisible && !isMobileBoard ? (
+        <section className="mt-6 hidden md:block">
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h2 className="flex items-center gap-2 text-subheading font-semibold text-text">
+                Backlog
+                <span className="rounded-full border border-line bg-panel px-2 py-0.5 text-caption font-semibold tabular-nums text-text-muted">
+                  {backlogCount}
+                </span>
+              </h2>
+              <p className="mt-0.5 text-caption text-text-muted">Planning, ideas, and work awaiting approval.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setBacklogVisible(false)}
+              className="rounded-lg border border-line bg-panel px-3 py-1.5 text-caption font-semibold text-text-muted shadow-[var(--shadow-xs)] hover:border-line-strong hover:text-text"
+            >
+              Collapse backlog
+            </button>
+          </div>
+          <BacklogDroppable>
+            {backlogTasks.length === 0 ? (
+              <BoardEmptyState title={filtersActive ? "No backlog tasks match" : "Backlog is empty"} detail={filtersActive ? "Try clearing a filter or changing your search." : "New tasks will appear here until they are approved."} />
+            ) : (
+              <div className="overflow-x-auto">
+                <div className="sticky top-0 z-10 grid min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line bg-panel-soft px-3 py-2.5 text-caption font-semibold text-text-muted">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={backlogCount > 0 && backlogTasks.every((task) => selectedIds.has(task.id))}
+                      onChange={(event) => toggleSelectAllBacklog(event.target.checked)}
+                      onClick={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      className="h-6 w-6 accent-accent md:h-4 md:w-4"
+                      aria-label="Select all backlog tasks"
+                    />
+                    <span>Task</span>
+                  </div>
+                  <span>Epic</span>
+                  <span>Assignee</span>
+                  <span>Reviewer</span>
+                  <span className="text-right">Elapsed</span>
+                  <span className="text-right">Created</span>
+                  <span className="text-right">Updated</span>
+                  <span className="sr-only">Actions</span>
+                </div>
+                <div className="max-h-[780px] overflow-y-auto">
+                  <SortableContext items={backlogTasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
+                    {backlogTasks.map((task) => (
+                      <BacklogRow
+                        key={task.id}
+                        task={task}
+                        projectSlug={projectSlug}
+                        onDeleteRequest={() => setDeleteTarget(task)}
+                        selected={selectedIds.has(task.id)}
+                        onSelectionChange={toggleTaskSelection}
+                        now={now}
+                      />
+                    ))}
+                  </SortableContext>
+                </div>
+              </div>
+            )}
+          </BacklogDroppable>
+        </section>
+      ) : null}
 
       <DragOverlay>
         {active ? (
@@ -896,6 +1193,157 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
         ) : null}
       </DragOverlay>
     </DndContext>
+  );
+}
+
+function BoardMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "todo" | "progress" | "review";
+}) {
+  const color = tone === "todo"
+    ? "var(--status-todo)"
+    : tone === "progress"
+      ? "var(--status-progress)"
+      : "var(--status-review)";
+  return (
+    <div className="flex min-w-[5.5rem] items-center gap-2 px-3 py-2.5">
+      <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: color }} aria-hidden="true" />
+      <span className="min-w-0">
+        <span className="block text-heading font-semibold leading-none tabular-nums text-text">{value}</span>
+        <span className="mt-1 block text-micro font-medium text-text-muted">{label}</span>
+      </span>
+    </div>
+  );
+}
+
+function BoardToggle({
+  active,
+  onClick,
+  label,
+  count,
+  icon,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  count?: number;
+  icon: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-3 py-2 text-caption font-semibold shadow-[var(--shadow-xs)] transition-[background-color,border-color,color,box-shadow] md:min-h-0 ${
+        active
+          ? "border-accent/35 bg-accent-soft text-accent shadow-[var(--focus-ring)]"
+          : "border-line bg-panel text-text-muted hover:border-line-strong hover:text-text"
+      }`}
+    >
+      {icon}
+      <span>{label}</span>
+      {count != null ? (
+        <span className={`rounded-full px-1.5 py-0.5 text-micro tabular-nums ${active ? "bg-panel/70" : "bg-bg-elev"}`}>
+          {count}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function BoardEmptyState({
+  title,
+  detail,
+  compact = false,
+}: {
+  title: string;
+  detail: string;
+  compact?: boolean;
+}) {
+  return (
+    <div className={`grid place-items-center rounded-xl border border-dashed border-line-strong/70 bg-panel/40 px-4 text-center ${compact ? "min-h-28 py-4" : "min-h-36 py-6"}`}>
+      <div>
+        <span className="mx-auto mb-2 grid h-8 w-8 place-items-center rounded-full bg-bg-elev text-text-dim" aria-hidden="true">
+          <BacklogIcon />
+        </span>
+        <p className="text-caption font-semibold text-text">{title}</p>
+        <p className="mt-1 text-micro leading-relaxed text-text-muted">{detail}</p>
+      </div>
+    </div>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  );
+}
+
+function SparkIcon() {
+  return (
+    <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m12 3-1.6 4.2a5 5 0 0 1-3.1 3.1L3 12l4.3 1.7a5 5 0 0 1 3.1 3.1L12 21l1.6-4.2a5 5 0 0 1 3.1-3.1L21 12l-4.3-1.7a5 5 0 0 1-3.1-3.1L12 3Z" />
+    </svg>
+  );
+}
+
+function EyeIcon({ crossed }: { crossed: boolean }) {
+  return (
+    <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+      <circle cx="12" cy="12" r="2.5" />
+      {crossed ? <path d="m4 4 16 16" /> : null}
+    </svg>
+  );
+}
+
+function FocusIcon() {
+  return (
+    <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function BacklogIcon() {
+  return (
+    <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <path d="M8 6h13M8 12h13M8 18h13" />
+      <circle cx="3.5" cy="6" r=".5" fill="currentColor" />
+      <circle cx="3.5" cy="12" r=".5" fill="currentColor" />
+      <circle cx="3.5" cy="18" r=".5" fill="currentColor" />
+    </svg>
+  );
+}
+
+function DensityIcon({ compact }: { compact: boolean }) {
+  return (
+    <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      {compact ? (
+        <><path d="M4 7h16M4 12h16M4 17h16" /></>
+      ) : (
+        <><path d="M4 5h16M4 12h16M4 19h16" /><path d="M7 8v1M7 15v1" /></>
+      )}
+    </svg>
+  );
+}
+
+function DragHandleIcon() {
+  return (
+    <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+      <circle cx="9" cy="6" r="1.4" /><circle cx="15" cy="6" r="1.4" />
+      <circle cx="9" cy="12" r="1.4" /><circle cx="15" cy="12" r="1.4" />
+      <circle cx="9" cy="18" r="1.4" /><circle cx="15" cy="18" r="1.4" />
+    </svg>
   );
 }
 
@@ -923,6 +1371,8 @@ function MobileStatusGroup({
   label,
   description,
   count,
+  totalCount,
+  filtered,
   allSelected,
   onSelectAll,
   children,
@@ -931,6 +1381,8 @@ function MobileStatusGroup({
   label: string;
   description?: string;
   count: number;
+  totalCount: number;
+  filtered: boolean;
   allSelected: boolean;
   onSelectAll: (checked: boolean) => void;
   children: React.ReactNode;
@@ -940,7 +1392,9 @@ function MobileStatusGroup({
     <details
       ref={setNodeRef}
       open
-      className={`rounded-xl border shadow-sm transition-colors ${columnSurfaceClass(id)} ${isOver ? "ring-2 ring-accent/50" : ""}`}
+      data-over={isOver ? "true" : "false"}
+      style={{ "--board-status": boardStatusColor(id) } as React.CSSProperties}
+      className="board-lane relative overflow-hidden rounded-xl border pt-1 transition-[background-color,border-color,box-shadow]"
     >
       <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-3 [&::-webkit-details-marker]:hidden">
         <div className="flex min-w-0 items-center gap-2">
@@ -953,7 +1407,10 @@ function MobileStatusGroup({
             className="h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
             aria-label={`Select all in ${label}`}
           />
-          <span className={`rounded border px-2 py-1 text-caption font-semibold uppercase tracking-wider ${columnHeaderPillClass(id)}`}>
+          <span
+            style={{ "--board-status": boardStatusColor(id) } as React.CSSProperties}
+            className="board-status-pill rounded-md border px-2 py-1 text-caption font-semibold"
+          >
             {label}
           </span>
           {description ? (
@@ -964,7 +1421,16 @@ function MobileStatusGroup({
           {count}
         </span>
       </summary>
-      <div className="space-y-2 px-2 pb-3">{children}</div>
+      <div className="space-y-2 px-2 pb-3">
+        {children}
+        {count === 0 ? (
+          <BoardEmptyState
+            title={filtered && totalCount > 0 ? `${totalCount} ${totalCount === 1 ? "card" : "cards"} hidden` : filtered ? "No matching tasks" : "No tasks here"}
+            detail={filtered ? "Change or reset the board filters to see more." : "Drop a task into this lane."}
+            compact
+          />
+        ) : null}
+      </div>
     </details>
   );
 }
@@ -972,8 +1438,9 @@ function MobileStatusGroup({
 function MobileTaskCard({
   task,
   projectSlug,
-  deleteTaskAction,
+  onDeleteRequest,
   now,
+  compact,
   selected,
   onSelectionChange,
   onMove,
@@ -981,8 +1448,9 @@ function MobileTaskCard({
 }: {
   task: Task;
   projectSlug: string;
-  deleteTaskAction: (formData: FormData) => Promise<void>;
+  onDeleteRequest: () => void;
   now: number | null;
+  compact: boolean;
   selected: boolean;
   onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
   onMove: (task: Task, status: string) => void;
@@ -1003,17 +1471,19 @@ function MobileTaskCard({
   return (
     <div
       ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`overflow-x-auto rounded-lg ${isDragging ? "opacity-30" : ""}`}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        "--board-status": boardStatusColor(task.status),
+      } as React.CSSProperties}
+      className={`scrollbar-none overflow-x-auto rounded-lg ${isDragging ? "opacity-30" : ""}`}
     >
       <div className="flex min-w-[calc(100%+9rem)] items-stretch">
         <div
-          {...attributes}
-          {...listeners}
-          onClick={() => router.push(taskHref(task, projectSlug))}
-          className={`${taskCardClass(task)} min-w-[calc(100%-9rem)] touch-pan-y active:cursor-grabbing`}
+          data-selected={selected ? "true" : "false"}
+          className={`${taskCardClass(task, false, compact, false)} min-w-[calc(100%-9rem)] touch-auto`}
         >
-          <div className="relative z-10 space-y-2">
+          <div className={`relative z-10 ${compact ? "space-y-1" : "space-y-2"}`}>
             <div className="flex items-start justify-between gap-2">
               <div className="flex min-w-0 items-start gap-2">
                 <input
@@ -1028,39 +1498,52 @@ function MobileTaskCard({
                   aria-label={`Select ${task.title}`}
                   className="mt-0.5 h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
                 />
-                <div className="min-w-0 flex-1">
+                <Link
+                  href={taskHref(task, projectSlug)}
+                  className="min-w-0 flex-1 rounded-sm text-text hover:text-accent"
+                >
                   <ProjectMetaLine task={task} />
-                  <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
+                  <div className="flex min-w-0 items-center gap-1.5 text-micro text-text-muted">
                     {actor ? <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} /> : null}
                     <span className="truncate font-mono uppercase tracking-wider">
                       {task.workItemKey ?? "—"}
                     </span>
                     {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
                   </div>
-                  <div className="mt-1 line-clamp-2 text-body font-medium leading-snug">{task.title}</div>
+                  <div className={`${compact ? "line-clamp-1" : "line-clamp-2"} mt-1 text-body font-medium leading-snug`}>{task.title}</div>
                   {task.epicTitle ? (
                     <div className="mt-1 truncate text-caption text-text-muted">{task.epicTitle}</div>
                   ) : null}
-                </div>
+                </Link>
               </div>
-              <form
-                action={deleteTaskAction}
-                onClick={(event) => event.stopPropagation()}
-                onPointerDown={(event) => event.stopPropagation()}
-              >
-                <input type="hidden" name="projectSlug" value={taskProjectSlug(task, projectSlug)} />
-                <input type="hidden" name="taskId" value={task.id} />
+              <div className="flex shrink-0 items-center">
                 <button
-                  type="submit"
+                  type="button"
+                  {...attributes}
+                  {...listeners}
+                  onClick={(event) => event.stopPropagation()}
+                  className="grid h-11 w-11 touch-none place-items-center rounded-md text-text-muted hover:bg-bg-elev hover:text-text"
+                  aria-label={`Drag ${task.title}`}
+                  title="Drag to reorder or move"
+                >
+                  <DragHandleIcon />
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDeleteRequest();
+                  }}
+                  onPointerDown={(event) => event.stopPropagation()}
                   className="grid h-11 w-11 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:p-1"
                   aria-label={`Move ${task.title} to bin`}
                   title="Move to bin"
                 >
                   <TrashIcon />
                 </button>
-              </form>
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-nano text-text-muted">
+            <div className="flex flex-wrap items-center gap-2 text-micro text-text-muted">
               <ElapsedClock task={task} now={now} />
               <SubtaskProgress task={task} />
               <time dateTime={task.updatedAt} title={task.updatedAt} className="tabular-nums" suppressHydrationWarning>
@@ -1096,6 +1579,9 @@ function ColumnDroppable({
   label,
   description,
   count,
+  totalCount,
+  filtered,
+  compact,
   allSelected = false,
   onSelectAll,
   children,
@@ -1104,6 +1590,9 @@ function ColumnDroppable({
   label: string;
   description?: string;
   count: number;
+  totalCount: number;
+  filtered: boolean;
+  compact: boolean;
   allSelected?: boolean;
   onSelectAll?: (checked: boolean) => void;
   children: React.ReactNode;
@@ -1112,14 +1601,12 @@ function ColumnDroppable({
   return (
     <div
       ref={setNodeRef}
-      className={`min-h-[60vh] rounded-lg border p-2 shadow-sm transition-colors ${columnSurfaceClass(id)} ${
-        isOver
-          ? "ring-2 ring-accent/50"
-          : ""
-      }`}
+      data-over={isOver ? "true" : "false"}
+      style={{ "--board-status": boardStatusColor(id) } as React.CSSProperties}
+      className="board-lane relative min-h-[30rem] overflow-hidden rounded-xl border p-2 pt-3 transition-[background-color,border-color,box-shadow]"
     >
-      <div className="px-1 pb-2 text-nano uppercase tracking-wider text-text-muted flex justify-between items-center">
-        <div className="flex items-center gap-1.5 min-w-0">
+      <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-panel/75 px-2 py-2 shadow-[var(--shadow-xs)] backdrop-blur">
+        <div className="flex min-w-0 items-center gap-2">
           {onSelectAll && (
             <input
               type="checkbox"
@@ -1127,22 +1614,36 @@ function ColumnDroppable({
               onChange={(e) => onSelectAll(e.target.checked)}
               onClick={(e) => e.stopPropagation()}
               onPointerDown={(e) => e.stopPropagation()}
-              className="h-3.5 w-3.5 shrink-0 accent-accent"
+              className="h-4 w-4 shrink-0 accent-accent"
               aria-label={`Select all in ${label}`}
             />
           )}
-          <span className={`w-fit rounded border px-1.5 py-0.5 text-nano font-semibold uppercase tracking-wider ${columnHeaderPillClass(id)}`}>
+          <span
+            style={{ "--board-status": boardStatusColor(id) } as React.CSSProperties}
+            className="board-status-pill w-fit rounded-md border px-2 py-1 text-caption font-semibold"
+          >
             {label}
           </span>
           {description ? (
-            <span className="hidden truncate normal-case tracking-normal text-text-muted xl:inline">
-              · {description}
+            <span className="hidden truncate text-caption text-text-muted xl:inline">
+              {description}
             </span>
           ) : null}
         </div>
-        <span className="shrink-0">{count}</span>
+        <span className="grid h-6 min-w-6 shrink-0 place-items-center rounded-full border border-line bg-panel px-1.5 text-caption font-semibold tabular-nums text-text-muted">
+          {count}
+        </span>
       </div>
-      <div className="space-y-2">{children}</div>
+      <div className={compact ? "space-y-1.5" : "space-y-2.5"}>
+        {children}
+        {count === 0 ? (
+          <BoardEmptyState
+            title={filtered && totalCount > 0 ? `${totalCount} ${totalCount === 1 ? "card" : "cards"} hidden` : filtered ? "No matching tasks" : "No tasks here"}
+            detail={filtered ? "Change or reset the board filters to see more." : "Drop a task into this lane."}
+            compact
+          />
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -1150,19 +1651,20 @@ function ColumnDroppable({
 function TaskCard({
   task,
   projectSlug,
-  deleteTaskAction,
+  onDeleteRequest,
   now,
+  compact,
   selected,
   onSelectionChange,
 }: {
   task: Task;
   projectSlug: string;
-  deleteTaskAction: (formData: FormData) => Promise<void>;
+  onDeleteRequest: () => void;
   now: number | null;
+  compact: boolean;
   selected: boolean;
   onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
 }) {
-  const router = useRouter();
   const {
     attributes,
     listeners,
@@ -1172,82 +1674,96 @@ function TaskCard({
     isDragging,
   } = useSortable({ id: task.id });
   const actor = boardActorForTask(task);
+  const displayedActor = task.status === "Done" ? task.reporter ?? actor : actor;
   return (
     <div
       ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
-      {...attributes}
-      {...listeners}
-      onClick={() => router.push(taskHref(task, projectSlug))}
-      className={taskCardClass(task, isDragging)}
+      data-selected={selected ? "true" : "false"}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        "--board-status": boardStatusColor(task.status),
+      } as React.CSSProperties}
+      className={taskCardClass(task, isDragging, compact, false)}
     >
-      <div className="relative z-10 flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <input
-            type="checkbox"
-            checked={selected}
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelectionChange(task.id, !selected, event.shiftKey);
-            }}
-            onChange={() => {}}
-            onPointerDown={(event) => event.stopPropagation()}
-            aria-label={`Select ${task.title}`}
-            className="h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
-          />
-          {task.status === "Done" ? (
-            <BoardReporterMarker task={task} />
-          ) : actor ? (
-            <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
-          ) : (
-            <span className="text-nano text-text-muted">unassigned</span>
-          )}
-          <div className="min-w-0 flex-1">
-            <ProjectMetaLine task={task} />
-            <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
-              {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
-              <span className="truncate font-mono uppercase tracking-wider">
-                {task.workItemKey ?? "—"}
-              </span>
-              {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
-            </div>
-            <div className="truncate">{task.title}</div>
-            <div className="mt-1 flex items-center gap-2 text-nano text-text-muted">
-              <ElapsedClock task={task} now={now} />
-              <SubtaskProgress task={task} />
-              <time
-                dateTime={task.updatedAt}
-                title={task.updatedAt}
-                className="shrink-0 tabular-nums"
-                // relativeUpdated() reads Date.now() at render, so server/client
-                // can land in different buckets and throw a recoverable React
-                // #418 hydration warning; suppress it (text is expected to differ).
-                suppressHydrationWarning
-              >
+      <div className="relative z-10">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-1 items-start gap-2">
+            <input
+              type="checkbox"
+              checked={selected}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelectionChange(task.id, !selected, event.shiftKey);
+              }}
+              onChange={() => {}}
+              onPointerDown={(event) => event.stopPropagation()}
+              aria-label={`Select ${task.title}`}
+              className="h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
+            />
+            <Link
+              href={taskHref(task, projectSlug)}
+              className="min-w-0 flex-1 rounded-md outline-none"
+            >
+              <ProjectMetaLine task={task} />
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-caption text-text-muted">
+                {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
+                <span className="truncate font-mono text-micro font-semibold tracking-wide text-text-muted">
+                  {task.workItemKey ?? "—"}
+                </span>
+                {task.epicTitle ? <span className="max-w-full truncate rounded bg-bg-elev px-1.5 py-0.5 text-micro">{task.epicTitle}</span> : null}
+              </div>
+              <div className={`${compact ? "line-clamp-1" : "line-clamp-2"} mt-1 font-medium leading-snug text-text`}>{task.title}</div>
+            </Link>
+          </div>
+          <button
+            type="button"
+            {...attributes}
+            {...listeners}
+            onClick={(event) => event.stopPropagation()}
+            className="grid h-8 w-8 shrink-0 cursor-grab touch-none place-items-center rounded-md text-text-dim transition hover:bg-bg-elev hover:text-text active:cursor-grabbing"
+            aria-label={`Drag ${task.title}`}
+            title="Drag to reorder or move"
+          >
+            <DragHandleIcon />
+          </button>
+        </div>
+        <div className={`${compact ? "mt-2" : "mt-3"} space-y-2 border-t border-line/70 pt-2 text-caption text-text-muted`}>
+          <div className="flex min-w-0 items-center gap-2">
+            {displayedActor ? (
+              <MessageAvatar actor={displayedActor} size="sm" busy={task.activeWorking} />
+            ) : (
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-dashed border-line-strong text-micro">?</span>
+            )}
+            <span className="min-w-0 flex-1 truncate text-micro font-medium">
+              {displayedActor ? actorDisplayName(displayedActor) : "Unassigned"}
+            </span>
+            <BlockedBadge task={task} />
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onDeleteRequest();
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
+              aria-label={`Move ${task.title} to bin`}
+              title="Move to bin"
+            >
+              <TrashIcon />
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 pl-0 text-micro sm:pl-10">
+            <SubtaskProgress task={task} />
+            <ElapsedClock task={task} now={now} />
+            <span className="inline-flex items-center gap-1">
+              <span className="text-text-dim">Updated</span>
+              <time dateTime={task.updatedAt} title={`Updated ${task.updatedAt}`} className="tabular-nums" suppressHydrationWarning>
                 {relativeUpdated(task.updatedAt)}
               </time>
-              <BlockedBadge task={task} />
-            </div>
+            </span>
           </div>
         </div>
-        <form
-          action={deleteTaskAction}
-          onClick={(event) => event.stopPropagation()}
-          onPointerDown={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-        >
-          <input type="hidden" name="projectSlug" value={taskProjectSlug(task, projectSlug)} />
-          <input type="hidden" name="taskId" value={task.id} />
-          <button
-            type="submit"
-            className="grid h-11 w-11 shrink-0 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:p-1"
-            aria-label={`Move ${task.title} to bin`}
-            title="Move to bin"
-          >
-            <TrashIcon />
-          </button>
-        </form>
       </div>
     </div>
   );
@@ -1269,6 +1785,7 @@ function WorkflowFocusCard({
     <button
       type="button"
       onClick={() => router.push(taskHref(task, projectSlug))}
+      style={{ "--board-status": boardStatusColor(task.status) } as React.CSSProperties}
       className={`${taskCardClass(task)} min-w-0 text-left`}
     >
       <div className="relative z-10 flex items-start justify-between gap-2">
@@ -1278,12 +1795,15 @@ function WorkflowFocusCard({
           ) : actor ? (
             <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
           ) : (
-            <span className="text-nano text-text-muted">unassigned</span>
+            <span className="text-caption text-text-muted">unassigned</span>
           )}
           <div className="min-w-0 flex-1">
             <ProjectMetaLine task={task} />
-            <div className="flex min-w-0 items-center gap-1.5 text-nano text-text-muted">
-              <span className={`shrink-0 rounded border px-1 py-0.5 text-pico font-semibold uppercase tracking-wider ${columnHeaderPillClass(task.status)}`}>
+            <div className="flex min-w-0 items-center gap-1.5 text-caption text-text-muted">
+              <span
+                style={{ "--board-status": boardStatusColor(task.status) } as React.CSSProperties}
+                className="board-status-pill shrink-0 rounded-md border px-1.5 py-0.5 text-micro font-semibold"
+              >
                 {task.status}
               </span>
               {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
@@ -1293,7 +1813,7 @@ function WorkflowFocusCard({
               {task.epicTitle ? <span className="ml-1 normal-case tracking-normal">· {task.epicTitle}</span> : null}
             </div>
             <div className="mt-0.5 truncate text-body">{task.title}</div>
-            <div className="mt-1 flex items-center gap-2 text-nano text-text-muted">
+            <div className="mt-1 flex items-center gap-2 text-caption text-text-muted">
               <ElapsedClock task={task} now={now} />
               <SubtaskProgress task={task} />
               <time
@@ -1321,11 +1841,9 @@ function BacklogDroppable({ children }: { children: React.ReactNode }) {
   return (
     <div
       ref={setNodeRef}
-      className={`rounded-lg border py-2 transition-colors ${
-        isOver
-          ? "border-accent bg-panel-soft"
-          : "border-line bg-panel"
-      }`}
+      data-over={isOver ? "true" : "false"}
+      style={{ "--board-status": boardStatusColor("Backlog") } as React.CSSProperties}
+      className="board-lane relative overflow-hidden rounded-2xl border pt-1 transition-[background-color,border-color,box-shadow]"
     >
       {children}
     </div>
@@ -1338,19 +1856,18 @@ function BacklogDroppable({ children }: { children: React.ReactNode }) {
 function BacklogRow({
   task,
   projectSlug,
-  deleteTaskAction,
+  onDeleteRequest,
   selected,
   onSelectionChange,
   now,
 }: {
   task: Task;
   projectSlug: string;
-  deleteTaskAction: (formData: FormData) => Promise<void>;
+  onDeleteRequest: () => void;
   selected: boolean;
   onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
   now: number | null;
 }) {
-  const router = useRouter();
   const {
     attributes,
     listeners,
@@ -1363,18 +1880,9 @@ function BacklogRow({
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      role="link"
-      tabIndex={0}
-      onClick={() => router.push(taskHref(task, projectSlug))}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          router.push(taskHref(task, projectSlug));
-        }
-      }}
-      className={`grid min-h-11 min-w-[68rem] cursor-pointer grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 py-2 text-body transition last:border-b-0 hover:bg-panel-soft active:scale-[0.98] md:min-h-0 md:active:scale-100 ${
+      className={`grid min-h-11 min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 py-2.5 text-body transition last:border-b-0 hover:bg-panel-soft ${
         isPlanningAssigned(task) ? "bg-yellow-300/[0.08]" : statusRowClass(task.status)
-      } ${isDragging ? "bg-panel-soft opacity-40" : ""}`}
+      } ${selected ? "bg-accent-soft shadow-[inset_3px_0_0_var(--color-accent)]" : ""} ${isDragging ? "bg-panel-soft opacity-40" : ""}`}
     >
       <div className="flex min-w-0 items-center gap-2">
         <input
@@ -1402,14 +1910,14 @@ function BacklogRow({
         </button>
         <BoardReporterMarker task={task} />
         {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
-        <span className="min-w-0 truncate">
+        <Link href={taskHref(task, projectSlug)} className="min-w-0 truncate rounded-sm font-medium text-text hover:text-accent hover:underline">
           {task.workItemKey ? (
-            <span className="mr-1 font-mono text-nano font-semibold text-text-muted">
+            <span className="mr-1 font-mono text-micro font-semibold text-text-muted">
               {task.workItemKey}
             </span>
           ) : null}
           {task.title}
-        </span>
+        </Link>
         <SubtaskProgress task={task} />
         <BlockedBadge task={task} />
       </div>
@@ -1421,23 +1929,19 @@ function BacklogRow({
       <ElapsedClock task={task} now={now} align="right" />
       <DateActorCell iso={task.createdAt} actor={task.createdBy} dateOnly />
       <DateActorCell iso={task.updatedAt} actor={task.updatedBy} />
-      <form
-        action={deleteTaskAction}
-        onClick={(event) => event.stopPropagation()}
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onDeleteRequest();
+        }}
         onPointerDown={(event) => event.stopPropagation()}
-        className="text-right"
+        className="grid h-11 w-11 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:px-1.5 md:py-1"
+        aria-label={`Move ${task.title} to bin`}
+        title="Move to bin"
       >
-        <input type="hidden" name="projectSlug" value={taskProjectSlug(task, projectSlug)} />
-        <input type="hidden" name="taskId" value={task.id} />
-        <button
-          type="submit"
-          className="grid h-11 w-11 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:px-1.5 md:py-1"
-          aria-label={`Move ${task.title} to bin`}
-          title="Move to bin"
-        >
-          <TrashIcon />
-        </button>
-      </form>
+        <TrashIcon />
+      </button>
     </div>
   );
 }
@@ -1453,8 +1957,8 @@ function taskProjectSlug(task: Task, fallbackProjectSlug: string) {
 function ProjectMetaLine({ task }: { task: Task }) {
   if (!task.project) return null;
   return (
-    <div className="truncate text-nano font-medium text-text-muted">
-      Project: {task.project.name}
+    <div className="mb-0.5 truncate text-micro font-semibold text-text-muted">
+      {task.project.name}
     </div>
   );
 }
@@ -1545,6 +2049,14 @@ function isPlanningAssigned(task: Task) {
   );
 }
 
+function taskNeedsAttention(task: Task) {
+  return Boolean(
+    task.blockedByKey ||
+    task.status === "Review" ||
+    isPlanningAssigned(task),
+  );
+}
+
 function ElapsedClock({
   task,
   now,
@@ -1564,7 +2076,7 @@ function ElapsedClock({
   return (
     <span
       title={elapsedTitle(task)}
-      className={`shrink-0 items-center gap-1 rounded border border-line bg-bg px-1.5 py-0.5 font-mono text-nano tabular-nums text-text-muted ${
+      className={`shrink-0 items-center gap-1 rounded-md border border-line bg-bg-elev px-1.5 py-0.5 font-mono text-micro tabular-nums text-text-muted ${
         align === "right" ? "ml-auto flex justify-end" : "inline-flex"
       }`}
     >
@@ -1646,28 +2158,20 @@ function statusRowClass(status: string) {
   return "";
 }
 
-function taskCardClass(task: Task, isDragging = false) {
-  return `group/card relative block w-full overflow-hidden rounded-lg border px-3 py-2 text-body cursor-pointer select-none shadow-[0_14px_34px_rgba(15,23,42,0.12)] ring-1 ring-white/10 backdrop-blur-xl transition-all active:scale-[0.98] md:active:scale-100 before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-white/80 before:to-transparent after:pointer-events-none after:absolute after:inset-0 after:-translate-x-full after:bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.16),transparent)] after:opacity-0 after:transition-all after:duration-700 hover:-translate-y-0.5 hover:border-white/55 hover:shadow-[0_18px_46px_rgba(15,23,42,0.18)] hover:after:translate-x-full hover:after:opacity-100 ${
-    isPlanningAssigned(task)
-      ? "border-yellow-200/70 bg-[linear-gradient(135deg,rgba(254,240,138,0.22),rgba(255,255,255,0.08))]"
-      : "border-white/25 bg-[linear-gradient(135deg,rgba(255,255,255,0.18),rgba(255,255,255,0.06))]"
-  } ${isDragging ? "opacity-30" : ""}`;
+function taskCardClass(task: Task, isDragging = false, compact = false, interactive = true) {
+  return `board-task-card group/card relative block w-full select-none overflow-hidden rounded-xl border text-body transition-[transform,border-color,box-shadow,background-color,opacity] active:scale-[0.99] ${
+    compact ? "px-3 py-2" : "p-3"
+  } ${interactive ? "cursor-pointer" : ""} ${isPlanningAssigned(task) ? "board-task-card--planning" : ""} ${
+    isDragging ? "opacity-30" : "hover:-translate-y-px"
+  }`;
 }
 
-function columnSurfaceClass(status: string) {
-  if (status === "To Do") return "border-violet-200/35 bg-violet-300/[0.40]";
-  if (status === "In Progress") return "border-sky-300/35 bg-sky-500/[0.11]";
-  if (status === "Review") return "border-amber-300/40 bg-amber-500/[0.14]";
-  if (status === "Done") return "border-lime-300/35 bg-lime-500/[0.10]";
-  return "border-line bg-panel";
-}
-
-function columnHeaderPillClass(status: string) {
-  if (status === "To Do") return "border-violet-500/70 bg-violet-100 text-violet-950 shadow-[inset_0_0_0_1px_rgba(124,58,237,0.2)]";
-  if (status === "In Progress") return "border-sky-500/70 bg-sky-100 text-sky-950 shadow-[inset_0_0_0_1px_rgba(2,132,199,0.18)]";
-  if (status === "Review") return "border-amber-500/80 bg-amber-100 text-amber-950 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.22)]";
-  if (status === "Done") return "border-lime-600/70 bg-lime-100 text-lime-950 shadow-[inset_0_0_0_1px_rgba(101,163,13,0.18)]";
-  return "border-slate-500/60 bg-slate-100 text-slate-950 shadow-[inset_0_0_0_1px_rgba(71,85,105,0.16)]";
+function boardStatusColor(status: string) {
+  if (status === "To Do") return "var(--status-todo)";
+  if (status === "In Progress") return "var(--status-progress)";
+  if (status === "Review") return "var(--status-review)";
+  if (status === "Done") return "var(--status-done)";
+  return "var(--status-backlog)";
 }
 
 function TimerIcon() {

@@ -98,7 +98,7 @@ export function TabsNav({
             <span className="inline-flex items-center gap-1.5">
               <span>{tab}</span>
               {badge > 0 ? (
-                <span className="rounded-full bg-crit px-1.5 py-0.5 text-nano font-semibold leading-none text-white">
+                <span className="rounded-full bg-crit px-1.5 py-0.5 text-nano font-semibold leading-none text-on-crit">
                   {badge > 99 ? "99+" : badge}
                 </span>
               ) : null}

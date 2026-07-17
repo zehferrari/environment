@@ -129,7 +129,7 @@ export default async function SystemUsersPage({
           </div>
           <ProjectGrantGrid projects={projects} />
           <div className="flex justify-end">
-            <button type="submit" className="rounded-lg bg-accent px-control-x py-control-y text-body font-semibold text-white shadow-sm hover:opacity-90">
+            <button type="submit" className="rounded-lg bg-accent px-control-x py-control-y text-body font-semibold text-bg shadow-sm hover:opacity-90">
               Create invitation
             </button>
           </div>
@@ -185,7 +185,7 @@ export default async function SystemUsersPage({
                     <input name="name" defaultValue={user.name ?? ""} maxLength={120} className={inputClass} />
                   </Field>
                   <Field label="Avatar image">
-                    <input type="file" name="avatar" accept="image/png,image/jpeg,image/webp,image/gif" className="block w-full text-caption file:mr-2 file:rounded file:border-0 file:bg-accent file:px-3 file:py-1.5 file:text-caption file:font-medium file:text-white hover:file:opacity-90" />
+                    <input type="file" name="avatar" accept="image/png,image/jpeg,image/webp,image/gif" className="block w-full text-caption file:mr-2 file:rounded file:border-0 file:bg-accent file:px-3 file:py-1.5 file:text-caption file:font-medium file:text-bg hover:file:opacity-90" />
                   </Field>
                   {user.avatarUpdatedAt ? (
                     <label className="flex items-center gap-2 text-caption text-text-muted">

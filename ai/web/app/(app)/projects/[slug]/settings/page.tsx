@@ -561,7 +561,7 @@ export default async function ProjectSettingsPage({
               </p>
               <button
                 type="submit"
-                className="w-full rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-medium text-crit hover:bg-crit hover:text-bg"
+                className="w-full rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-medium text-crit hover:bg-crit hover:text-on-crit"
               >
                 Delete project
               </button>
