@@ -21,7 +21,6 @@ import {
 } from "@/lib/workflow";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
-import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { buildDeploymentApproved } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
 import { isPublicEpic } from "@/lib/pm-events/visibility";
@@ -872,7 +871,6 @@ export async function createTaskInEpic(
     return { ok: false, error: "Epic tasks can only be created when the Epic has no top-level child tasks yet." };
   }
 
-  const branchName = effectiveEpicBranchName(epic);
   const defaultReviewer = epic.project.defaultReviewerId
     ? await db.user.findUnique({
         where: { id: epic.project.defaultReviewerId },
@@ -884,21 +882,6 @@ export async function createTaskInEpic(
     : defaultReviewer?.id ?? null;
 
   const task = await db.$transaction(async (tx) => {
-    if (!epic.branchName) {
-      await tx.epic.update({
-        where: { id: epic.id },
-        data: { branchName },
-      });
-      await tx.activityLog.create({
-        data: {
-          projectId: epic.projectId,
-          userId: actor.id,
-          kind: "epic.branch",
-          payload: JSON.stringify({ from: null, to: branchName, via: "epic-task-create" }),
-        },
-      });
-    }
-
     const maxRank = await tx.task.aggregate({
       where: { projectId: epic.projectId, status: "Backlog", archivedAt: null, deletedAt: null },
       _max: { rank: true },
@@ -918,8 +901,8 @@ export async function createTaskInEpic(
         assigneeId: null,
         actingManagerId: actor.kind === "human" ? defaultReviewerId : null,
         reporterId: actor.kind === "human" ? actor.id : epic.reporterId ?? null,
-        branchName,
-        commitPrefix: epic.commitPrefix ?? null,
+        branchName: null,
+        commitPrefix: null,
       },
       select: { id: true, title: true },
     });

@@ -18,7 +18,8 @@
 // — not yet implemented).
 
 import { db } from "@/lib/db";
-import { effectiveCommitPrefix } from "@/lib/work-items/keys";
+import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
+import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 
 // Generous caps — 99th-percentile tasks fit comfortably. PM database is
 // SQLite, all on local NVMe; reading 2k rows is sub-100ms.
@@ -354,11 +355,8 @@ export async function buildTaskContextJson(
       approvedOn: task.approvedOn?.toISOString() ?? null,
       alert_reporter: task.alertReporter,
       description: clipApi(task.description, API_DESCRIPTION_MAX),
-      branchName: task.branchName,
-      commitPrefix: effectiveCommitPrefix({
-        commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
-        workItemKey: task.workItemKey,
-      }),
+      branchName: effectiveTaskBranchName(task),
+      commitPrefix: effectiveTaskCommitPrefix(task),
       createdAt: task.createdAt.toISOString(),
       updatedAt: task.updatedAt.toISOString(),
       assignee: actor(task.assignee),
@@ -380,7 +378,7 @@ export async function buildTaskContextJson(
           title: task.epic.title,
           status: task.epic.status,
           description: clipApi(task.epic.description, API_DESCRIPTION_MAX),
-          branchName: task.epic.branchName,
+          branchName: effectiveEpicBranchName(task.epic),
           commitPrefix: effectiveCommitPrefix({
             commitPrefix: task.epic.commitPrefix,
             workItemKey: task.epic.workItemKey,
@@ -648,7 +646,7 @@ export async function buildEpicContextJson(
       title: epic.title,
       status: epic.status,
       description: clipApi(epic.description, API_DESCRIPTION_MAX),
-      branchName: epic.branchName,
+      branchName: effectiveEpicBranchName(epic),
       commitPrefix: effectiveCommitPrefix({
         commitPrefix: epic.commitPrefix,
         workItemKey: epic.workItemKey,
@@ -814,6 +812,7 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
       select: {
         id: true, workItemKey: true, title: true, status: true, epicId: true, parentTaskId: true,
         branchName: true, commitPrefix: true,
+        epic: { select: { workItemKey: true, branchName: true, commitPrefix: true } },
         assignee: { select: { username: true, kind: true, isOwner: true } },
         actingManager: { select: { username: true, kind: true, isOwner: true } },
       },
@@ -845,7 +844,7 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
       title: e.title,
       status: e.status,
       description: clipApi(e.description, API_DESCRIPTION_MAX),
-      branchName: e.branchName,
+      branchName: effectiveEpicBranchName(e),
       commitPrefix: effectiveCommitPrefix({ commitPrefix: e.commitPrefix, workItemKey: e.workItemKey }),
       workers: e.workers.map((worker) => actor(worker.user)),
       actingManager: actor(e.actingManager),
@@ -860,8 +859,8 @@ export async function buildProjectContextJson(projectId: string): Promise<Projec
       parentTaskId: t.parentTaskId,
       assignee: actor(t.assignee),
       actingManager: actor(t.actingManager),
-      branchName: t.branchName,
-      commitPrefix: effectiveCommitPrefix({ commitPrefix: t.commitPrefix, workItemKey: t.workItemKey }),
+      branchName: effectiveTaskBranchName(t),
+      commitPrefix: effectiveTaskCommitPrefix(t),
     })),
     meta: {
       fetchedAt: new Date().toISOString(),

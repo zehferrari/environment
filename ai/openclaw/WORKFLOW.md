@@ -467,12 +467,16 @@ Latency / PM queue/status names:
     - `Project.repositoryPath` tells you the repo path when configured.
     - `Project.defaultGitUserName` / `defaultGitUserEmail` describe the
       default project git identity.
-    - `Task.branchName` is the branch to use when set.
-    - `Task.commitPrefix` is the prefix to prepend to commit messages
-      when set.
+    - Branch resolution is: the Task's explicit `branchName`, then its
+      Epic's effective branch (explicit branch or lowercased Epic
+      `workItemKey`), then the lowercased Task `workItemKey`.
+    - Commit-prefix resolution is: the Task's explicit `commitPrefix`, then
+      its Epic's explicit `commitPrefix`, then the Task `workItemKey`.
+      Database record IDs are never branch names or commit prefixes.
 12. For repos under `/srv/Code/` or backed by Bitbucket, follow
     [`guides/BITBUCKET.md`](./guides/BITBUCKET.md) and [`guides/CODE_REPOS.md`](./guides/CODE_REPOS.md).
-    If a shared repo task lacks a branch name, ask in PM and wait.
+    If no explicit branch is stored, use the resolved human-key fallback from
+    PM context; do not invent a branch from a system/database ID.
 13. Run relevant tests/builds, or state plainly what could not be tested.
 14. Push the branch when code is ready. Do **not** create or update a pull
     request. PR creation and landing are human-only.
@@ -817,10 +821,11 @@ repository (`pm.repo.verify.ok`). Moving a code-touching task to `Review`
 wakes the monitor agent first; the monitor rejects dirty worktrees,
 pushes clean local branch commits when it can, verifies the remote
 branch/prefix/git author and committer against the project git identity
-or global git identity fallback, verifies the current `origin/main` is an
-ancestor of the task branch, rebuilds the live PM worktree if that branch
+or global git identity fallback, verifies the current effective deployment PR
+target branch is an ancestor of the task branch, rebuilds the live PM worktree if that branch
 is serving the website, and only then wakes the resolved reviewer. A stale
-branch fails this gate until it is updated or recreated from `origin/main`.
+branch fails this gate until it is updated or recreated from the base named in
+the verifier result.
 Non-code Review work can wake the reviewer directly. Do not approve or
 `review_done` a code task before `pm.repo.verify.ok` is present.
 

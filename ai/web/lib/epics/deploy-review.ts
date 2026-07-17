@@ -1,6 +1,8 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { generateClientMessageId } from "@/lib/agents/ops/client-message-id";
+import { effectiveEpicBranchName } from "@/lib/work-items/branches";
+import { effectiveCommitPrefix } from "@/lib/work-items/keys";
 
 export const DEFAULT_DEPLOY_REVIEW_PROMPT = "Give me a summary of the changes done in the source code (including details of the local and origin branches) plus a report confirming each request of the Epic has been properly addressed and the changes pose no harm to the system in terms of security and data integrity.";
 
@@ -161,6 +163,11 @@ export async function triggerDeployReview(args: {
   }
 
   const prompt = await resolveDeployReviewPrompt(epic.projectId);
+  const branchName = effectiveEpicBranchName(epic);
+  const commitPrefix = effectiveCommitPrefix({
+    commitPrefix: epic.commitPrefix,
+    workItemKey: epic.workItemKey,
+  });
   const notify = new FormData();
   notify.set("messageId", generateClientMessageId());
   notify.set("projectSlug", args.projectSlug);
@@ -171,8 +178,8 @@ export async function triggerDeployReview(args: {
     "",
     `Epic: ${epic.workItemKey ? `${epic.workItemKey} ` : ""}${epic.title}`,
     `Repository: ${epic.project.repositoryPath ?? "(not configured)"}`,
-    `Epic branch: ${epic.branchName ?? "(not configured)"}`,
-    `Commit prefix: ${epic.commitPrefix ?? "(not configured)"}`,
+    `Epic branch: ${branchName ?? "(not configured)"}`,
+    `Commit prefix: ${commitPrefix ?? "(not configured)"}`,
     "",
     "Deploy-review prompt:",
     prompt,

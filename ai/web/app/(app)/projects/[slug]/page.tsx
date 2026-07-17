@@ -135,14 +135,12 @@ async function createTask(formData: FormData) {
   // Epic combobox: scope the chosen epic to this project; ignore anything
   // that isn't a live epic here.
   let epicId: string | null = epicRaw === "" ? null : epicRaw;
-  let epicDefaults: { branchName: string | null; commitPrefix: string | null } | null = null;
   if (epicId) {
     const epic = await db.epic.findFirst({
       where: accessibleEpicWhere(actor, { id: epicId, projectId, archivedAt: null, deletedAt: null }),
-      select: { id: true, branchName: true, commitPrefix: true },
+      select: { id: true },
     });
     if (!epic) epicId = null;
-    else epicDefaults = epic;
   }
   const taskTitle = epicId ? await nextEpicTaskTitle(epicId, title) : title;
 
@@ -167,8 +165,10 @@ async function createTask(formData: FormData) {
       assigneeId,
       actingManagerId,
       reporterId: actor.id,
-      branchName: epicDefaults?.branchName ?? null,
-      commitPrefix: epicDefaults?.commitPrefix ?? null,
+      // Null means "resolve from the Epic, then the Task work-item key".
+      // Do not copy inherited values: later Epic edits must propagate.
+      branchName: null,
+      commitPrefix: null,
     },
     select: { id: true, title: true },
   });

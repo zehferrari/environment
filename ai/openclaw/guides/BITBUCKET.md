@@ -28,19 +28,22 @@ target branch before implementation starts.
 
 - For Jira tasks, the target Bitbucket branch must be named in the Jira
   ticket.
-- For Mission Control tasks, use the task's `branchName` field or the
-  explicit branch supplied by the PM context/human.
-- If no target branch is named for a shared repo, the task is blocked.
-  Ask in the source channel instead of inventing one.
+- For Mission Control tasks, use the resolved branch supplied by PM: an
+  explicit Task branch, then the Epic's explicit branch or lowercased Epic
+  work-item key, then the lowercased Task work-item key. Never use the Task or
+  Epic database ID.
+- A Mission Control task is blocked for branch naming only when neither an
+  explicit branch nor a human work-item key is available.
 
 Workflow:
 
 1. Read the source work item and note the designated branch
    (for example `feature/HOMELAB-12-foo`).
 2. Run `claim-branch <repo> <branch>` to check out the branch locally.
-   The helper first fetches `origin/main`. If the branch does not exist on
-   origin, it cuts it from that freshly fetched `origin/main`, pushes it, and
-   sets up upstream tracking. It rejects caller-supplied `--from` refs.
+   The helper first fetches `origin/main`, or `origin/master` when main is
+   absent. If the branch does not exist on origin, it cuts it from that
+   freshly fetched integration ref, pushes it, and sets up upstream tracking.
+   It rejects caller-supplied `--from` refs.
 3. Work inside the path printed by `claim-branch`. Never edit the
    primary `/srv/Code/<repo>/` tree directly for task work. You MUST configure
    the local worktree's git identity (user.name and user.email) to match the
@@ -68,9 +71,10 @@ again after every fix requested during review.
 - Keep commit messages concise and traceable.
 - Include the work item key or source-system commit prefix.
 - For Jira, include the Jira key (`PROJECT-123`) in every commit message.
-- For Mission Control, prepend the task's `commitPrefix` when it is set.
-  If no prefix is provided and the project has no convention, ask in the
-  PM task/comment thread before committing shared-repo work.
+- For Mission Control, prepend the resolved prefix: the Task's explicit
+  `commitPrefix`, then its Epic's explicit `commitPrefix`, then the Task
+  work-item key. Never combine Epic and Task keys unless that compound value
+  was explicitly configured, and never use a database ID.
 - Do not include secrets, tokens, private logs, or irrelevant terminal
   transcripts in commit messages.
 
@@ -206,7 +210,7 @@ under `/srv/Code/<repo>.worktrees/`. A repeated
 `claim-branch <repo> <branch>` is a no-op: it just prints the existing
 path.
 
-New branches are always created from the freshly fetched `origin/main`.
-Existing origin branches are attached at their remote tip; they are not
-silently rebased. Do not use raw `git worktree add -b` or a local `main`
-checkout for task branches.
+New branches are always created from freshly fetched `origin/main`, or
+`origin/master` when main is absent. Existing origin branches are attached at
+their remote tip; they are not silently rebased. Do not use raw
+`git worktree add -b` or a local integration-branch checkout for task branches.

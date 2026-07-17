@@ -36,6 +36,18 @@ export function effectiveCommitPrefix(args: {
   return explicit || args.workItemKey || null;
 }
 
+export function effectiveTaskCommitPrefix(task: {
+  workItemKey: string | null;
+  commitPrefix: string | null;
+  epic?: { commitPrefix: string | null } | null;
+}) {
+  const taskPrefix = task.commitPrefix?.trim();
+  if (taskPrefix) return taskPrefix;
+
+  const epicPrefix = task.epic?.commitPrefix?.trim();
+  return epicPrefix || task.workItemKey || null;
+}
+
 async function availableProjectPrefix(
   projectId: string,
   basePrefix: string,

@@ -25,8 +25,8 @@ import {
 } from "@/lib/agents/context/api/recent";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { resolveGitIdentity } from "@/lib/settings/system";
-import { effectiveCommitPrefix } from "@/lib/work-items/keys";
-import { effectiveEpicBranchName } from "@/lib/work-items/branches";
+import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
+import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 
 type Actor = {
   id: string;
@@ -106,21 +106,6 @@ function looksLikeReviewFeedback(body: string) {
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function requiredCommitPrefix(args: {
-  taskId: string;
-  taskWorkItemKey: string | null;
-  taskCommitPrefix: string | null;
-  epicWorkItemKey?: string | null;
-  epicCommitPrefix?: string | null;
-}) {
-  const taskKey = args.taskWorkItemKey ?? args.taskId;
-  if (args.epicWorkItemKey) return `${args.epicWorkItemKey} ${taskKey}`;
-  return effectiveCommitPrefix({
-    commitPrefix: args.taskCommitPrefix ?? args.epicCommitPrefix ?? null,
-    workItemKey: args.taskWorkItemKey,
-  });
 }
 
 function workflowPrompt(args: {
@@ -410,14 +395,8 @@ export async function sendTaskWorkflowNotification(args: {
     agentSlug: targetUser.agent.slug,
   });
   const gitIdentity = await resolveGitIdentity(task.project);
-  const commitPrefix = requiredCommitPrefix({
-    taskId: task.id,
-    taskWorkItemKey: task.workItemKey,
-    taskCommitPrefix: task.commitPrefix,
-    epicWorkItemKey: task.epic?.workItemKey ?? null,
-    epicCommitPrefix: task.epic?.commitPrefix ?? null,
-  });
-  const branchName = task.branchName ?? (task.epic ? effectiveEpicBranchName(task.epic) : null);
+  const commitPrefix = effectiveTaskCommitPrefix(task);
+  const branchName = effectiveTaskBranchName(task);
   const kind = planChannelNotification ? "task-chat" as const : "task-comment" as const;
   const dispatchArgs = {
     gatewayPort: targetUser.agent.gatewayPort,
@@ -737,14 +716,8 @@ export async function sendTaskCommentNotifications(args: {
   });
   const fetchBaseUrl = agentCallbackBaseUrl();
   const gitIdentity = await resolveGitIdentity(task.project);
-  const commitPrefix = requiredCommitPrefix({
-    taskId: task.id,
-    taskWorkItemKey: task.workItemKey,
-    taskCommitPrefix: task.commitPrefix,
-    epicWorkItemKey: task.epic?.workItemKey ?? null,
-    epicCommitPrefix: task.epic?.commitPrefix ?? null,
-  });
-  const branchName = task.branchName ?? (task.epic ? effectiveEpicBranchName(task.epic) : null);
+  const commitPrefix = effectiveTaskCommitPrefix(task);
+  const branchName = effectiveTaskBranchName(task);
 
   await Promise.all(mirroredMessages.map(async (msg) => {
     const userMessage = await buildTaskAgentUserMessage({

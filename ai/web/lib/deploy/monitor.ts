@@ -6,6 +6,9 @@ import {
   DEPLOYMENT_PR_LOCAL_CHANGES_PENDING,
   type DeploymentPrTerminalStatus,
 } from "@/lib/deploy/deployment-status";
+import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
+import { subjectHasCommitPrefix } from "@/lib/work-items/commit-prefix";
 
 const execFileAsync = promisify(execFile);
 const LOG_EXCERPT_MAX = 4000;
@@ -30,6 +33,10 @@ export interface DeploymentTarget {
   title: string;
   branchName: string;
   commitPrefix: string | null;
+  // A shared Epic branch can contain independently-prefixed commits for
+  // several child Tasks. Keep every required prefix on the single physical
+  // branch/PR target so deduplication never weakens the deployment gate.
+  commitPrefixes?: string[];
 }
 
 export interface DeploymentProjectConfig {
@@ -54,6 +61,66 @@ export interface DeploymentPlan {
   project: DeploymentProjectConfig;
   reporter: ReporterIdentity;
   targets: DeploymentTarget[];
+}
+
+type EpicDeploymentSource = {
+  id: string;
+  workItemKey: string | null;
+  title: string;
+  branchName: string | null;
+  commitPrefix: string | null;
+  tasks: Array<{
+    id: string;
+    workItemKey: string | null;
+    title: string;
+    branchName: string | null;
+    commitPrefix: string | null;
+  }>;
+};
+
+export function deploymentTargetsForEpic(epic: EpicDeploymentSource): DeploymentTarget[] {
+  const childTargets: DeploymentTarget[] = epic.tasks.flatMap((task): DeploymentTarget[] => {
+    const branchName = effectiveTaskBranchName({ ...task, epic });
+    const commitPrefix = effectiveTaskCommitPrefix({ ...task, epic });
+    return branchName ? [{
+      taskId: task.id,
+      epicId: epic.id,
+      workItemKey: task.workItemKey,
+      title: task.title,
+      branchName,
+      commitPrefix,
+      commitPrefixes: commitPrefix ? [commitPrefix] : [],
+    }] : [];
+  });
+
+  const targetsByBranch = new Map<string, DeploymentTarget>();
+  for (const target of childTargets) {
+    const existing = targetsByBranch.get(target.branchName);
+    if (!existing) {
+      targetsByBranch.set(target.branchName, target);
+      continue;
+    }
+    for (const prefix of target.commitPrefixes ?? []) {
+      if (!existing.commitPrefixes?.includes(prefix)) existing.commitPrefixes?.push(prefix);
+    }
+  }
+  const uniqueChildTargets = [...targetsByBranch.values()];
+  if (uniqueChildTargets.length) return uniqueChildTargets;
+
+  const branchName = effectiveEpicBranchName(epic);
+  const commitPrefix = effectiveCommitPrefix({
+    commitPrefix: epic.commitPrefix,
+    workItemKey: epic.workItemKey,
+  });
+  return branchName ? [{
+    taskId: null,
+    epicId: epic.id,
+    workItemKey: epic.workItemKey,
+    title: epic.title,
+    branchName,
+    commitPrefix,
+    commitPrefixes: commitPrefix ? [commitPrefix] : [],
+  }] : [];
 }
 
 export interface BranchVerification {
@@ -211,26 +278,9 @@ export async function resolveDeploymentPlan(args: {
     const repo = effective.deployment.bitbucketWorkspace.value && effective.deployment.bitbucketRepoSlug.value
       ? { workspace: effective.deployment.bitbucketWorkspace.value, repoSlug: effective.deployment.bitbucketRepoSlug.value }
       : await remoteBitbucketRepo(epic.project.repositoryPath);
-    const childTargets = epic.tasks.filter((task: any) => task.branchName);
-    const targets = childTargets.length
-      ? childTargets.map((task: any): DeploymentTarget => ({
-          taskId: task.id,
-          epicId: epic.id,
-          workItemKey: task.workItemKey,
-          title: task.title,
-          branchName: task.branchName!,
-          commitPrefix: task.commitPrefix ?? epic.commitPrefix,
-        }))
-      : epic.branchName
-        ? [{
-            taskId: null,
-            epicId: epic.id,
-            workItemKey: epic.workItemKey,
-            title: epic.title,
-            branchName: epic.branchName,
-            commitPrefix: epic.commitPrefix,
-          }]
-        : [];
+    // Several Epic children may inherit one branch. Open one physical PR but
+    // retain every child's required commit prefix in its verification gate.
+    const targets = deploymentTargetsForEpic(epic);
     if (targets.length === 0) throw new Error("No deployable branch found on Epic or child Tasks");
     return {
       scope: "epic",
@@ -267,7 +317,11 @@ export async function resolveDeploymentPlan(args: {
   if (task.epicId) throw new Error("Deployment can only be approved from an Epic or top-level Task");
   if (!task.reporter) throw new Error("Task reporter is required before deployment");
   if (!task.project.repositoryPath) throw new Error("Project repositoryPath is required before deployment");
-  if (!task.branchName) throw new Error("Task branchName is required before deployment");
+  const branchName = effectiveTaskBranchName({
+    workItemKey: task.workItemKey,
+    branchName: task.branchName,
+  });
+  if (!branchName) throw new Error("Task branchName or workItemKey is required before deployment");
   const effective = await resolveEffectiveProjectSettings(task.project);
   const repo = effective.deployment.bitbucketWorkspace.value && effective.deployment.bitbucketRepoSlug.value
     ? { workspace: effective.deployment.bitbucketWorkspace.value, repoSlug: effective.deployment.bitbucketRepoSlug.value }
@@ -296,8 +350,15 @@ export async function resolveDeploymentPlan(args: {
       epicId: null,
       workItemKey: task.workItemKey,
       title: task.title,
-      branchName: task.branchName,
-      commitPrefix: task.commitPrefix,
+      branchName,
+      commitPrefix: effectiveTaskCommitPrefix({
+        workItemKey: task.workItemKey,
+        commitPrefix: task.commitPrefix,
+      }),
+      commitPrefixes: [effectiveTaskCommitPrefix({
+        workItemKey: task.workItemKey,
+        commitPrefix: task.commitPrefix,
+      })].filter((prefix): prefix is string => Boolean(prefix)),
     }],
   };
 }
@@ -317,6 +378,7 @@ export async function verifyDeploymentBranch(args: {
   repositoryPath: string;
   branchName: string;
   commitPrefix: string | null;
+  commitPrefixes?: string[];
   reporter: ReporterIdentity;
   targetBranch: string;
 }): Promise<BranchVerification> {
@@ -329,21 +391,31 @@ export async function verifyDeploymentBranch(args: {
   const remoteLine = await git(args.repositoryPath, ["ls-remote", "--heads", "origin", args.branchName]).catch(() => "");
   const remoteSha = remoteLine ? remoteLine.split(/\s+/)[0] : null;
   let matchingCommitCount = 0;
-  if (args.commitPrefix) {
+  const requiredPrefixes = [...new Set(
+    args.commitPrefixes?.length
+      ? args.commitPrefixes.filter(Boolean)
+      : args.commitPrefix
+        ? [args.commitPrefix]
+        : [],
+  )];
+  for (const commitPrefix of requiredPrefixes) {
     const log = await git(args.repositoryPath, [
       "log",
       `${args.targetBranch}..${args.branchName}`,
       "--format=%H%x00%an%x00%ae%x00%s",
-      `--grep=^${escapeRegExp(args.commitPrefix)}`,
+      `--grep=^${escapeRegExp(commitPrefix)}`,
     ]).catch(() => "");
     const rows = log ? log.split("\n") : [];
-    matchingCommitCount = rows.filter((row) => {
-      const [, authorName, authorEmail] = row.split("\0");
-      return authorName === args.reporter.name && authorEmail === args.reporter.email;
+    const prefixMatchCount = rows.filter((row) => {
+      const [, authorName, authorEmail, subject] = row.split("\0");
+      return authorName === args.reporter.name &&
+        authorEmail === args.reporter.email &&
+        subjectHasCommitPrefix(subject ?? "", commitPrefix);
     }).length;
-    if (matchingCommitCount === 0) {
-      throw new Error(`No ${args.commitPrefix} commits authored as ${args.reporter.name} <${args.reporter.email}> found on ${args.branchName}`);
+    if (prefixMatchCount === 0) {
+      throw new Error(`No ${commitPrefix} commits authored as ${args.reporter.name} <${args.reporter.email}> found on ${args.branchName}`);
     }
+    matchingCommitCount += prefixMatchCount;
   }
   let pushed = false;
   if (remoteSha !== localSha) {
@@ -536,6 +608,7 @@ export async function handleDeploymentApproved(args: {
       repositoryPath: plan.project.repositoryPath,
       branchName: target.branchName,
       commitPrefix: target.commitPrefix,
+      commitPrefixes: target.commitPrefixes,
       reporter: plan.reporter,
       targetBranch: plan.project.prTargetBranch,
     });
@@ -638,6 +711,7 @@ export async function approveLocalChangesAndOpenDeploymentPr(args: {
     repositoryPath: plan.project.repositoryPath,
     branchName: target.branchName,
     commitPrefix: target.commitPrefix,
+    commitPrefixes: target.commitPrefixes,
     reporter: plan.reporter,
     targetBranch: plan.project.prTargetBranch,
   });

@@ -134,8 +134,12 @@ workspace group.
   git identity for commits.
 - `Project.defaultAssigneeId` / `defaultReviewerId` — seed the pickers.
 - `Project.doneTtlDays` — Done cards older than this drop off the board.
-- `Task.branchName` — the branch to use when set.
-- `Task.commitPrefix` — prefix to prepend to commit messages when set.
+- `Task.branchName` — optional Task override. When null, inherit the Epic's
+  effective branch (explicit branch or lowercased Epic `workItemKey`), then
+  use the lowercased Task `workItemKey` when no Epic key is available.
+- `Task.commitPrefix` — optional Task override. When null, inherit an explicit
+  Epic prefix; when that is also null, use the Task `workItemKey`.
+  System/database IDs are never used for either fallback.
 - `Task.actingManagerId` — the reviewer / acting manager (UI label is
   "Reviewer"; the schema column stays `actingManagerId` for audit
   continuity).

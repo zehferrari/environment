@@ -17,8 +17,9 @@ import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
 import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { createSubTaskItem, setSubTaskCompletion } from "@/lib/tasks/subtasks";
-import { resolveGitIdentity } from "@/lib/settings/system";
-import { effectiveCommitPrefix } from "@/lib/work-items/keys";
+import { resolveEffectiveProjectSettings } from "@/lib/settings/effective";
+import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
+import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignTaskAfterPlanApproval } from "@/lib/tasks/reviewer-assignment";
 import { isProtectedBranch, parseProtectedBranches } from "@/lib/projects/protected-branches";
@@ -246,12 +247,14 @@ export async function POST(
             repositoryPath: true,
             defaultGitUserName: true,
             defaultGitUserEmail: true,
+            deploymentProductionBranch: true,
+            deploymentPrTargetBranch: true,
             onlyReportersCanApproveActionPlans: true,
             onlyReportersCanSetTasksDone: true,
             agentChangeBlockedBranches: true,
           },
         },
-        epic: { select: { status: true, actingManagerId: true, commitPrefix: true, workItemKey: true } },
+        epic: { select: { status: true, actingManagerId: true, branchName: true, commitPrefix: true, workItemKey: true } },
       },
     }),
   ]);
@@ -509,24 +512,18 @@ export async function POST(
 
     // Resolve repoTouched. The assignee can override by sending an explicit
     // boolean; otherwise default to "yes, it touched the repo" iff the task
-    // has a branch name on a project with a repositoryPath set.
-    const codeTouching = Boolean(task.branchName && task.project.repositoryPath);
+    // resolves a branch on a project with a repositoryPath set.
+    const branchName = effectiveTaskBranchName(task);
+    const codeTouching = Boolean(branchName && task.project.repositoryPath);
     const repoTouched = typeof payload.repoTouched === "boolean"
       ? payload.repoTouched
       : codeTouching;
-    const fallbackCommitPrefix = effectiveCommitPrefix({
-      commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
-      workItemKey: task.workItemKey,
-    });
-    const taskKey = task.workItemKey ?? task.id;
-    const resolvedCommitPrefix = task.epic?.workItemKey
-      ? `${task.epic.workItemKey} ${taskKey}`
-      : fallbackCommitPrefix;
+    const resolvedCommitPrefix = effectiveTaskCommitPrefix(task);
 
-    if (repoTouched && isProtectedBranch(task.project.agentChangeBlockedBranches, task.branchName)) {
+    if (repoTouched && isProtectedBranch(task.project.agentChangeBlockedBranches, branchName)) {
       return NextResponse.json({
-        error: `Agents cannot submit code-changing work from protected branch ${task.branchName}. Move the work to an allowed task branch, push it, then call ready_for_review again.`,
-        branchName: task.branchName,
+        error: `Agents cannot submit code-changing work from protected branch ${branchName}. Move the work to an allowed task branch, push it, then call ready_for_review again.`,
+        branchName,
         protectedBranches: parseProtectedBranches(task.project.agentChangeBlockedBranches),
       }, { status: 409 });
     }
@@ -575,13 +572,24 @@ export async function POST(
     }
 
     // Monitor verifier: only enqueue when the task plausibly touched the repo.
-    // If branchName or repositoryPath is unset, there's nothing for the verifier to
+    // If the effective branch or repositoryPath is unset, there's nothing for the verifier to
     // check against — skip silently. If the assignee declared repoTouched=
     // false (e.g., doc-only task), also skip.
     let verifyJobId: string | null = null;
-    if (repoTouched && task.branchName && task.project.repositoryPath) {
+    if (repoTouched && branchName && task.project.repositoryPath) {
       const jobId = randomUUID();
-      const gitIdentity = await resolveGitIdentity(task.project);
+      const effectiveSettings = await resolveEffectiveProjectSettings({
+        id: task.projectId,
+        defaultGitUserName: task.project.defaultGitUserName,
+        defaultGitUserEmail: task.project.defaultGitUserEmail,
+        deploymentProductionBranch: task.project.deploymentProductionBranch,
+        deploymentPrTargetBranch: task.project.deploymentPrTargetBranch,
+      });
+      const gitIdentity = {
+        name: effectiveSettings.gitIdentity.name.value,
+        email: effectiveSettings.gitIdentity.email.value,
+      };
+      const baseBranch = effectiveSettings.deployment.prTargetBranch.value;
       try {
         await enqueueBranchVerifyJob({
           jobId,
@@ -589,7 +597,8 @@ export async function POST(
           projectId: task.projectId,
           projectSlug: task.project.slug,
           repositoryPath: task.project.repositoryPath,
-          branchName: task.branchName,
+          branchName,
+          baseBranch,
           commitPrefix: resolvedCommitPrefix,
           expectedGitUserName: gitIdentity.name,
           expectedGitUserEmail: gitIdentity.email,
@@ -607,7 +616,8 @@ export async function POST(
             targetAgent: agent.slug,
             payload: JSON.stringify({
               jobId,
-              branchName: task.branchName,
+              branchName,
+              baseBranch,
               commitPrefix: resolvedCommitPrefix,
               repositoryPath: task.project.repositoryPath,
               expectedGitUserName: gitIdentity.name,

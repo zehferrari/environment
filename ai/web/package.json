@@ -69,6 +69,8 @@
     "test:deploy-review-prompt": "tsx scripts/deploy-review-prompt-test.ts",
     "test:markdown-links": "tsx scripts/markdown-link-test.ts",
     "test:workflow-agent-rules": "tsx scripts/workflow-agent-rules-test.ts",
+    "test:branch-base-verification": "tsx scripts/branch-base-verification-test.ts",
+    "test:claim-branch-base": "bash ../openclaw/tests/claim-branch-base-test.sh",
     "test:protected-branches": "tsx scripts/protected-branches-test.ts",
     "test:worktree-cleanup": "tsx scripts/worktree-cleanup-test.ts"
   },

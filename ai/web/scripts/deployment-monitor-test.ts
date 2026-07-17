@@ -3,10 +3,26 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { approveLocalChangesAndOpenDeploymentPr, handleDeploymentApproved, pollDeploymentPullRequests, verifyDeploymentBranch } from "@/lib/deploy/monitor";
+import { approveLocalChangesAndOpenDeploymentPr, deploymentTargetsForEpic, handleDeploymentApproved, pollDeploymentPullRequests, verifyDeploymentBranch } from "@/lib/deploy/monitor";
 
 function git(cwd: string, args: string[]) {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+}
+
+function sharedEpicBranchRetainsEveryTaskPrefix() {
+  const targets = deploymentTargetsForEpic({
+    id: "epic1",
+    workItemKey: "V23-2",
+    title: "GreenID rollout",
+    branchName: "v23-2-greenid",
+    commitPrefix: null,
+    tasks: [
+      { id: "task1", workItemKey: "V23-3", title: "Client", branchName: null, commitPrefix: null },
+      { id: "task2", workItemKey: "V23-4", title: "Facade", branchName: null, commitPrefix: null },
+    ],
+  });
+  assert.equal(targets.length, 1, "one shared Epic branch must produce one deployment PR target");
+  assert.deepEqual(targets[0]?.commitPrefixes, ["V23-3", "V23-4"], "the shared branch gate must retain every child Task prefix");
 }
 
 async function branchVerificationPushesReporterAuthoredCommit() {
@@ -28,18 +44,37 @@ async function branchVerificationPushesReporterAuthoredCommit() {
     await import("node:fs/promises").then((fs) => fs.appendFile(path.join(repo, "README.md"), "feature\n"));
     git(repo, ["add", "README.md"]);
     git(repo, ["commit", "-m", "ENV-18 implement deployment"]);
+    await import("node:fs/promises").then((fs) => fs.appendFile(path.join(repo, "README.md"), "second task\n"));
+    git(repo, ["add", "README.md"]);
+    git(repo, ["commit", "-m", "ENV-19 implement second task"]);
 
     const result = await verifyDeploymentBranch({
       repositoryPath: repo,
       branchName: "feature/deploy",
       commitPrefix: "ENV-18",
+      commitPrefixes: ["ENV-18", "ENV-19"],
       reporter: { userId: "u1", name: "Example Owner", email: "owner@example.test" },
       targetBranch: "main",
     });
 
     assert.equal(result.pushed, true);
-    assert.equal(result.matchingCommitCount, 1);
+    assert.equal(result.matchingCommitCount, 2);
     assert.equal(git(repo, ["ls-remote", "--heads", "origin", "feature/deploy"]).split(/\s+/)[0], result.localSha);
+
+    git(repo, ["checkout", "-b", "feature/prefix-collision", "main"]);
+    await import("node:fs/promises").then((fs) => fs.appendFile(path.join(repo, "README.md"), "collision\n"));
+    git(repo, ["add", "README.md"]);
+    git(repo, ["commit", "-m", "V23-30 unrelated task"]);
+    await assert.rejects(
+      verifyDeploymentBranch({
+        repositoryPath: repo,
+        branchName: "feature/prefix-collision",
+        commitPrefix: "V23-3",
+        reporter: { userId: "u1", name: "Example Owner", email: "owner@example.test" },
+        targetBranch: "main",
+      }),
+      /No V23-3 commits/,
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -348,6 +383,7 @@ async function epicChildRollupWaitsForAllChildren() {
 }
 
 async function main() {
+  sharedEpicBranchRetainsEveryTaskPrefix();
   await branchVerificationPushesReporterAuthoredCommit();
   await missingReporterEmailReturnsPrompt();
   await dirtyDeploymentApprovalRecordsPendingLocalChanges();

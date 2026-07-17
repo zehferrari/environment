@@ -47,7 +47,8 @@ import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
 import EpicTasksClient from "./epic-tasks-client";
 import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
 import { buildEpicActionPlanApprovalUpdate } from "@/lib/epics/action-plan-approval";
-import { effectiveCommitPrefix } from "@/lib/work-items/keys";
+import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
+import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, type DeploymentPrRow } from "@/components/deployment-tab";
 import {
   accessibleEpicWhere,
@@ -753,10 +754,7 @@ export default async function EpicDetailPage({
     workItemKey: epic.workItemKey,
   });
   const childTaskCommitPrefixes = epic.tasks.flatMap((task) => [
-    effectiveCommitPrefix({
-      commitPrefix: task.commitPrefix ?? epic.commitPrefix,
-      workItemKey: task.workItemKey ?? null,
-    }),
+    effectiveTaskCommitPrefix({ ...task, epic }),
     task.workItemKey,
   ]);
   const epicChangeCommitPrefixes = uniqueStrings([
@@ -764,7 +762,11 @@ export default async function EpicDetailPage({
     epic.workItemKey,
     ...childTaskCommitPrefixes,
   ]);
-  const epicChangeBranchName = epic.branchName ?? epic.tasks.find((task) => task.branchName)?.branchName ?? null;
+  // Preserve an explicit child override for Epics that do not configure a
+  // shared branch; only then fall back to the Epic's human-key branch.
+  const epicChangeBranchName = epic.branchName?.trim()
+    || epic.tasks.find((task) => task.branchName?.trim())?.branchName?.trim()
+    || effectiveEpicBranchName(epic);
   const epicChanges = selectedTab === "Changes"
     ? await getTaskGitChanges({
         repositoryPath: epic.project.repositoryPath,
@@ -1202,7 +1204,7 @@ export default async function EpicDetailPage({
                           name="branchName"
                           defaultValue={epic.branchName ?? ""}
                           maxLength={200}
-                          placeholder="feature/HOMELAB-99"
+                          placeholder={epicChangeBranchName ? `defaults to ${epicChangeBranchName}` : "feature/HOMELAB-99"}
                           className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 font-mono text-caption outline-none focus:border-accent"
                           aria-label="Branch"
                         />
@@ -1216,7 +1218,7 @@ export default async function EpicDetailPage({
                           name="commitPrefix"
                           defaultValue={epic.commitPrefix ?? ""}
                           maxLength={200}
-                          placeholder={epic.workItemKey ? `defaults to ${epic.workItemKey}` : "HOMELAB-99"}
+                          placeholder={epicCommitPrefix ? `defaults to ${epicCommitPrefix}` : "HOMELAB-99"}
                           className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 font-mono text-caption outline-none focus:border-accent"
                           aria-label="Commit prefix"
                         />

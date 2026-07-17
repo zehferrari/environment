@@ -1,8 +1,9 @@
 #!/bin/bash
 # claim-branch — create or attach a git worktree for a /srv/Code/<repo>
-# on a specific branch. Every newly-created branch is based on the freshly
-# fetched origin/main. Existing origin branches are attached at their remote
-# tip.
+# on a specific branch. Every newly-created branch is based on a freshly
+# fetched conventional integration branch. Existing origin branches are
+# attached at their remote tip. The integration base is origin/main when
+# present, otherwise origin/master; callers cannot override it.
 #
 # Two modes:
 #   --review     attaches a *detached HEAD* worktree at origin/<branch>
@@ -13,7 +14,7 @@
 #   (default)    a normal branch worktree (the implementer's tree).
 #
 # Usage:
-#   claim-branch <repo> <branch>                 # attach or create from origin/main
+#   claim-branch <repo> <branch>                 # attach or create from origin/main|master
 #   claim-branch <repo> <branch> --review        # reviewer worktree (detached HEAD)
 #   claim-branch --release <repo> <branch>       # tear down implementer worktree
 #   claim-branch --release <repo> <branch> --review  # tear down reviewer worktree
@@ -94,10 +95,40 @@ write_expected_identity() {
   fi
 }
 
+resolve_base_branch() {
+  local repo_root="$1"
+  local main_error="" master_error=""
+
+  if main_error=$(git -C "$repo_root" fetch --quiet origin main 2>&1); then
+    git -C "$repo_root" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null || \
+      die "origin/main fetch succeeded but its remote-tracking ref is unavailable"
+    printf 'main\n'
+    return 0
+  fi
+
+  if master_error=$(git -C "$repo_root" fetch --quiet origin master 2>&1); then
+    git -C "$repo_root" rev-parse --verify --quiet refs/remotes/origin/master >/dev/null || \
+      die "origin/master fetch succeeded but its remote-tracking ref is unavailable"
+    printf 'master\n'
+    return 0
+  fi
+
+  printf '%s\n' "$main_error" >&2
+  printf '%s\n' "$master_error" >&2
+  die "neither origin/main nor origin/master could be fetched"
+}
+
+fetch_remote_branch() {
+  local repo_root="$1" branch="$2"
+  git -C "$repo_root" fetch --quiet origin \
+    "+refs/heads/${branch}:refs/remotes/origin/${branch}"
+}
+
 cmd_claim() {
   local repo="$1" branch="$2"
   local repo_root="$CODE_ROOT/$repo"
   [ -d "$repo_root/.git" ] || die "no repo at $repo_root"
+  git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "invalid branch name: $branch"
 
   local wt; wt=$(worktree_path "$repo" "$branch" false)
 
@@ -107,18 +138,20 @@ cmd_claim() {
   fi
 
   git -C "$repo_root" worktree prune
-  # Fetch the integration branch explicitly. Do not use a local main/master
-  # checkout or a repository-specific default branch as the creation base.
-  git -C "$repo_root" fetch --quiet origin main
-  git -C "$repo_root" rev-parse --verify --quiet refs/remotes/origin/main >/dev/null || \
-    die "origin/main was not fetched; cannot create branch '${branch}' safely"
+  # Fetch a conventional integration branch explicitly. Never use a local
+  # checkout or a caller-supplied ref as the creation base.
+  local base_branch; base_branch=$(resolve_base_branch "$repo_root")
+  # Refresh the exact task branch before deciding whether it exists. A remote
+  # branch may not be present in a clone's configured fetch refspec or local
+  # remote-tracking cache yet.
+  fetch_remote_branch "$repo_root" "$branch" 2>/dev/null || true
   mkdir -p "$CODE_ROOT/${repo}.worktrees"
 
   if git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null; then
     git -C "$repo_root" worktree add -B "$branch" "$wt" "origin/${branch}" >&2
   else
-    printf 'Branch %s not found on origin. Creating it from origin/main...\n' "$branch" >&2
-    git -C "$repo_root" worktree add -b "$branch" "$wt" origin/main >&2
+    printf 'Branch %s not found on origin. Creating it from origin/%s...\n' "$branch" "$base_branch" >&2
+    git -C "$repo_root" worktree add -b "$branch" "$wt" "origin/$base_branch" >&2
     git -C "$wt" push -u origin "$branch" >&2
   fi
 
@@ -155,6 +188,7 @@ cmd_claim_review() {
 }
 
 # ─── Arg parsing ─────────────────────────────────────────────────────────
+main() {
 [ $# -ge 1 ] || usage
 
 case "${1:-}" in
@@ -193,7 +227,7 @@ case "${1:-}" in
     while [ $# -gt 0 ]; do
       case "$1" in
         --review) review=true; shift ;;
-        --from) die "--from is disabled: every newly-created branch must start from origin/main" ;;
+        --from) die "--from is disabled: every newly-created branch must start from the resolved origin/main or origin/master" ;;
         *) die "unknown arg: $1" ;;
       esac
     done
@@ -204,3 +238,8 @@ case "${1:-}" in
     fi
     ;;
 esac
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

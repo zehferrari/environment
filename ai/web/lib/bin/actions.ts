@@ -32,6 +32,7 @@ import { db } from "@/lib/db";
 import { deleteAttachmentFile } from "@/lib/attachments/storage";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { cleanupEpicGitRefs } from "@/lib/bin/git-cleanup";
+import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 
 async function requireHumanActor(): Promise<Viewer> {
   const viewer = await requireViewer();
@@ -336,7 +337,7 @@ export async function emptyProjectBin(formData: FormData) {
   const [deletedEpics, deletedTasks] = await Promise.all([
     db.epic.findMany({
       where: { projectId: project.id, deletedAt: { not: null } },
-      select: { id: true, branchName: true },
+      select: { id: true, workItemKey: true, branchName: true },
     }),
     db.task.findMany({
       where: { projectId: project.id, deletedAt: { not: null } },
@@ -385,7 +386,7 @@ export async function emptyProjectBin(formData: FormData) {
   if (result.errors.length === 0 && epicIds.length > 0) {
     result.gitCleanup = await cleanupEpicGitRefs({
       repositoryPath: project.repositoryPath,
-      branches: deletedEpics.map((epic) => epic.branchName),
+      branches: deletedEpics.map(effectiveEpicBranchName),
     });
     result.errors.push(...result.gitCleanup.errors.map((msg) => `git cleanup: ${msg}`));
   }

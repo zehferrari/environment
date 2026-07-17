@@ -183,9 +183,11 @@ into `/var/lib/pm/branch-verify/<jobId>.json`. The repo-fetch-user
 reading `pm.service`'s `WorkingDirectory`), and runs the TS verifier
 (`ai/web/scripts/pm-verify-branch-pushed.ts`) inside it. The verifier:
 
-- `git -C <repositoryPath> fetch --quiet origin main <branchName>` on the local
-  clone, then verifies current `origin/main` is an ancestor of
-  `origin/<branchName>` — the remote IS Bitbucket, but the runner reuses the
+- fetches the effective deployment PR target branch and `<branchName>` on the
+  local clone, then verifies the current target is an ancestor of
+  `origin/<branchName>`. The base is snapshotted in each new job; legacy jobs
+  resolve remote HEAD and then try `main`/`master`. The remote IS Bitbucket,
+  but the runner reuses the
   SSH credentials configured for `PM_VERIFY_RUN_USER` on the local clone (no
   Bitbucket REST in this pass);
 - resolves the local branch worktree when available and fails fast if it still

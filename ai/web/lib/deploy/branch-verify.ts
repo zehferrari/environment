@@ -26,6 +26,9 @@ export interface BranchVerifyJob {
   projectSlug: string;
   repositoryPath: string;
   branchName: string;
+  // Effective deployment PR target branch at enqueue time. Optional so jobs
+  // queued by older PM builds can resolve origin/HEAD safely.
+  baseBranch?: string | null;
   commitPrefix: string | null;
   expectedGitUserName: string | null;
   expectedGitUserEmail: string | null;

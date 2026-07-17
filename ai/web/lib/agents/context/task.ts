@@ -11,7 +11,8 @@ import {
 } from "@/lib/agents/ops/directed-targets";
 import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
 import { clip, clipWithMeta, renderBudgetedTimeline } from "@/lib/agents/context/budget";
-import { effectiveCommitPrefix } from "@/lib/work-items/keys";
+import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
+import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
 // from agent.role. Coding agents (can_modify_code=true) get the 1M-token
@@ -439,6 +440,7 @@ export async function buildTaskAgentContextPacket(args: {
           title: true,
           status: true,
           description: true,
+          branchName: true,
           commitPrefix: true,
           workers: {
             orderBy: { createdAt: "asc" },
@@ -567,11 +569,8 @@ export async function buildTaskAgentContextPacket(args: {
             title: task.title,
             status: task.status,
             description: task.description,
-            branchName: task.branchName,
-            commitPrefix: effectiveCommitPrefix({
-              commitPrefix: task.commitPrefix ?? task.epic?.commitPrefix ?? null,
-              workItemKey: task.workItemKey,
-            }),
+            branchName: effectiveTaskBranchName(task),
+            commitPrefix: effectiveTaskCommitPrefix(task),
             approvedOn: formatDate(task.approvedOn),
             createdAt: formatDate(task.createdAt)!,
             updatedAt: formatDate(task.updatedAt)!,

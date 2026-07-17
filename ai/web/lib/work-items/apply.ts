@@ -27,7 +27,6 @@ import { listAssignablePrincipals } from "@/lib/principals";
 import { validateProposal } from "@/lib/work-items/proposal";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
-import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import { MAX_SUBTASK_TEXT } from "@/lib/tasks/subtasks";
 import { validateBlockedBy } from "@/lib/tasks/blocking";
 
@@ -336,29 +335,6 @@ export async function commitProposal(
           } else {
             const epicId = op.epic !== undefined ? resolveRef(op.epic) : null;
             const blockedById = op.blockedBy !== undefined ? resolveRef(op.blockedBy) : null;
-            let inheritedBranchName: string | null = null;
-            let inheritedCommitPrefix: string | null = null;
-            if (epicId) {
-              const epic = await tx.epic.findUnique({
-                where: { id: epicId },
-                select: { id: true, title: true, branchName: true, commitPrefix: true },
-              });
-              if (epic) {
-                inheritedBranchName = effectiveEpicBranchName(epic);
-                inheritedCommitPrefix = epic.commitPrefix ?? null;
-                if (!epic.branchName) {
-                  await tx.epic.update({ where: { id: epicId }, data: { branchName: inheritedBranchName } });
-                  await tx.activityLog.create({
-                    data: {
-                      projectId,
-                      userId: agentId,
-                      kind: "epic.branch",
-                      payload: JSON.stringify({ from: null, to: inheritedBranchName, via: "workitem-proposal", proposalId: proposal.id }),
-                    },
-                  });
-                }
-              }
-            }
             const title = epicId
               ? await nextEpicTaskTitle(epicId, String(op.title), tx)
               : String(op.title);
@@ -375,8 +351,9 @@ export async function commitProposal(
                 assigneeId: null,
                 actingManagerId: null,
                 reporterId: newItemReporterId,
-                branchName: inheritedBranchName,
-                commitPrefix: inheritedCommitPrefix,
+                // Null retains dynamic inheritance/default semantics.
+                branchName: null,
+                commitPrefix: null,
               },
               select: { id: true, title: true, assigneeId: true },
             });

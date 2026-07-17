@@ -9,12 +9,27 @@ export function sanitizeBranchComponent(value: string) {
     .slice(0, 180);
 }
 
-export function deriveEpicBranchName(epic: { id: string; title: string }) {
-  const title = sanitizeBranchComponent(epic.title) || "epic";
-  return `${epic.id.toLowerCase()}-${title}`;
+export function branchNameFromWorkItemKey(workItemKey: string | null | undefined) {
+  if (!workItemKey) return null;
+  return sanitizeBranchComponent(workItemKey) || null;
 }
 
-export function effectiveEpicBranchName(epic: { id: string; title: string; branchName: string | null }) {
+export function effectiveEpicBranchName(epic: {
+  workItemKey: string | null;
+  branchName: string | null;
+}) {
   const existing = epic.branchName?.trim();
-  return existing || deriveEpicBranchName(epic);
+  return existing || branchNameFromWorkItemKey(epic.workItemKey);
+}
+
+export function effectiveTaskBranchName(task: {
+  workItemKey: string | null;
+  branchName: string | null;
+  epic?: { workItemKey: string | null; branchName: string | null } | null;
+}) {
+  const taskBranch = task.branchName?.trim();
+  if (taskBranch) return taskBranch;
+
+  const epicBranch = task.epic ? effectiveEpicBranchName(task.epic) : null;
+  return epicBranch || branchNameFromWorkItemKey(task.workItemKey);
 }

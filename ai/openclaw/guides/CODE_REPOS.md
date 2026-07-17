@@ -63,9 +63,11 @@ the same DB + env, so only the served code changes. Full design:
 
 ## Mandatory branch workflow
 
-Every Jira ticket that touches a shared repo **must** designate a
-target Bitbucket branch in the ticket description. Without an
-explicit branch, the ticket is not actionable — do not start.
+Every Jira ticket that touches a shared repo **must** designate a target
+Bitbucket branch in the ticket description. Mission Control resolves its
+branch from a Task override, the Epic's explicit branch or human work-item key,
+or finally the lowercased Task work-item key. A database record ID is never a
+valid fallback.
 
 The primary worktree at `/srv/Code/<repo>/` is **not** for ticket
 work. It tracks the integration branch (master / main / etc.) and
@@ -75,12 +77,14 @@ created via `claim-branch`.
 
 The implementer flow is:
 
-1. Read the Jira or Mission Control ticket, note the designated branch (e.g. `feature/HOMELAB-12-foo`).
-2. `claim-branch <repo> <branch>` — fetches `origin/main`, checks if the
-   branch exists on origin, and creates a worktree on it. If it does not
-   exist, it creates and pushes the branch from the freshly fetched
-   `origin/main`. New branches must never be based on a local checkout or a
-   caller-supplied ref; `claim-branch` rejects `--from`.
+1. Read the Jira or Mission Control ticket and note the designated/resolved
+   branch (for example `feature/HOMELAB-12-foo` or `homelab-12`).
+2. `claim-branch <repo> <branch>` — fetches `origin/main` when present,
+   otherwise `origin/master`, checks if the branch exists on origin, and
+   creates a worktree on it. If it does not exist, it creates and pushes the
+   branch from that freshly fetched integration ref. New branches must never
+   be based on a local checkout or a caller-supplied ref; `claim-branch`
+   rejects `--from`.
 3. `cd "$(claim-branch <repo> <branch>)"` and work there.
 4. Make sure the git user name and email match the project settings.
    - If the project settings define a custom git identity, you MUST configure them locally in the worktree:
@@ -138,7 +142,8 @@ no shared branch ref:
    committing on the branch worktree without conflict.
 3. If the reviewer wants to propose fixups, they cut a sibling branch
    (`claim-branch <repo> <branch>-review-fixes`). New branches still start
-   from the freshly fetched `origin/main`; the helper already did the
+   from freshly fetched `origin/main`, or `origin/master` when main is absent;
+   the helper already did the
    initial `git push -u origin` for the new branch on creation, so the branch
    exists on Bitbucket immediately.
    Subsequent commits still need an explicit `git push` to land on
@@ -169,7 +174,8 @@ This applies to every form of merge that lands the PR:
 Agents **may** freely:
 
 - Merge or rebase the integration branch *into their own feature
-  branch* to resolve conflicts (`git merge origin/main` from a
+  branch* to resolve conflicts (`git merge origin/main` or
+  `git merge origin/master`, matching the repository, from a
   feature-branch worktree, then push the feature branch). This is
   preparing the change, not landing it.
 - Push and force-push to their own feature branch.
@@ -206,10 +212,11 @@ The script lives at `/usr/local/bin/claim-branch`. It writes the
 worktree path to **stdout** and progress messages to stderr, so it
 composes cleanly with `cd "$(...)"`.
 
-For a new branch, the helper first fetches `origin/main` and uses that exact
+For a new branch, the helper first tries `origin/main`, falls back to
+`origin/master` when main is absent, and uses that exact freshly fetched
 remote-tracking ref as the creation base. It has no `--from` override. If a
-branch already exists on origin, the helper attaches it at its existing
-remote tip; it does not recreate or rebase that branch.
+branch already exists on origin, the helper attaches it at its existing remote
+tip; it does not recreate or rebase that branch.
 
 A repeated `claim-branch <repo> <branch>` is a no-op — it just prints
 the existing worktree's path. So agents can run it freely to find

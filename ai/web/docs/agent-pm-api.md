@@ -336,8 +336,8 @@ Shape:
     "title": "Chat/Discussions Context packet truncate",
     "status": "Done",
     "description": "## Problem\n…",
-    "branchName": "feature/HOMELAB-41-…",
-    "commitPrefix": "HOMELAB-41:",
+    "branchName": "homelab-40",       // effective: Task → Epic explicit/key → Task key
+    "commitPrefix": "HOMELAB-41",     // effective: Task → Epic → workItemKey
     "createdAt": "2026-05-27T11:12:46.974Z",
     "updatedAt": "2026-05-28T00:34:44.180Z",
     "workItemKey": "HOMELAB-41",  // stable board key; null on older rows

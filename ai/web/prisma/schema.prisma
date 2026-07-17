@@ -305,8 +305,8 @@ model Epic {
   archivedAt       DateTime? @map("archived_at")
   archivedById     String?   @map("archived_by")
   archivedBy       User?     @relation("EpicArchivedBy", fields: [archivedById], references: [id])
-  // Epic-level git defaults inherited by child Tasks when their own fields
-  // are blank. Task keeps its own branchName/commitPrefix once overridden.
+  // Epic-level git overrides inherited dynamically by child Tasks while their
+  // own fields are null. A blank Epic falls back to its human work-item key.
   branchName       String?
   commitPrefix     String?
   // Soft delete (HOMELAB-48). deletedAt != null means the row is in the
@@ -416,10 +416,11 @@ model Task {
   // tasks after project.doneTtlDays so plain updates to title/description
   // don't reset the clock.
   statusChangedAt  DateTime?
-  // Free-text branch name the agent will use for commits on this task.
+  // Optional free-text override. Null inherits the Epic's effective branch
+  // (explicit or human-key fallback), then uses this Task's human key.
   branchName       String?
-  // Free-text commit-message prefix (e.g. a ticket key) the agent prepends
-  // to commits on this task. Edited alongside branchName on the task form.
+  // Optional commit-message override. Null inherits an explicit Epic prefix,
+  // then falls back to this Task's human work-item key.
   commitPrefix     String?
   // Agents set this when human/reporter intervention is required.
   alertReporter    Boolean   @default(false) @map("alert_reporter")

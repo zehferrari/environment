@@ -470,11 +470,12 @@ Epic's acting manager. Allowed actions:
 
 ### Commit hygiene + Review verification
 
-For code-touching tasks (task has a `branchName` set on a project with
-a `repositoryPath`), workflow turns inject a **Commit hygiene** block
-that names the resolved COMMIT_PREFIX (task.commitPrefix →
-epic.commitPrefix fallback), the branch, and the repository path. The
-assignee must:
+For code-touching tasks (the Task resolves a branch on a project with a
+`repositoryPath`), workflow turns inject a **Commit hygiene** block with the
+resolved branch and COMMIT_PREFIX. Branch precedence is Task override → Epic
+explicit branch → lowercased Epic `workItemKey` → lowercased Task `workItemKey`;
+prefix precedence is Task override → Epic override → Task `workItemKey`. Database IDs are never fallbacks, and PM
+does not implicitly compound the Epic and Task keys. The assignee must:
 
 - prefix every commit on the branch with the resolved COMMIT_PREFIX
   (e.g. `HOMELAB-41: short imperative summary`),
@@ -492,12 +493,14 @@ to an allowed branch and retry.
 For allowed branches, PM drops a JSON job into
 `/var/lib/pm/branch-verify/<jobId>.json`. The branch-verify runner
 (`pm-verify-runner.service`) runs as `PM_VERIFY_RUN_USER`, fetches the current
-`origin/main` and `origin/<branchName>` on the already-cloned repo, and
-requires `origin/main` to be an ancestor of the task branch before it checks
-the COMMIT_PREFIX on `origin/<branchName>`. It posts a `pm.repo.verify.ok`
+effective deployment PR target branch and `origin/<branchName>` on the
+already-cloned repo, and requires that base to be an ancestor of the task
+branch before it checks the COMMIT_PREFIX on `origin/<branchName>`. Legacy
+jobs without a recorded base resolve the remote default, then try
+`main`/`master`. It posts a `pm.repo.verify.ok`
 task comment (with HEAD sha, the verified base, the latest prefix-matching
 commit, and push timestamp) or `pm.repo.verify.fail` (no push found / no
-prefix match / protected branch / stale or unrelated origin/main base /
+prefix match / protected branch / stale or unrelated configured base /
 verifier credential failure) as `PM_MONITOR_USER`. The Review transition for
 allowed branches itself is NOT blocked — the verifier publishes its result
 asynchronously and the reviewer reads it before approving.
@@ -507,8 +510,8 @@ verification** block instructing them to read the latest
 `pm.repo.verify.*` comment first: on `ok` proceed; on fail because no
 branch/no commit/no prefix match, send `review_feedback` asking the
 assignee to push with the prefix before review. On a stale or unrelated
-`origin/main` base, send `review_feedback` asking the assignee to update or
-recreate the task branch from the current `origin/main`. On fail because the
+configured base, send `review_feedback` asking the assignee to update or
+recreate the task branch from the base named in the verifier result. On fail because the
 monitor verifier cannot fetch the remote (`Unauthorized`, permission denied,
 cannot read from remote), treat it as monitor credential configuration, not
 an assignee push problem. If neither has appeared, wait briefly for the

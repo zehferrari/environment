@@ -18,6 +18,7 @@ import WorktreeSwitcher from "@/components/worktree-switcher";
 import BranchMultiCombobox from "@/components/branch-multi-combobox";
 import { parseProtectedBranches } from "@/lib/projects/protected-branches";
 import { resolveEffectiveProjectSettings, settingSourceLabel } from "@/lib/settings/effective";
+import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 
 export const dynamic = "force-dynamic";
 
@@ -78,22 +79,24 @@ export default async function ProjectSettingsPage({
   const switchState = switchProject ? await readSwitchState(switchProject.spoolDir) : null;
   const showSwitcher = Boolean(switchProject) && switchState !== null;
 
-  const [effectiveSettings, projectTaskBranches] = await Promise.all([
+  const [effectiveSettings, projectTasks] = await Promise.all([
     resolveEffectiveProjectSettings(project),
     db.task.findMany({
-      where: accessibleTaskWhere(viewer, { projectId: project.id, deletedAt: null, branchName: { not: null } }),
-      distinct: ["branchName"],
-      orderBy: { branchName: "asc" },
-      select: { branchName: true },
+      where: accessibleTaskWhere(viewer, { projectId: project.id, deletedAt: null }),
+      select: {
+        workItemKey: true,
+        branchName: true,
+        epic: { select: { workItemKey: true, branchName: true } },
+      },
     }),
   ]);
   const protectedBranches = parseProtectedBranches(project.agentChangeBlockedBranches);
   const worktreeProtectedBranches = localWorktreeProtectedBranches(project);
-  const branchOptions = [
+  const branchOptions = [...new Set([
     project.deploymentProductionBranch ?? "main",
     project.deploymentPrTargetBranch ?? project.deploymentProductionBranch ?? "main",
-    ...projectTaskBranches.map((row) => row.branchName ?? ""),
-  ];
+    ...projectTasks.map((task) => effectiveTaskBranchName(task) ?? ""),
+  ])].filter(Boolean).sort();
   const principals = await listAssignablePrincipals(viewer);
   const codingAgentPrincipals = principals.filter((p) => p.kind === "agent" && p.agentRole === "coding");
   const managerAssignableUserIds = new Set(project.managerAssignableAgents.map((row) => row.userId));

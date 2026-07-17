@@ -33,7 +33,7 @@ import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteTask } from "@/lib/bin/actions";
 import { archiveTask, unarchiveTask } from "@/lib/archive/actions";
 import { approveAndMergeDeploymentPullRequest, approveDeploymentLocalChanges } from "@/lib/deploy/actions";
-import { effectiveEpicBranchName } from "@/lib/work-items/branches";
+import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 import {
   createSubTaskItem,
   setSubTaskCompletion,
@@ -50,7 +50,7 @@ import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation
 import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
-import { effectiveCommitPrefix } from "@/lib/work-items/keys";
+import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import {
   getCachedLatestRepoVerifyActivity,
   getCachedPendingTaskProposals,
@@ -215,7 +215,7 @@ async function updateTask(formData: FormData) {
           onlyReportersCanApprovePullRequests: true,
         },
       },
-      epic: { select: { id: true, title: true, status: true, actingManagerId: true, branchName: true, commitPrefix: true } },
+      epic: { select: { id: true, title: true, status: true, actingManagerId: true } },
       assignee: { select: { id: true, username: true, kind: true } },
       actingManager: { select: { username: true } },
       reporter: { select: { username: true } },
@@ -294,29 +294,17 @@ async function updateTask(formData: FormData) {
   }
 
   // Epic (must belong to the same project)
-  let selectedEpicDefaults =
-    newEpicId === task.epicId
-      ? {
-          branchName: task.epic ? effectiveEpicBranchName(task.epic) : null,
-          commitPrefix: task.epic?.commitPrefix ?? null,
-        }
-      : null;
-
   if (newEpicId !== task.epicId) {
     let newEpicTitle: string | null = null;
     if (newEpicId !== null) {
       const target = await db.epic.findFirst({
         where: accessibleEpicWhere(actor, { id: newEpicId }),
-        select: { id: true, title: true, projectId: true, branchName: true, commitPrefix: true },
+        select: { id: true, title: true, projectId: true },
       });
       if (!target || target.projectId !== task.projectId) {
         throw new Error("Epic not found in this project");
       }
       newEpicTitle = target.title;
-      selectedEpicDefaults = {
-        branchName: effectiveEpicBranchName(target),
-        commitPrefix: target.commitPrefix,
-      };
     }
     data.epic =
       newEpicId === null ? { disconnect: true } : { connect: { id: newEpicId } };
@@ -355,26 +343,24 @@ async function updateTask(formData: FormData) {
     });
   }
 
-  const effectiveNewBranch = newBranch ?? selectedEpicDefaults?.branchName ?? null;
-  const effectiveNewCommitPrefix = newCommitPrefix ?? selectedEpicDefaults?.commitPrefix ?? null;
-
-  // Branch
-  if ((task.branchName ?? null) !== effectiveNewBranch) {
-    data.branchName = effectiveNewBranch;
+  // Null is intentional: it means inherit the current Epic override or fall
+  // back to this Task's work-item key at read/use time.
+  if ((task.branchName ?? null) !== newBranch) {
+    data.branchName = newBranch;
     activity.push({
       kind: "task.branch",
-      payload: JSON.stringify({ from: task.branchName ?? null, to: effectiveNewBranch }),
+      payload: JSON.stringify({ from: task.branchName ?? null, to: newBranch }),
     });
   }
 
   // Commit prefix (HOMELAB task-form redesign)
-  if ((task.commitPrefix ?? null) !== effectiveNewCommitPrefix) {
-    data.commitPrefix = effectiveNewCommitPrefix;
+  if ((task.commitPrefix ?? null) !== newCommitPrefix) {
+    data.commitPrefix = newCommitPrefix;
     activity.push({
       kind: "task.commit_prefix",
       payload: JSON.stringify({
         from: task.commitPrefix ?? null,
-        to: effectiveNewCommitPrefix,
+        to: newCommitPrefix,
       }),
     });
   }
@@ -1746,11 +1732,8 @@ export default async function TaskDetailPage({
     status: task.status,
     statusChangedAt: task.statusChangedAt,
   });
-  const taskExplicitCommitPrefix = task.commitPrefix ?? task.epic?.commitPrefix ?? null;
-  const taskCommitPrefix = effectiveCommitPrefix({
-    commitPrefix: taskExplicitCommitPrefix,
-    workItemKey: task.workItemKey ?? null,
-  });
+  const taskBranchName = effectiveTaskBranchName(task);
+  const taskCommitPrefix = effectiveTaskCommitPrefix(task);
   const taskChangeCommitPrefixes = uniqueStrings([
     taskCommitPrefix,
     task.workItemKey,
@@ -1758,7 +1741,7 @@ export default async function TaskDetailPage({
   const taskChanges = selectedTab === "Changes"
     ? await getTaskGitChanges({
         repositoryPath: task.project.repositoryPath,
-        branchName: task.branchName ?? task.epic?.branchName ?? null,
+        branchName: taskBranchName,
         commitPrefix: taskChangeCommitPrefixes,
         windows: changeWindows,
       })
@@ -1863,8 +1846,8 @@ export default async function TaskDetailPage({
               verifier's
               latest pm.repo.verify.* result so the reviewer doesn't approve
               work that isn't on origin/<branch> yet. */}
-          {task.status === "Review" && (task.branchName || task.epic?.branchName) ? (() => {
-            const branchName = task.branchName ?? task.epic?.branchName ?? "";
+          {task.status === "Review" && taskBranchName ? (() => {
+            const branchName = taskBranchName;
             const commitPrefix = taskCommitPrefix;
             let kind: string | null = latestRepoVerify?.kind ?? null;
             let payload: { headSha?: string | null; matchSha?: string | null; branchName?: string | null; fetchError?: string | null; logError?: string | null } = {};
@@ -2074,9 +2057,9 @@ export default async function TaskDetailPage({
                         <input
                           form="taskMain"
                           name="branchName"
-                          defaultValue={task.branchName ?? task.epic?.branchName ?? ""}
+                          defaultValue={task.branchName ?? ""}
                           maxLength={200}
-                          placeholder="e.g. feature/HOMELAB-99"
+                          placeholder={taskBranchName ? `inherits/defaults to ${taskBranchName}` : "e.g. feature/HOMELAB-99"}
                           className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-caption font-mono outline-none focus:border-accent"
                           aria-label="Branch name"
                         />
@@ -2088,9 +2071,9 @@ export default async function TaskDetailPage({
                         <input
                           form="taskMain"
                           name="commitPrefix"
-                          defaultValue={task.commitPrefix ?? task.epic?.commitPrefix ?? ""}
+                          defaultValue={task.commitPrefix ?? ""}
                           maxLength={200}
-                          placeholder={task.workItemKey ? `defaults to ${task.workItemKey}` : "e.g. HOMELAB-99"}
+                          placeholder={taskCommitPrefix ? `inherits/defaults to ${taskCommitPrefix}` : "e.g. HOMELAB-99"}
                           className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-caption font-mono outline-none focus:border-accent"
                           aria-label="Commit prefix"
                         />
@@ -2398,7 +2381,7 @@ export default async function TaskDetailPage({
               {viewer.isOwner ? <TabPanel name="Changes">
                 <TaskChangesPanel
                   changes={taskChanges}
-                  branchName={task.branchName ?? task.epic?.branchName ?? null}
+                  branchName={taskBranchName}
                   commitPrefix={taskCommitPrefix}
                   commitPrefixes={taskChangeCommitPrefixes}
                   baseHref={`/projects/${slug}/tasks/${task.id}`}

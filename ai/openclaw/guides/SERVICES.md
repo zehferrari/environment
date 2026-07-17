@@ -53,9 +53,9 @@ thinkpad uses systemd timers for active automation. Cron references in old migra
   unit, `User=karen` on thinkpad). Watches `/var/lib/pm/branch-verify/*.json` job
   files dropped by the PM workflow endpoint when an assignee moves a
   code-touching task to Review (with `repoTouched: true`). For each job runs
-  fetches the current `origin/main` and `origin/<branchName>` on the already-
-  cloned local repo, requires `origin/main` to be an ancestor of the task
-  branch, then reads `origin/<branchName>` and looks for commits whose subject
+  fetches the effective deployment PR target and `origin/<branchName>` on the
+  already-cloned local repo, requires that target to be an ancestor of the
+  task branch, then reads `origin/<branchName>` and looks for commits whose subject
   starts with the task/epic `commitPrefix`. It writes a monitor-authored task
   `Comment` plus a `pm.repo.verify.ok` or `pm.repo.verify.fail` `ActivityLog`
   row. No sudo / no privileged step — DB writes go through `DATABASE_URL` from

@@ -14,17 +14,19 @@ per branch**, reviewers on detached-HEAD worktrees, enforced by the `/srv/Code`
 pre-commit hook. Two agents must never both *write* the same branch worktree —
 that produces entangled diffs and broken builds.
 
-New task branches are created only from the freshly fetched `origin/main`.
-The host helper rejects `--from` and local branch refs, so a stale primary
-checkout cannot silently become the base of a new worktree. A branch that
-already exists on origin is attached at its existing remote tip; it is not
-rebased by the helper.
+New task branches are created only from freshly fetched `origin/main`, or
+`origin/master` when main is absent. The host helper rejects `--from` and
+local branch refs, so a stale primary checkout cannot silently become the
+base of a new worktree. A branch that already exists on origin is attached at
+its existing remote tip; it is not rebased by the helper.
 
-At review time, the monitor fetches the current `origin/main` and rejects the
-task branch unless that commit is an ancestor of `origin/<branch>`. This is the
-review-time backstop for raw Git worktree creation and for branches created
-from a stale local checkout; update or recreate the branch from `origin/main`
-before retrying review.
+At review time, the monitor fetches the project's effective deployment PR
+target branch and rejects the task branch unless that commit is an ancestor
+of `origin/<branch>`. This is the review-time backstop for raw Git worktree
+creation and for branches created from a stale local checkout; update or
+recreate the branch from the base named in the verifier result before retrying
+review. Legacy jobs without a snapshotted base use remote HEAD, then
+`main`/`master`.
 
 ## 2. Collaborative permissions (any code-agent can build)
 
