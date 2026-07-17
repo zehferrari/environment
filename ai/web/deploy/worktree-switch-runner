@@ -81,6 +81,15 @@ def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=kw.pop("timeout", 20), **kw)
 
 
+def git(repo, args, *, timeout=20):
+    """Run Git while trusting only this exact managed repository/worktree."""
+    safe_repo = os.path.realpath(repo)
+    return run(
+        ["git", "-c", f"safe.directory={safe_repo}", "-C", safe_repo, *args],
+        timeout=timeout,
+    )
+
+
 # nginx-docroot has no per-project process: "off" removes the docroot symlink,
 # so "on" has nothing to restart and needs a target branch to re-point at. We
 # remember the worktree that was served (on each switch and just before "off")
@@ -126,7 +135,7 @@ def service_active(name):
 
 def branch_of(path):
     try:
-        return run(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"], timeout=10).stdout.strip() or "?"
+        return git(path, ["rev-parse", "--abbrev-ref", "HEAD"], timeout=10).stdout.strip() or "?"
     except Exception:
         return "?"
 
@@ -157,7 +166,7 @@ def served():
 def worktrees(served_root):
     if not REPO:
         return []
-    out = run(["git", "-C", REPO, "worktree", "list", "--porcelain"], timeout=20).stdout
+    out = git(REPO, ["worktree", "list", "--porcelain"], timeout=20).stdout
     res, cur = [], {}
     for line in out.splitlines():
         if line.startswith("worktree "):

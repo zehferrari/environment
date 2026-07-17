@@ -30,6 +30,15 @@ log()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\n\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Runners can operate worktrees owned by another member of the shared code
+# group. Scope Git's trust to this exact real path for this invocation only.
+git_in() {
+  local repo="$1" safe
+  shift
+  safe="$(readlink -f "$repo" 2>/dev/null)" || return 1
+  git -c "safe.directory=$safe" -C "$safe" "$@"
+}
+
 KEY="${1:?usage: worktree-switch.sh <key> <branch|status|off|on>}"
 ACTION="${2:?usage: worktree-switch.sh <key> <branch|status|off|on>}"
 [[ "$KEY" =~ ^[a-z0-9_-]+$ ]] || die "bad key '$KEY'"
@@ -66,7 +75,7 @@ app_dir_for() {  # worktree root -> built/served app dir
   if [[ -n "$APP_SUBDIR" ]]; then printf '%s\n' "$wt/$APP_SUBDIR"; else printf '%s\n' "$wt"; fi
 }
 
-branch_of() { git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null || true; }
+branch_of() { git_in "$1" rev-parse --abbrev-ref HEAD 2>/dev/null || true; }
 
 # ===========================================================================
 # node-service driver

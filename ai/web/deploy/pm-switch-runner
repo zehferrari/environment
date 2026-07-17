@@ -50,6 +50,15 @@ def read_json(path):
         return None
 
 
+def git(repo, args, *, timeout=20):
+    """Run Git while trusting only this exact managed repository/worktree."""
+    safe_repo = os.path.realpath(repo)
+    return subprocess.run(
+        ["git", "-c", f"safe.directory={safe_repo}", "-C", safe_repo, *args],
+        capture_output=True, text=True, timeout=timeout,
+    )
+
+
 def served():
     """(worktree_root, branch) pm.service is serving, from its WorkingDirectory."""
     try:
@@ -60,10 +69,7 @@ def served():
         suffix = "/ai/web/.next/standalone"
         if wd.endswith(suffix):
             root = wd[: -len(suffix)]
-            br = subprocess.run(
-                ["git", "-C", root, "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, timeout=10,
-            ).stdout.strip()
+            br = git(root, ["rev-parse", "--abbrev-ref", "HEAD"], timeout=10).stdout.strip()
             return root, br
     except Exception:
         pass
@@ -81,10 +87,7 @@ def service_active(name):
 
 
 def worktrees(served_root):
-    out = subprocess.run(
-        ["git", "-C", REPO, "worktree", "list", "--porcelain"],
-        capture_output=True, text=True, timeout=20,
-    ).stdout
+    out = git(REPO, ["worktree", "list", "--porcelain"], timeout=20).stdout
     res, cur = [], {}
     for line in out.splitlines():
         if line.startswith("worktree "):

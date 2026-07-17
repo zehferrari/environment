@@ -35,8 +35,12 @@ class RemovalError(RuntimeError):
 
 
 def git(repo, args, *, check=True):
+    # A monitor-owned runner may remove a worktree owned by another member of
+    # the shared code group. Trust only this exact path for this process; do
+    # not weaken the monitor account's persistent Git configuration.
+    safe_repo = os.path.realpath(repo)
     proc = subprocess.run(
-        ["git", "-C", repo, *args],
+        ["git", "-c", f"safe.directory={safe_repo}", "-C", safe_repo, *args],
         capture_output=True,
         text=True,
         timeout=30,

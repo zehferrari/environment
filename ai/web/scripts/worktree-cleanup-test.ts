@@ -28,6 +28,9 @@ function runCleanup(repo: string, worktreesRoot: string, target: string, servedR
       ], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
+        // Exercise the same ownership gate hit when the monitor runner uses a
+        // worktree owned by another code-agents member.
+        env: { ...process.env, GIT_TEST_ASSUME_DIFFERENT_OWNER: "1" },
       }).trim(),
     };
   } catch (error) {
@@ -195,7 +198,23 @@ function main() {
     assert.match(helperSource, /\["branch", "-D", "--", branch\]/);
     assert.match(helperSource, /public\/version\.json/);
     assert.match(helperSource, /O_NOFOLLOW/);
+    assert.match(helperSource, /safe\.directory=/);
     assert.doesNotMatch(helperSource, /--force|push/);
+
+    // Every monitor-owned Git path must use an exact, invocation-scoped
+    // safe.directory override. Persistent or wildcard trust would weaken the
+    // account for unrelated repositories.
+    for (const gitUser of [
+      "deploy/pm-switch.sh",
+      "deploy/pm-switch-runner",
+      "deploy/worktree-switch.sh",
+      "deploy/worktree-switch-runner",
+      "deploy/worktree-remove",
+    ]) {
+      const source = readFileSync(path.resolve(process.cwd(), gitUser), "utf8");
+      assert.match(source, /safe\.directory=/, `${gitUser} must scope Git trust to its repository`);
+      assert.doesNotMatch(source, /safe\.directory=\*|config\s+--global[^\n]*safe\.directory/);
+    }
     const actionSource = readFileSync(path.resolve(process.cwd(), "lib/deploy/actions.ts"), "utf8");
     assert.match(actionSource, /requestLocalWorktreeRemoval[\s\S]*?const owner = await requireOwner\(\)/);
     assert.match(actionSource, /protectedBranches/);

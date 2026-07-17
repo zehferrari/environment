@@ -46,6 +46,16 @@ MAINTENANCE_FILE="$SWITCH_DIR/.maintenance"
 log()  { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
 
+# The deployment runner intentionally builds worktrees owned by a different
+# code-agents member on some hosts. Trust only the exact repository/worktree
+# used by this invocation; never mutate the monitor user's global Git config.
+git_in() {
+  local repo="$1" safe
+  shift
+  safe="$(readlink -f "$repo" 2>/dev/null)" || return 1
+  git -c "safe.directory=$safe" -C "$safe" "$@"
+}
+
 if [[ -e "$MAINTENANCE_FILE" && "${PM_DEPLOY_MAINTENANCE_BYPASS:-0}" != 1 ]]; then
   die "PM deployment maintenance is active; retry after $MAINTENANCE_FILE is removed"
 fi
@@ -100,7 +110,7 @@ if [[ "$1" == "status" || "$1" == "--status" ]]; then
   db_url="$(active_database_url || true)"
   consumer_active="$(systemctl is-active pm-consumer.service 2>/dev/null || echo unknown)"
   printf 'pm.service serving:\n  worktree: %s\n  branch:   %s\n  db:       %s\n  active:   %s\npm-consumer.service:\n  worktree: %s\n  active:   %s\n' \
-    "$wt" "$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')" "$db_url" "$(systemctl is-active pm.service)" \
+    "$wt" "$(git_in "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')" "$db_url" "$(systemctl is-active pm.service)" \
     "${consumer_wt:-unknown}" "$consumer_active"
   exit 0
 fi
@@ -115,7 +125,7 @@ fi
 APP_DIR="$(readlink -f "$APP_DIR")"
 STANDALONE="$APP_DIR/.next/standalone"
 WT_ROOT="${APP_DIR%/ai/web}"
-BRANCH="$(git -C "$WT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+BRANCH="$(git_in "$WT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 [[ -n "$BRANCH" && "$BRANCH" != "HEAD" ]] || die "cannot resolve branch for $WT_ROOT"
 BRANCH_SLUG="${BRANCH//\//_}"
 BRANCH_DB="${PM_BRANCH_DB:-$PM_DB_DIR/wt-$BRANCH_SLUG.db}"
