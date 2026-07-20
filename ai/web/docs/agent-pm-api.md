@@ -301,6 +301,14 @@ per agent, not per epic: an Epic with several free pool workers gets one
 task assigned to each, so pool workers progress the queue in parallel.
 Humans may still assign explicitly as a deliberate override.
 
+A Task with a blocker (`blocked_by`) cannot be started until the blocking
+task reaches Done. This is enforced server-side everywhere: automated
+assignment skips blocked tasks (the epic queue hands out the next
+unblocked task instead), the workflow `start` action rejects blocked
+tasks, and post-approval auto-start refuses them. If you are assigned a
+blocked task anyway (human override), do not start it — plan in the
+Action Plan tab and wait for the blocker to reach Done.
+
 Review-stage work that received reviewer/reporter feedback and awaits the
 assignee's response is always the assignee's first priority (WORKFLOW.md
 § Picking your next task, tier 1). A reviewer `review_feedback` action

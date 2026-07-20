@@ -466,7 +466,9 @@ Epic's acting manager. Allowed actions:
   A worker already holding an active task in the project (active means
   To Do / In Progress / Review) is skipped, but other free pool workers
   are still assigned — the pool works in parallel, one active task per
-  agent.
+  agent. Tasks with an uncleared blocker (`blocked_by` task not Done)
+  are never assigned; the queue skips past them to the next unblocked
+  task, and they become assignable once the blocker reaches Done.
 - `advance_queue` — promote the Epic's Backlog tasks to To Do, then
   assign like `assign_next` (same per-worker availability rules).
 

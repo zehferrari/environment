@@ -79,6 +79,8 @@ export type EpicTaskAssignment = {
 // either runs out. Each assignment makes that worker ineligible for the rest
 // of the loop (their fresh To Do task counts as active inside the same
 // transaction), so one call fills every free worker with exactly one task.
+// Tasks with an uncleared blocker (blockedBy not Done) are never handed out —
+// the same dependency rule the start/auto-start guards enforce.
 export async function assignOpenEpicTasks(
   tx: Prisma.TransactionClient,
   args: {
@@ -89,7 +91,7 @@ export async function assignOpenEpicTasks(
     via: string;
   },
 ) {
-  const tasks = await tx.task.findMany({
+  const openTasks = await tx.task.findMany({
     where: {
       epicId: args.epicId,
       parentTaskId: null,
@@ -104,11 +106,34 @@ export async function assignOpenEpicTasks(
       id: true,
       title: true,
       actingManagerId: true,
+      blockedById: true,
+      blockedBy: { select: { status: true, workItemKey: true } },
       project: { select: { slug: true } },
     },
   });
-  if (tasks.length === 0) {
+  if (openTasks.length === 0) {
     return { assignments: [] as EpicTaskAssignment[], skipped: "no_todo_task" as const };
+  }
+
+  const tasks = openTasks.filter(
+    (task) => !task.blockedById || task.blockedBy?.status === "Done",
+  );
+  if (tasks.length === 0) {
+    await tx.activityLog.create({
+      data: {
+        projectId: args.projectId,
+        taskId: openTasks[0].id,
+        userId: args.actorUserId,
+        kind: "task.workflow.next_assignment_skipped",
+        payload: JSON.stringify({
+          reason: "all_open_tasks_blocked",
+          epicId: args.epicId,
+          via: args.via,
+          blockedTaskIds: openTasks.map((task) => task.id),
+        }),
+      },
+    });
+    return { assignments: [] as EpicTaskAssignment[], skipped: "all_open_tasks_blocked" as const };
   }
 
   const assignments: EpicTaskAssignment[] = [];

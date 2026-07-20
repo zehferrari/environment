@@ -144,7 +144,10 @@ workspace group.
   "Reviewer"; the schema column stays `actingManagerId` for audit
   continuity).
 - `Task.blockedById` — optional self-FK to a blocking task that must
-  reach Done first (cycle-guarded on write).
+  reach Done first (cycle-guarded on write). Enforced server-side: a
+  blocked task is skipped by automated epic-queue assignment and cannot
+  be started (workflow `start` and auto-start refuse) until the blocker
+  is Done.
 - `Task.deletedAt` / `Epic.deletedAt` — soft-delete; `!= null` means in
   the bin.
 - `Epic.actingManagerId` — Epic-level acting manager. Epics have **no
