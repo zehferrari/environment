@@ -3,9 +3,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel/runs";
 import { verifyEpicWorkflowToken } from "@/lib/agents/workflow/token/epic";
-import { assignOpenEpicTasks } from "@/lib/epics/assignment";
+import { assignOpenEpicTasks, promoteEpicBacklogTasks } from "@/lib/epics/assignment";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
-import { hasActiveOwnerOrigin } from "@/lib/agents/owner-origin";
+import { hasAuthorizedEpicAgentOrigin } from "@/lib/agents/owner-origin";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { publishBoardTouch } from "@/lib/pm/board-events";
@@ -49,6 +49,7 @@ async function notifyAssignedTask(args: {
   taskTitle: string;
   targetUserId: string;
   actor: { id: string; username: string; kind: "agent" };
+  approvedPlan: boolean;
 }) {
   await sendTaskWorkflowNotification({
     taskId: args.taskId,
@@ -57,61 +58,12 @@ async function notifyAssignedTask(args: {
     reason: "todo_start_required",
     body: [
       `Epic manager @${args.actor.username} assigned "${args.taskTitle}" to you in To Do.`,
-      "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
-      "If you have unresolved review feedback on another Review-stage task, address that feedback first; otherwise prepare the Action Plan for this task now.",
+      args.approvedPlan
+        ? "Its Action Plan is already approved: move the task to In Progress through the workflow endpoint and start immediately."
+        : "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
+      "If you have unresolved review feedback on another Review-stage task, address that feedback first; otherwise begin this task now.",
     ].join("\n"),
   });
-}
-
-async function promoteBacklogTasks(args: {
-  epicId: string;
-  projectId: string;
-  actorUserId: string;
-}) {
-  const tasks = await db.task.findMany({
-    where: {
-      epicId: args.epicId,
-      parentTaskId: null,
-      archivedAt: null,
-      deletedAt: null,
-      private: false,
-      status: "Backlog",
-    },
-    orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
-    select: { id: true, title: true },
-  });
-  if (tasks.length === 0) return [];
-
-  await db.$transaction(async (tx) => {
-    const maxRank = await tx.task.aggregate({
-      where: { projectId: args.projectId, status: "To Do", archivedAt: null, deletedAt: null },
-      _max: { rank: true },
-    });
-    let nextRank = (maxRank._max.rank ?? 0) + 1;
-    const now = new Date();
-    for (const task of tasks) {
-      await tx.task.update({
-        where: { id: task.id },
-        data: { status: "To Do", rank: nextRank++, statusChangedAt: now },
-      });
-      await tx.activityLog.create({
-        data: {
-          projectId: args.projectId,
-          taskId: task.id,
-          userId: args.actorUserId,
-          kind: "task.move",
-          payload: JSON.stringify({
-            from: "Backlog",
-            to: "To Do",
-            via: "epic-manager-workflow",
-            action: "advance_queue",
-            epicId: args.epicId,
-          }),
-        },
-      });
-    }
-  });
-  return tasks;
 }
 
 export async function POST(
@@ -151,6 +103,7 @@ export async function POST(
       targetType: true,
       targetValue: true,
       senderUserId: true,
+      sender: { select: { kind: true, status: true } },
     },
   });
   if (!original || original.epicId !== epicId) {
@@ -165,7 +118,13 @@ export async function POST(
   if (!verifyEpicWorkflowToken(messageId, epicId, grantAgentSlug, token)) {
     return NextResponse.json({ error: "Invalid workflow token" }, { status: 403 });
   }
-  if (!(await hasActiveOwnerOrigin(original.senderUserId))) {
+  if (!(await hasAuthorizedEpicAgentOrigin({
+    epicId,
+    messageId,
+    targetAgentSlug: grantAgentSlug,
+    senderUserId: original.senderUserId,
+    sender: original.sender,
+  }))) {
     return NextResponse.json({ error: "Workflow grant is no longer authorized" }, { status: 403 });
   }
 
@@ -242,6 +201,10 @@ export async function POST(
             status: "Backlog",
             rank: nextRank++,
             statusChangedAt: now,
+            // Leave the task reviewer unstamped: resolveReviewOwnerId falls
+            // back to the epic's CURRENT acting manager while the epic is In
+            // Progress. Stamping the manager here froze a stale reference when
+            // the human later swapped or deactivated the manager.
             actingManagerId: null,
             reporterId: epic.reporterId ?? null,
             branchName: null,
@@ -325,11 +288,14 @@ export async function POST(
   }
 
   const promoted = action === "advance_queue"
-    ? await promoteBacklogTasks({
-        epicId: epic.id,
-        projectId: epic.projectId,
-        actorUserId: agent.user.id,
-      })
+    ? await db.$transaction((tx) =>
+        promoteEpicBacklogTasks(tx, {
+          epicId: epic.id,
+          projectId: epic.projectId,
+          actorUserId: agent.user!.id,
+          via: "epic-manager-workflow",
+        }),
+      )
     : [];
 
   const assignment = await db.$transaction((tx) =>
@@ -355,6 +321,7 @@ export async function POST(
       taskTitle: assigned.task.title,
       targetUserId: assigned.worker.id,
       actor,
+      approvedPlan: assigned.approvedPlan,
     });
   }
 

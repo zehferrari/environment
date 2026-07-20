@@ -1,5 +1,6 @@
 import { Avatar } from "@/components/ui/primitives";
 import AvatarStatus from "@/components/avatar-status";
+import AgentAvatar from "@/components/agent-avatar";
 export type MessageActor = {
   id?: string | null;
   username: string;
@@ -60,10 +61,13 @@ export function MessageAvatar({
   actor,
   size = "md",
   busy = false,
+  title,
 }: {
   actor: MessageActor;
   size?: "sm" | "md";
   busy?: boolean;
+  // Optional tooltip override (e.g. "Built by X"); defaults to the actor name.
+  title?: string;
 }) {
   if (actor.kind === "system") {
     return (
@@ -71,7 +75,7 @@ export function MessageAvatar({
         size={size}
         shape="square"
         className="border-accent bg-accent text-bg"
-        title={actorDisplayName(actor)}
+        title={title ?? actorDisplayName(actor)}
         aria-label={`${actorDisplayName(actor)} avatar`}
       >
         Z
@@ -81,27 +85,47 @@ export function MessageAvatar({
 
   const src = actorAvatarSrc(actor);
   const label = actorDisplayName(actor);
+  const tooltip = title ?? label;
   const sizeClass = size === "sm" ? "h-8 w-8" : "h-11 w-11 md:h-9 md:w-9";
-  return (
-    <AvatarStatus status={busy && actor.kind === "agent" ? "busy" : "none"} sizeClass={sizeClass} roundedClass="rounded-full" title={label}>
-      <Avatar
-        size={size}
-        title={label}
-        aria-label={`${label} avatar`}
-        className="border-0"
+  const inner = (
+    <Avatar
+      size={size}
+      title={tooltip}
+      aria-label={`${label} avatar`}
+      className="border-0"
+    >
+      {src ? (
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        <span>{initialFor(actor)}</span>
+      )}
+    </Avatar>
+  );
+  if (actor.kind === "agent") {
+    // Live presence: the slug subscribes this avatar to the presence stream;
+    // the server-computed `busy` flag is only the SSR/first-paint hint.
+    return (
+      <AgentAvatar
+        slug={actor.agent?.slug ?? null}
+        name={label}
+        sizeClass={sizeClass}
+        roundedClass="rounded-full"
+        title={tooltip}
+        initialStatus={busy ? "busy" : undefined}
       >
-        {src ? (
-          <img
-            src={src}
-            alt=""
-            loading="lazy"
-            decoding="async"
-            className="h-full w-full object-cover"
-          />
-        ) : (
-          <span>{initialFor(actor)}</span>
-        )}
-      </Avatar>
+        {inner}
+      </AgentAvatar>
+    );
+  }
+  return (
+    <AvatarStatus status="none" sizeClass={sizeClass} roundedClass="rounded-full" title={tooltip}>
+      {inner}
     </AvatarStatus>
   );
 }

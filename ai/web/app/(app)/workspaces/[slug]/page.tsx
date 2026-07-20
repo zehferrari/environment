@@ -7,6 +7,7 @@ import { reorderTasks } from "@/lib/tasks/reorder";
 import { binTask } from "@/lib/bin/actions";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
+import { refillEpicQueue } from "@/lib/epics/queue";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
@@ -118,6 +119,7 @@ async function moveTask(taskId: string, status: string, workspaceSlug: string): 
       reporterId: true,
       approvedOn: true,
       deletedAt: true,
+      epicId: true,
       project: { select: { slug: true, onlyReportersCanApproveActionPlans: true, onlyReportersCanSetTasksDone: true } },
       epic: { select: { status: true, actingManagerId: true } },
     },
@@ -221,6 +223,25 @@ async function moveTask(taskId: string, status: string, workspaceSlug: string): 
       });
     }
   }
+  // Proactive queue refill — same trigger as the project board: a human
+  // completing a task or parking one unassigned frees capacity now.
+  if (
+    current.epicId &&
+    (status === "Done" || ((status === "To Do" || status === "Backlog") && !current.assigneeId))
+  ) {
+    const refill = await refillEpicQueue({
+      epicId: current.epicId,
+      actor,
+      via: "board-move",
+      contextLine: status === "Done"
+        ? `"${current.title}" was completed.`
+        : `"${current.title}" was returned to the queue.`,
+    });
+    for (const assigned of refill.assignments) {
+      revalidateTaskShell(assigned.task.id);
+      revalidatePath(`/projects/${current.project.slug}/tasks/${assigned.task.id}`);
+    }
+  }
   revalidateTaskShell(taskId);
   revalidatePath(`/projects/${current.project.slug}`);
   revalidatePath(`/workspaces/${workspaceSlug}`);
@@ -270,7 +291,7 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
               actingManager: { select: actorSelect },
             },
           },
-          checklist: { select: { completedAt: true, minutesSpent: true } },
+          checklist: { select: { completedAt: true, minutesSpent: true, kind: true } },
         },
       })
     : [];
@@ -401,8 +422,10 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
             createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
             updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
             epicTitle: t.epic?.title ?? null,
-            subtaskTotal: t.checklist.length,
-            subtaskDone: t.checklist.filter((c) => c.completedAt !== null).length,
+            subtaskImplTotal: t.checklist.filter((c) => c.kind !== "review").length,
+            subtaskImplDone: t.checklist.filter((c) => c.kind !== "review" && c.completedAt !== null).length,
+            subtaskReviewTotal: t.checklist.filter((c) => c.kind === "review").length,
+            subtaskReviewDone: t.checklist.filter((c) => c.kind === "review" && c.completedAt !== null).length,
             subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
             blockedByKey: blocker && blocker.status !== "Done" ? blocker.workItemKey ?? null : null,
             activeWorking:

@@ -160,6 +160,7 @@ export function getCachedTaskDetailShell(taskId: string) {
             text: true,
             completedAt: true,
             minutesSpent: true,
+            kind: true,
           },
         },
         blockedBy: { select: { id: true, workItemKey: true, title: true, status: true } },

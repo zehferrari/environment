@@ -10,6 +10,7 @@ import { listAssignablePrincipals } from "@/lib/principals";
 import { binTask } from "@/lib/bin/actions";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
+import { refillEpicQueue } from "@/lib/epics/queue";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
@@ -248,6 +249,7 @@ async function moveTask(
       reporterId: true,
       approvedOn: true,
       deletedAt: true,
+      epicId: true,
       epic: { select: { status: true, actingManagerId: true } },
     },
   });
@@ -362,9 +364,31 @@ async function moveTask(
         reason: "review_requested",
         body: [
           `Task "${current.title}" was moved to Review.`,
+          "BEFORE reviewing: add the topics you will address as review sub-tasks (action=add_subtask with subtaskKind:\"review\"), then mark each complete as you address it.",
           "Review the completed work and full task context. If satisfied, move the task to Done through the workflow endpoint without posting an approval-only comment. If changes or blockers remain, leave concise feedback while keeping it in Review.",
         ].join("\n"),
       });
+    }
+  }
+  // Proactive queue refill: any human board correction that completes a task
+  // or parks one unassigned frees capacity — hand the next unblocked To Do
+  // task to a free pool worker in the same request instead of waiting for an
+  // unrelated event to re-fire the queue.
+  if (
+    current.epicId &&
+    (status === "Done" || ((status === "To Do" || status === "Backlog") && !current.assigneeId))
+  ) {
+    const refill = await refillEpicQueue({
+      epicId: current.epicId,
+      actor,
+      via: "board-move",
+      contextLine: status === "Done"
+        ? `"${current.title}" was completed.`
+        : `"${current.title}" was returned to the queue.`,
+    });
+    for (const assigned of refill.assignments) {
+      revalidateTaskShell(assigned.task.id);
+      revalidatePath(`/projects/${slug}/tasks/${assigned.task.id}`);
     }
   }
   revalidateTaskShell(taskId);
@@ -397,7 +421,7 @@ export default async function ProjectBoardPage({
               actingManager: { select: actorSelect },
             },
           },
-          checklist: { select: { completedAt: true, minutesSpent: true } },
+          checklist: { select: { completedAt: true, minutesSpent: true, kind: true } },
         },
       },
     },
@@ -483,8 +507,10 @@ export default async function ProjectBoardPage({
             createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
             updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
             epicTitle: t.epic?.title ?? null,
-            subtaskTotal: t.checklist.length,
-            subtaskDone: t.checklist.filter((c) => c.completedAt !== null).length,
+            subtaskImplTotal: t.checklist.filter((c) => c.kind !== "review").length,
+            subtaskImplDone: t.checklist.filter((c) => c.kind !== "review" && c.completedAt !== null).length,
+            subtaskReviewTotal: t.checklist.filter((c) => c.kind === "review").length,
+            subtaskReviewDone: t.checklist.filter((c) => c.kind === "review" && c.completedAt !== null).length,
             subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
             blockedByKey: blocker && blocker.status !== "Done" ? blocker.workItemKey ?? null : null,
             activeWorking:

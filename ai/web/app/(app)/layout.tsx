@@ -1,9 +1,16 @@
+import { AgentPresenceProvider } from "@/components/agent-presence-provider";
 import { PersistentPmStreamProvider } from "@/components/persistent-pm-stream-provider";
 import Sidebar from "@/components/sidebar";
+import { requireViewer } from "@/lib/auth/permissions";
 
-export default function AppLayout({ children }: { children: React.ReactNode }) {
+export default async function AppLayout({ children }: { children: React.ReactNode }) {
+  // The presence SSE endpoint is owner-only (403 otherwise). Mounting the
+  // provider for non-owners would loop it through 403 reconnects forever, so
+  // only owners get the live stream; everyone else keeps the SSR status hint.
+  const viewer = await requireViewer();
   return (
     <PersistentPmStreamProvider>
+      {viewer.isOwner ? <AgentPresenceProvider /> : null}
       <div className="relative flex min-h-screen text-text">
         <Sidebar />
         <main className="relative min-w-0 flex-1 px-4 pt-4 pb-[calc(env(safe-area-inset-bottom)+6.5rem)] sm:px-page-x md:pt-page-y md:pb-24 lg:px-page-x-lg">

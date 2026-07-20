@@ -290,16 +290,38 @@ fields. Epic worker pools are coding-agent-only and may contain multiple
 agents; they define which agents an Acting Manager may choose from when
 assigning child Tasks. Task assignee remains a single user.
 
-An agent may have only one active Task per project. Active means `To Do`,
-`In Progress`, or `Review`. The same agent may hold active Tasks in
-different projects. This is enforced server-side in every automated
-assignment path (the epic queue, `assign_next`, and post-plan-approval
-assignment): an agent holding an active Task in a project is not offered
-another assignment there until that Task leaves the active set (reviewer
-moves it to Done, or feedback returns it to the assignee). The limit is
-per agent, not per epic: an Epic with several free pool workers gets one
-task assigned to each, so pool workers progress the queue in parallel.
-Humans may still assign explicitly as a deliberate override.
+An agent may have only one active Task per project. Active means `To Do`
+or `In Progress`. A task you moved to `Review` does NOT count — sending
+work to Review frees you for the next assignment, and PM assigns it in
+the same request. Unresolved review feedback on a Review-stage task stays
+your top priority (WORKFLOW.md tier 1): address feedback before advancing
+your new task. The same agent may hold active Tasks in different
+projects. The limit is per agent, not per epic: an Epic with several free
+pool workers gets one task assigned to each, so pool workers progress the
+queue in parallel. Humans may still assign explicitly as a deliberate
+override.
+
+The queue is self-driving. PM automatically assigns the next unblocked
+To Do task to every free pool worker when: a task reaches Done (any
+path), an assignee calls `ready_for_review`, an Action Plan is approved
+on an unassigned task, a human unassigns or returns a task to the queue,
+or the Epic's Action Plan is approved (which also promotes its Backlog
+tasks to To Do and starts the queue). Acting managers keep `assign_next`
+/ `advance_queue` for corrections, but should rarely need a human prompt:
+keep every pool worker busy whenever an unblocked To Do task exists.
+
+A plan approved while its task sat unassigned survives assignment: the
+new assignee inherits the approved plan and starts immediately instead of
+re-planning. Only unapproved tasks get a plan reset on assignment.
+
+Review-comment auto-complete responds to exactly one unmistakable
+keyword: `looks good, ship it`. No other phrasing closes a task from a
+comment — use the `review_done` workflow action.
+
+Proposals are not a side door: a proposed jump to `In Progress` is
+downgraded to `To Do` when the task's blocker is uncleared or its Action
+Plan is unapproved, and every proposal-applied assignment/status change
+dispatches the same workflow wake as the engine paths.
 
 A Task with a blocker (`blocked_by`) cannot be started until the blocking
 task reaches Done. This is enforced server-side everywhere: automated

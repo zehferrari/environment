@@ -488,7 +488,7 @@ export async function commitProposal(
               blockedById: true,
               assignee: { select: { username: true } },
               actingManager: { select: { username: true } },
-              blockedBy: { select: { workItemKey: true } },
+              blockedBy: { select: { workItemKey: true, status: true } },
               epic: { select: { status: true, actingManagerId: true } },
             },
           });
@@ -610,14 +610,39 @@ export async function commitProposal(
             }
           }
           if (typeof op.status === "string" && op.status !== task.status) {
-            const rankAgg = await tx.task.aggregate({
-              where: { projectId, status: op.status, archivedAt: null, deletedAt: null },
-              _max: { rank: true },
-            });
-            data.status = op.status;
-            data.rank = (rankAgg._max.rank ?? 0) + 1;
-            data.statusChangedAt = new Date();
-            logs.push({ kind: "task.move", payload: { from: task.status, to: op.status, proposalId: proposal.id } });
+            // Proposals must not be a side door around the workflow engine:
+            // a proposed jump to In Progress is downgraded to To Do when the
+            // task's blocker is uncleared or its Action Plan is unapproved —
+            // the same gates the workflow `start` action enforces. The
+            // assignee wake below then drives the normal plan/start flow.
+            let targetStatus = op.status;
+            if (targetStatus === "In Progress") {
+              const blockerUncleared = Boolean(task.blockedById && task.blockedBy && task.blockedBy.status !== "Done");
+              const planUnapproved = !task.approvedOn;
+              if (blockerUncleared || planUnapproved) {
+                targetStatus = "To Do";
+                logs.push({
+                  kind: "task.move.downgraded",
+                  payload: {
+                    proposalId: proposal.id,
+                    requested: "In Progress",
+                    applied: "To Do",
+                    reason: blockerUncleared ? "blocker_not_done" : "plan_not_approved",
+                    blockedBy: task.blockedBy?.workItemKey ?? null,
+                  },
+                });
+              }
+            }
+            if (targetStatus !== task.status) {
+              const rankAgg = await tx.task.aggregate({
+                where: { projectId, status: targetStatus, archivedAt: null, deletedAt: null },
+                _max: { rank: true },
+              });
+              data.status = targetStatus;
+              data.rank = (rankAgg._max.rank ?? 0) + 1;
+              data.statusChangedAt = new Date();
+              logs.push({ kind: "task.move", payload: { from: task.status, to: targetStatus, proposalId: proposal.id } });
+            }
           }
           if (Object.keys(data).length > 0) {
             await tx.task.update({ where: { id }, data });
@@ -626,11 +651,11 @@ export async function commitProposal(
             }
             counts.updates++;
 
-            const finalStatus = typeof op.status === "string" ? op.status : task.status;
+            const finalStatus = typeof data.status === "string" ? data.status : task.status;
             const finalAssigneeId = asg !== undefined ? asg : task.assigneeId;
             const finalActingManagerId = am !== undefined ? am : task.actingManagerId;
             const assignmentChanged = asg !== undefined && asg !== task.assigneeId;
-            const statusChanged = typeof op.status === "string" && op.status !== task.status;
+            const statusChanged = finalStatus !== task.status;
             const reviewerId = finalActingManagerId
               ?? (task.epic?.status === "In Progress" ? task.epic.actingManagerId : null)
               ?? task.reporterId;
@@ -657,6 +682,20 @@ export async function commitProposal(
                     actorUsername,
                     reason: "todo_start_required",
                   }),
+                });
+              } else if (finalStatus === "In Progress") {
+                // Previously the ONLY status transition that dispatched no
+                // wake — an applied proposal could park an agent's task In
+                // Progress while the agent never learned about it (observed
+                // 27-minute stall on PH-110).
+                workflowNotifications.push({
+                  taskId: id,
+                  targetUserId: finalAssigneeId,
+                  reason: "todo_start_required",
+                  body: [
+                    `Task "${task.title}" was assigned to you and moved to In Progress via an applied proposal by @${actorUsername}.`,
+                    "Start (or continue) implementation now using the full task context. If the Action Plan thread is empty, post your concise plan there first.",
+                  ].join("\n"),
                 });
               }
             }

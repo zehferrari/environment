@@ -10,37 +10,19 @@ type Actor = {
   kind: "human" | "agent";
 };
 
-const HARD_REVIEW_REJECT = [
-  /\bnot\s+(?:approved|ready|done|accepted)\b/i,
-  /\b(?:cannot|can't|wont|won't)\s+approve\b/i,
-  /\bneeds?\s+(?:changes?|fix(?:es)?|work|follow-?up|another\s+pass)\b/i,
-  /\bplease\s+(?:fix|add|remove|change|address|update|either)\b/i,
-  /\b(?:blocking|blocker)\s+(?:issue|before|found|remaining)\b/i,
-  /\bfail(?:ed|ing|s)?\b/i,
-  /\bmissing\b/i,
-];
-
-const NO_ISSUES_APPROVAL = /\bno\b[^.\n]{0,140}\b(?:blockers?|issues?|concerns?|findings?)\b/i;
-const POSITIVE_REVIEW = [
-  /\breview\s+pass(?:ed)?\b/i,
-  /\bapproved\b/i,
-  /\bapproving\b/i,
-  /\baccepted\b/i,
-  /\bsatisfied\b/i,
-  /\bhappy\s+with\b/i,
-  /\bworks\s+for\s+me\b/i,
-  /\blgtm\b/i,
-  /\blooks\s+good\b/i,
-  /\bready\s+(?:for\s+done|to\s+(?:merge|land|complete))\b/i,
-  /\bno\s+further\s+action\b/i,
-];
+// WORKFLOW.md § reviewing documents exactly one auto-complete keyword:
+// "looks good, ship it". The previous fuzzy classifier (POSITIVE_REVIEW /
+// NO_ISSUES_APPROVAL regexes) closed tasks against explicit reviewer intent
+// — e.g. "not review_done" evaded the reject list via the underscore — and
+// armed Ready-to-Deploy on unverified work. Auto-complete now fires ONLY on
+// the documented unmistakable keyword; everything else must use the
+// review_done workflow endpoint.
+const APPROVAL_KEYWORD = /\blooks\s+good\W+ship\s+it\b/i;
 
 export function isReviewerApprovalComment(body: string) {
   const text = body.trim();
   if (!text) return false;
-  if (HARD_REVIEW_REJECT.some((pattern) => pattern.test(text))) return false;
-  if (NO_ISSUES_APPROVAL.test(text)) return true;
-  return POSITIVE_REVIEW.some((pattern) => pattern.test(text));
+  return APPROVAL_KEYWORD.test(text);
 }
 
 export async function completeReviewedTaskAndAssignNext(args: {
@@ -202,8 +184,10 @@ export async function completeReviewedTaskAndAssignNext(args: {
       body: [
         `Previous epic task "${task.title}" was accepted by @${args.actor.username}.`,
         `Next task "${assigned.task.title}" is now assigned to you in To Do.`,
-        "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
-        "If you have unresolved review feedback on another Review-stage task, address that feedback first; otherwise prepare the Action Plan for this task now.",
+        assigned.approvedPlan
+          ? "Its Action Plan is already approved: move the task to In Progress through the workflow endpoint and start immediately."
+          : "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
+        "If you have unresolved review feedback on another Review-stage task, address that feedback first; otherwise begin this task now.",
       ].join("\n"),
     });
   }

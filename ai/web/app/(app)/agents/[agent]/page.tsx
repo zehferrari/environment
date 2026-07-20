@@ -12,6 +12,9 @@ import {
   MessageTimestamp,
   type MessageActor,
 } from "@/components/message-avatar";
+import AgentAvatar from "@/components/agent-avatar";
+import { readAtlasSnapshot } from "@/lib/atlas-snapshot";
+import { agentStatusFor } from "@/lib/agents/presence";
 import ProfileEditor from "./profile-editor";
 import AtlasControls from "./atlas-controls";
 import AgentTabs, { type AgentTab } from "./agent-tabs";
@@ -24,26 +27,6 @@ import { getSystemSettings } from "@/lib/settings/system";
 import { isProtectedAgentUsername } from "@/lib/agents/management/protected-usernames";
 
 export const dynamic = "force-dynamic";
-
-type SnapshotAgent = {
-  name?: string;
-  role?: string;
-  avatar?: string;
-  avatar_url?: string;
-  bot?: string;
-  gateway_listeners?: number[];
-  current_task?: { heading?: string; ticket?: string; status?: string } | null;
-  session_idle_s?: number | null;
-  model_primary?: string | null;
-  busy_state?: { is_busy?: boolean; signals?: string[] } | null;
-  jira_tickets?: Array<{ key?: string; summary?: string; status?: string; updated?: string }>;
-  last_activity?: string | null;
-};
-
-type Snapshot = {
-  agents?: Record<string, SnapshotAgent>;
-  system?: Record<string, { is_active?: string }>;
-};
 
 type RawAgent = {
   telegram?: { bot?: string; enabled?: boolean };
@@ -89,19 +72,6 @@ function serializeActivityActor(actor: ActivityActorRow | null): MessageActor | 
   };
 }
 
-async function readSnapshot(): Promise<Snapshot | null> {
-  try {
-    const res = await fetch("http://127.0.0.1:3013/agents/snapshot", {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as Snapshot;
-  } catch {
-    return null;
-  }
-}
-
 function parseRaw(raw: string | null): RawAgent {
   if (!raw) return {};
   try { return JSON.parse(raw) as RawAgent; } catch { return {}; }
@@ -116,18 +86,6 @@ function localAvatarSrc(agentAvatar: string | null, liveAvatarUrl: string | unde
   if (liveAvatarUrl?.startsWith("/")) return liveAvatarUrl;
   if (agentAvatar) return avatarUrl(name);
   return null;
-}
-
-function statusFor(agent: { deactivatedAt: Date | null; user: { status: string } | null }, live?: SnapshotAgent | null) {
-  if (agent.deactivatedAt || agent.user?.status === "deactivated") return "offline";
-  if (live?.busy_state?.is_busy) return "active";
-  if (live) {
-    const idle = live.session_idle_s ?? 999999;
-    if (idle < 90) return "active";
-    if (idle < 900) return "idle";
-    return "stale";
-  }
-  return agent.user ? "active" : "registered";
 }
 
 async function readProfileForPage(slug: string) {
@@ -162,7 +120,7 @@ export default async function AgentProfilePage({
   const session = await auth();
   const [agent, snapshot, allAgents] = await Promise.all([
     db.agent.findUnique({ where: { slug }, include: { user: true } }),
-    readSnapshot(),
+    readAtlasSnapshot(),
     db.agent.findMany({ select: { rawJson: true } }),
   ]);
   if (!agent) notFound();
@@ -196,7 +154,7 @@ export default async function AgentProfilePage({
   const live = snapshot?.agents?.[slug];
   const raw = parseRaw(agent.rawJson);
   const effective = await resolveEffectiveAgentConfig(agent.rawJson, allAgents.map(a => a.rawJson));
-  const status = statusFor(agent, live);
+  const status = agentStatusFor(agent, live);
   const tickets = live?.jira_tickets ?? [];
   const listeners = raw.listeners ?? [];
   const rawServices = effective.services;
@@ -217,13 +175,15 @@ export default async function AgentProfilePage({
       <header className="rounded-hero border border-line bg-panel p-card-lg shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-card">
           <div className="flex min-w-0 items-start gap-card">
-            <div className="grid h-20 w-20 shrink-0 place-items-center overflow-hidden rounded-3xl border border-line bg-panel-soft text-3xl font-semibold">
-              {avatarSrc ? (
-                <img src={avatarSrc} alt={`${agent.name} avatar`} decoding="async" className="h-full w-full object-cover" />
-              ) : live?.avatar_url ? (
-                <img src={live.avatar_url} alt={`${agent.name} avatar`} className="h-full w-full object-cover" />
-              ) : (live?.avatar ?? agent.name.slice(0, 1))}
-            </div>
+            <AgentAvatar
+              slug={agent.slug}
+              name={agent.name}
+              src={avatarSrc ?? live?.avatar_url ?? null}
+              sizeClass="h-20 w-20"
+              roundedClass="rounded-3xl"
+              initialStatus={status}
+              fallback={live?.avatar ?? agent.name.slice(0, 1)}
+            />
             <div className="min-w-0">
               <p className="font-mono text-caption text-text-muted">@{agent.slug}</p>
               <h1 className="truncate text-3xl font-semibold tracking-tight">{agent.name}</h1>

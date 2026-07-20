@@ -491,6 +491,7 @@ async function notifyAfterGate(args: {
       body: [
         `Monitor validation passed for "${task.title}".`,
         args.summary,
+        "BEFORE reviewing: add the topics you will address as review sub-tasks (action=add_subtask with subtaskKind:\"review\", one per topic), then mark each complete (action=complete_subtask) as you address it — the board shows your review progress from these.",
         "You may now review the completed work. If satisfied, use action=review_done. If changes or blockers remain, use action=review_feedback with one concise comment.",
       ].join("\n"),
     });

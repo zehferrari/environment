@@ -433,11 +433,20 @@ as work proceeds so the board card shows how close the Task is to done.
 Break the work into **independent, parallelizable** steps and dispatch
 parallel sub-agents to tackle the independent ones at once whenever the work
 allows — don't serialize work that could run on multiple fronts. POST
-`action=add_subtask` (`{subtaskText}`) to add a step and
+`action=add_subtask` (`{subtaskText, subtaskKind?}`) to add a step and
 `action=complete_subtask` (`{subtaskId, completed, minutesSpent}`) as each
 lands — `minutesSpent` is the optional self-reported minutes that step took,
 which the Task sums into a cost roll-up. Ids appear in the SUB-TASKS block of
 the task context. Do not create child Tasks for steps inside a single Task.
+
+`subtaskKind` selects the checklist phase: `implementation` (default — the
+assignee's In Progress breakdown) or `review` (the reviewer's
+topics-to-address list). Only the assignee may write implementation items;
+only the resolved reviewer may write review items. Reviewers: BEFORE
+starting a review, add one `review` sub-task per topic you will address,
+then mark each complete as you address it — the board card shows review
+progress from these while the task sits in the Review column, exactly as it
+shows the assignee's implementation progress in the In Progress column.
 When a task returns from Review with feedback, add a sub-task per feedback item
 before resuming so the bar reflects the remaining work. The task context also
 shows **Blocked by** when the task has an open hard-dependency; the workflow

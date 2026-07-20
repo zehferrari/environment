@@ -43,6 +43,8 @@ function reasonForKind(kind: string | undefined): TaskWorkflowNotificationReason
       return "action_plan_review_requested";
     case "pm-todo-not-started":
       return "todo_start_required";
+    case "pm-in-progress-stale":
+      return "monitor_recovery";
     case "pm-review-awaiting-reviewer":
       return "review_requested";
     case "pm-review-feedback-awaiting-assignee":

@@ -12,48 +12,12 @@ import SidebarNav, {
   type SidebarProject,
   type SidebarWorkspace,
 } from "@/components/sidebar-nav";
-import { avatarStatusTone } from "@/components/avatar-status";
-
-type SnapshotAgent = {
-  session_idle_s?: number | null;
-  busy_state?: { is_busy?: boolean; signals?: string[] } | null;
-};
-
-type Snapshot = {
-  agents?: Record<string, SnapshotAgent>;
-};
-
-async function readSnapshot(): Promise<Snapshot | null> {
-  try {
-    const res = await fetch("http://127.0.0.1:3013/agents/snapshot", {
-      cache: "no-store",
-      next: { revalidate: 0 },
-    });
-    if (!res.ok) return null;
-    return (await res.json()) as Snapshot;
-  } catch {
-    return null;
-  }
-}
+import { readAtlasSnapshot } from "@/lib/atlas-snapshot";
+import { agentStatusFor, agentStatusRank } from "@/lib/agents/presence";
 
 function avatarUrl(name: string) {
   const first = name.split(" ")[0] || name;
   return `/agents/avatars/${encodeURIComponent(first)}?v=agent-image-v2`;
-}
-
-function statusFor(
-  agent: { deactivatedAt: Date | null; user: { status: string } | null },
-  live?: SnapshotAgent | null
-) {
-  if (agent.deactivatedAt || agent.user?.status === "deactivated") return "offline";
-  if (live?.busy_state?.is_busy) return "busy";
-  if (live) {
-    const idle = live.session_idle_s ?? 999999;
-    if (idle < 90) return "live";
-    if (idle < 900) return "idle";
-    return "stale";
-  }
-  return agent.user ? "live" : "registered";
 }
 
 export default async function Sidebar() {
@@ -77,7 +41,7 @@ export default async function Sidebar() {
         user: { select: { username: true, status: true } },
       },
     }) : Promise.resolve([]),
-    viewer.isOwner ? readSnapshot() : Promise.resolve(null),
+    viewer.isOwner ? readAtlasSnapshot() : Promise.resolve(null),
     db.project.findMany({
       where: projectWhere,
       orderBy: { name: "asc" },
@@ -132,20 +96,12 @@ export default async function Sidebar() {
   });
   const liveAgents = snapshot?.agents ?? {};
 
-  // Surface the most active agents first: Busy → Live → Idle → Stale, then
-  // the inert states. Ties keep the alphabetical (slug) order the query returns.
-  const STATUS_ORDER: Record<string, number> = {
-    busy: 0,
-    live: 1,
-    idle: 2,
-    stale: 3,
-    registered: 4,
-    offline: 5,
-  };
+  // Server-render status is the SSR/first-paint value only; SidebarNav
+  // re-derives status, ordering and busy-row visibility from the live
+  // presence store on the client.
   const navAgents: SidebarAgent[] = agents.map((agent) => {
     const live = liveAgents[agent.slug];
-    const status = statusFor(agent, live);
-    const tone = avatarStatusTone(status);
+    const status = agentStatusFor(agent, live);
     const latest = latestBySlug.get(agent.slug) ?? null;
     const lastRead = cursorBySlug.get(agent.slug) ?? null;
     const unread = Boolean(latest && (!lastRead || latest > lastRead));
@@ -155,14 +111,10 @@ export default async function Sidebar() {
       role: agent.role,
       avatarSrc: agent.avatar ? avatarUrl(agent.name) : null,
       status,
-      grayscale: tone.grayscale,
-      pulse: tone.pulse,
       unread,
     };
   });
-  navAgents.sort(
-    (a, b) => (STATUS_ORDER[a.status] ?? 99) - (STATUS_ORDER[b.status] ?? 99),
-  );
+  navAgents.sort((a, b) => agentStatusRank(a.status) - agentStatusRank(b.status));
 
   const navProjects: SidebarProject[] = projects.map((p) => ({
     slug: p.slug,

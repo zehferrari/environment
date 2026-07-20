@@ -58,8 +58,10 @@ type Task = {
   createdBy: BoardActor | null;
   updatedBy: BoardActor | null;
   epicTitle: string | null;
-  subtaskTotal: number;
-  subtaskDone: number;
+  subtaskImplTotal: number;
+  subtaskImplDone: number;
+  subtaskReviewTotal: number;
+  subtaskReviewDone: number;
   subtaskMinutes: number;
   blockedByKey: string | null;
   activeWorking: boolean;
@@ -103,13 +105,21 @@ function formatMinutes(total: number): string {
 // Sub-task progress for a board card (ENV-60/61): a segmented bar with one node
 // per sub-task. Completed nodes fill on an orange→green gradient driven by
 // overall completion (greener nearer 100%); unfinished nodes are a solid dark
-// node. Hidden unless the task is actively in progress and has a checklist.
-// Numeric count + rolled-up time live in the tooltip.
+// node. Column-aware: In Progress cards track the assignee's implementation
+// checklist; Review cards track the reviewer's topics-to-address list (a task
+// freshly in Review shows no bar until the first review item exists). Other
+// columns show no bar. Numeric count + rolled-up time live in the tooltip.
 function SubtaskProgress({ task }: { task: Task }) {
-  if (task.status !== "In Progress") return null;
-  const n = task.subtaskTotal;
+  const phase =
+    task.status === "In Progress"
+      ? { total: task.subtaskImplTotal, done: task.subtaskImplDone, noun: "sub-tasks done" }
+      : task.status === "Review"
+        ? { total: task.subtaskReviewTotal, done: task.subtaskReviewDone, noun: "review topics addressed" }
+        : null;
+  if (!phase) return null;
+  const n = phase.total;
   if (!n) return null;
-  const d = task.subtaskDone;
+  const d = phase.done;
   const ratio = d / n;
   // hue 28 (orange) → 135 (green) as completion rises.
   const fill = `hsl(${Math.round(28 + 107 * ratio)} 85% 45%)`;
@@ -117,8 +127,8 @@ function SubtaskProgress({ task }: { task: Task }) {
   return (
     <span
       role="img"
-      aria-label={`${d} of ${n} sub-tasks done`}
-      title={`${d}/${n} sub-tasks done${time}`}
+      aria-label={`${d} of ${n} ${phase.noun}`}
+      title={`${d}/${n} ${phase.noun}${time}`}
       className="inline-flex shrink-0 items-center gap-1.5"
     >
       <span className="inline-flex h-1.5 w-12 items-center gap-[2px]" aria-hidden="true">
@@ -757,13 +767,22 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
       })
       .slice(0, 6);
   }, [visibleItems]);
+  // While the Workflow Focus block is visible the board narrows to the two
+  // active lanes: To Do and Done are hidden (Backlog keeps its own toggle but
+  // stays hidden too). Toggling focus off restores every column.
+  const focusActive = !hideWorkflowFocus && focusVisible && workflowFocus.length > 0;
+  const visibleColumnLanes = focusActive
+    ? columnLanes.filter(({ col }) => col.id === "In Progress" || col.id === "Review")
+    : columnLanes;
   const mobileBacklogLane = useMemo(
     () => ({ col: { id: "Backlog", label: "Backlog", description: "planning/opinions" }, tasks: backlogTasks }),
     [backlogTasks],
   );
-  const mobileLanes = backlogVisible
-    ? [...columnLanes, mobileBacklogLane]
-    : columnLanes;
+  const mobileLanes = focusActive
+    ? visibleColumnLanes
+    : backlogVisible
+      ? [...columnLanes, mobileBacklogLane]
+      : columnLanes;
 
   return (
     <DndContext
@@ -1000,7 +1019,7 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
         </div>
       ) : null}
 
-      {!hideWorkflowFocus && focusVisible && workflowFocus.length > 0 ? (
+      {focusActive ? (
         <section className="mb-5 rounded-2xl border border-accent/20 bg-accent/[0.045] p-3 shadow-[var(--shadow-xs)]">
           <div className="mb-3 flex items-center justify-between gap-3 px-1">
             <div>
@@ -1077,8 +1096,8 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
         </div>
       ) : (
         <div className="-mx-4 hidden overflow-x-auto px-4 pb-3 sm:-mx-page-x sm:px-page-x md:block lg:-mx-page-x-lg lg:px-page-x-lg xl:mx-0 xl:px-0">
-        <div className="grid min-w-[68rem] grid-cols-4 gap-3">
-          {columnLanes.map(({ col, tasks: colTasks }) => {
+        <div className={`grid gap-3 ${focusActive ? "min-w-[34rem] grid-cols-2" : "min-w-[68rem] grid-cols-4"}`}>
+          {visibleColumnLanes.map(({ col, tasks: colTasks }) => {
             const colTaskIds = colTasks.map((t) => t.id);
             const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
             return (
@@ -1118,7 +1137,7 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
         </div>
       )}
 
-      {backlogVisible && !isMobileBoard ? (
+      {backlogVisible && !isMobileBoard && !focusActive ? (
         <section className="mt-6 hidden md:block">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
             <div>
@@ -1482,8 +1501,10 @@ function MobileTaskCard({
         <div
           data-selected={selected ? "true" : "false"}
           className={`${taskCardClass(task, false, compact, false)} min-w-[calc(100%-9rem)] touch-auto`}
+          title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
         >
           <div className={`relative z-10 ${compact ? "space-y-0.5" : "space-y-2"}`}>
+            <HumanReviewSrLabel task={task} />
             <div className="flex items-start justify-between gap-2">
               <div className="flex min-w-0 items-start gap-2">
                 <input
@@ -1508,7 +1529,11 @@ function MobileTaskCard({
                     <>
                       <ProjectMetaLine task={task} />
                       <div className="flex min-w-0 items-center gap-1.5 text-micro text-text-muted">
-                        {actor ? <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} /> : null}
+                        {task.status === "Done" ? (
+                          <DoneActorPair task={task} />
+                        ) : actor ? (
+                          <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
+                        ) : null}
                         <span className="truncate font-mono uppercase tracking-wider">
                           {task.workItemKey ?? "—"}
                         </span>
@@ -1550,7 +1575,14 @@ function MobileTaskCard({
               </div>
             </div>
             <div className={`flex min-w-0 items-center text-micro text-text-muted ${compact ? "gap-1.5 overflow-hidden border-t border-line/60 pt-1" : "flex-wrap gap-2"}`}>
-              {compact && actor ? (
+              {compact && task.status === "Done" ? (
+                <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                  <DoneActorPair task={task} />
+                  <span className="min-w-0 flex-1 truncate" title={doneActorLabel(task)}>
+                    {doneActorLabel(task)}
+                  </span>
+                </span>
+              ) : compact && actor ? (
                 <span className="min-w-0 flex-1 truncate" title={actorDisplayName(actor)}>
                   {actorDisplayName(actor)}
                 </span>
@@ -1685,7 +1717,7 @@ function TaskCard({
     isDragging,
   } = useSortable({ id: task.id });
   const actor = boardActorForTask(task);
-  const displayedActor = task.status === "Done" ? task.reporter ?? actor : actor;
+  const isDone = task.status === "Done";
   return (
     <div
       ref={setNodeRef}
@@ -1696,8 +1728,10 @@ function TaskCard({
         "--board-status": boardStatusColor(task.status),
       } as React.CSSProperties}
       className={taskCardClass(task, isDragging, compact, false)}
+      title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
     >
       <div className="relative z-10">
+        <HumanReviewSrLabel task={task} />
         <div className="flex items-start justify-between gap-2">
           <div className="flex min-w-0 flex-1 items-start gap-2">
             <input
@@ -1747,8 +1781,9 @@ function TaskCard({
         </div>
         {compact ? (
           <div className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden border-t border-line/60 pt-1 text-micro text-text-muted">
-            <span className="min-w-0 flex-1 truncate" title={displayedActor ? actorDisplayName(displayedActor) : "Unassigned"}>
-              {displayedActor ? actorDisplayName(displayedActor) : "Unassigned"}
+            {isDone ? <DoneActorPair task={task} /> : null}
+            <span className="min-w-0 flex-1 truncate" title={isDone ? doneActorLabel(task) : actor ? actorDisplayName(actor) : "Unassigned"}>
+              {isDone ? doneActorLabel(task) : actor ? actorDisplayName(actor) : "Unassigned"}
             </span>
             <SubtaskProgress task={task} />
             <ElapsedClock task={task} now={now} />
@@ -1773,13 +1808,16 @@ function TaskCard({
         ) : (
           <div className="mt-3 space-y-2 border-t border-line/70 pt-2 text-caption text-text-muted">
             <div className="flex min-w-0 items-center gap-2">
-              {displayedActor ? (
-                <MessageAvatar actor={displayedActor} size="sm" busy={task.activeWorking} />
-              ) : (
+              {isDone ? (
+                <DoneActorPair task={task} />
+              ) : actor ? (
+                <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
+              ) : null}
+              {!isDone && !actor ? (
                 <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-dashed border-line-strong text-micro">?</span>
-              )}
+              ) : null}
               <span className="min-w-0 flex-1 truncate text-micro font-medium">
-                {displayedActor ? actorDisplayName(displayedActor) : "Unassigned"}
+                {isDone ? doneActorLabel(task) : actor ? actorDisplayName(actor) : "Unassigned"}
               </span>
               <BlockedBadge task={task} />
               <button
@@ -1831,7 +1869,9 @@ function WorkflowFocusCard({
       onClick={() => router.push(taskHref(task, projectSlug))}
       style={{ "--board-status": boardStatusColor(task.status) } as React.CSSProperties}
       className={`${taskCardClass(task)} min-w-0 text-left`}
+      title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
     >
+      <HumanReviewSrLabel task={task} />
       <div className="relative z-10 flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           {task.status === "Done" ? (
@@ -2060,6 +2100,42 @@ function BoardReporterMarker({ task }: { task: Task }) {
   return task.reporter ? <MessageAvatar actor={task.reporter} size="sm" /> : null;
 }
 
+// Done cards credit the pair who shipped the task: the assignee who built it
+// followed by the resolved reviewer (task reviewer ?? acting manager ??
+// reporter) who accepted it. Collapses to a single avatar when both roles
+// resolve to the same person.
+function doneCardActors(task: Task): Array<{ actor: BoardActor; title: string }> {
+  const builder = task.assignee;
+  const acceptor = task.reviewer ?? task.manager ?? task.reporter;
+  if (builder && acceptor && builder.id === acceptor.id) {
+    return [{ actor: builder, title: `Built and accepted by ${actorDisplayName(builder)}` }];
+  }
+  const entries: Array<{ actor: BoardActor; title: string }> = [];
+  if (builder) entries.push({ actor: builder, title: `Built by ${actorDisplayName(builder)}` });
+  if (acceptor) entries.push({ actor: acceptor, title: `Accepted by ${actorDisplayName(acceptor)}` });
+  return entries;
+}
+
+function doneActorLabel(task: Task): string {
+  const entries = doneCardActors(task);
+  if (entries.length === 0) return "Unassigned";
+  return entries.map((entry) => actorDisplayName(entry.actor)).join(" → ");
+}
+
+// Two small avatars in a slightly overlapped stack (assignee first, reviewer
+// on top); per-avatar tooltips carry the "Built by" / "Accepted by" roles.
+function DoneActorPair({ task }: { task: Task }) {
+  const entries = doneCardActors(task);
+  if (entries.length === 0) return null;
+  return (
+    <span className="flex shrink-0 items-center -space-x-1">
+      {entries.map(({ actor, title }) => (
+        <MessageAvatar key={actor.id} actor={actor} size="sm" title={title} />
+      ))}
+    </span>
+  );
+}
+
 function TrashIcon() {
   return (
     <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -2120,6 +2196,24 @@ function taskNeedsAttention(task: Task) {
     task.status === "Review" ||
     isPlanningAssigned(task),
   );
+}
+
+// A Review card is waiting on a HUMAN when its resolved reviewer (task
+// reviewer ?? acting manager ?? reporter — the same chain Done cards credit)
+// is a human rather than an agent. Those tasks need the PM owner's personal
+// attention, so the card gets a red attention treatment.
+function waitingOnHumanReview(task: Task) {
+  if (task.status !== "Review") return false;
+  const reviewer = task.reviewer ?? task.manager ?? task.reporter;
+  return reviewer?.kind === "human";
+}
+
+const HUMAN_REVIEW_LABEL = "Waiting on human review";
+
+// Screen-reader counterpart of the red human-review card treatment.
+function HumanReviewSrLabel({ task }: { task: Task }) {
+  if (!waitingOnHumanReview(task)) return null;
+  return <span className="sr-only">{HUMAN_REVIEW_LABEL}</span>;
 }
 
 function ElapsedClock({
@@ -2227,8 +2321,8 @@ function taskCardClass(task: Task, isDragging = false, compact = false, interact
   return `board-task-card group/card relative block w-full select-none overflow-hidden border transition-[transform,border-color,box-shadow,background-color,opacity] active:scale-[0.99] ${
     compact ? "rounded-lg px-2 py-1.5 text-caption" : "rounded-xl p-3 text-body"
   } ${interactive ? "cursor-pointer" : ""} ${isPlanningAssigned(task) ? "board-task-card--planning" : ""} ${
-    isDragging ? "opacity-30" : "hover:-translate-y-px"
-  }`;
+    waitingOnHumanReview(task) ? "board-task-card--human-review" : ""
+  } ${isDragging ? "opacity-30" : "hover:-translate-y-px"}`;
 }
 
 function boardStatusColor(status: string) {

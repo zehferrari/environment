@@ -475,6 +475,11 @@ model SubTask {
   taskId       String
   task         Task      @relation("TaskChecklist", fields: [taskId], references: [id], onDelete: Cascade)
   text         String
+  // Which phase this checklist item belongs to: "implementation" items are
+  // the assignee's In Progress breakdown; "review" items are the reviewer's
+  // topics-to-address list created when the task reaches Review. The board
+  // card shows the progress of whichever kind matches the task's column.
+  kind         String    @default("implementation")
   // null = open; a timestamp = done. This is the "hidden field with the
   // timestamp when it was complete" — surfaced only as a checkbox + progress.
   completedAt  DateTime?
@@ -487,6 +492,7 @@ model SubTask {
   updatedAt    DateTime  @updatedAt
 
   @@index([taskId])
+  @@index([taskId, kind])
 }
 
 // ------------------------------------------------------------------

@@ -204,9 +204,71 @@ export async function enqueueOpenClawPmChannelTurn(
   return { ok: true, status: 202, driver: "openclaw-pm-channel" };
 }
 
+// Dispatch circuit breaker. A dead agent gateway once absorbed 878
+// re-dispatches over 4 days (~40M tokens of prompts) with zero escalation:
+// every run failed, and every failure triggered another full-context send.
+// When the agent's recent runs are ALL failures, suppress further dispatches
+// (recording a visible activity row) and let one probe through per cooldown
+// window so recovery is still automatic once the gateway returns.
+const BREAKER_CONSECUTIVE_FAILURES = 5;
+const BREAKER_PROBE_INTERVAL_MS = 10 * 60 * 1000;
+
+async function channelBreakerOpen(agentSlug: string): Promise<{ open: boolean; failures?: number }> {
+  // Evaluate over TERMINAL runs only (failed/complete). In-flight rows
+  // (queued/accepted/streaming) are upserted from a prior run's row, so
+  // counting them would let a single in-flight probe reopen the gate for
+  // every waiting dispatch. Order by updatedAt, not createdAt: runs are
+  // upserted per target key, so createdAt is frozen at the first-ever
+  // dispatch and the recency check would be permanently true.
+  const recent = await db.pmChannelRun.findMany({
+    where: { agentSlug, status: { in: ["failed", "complete"] } },
+    orderBy: { updatedAt: "desc" },
+    take: BREAKER_CONSECUTIVE_FAILURES,
+    select: { status: true },
+  });
+  if (recent.length < BREAKER_CONSECUTIVE_FAILURES) return { open: false };
+  if (!recent.every((run) => run.status === "failed")) return { open: false };
+  // Armed: last N terminal runs all failed. Allow exactly one probe per
+  // interval — suppress while ANY run (including a probe just enqueued as
+  // 'queued') was touched within the window. The enqueue path records a
+  // queued run synchronously, so a probe we let through blocks the next
+  // dispatch until it resolves or the interval elapses; a probe that
+  // completes lands in the terminal set above and closes the gate.
+  const newest = await db.pmChannelRun.findFirst({
+    where: { agentSlug },
+    orderBy: { updatedAt: "desc" },
+    select: { updatedAt: true },
+  });
+  const sinceLast = newest ? Date.now() - newest.updatedAt.getTime() : Number.POSITIVE_INFINITY;
+  if (sinceLast > BREAKER_PROBE_INTERVAL_MS) return { open: false, failures: recent.length };
+  return { open: true, failures: recent.length };
+}
+
 export async function sendOrQueueOpenClawPmChannelTurn(
   args: SendPmChannelTurnArgs,
 ): Promise<SendPmChannelTurnResult> {
+  const breaker = await channelBreakerOpen(args.agentSlug);
+  if (breaker.open) {
+    await db.activityLog.create({
+      data: {
+        projectId: args.projectId,
+        userId: args.actor.id,
+        kind: "pm.channel.dispatch_suppressed",
+        targetAgent: args.agentSlug,
+        payload: JSON.stringify({
+          reason: "channel_down_breaker",
+          consecutiveFailures: breaker.failures,
+          probeIntervalMs: BREAKER_PROBE_INTERVAL_MS,
+          replyTarget: args.replyTarget,
+        }),
+      },
+    }).catch(() => {});
+    return {
+      ok: false,
+      driver: "openclaw-pm-channel",
+      error: `channel down: last ${breaker.failures} runs for ${args.agentSlug} failed; dispatch suppressed (next probe within ${Math.round(BREAKER_PROBE_INTERVAL_MS / 60000)}m)`,
+    };
+  }
   if (pmAsyncDispatchEnabled()) {
     return enqueueOpenClawPmChannelTurn(args);
   }

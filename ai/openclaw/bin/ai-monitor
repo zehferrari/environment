@@ -2430,6 +2430,7 @@ def ai_judge(cfg, probe_blob, prev_open):
         {"probes": compact, "previously_open": prev_open}, default=str
     )
     last_error = ""
+    fallback_errors = []
     for model in _ai_chain(cfg):
         try:
             url = cfg["ai"]["endpoint"] + "/api/chat"
@@ -2442,7 +2443,14 @@ def ai_judge(cfg, probe_blob, prev_open):
                 "format": "json",
                 "stream": False,
                 "keep_alive": cfg["ai"].get("keep_alive", "30m"),
-                "options": {"temperature": 0.1, "num_predict": 1024},
+                # num_predict must fit a full issues array from a verbose
+                # model — 1024 silently truncated glm's JSON mid-array, the
+                # parse failed, and every tick fell back to the tiny local
+                # model without any recorded reason.
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": int(cfg["ai"].get("num_predict", 4096)),
+                },
             }
             status, body = http_post_json(
                 url, payload, timeout=cfg["ai"]["timeout_s"]
@@ -2454,9 +2462,14 @@ def ai_judge(cfg, probe_blob, prev_open):
                 verdict["issues"] = []
             verdict["_model"] = model
             verdict["_latency_s"] = obj.get("total_duration", 0) / 1e9 if obj.get("total_duration") else None
+            # Surface WHY better models were skipped, so a degraded judge is
+            # visible in the JSONL instead of masquerading as success.
+            if fallback_errors:
+                verdict["_ai_fallback_errors"] = fallback_errors[:4]
             return verdict
         except Exception as e:
             last_error = f"{type(e).__name__}: {e}"
+            fallback_errors.append(f"{model}: {last_error[:140]}")
             continue
     # AI failed silently: deterministic_issues already produced the alerts the user
     # cares about. Don't add a noisy "judge-failed" issue on top. The failure is

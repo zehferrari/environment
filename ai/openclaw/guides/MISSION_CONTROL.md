@@ -73,7 +73,7 @@ it holds something.
 |---|---|
 | `app/(app)/projects` | projects list + inline create. |
 | `app/(app)/projects/bin` | project-level soft-delete bin (30-day TTL restores). |
-| `app/(app)/projects/[slug]` | kanban board — four workflow columns (To Do · In Progress · Review · Done) with drag-and-drop; Backlog is a separate table below with a show/hide toggle. Done cards older than `doneTtlDays` drop off. Task cards show the current workflow actor + `updated` time. |
+| `app/(app)/projects/[slug]` | kanban board — four workflow columns (To Do · In Progress · Review · Done) with drag-and-drop; Backlog is a separate table below with a show/hide toggle. When the Workflow Focus block is shown, the board narrows to In Progress + Review only. Done cards older than `doneTtlDays` drop off and show the assignee + resolved reviewer avatar pair (built-by / accepted-by). Task cards show the current workflow actor + `updated` time, and a checklist progress bar that is column-aware: implementation items in In Progress, review items in Review. |
 | `app/(app)/projects/[slug]/tasks/[taskId]` | task editor — two-column. **Main**: inline title, markdown description editor, sub-tasks progress checklist, attachments, comments. **Sidebar**: status, assignee, reviewer, epic picker, dates. |
 | `app/(app)/projects/[slug]/tasks` | flat task list across all statuses (search/filter; shows the deployment indicator for standalone tasks). |
 | `app/(app)/projects/[slug]/epics` | epic list (status filter: Backlog / In Progress / Ready to Deploy / Done) + inline create. |
@@ -116,7 +116,7 @@ workspace group.
 | `app/api/tasks/[id]/description` | agent description write-back (one-shot grant). |
 | `app/api/epics/[id]/description` | agent Epic description write-back (one-shot grant). |
 | `app/api/agent/projects/[projectId]/proposals` | work-item proposal submission (grant-gated, idempotent on `planId`). |
-| `app/api/agent/tasks/[taskId]/workflow` | one-shot-token task workflow actions — `start`, `ready_for_review`/`submit_review`, `review_feedback`, `review_done`, `triage_to_todo`, `approve_plan`, `assign_after_plan_approval`, `add_subtask`, `complete_subtask` (full contract in `agent-interaction.md`). |
+| `app/api/agent/tasks/[taskId]/workflow` | one-shot-token task workflow actions — `start`, `ready_for_review`/`submit_review`, `review_feedback`, `review_done`, `triage_to_todo`, `approve_plan`, `assign_after_plan_approval`, `add_subtask` (`subtaskKind: implementation\|review`), `complete_subtask` (full contract in `agent-interaction.md`). Sub-tasks carry a `kind`: implementation items belong to the assignee, review items to the resolved reviewer. |
 | `app/api/agent/epics/[epicId]/workflow` | one-shot-token epic-manager workflow actions — `advance_queue`, `assign_next`, `create_tasks`. |
 | `app/api/agents/context/{task,epic,project}/[id]` | loopback-only live PM read API; scoped `?grant=` URLs preferred. |
 | `app/api/openclaw/pm-channel/stream` | token-scoped native PM channel live partial-reply callback. |

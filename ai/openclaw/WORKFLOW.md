@@ -192,10 +192,13 @@ the status names differ (see [`guides/JIRA.md`](./guides/JIRA.md) § *Picking Ji
    the most recent move into review. Oldest comment first. Respond with
    **concrete action** (code change pushed, plan revised, question
    answered), not just acknowledgement. In Mission Control / PM the system
-   backs this rule: you hold at most one active task per project
-   (To Do / In Progress / Review — no new automated assignment while one
-   is active), and reviewer `review_feedback` returns the task to the
-   **front** of To Do, so clearing feedback is what unblocks your queue.
+   backs this rule: you hold at most one active task per project (To Do /
+   In Progress — a task you sent to Review does NOT count, and PM assigns
+   you the next unblocked To Do task in the same `ready_for_review`
+   request). Unresolved feedback on your Review-stage work still outranks
+   the new assignment: reviewer `review_feedback` returns the task to the
+   **front** of To Do, and you clear that feedback before advancing other
+   work.
 2. **Approved work assigned to you and ready to start.** Follow the
    source-specific queue/status rules before acting.
 3. **Directly assigned work that is not yet in an approved ready state.**
@@ -288,10 +291,18 @@ Two distinct decomposition levels, each with its own creator and gate:
   should divide the task into subtasks to allow multiple subagents working
   in the same task in parallel.
 - Subtasks are a **lightweight progress checklist** (`SubTask` model: text
-  + `completedAt` + optional `minutesSpent`), not child Tasks — they have
-  no assignee, reviewer, status, key, or board presence.
-- Subtasks may be created only by the task assignee, only after the Task
-  Action Plan is approved.
+  + `kind` + `completedAt` + optional `minutesSpent`), not child Tasks —
+  they have no assignee, reviewer, status, key, or board presence.
+- Subtasks come in two kinds sharing the same table: `implementation`
+  (default) and `review`. Implementation subtasks may be created only by
+  the task assignee, only after the Task Action Plan is approved. Review
+  subtasks may be created only by the resolved reviewer.
+- **Reviewers keep the same discipline as assignees**: before starting a
+  review, add one `review` subtask per topic you will address
+  (`add_subtask` with `subtaskKind:"review"`), and tick each one as you
+  address it. The board card shows review progress from these while the
+  task is in the Review column, exactly as it shows implementation
+  progress in the In Progress column.
 - When a task bounces back from `Review`, the assignee adds a subtask per
   feedback item so the progress bar stays honest.
 - The assignee must set each subtask as `Done` (tick it) as it completes.
@@ -797,6 +808,11 @@ The receiving agent:
 ---
 
 ## Reviewing
+
+**Review checklist first.** Before addressing anything, list the topics
+you will cover as `review` subtasks on the task (`add_subtask` with
+`subtaskKind:"review"`), then mark each complete as you address it — the
+owner watches review progress on the board from these.
 
 Reviewer checks:
 

@@ -16,12 +16,13 @@ import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
 import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
-import { createSubTaskItem, setSubTaskCompletion } from "@/lib/tasks/subtasks";
+import { createSubTaskItem, normalizeSubTaskKind, setSubTaskCompletion } from "@/lib/tasks/subtasks";
 import { resolveEffectiveProjectSettings } from "@/lib/settings/effective";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignTaskAfterPlanApproval } from "@/lib/tasks/reviewer-assignment";
+import { refillEpicQueue } from "@/lib/epics/queue";
 import { isProtectedBranch, parseProtectedBranches } from "@/lib/projects/protected-branches";
 import { hasAuthorizedTaskAgentOrigin } from "@/lib/agents/owner-origin";
 
@@ -136,6 +137,7 @@ export async function POST(
     repoTouched?: unknown;
     subtaskText?: unknown;
     subtaskId?: unknown;
+    subtaskKind?: unknown;
     completed?: unknown;
     minutesSpent?: unknown;
   };
@@ -453,18 +455,48 @@ export async function POST(
               "Do not post a visible acknowledgement unless a blocker or material plan change appears.",
             ].join("\n"),
       });
-    } else if (reviewerId) {
-      await sendTaskWorkflowNotification({
-        taskId: task.id,
-        targetUserId: reviewerId,
-        actor,
-        reason: "reviewer_assignment_requested",
-        body: [
-          `The Action Plan for "${task.title}" was approved by @${agent.user.username}, but the task has no assignee.`,
-          "If you are the assigned task reviewer, call the workflow endpoint with action=assign_after_plan_approval. PM will choose an eligible coding agent and move Backlog to To Do if needed.",
-          "Do not start implementation yourself.",
-        ].join("\n"),
-      });
+    } else {
+      // No assignee: assign in the same request instead of asking the
+      // reviewer to call back with assign_after_plan_approval — that
+      // round-trip 403'd for epic-fallback reviewers and stalled approved
+      // tasks indefinitely.
+      let autoAssigned = false;
+      if (task.epicId) {
+        const refill = await refillEpicQueue({
+          epicId: task.epicId,
+          actor,
+          via: "agent-plan-approval",
+          contextLine: `The Action Plan for "${task.title}" was approved by @${agent.user.username}.`,
+        });
+        // Only THIS task being assigned counts — the refill may have handed a
+        // different queue-head task to the free worker while the just-approved
+        // one stayed unassigned. Conflating the two suppressed the reviewer
+        // fallback and stranded the approved task silently.
+        autoAssigned = refill.assignments.some((a) => a.task.id === task.id);
+        for (const assigned of refill.assignments) {
+          revalidateTaskShell(assigned.task.id);
+          revalidatePath(`/projects/${task.project.slug}/tasks/${assigned.task.id}`);
+        }
+      } else {
+        const result = await assignTaskAfterPlanApproval({
+          taskId: task.id,
+          actor,
+        });
+        autoAssigned = result.ok;
+      }
+      if (!autoAssigned && reviewerId) {
+        await sendTaskWorkflowNotification({
+          taskId: task.id,
+          targetUserId: reviewerId,
+          actor,
+          reason: "reviewer_assignment_requested",
+          body: [
+            `The Action Plan for "${task.title}" was approved by @${agent.user.username}, but the task has no assignee and no pool worker is free right now.`,
+            "PM will assign it automatically when a worker frees up. You may also call the workflow endpoint with action=assign_after_plan_approval to assign it explicitly.",
+            "Do not start implementation yourself.",
+          ].join("\n"),
+        });
+      }
     }
     if (comment) revalidateTaskReplyScope(task.id, "chat");
     revalidateTaskShell(task.id);
@@ -474,13 +506,16 @@ export async function POST(
   }
 
   if (action === "assign_after_plan_approval") {
-    if (task.actingManagerId !== agent.user.id) {
-      return NextResponse.json({ error: "Only the assigned task reviewer can assign this task after plan approval" }, { status: 403 });
+    // Accept the RESOLVED reviewer (task acting manager -> In Progress epic
+    // acting manager -> reporter), not just the raw task.actingManagerId —
+    // PM nominates epic-fallback reviewers for this exact action, and the
+    // old strict check guaranteed them a 403.
+    if (!isReviewer) {
+      return NextResponse.json({ error: "Only the resolved task reviewer can assign this task after plan approval" }, { status: 403 });
     }
     const result = await assignTaskAfterPlanApproval({
       taskId: task.id,
       actor,
-      requireReviewerUserId: agent.user.id,
     });
     if (!result.ok) {
       return NextResponse.json({ error: result.error }, { status: result.status ?? 400 });
@@ -648,9 +683,26 @@ export async function POST(
           repoTouched
             ? "No monitor branch verification could be queued, so treat this as a workflow/setup issue before approving code work."
             : "The assignee indicated this task did not change the repository (or no branch is set). Verify the non-code work directly.",
+          "BEFORE reviewing: add the topics you will address as review sub-tasks (action=add_subtask with subtaskKind:\"review\", one per topic), then mark each complete (action=complete_subtask) as you address it — the board shows your review progress from these.",
           "Review the completed work or respond to the assignee's blocker/question using the full task context. If satisfied, move the task to Done through the workflow endpoint without posting an approval-only comment. If changes or blockers remain, leave concise feedback while keeping it in Review.",
         ].filter(Boolean).join("\n"),
       });
+    }
+    // A task entering Review frees its worker (Review no longer counts
+    // toward the per-agent WIP limit): immediately hand the assignee the
+    // next unblocked To Do task in the epic queue so nobody idles while a
+    // reviewer looks at finished work.
+    if (task.epicId && task.status !== "Review") {
+      const refill = await refillEpicQueue({
+        epicId: task.epicId,
+        actor,
+        via: "ready-for-review",
+        contextLine: `"${task.title}" moved to Review — your review-stage feedback there stays priority one.`,
+      });
+      for (const assigned of refill.assignments) {
+        revalidateTaskShell(assigned.task.id);
+        revalidatePath(`/projects/${task.project.slug}/tasks/${assigned.task.id}`);
+      }
     }
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
@@ -833,12 +885,20 @@ export async function POST(
   // checklist (text + done) so the board card shows how close the task is to
   // finished. These are NOT child tasks.
   if (action === "add_subtask") {
-    if (!isAssignee) return NextResponse.json({ error: "Only the assignee can add sub-tasks" }, { status: 403 });
+    // Implementation checklist items belong to the assignee; review checklist
+    // items (the reviewer's topics-to-address list) belong to the resolved
+    // reviewer. Both phases share the SubTask table, discriminated by kind.
+    const kind = normalizeSubTaskKind(payload.subtaskKind);
+    if (kind === "review") {
+      if (!isReviewer) return NextResponse.json({ error: "Only the resolved reviewer can add review sub-tasks" }, { status: 403 });
+    } else if (!isAssignee) {
+      return NextResponse.json({ error: "Only the assignee can add implementation sub-tasks" }, { status: 403 });
+    }
     const text = typeof payload.subtaskText === "string" ? payload.subtaskText.trim() : "";
     if (!text) return NextResponse.json({ error: "subtaskText is required" }, { status: 400 });
     let created: { id: string } | null = null;
     try {
-      created = await createSubTaskItem({ taskId: task.id, text, actorUserId: agent.user.id });
+      created = await createSubTaskItem({ taskId: task.id, text, actorUserId: agent.user.id, kind });
     } catch (err) {
       return NextResponse.json({ error: err instanceof Error ? err.message : "Could not add sub-task" }, { status: 409 });
     }
@@ -847,13 +907,22 @@ export async function POST(
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     publishBoardTouch(task.projectId);
-    return NextResponse.json({ ok: true, taskId: task.id, subtaskId: created.id });
+    return NextResponse.json({ ok: true, taskId: task.id, subtaskId: created.id, subtaskKind: kind });
   }
 
   if (action === "complete_subtask") {
-    if (!isAssignee) return NextResponse.json({ error: "Only the assignee can update sub-tasks" }, { status: 403 });
     const subtaskId = typeof payload.subtaskId === "string" ? payload.subtaskId : "";
     if (!subtaskId) return NextResponse.json({ error: "subtaskId is required" }, { status: 400 });
+    const subtaskRow = await db.subTask.findFirst({
+      where: { id: subtaskId, taskId: task.id },
+      select: { kind: true },
+    });
+    if (!subtaskRow) return NextResponse.json({ error: "Sub-task not found on this task" }, { status: 404 });
+    if (subtaskRow.kind === "review") {
+      if (!isReviewer) return NextResponse.json({ error: "Only the resolved reviewer can update review sub-tasks" }, { status: 403 });
+    } else if (!isAssignee) {
+      return NextResponse.json({ error: "Only the assignee can update implementation sub-tasks" }, { status: 403 });
+    }
     // Default to marking complete; pass completed:false to reopen.
     const completed = payload.completed === undefined ? true : payload.completed === true;
     // Optional self-reported effort for this step.

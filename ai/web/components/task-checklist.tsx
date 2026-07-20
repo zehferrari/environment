@@ -6,6 +6,12 @@
 // a rough cost view. Humans edit here; the assigned agent does the same through
 // the native workflow endpoint. The server is the source of truth — optimistic
 // edits are replaced by the revalidated list on the next render.
+//
+// Items carry a `kind`: "implementation" is the assignee's In Progress
+// breakdown, "review" is the reviewer's topics-to-address list. The two phases
+// render as separate titled sections, each with its own progress summary; the
+// Review section stays hidden until the task reaches Review or the first
+// review topic exists.
 
 import {
   useCallback,
@@ -30,16 +36,22 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
+// Mirrors SubTaskKind in lib/tasks/subtasks.ts (not imported: that module is
+// server-only — it pulls in the db client).
+export type ChecklistKind = "implementation" | "review";
+
 export type ChecklistItem = {
   id: string;
   text: string;
   completedAt: string | null;
   minutesSpent: number | null;
+  kind: ChecklistKind;
 };
 
 type Props = {
   taskId: string;
   projectSlug: string;
+  taskStatus: string;
   items: ChecklistItem[];
   addAction: (formData: FormData) => Promise<void>;
   toggleAction: (formData: FormData) => Promise<void>;
@@ -59,6 +71,7 @@ export function formatMinutes(total: number): string {
 export default function TaskChecklist({
   taskId,
   projectSlug,
+  taskStatus,
   items,
   addAction,
   toggleAction,
@@ -67,6 +80,9 @@ export default function TaskChecklist({
 }: Props) {
   const [order, setOrder] = useState(items);
   const [text, setText] = useState("");
+  // null = follow the status-based default (review while the task is in
+  // Review, implementation otherwise); set once the user picks a phase.
+  const [kindOverride, setKindOverride] = useState<ChecklistKind | null>(null);
   const [, startTransition] = useTransition();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -75,14 +91,12 @@ export default function TaskChecklist({
     setOrder(items);
   }, [items]);
 
-  const total = order.length;
-  const done = order.filter((i) => i.completedAt).length;
-  const pct = total === 0 ? 0 : Math.round((done / total) * 100);
+  const implementation = order.filter((i) => i.kind !== "review");
+  const review = order.filter((i) => i.kind === "review");
+  const showReview = review.length > 0 || taskStatus === "Review";
+  const addKind: ChecklistKind =
+    kindOverride ?? (taskStatus === "Review" ? "review" : "implementation");
   const totalMinutes = order.reduce((sum, i) => sum + (i.minutesSpent ?? 0), 0);
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-  );
 
   const submitToggle = useCallback(
     (id: string, completed: boolean, minutesSpent?: number | null) => {
@@ -99,17 +113,18 @@ export default function TaskChecklist({
     [taskId, projectSlug, toggleAction],
   );
 
-  const handleDragEnd = useCallback(
-    (event: DragEndEvent) => {
-      const { active, over } = event;
-      if (!over || active.id === over.id) return;
-      const oldIndex = order.findIndex((t) => t.id === active.id);
-      const newIndex = order.findIndex((t) => t.id === over.id);
-      if (oldIndex === -1 || newIndex === -1) return;
-      const next = arrayMove(order, oldIndex, newIndex);
-      setOrder(next);
+  // Drags are section-local. Persist a full-task order (implementation block
+  // then review block) so a within-section reorder keeps global ranks
+  // consistent for both phases.
+  const reorderSection = useCallback(
+    (kind: ChecklistKind, next: ChecklistItem[]) => {
+      const other = order.filter((i) =>
+        kind === "review" ? i.kind !== "review" : i.kind === "review",
+      );
+      const full = kind === "review" ? [...other, ...next] : [...next, ...other];
+      setOrder(full);
       startTransition(() => {
-        void reorderAction(next.map((t) => t.id));
+        void reorderAction(full.map((t) => t.id));
       });
     },
     [order, reorderAction],
@@ -167,12 +182,13 @@ export default function TaskChecklist({
     fd.set("taskId", taskId);
     fd.set("projectSlug", projectSlug);
     fd.set("text", value);
+    fd.set("kind", addKind);
     setText("");
     startTransition(() => {
       void addAction(fd);
     });
     inputRef.current?.focus();
-  }, [text, taskId, projectSlug, addAction]);
+  }, [text, taskId, projectSlug, addKind, addAction]);
 
   return (
     <div>
@@ -180,14 +196,142 @@ export default function TaskChecklist({
         <h2 className="text-body font-semibold tracking-wide text-text">
           Sub-tasks
         </h2>
+        {totalMinutes > 0 ? (
+          <span
+            className="inline-flex items-center gap-1 text-caption text-text-muted"
+            title="Total self-reported time across completed sub-tasks"
+          >
+            <ClockIcon />
+            {formatMinutes(totalMinutes)}
+          </span>
+        ) : null}
+      </div>
+
+      <p className="mb-3 text-micro text-text-muted">
+        Implementation steps are the assignee&rsquo;s In&nbsp;Progress breakdown;
+        review topics are the reviewer&rsquo;s points to address. Tick items off
+        as they land and record the minutes — the board card shows whichever
+        list matches its column.
+      </p>
+
+      <div className="space-y-5">
+        <ChecklistSection
+          title="Implementation"
+          emptyLabel="No implementation steps yet."
+          items={implementation}
+          onReorder={(next) => reorderSection("implementation", next)}
+          onToggle={toggle}
+          onRemove={remove}
+          onSetMinutes={setMinutes}
+        />
+        {showReview ? (
+          <ChecklistSection
+            title="Review"
+            emptyLabel="No review topics yet."
+            items={review}
+            onReorder={(next) => reorderSection("review", next)}
+            onToggle={toggle}
+            onRemove={remove}
+            onSetMinutes={setMinutes}
+          />
+        ) : null}
+      </div>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <input
+          ref={inputRef}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+          }}
+          maxLength={500}
+          placeholder={addKind === "review" ? "Add a review topic…" : "Add a step…"}
+          className="min-h-11 min-w-40 flex-1 rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent md:min-h-0"
+        />
+        <div
+          role="group"
+          aria-label="Checklist phase for the new item"
+          className="flex divide-x divide-line overflow-hidden rounded-lg border border-line"
+        >
+          <KindButton
+            active={addKind === "implementation"}
+            onClick={() => setKindOverride("implementation")}
+          >
+            Implementation
+          </KindButton>
+          <KindButton
+            active={addKind === "review"}
+            onClick={() => setKindOverride("review")}
+          >
+            Review
+          </KindButton>
+        </div>
+        <button
+          type="button"
+          onClick={add}
+          className="min-h-11 rounded-lg bg-accent px-4 text-body font-medium text-bg hover:opacity-90 md:min-h-0 md:px-3"
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// One checklist phase: a titled section with its own progress summary
+// (minutes, bar, done/total) and its own drag-to-reorder scope.
+function ChecklistSection({
+  title,
+  emptyLabel,
+  items,
+  onReorder,
+  onToggle,
+  onRemove,
+  onSetMinutes,
+}: {
+  title: string;
+  emptyLabel: string;
+  items: ChecklistItem[];
+  onReorder: (next: ChecklistItem[]) => void;
+  onToggle: (item: ChecklistItem) => void;
+  onRemove: (id: string) => void;
+  onSetMinutes: (item: ChecklistItem, minutes: number | null) => void;
+}) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+  );
+  const total = items.length;
+  const done = items.filter((i) => i.completedAt).length;
+  const pct = total === 0 ? 0 : Math.round((done / total) * 100);
+  const minutes = items.reduce((sum, i) => sum + (i.minutesSpent ?? 0), 0);
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = items.findIndex((t) => t.id === active.id);
+    const newIndex = items.findIndex((t) => t.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+    onReorder(arrayMove(items, oldIndex, newIndex));
+  };
+
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="text-caption font-semibold uppercase tracking-wider text-text-muted">
+          {title}
+        </h3>
         <div className="flex items-center gap-3">
-          {totalMinutes > 0 ? (
+          {minutes > 0 ? (
             <span
               className="inline-flex items-center gap-1 text-caption text-text-muted"
-              title="Total self-reported time across completed sub-tasks"
+              title={`Total self-reported time across completed ${title.toLowerCase()} items`}
             >
               <ClockIcon />
-              {formatMinutes(totalMinutes)}
+              {formatMinutes(minutes)}
             </span>
           ) : null}
           {total > 0 ? (
@@ -205,15 +349,8 @@ export default function TaskChecklist({
           ) : null}
         </div>
       </div>
-
-      <p className="mb-3 text-micro text-text-muted">
-        Break this task into independent, parallelizable steps. Tick each off as
-        it lands and record the minutes it took — the board shows how many remain
-        and the total time rolls up here.
-      </p>
-
       {total === 0 ? (
-        <p className="text-caption text-text-muted">No sub-tasks yet.</p>
+        <p className="text-caption text-text-muted">{emptyLabel}</p>
       ) : (
         <DndContext
           sensors={sensors}
@@ -221,51 +358,50 @@ export default function TaskChecklist({
           onDragEnd={handleDragEnd}
         >
           <SortableContext
-            items={order.map((t) => t.id)}
+            items={items.map((t) => t.id)}
             strategy={verticalListSortingStrategy}
           >
             <ul
-              aria-label="Sub-tasks"
+              aria-label={`${title} sub-tasks`}
               className="divide-y divide-line rounded-lg border border-line bg-panel-soft"
             >
-              {order.map((item) => (
+              {items.map((item) => (
                 <ChecklistRow
                   key={item.id}
                   item={item}
-                  onToggle={() => toggle(item)}
-                  onRemove={() => remove(item.id)}
-                  onSetMinutes={(minutes) => setMinutes(item, minutes)}
+                  onToggle={() => onToggle(item)}
+                  onRemove={() => onRemove(item.id)}
+                  onSetMinutes={(m) => onSetMinutes(item, m)}
                 />
               ))}
             </ul>
           </SortableContext>
         </DndContext>
       )}
+    </section>
+  );
+}
 
-      <div className="mt-4 flex gap-2">
-        <input
-          ref={inputRef}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              add();
-            }
-          }}
-          maxLength={500}
-          placeholder="Add a step…"
-          className="min-h-11 flex-1 rounded-lg border border-line bg-bg px-control-x py-control-y text-body outline-none focus:border-accent md:min-h-0"
-        />
-        <button
-          type="button"
-          onClick={add}
-          className="min-h-11 rounded-lg bg-accent px-4 text-body font-medium text-bg hover:opacity-90 md:min-h-0 md:px-3"
-        >
-          Add
-        </button>
-      </div>
-    </div>
+function KindButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`min-h-11 px-3 text-caption font-medium transition md:min-h-0 ${
+        active ? "bg-accent-soft text-accent" : "bg-bg text-text-muted hover:text-text"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 

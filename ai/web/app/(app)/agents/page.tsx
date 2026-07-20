@@ -5,7 +5,9 @@ import { describeActivity } from "@/lib/activity";
 import { activityScopeWhere } from "@/lib/activity-categories";
 import { formatLatency, pmChannelLatencySpans } from "@/lib/agents/pm-channel/latency";
 import { readAtlasSnapshot, type SnapshotAgent } from "@/lib/atlas-snapshot";
+import { agentStatusFor, agentStatusRing } from "@/lib/agents/presence";
 import { statusPillClass } from "@/lib/board-status";
+import AgentAvatar from "@/components/agent-avatar";
 import AutoRefresh from "@/components/auto-refresh";
 import AgentServiceControls, { type AgentService } from "./agent-service-controls";
 import fs from "fs/promises";
@@ -23,33 +25,6 @@ function localAvatarSrc(agentAvatar: string | null, liveAvatarUrl: string | unde
   if (liveAvatarUrl?.startsWith("/")) return liveAvatarUrl;
   if (agentAvatar) return avatarUrl(name);
   return null;
-}
-
-function statusFor(agent: { deactivatedAt: Date | null; user: { status: string } | null }, live?: SnapshotAgent | null) {
-  if (agent.deactivatedAt || agent.user?.status === "deactivated") return "offline";
-  if (live?.busy_state?.is_busy) return "busy";
-  if (live) {
-    const idle = live.session_idle_s ?? 999999;
-    if (idle < 90) return "live";
-    if (idle < 900) return "idle";
-    return "stale";
-  }
-  return agent.user ? "live" : "registered";
-}
-
-function ringFor(status: string) {
-  if (status === "busy") return { ring: "#22c55e", bg: "rgba(34,197,94,0.16)", label: "busy" };
-  if (status === "live") return { ring: "#2dd4bf", bg: "rgba(45,212,191,0.16)", label: "live" };
-  if (status === "idle") return { ring: "#f59e0b", bg: "rgba(245,158,11,0.16)", label: "idle" };
-  if (status === "stale") return { ring: "#64748b", bg: "rgba(100,116,139,0.16)", label: "stale" };
-  if (status === "offline") return { ring: "#ef4444", bg: "rgba(239,68,68,0.16)", label: "offline" };
-  return { ring: "#94a3b8", bg: "rgba(148,163,184,0.16)", label: status };
-}
-
-// Avatar treatment matching the sidebar: stale/offline render grayscale, busy
-// agents get a discrete pulse ring; live/idle stay in full colour.
-function avatarTone(status: string): { grayscale: boolean; pulse: boolean } {
-  return { grayscale: status === "stale" || status === "offline", pulse: status === "busy" };
 }
 
 function shortModel(ref?: string | null) {
@@ -489,7 +464,7 @@ export default async function AgentsPage() {
     return name.includes("/") && agentSlugs.has(prefix);
   };
   const hostServices = Object.entries(system).filter(([name]) => !isAgentService(name));
-  const onlineCount = agents.filter((a) => statusFor(a, liveAgents[a.slug]) !== "offline").length;
+  const onlineCount = agents.filter((a) => agentStatusFor(a, liveAgents[a.slug]) !== "offline").length;
   const openTickets = agents.reduce((sum, a) => sum + (liveAgents[a.slug]?.jira_tickets?.length ?? 0), 0);
   const activeServices = hostServices.filter(([, s]) => s.is_active === "active").length;
   const openSensorEvents = monitor?.open_events ?? [];
@@ -541,8 +516,8 @@ export default async function AgentsPage() {
             ));
             const newestPmRun = recentAgentPmRuns[0] ?? null;
             const newestPmLatency = newestPmRun ? pmChannelLatencySpans(newestPmRun) : null;
-            const status = statusFor(a, live);
-            const ring = ringFor(status);
+            const status = agentStatusFor(a, live);
+            const ring = agentStatusRing(status);
             const tickets = live?.jira_tickets ?? [];
             const avatarSrc = localAvatarSrc(a.avatar, live?.avatar_url, a.name);
             const effective = effectiveConfigs.get(a.slug);
@@ -554,7 +529,6 @@ export default async function AgentsPage() {
               name,
               status: system[`${a.slug}/${name}`]?.is_active ?? system[name]?.is_active ?? null,
             }));
-            const tone = avatarTone(status);
             // Assigned open tasks (Backlog/Done excluded in the query). A task
             // sitting in Review is the *reviewer's* work, so it only counts
             // for this agent when they are its acting manager (or the epic's);
@@ -614,26 +588,15 @@ export default async function AgentsPage() {
                   <div className="min-w-0 md:col-span-3">
                     <div className="flex items-start gap-2.5">
                       <Link href={`/agents/${a.slug}`} className="relative shrink-0" title={`${a.name} — profile`}>
-                        {tone.pulse && (
-                          <span
-                            className="pointer-events-none absolute -inset-1 animate-ping rounded-orbit opacity-30"
-                            style={{ background: ring.ring }}
-                            aria-hidden="true"
-                          />
-                        )}
-                        <div
-                          className={`relative grid h-14 w-14 place-items-center overflow-hidden rounded-panel border bg-panel-soft text-heading font-semibold ${tone.grayscale ? "opacity-80 grayscale" : ""}`}
-                          style={{
-                            borderColor: "color-mix(in srgb, var(--agent-hue) 45%, var(--color-line))",
-                            boxShadow: tone.pulse ? `0 0 12px 2px ${ring.bg}` : undefined,
-                          }}
-                        >
-                          {avatarSrc ? (
-                            <img src={avatarSrc} alt={`${a.name} avatar`} loading="lazy" decoding="async" className="h-full w-full object-cover" />
-                          ) : live?.avatar_url ? (
-                            <img src={live.avatar_url} alt={`${a.name} avatar`} className="h-full w-full object-cover" />
-                          ) : (live?.avatar ?? a.name.slice(0, 1))}
-                        </div>
+                        <AgentAvatar
+                          slug={a.slug}
+                          name={a.name}
+                          src={avatarSrc ?? live?.avatar_url ?? null}
+                          sizeClass="h-14 w-14"
+                          roundedClass="rounded-panel"
+                          initialStatus={status}
+                          fallback={live?.avatar ?? a.name.slice(0, 1)}
+                        />
                         <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border border-line bg-panel px-1.5 py-0.5 text-pico font-semibold uppercase tracking-wide" style={{ color: ring.ring }}>{status}</span>
                       </Link>
                       <div className="min-w-0 flex-1">

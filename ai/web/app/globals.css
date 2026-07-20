@@ -291,6 +291,16 @@ textarea::placeholder {
   background: color-mix(in srgb, var(--color-warn) 5%, var(--color-panel));
 }
 
+/* Review card whose resolved reviewer is a human — it needs the PM owner's
+   personal attention, so it gets a red attention wash + tinted border that
+   stands apart from the amber Review lane. Derives from theme vars, so the
+   treatment adapts to light and dark automatically. */
+.board-task-card--human-review {
+  --card-status: var(--color-crit);
+  background: color-mix(in srgb, var(--color-crit) 6%, var(--color-panel));
+  border-color: color-mix(in srgb, var(--color-crit) 38%, var(--color-line));
+}
+
 /* Markdown body — descriptions, chat messages.
    Scoped utility classes since @tailwindcss/typography isn't installed
    and the styling needs are modest. Targets output from

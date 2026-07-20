@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import AvatarStatus from "@/components/avatar-status";
+import AgentAvatar from "@/components/agent-avatar";
+import { useAgentPresenceMap } from "@/components/agent-presence-provider";
+import { agentStatusRank } from "@/lib/agents/presence";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
@@ -10,11 +13,9 @@ export type SidebarAgent = {
   name: string;
   role: string;
   avatarSrc: string | null;
+  // Server-render presence status; the live presence store takes over on the
+  // client (AgentAvatar handles the visual treatment per status).
   status: string;
-  // Visual treatment derived from status: grayscale for stale/offline,
-  // a glowing pulse ring for busy. live/idle render plain colour.
-  grayscale: boolean;
-  pulse: boolean;
   // Whether this agent has unread direct-chat messages for the viewer.
   unread: boolean;
 };
@@ -241,6 +242,10 @@ export default function SidebarNav({
   const mobileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const pathname = usePathname();
   const router = useRouter();
+  // Live presence: overrides each agent's SSR status once the stream reports,
+  // so busy-first ordering and busy-row visibility react without a refresh.
+  const liveStatuses = useAgentPresenceMap();
+  const statusOf = (agent: SidebarAgent) => liveStatuses[agent.slug] ?? agent.status;
 
   // Read persisted state after mount to avoid an SSR/hydration mismatch.
   useEffect(() => {
@@ -292,7 +297,12 @@ export default function SidebarNav({
   const visibleAgents = workspaceFilter && activeWorkspaceAgentSlugs.length > 0
     ? agents.filter((agent) => activeWorkspaceAgentSlugs.includes(agent.slug))
     : agents;
-  const busyAgents = visibleAgents.filter((agent) => agent.status === "busy");
+  // Busy-first ordering tracks the live statuses; stable sort keeps the
+  // server's alphabetical order within each status band.
+  const orderedAgents = [...visibleAgents].sort(
+    (a, b) => agentStatusRank(statusOf(a)) - agentStatusRank(statusOf(b)),
+  );
+  const busyAgents = orderedAgents.filter((agent) => statusOf(agent) === "busy");
   const hasUnreadAgents = visibleAgents.some((agent) => agent.unread);
   const assignedProjectSlugs = new Set(workspaces.flatMap((workspace) => workspace.projects.map((project) => project.slug)));
   const unassignedProjects = projects.filter((project) => !assignedProjectSlugs.has(project.slug));
@@ -467,54 +477,34 @@ export default function SidebarNav({
             active={isAgentsActive}
             badge={hasUnreadAgents}
           />
-          {visibleAgents.map((agent) => {
+          {orderedAgents.map((agent) => {
             const href = `/agents/${agent.slug}/chat`;
             const active = pathname?.startsWith(`/agents/${agent.slug}`);
-            const busy = agent.status === "busy";
+            const status = statusOf(agent);
+            const busy = status === "busy";
             return (
               <Link
                 key={agent.slug}
                 href={href}
-                title={collapsed ? `${agent.name} · ${agent.status}` : undefined}
+                title={collapsed ? `${agent.name} · ${status}` : undefined}
                 className={`items-center gap-3 rounded-lg py-1.5 transition-[background-color,color,box-shadow] hover:bg-accent-soft hover:text-accent ${
                   active ? "bg-accent-soft text-accent shadow-[inset_3px_0_0_var(--color-accent)]" : "text-text-muted"
                 } ${collapsed ? "justify-center px-0" : "px-3"} ${
                   busy ? "flex" : "hidden group-hover/agents:flex group-focus-within/agents:flex"
                 }`}
               >
-                {/* Avatar: busy → discreet pulsing ring (opacity only, kept
-                    within bounds so the collapsed rail never scrolls);
-                    stale/offline → grayscale; unread → red dot. */}
-                <div className="relative h-8 w-8 shrink-0">
-                  {agent.pulse ? (
-                    <span
-                      className="pointer-events-none absolute -inset-1 animate-ping rounded-lg bg-accent opacity-30"
-                      aria-hidden="true"
-                    />
-                  ) : null}
-                  <div className="relative grid h-8 w-8 place-items-center overflow-hidden rounded-lg border border-line bg-panel-soft text-caption font-semibold text-text">
-                    {agent.avatarSrc ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={agent.avatarSrc}
-                        alt={`${agent.name} avatar`}
-                        decoding="async"
-                        className={`h-full w-full object-cover ${
-                          agent.grayscale ? "grayscale" : ""
-                        }`}
-                      />
-                    ) : (
-                      agent.name.slice(0, 1)
-                    )}
-                  </div>
-                  {agent.unread ? (
-                    <span
-                      className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-panel bg-red-500"
-                      title="Unread messages"
-                      aria-label="Unread messages"
-                    />
-                  ) : null}
-                </div>
+                {/* Avatar: busy → discreet pulsing ring; stale/offline →
+                    grayscale; unread → red dot. All owned by AgentAvatar,
+                    driven by the live presence store. */}
+                <AgentAvatar
+                  slug={agent.slug}
+                  name={agent.name}
+                  src={agent.avatarSrc}
+                  sizeClass="h-8 w-8"
+                  roundedClass="rounded-lg"
+                  initialStatus={agent.status}
+                  unread={agent.unread}
+                />
 
                 {!collapsed ? (
                   <div className="min-w-0 flex-1">
@@ -717,7 +707,7 @@ export default function SidebarNav({
             {canViewAgents ? <section aria-labelledby="mobile-agents-heading" className="space-y-1">
               <h3 id="mobile-agents-heading" className="px-2 text-nano font-semibold uppercase tracking-wider text-text-muted">Agents</h3>
               <NavSheetLink href="/agents" icon={icons.agents} label="All agents" color={NAV_COLORS.agents} active={isAgentsActive} badge={hasUnreadAgents} onNavigate={closeMobileMenu} />
-              {visibleAgents.map((agent) => {
+              {orderedAgents.map((agent) => {
                 const href = `/agents/${agent.slug}/chat`;
                 const active = pathname?.startsWith(`/agents/${agent.slug}`);
                 return (
@@ -728,18 +718,15 @@ export default function SidebarNav({
                     aria-current={active ? "page" : undefined}
                     className={`flex min-h-11 items-center gap-3 rounded-2xl px-3 py-2.5 hover:bg-accent-soft hover:text-accent ${active ? "text-accent" : "text-text-muted"}`}
                   >
-                    <div className="relative h-11 w-11 shrink-0">
-                      {agent.pulse ? <span className="pointer-events-none absolute -inset-1 animate-ping rounded-xl bg-accent opacity-30" aria-hidden="true" /> : null}
-                      <div className="relative grid h-11 w-11 place-items-center overflow-hidden rounded-xl border border-line bg-panel-soft text-caption font-semibold text-text">
-                        {agent.avatarSrc ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={agent.avatarSrc} alt={`${agent.name} avatar`} decoding="async" className={`h-full w-full object-cover ${agent.grayscale ? "grayscale" : ""}`} />
-                        ) : (
-                          agent.name.slice(0, 1)
-                        )}
-                      </div>
-                      {agent.unread ? <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-panel bg-red-500" aria-label="Unread messages" /> : null}
-                    </div>
+                    <AgentAvatar
+                      slug={agent.slug}
+                      name={agent.name}
+                      src={agent.avatarSrc}
+                      sizeClass="h-11 w-11"
+                      roundedClass="rounded-xl"
+                      initialStatus={agent.status}
+                      unread={agent.unread}
+                    />
                     <div className="min-w-0 flex-1">
                       <span className="flex items-center gap-1.5 truncate text-caption font-semibold text-text">
                         {agent.name}

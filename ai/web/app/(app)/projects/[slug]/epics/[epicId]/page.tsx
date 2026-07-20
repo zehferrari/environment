@@ -47,6 +47,8 @@ import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
 import EpicTasksClient from "./epic-tasks-client";
 import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
 import { buildEpicActionPlanApprovalUpdate } from "@/lib/epics/action-plan-approval";
+import { promoteEpicBacklogTasks } from "@/lib/epics/assignment";
+import { refillEpicQueue } from "@/lib/epics/queue";
 import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName } from "@/lib/work-items/branches";
 import DeploymentTab, { DeploymentStatusSelect, canShowDeploymentAction, type DeploymentPrRow } from "@/components/deployment-tab";
@@ -249,10 +251,62 @@ async function approveEpicActionPlan(formData: FormData) {
       "Each child task title must start with the implementation order: `1.`, `2.`, `3.`, and so on. Keep each task standalone and assignable.",
     ].join("\n"));
     await sendAgentChatMessage(notify);
+  } else if (
+    epic._count.tasks > 0 &&
+    (approvalUpdate.promotedToInProgress || epic.status === "In Progress")
+  ) {
+    // Only start the queue when this approval puts the Epic INTO (or keeps it
+    // in) In Progress. The deploy-review sign-off re-approves a
+    // Ready-to-Deploy Epic (resetEpicActionPlanForDeployReview nulls
+    // approvedOn, so this action runs again) — that must NOT promote Backlog
+    // or tell the manager the finished Epic is back In Progress.
+    //
+    // The approval is the human go-signal: start the queue in the same
+    // request instead of waiting for a manager turn that never comes
+    // (observed 24-minute dead-epic stalls on both KYC epics). Promote the
+    // Backlog, assign every free pool worker, wake each assignee, and brief
+    // the acting manager with a grant-bearing epic-chat turn.
+    const promoted = await db.$transaction((tx) =>
+      promoteEpicBacklogTasks(tx, {
+        epicId: epic.id,
+        projectId: epic.projectId,
+        actorUserId: actor.id,
+        via: "epic-approval",
+      }),
+    );
+    const refill = await refillEpicQueue({
+      epicId: epic.id,
+      actor: { id: actor.id, kind: "human" },
+      via: "epic-approval",
+      contextLine: `Epic "${epic.title}" was approved and is now In Progress.`,
+    });
+    if (managerSlug) {
+      const queueSummary = refill.assignments.length > 0
+        ? refill.assignments
+            .map((assigned) => `- "${assigned.task.title}" -> @${assigned.worker.username}`)
+            .join("\n")
+        : `- no assignment made (${refill.skipped ?? "queue busy"})`;
+      const notify = new FormData();
+      notify.set("projectSlug", slug);
+      notify.set("epicId", epic.id);
+      notify.set("discussionTarget", `agent:${managerSlug}`);
+      notify.set("body", [
+        `Action Plan approved for Epic "${epic.title}" — the Epic is now In Progress.`,
+        `PM promoted ${promoted.length} Backlog task${promoted.length === 1 ? "" : "s"} to To Do and started the queue:`,
+        queueSummary,
+        "You are the acting manager: keep every pool worker busy. Whenever a worker is free and an unblocked To Do task exists, use this turn's workflow grant (assign_next / advance_queue). Do not wait for a human prompt.",
+        "Do not post an acknowledgement-only response.",
+      ].join("\n"));
+      await sendAgentChatMessage(notify);
+    }
+    for (const assigned of refill.assignments) {
+      revalidatePath(`/projects/${slug}/tasks/${assigned.task.id}`);
+    }
   }
 
   revalidatePath(`/projects/${slug}/epics/${epic.id}`);
   revalidatePath(`/projects/${slug}`);
+  publishBoardTouch(epic.projectId);
 }
 
 function discussionTargetValue(

@@ -17,6 +17,15 @@ import { db } from "@/lib/db";
 export const MAX_SUBTASK_TEXT = 500;
 export const MAX_SUBTASKS_PER_TASK = 50;
 
+// Checklist phases. "implementation" is the assignee's In Progress breakdown;
+// "review" is the reviewer's topics-to-address list for the Review column.
+export const SUBTASK_KINDS = ["implementation", "review"] as const;
+export type SubTaskKind = (typeof SUBTASK_KINDS)[number];
+
+export function normalizeSubTaskKind(value: unknown): SubTaskKind {
+  return value === "review" ? "review" : "implementation";
+}
+
 export type SubTaskActivityKind =
   | "task.subtask.add"
   | "task.subtask.complete"
@@ -33,9 +42,11 @@ export async function createSubTaskItem(args: {
   text: string;
   actorUserId: string;
   completedAt?: Date | null;
+  kind?: SubTaskKind;
 }): Promise<{ id: string } | null> {
   const text = args.text.trim().slice(0, MAX_SUBTASK_TEXT);
   if (!text) return null;
+  const kind = normalizeSubTaskKind(args.kind);
 
   const agg = await db.subTask.aggregate({
     where: { taskId: args.taskId },
@@ -50,6 +61,7 @@ export async function createSubTaskItem(args: {
     data: {
       taskId: args.taskId,
       text,
+      kind,
       rank: (agg._max.rank ?? 0) + 1,
       completedAt: args.completedAt ?? null,
     },
@@ -61,7 +73,7 @@ export async function createSubTaskItem(args: {
       taskId: args.taskId,
       userId: args.actorUserId,
       kind: "task.subtask.add",
-      payload: JSON.stringify({ subTaskId: item.id, text }),
+      payload: JSON.stringify({ subTaskId: item.id, text, kind }),
     },
   });
   return { id: item.id };

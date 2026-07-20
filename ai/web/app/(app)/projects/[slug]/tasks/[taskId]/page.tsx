@@ -38,6 +38,7 @@ import {
   createSubTaskItem,
   setSubTaskCompletion,
   deleteSubTaskItem,
+  normalizeSubTaskKind,
   reorderSubTaskItems,
 } from "@/lib/tasks/subtasks";
 import { validateBlockedBy } from "@/lib/tasks/blocking";
@@ -1000,10 +1001,13 @@ async function addSubTaskItem(formData: FormData) {
   const taskId = String(formData.get("taskId") ?? "");
   const slug = String(formData.get("projectSlug") ?? "");
   const text = String(formData.get("text") ?? "").trim();
+  // "implementation" (default) or "review" — which checklist phase the item
+  // belongs to; anything unexpected normalizes to "implementation".
+  const kind = normalizeSubTaskKind(formData.get("kind"));
   if (!taskId || !slug || !text) return;
   const ctx = await resolveChecklistContext(taskId, slug);
   if (!ctx) return;
-  await createSubTaskItem({ taskId, text, actorUserId: ctx.actor.id });
+  await createSubTaskItem({ taskId, text, actorUserId: ctx.actor.id, kind });
   revalidateChecklist(slug, taskId, ctx.task.projectId);
 }
 
@@ -2198,6 +2202,7 @@ export default async function TaskDetailPage({
                 <TaskChecklist
                   taskId={task.id}
                   projectSlug={slug}
+                  taskStatus={task.status}
                   items={task.checklist.map((item) => ({
                     id: item.id,
                     text: item.text,
@@ -2205,6 +2210,7 @@ export default async function TaskDetailPage({
                     // completedAt as an ISO string; dateIso handles Date|string.
                     completedAt: dateIso(item.completedAt),
                     minutesSpent: item.minutesSpent ?? null,
+                    kind: item.kind === "review" ? ("review" as const) : ("implementation" as const),
                   }))}
                   addAction={addSubTaskItem}
                   toggleAction={toggleSubTaskItem}
