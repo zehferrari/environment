@@ -312,9 +312,9 @@ async function persistTaskReply(
   revalidateTaskReplyScope(target.taskId, reply.channel);
   if (reviewAutomation?.completed) {
     revalidateTaskShell(target.taskId);
-    if (reviewAutomation.nextTask) {
-      revalidateTaskShell(reviewAutomation.nextTask.id);
-      revalidatePath(`/projects/${reviewAutomation.nextTask.projectSlug}/tasks/${reviewAutomation.nextTask.id}`);
+    for (const next of reviewAutomation.nextTasks ?? []) {
+      revalidateTaskShell(next.id);
+      revalidatePath(`/projects/${next.projectSlug}/tasks/${next.id}`);
     }
     revalidatePath(`/projects/${reviewAutomation.projectSlug}`);
   }

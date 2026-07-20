@@ -293,11 +293,13 @@ assigning child Tasks. Task assignee remains a single user.
 An agent may have only one active Task per project. Active means `To Do`,
 `In Progress`, or `Review`. The same agent may hold active Tasks in
 different projects. This is enforced server-side in every automated
-assignment path (the epic sequential queue, `assign_next`, and
-post-plan-approval assignment): an agent holding an active Task in a
-project is not offered another assignment there until that Task leaves
-the active set (reviewer moves it to Done, or feedback returns it to the
-assignee). Humans may still assign explicitly as a deliberate override.
+assignment path (the epic queue, `assign_next`, and post-plan-approval
+assignment): an agent holding an active Task in a project is not offered
+another assignment there until that Task leaves the active set (reviewer
+moves it to Done, or feedback returns it to the assignee). The limit is
+per agent, not per epic: an Epic with several free pool workers gets one
+task assigned to each, so pool workers progress the queue in parallel.
+Humans may still assign explicitly as a deliberate override.
 
 Review-stage work that received reviewer/reporter feedback and awaits the
 assignee's response is always the assignee's first priority (WORKFLOW.md

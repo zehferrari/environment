@@ -26,7 +26,7 @@ import { notifyDispatch } from "@/lib/pm-dispatch";
 import { isPublicEpic } from "@/lib/pm-events/visibility";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
 import { publishBoardTouch } from "@/lib/pm/board-events";
-import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
+import { assignOpenEpicTasks } from "@/lib/epics/assignment";
 import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
 import {
   accessibleEpicWhere,
@@ -725,7 +725,7 @@ export async function updateEpic(formData: FormData) {
         },
       });
       if (status === "In Progress" && canTriggerAgents) {
-        openAssignment = await assignFirstOpenEpicTask(tx, {
+        openAssignment = await assignOpenEpicTasks(tx, {
           epicId,
           projectId: epic.project.id,
           actorUserId: actor.id,
@@ -752,14 +752,14 @@ export async function updateEpic(formData: FormData) {
     }
   });
 
-  if (openAssignment?.task && openAssignment.worker) {
+  for (const assigned of openAssignment?.assignments ?? []) {
     await sendTaskWorkflowNotification({
-      taskId: openAssignment.task.id,
-      targetUserId: openAssignment.worker.id,
+      taskId: assigned.task.id,
+      targetUserId: assigned.worker.id,
       actor,
       reason: "todo_start_required",
       body: [
-        `Epic "${title}" is in progress and task "${openAssignment.task.title}" is assigned to you.`,
+        `Epic "${title}" is in progress and task "${assigned.task.title}" is assigned to you.`,
         "Read the task context and attachments first. Post one concise technical Action Plan and wait for reviewer/manager/reporter approval before starting implementation.",
         "Use task attachments first; only inspect Epic attachments when the task context explicitly references them or is insufficient.",
       ].join("\n"),
@@ -984,7 +984,7 @@ export async function setEpicStatus(formData: FormData) {
         },
       });
       if (status === "In Progress" && (actor.isOwner || actor.kind === "agent")) {
-        openAssignment = await assignFirstOpenEpicTask(tx, {
+        openAssignment = await assignOpenEpicTasks(tx, {
           epicId,
           projectId: epic.project.id,
           actorUserId: actor.id,
@@ -1014,14 +1014,14 @@ export async function setEpicStatus(formData: FormData) {
     });
   });
 
-  if (openAssignment?.task && openAssignment.worker) {
+  for (const assigned of openAssignment?.assignments ?? []) {
     await sendTaskWorkflowNotification({
-      taskId: openAssignment.task.id,
-      targetUserId: openAssignment.worker.id,
+      taskId: assigned.task.id,
+      targetUserId: assigned.worker.id,
       actor,
       reason: "todo_start_required",
       body: [
-        `Epic "${epic.title}" is in progress and task "${openAssignment.task.title}" is assigned to you.`,
+        `Epic "${epic.title}" is in progress and task "${assigned.task.title}" is assigned to you.`,
         "Read the task context and attachments first. Post one concise technical Action Plan and wait for reviewer/manager/reporter approval before starting implementation.",
         "Use task attachments first; only inspect Epic attachments when the task context explicitly references them or is insufficient.",
       ].join("\n"),

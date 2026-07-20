@@ -301,9 +301,9 @@ async function moveTask(
     }
     revalidateTaskShell(taskId);
     revalidatePath(`/projects/${slug}`);
-    if (completion.nextTask) {
-      revalidateTaskShell(completion.nextTask.id);
-      revalidatePath(`/projects/${slug}/tasks/${completion.nextTask.id}`);
+    for (const next of completion.nextTasks ?? []) {
+      revalidateTaskShell(next.id);
+      revalidatePath(`/projects/${slug}/tasks/${next.id}`);
     }
     publishBoardTouch(current.projectId);
     return { ok: true };

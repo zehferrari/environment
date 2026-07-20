@@ -461,12 +461,14 @@ Epic's acting manager. Allowed actions:
 
 - `create_tasks` — create the Epic's implementation tasks from the
   approved Epic Action Plan (only when the Epic has no child tasks yet).
-- `assign_next` — assign the first open To Do task to an available
-  worker from the Epic's pool (skipped while any pool worker holds an
-  active task in the project — active means To Do / In Progress /
-  Review).
-- `advance_queue` — advance the sequential queue after a task completes
-  (re-checks the same availability rules as `assign_next`).
+- `assign_next` — assign unassigned To Do tasks (queue order) to
+  available workers from the Epic's pool, one task per free worker.
+  A worker already holding an active task in the project (active means
+  To Do / In Progress / Review) is skipped, but other free pool workers
+  are still assigned — the pool works in parallel, one active task per
+  agent.
+- `advance_queue` — promote the Epic's Backlog tasks to To Do, then
+  assign like `assign_next` (same per-worker availability rules).
 
 ### Commit hygiene + Review verification
 

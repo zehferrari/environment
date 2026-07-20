@@ -777,12 +777,18 @@ export async function POST(
     });
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
-    if (completion.nextTask) {
-      revalidateTaskShell(completion.nextTask.id);
-      revalidatePath(`/projects/${task.project.slug}/tasks/${completion.nextTask.id}`);
+    for (const next of completion.nextTasks ?? []) {
+      revalidateTaskShell(next.id);
+      revalidatePath(`/projects/${task.project.slug}/tasks/${next.id}`);
     }
     revalidatePath(`/projects/${task.project.slug}`);
-    return NextResponse.json({ ok: true, taskId: task.id, status: "Done", nextTask: completion.nextTask });
+    return NextResponse.json({
+      ok: true,
+      taskId: task.id,
+      status: "Done",
+      nextTask: completion.nextTask,
+      nextTasks: completion.nextTasks,
+    });
   }
 
   if (action === "triage_to_todo") {

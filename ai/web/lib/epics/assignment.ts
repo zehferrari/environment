@@ -5,6 +5,8 @@ import type { Prisma } from "@prisma/client";
 // automated assignment in that project. Review counts — work awaiting review
 // (or reviewer feedback) must leave the active set before the next task is
 // handed out, so agents resolve feedback instead of stacking new work.
+// The limit is per worker, not per epic: an epic with N free pool workers
+// may have N tasks in flight at once.
 export const ACTIVE_TASK_ASSIGNMENT_STATUSES = ["To Do", "In Progress", "Review"] as const;
 
 export async function findAvailableEpicWorker(
@@ -63,7 +65,21 @@ export async function findAvailableEpicWorker(
   return null;
 }
 
-export async function assignFirstOpenEpicTask(
+export type EpicTaskAssignment = {
+  task: {
+    id: string;
+    title: string;
+    actingManagerId: string | null;
+    project: { slug: string };
+  };
+  worker: { id: string; username: string };
+};
+
+// Assign unassigned To Do tasks (queue order) to available pool workers until
+// either runs out. Each assignment makes that worker ineligible for the rest
+// of the loop (their fresh To Do task counts as active inside the same
+// transaction), so one call fills every free worker with exactly one task.
+export async function assignOpenEpicTasks(
   tx: Prisma.TransactionClient,
   args: {
     epicId: string;
@@ -73,23 +89,7 @@ export async function assignFirstOpenEpicTask(
     via: string;
   },
 ) {
-  const activeAssigned = await tx.task.findFirst({
-    where: {
-      epicId: args.epicId,
-      parentTaskId: null,
-      archivedAt: null,
-      deletedAt: null,
-      private: false,
-      assigneeId: { not: null },
-      status: { in: [...ACTIVE_TASK_ASSIGNMENT_STATUSES] },
-    },
-    select: { id: true, assigneeId: true },
-  });
-  if (activeAssigned) {
-    return { task: null, worker: null, skipped: "active_task_already_assigned" as const };
-  }
-
-  const task = await tx.task.findFirst({
+  const tasks = await tx.task.findMany({
     where: {
       epicId: args.epicId,
       parentTaskId: null,
@@ -97,6 +97,7 @@ export async function assignFirstOpenEpicTask(
       deletedAt: null,
       private: false,
       status: "To Do",
+      assigneeId: null,
     },
     orderBy: [{ rank: "asc" }, { createdAt: "asc" }],
     select: {
@@ -106,18 +107,58 @@ export async function assignFirstOpenEpicTask(
       project: { select: { slug: true } },
     },
   });
-  if (!task) return { task: null, worker: null, skipped: "no_todo_task" as const };
+  if (tasks.length === 0) {
+    return { assignments: [] as EpicTaskAssignment[], skipped: "no_todo_task" as const };
+  }
 
-  const worker = await findAvailableEpicWorker(tx, {
-    epicId: args.epicId,
-    projectId: args.projectId,
-    excludeUserIds: args.excludeUserIds,
-  });
-  if (!worker) {
+  const assignments: EpicTaskAssignment[] = [];
+  for (const task of tasks) {
+    const worker = await findAvailableEpicWorker(tx, {
+      epicId: args.epicId,
+      projectId: args.projectId,
+      excludeUserIds: args.excludeUserIds,
+    });
+    if (!worker) break;
+
+    await tx.task.update({
+      where: { id: task.id },
+      data: { assigneeId: worker.id, approvedOn: null, approvedById: null },
+    });
     await tx.activityLog.create({
       data: {
         projectId: args.projectId,
         taskId: task.id,
+        userId: args.actorUserId,
+        kind: "task.assign",
+        payload: JSON.stringify({
+          from: null,
+          to: worker.username,
+          via: args.via,
+          epicId: args.epicId,
+        }),
+      },
+    });
+    await tx.activityLog.create({
+      data: {
+        projectId: args.projectId,
+        taskId: task.id,
+        userId: args.actorUserId,
+        kind: "task.action_plan.reset",
+        payload: JSON.stringify({
+          reason: "epic_queue_assignment",
+          via: args.via,
+          epicId: args.epicId,
+        }),
+      },
+    });
+    assignments.push({ task, worker });
+  }
+
+  if (assignments.length === 0) {
+    await tx.activityLog.create({
+      data: {
+        projectId: args.projectId,
+        taskId: tasks[0].id,
         userId: args.actorUserId,
         kind: "task.workflow.next_assignment_skipped",
         payload: JSON.stringify({
@@ -127,40 +168,8 @@ export async function assignFirstOpenEpicTask(
         }),
       },
     });
-    return { task: null, worker: null, skipped: "no_available_epic_worker" as const };
+    return { assignments, skipped: "no_available_epic_worker" as const };
   }
 
-  await tx.task.update({
-    where: { id: task.id },
-    data: { assigneeId: worker.id, approvedOn: null, approvedById: null },
-  });
-  await tx.activityLog.create({
-    data: {
-      projectId: args.projectId,
-      taskId: task.id,
-      userId: args.actorUserId,
-      kind: "task.assign",
-      payload: JSON.stringify({
-        from: null,
-        to: worker.username,
-        via: args.via,
-        epicId: args.epicId,
-      }),
-    },
-  });
-  await tx.activityLog.create({
-    data: {
-      projectId: args.projectId,
-      taskId: task.id,
-      userId: args.actorUserId,
-      kind: "task.action_plan.reset",
-      payload: JSON.stringify({
-        reason: "epic_sequential_assignment",
-        via: args.via,
-        epicId: args.epicId,
-      }),
-    },
-  });
-
-  return { task, worker, skipped: null };
+  return { assignments, skipped: null };
 }

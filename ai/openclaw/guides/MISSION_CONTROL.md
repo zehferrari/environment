@@ -150,7 +150,7 @@ workspace group.
 - `Epic.actingManagerId` — Epic-level acting manager. Epics have **no
   assignee**; they carry a worker pool instead.
 - `Epic.workers` — the coding-agent pool the acting manager assigns
-  child tasks from (sequential queue, one active task at a time).
+  child tasks from (ordered queue, one active task per pool worker).
 - `Epic.deployReviewerId` — the reviewer for the deploy-review pass when
   the Epic reaches `Ready to Deploy`.
 - `Epic.status` — `Backlog` | `In Progress` | `Ready to Deploy` | `Done`.

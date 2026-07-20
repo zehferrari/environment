@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel/runs";
 import { verifyEpicWorkflowToken } from "@/lib/agents/workflow/token/epic";
-import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
+import { assignOpenEpicTasks } from "@/lib/epics/assignment";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { hasActiveOwnerOrigin } from "@/lib/agents/owner-origin";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
@@ -333,7 +333,7 @@ export async function POST(
     : [];
 
   const assignment = await db.$transaction((tx) =>
-    assignFirstOpenEpicTask(tx, {
+    assignOpenEpicTasks(tx, {
       epicId: epic.id,
       projectId: epic.projectId,
       actorUserId: agent.user!.id,
@@ -349,31 +349,34 @@ export async function POST(
     action,
   });
 
-  if (assignment.task && assignment.worker) {
+  for (const assigned of assignment.assignments) {
     await notifyAssignedTask({
-      taskId: assignment.task.id,
-      taskTitle: assignment.task.title,
-      targetUserId: assignment.worker.id,
+      taskId: assigned.task.id,
+      taskTitle: assigned.task.title,
+      targetUserId: assigned.worker.id,
       actor,
     });
   }
 
   revalidatePath(`/projects/${epic.project.slug}`);
   revalidatePath(`/projects/${epic.project.slug}/epics/${epic.id}`);
-  if (assignment.task) {
-    revalidatePath(`/projects/${epic.project.slug}/tasks/${assignment.task.id}`);
+  for (const assigned of assignment.assignments) {
+    revalidatePath(`/projects/${epic.project.slug}/tasks/${assigned.task.id}`);
   }
   publishBoardTouch(epic.projectId);
 
+  const first = assignment.assignments[0] ?? null;
   return NextResponse.json({
     ok: true,
     epicId: epic.id,
     promotedTaskIds: promoted.map((task) => task.id),
-    nextTask: assignment.task
-      ? { id: assignment.task.id, title: assignment.task.title }
-      : null,
-    assignedTo: assignment.worker
-      ? { id: assignment.worker.id, username: assignment.worker.username }
+    assignments: assignment.assignments.map((assigned) => ({
+      task: { id: assigned.task.id, title: assigned.task.title },
+      assignedTo: { id: assigned.worker.id, username: assigned.worker.username },
+    })),
+    nextTask: first ? { id: first.task.id, title: first.task.title } : null,
+    assignedTo: first
+      ? { id: first.worker.id, username: first.worker.username }
       : null,
     skipped: assignment.skipped,
   });

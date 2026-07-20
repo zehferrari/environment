@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { resolveDoneOwnerId, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
-import { assignFirstOpenEpicTask } from "@/lib/epics/assignment";
+import { assignOpenEpicTasks, type EpicTaskAssignment } from "@/lib/epics/assignment";
 import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
 
 type Actor = {
@@ -105,23 +105,24 @@ export async function completeReviewedTaskAndAssignNext(args: {
       },
     });
 
-    let nextAssignment: Awaited<ReturnType<typeof assignFirstOpenEpicTask>> | null = null;
+    let nextAssignments: EpicTaskAssignment[] = [];
     let skipReason: string | null = null;
 
     if (!task.epicId) {
       skipReason = "no_epic";
     } else {
-      nextAssignment = await assignFirstOpenEpicTask(tx, {
+      const assignment = await assignOpenEpicTasks(tx, {
         epicId: task.epicId,
         projectId: task.projectId,
         actorUserId: args.actor.id,
         excludeUserIds: [reviewerId, task.reporterId, task.epic?.actingManagerId],
         via: args.via,
       });
-      skipReason = nextAssignment.skipped;
+      nextAssignments = assignment.assignments;
+      skipReason = assignment.skipped;
     }
 
-    if (!nextAssignment?.task || !nextAssignment.worker) {
+    if (nextAssignments.length === 0) {
       await tx.activityLog.create({
         data: {
           projectId: task.projectId,
@@ -178,37 +179,39 @@ export async function completeReviewedTaskAndAssignNext(args: {
       }
     }
 
-    return { nextAssignment, promotedEpicToReadyToDeploy };
+    return { nextAssignments, promotedEpicToReadyToDeploy };
   });
 
-  const nextTask = completion.nextAssignment?.task && completion.nextAssignment.worker
-    ? {
-        id: completion.nextAssignment.task.id,
-        title: completion.nextAssignment.task.title,
-        projectSlug: completion.nextAssignment.task.project.slug,
-      }
-    : null;
+  const nextTasks = completion.nextAssignments.map((assigned) => ({
+    id: assigned.task.id,
+    title: assigned.task.title,
+    projectSlug: assigned.task.project.slug,
+  }));
+  const nextTask = nextTasks[0] ?? null;
 
   if (completion.promotedEpicToReadyToDeploy && task.epicId) {
     await triggerDeployReview({ projectSlug: task.project.slug, epicId: task.epicId, actorId: args.actor.id });
   }
 
-  if (completion.nextAssignment?.task && completion.nextAssignment.worker) {
+  for (const assigned of completion.nextAssignments) {
     await sendTaskWorkflowNotification({
-      taskId: completion.nextAssignment.task.id,
-      targetUserId: completion.nextAssignment.worker.id,
+      taskId: assigned.task.id,
+      targetUserId: assigned.worker.id,
       actor: args.actor,
       reason: "todo_start_required",
       body: [
         `Previous epic task "${task.title}" was accepted by @${args.actor.username}.`,
-        `Next task "${completion.nextAssignment.task.title}" is now assigned to you in To Do.`,
+        `Next task "${assigned.task.title}" is now assigned to you in To Do.`,
         "Before starting work, post one concise technical implementation plan in Action Plan and wait for reviewer/reporter approval.",
         "If you have unresolved review feedback on another Review-stage task, address that feedback first; otherwise prepare the Action Plan for this task now.",
       ].join("\n"),
     });
   }
 
-  if (!nextTask && task.assigneeId) {
+  const previousAssigneeGotNext = completion.nextAssignments.some(
+    (assigned) => assigned.worker.id === task.assigneeId,
+  );
+  if (!previousAssigneeGotNext && task.assigneeId) {
     await sendTaskWorkflowNotification({
       taskId: task.id,
       targetUserId: task.assigneeId,
@@ -226,6 +229,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
     taskId: task.id,
     projectSlug: task.project.slug,
     nextTask,
+    nextTasks,
   };
 }
 
