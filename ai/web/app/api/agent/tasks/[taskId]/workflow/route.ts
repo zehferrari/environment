@@ -40,6 +40,9 @@ const ACTIONS = [
   "assign_after_plan_approval",
   "add_subtask",
   "complete_subtask",
+  "request_subtask",
+  "request_task",
+  "flag_extra_work_blocker",
 ] as const;
 
 type WorkflowAction = (typeof ACTIONS)[number];
@@ -940,6 +943,159 @@ export async function POST(
     revalidatePath(`/projects/${task.project.slug}`);
     publishBoardTouch(task.projectId);
     return NextResponse.json({ ok: true, taskId: task.id, subtaskId, completed: result.completedAt !== null, minutesSpent: result.minutesSpent });
+  }
+
+  // Scope-negotiation flow (all in comments): a reviewer/manager asks the
+  // assignee for extra implementation sub-tasks; an assignee asks the epic
+  // acting manager for a new task; and the assignee can flag an extra-work
+  // request as a blocker rather than silently absorbing scope. The requester
+  // never mutates the other actor's work directly — they post a described
+  // request and PM wakes the owner of that work to accept or push back.
+  const requesterUserId = agent.user.id;
+  const requesterSlug = agent.slug;
+  const requestTaskId = task.id;
+  const requestProjectId = task.projectId;
+  async function postWorkflowComment(body: string, kind: string) {
+    const created = await db.comment.create({
+      data: { taskId: requestTaskId, userId: requesterUserId, body },
+      select: { id: true },
+    });
+    await db.activityLog.create({
+      data: {
+        projectId: requestProjectId,
+        taskId: requestTaskId,
+        userId: requesterUserId,
+        kind,
+        targetAgent: requesterSlug,
+        payload: JSON.stringify({ commentId: created.id, action }),
+      },
+    });
+    return created.id;
+  }
+
+  if (action === "request_subtask") {
+    // Reviewer/acting-manager -> assignee: request an implementation sub-task.
+    if (!isReviewer) {
+      return NextResponse.json({ error: "Only the resolved reviewer or acting manager can request a sub-task from the assignee" }, { status: 403 });
+    }
+    const subtaskText = typeof payload.subtaskText === "string" ? payload.subtaskText.trim() : "";
+    const reason = comment;
+    if (!subtaskText) return NextResponse.json({ error: "subtaskText is required" }, { status: 400 });
+    if (!reason) return NextResponse.json({ error: "comment (the reason for the requested sub-task) is required" }, { status: 400 });
+    if (!task.assigneeId) return NextResponse.json({ error: "Task has no assignee to receive the request" }, { status: 409 });
+    const commentId = await postWorkflowComment(
+      [
+        `**Sub-task requested** by @${agent.user.username} (reviewer):`,
+        `- ${subtaskText}`,
+        "",
+        `Reason: ${reason}`,
+        "",
+        "@assignee: add this via action=add_subtask if you agree, or call action=flag_extra_work_blocker with a reason if it blocks the current scope / needs an owner decision.",
+      ].join("\n"),
+      "task.subtask.requested",
+    );
+    await sendTaskWorkflowNotification({
+      taskId: task.id,
+      targetUserId: task.assigneeId,
+      actor,
+      reason: "subtask_requested",
+      body: [
+        `Reviewer @${agent.user.username} requested a new sub-task on "${task.title}":`,
+        `"${subtaskText}" — reason: ${reason}`,
+        "Add it with action=add_subtask (subtaskKind=implementation) if you agree, or call action=flag_extra_work_blocker with a reason if it should block or needs an owner decision.",
+      ].join("\n"),
+    });
+    revalidateTaskReplyScope(task.id, "chat");
+    revalidateTaskShell(task.id);
+    revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    return NextResponse.json({ ok: true, taskId: task.id, requested: "subtask", commentId });
+  }
+
+  if (action === "request_task") {
+    // Assignee -> epic acting manager: request a new Epic task.
+    if (!isAssignee) {
+      return NextResponse.json({ error: "Only the assignee can request a new task" }, { status: 403 });
+    }
+    if (!task.epicId || !task.epic) {
+      return NextResponse.json({ error: "Task is not under an Epic, so there is no acting manager to request a task from" }, { status: 409 });
+    }
+    const managerUserId = task.epic.actingManagerId;
+    if (!managerUserId) {
+      return NextResponse.json({ error: "The Epic has no acting manager to receive the request" }, { status: 409 });
+    }
+    const requestedTitle = typeof payload.subtaskText === "string" ? payload.subtaskText.trim() : "";
+    const reason = comment;
+    if (!requestedTitle) return NextResponse.json({ error: "subtaskText (the requested task title) is required" }, { status: 400 });
+    if (!reason) return NextResponse.json({ error: "comment (the reason for the requested task) is required" }, { status: 400 });
+    const commentId = await postWorkflowComment(
+      [
+        `**New Epic task requested** by @${agent.user.username} (assignee):`,
+        `- ${requestedTitle}`,
+        "",
+        `Reason: ${reason}`,
+        "",
+        "@acting-manager: create it via the Epic workflow (action=create_tasks) if you agree, or reply here if it should be deferred.",
+      ].join("\n"),
+      "task.task.requested",
+    );
+    await sendTaskWorkflowNotification({
+      taskId: task.id,
+      targetUserId: managerUserId,
+      actor,
+      reason: "task_requested",
+      body: [
+        `Assignee @${agent.user.username} requested a new Epic task from "${task.title}":`,
+        `"${requestedTitle}" — reason: ${reason}`,
+        "If you agree, create it through the Epic manager workflow (action=create_tasks) so it enters the ordered queue. Otherwise reply with why it is deferred.",
+      ].join("\n"),
+    });
+    revalidateTaskReplyScope(task.id, "chat");
+    revalidateTaskShell(task.id);
+    revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    return NextResponse.json({ ok: true, taskId: task.id, requested: "task", commentId });
+  }
+
+  if (action === "flag_extra_work_blocker") {
+    // Assignee flags a requested extra sub-task/task as blocking scope: raise
+    // it to the owner (alert_reporter) and notify the reviewer + reporter.
+    if (!isAssignee) {
+      return NextResponse.json({ error: "Only the assignee can flag extra-work as a blocker" }, { status: 403 });
+    }
+    const reason = comment;
+    if (!reason) return NextResponse.json({ error: "comment (why the extra work blocks) is required" }, { status: 400 });
+    const commentId = await postWorkflowComment(
+      [
+        `**Extra-work blocker raised** by @${agent.user.username} (assignee):`,
+        "",
+        reason,
+        "",
+        "This extra scope needs a decision before it is absorbed into the current task.",
+      ].join("\n"),
+      "task.extra_work.blocker",
+    );
+    await db.task.update({ where: { id: task.id }, data: { alertReporter: true } });
+    const targets = new Set<string>();
+    if (reviewerId) targets.add(reviewerId);
+    if (task.reporterId) targets.add(task.reporterId);
+    for (const targetUserId of targets) {
+      await sendTaskWorkflowNotification({
+        taskId: task.id,
+        targetUserId,
+        actor,
+        reason: "extra_work_blocker",
+        body: [
+          `Assignee @${agent.user.username} flagged requested extra work on "${task.title}" as a blocker:`,
+          reason,
+          "Decide whether the extra scope is in or out before the task proceeds.",
+        ].join("\n"),
+      });
+    }
+    revalidateTaskReplyScope(task.id, "chat");
+    revalidateTaskShell(task.id);
+    revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    revalidatePath(`/projects/${task.project.slug}`);
+    publishBoardTouch(task.projectId);
+    return NextResponse.json({ ok: true, taskId: task.id, flagged: "extra_work_blocker", commentId });
   }
 
   return NextResponse.json({ error: "Unsupported action" }, { status: 400 });

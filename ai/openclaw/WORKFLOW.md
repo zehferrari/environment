@@ -303,6 +303,16 @@ Two distinct decomposition levels, each with its own creator and gate:
   address it. The board card shows review progress from these while the
   task is in the Review column, exactly as it shows implementation
   progress in the In Progress column.
+- **Do not add another actor's implementation subtasks directly** (PM
+  rejects it). Negotiate extra scope in the comments instead:
+  - Reviewer/acting-manager wants more implementation work → `request_subtask`
+    (`{subtaskText, comment=reason}`); PM asks the assignee to add it.
+  - Assignee under an Epic wants a new task → `request_task`
+    (`{subtaskText=title, comment=reason}`); PM asks the acting manager to
+    `create_tasks` it.
+  - Assignee thinks the requested extra work should block or needs an owner
+    call → `flag_extra_work_blocker` (`{comment=reason}`); PM raises it to the
+    owner and the reviewer/reporter. Every request carries a described reason.
 - When a task bounces back from `Review`, the assignee adds a subtask per
   feedback item so the progress bar stays honest.
 - The assignee must set each subtask as `Done` (tick it) as it completes.

@@ -82,6 +82,7 @@ import {
   actorDisplayName,
   MessageAvatar,
   MessageTimestamp,
+  syntheticRoleMeta,
 } from "@/components/message-avatar";
 import DescriptionField from "@/components/description-field";
 import PrivateToggle from "@/components/private-toggle";
@@ -105,9 +106,11 @@ import {
 import {
   getActorVisibility,
   serializeVisibleActor,
+  serializeVisibleActorAs,
   visibleActivityRows,
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
+import { buildAgentRedactor } from "@/lib/users/redact-agents";
 
 type ActorRow = {
   id: string;
@@ -1417,15 +1420,28 @@ export default async function TaskDetailPage({
   const mentionables = mentionableUsers
     .filter((user) => viewer.isOwner || user.kind !== "agent")
     .map((user) => ({ username: user.username }));
+  // Resolved reviewer for role-aware comment identity: the task's acting
+  // manager, or the epic's acting manager when the task has none.
+  const resolvedReviewerId = task.actingManager?.id ?? task.epic?.actingManagerId ?? null;
+  // Body redactor: strips real agent slugs/usernames/names out of member-
+  // visible comment bodies (agent comments name each other verbatim, which the
+  // author-avatar mask alone does not cover). No-op for the owner.
+  const redactBody = buildAgentRedactor(actorVisibility.agentIdentities, actorVisibility.maskAgents);
   const visibleTaskComments = viewer.isOwner
     ? task.comments
-    : task.comments.filter((comment) => (
-        comment.user.kind !== "agent" &&
-        !(
+    : task.comments.filter((comment) => {
+        // Deleted agent comments were fully hidden from members before this
+        // change; keep them hidden (the deleted-divider reveal would expose the
+        // raw body and the deleting agent's slug).
+        if (comment.user.kind === "agent") return !comment.deletedAt;
+        // Human comments stay visible, except the owner's PM-instruction
+        // comments aimed at an agent (targeted or @agent mention) — those embed
+        // real agent slugs in the body, so they remain hidden from members.
+        return !(
           comment.user.id === actorVisibility.owner?.id &&
           (targetedCommentIds.has(comment.id) || agentUsernames.some((username) => mentionedUsername(comment.body, username)))
-        )
-      ));
+        );
+      });
   const settledMessageIds = activityMessageIds(recentReplyActivity);
   const recentCommentMessages = recentTaskChatMessages.filter((message) => (
     message.originChannel === "comment"
@@ -2279,23 +2295,34 @@ export default async function TaskDetailPage({
                           fields: { commentId: c.id, taskId: task.id, projectSlug: slug },
                         } : undefined}
                       >
-                        {renderCommentBody(c.body, mentionables)}
+                        {renderCommentBody(redactBody(c.body), mentionables)}
                       </DeletedMessageDivider>
                     </li>
                   );
                 }
+                const commentAuthor = serializeVisibleActorAs(
+                  c.user,
+                  c.user.id === resolvedReviewerId ? "reviewer" : "assignee",
+                  actorVisibility,
+                )!;
+                const authorRole = syntheticRoleMeta(commentAuthor);
                 return (
                   <li
                     key={c.id}
                     className="flex items-start gap-3 text-body"
                   >
-                    <MessageAvatar actor={c.user} size="sm" />
-                    <div className={`min-w-0 flex-1 rounded-card border border-line px-3 py-2 ${mentionedCurrentUser ? "bg-yellow-400/[0.12]" : "bg-panel-soft"}`}>
+                    <MessageAvatar actor={commentAuthor} size="sm" />
+                    <div className={`min-w-0 flex-1 rounded-card border border-line px-3 py-2 ${authorRole?.accentClass ?? ""} ${mentionedCurrentUser ? "bg-yellow-400/[0.12]" : "bg-panel-soft"}`}>
                       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-caption text-text-muted">
                         <div className="flex min-w-0 flex-wrap items-center gap-2">
                           <strong className="truncate font-medium text-text">
-                            {actorDisplayName(c.user)}
+                            {actorDisplayName(commentAuthor)}
                           </strong>
+                          {authorRole ? (
+                            <span className={`rounded-full px-2 py-0.5 text-nano font-semibold uppercase tracking-wide ${authorRole.chipClass}`}>
+                              {authorRole.label}
+                            </span>
+                          ) : null}
                           <MessageTimestamp value={c.createdAt} />
                         </div>
                         {canDeleteComments ? (
@@ -2310,7 +2337,7 @@ export default async function TaskDetailPage({
                           />
                         ) : null}
                       </div>
-                      <div>{renderCommentBody(parsedPmOptions.body, mentionables)}</div>
+                      <div>{renderCommentBody(redactBody(parsedPmOptions.body), mentionables)}</div>
                       {parsedPmOptions.options.length > 0 ? (
                         <PmOptions
                           projectSlug={slug}

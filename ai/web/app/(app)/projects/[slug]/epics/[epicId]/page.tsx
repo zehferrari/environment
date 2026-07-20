@@ -37,6 +37,7 @@ import {
   actorDisplayName,
   MessageAvatar,
   MessageTimestamp,
+  syntheticRoleMeta,
 } from "@/components/message-avatar";
 import DescriptionField from "@/components/description-field";
 import PrivateToggle from "@/components/private-toggle";
@@ -64,9 +65,11 @@ import {
 import {
   getActorVisibility,
   serializeVisibleActor,
+  serializeVisibleActorAs,
   visibleActivityRows,
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
+import { buildAgentRedactor } from "@/lib/users/redact-agents";
 
 type ActorRow = {
   id: string;
@@ -642,15 +645,23 @@ export default async function EpicDetailPage({
   );
   const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows, actorVisibility);
   const selectedAgentSlug = viewer.isOwner ? chat || epic.actingManager?.agent?.slug || null : null;
+  // Resolved reviewer for role-aware comment identity on an epic.
+  const resolvedReviewerId = epic.actingManagerId ?? null;
+  // Body redactor: strips real agent slugs/usernames/names from member-visible
+  // comment bodies. No-op for the owner.
+  const redactBody = buildAgentRedactor(actorVisibility.agentIdentities, actorVisibility.maskAgents);
   const visibleEpicComments = viewer.isOwner
     ? epic.comments
-    : epic.comments.filter((comment) => (
-        comment.user.kind !== "agent" &&
-        !(
+    : epic.comments.filter((comment) => {
+        // Deleted agent comments stay hidden from members (the deleted-divider
+        // reveal would expose the raw body + deleting agent's slug).
+        if (comment.user.kind === "agent") return !comment.deletedAt;
+        // Owner's @agent-mention notes stay hidden (they embed real slugs).
+        return !(
           comment.user.id === actorVisibility.owner?.id &&
           extractMentions(comment.body, agentUsers).length > 0
-        )
-      ));
+        );
+      });
 
   const chatMessages = await db.agentChatMessage.findMany({
     where: {
@@ -1492,24 +1503,35 @@ export default async function EpicDetailPage({
                                 >
                                   <div
                                     className="md"
-                                    dangerouslySetInnerHTML={renderFullMarkdown(c.body)}
+                                    dangerouslySetInnerHTML={renderFullMarkdown(redactBody(c.body))}
                                   />
                                 </DeletedMessageDivider>
                               </li>
                             );
                           }
+                          const commentAuthor = serializeVisibleActorAs(
+                            c.user,
+                            c.user.id === resolvedReviewerId ? "reviewer" : "assignee",
+                            actorVisibility,
+                          )!;
+                          const authorRole = syntheticRoleMeta(commentAuthor);
                           return (
                             <li
                               key={c.id}
                               className="flex items-start gap-3 text-body"
                             >
-                              <MessageAvatar actor={c.user} size="sm" />
-                              <div className="min-w-0 flex-1 rounded-card border border-line bg-panel-soft px-3 py-2">
+                              <MessageAvatar actor={commentAuthor} size="sm" />
+                              <div className={`min-w-0 flex-1 rounded-card border border-line bg-panel-soft px-3 py-2 ${authorRole?.accentClass ?? ""}`}>
                                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-caption text-text-muted">
                                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                                     <strong className="truncate font-medium text-text">
-                                      {actorDisplayName(c.user)}
+                                      {actorDisplayName(commentAuthor)}
                                     </strong>
+                                    {authorRole ? (
+                                      <span className={`rounded-full px-2 py-0.5 text-nano font-semibold uppercase tracking-wide ${authorRole.chipClass}`}>
+                                        {authorRole.label}
+                                      </span>
+                                    ) : null}
                                     <MessageTimestamp value={c.createdAt} />
                                   </div>
                                   {canDeleteComments ? (
@@ -1526,7 +1548,7 @@ export default async function EpicDetailPage({
                                 </div>
                                 <div
                                   className="md"
-                                  dangerouslySetInnerHTML={renderFullMarkdown(c.body)}
+                                  dangerouslySetInnerHTML={renderFullMarkdown(redactBody(c.body))}
                                 />
                               </div>
                             </li>

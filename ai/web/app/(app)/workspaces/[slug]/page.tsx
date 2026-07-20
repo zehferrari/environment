@@ -28,6 +28,7 @@ import {
 import {
   getActorVisibility,
   serializeVisibleActor,
+  serializeVisibleActorAs,
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
 
@@ -416,9 +417,10 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
             deploymentStatus: t.epic?.deploymentStatus ?? t.deploymentStatus,
             epicId: t.epicId,
             reporter: serializeActor(t.reporter, actorVisibility),
-            assignee: serializeActor(t.assignee, actorVisibility),
-            reviewer: serializeActor(t.actingManager, actorVisibility),
-            manager: serializeActor(t.epic?.actingManager ?? null, actorVisibility),
+            // Role-driven non-owner board identity (see project board page).
+            assignee: serializeVisibleActorAs(t.assignee, "assignee", actorVisibility),
+            reviewer: serializeVisibleActorAs(t.actingManager, "reviewer", actorVisibility),
+            manager: serializeVisibleActorAs(t.epic?.actingManager ?? null, "reviewer", actorVisibility),
             createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
             updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
             epicTitle: t.epic?.title ?? null,

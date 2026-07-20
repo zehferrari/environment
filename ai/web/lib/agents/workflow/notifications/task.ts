@@ -60,6 +60,9 @@ export type TaskWorkflowNotificationReason =
   | "action_plan_review_requested"
   | "reviewer_plan_requested"
   | "reviewer_assignment_requested"
+  | "subtask_requested"
+  | "task_requested"
+  | "extra_work_blocker"
   | "policy_update";
 
 function agentCallbackBaseUrl() {

@@ -1,9 +1,12 @@
 import { Avatar } from "@/components/ui/primitives";
 import AvatarStatus from "@/components/avatar-status";
 import AgentAvatar from "@/components/agent-avatar";
+import { SyntheticAvatar } from "@/components/synthetic-avatars";
 export type MessageActor = {
   id?: string | null;
   username: string;
+  // "human" | "agent" | "system" | "synthetic". A "synthetic" actor is a
+  // masked non-owner identity (see `synthetic`) and never carries a real agent.
   kind: string;
   name?: string | null;
   avatarUpdatedAt?: Date | string | null;
@@ -12,7 +15,31 @@ export type MessageActor = {
     name?: string | null;
     avatar?: string | null;
   } | null;
+  // Marks a synthetic (non-owner) identity: "review" = Feedback / Review,
+  // "monitor" = Monitor. Set only by the actor-visibility projectors.
+  synthetic?: "review" | "monitor" | null;
 };
+
+// Subtle, theme-aware restyle metadata for a comment/message authored by a
+// synthetic identity (member view). Returns null for owners and for
+// human/agent/system actors, so callers apply no treatment there.
+export function syntheticRoleMeta(
+  actor: MessageActor,
+): { label: string; accentClass: string; chipClass: string } | null {
+  if (actor.kind !== "synthetic") return null;
+  if (actor.synthetic === "monitor") {
+    return {
+      label: "Monitor",
+      accentClass: "border-l-2 border-l-line-strong",
+      chipClass: "border border-line-strong bg-bg-elev text-text-muted",
+    };
+  }
+  return {
+    label: "Feedback / Review",
+    accentClass: "border-l-2 border-l-accent",
+    chipClass: "border border-accent/30 bg-accent-soft text-accent",
+  };
+}
 
 function avatarStamp(value: Date | string | null | undefined): number | null {
   if (!value) return null;
@@ -34,6 +61,7 @@ function agentAvatarUrl(name: string) {
 
 export function actorDisplayName(actor: MessageActor) {
   if (actor.kind === "system") return actor.name ?? "System";
+  if (actor.kind === "synthetic") return actor.name ?? actor.username;
   if (actor.kind === "agent") {
     return actor.agent?.name ?? actor.name ?? actor.username;
   }
@@ -41,6 +69,7 @@ export function actorDisplayName(actor: MessageActor) {
 }
 
 function actorAvatarSrc(actor: MessageActor) {
+  if (actor.kind === "synthetic") return null;
   if (actor.kind === "agent") {
     const agentName = actor.agent?.name ?? actor.name;
     if (actor.agent?.avatar && agentName) return agentAvatarUrl(agentName);
@@ -87,6 +116,20 @@ export function MessageAvatar({
   const label = actorDisplayName(actor);
   const tooltip = title ?? label;
   const sizeClass = size === "sm" ? "h-8 w-8" : "h-11 w-11 md:h-9 md:w-9";
+
+  if (actor.kind === "synthetic") {
+    // Masked non-owner identity: stylish inline glyph, no photo, no live
+    // presence pulse (synthetics have no slug to subscribe).
+    const glyphKind = actor.synthetic === "monitor" ? "monitor" : "review";
+    const tone = glyphKind === "monitor" ? "text-text" : "text-accent";
+    return (
+      <AvatarStatus status="none" sizeClass={sizeClass} roundedClass="rounded-full" title={tooltip}>
+        <span className={`grid h-full w-full place-items-center ${tone}`} aria-label={`${label} avatar`}>
+          <SyntheticAvatar kind={glyphKind} className="h-[58%] w-[58%]" />
+        </span>
+      </AvatarStatus>
+    );
+  }
   const inner = (
     <Avatar
       size={size}

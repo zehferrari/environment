@@ -66,16 +66,8 @@ export default async function ProjectSummaryPage({
       actorName: row.user?.username ?? null,
       taskTitle: row.task?.title ?? null,
     }),
-    actor: row.user
-      ? {
-          id: row.user.id,
-          username: row.user.username,
-          kind: row.user.kind,
-          name: row.user.name,
-          avatarUpdatedAt: row.user.avatarUpdatedAt?.toISOString() ?? null,
-          agent: row.user.agent,
-        }
-      : null,
+    // row.user is already projected + serialized through the role-aware mask.
+    actor: row.user,
   }));
 
   return (

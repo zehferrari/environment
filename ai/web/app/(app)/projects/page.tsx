@@ -18,7 +18,7 @@ import {
   requireViewer,
   workspaceAccessWhere,
 } from "@/lib/auth/permissions";
-import { getActorVisibility, serializeVisibleActor, visibleActivityRows, visibleActivityWhere } from "@/lib/users/actor-visibility";
+import { getActorVisibility, visibleActivityRows, visibleActivityWhere } from "@/lib/users/actor-visibility";
 
 export const dynamic = "force-dynamic";
 
@@ -397,7 +397,8 @@ export default async function ProjectsPage() {
   );
 
   const feed = visibleActivityRows(activity, actorVisibility).map((row) => {
-    const actor = serializeVisibleActor(row.user, actorVisibility);
+    // row.user is already projected through the role-aware mask.
+    const actor = row.user;
     return {
       id: row.id,
       createdAt: row.createdAt.toISOString(),

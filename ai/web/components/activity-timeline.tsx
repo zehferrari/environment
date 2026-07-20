@@ -12,7 +12,8 @@ type ActivityActor = {
   kind: string;
   name?: string | null;
   avatarUpdatedAt?: Date | string | null;
-  agent?: { slug: string; name: string; avatar: string | null } | null;
+  agent?: { slug?: string | null; name?: string | null; avatar?: string | null } | null;
+  synthetic?: "review" | "monitor" | null;
 } | null;
 
 export type ActivityTimelineRow = {

@@ -31,6 +31,7 @@ import {
 import {
   getActorVisibility,
   serializeVisibleActor,
+  serializeVisibleActorAs,
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
 
@@ -501,9 +502,13 @@ export default async function ProjectBoardPage({
             deploymentStatus: t.epic?.deploymentStatus ?? t.deploymentStatus,
             epicId: t.epicId,
             reporter: serializeActor(t.reporter, actorVisibility),
-            assignee: serializeActor(t.assignee, actorVisibility),
-            reviewer: serializeActor(t.actingManager, actorVisibility),
-            manager: serializeActor(t.epic?.actingManager ?? null, actorVisibility),
+            // Non-owner board identity is role-driven: the assignee slot (To Do /
+            // In Progress / Done builder) projects to Owner, while the reviewer
+            // slots (task acting-manager, epic acting-manager) project to
+            // "Feedback / Review" — or Monitor for a monitor agent.
+            assignee: serializeVisibleActorAs(t.assignee, "assignee", actorVisibility),
+            reviewer: serializeVisibleActorAs(t.actingManager, "reviewer", actorVisibility),
+            manager: serializeVisibleActorAs(t.epic?.actingManager ?? null, "reviewer", actorVisibility),
             createdBy: taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
             updatedBy: taskActivityActors.updatedBy.get(t.id) ?? taskActivityActors.createdBy.get(t.id) ?? serializeActor(t.reporter, actorVisibility),
             epicTitle: t.epic?.title ?? null,

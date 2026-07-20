@@ -447,6 +447,22 @@ starting a review, add one `review` sub-task per topic you will address,
 then mark each complete as you address it — the board card shows review
 progress from these while the task sits in the Review column, exactly as it
 shows the assignee's implementation progress in the In Progress column.
+
+**Requesting extra work (scope negotiation, all in comments).** A reviewer
+must not add another actor's implementation sub-tasks directly. Instead:
+
+- `request_subtask` (`{subtaskText, comment}`) — the resolved reviewer/acting
+  manager asks the ASSIGNEE to add an implementation sub-task. `comment` (the
+  reason) is required. PM posts the request as a comment and wakes the
+  assignee, who either adds it via `add_subtask` or pushes back.
+- `request_task` (`{subtaskText, comment}`) — the ASSIGNEE of a task under an
+  Epic asks the epic acting manager to create a NEW task. `subtaskText` is the
+  proposed task title; `comment` (the reason) is required. PM wakes the acting
+  manager, who creates it via the Epic `create_tasks` workflow or defers it.
+- `flag_extra_work_blocker` (`{comment}`) — the ASSIGNEE flags a requested
+  extra sub-task/task as blocking the current scope: PM raises it to the owner
+  (`alert_reporter`) and wakes the reviewer + reporter for a decision. Use this
+  instead of silently absorbing unbounded scope.
 When a task returns from Review with feedback, add a sub-task per feedback item
 before resuming so the bar reflects the remaining work. The task context also
 shows **Blocked by** when the task has an open hard-dependency; the workflow
