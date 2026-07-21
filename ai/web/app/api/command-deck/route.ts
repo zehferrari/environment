@@ -50,8 +50,10 @@ export async function GET() {
   if (!viewer) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const activityWhere = await accessibleActivityWhere(viewer);
+  // Agent presence is owner-only everywhere else (/api/agents/presence,
+  // sidebar, boards) — non-owners get no agents field at all here either.
   const [agents, queueGroups, activity, actorVisibility] = await Promise.all([
-    readAgentStates(),
+    viewer.isOwner ? readAgentStates() : Promise.resolve(null),
     db.task.groupBy({
       by: ["status"],
       where: accessibleTaskWhere(viewer, { deletedAt: null, parentTaskId: null }),
@@ -70,7 +72,7 @@ export async function GET() {
   ]);
 
   return NextResponse.json({
-    agents,
+    ...(agents ? { agents } : {}),
     queues: queueGroups.map((group) => ({ status: group.status, count: group._count._all })),
     activity: visibleActivityRows(activity, actorVisibility).map((row) => ({
       id: row.id,

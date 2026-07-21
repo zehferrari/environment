@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 
 type DeckData = {
-  agents: { slug: string; busy: boolean }[];
+  // Present only for owners — the API omits agent presence for everyone else.
+  agents?: { slug: string; busy: boolean }[];
   queues: { status: string; count: number }[];
   activity: { id: string; at: string; label: string }[];
 };
@@ -63,26 +64,28 @@ export default function CommandDeckPanel() {
 
   return (
     <div className="sticky top-0 flex max-h-dvh flex-col gap-3 overflow-y-auto p-4">
-      <Widget title="Agents">
-        {data && data.agents.length > 0 ? (
-          <ul className="space-y-1.5">
-            {data.agents.map((agent) => (
-              <li key={agent.slug} className="flex items-center gap-2 text-body">
-                <span
-                  aria-hidden
-                  className={`h-2 w-2 rounded-full ${agent.busy ? "bg-ok" : "bg-line-strong"}`}
-                />
-                <span className="truncate text-text">{agent.slug}</span>
-                <span className="ml-auto text-caption text-text-muted">
-                  {agent.busy ? "working" : "idle"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-caption text-text-muted">No agent snapshot available.</p>
-        )}
-      </Widget>
+      {data?.agents ? (
+        <Widget title="Agents">
+          {data.agents.length > 0 ? (
+            <ul className="space-y-1.5">
+              {data.agents.map((agent) => (
+                <li key={agent.slug} className="flex items-center gap-2 text-body">
+                  <span
+                    aria-hidden
+                    className={`h-2 w-2 rounded-full ${agent.busy ? "bg-ok" : "bg-line-strong"}`}
+                  />
+                  <span className="truncate text-text">{agent.slug}</span>
+                  <span className="ml-auto text-caption text-text-muted">
+                    {agent.busy ? "working" : "idle"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-caption text-text-muted">No agent snapshot available.</p>
+          )}
+        </Widget>
+      ) : null}
 
       <Widget title="Queue depth">
         {queues.length > 0 ? (
