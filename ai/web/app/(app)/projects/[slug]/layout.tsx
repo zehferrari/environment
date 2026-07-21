@@ -12,9 +12,11 @@ import {
 
 export default async function ProjectLayout({
   children,
+  workspace,
   params,
 }: {
   children: React.ReactNode;
+  workspace: React.ReactNode;
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
@@ -68,7 +70,23 @@ export default async function ProjectLayout({
         hasBin={hasBin}
         canAccessSettings={viewer.isOwner}
       />
-      {children}
+      {/* ENV-110 split workspace, sized on AVAILABLE width, not the viewport:
+          the @container/ws wrapper measures the real project content width
+          after the sidebar (256px expanded / 64px collapsed), main padding,
+          shell cap, and the 5xl command-deck rail have taken their share.
+          Split view activates at 146rem (2336px = 1200px board minimum +
+          16px gap + 1120px detail pane); otherwise the intercepted task
+          (data-ws-open) hides the board — matching plain route navigation.
+          Being pure CSS container queries, activation tracks live resize and
+          sidebar collapse without any JS. */}
+      <div className="@container/ws">
+        <div className="group/ws @min-[146rem]/ws:flex @min-[146rem]/ws:items-start @min-[146rem]/ws:gap-4">
+          <div className="@container/board min-w-0 flex-1 group-has-[[data-ws-open]]/ws:hidden @min-[146rem]/ws:group-has-[[data-ws-open]]/ws:block">
+            {children}
+          </div>
+          {workspace}
+        </div>
+      </div>
     </div>
   );
 }

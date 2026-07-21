@@ -26,7 +26,26 @@ function walk(dir: string, files: string[] = []) {
 }
 
 const globals = readFileSync(join(root, "app/globals.css"), "utf8");
-assert(!globals.includes("--breakpoint-"), "globals.css must not declare custom Tailwind breakpoints");
+// ENV-110: the ultra-wide scale is the only sanctioned set of custom
+// breakpoints. 3xl must sit above the protected 1920×1080 baseline.
+const sanctionedBreakpoints = new Map([
+  ["3xl", "125rem"],
+  ["4xl", "160rem"],
+  ["5xl", "215rem"],
+]);
+const declaredBreakpoints = [...globals.matchAll(/--breakpoint-([a-z0-9]+)\s*:\s*([^;]+);/g)];
+for (const [, name, value] of declaredBreakpoints) {
+  assert(
+    sanctionedBreakpoints.get(name) === value.trim(),
+    `globals.css declares unsanctioned breakpoint --breakpoint-${name}: ${value.trim()} (allowed: 3xl 125rem, 4xl 160rem, 5xl 215rem)`,
+  );
+}
+for (const [name] of sanctionedBreakpoints) {
+  assert(
+    declaredBreakpoints.some(([, declared]) => declared === name),
+    `globals.css must declare --breakpoint-${name} (ultra-wide scale, ENV-110)`,
+  );
+}
 assert(!globals.includes("@custom-media"), "globals.css must not declare custom media breakpoints");
 
 const tailwindConfigCandidates = [
@@ -64,8 +83,8 @@ assert(customBreakpointFiles.length === 0, `non-default breakpoint prefixes foun
 
 const appLayout = readFileSync(join(root, "app/(app)/layout.tsx"), "utf8");
 assert(
-  appLayout.includes("mx-auto w-full min-w-0 max-w-[1480px]"),
-  "app shell content wrapper must be width-constrained without forcing document horizontal scroll",
+  appLayout.includes("mx-auto w-full min-w-0 max-w-[1480px] 3xl:max-w-[1780px] 4xl:max-w-[5000px]"),
+  "app shell content wrapper must use the sanctioned progressive width scale (1480 → 1780 @3xl → 5000 @4xl) without forcing document horizontal scroll",
 );
 
 console.log("breakpoint alignment contract ok");

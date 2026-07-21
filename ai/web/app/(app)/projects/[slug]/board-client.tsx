@@ -1038,7 +1038,13 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
               ×
             </button>
           </div>
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {/* Wide bands key off the board container (@container/board in the
+              project layout), not the viewport: the sidebar, main padding,
+              split-workspace pane, and 5xl command-deck rail all consume
+              width first. auto-fill keeps every track >=284px; the fixed
+              six-column grid only engages once the container fits six
+              284px tracks plus gaps (6*284 + 5*8 = 1744px = 109rem). */}
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3 3xl:grid-cols-4 @min-[75rem]/board:grid-cols-[repeat(auto-fill,minmax(284px,1fr))] @min-[109rem]/board:grid-cols-6">
             {workflowFocus.map((task) => (
               <WorkflowFocusCard
                 key={task.id}
