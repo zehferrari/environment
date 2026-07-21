@@ -1940,7 +1940,7 @@ export default async function TaskDetailPage({
             />
             <div className="pt-4">
               <TabPanel name="Description">
-                <div className="grid gap-card xl:grid-cols-[minmax(0,1fr)_20rem]">
+                <div className="grid gap-card xl:grid-cols-[minmax(0,1fr)_20rem] 4xl:grid-cols-[minmax(0,1fr)_24rem]">
                   <DescriptionField
                     formId="taskMain"
                     previewHtml={renderFullMarkdown(task.description ?? "").__html}

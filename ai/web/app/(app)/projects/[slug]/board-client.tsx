@@ -1038,7 +1038,7 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
               ×
             </button>
           </div>
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3 3xl:grid-cols-4 4xl:grid-cols-[repeat(auto-fill,minmax(284px,1fr))] 5xl:grid-cols-6">
             {workflowFocus.map((task) => (
               <WorkflowFocusCard
                 key={task.id}

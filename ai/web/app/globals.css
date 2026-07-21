@@ -19,6 +19,11 @@
   --color-on-crit: #ffffff;
   --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Ultra-wide scale (ENV-110). 3xl starts at 2000px so the protected
+     1920×1080 baseline renders byte-identical to the 1480px-cap layout. */
+  --breakpoint-3xl: 125rem;
+  --breakpoint-4xl: 160rem;
+  --breakpoint-5xl: 215rem;
   --spacing-page-x: 1.5rem;
   --spacing-page-x-lg: 2rem;
   --spacing-page-y: 1.25rem;

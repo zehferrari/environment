@@ -12,9 +12,11 @@ import {
 
 export default async function ProjectLayout({
   children,
+  workspace,
   params,
 }: {
   children: React.ReactNode;
+  workspace: React.ReactNode;
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
@@ -68,7 +70,16 @@ export default async function ProjectLayout({
         hasBin={hasBin}
         canAccessSettings={viewer.isOwner}
       />
-      {children}
+      {/* ENV-110 split workspace: when the workspace slot holds an
+          intercepted task (data-ws-open), the children slot (board) hides
+          below 4xl — matching plain route navigation — and sits beside the
+          task pane at 4xl+. */}
+      <div className="group/ws 4xl:flex 4xl:items-start 4xl:gap-4">
+        <div className="min-w-0 flex-1 group-has-[[data-ws-open]]/ws:hidden 4xl:group-has-[[data-ws-open]]/ws:block">
+          {children}
+        </div>
+        {workspace}
+      </div>
     </div>
   );
 }
