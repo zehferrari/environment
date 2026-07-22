@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import PrivateToggle from "@/components/private-toggle";
 
@@ -32,6 +32,15 @@ export default function NewEpicFab({
   createEpicAction: (formData: FormData) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  // Auto-open when arriving from the unified board's (+) menu.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("newEpic") !== "1") return;
+    setOpen(true);
+    params.delete("newEpic");
+    const query = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+  }, []);
   const principalOptions: AvatarComboboxOption[] = principals.map((p) => ({
     value: p.id,
     label: p.name,

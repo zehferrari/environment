@@ -6,10 +6,12 @@ import { createWorkspace, restoreWorkspace } from "@/lib/workspaces/service";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 import {
   accessibleProjectWhere,
+  accessibleTaskWhere,
   requireOwner,
   requireViewer,
   workspaceAccessWhere,
 } from "@/lib/auth/permissions";
+import WorkspacesBoard, { type BoardWorkspace } from "./workspaces-board";
 
 export const dynamic = "force-dynamic";
 
@@ -65,6 +67,53 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
   if (!showingArchived && activeWorkspaces.length === 1) {
     redirect(`/workspaces/${activeWorkspaces[0].slug}`);
   }
+
+  // Unified board (ENV-111): with >=2 accessible active workspaces the page
+  // becomes a cross-workspace task board. Single-workspace users were already
+  // redirected above; the archived view keeps the card grid.
+  const boardWorkspaces: BoardWorkspace[] = showingArchived
+    ? []
+    : (
+        await db.workspace.findMany({
+          where: { AND: [{ archivedAt: null }, workspaceAccessWhere(viewer)] },
+          orderBy: [{ type: "asc" }, { name: "asc" }],
+          select: {
+            id: true,
+            slug: true,
+            name: true,
+            type: true,
+            borderColor: true,
+            projects: {
+              where: { project: accessibleProjectWhere(viewer, { deletedAt: null }) },
+              orderBy: { project: { name: "asc" } },
+              select: {
+                project: {
+                  select: {
+                    id: true,
+                    slug: true,
+                    name: true,
+                    backgroundColor: true,
+                    tasks: {
+                      where: accessibleTaskWhere(viewer, {
+                        deletedAt: null,
+                      }),
+                      orderBy: [{ status: "asc" }, { rank: "asc" }],
+                      select: { id: true, title: true, status: true, workItemKey: true, parentTaskId: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        })
+      ).map((workspace) => ({
+        id: workspace.id,
+        slug: workspace.slug,
+        name: workspace.name,
+        type: workspace.type,
+        borderColor: workspace.borderColor,
+        projects: workspace.projects.map(({ project }) => project),
+      }));
 
   return (
     <div className="space-y-5">
@@ -139,6 +188,8 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
             ? "No archived workspaces. Archived workspaces will appear here for restore."
             : "No active workspaces yet. Use the workspace API to create one, then manage projects, boards, and agents here."}
         </div>
+      ) : !showingArchived ? (
+        <WorkspacesBoard workspaces={boardWorkspaces} isOwner={viewer.isOwner} />
       ) : (
         <div className="grid grid-cols-1 gap-card sm:grid-cols-2 xl:grid-cols-3">
           {workspaces.map((workspace) => {

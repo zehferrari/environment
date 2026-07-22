@@ -9,6 +9,7 @@ type Workspace = {
   name: string;
   description: string | null;
   type: string;
+  borderColor: string | null;
   archivedAt: string | null;
   logo: { url: string; mimeType: string | null; sizeBytes: number | null; updatedAt: string | null } | null;
   projects: { id: string; slug: string; name: string; archivedAt: string | null; deletedAt: string | null }[];
@@ -73,6 +74,7 @@ export default function WorkspaceSettingsClient({
   const [name, setName] = useState(initialWorkspace.name);
   const [slug, setSlug] = useState(initialWorkspace.slug);
   const [type, setType] = useState(initialWorkspace.type);
+  const [borderColor, setBorderColor] = useState(initialWorkspace.borderColor ?? "#2563eb");
   const [description, setDescription] = useState(initialWorkspace.description ?? "");
   const [defaults, setDefaults] = useState(() => initialWorkspace.defaults);
   const [integrationDefaults, setIntegrationDefaults] = useState(initialWorkspace.defaults.integrationDefaults ?? "");
@@ -200,6 +202,7 @@ export default function WorkspaceSettingsClient({
           name: name.trim(),
           slug: nextSlug,
           type,
+          borderColor,
           description,
           projectIds: selectedProjectIds,
           agentIds: selectedAgentIds,
@@ -232,6 +235,7 @@ export default function WorkspaceSettingsClient({
       setName(nextWorkspace.name);
       setSlug(nextWorkspace.slug);
       setType(nextWorkspace.type);
+      setBorderColor(nextWorkspace.borderColor ?? "#2563eb");
       setDescription(nextWorkspace.description ?? "");
       setDefaults(nextWorkspace.defaults);
       setIntegrationDefaults(nextWorkspace.defaults.integrationDefaults ?? "");
@@ -315,11 +319,16 @@ export default function WorkspaceSettingsClient({
                 <input value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase())} required pattern="[a-z0-9]+([._-][a-z0-9]+)*" className={`${inputClass} font-mono`} placeholder="product-team" />
               </SettingsField>
             </div>
-            <SettingsField label="Workspace type" hint="Used for grouping and filtering workspaces.">
-              <select value={type} onChange={(event) => setType(event.target.value)} className={inputClass}>
-                {WORKSPACE_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </SettingsField>
+            <div className="grid gap-card md:grid-cols-2">
+              <SettingsField label="Workspace type" hint="Used for grouping and filtering workspaces.">
+                <select value={type} onChange={(event) => setType(event.target.value)} className={inputClass}>
+                  {WORKSPACE_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                </select>
+              </SettingsField>
+              <SettingsField label="Board border colour" hint="Border colour around this workspace's tasks on the unified workspaces board. New workspaces start with a random colour.">
+                <input type="color" value={borderColor} onChange={(event) => setBorderColor(event.target.value)} className="h-10 w-20 cursor-pointer rounded-lg border border-line bg-bg p-1" />
+              </SettingsField>
+            </div>
             <SettingsField label="Description" hint="Optional summary for humans and agents.">
               <textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} className={inputClass} placeholder="What this workspace is for..." />
             </SettingsField>
