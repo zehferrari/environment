@@ -16,6 +16,7 @@ export type BoardTask = {
   title: string;
   status: string;
   workItemKey: string | null;
+  parentTaskId: string | null;
 };
 
 export type BoardProject = {
@@ -151,7 +152,7 @@ export default function WorkspacesBoard({
             </button>
           ) : null}
         </div>
-        {singleWorkspace ? (
+        {singleWorkspace && isOwner ? (
           <Link
             href={`/workspaces/${singleWorkspace.slug}/settings`}
             aria-label={`${singleWorkspace.name} workspace settings`}
@@ -257,11 +258,12 @@ function ProjectGroup({
         <ul className="space-y-2">
           {project.tasks.map((task) => (
             <li key={task.id} className="rounded-lg border border-line bg-panel px-3 py-2 shadow-sm">
-              <div className="flex items-start justify-between gap-2">
+              <div className={`flex items-start justify-between gap-2 ${task.parentTaskId ? "ml-4 border-l-2 border-line pl-3" : ""}`}>
                 <Link
                   href={`/projects/${project.slug}/tasks/${task.id}`}
                   className="min-w-0 flex-1 text-body font-medium text-text hover:text-accent"
                 >
+                  {task.parentTaskId ? <span className="mr-1 text-text-muted" aria-hidden="true">↳</span> : null}
                   {task.workItemKey ? (
                     <span className="mr-1.5 font-mono text-caption text-text-muted">{task.workItemKey}</span>
                   ) : null}

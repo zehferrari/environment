@@ -84,7 +84,7 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
             type: true,
             borderColor: true,
             projects: {
-              where: { project: accessibleProjectWhere(viewer, { deletedAt: null, archivedAt: null }) },
+              where: { project: accessibleProjectWhere(viewer, { deletedAt: null }) },
               orderBy: { project: { name: "asc" } },
               select: {
                 project: {
@@ -96,11 +96,9 @@ export default async function WorkspacesPage({ searchParams }: { searchParams?: 
                     tasks: {
                       where: accessibleTaskWhere(viewer, {
                         deletedAt: null,
-                        archivedAt: null,
-                        parentTaskId: null,
                       }),
                       orderBy: [{ status: "asc" }, { rank: "asc" }],
-                      select: { id: true, title: true, status: true, workItemKey: true },
+                      select: { id: true, title: true, status: true, workItemKey: true, parentTaskId: true },
                     },
                   },
                 },
