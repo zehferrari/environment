@@ -18,6 +18,7 @@ import WorktreeSwitcher from "@/components/worktree-switcher";
 import BranchMultiCombobox from "@/components/branch-multi-combobox";
 import { parseProtectedBranches } from "@/lib/projects/protected-branches";
 import { resolveEffectiveProjectSettings, settingSourceLabel } from "@/lib/settings/effective";
+import { fallbackBoardColor } from "@/lib/board-colors";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 
 export const dynamic = "force-dynamic";
@@ -176,6 +177,18 @@ export default async function ProjectSettingsPage({
               />
             </SettingsRow>
           </div>
+
+          <SettingsRow
+            label="Board background colour"
+            hint="Translucent background tint behind this project's tasks on the unified workspaces board. New projects start with a random colour."
+          >
+            <input
+              type="color"
+              name="backgroundColor"
+              defaultValue={project.backgroundColor ?? fallbackBoardColor(project.id)}
+              className="h-10 w-20 cursor-pointer rounded-lg border border-line bg-bg p-1"
+            />
+          </SettingsRow>
           </SettingsCard>
 
           <SettingsCard

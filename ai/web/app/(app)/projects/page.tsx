@@ -6,6 +6,7 @@ import type { Prisma } from "@prisma/client";
 import { describeActivity } from "@/lib/activity";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
+import { randomBoardColor } from "@/lib/board-colors";
 import { DEPLOYMENT_STATUSES } from "@/lib/deploy/deployment-status";
 import { emptyDeploymentRollup, getDeploymentRollupsByProject, mergeDeploymentRollup, type DeploymentRollup } from "@/lib/workspaces/deployment-rollup";
 import ActivityAgenda from "@/components/activity-agenda";
@@ -137,6 +138,7 @@ async function createProject(
         defaultAssigneeId,
         defaultReviewerId,
         doneTtlDays,
+        backgroundColor: randomBoardColor(),
         workspaces: { create: { workspaceId: workspace.id } },
       },
       select: { slug: true },

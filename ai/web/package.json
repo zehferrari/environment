@@ -55,6 +55,7 @@
     "test:pm-unified-context": "tsx scripts/pm-unified-context-test.ts",
     "test:context-budget": "tsx scripts/context-budget-test.ts",
     "test:workspace-settings-hierarchy": "tsx scripts/workspace-settings-hierarchy-test.ts",
+    "test:workspaces-board": "tsx scripts/workspaces-board-test.tsx",
     "test:workspace-deployment-rollup": "tsx scripts/workspace-deployment-rollup-test.ts",
     "test:workspace-api": "tsx scripts/workspace-api-test.ts",
     "test:user-access-control": "tsx scripts/user-access-control-test.ts",

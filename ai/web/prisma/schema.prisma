@@ -178,6 +178,9 @@ model Project {
   agentChangeBlockedBranches          String?                         @map("agent_change_blocked_branches")
   // Provider-agnostic, non-secret integration defaults. Overrides workspace and system defaults.
   integrationDefaults                 String?                         @map("integration_defaults")
+  // Translucent background tint for this project's group on the unified
+  // workspaces board. Random default at creation; editable in settings.
+  backgroundColor                     String?                         @map("background_color")
   // Soft-delete: project bin with 30-day TTL (hard-purge via the
   // hourly job in instrumentation.node.ts).
   deletedAt                           DateTime?
@@ -215,6 +218,9 @@ model Workspace {
   logoMimeType                 String?   @map("logo_mime_type")
   logoSizeBytes                Int?      @map("logo_size_bytes")
   logoUpdatedAt                DateTime? @map("logo_updated_at")
+  // Border colour for this workspace's group on the unified board.
+  // Random default at creation; editable in workspace settings.
+  borderColor                  String?   @map("border_color")
   // Nullable workspace defaults sit between project-specific settings and
   // SystemSettings. Existing project rows keep precedence; blank fields inherit.
   defaultGitUserName           String?   @map("default_git_user_name")

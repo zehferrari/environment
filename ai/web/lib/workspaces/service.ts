@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
+import { hexColorOrNull, randomBoardColor } from "@/lib/board-colors";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 import {
   accessibleProjectWhere,
@@ -36,6 +37,7 @@ export type WorkspacePayload = {
   slug?: unknown;
   description?: unknown;
   type?: unknown;
+  borderColor?: unknown;
   projectIds?: unknown;
   agentIds?: unknown;
   defaultGitUserName?: unknown;
@@ -168,6 +170,7 @@ type SerializedWorkspaceBase = {
   name: string;
   description: string | null;
   type: string;
+  borderColor: string | null;
   archivedAt: string | null;
   logo: {
     url: string;
@@ -199,6 +202,7 @@ export function serializeWorkspace(workspace: WorkspaceWithRelations, includeOwn
     name: workspace.name,
     description: workspace.description,
     type: workspace.type,
+    borderColor: workspace.borderColor,
     archivedAt: workspace.archivedAt?.toISOString() ?? null,
     logo: workspace.logoPath
       ? {
@@ -314,6 +318,7 @@ export async function createWorkspace(payload: WorkspacePayload) {
       slug,
       description: trimOrNull(payload.description),
       type,
+      borderColor: hexColorOrNull(payload.borderColor) ?? randomBoardColor(),
       projects: { create: projectIds.map((projectId) => ({ projectId })) },
       agentPool: { create: agentIds.map((agentId) => ({ agentId })) },
       ...workspaceDefaultsData(payload),
@@ -335,6 +340,7 @@ export async function updateWorkspace(slug: string, payload: WorkspacePayload, a
   if (payload.slug !== undefined) data.slug = normalizeWorkspaceSlug(payload.slug);
   if (payload.description !== undefined) data.description = trimOrNull(payload.description);
   if (payload.type !== undefined) data.type = normalizeWorkspaceType(payload.type);
+  if (payload.borderColor !== undefined) data.borderColor = hexColorOrNull(payload.borderColor);
   if (payload.archived !== undefined) {
     if (payload.archived === true) {
       if (!existing.archivedAt) {
@@ -399,6 +405,7 @@ export async function seedDefaultWorkspaceFromProjects() {
       name: "Default Workspace",
       description: "Initial workspace seeded from existing active projects.",
       type: "internal",
+      borderColor: randomBoardColor(),
       projects: { create: projects.map((project) => ({ projectId: project.id })) },
     },
   });
