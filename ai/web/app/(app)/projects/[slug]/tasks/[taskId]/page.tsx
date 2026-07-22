@@ -69,13 +69,12 @@ import {
 } from "@/lib/tasks/cache";
 import TaskChecklist from "@/components/task-checklist";
 import AttachmentList from "@/components/attachment-list";
-import AttachmentUploadFab from "@/components/attachment-upload-fab";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
 import TaskCommentStreams from "@/components/task-comment-streams";
 import ChatRoom from "@/components/chat-room";
 import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activity-timeline";
 import TaskChangesPanel from "@/components/task-changes-panel";
-import CommentComposerFab from "@/components/comment-composer-fab";
+import TaskQuickAddFab from "@/components/task-quick-add-fab";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
 import {
@@ -87,6 +86,7 @@ import {
 import DescriptionField from "@/components/description-field";
 import PrivateToggle from "@/components/private-toggle";
 import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
+import StickyViewportSurface from "@/components/sticky-viewport-surface";
 import PmOptions from "@/components/pm-options";
 import { findPmOptionResolution, parsePmOptions, isPmOptionsTargetedAtCurrentUser } from "@/lib/pm-options";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
@@ -1326,9 +1326,11 @@ function tabFromSearchParam(raw: string | undefined, tabs: readonly string[]) {
 export default async function TaskDetailPage({
   params,
   searchParams,
+  contained = false,
 }: {
   params: Promise<{ slug: string; taskId: string }>;
   searchParams: Promise<{ chat?: string; chatArchive?: string; chatRoom?: string; tab?: string; commit?: string; file?: string }>;
+  contained?: boolean;
 }) {
   const [{ slug, taskId }, { chatArchive = "", chatRoom = "", tab = "", commit = "", file = "" }] = await Promise.all([
     params,
@@ -1702,13 +1704,24 @@ export default async function TaskDetailPage({
         : null,
     },
   }));
-  const reporterOptions = task.reporter && !principals.some((p) => p.id === task.reporterId)
+  const visibleReporter = serializeActor(task.reporter, actorVisibility);
+  const visibleAssignee = serializeVisibleActorAs(task.assignee, "assignee", actorVisibility);
+  const visibleReviewer = serializeVisibleActorAs(task.actingManager, "reviewer", actorVisibility);
+  const visibleApprover = serializeActor(task.approvedBy, actorVisibility);
+  const showApproverAvatar = Boolean(
+    task.approvedOn &&
+    visibleApprover &&
+    task.approvedById !== task.actingManagerId
+  );
+  const effectiveDeploymentStatus = task.epic?.deploymentStatus
+    ?? (task.parentTaskId ? "Not applicable" : task.deploymentStatus);
+  const reporterOptions = task.reporter && visibleReporter && !principals.some((p) => p.id === task.reporterId)
     ? [
         ...principalOptions,
         {
           value: task.reporter.id,
-          label: actorDisplayName(serializeActor(task.reporter, actorVisibility)!),
-          actor: serializeActor(task.reporter, actorVisibility),
+          label: actorDisplayName(visibleReporter),
+          actor: visibleReporter,
         },
       ]
       : principalOptions;
@@ -1736,18 +1749,37 @@ export default async function TaskDetailPage({
   const canApproveActionPlan =
     !task.approvedOn &&
     (viewer.kind === "human" || canApproveActionPlanForActor(task, viewer.id));
-  const doneActivity = visibleActivity.find((row) =>
+  const doneActivity = allActivity.find((row) =>
     row.kind === "task.move" && payloadValue(row.payload, "to") === "Done"
   );
   const createdActivity = [...visibleActivity].reverse().find((row) => row.kind === "task.create");
-  const updatedActivity = visibleActivity.find((row) => (
+  const updatedActivity = allActivity.find((row) => (
     row.kind === "task.update" ||
     row.kind === "task.move" ||
+    row.kind === "task.ack.auto" ||
     row.kind === "task.assign" ||
     row.kind === "task.acting_manager" ||
+    row.kind === "task.privacy" ||
+    row.kind === "task.epic" ||
+    row.kind === "task.blocked_by" ||
+    row.kind === "task.branch" ||
+    row.kind === "task.commit_prefix" ||
+    row.kind === "task.deployment_status" ||
+    row.kind === "task.reporter" ||
+    row.kind === "task.alert_reporter" ||
+    row.kind === "task.archive" ||
+    row.kind === "task.unarchive" ||
+    row.kind === "task.auto_archive" ||
+    row.kind === "task.restore" ||
     row.kind === "task.action_plan.approve" ||
     row.kind === "task.action_plan.reset"
-  )) ?? createdActivity;
+  ));
+  const visibleUpdatedActor = updatedActivity
+    ? serializeVisibleActor(updatedActivity.user, actorVisibility)
+    : createdActivity?.user ?? null;
+  const visibleDoneActor = serializeVisibleActor(doneActivity?.user ?? null, actorVisibility);
+  const doneAt = doneActivity?.createdAt
+    ?? (task.status === "Done" ? task.statusChangedAt : null);
   const changeWindows = taskWorkWindows(allActivity, {
     status: task.status,
     statusChangedAt: task.statusChangedAt,
@@ -1783,12 +1815,17 @@ export default async function TaskDetailPage({
   }
 
   return (
-    <div className="mx-auto w-full max-w-none">
+    <StickyViewportSurface kind="task-detail" contained={contained}>
+    <div data-task-quick-add-context className="mx-auto w-full max-w-none">
       {/* ----- Main column ------------------------------------------- */}
       <div className="min-w-0">
         <section className="space-y-section-gap rounded-panel border border-line bg-panel p-card-lg shadow-sm">
           {/* Sticky one-row editor header: title, epic, status and save stay visible. */}
-          <div className="sticky top-0 z-10 -mx-5 -mt-5 flex flex-wrap items-end gap-3 rounded-t-2xl border-b border-line bg-panel px-5 py-2 shadow-sm xl:flex-nowrap">
+          <div
+            data-detail-header
+            data-task-header
+            className="sticky top-[var(--detail-sticky-top)] z-20 -mx-5 -mt-5 flex flex-wrap items-end gap-3 rounded-t-2xl border-b border-line bg-panel px-5 py-2 shadow-sm xl:flex-nowrap"
+          >
             <label className="min-w-[18rem] flex-1">
               <span className="mb-0.5 block text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Task title
@@ -1960,116 +1997,127 @@ export default async function TaskDetailPage({
                     rows={task.parentTaskId !== null ? 24 : 12}
                   />
 
-                  <aside className="space-y-section-gap xl:sticky xl:top-16 xl:self-start">
-                    {/* Dates */}
-                    <div className="rounded-card border border-line bg-panel-soft p-card">
-                      <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
+                  <aside className="space-y-section-gap xl:sticky xl:top-[calc(var(--detail-sticky-top)+var(--detail-header-height)+var(--detail-tabs-height)+1rem)] xl:self-start">
+                    {/* Fixed three-column task timeline. Missing workflow dates
+                        remain visible as an em dash so the shape never jumps. */}
+                    <dl
+                      data-task-dates
+                      className="grid grid-cols-3 gap-2 rounded-card border border-line bg-panel-soft p-card text-caption"
+                    >
+                      <div className="col-span-3 text-micro font-semibold uppercase tracking-wider text-text-muted">
                         Dates
                       </div>
-                      <dl className="mt-2 space-y-1 text-caption">
-                        <div className="flex items-center justify-between gap-3">
-                          <dt className="text-text-muted">Created</dt>
-                          <dd className="flex items-center gap-2">
-                            <time
-                              dateTime={dateIso(task.createdAt) ?? undefined}
-                              title={dateIso(task.createdAt) ?? undefined}
-                              className="tabular-nums"
-                            >
-                              {timeAgo(task.createdAt)}
-                            </time>
-                            {createdActivity?.user ? (
-                              <MessageAvatar actor={createdActivity.user} size="sm" />
-                            ) : task.reporter ? (
-                              <MessageAvatar actor={serializeActor(task.reporter, actorVisibility)!} size="sm" />
-                            ) : null}
-                          </dd>
+                      <div data-task-date className="min-w-0">
+                        <dt className="text-micro font-semibold uppercase tracking-wider text-text-muted">Created</dt>
+                        <dd className="mt-1 flex min-w-0 items-center gap-1.5">
+                          {createdActivity?.user ? (
+                            <MessageAvatar actor={createdActivity.user} size="sm" />
+                          ) : visibleReporter ? (
+                            <MessageAvatar actor={visibleReporter} size="sm" />
+                          ) : (
+                            <span aria-hidden="true" className="h-8 w-8 shrink-0 rounded-full bg-bg-elev" />
+                          )}
+                          <time
+                            dateTime={dateIso(task.createdAt) ?? undefined}
+                            title={dateIso(task.createdAt) ?? undefined}
+                            className="min-w-0 flex-1 break-words text-[0.68rem] leading-tight tabular-nums"
+                          >
+                            {timeAgo(task.createdAt)}
+                          </time>
+                        </dd>
+                      </div>
+                      <div data-task-date className="min-w-0">
+                        <dt className="text-micro font-semibold uppercase tracking-wider text-text-muted">Updated</dt>
+                        <dd className="mt-1 flex min-w-0 items-center gap-1.5">
+                          {visibleUpdatedActor ? (
+                            <MessageAvatar actor={visibleUpdatedActor} size="sm" />
+                          ) : (
+                            <span aria-hidden="true" className="h-8 w-8 shrink-0 rounded-full bg-bg-elev" />
+                          )}
+                          <time
+                            dateTime={dateIso(task.updatedAt) ?? undefined}
+                            title={dateIso(task.updatedAt) ?? undefined}
+                            className="min-w-0 flex-1 break-words text-[0.68rem] leading-tight tabular-nums"
+                          >
+                            {timeAgo(task.updatedAt)}
+                          </time>
+                        </dd>
+                      </div>
+                      <div data-task-date className="min-w-0">
+                        <dt className="text-micro font-semibold uppercase tracking-wider text-text-muted">Done</dt>
+                        <dd className="mt-1 flex min-w-0 items-center gap-1.5">
+                          {visibleDoneActor ? (
+                            <MessageAvatar actor={visibleDoneActor} size="sm" />
+                          ) : (
+                            <span aria-hidden="true" className="h-8 w-8 shrink-0 rounded-full bg-bg-elev" />
+                          )}
+                          <time
+                            dateTime={dateIso(doneAt) ?? undefined}
+                            title={dateIso(doneAt) ?? undefined}
+                            className="min-w-0 flex-1 break-words text-[0.68rem] leading-tight tabular-nums"
+                          >
+                            {doneAt ? timeAgo(doneAt) : "—"}
+                          </time>
+                        </dd>
+                      </div>
+                    </dl>
+
+                    <div
+                      data-task-roles
+                      className="grid grid-cols-2 gap-3 rounded-card border border-line bg-panel-soft p-card"
+                    >
+                      <div data-task-role className="min-w-0">
+                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Reported by</span>
+                        {viewer.isOwner ? (
+                          <AvatarCombobox formId="taskMain" name="reporterId" defaultValue={task.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Reported by" />
+                        ) : (
+                          <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
+                            {visibleReporter ? <MessageAvatar actor={visibleReporter} size="sm" /> : null}
+                            <span className="truncate">{visibleReporter ? actorDisplayName(visibleReporter) : "No reporter"}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div data-task-role className="min-w-0">
+                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Assignee</span>
+                        {viewer.isOwner ? (
+                          <AvatarCombobox formId="taskMain" name="assigneeId" defaultValue={task.assigneeId ?? ""} options={principalOptions} emptyLabel="Unassigned" ariaLabel="Assignee" />
+                        ) : (
+                          <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
+                            {visibleAssignee ? <MessageAvatar actor={visibleAssignee} size="sm" /> : null}
+                            <span className="truncate">{visibleAssignee ? actorDisplayName(visibleAssignee) : "Unassigned"}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div data-task-role className="min-w-0">
+                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Reviewer</span>
+                        {viewer.isOwner ? (
+                          <AvatarCombobox formId="taskMain" name="actingManagerId" defaultValue={task.actingManagerId ?? ""} options={principalOptions} emptyLabel="No reviewer" ariaLabel="Reviewer" />
+                        ) : (
+                          <div className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
+                            {visibleReviewer ? <MessageAvatar actor={visibleReviewer} size="sm" /> : null}
+                            <span className="truncate">{visibleReviewer ? actorDisplayName(visibleReviewer) : "No reviewer"}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div data-task-role className="min-w-0">
+                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Approved date</span>
+                        <div data-task-approved className="flex min-h-9 items-center gap-2 rounded-lg border border-line bg-bg px-2 text-caption">
+                          {showApproverAvatar && visibleApprover ? (
+                            <MessageAvatar actor={visibleApprover} size="sm" />
+                          ) : null}
+                          <time
+                            dateTime={dateIso(task.approvedOn) ?? undefined}
+                            title={dateIso(task.approvedOn) ?? undefined}
+                            className="min-w-0 flex-1 break-words text-[0.68rem] leading-tight tabular-nums"
+                          >
+                            {task.approvedOn ? timeAgo(task.approvedOn) : "—"}
+                          </time>
                         </div>
-                        <div className="flex items-center justify-between gap-3">
-                          <dt className="text-text-muted">Updated</dt>
-                          <dd className="flex items-center gap-2">
-                            <time
-                              dateTime={dateIso(task.updatedAt) ?? undefined}
-                              title={dateIso(task.updatedAt) ?? undefined}
-                              className="tabular-nums"
-                            >
-                              {timeAgo(task.updatedAt)}
-                            </time>
-                            {updatedActivity?.user ? (
-                              <MessageAvatar actor={updatedActivity.user} size="sm" />
-                            ) : null}
-                          </dd>
-                        </div>
-                        {task.approvedOn ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <dt className="text-text-muted">Approved</dt>
-                            <dd className="flex items-center gap-2">
-                              <time
-                                dateTime={dateIso(task.approvedOn) ?? undefined}
-                                title={dateIso(task.approvedOn) ?? undefined}
-                                className="tabular-nums"
-                              >
-                                {timeAgo(task.approvedOn)}
-                              </time>
-                              {task.approvedBy ? <MessageAvatar actor={serializeActor(task.approvedBy, actorVisibility)!} size="sm" /> : null}
-                            </dd>
-                          </div>
-                        ) : null}
-                        {task.status === "Done" && task.statusChangedAt ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <dt className="text-text-muted">Done</dt>
-                            <dd className="flex items-center gap-2">
-                              <time
-                                dateTime={dateIso(task.statusChangedAt) ?? undefined}
-                                title={dateIso(task.statusChangedAt) ?? undefined}
-                                className="tabular-nums"
-                              >
-                                {timeAgo(task.statusChangedAt)}
-                              </time>
-                              {doneActivity?.user ? <MessageAvatar actor={doneActivity.user} size="sm" /> : null}
-                            </dd>
-                          </div>
-                        ) : null}
-                        {task.archivedAt ? (
-                          <div className="flex items-center justify-between gap-3">
-                            <dt className="text-text-muted">Archived</dt>
-                            <dd className="flex items-center gap-2">
-                              <time
-                                dateTime={dateIso(task.archivedAt) ?? undefined}
-                                title={dateIso(task.archivedAt) ?? undefined}
-                                className="tabular-nums"
-                              >
-                                {timeAgo(task.archivedAt)}
-                              </time>
-                              {task.archivedBy ? <MessageAvatar actor={serializeActor(task.archivedBy, actorVisibility)!} size="sm" /> : null}
-                            </dd>
-                          </div>
-                        ) : null}
-                      </dl>
+                      </div>
                     </div>
 
-                    {viewer.isOwner ? <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
-                        <label className="block">
-                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Report by</span>
-                          <AvatarCombobox formId="taskMain" name="reporterId" defaultValue={task.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Report by" />
-                        </label>
-                        <label className="block">
-                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Assignee</span>
-                          <AvatarCombobox formId="taskMain" name="assigneeId" defaultValue={task.assigneeId ?? ""} options={principalOptions} emptyLabel="Unassigned" ariaLabel="Assignee" />
-                        </label>
-                        <label className="block">
-                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Reviewer</span>
-                          <AvatarCombobox formId="taskMain" name="actingManagerId" defaultValue={task.actingManagerId ?? ""} options={principalOptions} emptyLabel="No reviewer" ariaLabel="Reviewer" />
-                        </label>
-                    </div> : null}
-
-                    {hasDeploymentTab ? (
-                      <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
-                        <DeploymentStatusSelect formId="taskMain" defaultValue={task.deploymentStatus} />
-                      </div>
-                    ) : null}
-
-                    {/* Branch + Commit prefix — persisted by the card's single Save. */}
-                    <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
+                    {/* Branch, commit prefix, and deployment — persisted by the card's single Save. */}
+                    <div data-task-source-control className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                       <label className="block">
                         <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
                           Branch
@@ -2084,20 +2132,34 @@ export default async function TaskDetailPage({
                           aria-label="Branch name"
                         />
                       </label>
-                      <label className="block">
-                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
-                          Commit prefix
-                        </span>
-                        <input
-                          form="taskMain"
-                          name="commitPrefix"
-                          defaultValue={task.commitPrefix ?? ""}
-                          maxLength={200}
-                          placeholder={taskCommitPrefix ? `inherits/defaults to ${taskCommitPrefix}` : "e.g. HOMELAB-99"}
-                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-caption font-mono outline-none focus:border-accent"
-                          aria-label="Commit prefix"
-                        />
-                      </label>
+                      <div data-task-commit-deployment className="grid grid-cols-2 gap-3">
+                        <label className="block min-w-0">
+                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
+                            Commit prefix
+                          </span>
+                          <input
+                            form="taskMain"
+                            name="commitPrefix"
+                            defaultValue={task.commitPrefix ?? ""}
+                            maxLength={200}
+                            placeholder={taskCommitPrefix ? `inherits/defaults to ${taskCommitPrefix}` : "e.g. HOMELAB-99"}
+                            className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-caption font-mono outline-none focus:border-accent"
+                            aria-label="Commit prefix"
+                          />
+                        </label>
+                        <div className="min-w-0">
+                          {hasDeploymentTab ? (
+                            <DeploymentStatusSelect formId="taskMain" defaultValue={task.deploymentStatus} />
+                          ) : (
+                            <div>
+                              <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Deployment status</span>
+                              <div className="flex min-h-9 items-center rounded-lg border border-line bg-bg px-2 text-caption text-text-muted">
+                                {effectiveDeploymentStatus}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
 
                     {/* Blocked by — hard dependency on another task (ENV-62). */}
@@ -2127,52 +2189,53 @@ export default async function TaskDetailPage({
                       </p>
                     </div> : null}
 
-                    <form
-                      action={task.archivedAt ? unarchiveTask : archiveTask}
-                      className="space-y-2 rounded-card border border-line bg-panel-soft p-card"
-                    >
-                      <input type="hidden" name="taskId" value={task.id} />
-                      <input type="hidden" name="projectSlug" value={slug} />
-                      <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
-                        Archive
-                      </div>
-                      <p className="text-caption text-text-muted">
-                        {task.archivedAt
-                          ? "Restore this task to active project views without changing its status."
-                          : "Hide this task from active boards and grids without changing its status."}
-                      </p>
-                      <button
-                        type="submit"
-                        className="w-full rounded-lg border border-line bg-transparent px-control-x py-control-y text-caption font-medium text-text hover:border-accent hover:text-accent"
+                    <div data-task-actions className="grid grid-cols-2 gap-3">
+                      <form
+                        action={task.archivedAt ? unarchiveTask : archiveTask}
+                        className="flex h-full flex-col gap-2 rounded-card border border-line bg-panel-soft p-card"
                       >
-                        {task.archivedAt ? "Restore from archive" : "Archive task"}
-                      </button>
-                    </form>
+                        <input type="hidden" name="taskId" value={task.id} />
+                        <input type="hidden" name="projectSlug" value={slug} />
+                        <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
+                          Archive
+                        </div>
+                        <p className="flex-1 text-caption text-text-muted">
+                          {task.archivedAt
+                            ? "Restore this task to active project views without changing its status."
+                            : "Hide this task from active boards and grids without changing its status."}
+                        </p>
+                        <button
+                          type="submit"
+                          className="mt-auto w-full rounded-lg border border-line bg-transparent px-control-x py-control-y text-caption font-medium text-text hover:border-accent hover:text-accent"
+                        >
+                          {task.archivedAt ? "Restore from archive" : "Archive task"}
+                        </button>
+                      </form>
 
-                    {/* Danger zone — soft delete moves the task (and any sub-tasks) to
-                        the bin for 7 days, then hard-deletes. Its own form, separate
-                        from the main edit form. Restore from /projects/<slug>/bin. */}
-                    <form
-                      action={deleteTask}
-                      className="space-y-2 rounded-card border border-line bg-panel-soft p-card"
-                    >
-                      <input type="hidden" name="taskId" value={task.id} />
-                      <input type="hidden" name="projectSlug" value={slug} />
-                      <div className="text-micro font-semibold uppercase tracking-wider text-crit">
-                        Danger zone
-                      </div>
-                      <p className="text-caption text-text-muted">
-                        Move this task to the bin. Its {task.checklist.length} checklist
-                        item{task.checklist.length === 1 ? "" : "s"} go with it.
-                        Auto-purged after 7 days.
-                      </p>
-                      <button
-                        type="submit"
-                        className="w-full rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-medium text-crit hover:bg-crit hover:text-on-crit"
+                      {/* Danger zone — soft delete moves the task (and any sub-tasks)
+                          to the bin for 7 days, then hard-deletes. */}
+                      <form
+                        action={deleteTask}
+                        className="flex h-full flex-col gap-2 rounded-card border border-line bg-panel-soft p-card"
                       >
-                        Delete task
-                      </button>
-                    </form>
+                        <input type="hidden" name="taskId" value={task.id} />
+                        <input type="hidden" name="projectSlug" value={slug} />
+                        <div className="text-micro font-semibold uppercase tracking-wider text-crit">
+                          Danger zone
+                        </div>
+                        <p className="flex-1 text-caption text-text-muted">
+                          Move this task to the bin. Its {task.checklist.length} checklist
+                          item{task.checklist.length === 1 ? "" : "s"} go with it.
+                          Auto-purged after 7 days.
+                        </p>
+                        <button
+                          type="submit"
+                          className="mt-auto w-full rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-medium text-crit hover:bg-crit hover:text-on-crit"
+                        >
+                          Delete task
+                        </button>
+                      </form>
+                    </div>
                   </aside>
                 </div>
               </TabPanel>
@@ -2251,12 +2314,6 @@ export default async function TaskDetailPage({
             deleteAction={deleteAttachment}
           />
 
-          <AttachmentUploadFab
-            projectSlug={slug}
-            taskId={task.id}
-            maxLabel={formatBytes(attachmentMaxBytes())}
-            uploadAction={uploadAttachment}
-          />
                 </div>
               </TabPanel>
 
@@ -2373,14 +2430,6 @@ export default async function TaskDetailPage({
             />
           ) : null}
                   </div>
-
-          <CommentComposerFab
-            projectSlug={slug}
-            taskId={task.id}
-            action={createComment}
-            title="Task Comment"
-            placeholder="Write a comment — **markdown** and @mentions supported"
-          />
                 </div>
               </TabPanel>
 
@@ -2422,9 +2471,22 @@ export default async function TaskDetailPage({
                 />
               </TabPanel> : null}
             </div>
+            <TaskQuickAddFab
+              projectSlug={slug}
+              projectName={task.project.name}
+              taskId={task.id}
+              taskTitle={task.title}
+              epicId={task.epicId ?? undefined}
+              epicTitle={task.epic?.title ?? undefined}
+              canCreateProject={viewer.isOwner}
+              maxAttachmentLabel={formatBytes(attachmentMaxBytes())}
+              uploadAttachmentAction={uploadAttachment}
+              createCommentAction={createComment}
+            />
           </TabsProvider>
         </section>
       </div>
     </div>
+    </StickyViewportSurface>
   );
 }

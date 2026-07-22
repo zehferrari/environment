@@ -36,11 +36,17 @@ export default function NewEpicFab({
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("newEpic") !== "1") return;
+
     setOpen(true);
     params.delete("newEpic");
     const query = params.toString();
-    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+    );
   }, []);
+
   const principalOptions: AvatarComboboxOption[] = principals.map((p) => ({
     value: p.id,
     label: p.name,

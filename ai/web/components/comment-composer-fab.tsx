@@ -11,6 +11,9 @@ export default function CommentComposerFab({
   action,
   title,
   placeholder,
+  open: controlledOpen,
+  onOpenChange,
+  hideTrigger = false,
 }: {
   projectSlug: string;
   taskId?: string;
@@ -18,10 +21,18 @@ export default function CommentComposerFab({
   action: (formData: FormData) => Promise<void>;
   title: string;
   placeholder: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  hideTrigger?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
   const [body, setBody] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (next: boolean) => {
+    if (controlledOpen === undefined) setInternalOpen(next);
+    onOpenChange?.(next);
+  };
   const canSubmit = body.trim().length > 0;
 
   // Focus the textarea whenever the composer opens (the (+) button) so the user
@@ -110,15 +121,18 @@ export default function CommentComposerFab({
         </div>
       ) : null}
 
-      <Button
-        type="button"
-        onClick={() => setOpen(true)}
-        aria-label="Add comment"
-        variant="primary"
-        className="fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full p-0 text-3xl leading-none shadow-lg"
-      >
-        <span className="-mt-0.5">+</span>
-      </Button>
+      {!hideTrigger ? (
+        <Button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label="Add comment"
+          data-task-local-fab
+          variant="primary"
+          className="fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full p-0 text-3xl leading-none shadow-lg"
+        >
+          <span className="-mt-0.5">+</span>
+        </Button>
+      ) : null}
     </>
   );
 }

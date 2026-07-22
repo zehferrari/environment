@@ -73,9 +73,10 @@ export function TabsNav({
   return (
     <div
       role="tablist"
+      data-detail-tabs={sticky ? "" : undefined}
       className={`flex flex-wrap gap-1 border-b border-line ${
         sticky
-          ? "sticky top-[70px] z-20 -mx-5 bg-panel px-5 shadow-sm"
+          ? "sticky top-[calc(var(--detail-sticky-top)+var(--detail-header-height))] z-10 -mx-5 bg-panel px-5 shadow-sm"
           : ""
       }`}
     >

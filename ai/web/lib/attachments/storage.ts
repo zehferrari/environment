@@ -9,10 +9,12 @@
 // locally so dev works without /srv/Data. Files are content-addressed
 // by sha256 — re-uploading the same bytes from a different filename
 // reuses the existing on-disk blob; metadata rows still distinguish
-// taskId/epicId/filename per upload.
+// project/task/epic scope and filename per upload.
 //
-// One-of-target invariant (taskId XOR epicId) is enforced here, not in
-// the DB, because SQLite has no portable check constraint.
+// A file may belong directly to a project, or be scoped to one task or
+// epic. The only invalid combination is setting both scoped targets; that
+// invariant is enforced here rather than in the DB because SQLite has no
+// portable check constraint.
 
 import { createReadStream, type ReadStream } from "node:fs";
 import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -43,14 +45,16 @@ export interface AttachmentTarget {
   epicId: string | null;
 }
 
-// Throws on the XOR violation. Server actions should call this before
-// touching the DB so an invalid target never produces a half-written row.
+// Throws when both scoped targets are set. Neither is valid and represents
+// an attachment owned directly by the project. Server actions should call
+// this before touching the DB so an invalid target never produces a
+// half-written row.
 export function assertOneTarget(t: AttachmentTarget): void {
   const taskSet = t.taskId !== null && t.taskId !== "";
   const epicSet = t.epicId !== null && t.epicId !== "";
-  if (taskSet === epicSet) {
+  if (taskSet && epicSet) {
     throw new Error(
-      "Attachment must reference exactly one of taskId or epicId",
+      "Attachment cannot reference both taskId and epicId",
     );
   }
 }

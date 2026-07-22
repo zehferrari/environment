@@ -58,15 +58,37 @@ const rail = deck.match(/hidden w-\[([0-9.]+)rem\][^"]*5xl:block/);
 assert(rail, "command-deck rail must be hidden below 5xl and use a fixed rem width");
 const RAIL_W = parseFloat(rail![1]) * 16;
 
-const projectLayout = read("app/(app)/projects/[slug]/layout.tsx");
-assert(projectLayout.includes("@container/ws"), "project layout must define the @container/ws measure");
-assert(projectLayout.includes("@container/board"), "project layout must define the @container/board measure");
-const splitAt = projectLayout.match(/@min-\[([0-9.]+)rem\]\/ws:flex/);
-assert(splitAt, "split workspace must activate via an @min container query on /ws");
-const SPLIT_AT = parseFloat(splitAt![1]) * 16;
-assert(/group-has-\[\[data-ws-open\]\]\/ws:hidden/.test(projectLayout), "board must hide under the pane below the split threshold");
-assert(/@min-\[[0-9.]+rem\]\/ws:group-has-\[\[data-ws-open\]\]\/ws:block/.test(projectLayout), "board must stay visible beside the pane above the split threshold");
-assert(/@min-\[[0-9.]+rem\]\/ws:gap-4/.test(projectLayout), "split workspace gap must be gap-4");
+function splitLayoutThreshold(source: string, label: string) {
+  assert(source.includes("@container/ws"), `${label} must define the @container/ws measure`);
+  assert(source.includes("@container/board"), `${label} must define the @container/board measure`);
+  assert(source.includes("group/ws"), `${label} must define the split workspace group`);
+
+  const splitAt = source.match(/@min-\[([0-9.]+)rem\]\/ws:flex/);
+  assert(splitAt, `${label} must activate split view via an @min container query on /ws`);
+  const splitToken = `@min-[${splitAt![1]}rem]/ws`;
+  assert(source.includes(`${splitToken}:items-start`), `${label} split panes must align at the top`);
+  assert(source.includes(`${splitToken}:gap-4`), `${label} split workspace gap must be gap-4`);
+  assert(
+    /group-has-\[\[data-ws-open\]\]\/ws:hidden/.test(source),
+    `${label} board must hide under the pane below the split threshold`,
+  );
+  assert(
+    source.includes(`${splitToken}:group-has-[[data-ws-open]]/ws:block`),
+    `${label} board must stay visible beside the pane above the split threshold`,
+  );
+  return parseFloat(splitAt![1]) * 16;
+}
+
+const projectLayoutPath = "app/(app)/projects/[slug]/layout.tsx";
+const workspaceLayoutPath = "app/(app)/workspaces/[slug]/layout.tsx";
+const projectLayout = read(projectLayoutPath);
+const workspaceLayout = read(workspaceLayoutPath);
+const SPLIT_AT = splitLayoutThreshold(projectLayout, "project layout");
+const WORKSPACE_SPLIT_AT = splitLayoutThreshold(workspaceLayout, "workspace layout");
+assert(
+  WORKSPACE_SPLIT_AT === SPLIT_AT,
+  `workspace split threshold must match the project threshold (${SPLIT_AT}px, got ${WORKSPACE_SPLIT_AT}px)`,
+);
 const SPLIT_GAP = 16;
 
 const pane = read("components/workspace-pane.tsx");
@@ -101,7 +123,7 @@ assert(PANE_WIDE_AT === PANE_WIDE_W + SPLIT_GAP + FOCUS_SIX_AT, "pane wide thres
 assert(FOCUS_FILL_AT >= 4 * TRACK_MIN + 3 * FOCUS_GAP, "auto-fill band must not engage before four 284px tracks fit");
 
 // Live resize must be pure CSS: no JS viewport measurements in the sizing path.
-for (const path of ["app/(app)/projects/[slug]/layout.tsx", "components/workspace-pane.tsx"]) {
+for (const path of [projectLayoutPath, workspaceLayoutPath, "components/workspace-pane.tsx"]) {
   const source = read(path);
   assert(!/window\.innerWidth|matchMedia|ResizeObserver/.test(source), `${path} must size purely via CSS container queries (live-resize safe)`);
 }

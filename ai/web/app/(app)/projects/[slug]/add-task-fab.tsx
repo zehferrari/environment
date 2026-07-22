@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import PrivateToggle from "@/components/private-toggle";
 
@@ -40,16 +41,34 @@ export default function AddTaskFab({
   canSetPrivate?: boolean;
   createTaskAction: (formData: FormData) => Promise<void>;
 }) {
+  const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [selectedEpicId, setSelectedEpicId] = useState("");
+  const taskOpen = /\/tasks\/[^/]+\/?$/.test(pathname);
+
   // Auto-open when arriving from the unified board's (+) menu.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("newTask") !== "1") return;
+
+    const requestedEpicId = params.get("epicId") ?? "";
+    setSelectedEpicId(
+      epics.some((epic) => epic.id === requestedEpicId) ? requestedEpicId : "",
+    );
     setOpen(true);
+
+    // The query is an imperative hand-off, not durable page state. Clear it
+    // after consuming it so refresh/back cannot unexpectedly reopen the form.
     params.delete("newTask");
+    params.delete("epicId");
     const query = params.toString();
-    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
-  }, []);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+    );
+  }, [epics, pathname]);
+
   const principalOptions: AvatarComboboxOption[] = principals.map((p) => ({
     value: p.id,
     label: p.name,
@@ -65,17 +84,22 @@ export default function AddTaskFab({
     },
   }));
 
+  const close = () => {
+    setOpen(false);
+    setSelectedEpicId("");
+  };
+
   return (
     <>
       {open ? (
         <div
           className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-3 sm:items-center sm:p-card"
-          onClick={() => setOpen(false)}
+          onClick={close}
         >
           <form
             id="newTaskForm"
             action={createTaskAction}
-            onSubmit={() => setOpen(false)}
+            onSubmit={close}
             onClick={(e) => e.stopPropagation()}
             className="max-h-[calc(100vh-2rem)] w-full max-w-lg space-y-3 overflow-y-auto rounded-panel border border-line bg-panel p-card-lg shadow-2xl"
           >
@@ -87,7 +111,7 @@ export default function AddTaskFab({
               </div>
               <button
                 type="button"
-                onClick={() => setOpen(false)}
+                onClick={close}
                 aria-label="Close"
                 className="text-heading leading-none text-text-muted hover:text-text"
               >
@@ -120,7 +144,8 @@ export default function AddTaskFab({
               </span>
               <select
                 name="epicId"
-                defaultValue=""
+                value={selectedEpicId}
+                onChange={(event) => setSelectedEpicId(event.currentTarget.value)}
                 className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 text-caption outline-none focus:border-accent"
               >
                 <option value="">No epic</option>
@@ -166,7 +191,7 @@ export default function AddTaskFab({
             <div className="flex justify-end gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => setOpen(false)}
+                onClick={close}
                 className="rounded-lg border border-line bg-panel-soft px-control-x py-control-y text-body font-medium hover:border-accent"
               >
                 Cancel
@@ -182,15 +207,20 @@ export default function AddTaskFab({
         </div>
       ) : null}
 
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        aria-label="Add task"
-        className="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 items-center justify-center gap-2 rounded-2xl bg-accent px-4 text-bg shadow-[var(--shadow-float)] transition-[transform,background-color,box-shadow] hover:-translate-y-0.5 hover:bg-accent-strong md:bottom-6 md:right-6 md:h-12"
-      >
-        <span className="text-2xl leading-none" aria-hidden="true">+</span>
-        <span className="text-body font-semibold">New task</span>
-      </button>
+      {!taskOpen ? (
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedEpicId("");
+            setOpen(true);
+          }}
+          aria-label="Add task"
+          className="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 items-center justify-center gap-2 rounded-2xl bg-accent px-4 text-bg shadow-[var(--shadow-float)] transition-[transform,background-color,box-shadow] hover:-translate-y-0.5 hover:bg-accent-strong md:bottom-6 md:right-6 md:h-12"
+        >
+          <span className="text-2xl leading-none" aria-hidden="true">+</span>
+          <span className="text-body font-semibold">New task</span>
+        </button>
+      ) : null}
     </>
   );
 }

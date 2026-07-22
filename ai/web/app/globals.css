@@ -62,6 +62,12 @@
   --text-icon-lg--line-height: 1.5rem;
 }
 
+/* The task-wide quick-add menu owns the single visible pane action trigger.
+   Action-plan composers stay mounted and are opened through that menu. */
+[data-task-quick-add-context] [data-task-quick-action="action-plan"] {
+  display: none;
+}
+
 :root {
   color-scheme: light;
   --shadow-xs: 0 1px 2px rgb(20 31 55 / 0.05);
@@ -134,6 +140,17 @@ body {
     var(--color-bg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* A bounded ultrawide workflow surface supplies its own bottom breathing room
+   inside the sticky track. The shell's normal desktop padding would create
+   travel after that track ends, forcing the surface or split task pane to
+   unstick. */
+@media (min-width: 160rem) {
+  main:has([data-board-sticky-track]),
+  main:has([data-sticky-viewport-track]) {
+    padding-bottom: 0;
+  }
 }
 
 a, button, input, select, textarea {

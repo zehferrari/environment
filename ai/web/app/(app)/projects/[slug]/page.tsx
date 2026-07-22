@@ -486,6 +486,7 @@ export default async function ProjectBoardPage({
     <div>
       <Board
         projectSlug={project.slug}
+        chromeSlotScope={`project-${project.slug}`}
         columns={COLUMNS}
         tasks={project.tasks.map((t) => {
           const blocker = t.blockedById ? visibleBlockerById.get(t.blockedById) : null;

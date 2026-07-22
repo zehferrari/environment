@@ -27,13 +27,15 @@ export default async function ProjectLibraryPage({
   if (!project) notFound();
 
   // All attachments under this project — Attachment.projectId is the
-  // direct FK, so a single query covers both task- and epic-anchored
-  // files. Filter out attachments whose parent is soft-deleted; they
-  // still appear in the bin, not the library.
+  // direct FK, so a single query covers project-, task-, and epic-anchored
+  // files. Filter out attachments whose parent is soft-deleted; they still
+  // appear in the bin, not the library. Project-owned rows have neither
+  // scoped target and remain visible here.
   const attachments = await db.attachment.findMany({
     where: {
       projectId: project.id,
       OR: [
+        { taskId: null, epicId: null },
         { task: accessibleTaskWhere(viewer, { deletedAt: null }) },
         { epic: accessibleEpicWhere(viewer, { deletedAt: null }) },
       ],

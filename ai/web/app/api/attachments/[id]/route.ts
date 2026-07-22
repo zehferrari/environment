@@ -133,7 +133,7 @@ async function authorizeAttachmentRead(
         ? await canAccessTask(viewer, scope.taskId)
         : scope.epicId
           ? await canAccessEpic(viewer, scope.epicId)
-          : false
+          : true
       : false;
     if (viewer && canAccessItem && await canAccessProject(viewer, { id: scope.projectId })) {
       return { ok: true as const };

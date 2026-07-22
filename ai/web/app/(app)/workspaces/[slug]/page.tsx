@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
@@ -12,7 +11,6 @@ import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { normalizeWorkspaceSlug } from "@/lib/workspaces/service";
-import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 import Board from "../../projects/[slug]/board-client";
 import { COLUMNS, COLUMN_IDS } from "../../projects/[slug]/columns";
 import type { MoveTaskResult } from "../../projects/[slug]/page";
@@ -321,8 +319,6 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
   const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows, actorVisibility);
   const visibleBlockerById = new Map(visibleBlockers.map((task) => [task.id, task]));
 
-  const workspaceProjectNames = workspace.projects.map(({ project }) => project.name).join(", ");
-  const isArchivedWorkspace = workspace.archivedAt != null;
   async function reorderWorkspaceTasks(orderedIds: string[]): Promise<void> {
     "use server";
     const actor = await requireViewer();
@@ -348,57 +344,13 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
     revalidatePath(`/workspaces/${slug}`);
   }
 
+  const boardChromeScope = `workspace-${workspace.slug}`;
+
   return (
     <div>
-      <header className="mb-4">
-        <div className="mb-2 flex items-center gap-1 text-caption text-text-muted">
-          <Link href="/workspaces" className="hover:text-text hover:underline">workspaces</Link>
-          <span>/</span>
-          <span>{workspace.slug}</span>
-        </div>
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <div className="flex items-center gap-3">
-              {workspace.logoPath ? (
-                <img
-                  src={workspaceLogoPublicUrl(workspace.slug, workspace.logoUpdatedAt)}
-                  alt={`${workspace.name} logo`}
-                  className="h-10 w-10 shrink-0 rounded-lg border border-line bg-panel object-cover"
-                />
-              ) : null}
-              <h1 className="text-display font-semibold tracking-tight">{workspace.name}</h1>
-            </div>
-            <p className="mt-1 text-body text-text-muted">
-              Unified board across {workspace.projects.length} project{workspace.projects.length === 1 ? "" : "s"}
-              {workspaceProjectNames ? `: ${workspaceProjectNames}` : ""}.
-            </p>
-            {isArchivedWorkspace ? (
-              <div className="mt-3 rounded-card border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-caption text-amber-800">
-                This workspace is archived and hidden from default navigation. Direct access remains available and project history is preserved.
-              </div>
-            ) : null}
-          </div>
-          {viewer.isOwner ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <Link
-                href="/?newProject=1"
-                className="rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-bg shadow-sm hover:opacity-90"
-              >
-                New project
-              </Link>
-              <Link
-                href={`/workspaces/${workspace.slug}/settings`}
-                className="rounded-lg border border-line bg-panel px-control-x py-control-y text-caption font-medium text-text-muted hover:border-accent hover:text-accent"
-              >
-                Workspace settings
-              </Link>
-            </div>
-          ) : null}
-        </div>
-      </header>
-
       <Board
         projectSlug={workspace.slug}
+        chromeSlotScope={boardChromeScope}
         boardStreamUrl={`/api/workspaces/${workspace.slug}/board/stream`}
         hideWorkflowFocus
         columns={COLUMNS}

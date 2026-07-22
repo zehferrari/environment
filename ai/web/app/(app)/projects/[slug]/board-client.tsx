@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useTransition } from "react";
+import { createPortal } from "react-dom";
 import {
   closestCenter,
   DndContext,
@@ -36,6 +37,7 @@ import { formatGridDate } from "@/lib/date-format";
 import { bulkBinTasks } from "@/lib/bin/actions";
 import ConfirmPopup from "@/components/confirm-popup";
 import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
+import { boardAvailableHeight, boardChromeSlotId, boardStickyTop } from "@/lib/board-chrome";
 
 type BoardActor = MessageActor & { id: string };
 
@@ -68,6 +70,15 @@ type Task = {
   project: { slug: string; name: string } | null;
 };
 type Column = { id: string; label: string; description?: string };
+type BoardStats = {
+  total: number;
+  open: number;
+  done: number;
+  blocked: number;
+  attention: number;
+  completion: number;
+  byStatus: Record<string, number>;
+};
 
 // Bottom-right lock badge (ENV-62): shown when the task is blocked by another
 // task that isn't Done yet. The key is the blocker's work-item id.
@@ -147,6 +158,7 @@ function SubtaskProgress({ task }: { task: Task }) {
 
 type BoardProps = {
   projectSlug: string;
+  chromeSlotScope?: string;
   boardStreamUrl?: string | null;
   hideWorkflowFocus?: boolean;
   columns: ReadonlyArray<Column>;
@@ -188,7 +200,7 @@ const boardCollisionDetection: CollisionDetection = (args) => {
   return pointer.length > 0 ? pointer : rectIntersection(args);
 };
 
-export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus = false, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
+export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hideWorkflowFocus = false, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
   const router = useRouter();
   const resolvedBoardStreamUrl = boardStreamUrl === undefined ? `/api/projects/${projectSlug}/board/stream` : boardStreamUrl;
   const preferenceKey = resolvedBoardStreamUrl ?? projectSlug;
@@ -214,6 +226,22 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
   const [doneVisible, setDoneVisible] = useState(true);
   const [compact, setCompact] = useState(false);
   const [preferencesScope, setPreferencesScope] = useState<string | null>(null);
+  const [chromeTargets, setChromeTargets] = useState<{
+    summary: HTMLElement | null;
+    controls: HTMLElement | null;
+  }>({ summary: null, controls: null });
+  const boardSurfaceRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    if (!chromeSlotScope) {
+      setChromeTargets({ summary: null, controls: null });
+      return;
+    }
+    setChromeTargets({
+      summary: document.getElementById(boardChromeSlotId(chromeSlotScope, "summary")),
+      controls: document.getElementById(boardChromeSlotId(chromeSlotScope, "controls")),
+    });
+  }, [chromeSlotScope]);
 
   // Server is the source of truth: when revalidatePath re-renders this
   // page with fresh tasks (status, rank), reset the local optimistic
@@ -784,6 +812,115 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
       ? [...columnLanes, mobileBacklogLane]
       : columnLanes;
 
+  // Keep the desktop board surface inside the currently visible viewport. Its
+  // starting position changes as the title/summary scroll away, the tabs
+  // become sticky, or transient filter/selection/focus rows appear. Measuring
+  // that real position avoids a brittle fixed header-height subtraction while
+  // writing the result to shared layout variables keeps scroll updates out of
+  // React and aligns an open task pane to the same sticky floor.
+  useLayoutEffect(() => {
+    const boardSurface = boardSurfaceRef.current;
+    if (!boardSurface || isMobileBoard) return;
+
+    let frame = 0;
+    let active = true;
+    const boardLayout = boardSurface.closest("[data-board-layout]") as HTMLElement | null;
+    const controlsTarget = chromeSlotScope
+      ? document.getElementById(boardChromeSlotId(chromeSlotScope, "controls"))
+      : null;
+    const toolbar = (controlsTarget?.closest("[data-board-toolbar]") ??
+      boardLayout?.querySelector("[data-board-toolbar]")) as HTMLElement | null;
+    const selectionToolbar = boardLayout?.querySelector("[data-board-selection-toolbar]") as HTMLElement | null;
+
+    const measure = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        if (!active) return;
+        const viewportHeight = window.innerHeight;
+        const bottomGap = 16;
+        const toolbarRect = toolbar?.getBoundingClientRect();
+        const toolbarMargin = toolbar
+          ? Number.parseFloat(window.getComputedStyle(toolbar).marginBottom) || 0
+          : 0;
+        const selectionRect = selectionToolbar?.getBoundingClientRect();
+        const selectionStyles = selectionToolbar
+          ? window.getComputedStyle(selectionToolbar)
+          : null;
+        const obstructionStickyTop = selectionStyles
+          ? Number.parseFloat(selectionStyles.top) || 0
+          : 0;
+        const obstructionHeight = selectionRect?.height ?? 0;
+        const obstructionMargin = selectionStyles
+          ? Number.parseFloat(selectionStyles.marginBottom) || 0
+          : 0;
+        const stickyTop = boardStickyTop({
+          toolbarHeight: toolbarRect?.height ?? 0,
+          toolbarMargin,
+          obstructionStickyTop,
+          obstructionHeight,
+          obstructionMargin,
+        });
+        const available = boardAvailableHeight({
+          viewportHeight,
+          columnsTop: boardSurface.getBoundingClientRect().top,
+          toolbarHeight: toolbarRect?.height ?? 0,
+          toolbarBottom: toolbarRect?.bottom ?? 0,
+          toolbarMargin,
+          obstructionStickyTop,
+          obstructionHeight,
+          obstructionBottom: selectionRect?.bottom ?? 0,
+          obstructionMargin,
+          bottomGap,
+        });
+        const nextHeight = `${available}px`;
+        const nextTop = `${stickyTop}px`;
+        if (boardLayout?.style.getPropertyValue("--board-available-height") !== nextHeight) {
+          boardLayout?.style.setProperty("--board-available-height", nextHeight);
+        }
+        if (boardLayout?.style.getPropertyValue("--board-sticky-top") !== nextTop) {
+          boardLayout?.style.setProperty("--board-sticky-top", nextTop);
+        }
+      });
+    };
+
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, { passive: true });
+    window.visualViewport?.addEventListener("resize", measure);
+    window.visualViewport?.addEventListener("scroll", measure);
+    const sizeObserver = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(measure)
+      : null;
+    if (toolbar && sizeObserver) sizeObserver.observe(toolbar);
+    if (selectionToolbar && sizeObserver) sizeObserver.observe(selectionToolbar);
+    void document.fonts?.ready.then(() => {
+      if (active) measure();
+    });
+
+    return () => {
+      active = false;
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure);
+      window.visualViewport?.removeEventListener("resize", measure);
+      window.visualViewport?.removeEventListener("scroll", measure);
+      sizeObserver?.disconnect();
+      boardLayout?.style.removeProperty("--board-available-height");
+      boardLayout?.style.removeProperty("--board-sticky-top");
+    };
+  }, [
+    chromeSlotScope,
+    filtersActive,
+    focusActive,
+    hiddenSelectedCount,
+    isMobileBoard,
+    items,
+    moveError,
+    searchQuery,
+    selectedCount,
+    workflowFocus,
+  ]);
+
   return (
     <DndContext
       // Stable id keeps dnd-kit's generated aria ids deterministic across
@@ -818,6 +955,42 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
         onConfirm={performSingleDelete}
         onCancel={() => setDeleteTarget(null)}
       />
+      {chromeTargets.summary
+        ? createPortal(
+            <BoardSummary boardStats={boardStats} placement="header" />,
+            chromeTargets.summary,
+          )
+        : null}
+      {chromeTargets.controls
+        ? createPortal(
+            <BoardControls
+              placement="toolbar"
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              attentionOnly={attentionOnly}
+              onToggleAttention={() => setAttentionOnly((value) => !value)}
+              doneVisible={doneVisible}
+              onToggleDone={() => setDoneVisible((value) => !value)}
+              focusVisible={focusVisible}
+              showFocus={!hideWorkflowFocus && workflowFocus.length > 0}
+              focusCount={workflowFocus.length}
+              onToggleFocus={() => setFocusVisible((value) => !value)}
+              backlogVisible={backlogVisible}
+              backlogCount={boardStats.byStatus.Backlog ?? 0}
+              onToggleBacklog={() => setBacklogVisible((value) => !value)}
+              compact={compact}
+              onToggleCompact={() => setCompact((value) => !value)}
+              filtersActive={filtersActive}
+              onReset={() => {
+                setSearchQuery("");
+                setAttentionOnly(false);
+                setDoneVisible(true);
+              }}
+              boardStats={boardStats}
+            />,
+            chromeTargets.controls,
+          )
+        : null}
       {moveError ? (
         <div
           role="alert"
@@ -834,143 +1007,61 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
         </div>
       ) : null}
 
-      <section className="mb-5 overflow-hidden rounded-2xl border border-line bg-panel/95 shadow-[var(--shadow-sm)] backdrop-blur">
-        <div className="grid gap-4 px-4 py-4 lg:grid-cols-[minmax(15rem,1fr)_auto] lg:items-center lg:px-5">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-subheading font-semibold tracking-tight text-text">Workflow board</h2>
-              <span className="rounded-full border border-line bg-panel-soft px-2 py-0.5 text-caption font-semibold tabular-nums text-text-muted">
-                {boardStats.open} open
-              </span>
-              {boardStats.blocked > 0 ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-crit/30 bg-crit/[0.07] px-2 py-0.5 text-caption font-semibold text-crit">
-                  <LockGlyph /> {boardStats.blocked} blocked
-                </span>
-              ) : null}
-            </div>
-            <div className="mt-2 flex max-w-xl items-center gap-3">
-              <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-bg-elev" aria-hidden="true">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-accent to-ok transition-[width]"
-                  style={{ width: `${boardStats.completion}%` }}
-                />
-              </div>
-              <span
-                className="shrink-0 text-caption font-medium tabular-nums text-text-muted"
-                title="Completion among the tasks currently loaded on this board"
-              >
-                {boardStats.completion}% current board
-              </span>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 divide-x divide-line overflow-hidden rounded-xl border border-line bg-panel-soft">
-            <BoardMetric label="To do" value={boardStats.byStatus["To Do"] ?? 0} tone="todo" />
-            <BoardMetric label="Doing" value={boardStats.byStatus["In Progress"] ?? 0} tone="progress" />
-            <BoardMetric label="Review" value={boardStats.byStatus.Review ?? 0} tone="review" />
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-3 border-t border-line bg-panel-soft/70 px-3 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-4">
-          <div className="relative block min-w-0 flex-1 lg:max-w-md">
-            <span className="pointer-events-none absolute inset-y-0 left-3 grid place-items-center text-text-dim">
-              <SearchIcon />
-            </span>
-            <input
-              type="text"
-              role="searchbox"
-              aria-label="Search board"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.currentTarget.value)}
-              placeholder="Search key, task, epic, project or person…"
-              className="min-h-11 w-full rounded-lg border border-line bg-panel py-2 pl-9 pr-10 text-body text-text shadow-[var(--shadow-xs)] outline-none transition focus:border-accent focus:shadow-[var(--focus-ring)] md:min-h-0"
-            />
-            {searchQuery ? (
-              <button
-                type="button"
-                onClick={() => setSearchQuery("")}
-                aria-label="Clear board search"
-                className="absolute inset-y-0 right-1 grid w-9 place-items-center rounded-md text-text-muted hover:bg-accent-soft hover:text-accent"
-              >
-                ×
-              </button>
-            ) : null}
-          </div>
-
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <BoardToggle
-              active={attentionOnly}
-              onClick={() => setAttentionOnly((value) => !value)}
-              label="Attention"
-              count={boardStats.attention}
-              icon={<SparkIcon />}
-            />
-            <BoardToggle
-              active={!doneVisible}
-              onClick={() => setDoneVisible((value) => !value)}
-              label={doneVisible ? "Hide done cards" : "Done cards hidden"}
-              count={boardStats.done}
-              icon={<EyeIcon crossed={!doneVisible} />}
-            />
-            {!hideWorkflowFocus && workflowFocus.length > 0 ? (
-              <BoardToggle
-                active={focusVisible}
-                onClick={() => setFocusVisible((value) => !value)}
-                label="Focus"
-                count={workflowFocus.length}
-                icon={<FocusIcon />}
-              />
-            ) : null}
-            <BoardToggle
-              active={backlogVisible}
-              onClick={() => setBacklogVisible((value) => !value)}
-              label="Backlog"
-              count={boardStats.byStatus.Backlog ?? 0}
-              icon={<BacklogIcon />}
-            />
-            <button
-              type="button"
-              onClick={() => setCompact((value) => !value)}
-              aria-pressed={compact}
-              aria-label={compact ? "Use comfortable board density" : "Use compact board density"}
-              className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 text-caption font-semibold text-text-muted shadow-[var(--shadow-xs)] transition hover:border-line-strong hover:text-text md:min-h-0"
-              title={compact ? "Use comfortable cards" : "Use compact cards"}
-            >
-              <DensityIcon compact={compact} />
-              <span className="hidden xl:inline">{compact ? "Compact" : "Comfortable"}</span>
-            </button>
-            {filtersActive ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setSearchQuery("");
-                  setAttentionOnly(false);
-                  setDoneVisible(true);
-                }}
-                className="min-h-11 rounded-lg px-2.5 py-2 text-caption font-semibold text-accent hover:bg-accent-soft md:min-h-0"
-              >
-                Reset
-              </button>
-            ) : null}
-          </div>
-        </div>
+      <section className="mb-5 overflow-hidden rounded-2xl border border-line bg-panel/95 shadow-[var(--shadow-sm)] backdrop-blur 4xl:hidden">
+        <BoardSummary boardStats={boardStats} placement="stacked" />
+        <BoardControls
+          placement="stacked"
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          attentionOnly={attentionOnly}
+          onToggleAttention={() => setAttentionOnly((value) => !value)}
+          doneVisible={doneVisible}
+          onToggleDone={() => setDoneVisible((value) => !value)}
+          focusVisible={focusVisible}
+          showFocus={!hideWorkflowFocus && workflowFocus.length > 0}
+          focusCount={workflowFocus.length}
+          onToggleFocus={() => setFocusVisible((value) => !value)}
+          backlogVisible={backlogVisible}
+          backlogCount={boardStats.byStatus.Backlog ?? 0}
+          onToggleBacklog={() => setBacklogVisible((value) => !value)}
+          compact={compact}
+          onToggleCompact={() => setCompact((value) => !value)}
+          filtersActive={filtersActive}
+          onReset={() => {
+            setSearchQuery("");
+            setAttentionOnly(false);
+            setDoneVisible(true);
+          }}
+          boardStats={boardStats}
+        />
         {filtersActive ? (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-2 text-caption text-text-muted" role="status">
-            <span>Showing <span className="font-semibold text-text">{visibleItems.length}</span> of {items.length} tasks</span>
-            {!backlogVisible && backlogCount > 0 ? (
-              <button
-                type="button"
-                onClick={() => setBacklogVisible(true)}
-                className="font-semibold text-accent hover:underline"
-              >
-                {backlogCount} matching {backlogCount === 1 ? "task is" : "tasks are"} in the collapsed Backlog · Show
-              </button>
-            ) : null}
-          </div>
+          <BoardFilterStatus
+            visibleCount={visibleItems.length}
+            totalCount={items.length}
+            backlogVisible={backlogVisible}
+            backlogCount={backlogCount}
+            onShowBacklog={() => setBacklogVisible(true)}
+          />
         ) : null}
       </section>
 
+      {filtersActive ? (
+        <div className="mb-4 hidden rounded-xl border border-line bg-panel/90 shadow-[var(--shadow-xs)] 4xl:block">
+          <BoardFilterStatus
+            visibleCount={visibleItems.length}
+            totalCount={items.length}
+            backlogVisible={backlogVisible}
+            backlogCount={backlogCount}
+            onShowBacklog={() => setBacklogVisible(true)}
+          />
+        </div>
+      ) : null}
+
       {selectedCount > 0 ? (
-        <div className="sticky top-3 z-20 mb-4 flex flex-wrap items-center justify-between gap-3 rounded-panel border border-accent/30 bg-panel/95 px-4 py-3 text-body shadow-[var(--shadow-md)] backdrop-blur">
+        <div
+          data-board-selection-toolbar
+          className="sticky top-16 z-20 mb-4 flex flex-wrap items-center justify-between gap-3 rounded-panel border border-accent/30 bg-panel/95 px-4 py-3 text-body shadow-[var(--shadow-md)] backdrop-blur"
+        >
           <span className="font-semibold text-text">
             {selectedCount} selected
             {hiddenSelectedCount > 0 ? (
@@ -1101,45 +1192,57 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
           })}
         </div>
       ) : (
-        <div className="-mx-4 hidden overflow-x-auto px-4 pb-3 sm:-mx-page-x sm:px-page-x md:block lg:-mx-page-x-lg lg:px-page-x-lg xl:mx-0 xl:px-0">
-        <div className={`grid gap-3 ${focusActive ? "min-w-[34rem] grid-cols-2" : "min-w-[68rem] grid-cols-4"}`}>
-          {visibleColumnLanes.map(({ col, tasks: colTasks }) => {
-            const colTaskIds = colTasks.map((t) => t.id);
-            const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
-            return (
-              <ColumnDroppable
-                key={col.id}
-                id={col.id}
-                label={col.label}
-                description={col.description}
-                count={colTasks.length}
-                totalCount={boardStats.byStatus[col.id] ?? 0}
-                filtered={filtersActive}
-                compact={compact}
-                allSelected={allSelected}
-                onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
-              >
-                <SortableContext
-                  items={colTasks.map((t) => t.id)}
-                  strategy={verticalListSortingStrategy}
-                >
-                  {colTasks.map((t) => (
-                    <TaskCard
-                      key={t.id}
-                      task={t}
-                      projectSlug={projectSlug}
-                      onDeleteRequest={() => setDeleteTarget(t)}
-                      now={now}
-                      compact={compact}
-                      selected={selectedIds.has(t.id)}
-                      onSelectionChange={toggleTaskSelection}
-                    />
-                  ))}
-                </SortableContext>
-              </ColumnDroppable>
-            );
-          })}
-        </div>
+        <div
+          data-board-sticky-track
+          className="4xl:min-h-[calc(100dvh-var(--board-sticky-top))]"
+        >
+          <div
+            ref={boardSurfaceRef}
+            data-board-surface
+            className="-mx-4 hidden min-h-0 overflow-x-auto px-4 pb-3 sm:-mx-page-x sm:px-page-x md:block lg:-mx-page-x-lg lg:px-page-x-lg xl:mx-0 xl:px-0 4xl:sticky 4xl:top-[var(--board-sticky-top)] 4xl:h-[var(--board-available-height)] 4xl:max-h-[var(--board-available-height)]"
+          >
+            <div
+              data-board-columns
+              className={`grid gap-3 4xl:h-full 4xl:min-h-0 ${focusActive ? "min-w-[34rem] grid-cols-2" : "min-w-[68rem] grid-cols-4"}`}
+            >
+              {visibleColumnLanes.map(({ col, tasks: colTasks }) => {
+                const colTaskIds = colTasks.map((t) => t.id);
+                const allSelected = colTaskIds.length > 0 && colTaskIds.every((id) => selectedIds.has(id));
+                return (
+                  <ColumnDroppable
+                    key={col.id}
+                    id={col.id}
+                    label={col.label}
+                    description={col.description}
+                    count={colTasks.length}
+                    totalCount={boardStats.byStatus[col.id] ?? 0}
+                    filtered={filtersActive}
+                    compact={compact}
+                    allSelected={allSelected}
+                    onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
+                  >
+                    <SortableContext
+                      items={colTasks.map((t) => t.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      {colTasks.map((t) => (
+                        <TaskCard
+                          key={t.id}
+                          task={t}
+                          projectSlug={projectSlug}
+                          onDeleteRequest={() => setDeleteTarget(t)}
+                          now={now}
+                          compact={compact}
+                          selected={selectedIds.has(t.id)}
+                          onSelectionChange={toggleTaskSelection}
+                        />
+                      ))}
+                    </SortableContext>
+                  </ColumnDroppable>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
@@ -1218,6 +1321,226 @@ export default function Board({ projectSlug, boardStreamUrl, hideWorkflowFocus =
         ) : null}
       </DragOverlay>
     </DndContext>
+  );
+}
+
+function BoardSummary({
+  boardStats,
+  placement,
+}: {
+  boardStats: BoardStats;
+  placement: "header" | "stacked";
+}) {
+  const summary = (
+    <div className="min-w-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-subheading font-semibold tracking-tight text-text">Workflow board</h2>
+        <span className="rounded-full border border-line bg-panel-soft px-2 py-0.5 text-caption font-semibold tabular-nums text-text-muted">
+          {boardStats.open} open
+        </span>
+        {boardStats.blocked > 0 ? (
+          <span className="inline-flex items-center gap-1 rounded-full border border-crit/30 bg-crit/[0.07] px-2 py-0.5 text-caption font-semibold text-crit">
+            <LockGlyph /> {boardStats.blocked} blocked
+          </span>
+        ) : null}
+      </div>
+      <div className={`mt-2 flex items-center gap-3 ${placement === "header" ? "max-w-2xl" : "max-w-xl"}`}>
+        <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-bg-elev" aria-hidden="true">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-accent to-ok transition-[width]"
+            style={{ width: `${boardStats.completion}%` }}
+          />
+        </div>
+        <span
+          className="shrink-0 text-caption font-medium tabular-nums text-text-muted"
+          title="Completion among the tasks currently loaded on this board"
+        >
+          {boardStats.completion}% current board
+        </span>
+      </div>
+    </div>
+  );
+  const metrics = (
+    <div className="grid grid-cols-3 divide-x divide-line overflow-hidden rounded-xl border border-line bg-panel-soft">
+      <BoardMetric label="To do" value={boardStats.byStatus["To Do"] ?? 0} tone="todo" />
+      <BoardMetric label="Doing" value={boardStats.byStatus["In Progress"] ?? 0} tone="progress" />
+      <BoardMetric label="Review" value={boardStats.byStatus.Review ?? 0} tone="review" />
+    </div>
+  );
+
+  if (placement === "header") {
+    return (
+      <section
+        data-board-summary
+        aria-label="Workflow board summary"
+        className="grid w-full min-w-0 grid-cols-[minmax(24rem,1fr)_auto] items-center gap-8"
+      >
+        {summary}
+        {metrics}
+      </section>
+    );
+  }
+
+  return (
+    <div className="grid gap-4 px-4 py-4 lg:grid-cols-[minmax(15rem,1fr)_auto] lg:items-center lg:px-5">
+      {summary}
+      {metrics}
+    </div>
+  );
+}
+
+function BoardControls({
+  placement,
+  searchQuery,
+  onSearchChange,
+  attentionOnly,
+  onToggleAttention,
+  doneVisible,
+  onToggleDone,
+  focusVisible,
+  showFocus,
+  focusCount,
+  onToggleFocus,
+  backlogVisible,
+  backlogCount,
+  onToggleBacklog,
+  compact,
+  onToggleCompact,
+  filtersActive,
+  onReset,
+  boardStats,
+}: {
+  placement: "toolbar" | "stacked";
+  searchQuery: string;
+  onSearchChange: (value: string) => void;
+  attentionOnly: boolean;
+  onToggleAttention: () => void;
+  doneVisible: boolean;
+  onToggleDone: () => void;
+  focusVisible: boolean;
+  showFocus: boolean;
+  focusCount: number;
+  onToggleFocus: () => void;
+  backlogVisible: boolean;
+  backlogCount: number;
+  onToggleBacklog: () => void;
+  compact: boolean;
+  onToggleCompact: () => void;
+  filtersActive: boolean;
+  onReset: () => void;
+  boardStats: BoardStats;
+}) {
+  const toolbar = placement === "toolbar";
+  return (
+    <div
+      data-board-controls
+      className={toolbar
+        ? "flex min-w-0 flex-1 items-center justify-end gap-2"
+        : "flex flex-col gap-3 border-t border-line bg-panel-soft/70 px-3 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-4"}
+    >
+      <div className={toolbar ? "relative w-[clamp(18rem,24vw,42rem)] shrink-0" : "relative block min-w-0 flex-1 lg:max-w-md"}>
+        <span className="pointer-events-none absolute inset-y-0 left-3 grid place-items-center text-text-dim">
+          <SearchIcon />
+        </span>
+        <input
+          type="text"
+          role="searchbox"
+          aria-label="Search board"
+          value={searchQuery}
+          onChange={(event) => onSearchChange(event.currentTarget.value)}
+          placeholder="Search key, task, epic, project or person…"
+          className="min-h-11 w-full rounded-lg border border-line bg-panel py-2 pl-9 pr-10 text-body text-text shadow-[var(--shadow-xs)] outline-none transition focus:border-accent focus:shadow-[var(--focus-ring)] md:min-h-0"
+        />
+        {searchQuery ? (
+          <button
+            type="button"
+            onClick={() => onSearchChange("")}
+            aria-label="Clear board search"
+            className="absolute inset-y-0 right-1 grid w-9 place-items-center rounded-md text-text-muted hover:bg-accent-soft hover:text-accent"
+          >
+            ×
+          </button>
+        ) : null}
+      </div>
+
+      <div className={`flex min-w-0 items-center gap-2 ${toolbar ? "shrink-0" : "flex-wrap"}`}>
+        <BoardToggle
+          active={attentionOnly}
+          onClick={onToggleAttention}
+          label="Attention"
+          count={boardStats.attention}
+          icon={<SparkIcon />}
+        />
+        <BoardToggle
+          active={!doneVisible}
+          onClick={onToggleDone}
+          label={doneVisible ? "Hide done cards" : "Done cards hidden"}
+          count={boardStats.done}
+          icon={<EyeIcon crossed={!doneVisible} />}
+        />
+        {showFocus ? (
+          <BoardToggle
+            active={focusVisible}
+            onClick={onToggleFocus}
+            label="Focus"
+            count={focusCount}
+            icon={<FocusIcon />}
+          />
+        ) : null}
+        <BoardToggle
+          active={backlogVisible}
+          onClick={onToggleBacklog}
+          label="Backlog"
+          count={backlogCount}
+          icon={<BacklogIcon />}
+        />
+        <button
+          type="button"
+          onClick={onToggleCompact}
+          aria-pressed={compact}
+          aria-label={compact ? "Use comfortable board density" : "Use compact board density"}
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 text-caption font-semibold text-text-muted shadow-[var(--shadow-xs)] transition hover:border-line-strong hover:text-text md:min-h-0"
+          title={compact ? "Use comfortable cards" : "Use compact cards"}
+        >
+          <DensityIcon compact={compact} />
+          <span className="hidden xl:inline">{compact ? "Compact" : "Comfortable"}</span>
+        </button>
+        {filtersActive ? (
+          <button
+            type="button"
+            onClick={onReset}
+            className="min-h-11 rounded-lg px-2.5 py-2 text-caption font-semibold text-accent hover:bg-accent-soft md:min-h-0"
+          >
+            Reset
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function BoardFilterStatus({
+  visibleCount,
+  totalCount,
+  backlogVisible,
+  backlogCount,
+  onShowBacklog,
+}: {
+  visibleCount: number;
+  totalCount: number;
+  backlogVisible: boolean;
+  backlogCount: number;
+  onShowBacklog: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-2 text-caption text-text-muted" role="status">
+      <span>Showing <span className="font-semibold text-text">{visibleCount}</span> of {totalCount} tasks</span>
+      {!backlogVisible && backlogCount > 0 ? (
+        <button type="button" onClick={onShowBacklog} className="font-semibold text-accent hover:underline">
+          {backlogCount} matching {backlogCount === 1 ? "task is" : "tasks are"} in the collapsed Backlog · Show
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -1491,6 +1814,7 @@ function MobileTaskCard({
     isDragging,
   } = useSortable({ id: task.id });
   const actor = boardActorForTask(task);
+  const isDone = task.status === "Done";
   const nextLabel = nextStatus === task.status ? "Move" : `Move → ${nextStatus}`;
 
   return (
@@ -1535,9 +1859,7 @@ function MobileTaskCard({
                     <>
                       <ProjectMetaLine task={task} />
                       <div className="flex min-w-0 items-center gap-1.5 text-micro text-text-muted">
-                        {task.status === "Done" ? (
-                          <DoneActorPair task={task} />
-                        ) : actor ? (
+                        {!isDone && actor ? (
                           <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
                         ) : null}
                         <span className="truncate font-mono uppercase tracking-wider">
@@ -1580,14 +1902,9 @@ function MobileTaskCard({
                 </button>
               </div>
             </div>
-            <div className={`flex min-w-0 items-center text-micro text-text-muted ${compact ? "gap-1.5 overflow-hidden border-t border-line/60 pt-1" : "flex-wrap gap-2"}`}>
-              {compact && task.status === "Done" ? (
-                <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                  <DoneActorPair task={task} />
-                  <span className="min-w-0 flex-1 truncate" title={doneActorLabel(task)}>
-                    {doneActorLabel(task)}
-                  </span>
-                </span>
+            <div className={`flex min-w-0 items-center text-micro text-text-muted ${compact ? "gap-1.5 overflow-hidden border-t border-line/60 pt-1" : "flex-wrap gap-2"} ${isDone ? "flex-wrap" : ""}`}>
+              {isDone ? (
+                <DoneActorColumns task={task} className="basis-full" />
               ) : compact && actor ? (
                 <span className="min-w-0 flex-1 truncate" title={actorDisplayName(actor)}>
                   {actorDisplayName(actor)}
@@ -1650,11 +1967,12 @@ function ColumnDroppable({
   return (
     <div
       ref={setNodeRef}
+      data-board-lane
       data-over={isOver ? "true" : "false"}
       style={{ "--board-status": boardStatusColor(id) } as React.CSSProperties}
-      className="board-lane relative min-h-[30rem] overflow-hidden rounded-xl border p-2 pt-3 transition-[background-color,border-color,box-shadow]"
+      className="board-lane relative flex min-h-[30rem] flex-col rounded-xl border p-2 pt-3 transition-[background-color,border-color,box-shadow] 4xl:h-full 4xl:min-h-0 4xl:overflow-hidden"
     >
-      <div className="mb-2 flex items-center justify-between gap-2 rounded-lg bg-panel/75 px-2 py-2 shadow-[var(--shadow-xs)] backdrop-blur">
+      <div className="mb-2 flex shrink-0 items-center justify-between gap-2 rounded-lg bg-panel/75 px-2 py-2 shadow-[var(--shadow-xs)] backdrop-blur">
         <div className="flex min-w-0 items-center gap-2">
           {onSelectAll && (
             <input
@@ -1683,7 +2001,10 @@ function ColumnDroppable({
           {count}
         </span>
       </div>
-      <div className={compact ? "space-y-1" : "space-y-2.5"}>
+      <div
+        data-board-lane-scroll
+        className={`min-h-0 flex-1 overflow-x-hidden pr-1 4xl:overflow-y-auto 4xl:overscroll-contain ${compact ? "space-y-1" : "space-y-2.5"}`}
+      >
         {children}
         {count === 0 ? (
           <BoardEmptyState
@@ -1786,11 +2107,14 @@ function TaskCard({
           </button>
         </div>
         {compact ? (
-          <div className="mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden border-t border-line/60 pt-1 text-micro text-text-muted">
-            {isDone ? <DoneActorPair task={task} /> : null}
-            <span className="min-w-0 flex-1 truncate" title={isDone ? doneActorLabel(task) : actor ? actorDisplayName(actor) : "Unassigned"}>
-              {isDone ? doneActorLabel(task) : actor ? actorDisplayName(actor) : "Unassigned"}
-            </span>
+          <div className={`mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden border-t border-line/60 pt-1 text-micro text-text-muted ${isDone ? "flex-wrap" : ""}`}>
+            {isDone ? (
+              <DoneActorColumns task={task} className="basis-full" />
+            ) : (
+              <span className="min-w-0 flex-1 truncate" title={actor ? actorDisplayName(actor) : "Unassigned"}>
+                {actor ? actorDisplayName(actor) : "Unassigned"}
+              </span>
+            )}
             <SubtaskProgress task={task} />
             <ElapsedClock task={task} now={now} />
             <time dateTime={task.updatedAt} title={`Updated ${task.updatedAt}`} className="shrink-0 tabular-nums" suppressHydrationWarning>
@@ -1815,16 +2139,18 @@ function TaskCard({
           <div className="mt-3 space-y-2 border-t border-line/70 pt-2 text-caption text-text-muted">
             <div className="flex min-w-0 items-center gap-2">
               {isDone ? (
-                <DoneActorPair task={task} />
+                <DoneActorColumns task={task} className="flex-1" />
               ) : actor ? (
                 <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
               ) : null}
               {!isDone && !actor ? (
                 <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-dashed border-line-strong text-micro">?</span>
               ) : null}
-              <span className="min-w-0 flex-1 truncate text-micro font-medium">
-                {isDone ? doneActorLabel(task) : actor ? actorDisplayName(actor) : "Unassigned"}
-              </span>
+              {!isDone ? (
+                <span className="min-w-0 flex-1 truncate text-micro font-medium">
+                  {actor ? actorDisplayName(actor) : "Unassigned"}
+                </span>
+              ) : null}
               <BlockedBadge task={task} />
               <button
                 type="button"
@@ -2106,39 +2432,43 @@ function BoardReporterMarker({ task }: { task: Task }) {
   return task.reporter ? <MessageAvatar actor={task.reporter} size="sm" /> : null;
 }
 
-// Done cards credit the pair who shipped the task: the assignee who built it
-// followed by the resolved reviewer (task reviewer ?? acting manager ??
-// reporter) who accepted it. Collapses to a single avatar when both roles
-// resolve to the same person.
-function doneCardActors(task: Task): Array<{ actor: BoardActor; title: string }> {
-  const builder = task.assignee;
-  const acceptor = task.reviewer ?? task.manager ?? task.reporter;
-  if (builder && acceptor && builder.id === acceptor.id) {
-    return [{ actor: builder, title: `Built and accepted by ${actorDisplayName(builder)}` }];
-  }
-  const entries: Array<{ actor: BoardActor; title: string }> = [];
-  if (builder) entries.push({ actor: builder, title: `Built by ${actorDisplayName(builder)}` });
-  if (acceptor) entries.push({ actor: acceptor, title: `Accepted by ${actorDisplayName(acceptor)}` });
-  return entries;
-}
-
-function doneActorLabel(task: Task): string {
-  const entries = doneCardActors(task);
-  if (entries.length === 0) return "Unassigned";
-  return entries.map((entry) => actorDisplayName(entry.actor)).join(" → ");
-}
-
-// Two small avatars in a slightly overlapped stack (assignee first, reviewer
-// on top); per-avatar tooltips carry the "Built by" / "Accepted by" roles.
-function DoneActorPair({ task }: { task: Task }) {
-  const entries = doneCardActors(task);
-  if (entries.length === 0) return null;
+// Done cards reserve one column for the assignee and one for the resolved
+// reviewer. Keep both cells when one person fills both roles so the two
+// responsibilities remain explicit.
+function DoneActorColumns({ task, className = "" }: { task: Task; className?: string }) {
+  const assignee = task.assignee;
+  const reviewer = task.reviewer ?? task.manager ?? task.reporter;
   return (
-    <span className="flex shrink-0 items-center -space-x-1">
-      {entries.map(({ actor, title }) => (
-        <MessageAvatar key={actor.id} actor={actor} size="sm" title={title} />
-      ))}
-    </span>
+    <div data-done-card-people className={`grid min-w-0 grid-cols-2 gap-2 ${className}`}>
+      <span
+        data-done-card-assignee
+        className="flex min-w-0 items-center gap-1.5"
+        title={assignee ? `Assignee: ${actorDisplayName(assignee)}` : "Unassigned"}
+      >
+        {assignee ? (
+          <MessageAvatar actor={assignee} size="sm" />
+        ) : (
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-dashed border-line-strong text-micro">?</span>
+        )}
+        <span className="min-w-0 flex-1 truncate font-medium">
+          {assignee ? actorDisplayName(assignee) : "Unassigned"}
+        </span>
+      </span>
+      <span
+        data-done-card-reviewer
+        className="flex min-w-0 items-center gap-1.5"
+        title={reviewer ? `Reviewer: ${actorDisplayName(reviewer)}` : "No reviewer"}
+      >
+        {reviewer ? (
+          <MessageAvatar actor={reviewer} size="sm" />
+        ) : (
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-dashed border-line-strong text-micro">?</span>
+        )}
+        <span className="min-w-0 flex-1 truncate font-medium">
+          {reviewer ? actorDisplayName(reviewer) : "No reviewer"}
+        </span>
+      </span>
+    </div>
   );
 }
 

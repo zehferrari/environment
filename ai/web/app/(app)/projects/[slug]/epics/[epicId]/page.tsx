@@ -42,6 +42,7 @@ import {
 import DescriptionField from "@/components/description-field";
 import PrivateToggle from "@/components/private-toggle";
 import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
+import StickyViewportSurface from "@/components/sticky-viewport-surface";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import AddEpicTaskFab from "./add-epic-task-fab";
 import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
@@ -1044,12 +1045,17 @@ export default async function EpicDetailPage({
   }
 
   return (
+    <StickyViewportSurface kind="epic-detail">
     <div className="mx-auto w-full max-w-none">
       {/* ----- Main -------------------------------------------------- */}
       <div className="min-w-0">
         <section className="space-y-section-gap rounded-panel border border-line bg-panel p-card-lg shadow-sm">
           {/* Sticky one-row editor header: title, privacy, status and save stay visible. */}
-          <div className="sticky top-0 z-30 -mx-5 -mt-5 flex flex-wrap items-end gap-3 rounded-t-2xl border-b border-line bg-panel px-5 py-2 shadow-sm xl:flex-nowrap">
+          <div
+            data-detail-header
+            data-epic-header
+            className="sticky top-[var(--detail-sticky-top)] z-20 -mx-5 -mt-5 flex flex-wrap items-end gap-3 rounded-t-2xl border-b border-line bg-panel px-5 py-2 shadow-sm xl:flex-nowrap"
+          >
             <label className="min-w-[18rem] flex-1">
               <span className="mb-0.5 block text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Epic title
@@ -1148,7 +1154,7 @@ export default async function EpicDetailPage({
                     rows={12}
                   />
 
-                  <aside className="space-y-section-gap xl:sticky xl:top-32 xl:self-start">
+                  <aside className="space-y-section-gap xl:sticky xl:top-[calc(var(--detail-sticky-top)+var(--detail-header-height)+var(--detail-tabs-height)+1rem)] xl:self-start">
                     {/* Dates */}
                     <div className="rounded-card border border-line bg-panel-soft p-card">
                       <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
@@ -1615,5 +1621,6 @@ export default async function EpicDetailPage({
         </section>
       </div>
     </div>
+    </StickyViewportSurface>
   );
 }

@@ -504,9 +504,9 @@ model SubTask {
 // ------------------------------------------------------------------
 // HOMELAB-47 attachments — file metadata; bytes live on disk under
 // /srv/Data/projects/<projectId>/attachments/<sha256> (deploy host) or
-// ./.data/attachments/<projectId>/<sha256> (local-dev fallback). One of
-// taskId | epicId must be set — enforced server-side in
-// lib/attachments.ts since SQLite has no portable XOR check.
+// ./.data/attachments/<projectId>/<sha256> (local-dev fallback). A row may
+// belong directly to the project or to one task/epic; taskId + epicId
+// together is rejected server-side since SQLite has no portable check.
 // ------------------------------------------------------------------
 
 model Attachment {

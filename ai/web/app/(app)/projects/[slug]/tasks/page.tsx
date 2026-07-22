@@ -8,6 +8,7 @@ import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-c
 import { formatGridDate } from "@/lib/date-format";
 import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 import { accessibleProjectWhere, accessibleTaskWhere, requireViewer } from "@/lib/auth/permissions";
+import StickyViewportSurface from "@/components/sticky-viewport-surface";
 import {
   getActorVisibility,
   serializeVisibleActor,
@@ -329,6 +330,7 @@ export default async function ProjectTasksPage({
   );
 
   return (
+    <StickyViewportSurface kind="tasks-grid">
     <div className="space-y-section-gap">
       <header>
         <div>
@@ -484,6 +486,7 @@ export default async function ProjectTasksPage({
         </div>
       )}
     </div>
+    </StickyViewportSurface>
   );
 }
 

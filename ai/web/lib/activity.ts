@@ -27,6 +27,8 @@ export type ActivityKind =
   | "epic.status"
   | "epic.attachment.add"
   | "epic.attachment.delete"
+  | "project.attachment.add"
+  | "project.attachment.delete"
   | "task.delete"
   | "task.restore"
   | "task.archive"
@@ -315,6 +317,14 @@ export function describeActivity(row: ActivityRow): string {
     case "epic.attachment.delete": {
       const p = parsePayload<{ filename?: string }>(row.payload);
       return `${actor(row.actorName)} removed ${p?.filename ?? "an attachment"} from an epic`;
+    }
+    case "project.attachment.add": {
+      const p = parsePayload<{ filename?: string }>(row.payload);
+      return `${actor(row.actorName)} attached ${p?.filename ?? "a file"} to the project`;
+    }
+    case "project.attachment.delete": {
+      const p = parsePayload<{ filename?: string }>(row.payload);
+      return `${actor(row.actorName)} removed ${p?.filename ?? "an attachment"} from the project`;
     }
     case "task.delete": {
       const p = parsePayload<{ cascadedSubtaskIds?: string[] }>(row.payload);

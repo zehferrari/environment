@@ -3,6 +3,7 @@ import Link from "next/link";
 import { db } from "@/lib/db";
 import { repoHasReadme } from "@/lib/projects/repo-readme";
 import ProjectTabs from "./project-tabs";
+import { boardChromeSlotId } from "@/lib/board-chrome";
 import {
   accessibleEpicWhere,
   accessibleProjectWhere,
@@ -43,28 +44,41 @@ export default async function ProjectLayout({
     db.task.count({ where: accessibleTaskWhere(viewer, { projectId: project.id, deletedAt: { not: null } }) }),
   ]);
   const hasBin = binnedEpics + binnedTasks > 0;
+  const boardChromeScope = `project-${project.slug}`;
 
   return (
-    <div>
-      <header className="mb-4">
-        <div className="mb-2 flex items-center gap-2 text-caption font-medium text-text-muted">
-          <Link
-            href="/projects"
-            className="rounded-md px-1.5 py-0.5 transition hover:bg-accent-soft hover:text-accent"
-          >
-            Projects
-          </Link>
-          <span className="text-text-dim">/</span>
-          <span className="truncate font-mono text-micro uppercase tracking-[0.12em]">{project.slug}</span>
+    <div
+      data-board-layout
+      className="[--page-available-height:calc(100dvh-5.5rem)] [--page-sticky-top:4.5rem] [--board-available-height:var(--page-available-height)] [--board-sticky-top:var(--page-sticky-top)]"
+    >
+      <header className="mb-4 4xl:grid 4xl:grid-cols-[minmax(28rem,1fr)_minmax(48rem,1.1fr)] 4xl:items-end 4xl:gap-10">
+        <div className="min-w-0">
+          <div className="mb-2 flex items-center gap-2 text-caption font-medium text-text-muted">
+            <Link
+              href="/projects"
+              className="rounded-md px-1.5 py-0.5 transition hover:bg-accent-soft hover:text-accent"
+            >
+              Projects
+            </Link>
+            <span className="text-text-dim">/</span>
+            <span className="truncate font-mono text-micro uppercase tracking-[0.12em]">{project.slug}</span>
+          </div>
+          <h1 className="text-display font-semibold tracking-[-0.035em] text-text">
+            <Link href={`/projects/${project.slug}`} className="hover:underline">
+              {project.name}
+            </Link>
+          </h1>
         </div>
-        <h1 className="text-display font-semibold tracking-[-0.035em] text-text">
-          <Link href={`/projects/${project.slug}`} className="hover:underline">
-            {project.name}
-          </Link>
-        </h1>
+        <div
+          id={boardChromeSlotId(boardChromeScope, "summary")}
+          data-board-summary-slot
+          className="hidden min-h-16 min-w-0 items-end 4xl:flex"
+        />
       </header>
       <ProjectTabs
         slug={project.slug}
+        name={project.name}
+        boardChromeScope={boardChromeScope}
         hasSummary={hasSummary}
         hasCode={viewer.isOwner && hasCode}
         hasBin={hasBin}

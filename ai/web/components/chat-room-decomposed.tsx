@@ -1751,6 +1751,8 @@ const Composer = React.memo(function Composer(props: any) {
             type="button"
             onClick={() => setComposerOpen(true)}
             aria-label={canContinueArchive ? "Continue action plan" : "Message action plan"}
+            data-task-local-fab
+            data-task-quick-action="action-plan"
             className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-3xl leading-none text-bg shadow-lg transition hover:opacity-90 max-sm:bottom-[calc(env(safe-area-inset-bottom)+1rem)] max-sm:right-4"
           >
             <span className="-mt-0.5">+</span>

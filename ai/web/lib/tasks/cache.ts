@@ -137,6 +137,7 @@ export function getCachedTaskDetailShell(taskId: string) {
             workItemKey: true,
             title: true,
             status: true,
+            deploymentStatus: true,
             branchName: true,
             commitPrefix: true,
             actingManagerId: true,

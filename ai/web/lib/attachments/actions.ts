@@ -3,10 +3,11 @@
 // Attachment server actions (HOMELAB-47).
 //
 // Wire-side glue between the form upload, the lib/attachments
-// filesystem helper, and the Attachment DB row. Targets are XOR
-// (taskId | epicId) — assertOneTarget throws before any I/O. Files are
-// content-addressed; metadata rows can outnumber on-disk blobs when
-// the same bytes are uploaded twice.
+// filesystem helper, and the Attachment DB row. Attachments may target a
+// Task, an Epic, or the Project itself (neither scoped id); setting both
+// scoped ids is rejected before any I/O. Files are content-addressed;
+// metadata rows can outnumber on-disk blobs when the same bytes are uploaded
+// twice.
 
 import { revalidatePath } from "next/cache";
 import {
@@ -123,7 +124,11 @@ export async function uploadAttachment(formData: FormData) {
         projectId: project.id,
         taskId,
         userId: actor.id,
-        kind: taskId ? "task.attachment.add" : "epic.attachment.add",
+        kind: taskId
+          ? "task.attachment.add"
+          : epicId
+            ? "epic.attachment.add"
+            : "project.attachment.add",
         payload: JSON.stringify({
           attachmentId: row.id,
           filename,
@@ -140,6 +145,8 @@ export async function uploadAttachment(formData: FormData) {
   if (epicId) {
     revalidatePath(`/projects/${slug}/epics/${epicId}`);
   }
+  revalidatePath(`/projects/${slug}/library`);
+  revalidatePath(`/projects/${slug}`);
 }
 
 export async function deleteAttachment(formData: FormData) {
@@ -168,7 +175,11 @@ export async function deleteAttachment(formData: FormData) {
         projectId: row.projectId,
         taskId: row.taskId,
         userId: actor.id,
-        kind: row.taskId ? "task.attachment.delete" : "epic.attachment.delete",
+        kind: row.taskId
+          ? "task.attachment.delete"
+          : row.epicId
+            ? "epic.attachment.delete"
+            : "project.attachment.delete",
         payload: JSON.stringify({
           attachmentId,
           filename: row.filename,
@@ -188,4 +199,6 @@ export async function deleteAttachment(formData: FormData) {
   if (row.epicId) {
     revalidatePath(`/projects/${slug}/epics/${row.epicId}`);
   }
+  revalidatePath(`/projects/${slug}/library`);
+  revalidatePath(`/projects/${slug}`);
 }

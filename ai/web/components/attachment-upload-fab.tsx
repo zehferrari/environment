@@ -6,6 +6,13 @@ import { Button, Surface } from "@/components/ui/primitives";
 
 type UploadState = { ok: boolean; error: string | null };
 
+export type AttachmentUploadTarget = {
+  value: "task" | "epic" | "project";
+  label: string;
+  taskId?: string;
+  epicId?: string;
+};
+
 const IDLE_STATE: UploadState = { ok: false, error: null };
 
 function SubmitButton() {
@@ -23,34 +30,67 @@ export default function AttachmentUploadFab({
   epicId,
   maxLabel,
   uploadAction,
+  targets: targetOptions,
+  open: controlledOpen,
+  onOpenChange,
+  hideTrigger = false,
 }: {
   projectSlug: string;
   taskId?: string;
   epicId?: string;
   maxLabel: string;
   uploadAction: (formData: FormData) => Promise<void>;
+  targets?: AttachmentUploadTarget[];
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  hideTrigger?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [selectedTargetValue, setSelectedTargetValue] = useState<AttachmentUploadTarget["value"]>(
+    targetOptions?.[0]?.value ?? (taskId ? "task" : epicId ? "epic" : "project"),
+  );
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (next: boolean) => {
+    if (next) setUploadError(null);
+    if (controlledOpen === undefined) setInternalOpen(next);
+    onOpenChange?.(next);
+  };
+  const targets: AttachmentUploadTarget[] = targetOptions?.length
+    ? targetOptions
+    : taskId
+      ? [{ value: "task", label: "Current task", taskId }]
+      : epicId
+        ? [{ value: "epic", label: "Current epic", epicId }]
+        : [{ value: "project", label: "Current project" }];
+  const selectedTarget = targets.find((target) => target.value === selectedTargetValue) ?? targets[0]!;
+  const defaultTargetValue = targets[0]!.value;
 
-  const [state, formAction] = useActionState<UploadState, FormData>(
+  useEffect(() => {
+    if (!open) return;
+    setUploadError(null);
+    setSelectedTargetValue(defaultTargetValue);
+  }, [defaultTargetValue, open]);
+
+  const [, formAction] = useActionState<UploadState, FormData>(
     async (_prev, formData) => {
+      setUploadError(null);
       try {
         await uploadAction(formData);
+        if (controlledOpen === undefined) setInternalOpen(false);
+        onOpenChange?.(false);
         return { ok: true, error: null };
       } catch (err) {
+        const message = err instanceof Error ? err.message : "Upload failed";
+        setUploadError(message);
         return {
           ok: false,
-          error: err instanceof Error ? err.message : "Upload failed",
+          error: message,
         };
       }
     },
     IDLE_STATE,
   );
-
-  // Only a successful upload closes the modal.
-  useEffect(() => {
-    if (state.ok) setOpen(false);
-  }, [state.ok]);
 
   return (
     <>
@@ -69,8 +109,8 @@ export default function AttachmentUploadFab({
             className="w-full max-w-md space-y-section-gap"
           >
             <input type="hidden" name="projectSlug" value={projectSlug} />
-            {taskId ? <input type="hidden" name="taskId" value={taskId} /> : null}
-            {epicId ? <input type="hidden" name="epicId" value={epicId} /> : null}
+            {selectedTarget.taskId ? <input type="hidden" name="taskId" value={selectedTarget.taskId} /> : null}
+            {selectedTarget.epicId ? <input type="hidden" name="epicId" value={selectedTarget.epicId} /> : null}
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
@@ -90,6 +130,21 @@ export default function AttachmentUploadFab({
                 ×
               </Button>
             </div>
+            {targets.length > 1 ? (
+              <label className="block text-caption">
+                <span className="mb-1 block font-semibold text-text-muted">Attach to</span>
+                <select
+                  value={selectedTarget.value}
+                  onChange={(event) => setSelectedTargetValue(event.currentTarget.value as AttachmentUploadTarget["value"])}
+                  className="w-full rounded-lg border border-line bg-bg px-3 py-2 text-body outline-none focus:border-accent"
+                  aria-label="Attachment destination"
+                >
+                  {targets.map((target) => (
+                    <option key={target.value} value={target.value}>{target.label}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
             <input
               type="file"
               name="files"
@@ -97,12 +152,12 @@ export default function AttachmentUploadFab({
               required
               className="w-full rounded-lg border border-dashed border-line bg-bg px-3 py-6 text-body file:mr-3 file:rounded-lg file:border-0 file:bg-accent file:px-3 file:py-1.5 file:text-caption file:font-medium file:text-bg hover:file:opacity-90"
             />
-            {state.error ? (
+            {uploadError ? (
               <p
                 role="alert"
                 className="rounded-lg border border-crit/40 bg-crit/10 px-3 py-2 text-caption text-crit"
               >
-                {state.error}
+                {uploadError}
               </p>
             ) : null}
             <div className="flex justify-end gap-2">
@@ -115,15 +170,18 @@ export default function AttachmentUploadFab({
         </div>
       ) : null}
 
-      <Button
-        type="button"
-        onClick={() => setOpen(true)}
-        aria-label="Add attachment"
-        variant="primary"
-        className="fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full p-0 text-3xl leading-none shadow-lg"
-      >
-        <span className="-mt-0.5">+</span>
-      </Button>
+      {!hideTrigger ? (
+        <Button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label="Add attachment"
+          data-task-local-fab
+          variant="primary"
+          className="fixed bottom-6 right-6 z-40 h-14 w-14 rounded-full p-0 text-3xl leading-none shadow-lg"
+        >
+          <span className="-mt-0.5">+</span>
+        </Button>
+      ) : null}
     </>
   );
 }

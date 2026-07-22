@@ -10,8 +10,8 @@ export default async function WorkspaceTaskPage(props: {
 }) {
   const { slug } = await props.params;
   return (
-    <WorkspacePane slug={slug}>
-      <TaskPage params={props.params} searchParams={props.searchParams} />
+    <WorkspacePane closeHref={`/projects/${slug}`}>
+      <TaskPage params={props.params} searchParams={props.searchParams} contained />
     </WorkspacePane>
   );
 }
