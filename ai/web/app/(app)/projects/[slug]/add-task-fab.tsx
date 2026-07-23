@@ -215,10 +215,9 @@ export default function AddTaskFab({
             setOpen(true);
           }}
           aria-label="Add task"
-          className="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 items-center justify-center gap-2 rounded-2xl bg-accent px-4 text-bg shadow-[var(--shadow-float)] transition-[transform,background-color,box-shadow] hover:-translate-y-0.5 hover:bg-accent-strong md:bottom-6 md:right-6 md:h-12"
+          className="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-bg shadow-[var(--shadow-float)] transition-[transform,background-color,box-shadow] hover:-translate-y-0.5 hover:bg-accent-strong md:bottom-6 md:right-6 md:h-12 md:w-12"
         >
           <span className="text-2xl leading-none" aria-hidden="true">+</span>
-          <span className="text-body font-semibold">New task</span>
         </button>
       ) : null}
     </>

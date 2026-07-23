@@ -1827,7 +1827,7 @@ export default async function TaskDetailPage({
           <div
             data-detail-header
             data-task-header
-            className="sticky top-[var(--detail-sticky-top)] z-20 -mx-5 -mt-5 flex flex-wrap items-end gap-3 rounded-t-2xl border-b border-line bg-panel px-5 py-2 shadow-sm xl:flex-nowrap"
+            className="relative sticky top-[var(--detail-sticky-top)] z-20 -mx-5 -mt-5 flex flex-wrap items-end gap-3 rounded-t-2xl border-b border-line bg-panel px-5 py-2 shadow-sm xl:flex-nowrap"
           >
             <label className="min-w-[18rem] flex-1">
               <span className="mb-0.5 block text-nano font-semibold uppercase tracking-wider text-text-muted">
@@ -1848,18 +1848,6 @@ export default async function TaskDetailPage({
                 aria-label="Task title"
               />
             </label>
-            <div className="min-w-[12rem] flex-[0_1_16rem]">
-              <span className="mb-0.5 block text-nano font-semibold uppercase tracking-wider text-text-muted">
-                Epic
-              </span>
-              <TaskEpicPicker
-                formId="taskMain"
-                name="epicId"
-                projectSlug={slug}
-                defaultValue={task.epicId ?? ""}
-                epics={projectEpics}
-              />
-            </div>
             <div className="flex shrink-0 flex-col items-end gap-0.5">
               <span className="text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Updated{" "}
@@ -2108,6 +2096,20 @@ export default async function TaskDetailPage({
                       </div>
                     </div>
 
+                    {/* Epic picker moved from header to sidebar */}
+                    <div className="min-w-0">
+                      <span className="mb-0.5 block text-nano font-semibold uppercase tracking-wider text-text-muted">
+                        Epic
+                      </span>
+                      <TaskEpicPicker
+                        formId="taskMain"
+                        name="epicId"
+                        projectSlug={slug}
+                        defaultValue={task.epicId ?? ""}
+                        epics={projectEpics}
+                      />
+                    </div>
+
                     {/* Blocked by — hard dependency on another task (ENV-62). */}
                     {currentBlockerVisible ? <div className="space-y-1 rounded-card border border-line bg-panel-soft p-card">
                       <label className="block">
@@ -2134,66 +2136,6 @@ export default async function TaskDetailPage({
                         This task waits until the chosen task is Done. Circular blocks are rejected.
                       </p>
                     </div> : null}
-
-                    {/* Dates — no border/background, each date on its own row with avatar+username+timestamp */}
-                    <dl data-task-dates className="space-y-2 text-caption">
-                      <div data-task-date className="flex items-center gap-2">
-                        <span className="text-micro font-semibold uppercase tracking-wider text-text-muted">Created by</span>
-                        {createdActivity?.user ? (
-                          <MessageAvatar actor={createdActivity.user} size="sm" />
-                        ) : visibleReporter ? (
-                          <MessageAvatar actor={visibleReporter} size="sm" />
-                        ) : (
-                          <span aria-hidden="true" className="h-6 w-6 shrink-0 rounded-full bg-bg-elev" />
-                        )}
-                        <span className="truncate text-text-muted">
-                          {createdActivity?.user ? actorDisplayName(createdActivity.user) : visibleReporter ? actorDisplayName(visibleReporter) : "Unknown"}
-                        </span>
-                        <time
-                          dateTime={dateIso(task.createdAt) ?? undefined}
-                          title={dateIso(task.createdAt) ?? undefined}
-                          className="ml-auto tabular-nums text-text-muted"
-                        >
-                          {timeAgo(task.createdAt)}
-                        </time>
-                      </div>
-                      <div data-task-date className="flex items-center gap-2">
-                        <span className="text-micro font-semibold uppercase tracking-wider text-text-muted">Last updated by</span>
-                        {visibleUpdatedActor ? (
-                          <MessageAvatar actor={visibleUpdatedActor} size="sm" />
-                        ) : (
-                          <span aria-hidden="true" className="h-6 w-6 shrink-0 rounded-full bg-bg-elev" />
-                        )}
-                        <span className="truncate text-text-muted">
-                          {visibleUpdatedActor ? actorDisplayName(visibleUpdatedActor) : "Unknown"}
-                        </span>
-                        <time
-                          dateTime={dateIso(task.updatedAt) ?? undefined}
-                          title={dateIso(task.updatedAt) ?? undefined}
-                          className="ml-auto tabular-nums text-text-muted"
-                        >
-                          {timeAgo(task.updatedAt)}
-                        </time>
-                      </div>
-                      <div data-task-date className="flex items-center gap-2">
-                        <span className="text-micro font-semibold uppercase tracking-wider text-text-muted">Completed by</span>
-                        {visibleDoneActor ? (
-                          <MessageAvatar actor={visibleDoneActor} size="sm" />
-                        ) : (
-                          <span aria-hidden="true" className="h-6 w-6 shrink-0 rounded-full bg-bg-elev" />
-                        )}
-                        <span className="truncate text-text-muted">
-                          {visibleDoneActor ? actorDisplayName(visibleDoneActor) : "—"}
-                        </span>
-                        <time
-                          dateTime={dateIso(doneAt) ?? undefined}
-                          title={dateIso(doneAt) ?? undefined}
-                          className="ml-auto tabular-nums text-text-muted"
-                        >
-                          {doneAt ? timeAgo(doneAt) : "—"}
-                        </time>
-                      </div>
-                    </dl>
 
                     <div data-task-actions className="grid grid-cols-2 gap-3">
                       <form
@@ -2242,6 +2184,66 @@ export default async function TaskDetailPage({
                         </button>
                       </form>
                     </div>
+
+                    {/* Dates — no border/background, each date on its own row with avatar+username+timestamp */}
+                    <dl data-task-dates className="space-y-2 text-caption">
+                      <div data-task-date className="flex items-center gap-2">
+                        <span className="w-28 shrink-0 text-micro uppercase tracking-wider text-text-muted">Created by</span>
+                        {createdActivity?.user ? (
+                          <MessageAvatar actor={createdActivity.user} size="sm" />
+                        ) : visibleReporter ? (
+                          <MessageAvatar actor={visibleReporter} size="sm" />
+                        ) : (
+                          <span aria-hidden="true" className="h-6 w-6 shrink-0 rounded-full bg-bg-elev" />
+                        )}
+                        <span className="truncate text-text-muted">
+                          {createdActivity?.user ? actorDisplayName(createdActivity.user) : visibleReporter ? actorDisplayName(visibleReporter) : "Unknown"}
+                        </span>
+                        <time
+                          dateTime={dateIso(task.createdAt) ?? undefined}
+                          title={dateIso(task.createdAt) ?? undefined}
+                          className="ml-auto tabular-nums text-text-muted"
+                        >
+                          {timeAgo(task.createdAt)}
+                        </time>
+                      </div>
+                      <div data-task-date className="flex items-center gap-2">
+                        <span className="w-28 shrink-0 text-micro uppercase tracking-wider text-text-muted">Last updated by</span>
+                        {visibleUpdatedActor ? (
+                          <MessageAvatar actor={visibleUpdatedActor} size="sm" />
+                        ) : (
+                          <span aria-hidden="true" className="h-6 w-6 shrink-0 rounded-full bg-bg-elev" />
+                        )}
+                        <span className="truncate text-text-muted">
+                          {visibleUpdatedActor ? actorDisplayName(visibleUpdatedActor) : "Unknown"}
+                        </span>
+                        <time
+                          dateTime={dateIso(task.updatedAt) ?? undefined}
+                          title={dateIso(task.updatedAt) ?? undefined}
+                          className="ml-auto tabular-nums text-text-muted"
+                        >
+                          {timeAgo(task.updatedAt)}
+                        </time>
+                      </div>
+                      <div data-task-date className="flex items-center gap-2">
+                        <span className="w-28 shrink-0 text-micro uppercase tracking-wider text-text-muted">Completed by</span>
+                        {visibleDoneActor ? (
+                          <MessageAvatar actor={visibleDoneActor} size="sm" />
+                        ) : (
+                          <span aria-hidden="true" className="h-6 w-6 shrink-0 rounded-full bg-bg-elev" />
+                        )}
+                        <span className="truncate text-text-muted">
+                          {visibleDoneActor ? actorDisplayName(visibleDoneActor) : "—"}
+                        </span>
+                        <time
+                          dateTime={dateIso(doneAt) ?? undefined}
+                          title={dateIso(doneAt) ?? undefined}
+                          className="ml-auto tabular-nums text-text-muted"
+                        >
+                          {doneAt ? timeAgo(doneAt) : "—"}
+                        </time>
+                      </div>
+                    </dl>
                   </aside>
                 </div>
               </TabPanel>
@@ -2477,20 +2479,18 @@ export default async function TaskDetailPage({
                 />
               </TabPanel> : null}
             </div>
-            {!contained ? (
-              <TaskQuickAddFab
-                projectSlug={slug}
-                projectName={task.project.name}
-                taskId={task.id}
-                taskTitle={task.title}
-                epicId={task.epicId ?? undefined}
-                epicTitle={task.epic?.title ?? undefined}
-                canCreateProject={viewer.isOwner}
-                maxAttachmentLabel={formatBytes(attachmentMaxBytes())}
-                uploadAttachmentAction={uploadAttachment}
-                createCommentAction={createComment}
-              />
-            ) : null}
+            <TaskQuickAddFab
+              projectSlug={slug}
+              projectName={task.project.name}
+              taskId={task.id}
+              taskTitle={task.title}
+              epicId={task.epicId ?? undefined}
+              epicTitle={task.epic?.title ?? undefined}
+              canCreateProject={viewer.isOwner}
+              maxAttachmentLabel={formatBytes(attachmentMaxBytes())}
+              uploadAttachmentAction={uploadAttachment}
+              createCommentAction={createComment}
+            />
           </TabsProvider>
         </section>
       </div>
