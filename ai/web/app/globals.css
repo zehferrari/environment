@@ -286,17 +286,6 @@ textarea::placeholder {
   box-shadow: var(--shadow-xs);
 }
 
-.board-task-card::before {
-  background: var(--card-status);
-  border-radius: 0 999px 999px 0;
-  content: "";
-  inset: 0.7rem auto 0.7rem 0;
-  opacity: 0.72;
-  pointer-events: none;
-  position: absolute;
-  width: 3px;
-}
-
 .board-task-card:hover {
   border-color: color-mix(in srgb, var(--card-status) 30%, var(--color-line));
   box-shadow: var(--shadow-sm);

@@ -1822,12 +1822,12 @@ export default async function TaskDetailPage({
     <div data-task-quick-add-context className="mx-auto w-full max-w-none">
       {/* ----- Main column ------------------------------------------- */}
       <div className="min-w-0">
-        <section className="space-y-section-gap rounded-panel border border-line bg-panel p-card-lg shadow-sm">
+        <section className={`space-y-section-gap border border-line bg-panel p-card-lg shadow-sm ${contained ? "rounded-b-panel rounded-t-none border-t-0" : "rounded-panel"}`}>
           {/* Sticky one-row editor header: title, epic and save stay visible. */}
           <div
             data-detail-header
             data-task-header
-            className="relative sticky top-[var(--detail-sticky-top)] z-20 -mx-5 -mt-5 flex flex-wrap items-end gap-3 rounded-t-2xl border-b border-line bg-panel px-5 py-2 shadow-sm xl:flex-nowrap"
+            className={`relative sticky top-[var(--detail-sticky-top)] z-20 -mx-5 -mt-5 flex flex-wrap items-end gap-3 border-b border-line bg-panel px-5 py-2 shadow-sm xl:flex-nowrap ${contained ? "" : "rounded-t-2xl"}`}
           >
             <label className="min-w-[18rem] flex-1">
               <span className="mb-0.5 block text-nano font-semibold uppercase tracking-wider text-text-muted">

@@ -804,7 +804,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
   const focusActive = !hideWorkflowFocus && focusVisible && workflowFocus.length > 0;
   const visibleColumnLanes = focusActive
     ? columnLanes.filter(({ col }) => col.id === "In Progress" || col.id === "Review")
-    : columnLanes;
+    : columnLanes.filter(({ col }) => doneVisible || col.id !== "Done");
   const mobileBacklogLane = useMemo(
     () => ({ col: { id: "Backlog", label: "Backlog", description: "planning/opinions" }, tasks: backlogTasks }),
     [backlogTasks],
@@ -1206,7 +1206,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
           >
             <div
               data-board-columns
-              className={`grid gap-3 4xl:h-full 4xl:min-h-0 ${focusActive ? "min-w-[34rem] grid-cols-2" : "min-w-[68rem] grid-cols-4"}`}
+              className={`grid gap-3 4xl:h-full 4xl:min-h-0 ${focusActive ? "min-w-[34rem] grid-cols-2" : doneVisible ? "min-w-[68rem] grid-cols-4" : "min-w-[51rem] grid-cols-3"}`}
             >
               {visibleColumnLanes.map(({ col, tasks: colTasks }) => {
                 const colTaskIds = colTasks.map((t) => t.id);
@@ -2086,17 +2086,28 @@ function TaskCard({
                 <CompactTaskMeta task={task} />
               ) : (
                 <>
-                  <ProjectMetaLine task={task} />
-                  <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-caption text-text-muted">
-                    {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
+                  <div className="flex min-w-0 items-center justify-between gap-2">
                     <span className="truncate font-mono text-micro font-semibold tracking-wide text-text-muted">
                       {task.workItemKey ?? "—"}
                     </span>
+                    <span className="inline-flex shrink-0 items-center gap-1.5 text-micro text-text-muted">
+                      <ElapsedClock task={task} now={now} />
+                      <time dateTime={task.updatedAt} title={`Updated ${task.updatedAt}`} className="tabular-nums" suppressHydrationWarning>
+                        {relativeUpdated(task.updatedAt)}
+                      </time>
+                    </span>
+                  </div>
+                  <div className={`${compact ? "mt-0.5 line-clamp-1 text-caption" : "mt-1 line-clamp-2"} font-medium leading-snug text-text`}>{task.title}</div>
+                  <ProjectMetaLine task={task} />
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-caption text-text-muted">
+                    {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
                     {task.epicTitle ? <span className="max-w-full truncate rounded bg-bg-elev px-1.5 py-0.5 text-micro">{task.epicTitle}</span> : null}
                   </div>
                 </>
               )}
-              <div className={`${compact ? "mt-0.5 line-clamp-1 text-caption" : "mt-1 line-clamp-2"} font-medium leading-snug text-text`}>{task.title}</div>
+              {compact ? (
+                <div className={`mt-0.5 line-clamp-1 text-caption font-medium leading-snug text-text`}>{task.title}</div>
+              ) : null}
             </Link>
           </div>
           <button
@@ -2121,10 +2132,6 @@ function TaskCard({
               </span>
             )}
             <SubtaskProgress task={task} />
-            <ElapsedClock task={task} now={now} />
-            <time dateTime={task.updatedAt} title={`Updated ${task.updatedAt}`} className="shrink-0 tabular-nums" suppressHydrationWarning>
-              {relativeUpdated(task.updatedAt)}
-            </time>
             <BlockedBadge task={task} />
             <button
               type="button"
@@ -2141,46 +2148,35 @@ function TaskCard({
             </button>
           </div>
         ) : (
-          <div className="mt-3 space-y-2 border-t border-line/70 pt-2 text-caption text-text-muted">
-            <div className="flex min-w-0 items-center gap-2">
-              {isDone ? (
-                <DoneActorColumns task={task} className="flex-1" />
-              ) : actor ? (
-                <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
-              ) : null}
-              {!isDone && !actor ? (
-                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-dashed border-line-strong text-micro">?</span>
-              ) : null}
-              {!isDone ? (
-                <span className="min-w-0 flex-1 truncate text-micro font-medium">
-                  {actor ? actorDisplayName(actor) : "Unassigned"}
-                </span>
-              ) : null}
-              <BlockedBadge task={task} />
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onDeleteRequest();
-                }}
-                onPointerDown={(event) => event.stopPropagation()}
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
-                aria-label={`Move ${task.title} to bin`}
-                title="Move to bin"
-              >
-                <TrashIcon />
-              </button>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 pl-0 text-micro sm:pl-10">
-              <SubtaskProgress task={task} />
-              <ElapsedClock task={task} now={now} />
-              <span className="inline-flex items-center gap-1">
-                <span className="text-text-dim">Updated</span>
-                <time dateTime={task.updatedAt} title={`Updated ${task.updatedAt}`} className="tabular-nums" suppressHydrationWarning>
-                  {relativeUpdated(task.updatedAt)}
-                </time>
+          <div className="mt-3 flex min-w-0 items-center gap-2 border-t border-line/70 pt-2 text-caption text-text-muted">
+            {isDone ? (
+              <DoneActorColumns task={task} className="flex-1" />
+            ) : actor ? (
+              <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
+            ) : null}
+            {!isDone && !actor ? (
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-dashed border-line-strong text-micro">?</span>
+            ) : null}
+            {!isDone ? (
+              <span className="min-w-0 flex-1 truncate text-micro font-medium">
+                {actor ? actorDisplayName(actor) : "Unassigned"}
               </span>
-            </div>
+            ) : null}
+            <SubtaskProgress task={task} />
+            <BlockedBadge task={task} />
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onDeleteRequest();
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
+              aria-label={`Move ${task.title} to bin`}
+              title="Move to bin"
+            >
+              <TrashIcon />
+            </button>
           </div>
         )}
       </div>
@@ -2395,15 +2391,15 @@ function ProjectMetaLine({ task }: { task: Task }) {
 function CompactTaskMeta({ task }: { task: Task }) {
   return (
     <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-micro leading-none text-text-muted">
+      <span className="shrink-0 font-mono font-semibold tracking-wide">
+        {task.workItemKey ?? "—"}
+      </span>
       {task.project ? (
         <span className="min-w-0 truncate font-semibold" title={projectDisplayName(task.project)}>
           {projectDisplayName(task.project)}
         </span>
       ) : null}
       {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
-      <span className="shrink-0 font-mono font-semibold tracking-wide">
-        {task.workItemKey ?? "—"}
-      </span>
       {task.epicTitle ? (
         <span className="min-w-0 truncate rounded bg-bg-elev px-1 py-0.5" title={task.epicTitle}>
           {task.epicTitle}
