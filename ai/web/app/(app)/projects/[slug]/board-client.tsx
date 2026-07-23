@@ -68,6 +68,8 @@ type Task = {
   blockedByKey: string | null;
   activeWorking: boolean;
   project: { slug: string; name: string; workspace?: { slug: string; name: string } | null } | null;
+  workspaceColor?: string | null;
+  projectColor?: string | null;
 };
 type Column = { id: string; label: string; description?: string };
 type BoardStats = {
@@ -1832,6 +1834,7 @@ function MobileTaskCard({
         <div
           data-selected={selected ? "true" : "false"}
           className={`${taskCardClass(task, false, compact, false)} min-w-[calc(100%-9rem)] touch-auto`}
+          style={taskCardStyle(task)}
           title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
         >
           <div className={`relative z-10 ${compact ? "space-y-0.5" : "space-y-2"}`}>
@@ -2054,6 +2057,7 @@ function TaskCard({
         transform: CSS.Transform.toString(transform),
         transition,
         "--board-status": boardStatusColor(task.status),
+        ...taskCardStyle(task),
       } as React.CSSProperties}
       className={taskCardClass(task, isDragging, compact, false)}
       title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
@@ -2200,7 +2204,7 @@ function WorkflowFocusCard({
     <button
       type="button"
       onClick={() => router.push(taskHref(task, projectSlug))}
-      style={{ "--board-status": boardStatusColor(task.status) } as React.CSSProperties}
+      style={{ "--board-status": boardStatusColor(task.status), ...taskCardStyle(task) } as React.CSSProperties}
       className={`${taskCardClass(task)} min-w-0 text-left`}
       title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
     >
@@ -2296,7 +2300,11 @@ function BacklogRow({
   return (
     <div
       ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
+      style={{
+        transform: CSS.Transform.toString(transform),
+        transition,
+        ...(task.workspaceColor ? { borderLeftWidth: "3px", borderLeftColor: task.workspaceColor } : {}),
+      }}
       className={`grid min-h-11 min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 py-2.5 text-body transition last:border-b-0 hover:bg-panel-soft ${
         isPlanningAssigned(task) ? "bg-yellow-300/[0.08]" : statusRowClass(task.status)
       } ${selected ? "bg-accent-soft shadow-[inset_3px_0_0_var(--color-accent)]" : ""} ${isDragging ? "bg-panel-soft opacity-40" : ""}`}
@@ -2659,11 +2667,29 @@ function statusRowClass(status: string) {
 }
 
 function taskCardClass(task: Task, isDragging = false, compact = false, interactive = true) {
+  const borderStyle = task.workspaceColor
+    ? `border-l-[3px] border-l-[${task.workspaceColor}]`
+    : "";
+  const bgStyle = task.projectColor
+    ? `background-color: ${task.projectColor}18`
+    : "";
   return `board-task-card group/card relative block w-full select-none overflow-hidden border transition-[transform,border-color,box-shadow,background-color,opacity] active:scale-[0.99] ${
     compact ? "rounded-lg px-2 py-1.5 text-caption" : "rounded-xl p-3 text-body"
   } ${interactive ? "cursor-pointer" : ""} ${isPlanningAssigned(task) ? "board-task-card--planning" : ""} ${
     waitingOnHumanReview(task) ? "board-task-card--human-review" : ""
-  } ${isDragging ? "opacity-30" : "hover:-translate-y-px"}`;
+  } ${isDragging ? "opacity-30" : "hover:-translate-y-px"} ${borderStyle}`;
+}
+
+function taskCardStyle(task: Task): React.CSSProperties {
+  const style: React.CSSProperties = {};
+  if (task.workspaceColor) {
+    style.borderLeftWidth = "3px";
+    style.borderLeftColor = task.workspaceColor;
+  }
+  if (task.projectColor) {
+    style.backgroundColor = `${task.projectColor}18`;
+  }
+  return style;
 }
 
 function boardStatusColor(status: string) {

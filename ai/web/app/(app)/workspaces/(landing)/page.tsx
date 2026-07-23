@@ -303,13 +303,22 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
     include: {
       projects: {
         where: { project: accessibleProjectWhere(viewer, { deletedAt: null, archivedAt: null }) },
-        include: { project: { select: { id: true, slug: true, name: true } } },
+        include: { project: { select: { id: true, slug: true, name: true, backgroundColor: true } } },
         orderBy: { createdAt: "asc" },
       },
     },
   });
 
-  const projectById = new Map<string, { id: string; slug: string; name: string; workspace: { slug: string; name: string } }>();
+  const workspaceColorById = new Map<string, string | null>();
+  for (const workspace of workspaces) {
+    for (const { project } of workspace.projects) {
+      if (!workspaceColorById.has(project.id)) {
+        workspaceColorById.set(project.id, workspace.borderColor);
+      }
+    }
+  }
+
+  const projectById = new Map<string, { id: string; slug: string; name: string; backgroundColor: string | null; workspace: { slug: string; name: string } }>();
   for (const workspace of workspaces) {
     for (const { project } of workspace.projects) {
       if (!projectById.has(project.id)) {
@@ -441,6 +450,8 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
                 name: t.project.name,
                 workspace: project?.workspace ?? null,
               },
+              workspaceColor: workspaceColorById.get(t.projectId) ?? null,
+              projectColor: project?.backgroundColor ?? null,
             };
           })}
           moveTaskAction={moveTask}

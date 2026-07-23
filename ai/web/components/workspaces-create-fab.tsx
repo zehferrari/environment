@@ -139,22 +139,23 @@ export default function WorkspacesCreateFab({
                 <MenuButton
                   label="New workspace"
                   detail="Group projects and agent pools"
+                  icon={<WorkspaceIcon />}
                   onSelect={() => {
                     setMenuOpen(false);
                     setWorkspaceOpen(true);
                   }}
                 />
               ) : (
-                <MenuDisabled label="New workspace" detail="Mission Control owner only" />
+                <MenuDisabled label="New workspace" detail="Mission Control owner only" icon={<WorkspaceIcon />} />
               )}
               {isOwner ? (
-                <MenuLink href="/projects?newProject=1" label="New project" detail="Create in a workspace" onSelect={() => setMenuOpen(false)} />
+                <MenuLink href="/projects?newProject=1" label="New project" detail="Create in a workspace" icon={<ProjectIcon />} onSelect={() => setMenuOpen(false)} />
               ) : (
-                <MenuDisabled label="New project" detail="Mission Control owner only" />
+                <MenuDisabled label="New project" detail="Mission Control owner only" icon={<ProjectIcon />} />
               )}
-              <MenuButton label="New epic" detail="Choose a project first" onSelect={() => setPicker("epic")} />
-              <MenuButton label="New task" detail="Choose a project first" onSelect={() => setPicker("task")} />
-              <MenuButton label="Attachments" detail="Upload to a project" onSelect={() => setPicker("attachment")} />
+              <MenuButton label="New epic" detail="Choose a project first" icon={<EpicIcon />} onSelect={() => setPicker("epic")} />
+              <MenuButton label="New task" detail="Choose a project first" icon={<TaskIcon />} onSelect={() => setPicker("task")} />
+              <MenuButton label="Attachments" detail="Upload to a project" icon={<AttachmentIcon />} onSelect={() => setPicker("attachment")} />
             </>
           ) : (
             <>
@@ -170,12 +171,13 @@ export default function WorkspacesCreateFab({
                       key={project.slug}
                       label={project.name}
                       detail={project.workspaceName}
+                      icon={<ProjectIcon />}
                       onSelect={() => pickProject(project)}
                     />
                   ))}
                 </div>
               )}
-              <MenuButton label="Back" detail="Return to create menu" onSelect={() => setPicker(null)} />
+              <MenuButton label="Back" detail="Return to create menu" icon={<BackIcon />} onSelect={() => setPicker(null)} />
             </>
           )}
         </div>
@@ -189,10 +191,9 @@ export default function WorkspacesCreateFab({
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         aria-controls="workspaces-create-menu"
-        className="flex h-14 items-center justify-center gap-2 rounded-2xl bg-accent px-4 text-bg shadow-[var(--shadow-float)] transition-[transform,background-color,box-shadow] hover:-translate-y-0.5 hover:bg-accent-strong md:h-12"
+        className="flex h-14 w-14 items-center justify-center rounded-full bg-accent text-bg shadow-[var(--shadow-float)] transition-[transform,background-color,box-shadow] hover:-translate-y-0.5 hover:bg-accent-strong md:h-12 md:w-12"
       >
         <span className={`text-2xl leading-none transition-transform ${menuOpen ? "rotate-45" : ""}`} aria-hidden="true">+</span>
-        <span className="text-body font-semibold">Add</span>
       </button>
 
       {attachmentProject ? (
@@ -292,11 +293,13 @@ function MenuLink({
   href,
   label,
   detail,
+  icon,
   onSelect,
 }: {
   href: string;
   label: string;
   detail: string;
+  icon: React.ReactNode;
   onSelect: () => void;
 }) {
   return (
@@ -306,7 +309,7 @@ function MenuLink({
       onClick={onSelect}
       className="flex items-center gap-3 rounded-lg px-3 py-2.5 transition hover:bg-accent-soft hover:text-accent"
     >
-      <MenuGlyph />
+      <MenuGlyph icon={icon} />
       <span className="min-w-0 flex-1">
         <span className="block font-semibold">{label}</span>
         <span className="block truncate text-caption text-text-muted">{detail}</span>
@@ -315,7 +318,7 @@ function MenuLink({
   );
 }
 
-function MenuButton({ label, detail, onSelect }: { label: string; detail: string; onSelect: () => void }) {
+function MenuButton({ label, detail, icon, onSelect }: { label: string; detail: string; icon: React.ReactNode; onSelect: () => void }) {
   return (
     <button
       type="button"
@@ -323,7 +326,7 @@ function MenuButton({ label, detail, onSelect }: { label: string; detail: string
       onClick={onSelect}
       className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition hover:bg-accent-soft hover:text-accent"
     >
-      <MenuGlyph />
+      <MenuGlyph icon={icon} />
       <span className="min-w-0 flex-1">
         <span className="block font-semibold">{label}</span>
         <span className="block truncate text-caption text-text-muted">{detail}</span>
@@ -332,10 +335,10 @@ function MenuButton({ label, detail, onSelect }: { label: string; detail: string
   );
 }
 
-function MenuDisabled({ label, detail }: { label: string; detail: string }) {
+function MenuDisabled({ label, detail, icon }: { label: string; detail: string; icon: React.ReactNode }) {
   return (
     <span role="menuitem" aria-disabled="true" className="flex items-center gap-3 rounded-lg px-3 py-2.5 opacity-45">
-      <MenuGlyph />
+      <MenuGlyph icon={icon} />
       <span className="min-w-0 flex-1">
         <span className="block font-semibold">{label}</span>
         <span className="block truncate text-caption text-text-muted">{detail}</span>
@@ -344,10 +347,63 @@ function MenuDisabled({ label, detail }: { label: string; detail: string }) {
   );
 }
 
-function MenuGlyph() {
+function MenuGlyph({ icon }: { icon: React.ReactNode }) {
   return (
-    <span aria-hidden="true" className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-line bg-panel-soft text-lg font-medium">
-      +
+    <span aria-hidden="true" className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-line bg-panel-soft text-text-muted">
+      {icon}
     </span>
+  );
+}
+
+function WorkspaceIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="20" height="14" rx="2" />
+      <path d="M8 21h8" />
+      <path d="M12 17v4" />
+    </svg>
+  );
+}
+
+function ProjectIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+
+function EpicIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />
+      <path d="M4 22v-7" />
+    </svg>
+  );
+}
+
+function TaskIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+function AttachmentIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+    </svg>
+  );
+}
+
+function BackIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m9 18-6-6 6-6" />
+      <path d="M3 12h14" />
+    </svg>
   );
 }

@@ -75,6 +75,8 @@ import ChatRoom from "@/components/chat-room";
 import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activity-timeline";
 import TaskChangesPanel from "@/components/task-changes-panel";
 import TaskQuickAddFab from "@/components/task-quick-add-fab";
+import CloseTaskButton from "@/components/close-task-button";
+import TaskDirtyGuard from "@/components/task-dirty-guard";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
 import {
@@ -1816,11 +1818,12 @@ export default async function TaskDetailPage({
 
   return (
     <StickyViewportSurface kind="task-detail" contained={contained}>
+    <TaskDirtyGuard>
     <div data-task-quick-add-context className="mx-auto w-full max-w-none">
       {/* ----- Main column ------------------------------------------- */}
       <div className="min-w-0">
         <section className="space-y-section-gap rounded-panel border border-line bg-panel p-card-lg shadow-sm">
-          {/* Sticky one-row editor header: title, epic, status and save stay visible. */}
+          {/* Sticky one-row editor header: title, epic and save stay visible. */}
           <div
             data-detail-header
             data-task-header
@@ -1845,13 +1848,6 @@ export default async function TaskDetailPage({
                 aria-label="Task title"
               />
             </label>
-            {viewer.isOwner ? (
-              <PrivateToggle
-                formId="taskMain"
-                defaultChecked={task.private}
-                includeSubmittedField
-              />
-            ) : null}
             <div className="min-w-[12rem] flex-[0_1_16rem]">
               <span className="mb-0.5 block text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Epic
@@ -1864,24 +1860,6 @@ export default async function TaskDetailPage({
                 epics={projectEpics}
               />
             </div>
-            <label className="w-32 shrink-0">
-              <span className="mb-0.5 block text-left text-nano font-semibold uppercase tracking-wider text-text-muted">
-                Status
-              </span>
-              <select
-                form="taskMain"
-                name="status"
-                defaultValue={task.status}
-                className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
-                aria-label="Status"
-              >
-                {COLUMN_IDS.map((id) => (
-                  <option key={id} value={id}>
-                    {id}
-                  </option>
-                ))}
-              </select>
-            </label>
             <div className="flex shrink-0 flex-col items-end gap-0.5">
               <span className="text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Updated{" "}
@@ -1889,13 +1867,16 @@ export default async function TaskDetailPage({
                   {timeAgo(task.updatedAt)}
                 </time>
               </span>
-              <button
-                form="taskMain"
-                type="submit"
-                className="h-9 rounded-lg bg-accent px-3 text-body font-medium text-bg hover:opacity-90"
-              >
-                Save changes
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  form="taskMain"
+                  type="submit"
+                  className="h-9 rounded-lg bg-accent px-3 text-body font-medium text-bg hover:opacity-90"
+                >
+                  Save changes
+                </button>
+                <CloseTaskButton slug={slug} />
+              </div>
             </div>
           </div>
           {/* Review verification panel — only shown on tasks in Review with
@@ -1998,69 +1979,34 @@ export default async function TaskDetailPage({
                   />
 
                   <aside className="space-y-section-gap xl:sticky xl:top-[calc(var(--detail-sticky-top)+var(--detail-header-height)+var(--detail-tabs-height)+1rem)] xl:self-start">
-                    {/* Fixed three-column task timeline. Missing workflow dates
-                        remain visible as an em dash so the shape never jumps. */}
-                    <dl
-                      data-task-dates
-                      className="grid grid-cols-3 gap-2 rounded-card border border-line bg-panel-soft p-card text-caption"
-                    >
-                      <div className="col-span-3 text-micro font-semibold uppercase tracking-wider text-text-muted">
-                        Dates
-                      </div>
-                      <div data-task-date className="min-w-0">
-                        <dt className="text-micro font-semibold uppercase tracking-wider text-text-muted">Created</dt>
-                        <dd className="mt-1 flex min-w-0 items-center gap-1.5">
-                          {createdActivity?.user ? (
-                            <MessageAvatar actor={createdActivity.user} size="sm" />
-                          ) : visibleReporter ? (
-                            <MessageAvatar actor={visibleReporter} size="sm" />
-                          ) : (
-                            <span aria-hidden="true" className="h-8 w-8 shrink-0 rounded-full bg-bg-elev" />
-                          )}
-                          <time
-                            dateTime={dateIso(task.createdAt) ?? undefined}
-                            title={dateIso(task.createdAt) ?? undefined}
-                            className="min-w-0 flex-1 break-words text-[0.68rem] leading-tight tabular-nums"
-                          >
-                            {timeAgo(task.createdAt)}
-                          </time>
-                        </dd>
-                      </div>
-                      <div data-task-date className="min-w-0">
-                        <dt className="text-micro font-semibold uppercase tracking-wider text-text-muted">Updated</dt>
-                        <dd className="mt-1 flex min-w-0 items-center gap-1.5">
-                          {visibleUpdatedActor ? (
-                            <MessageAvatar actor={visibleUpdatedActor} size="sm" />
-                          ) : (
-                            <span aria-hidden="true" className="h-8 w-8 shrink-0 rounded-full bg-bg-elev" />
-                          )}
-                          <time
-                            dateTime={dateIso(task.updatedAt) ?? undefined}
-                            title={dateIso(task.updatedAt) ?? undefined}
-                            className="min-w-0 flex-1 break-words text-[0.68rem] leading-tight tabular-nums"
-                          >
-                            {timeAgo(task.updatedAt)}
-                          </time>
-                        </dd>
-                      </div>
-                      <div data-task-date className="min-w-0">
-                        <dt className="text-micro font-semibold uppercase tracking-wider text-text-muted">Done</dt>
-                        <dd className="mt-1 flex min-w-0 items-center gap-1.5">
-                          {visibleDoneActor ? (
-                            <MessageAvatar actor={visibleDoneActor} size="sm" />
-                          ) : (
-                            <span aria-hidden="true" className="h-8 w-8 shrink-0 rounded-full bg-bg-elev" />
-                          )}
-                          <time
-                            dateTime={dateIso(doneAt) ?? undefined}
-                            title={dateIso(doneAt) ?? undefined}
-                            className="min-w-0 flex-1 break-words text-[0.68rem] leading-tight tabular-nums"
-                          >
-                            {doneAt ? timeAgo(doneAt) : "—"}
-                          </time>
-                        </dd>
-                      </div>
-                    </dl>
+                    {/* Status + Private widget */}
+                    <div data-task-status-private className="flex items-end gap-3">
+                      <label className="min-w-0 flex-1">
+                        <span className="mb-0.5 block text-nano font-semibold uppercase tracking-wider text-text-muted">
+                          Status
+                        </span>
+                        <select
+                          form="taskMain"
+                          name="status"
+                          defaultValue={task.status}
+                          className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
+                          aria-label="Status"
+                        >
+                          {COLUMN_IDS.map((id) => (
+                            <option key={id} value={id}>
+                              {id}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {viewer.isOwner ? (
+                        <PrivateToggle
+                          formId="taskMain"
+                          defaultChecked={task.private}
+                          includeSubmittedField
+                        />
+                      ) : null}
+                    </div>
 
                     <div
                       data-task-roles
@@ -2188,6 +2134,66 @@ export default async function TaskDetailPage({
                         This task waits until the chosen task is Done. Circular blocks are rejected.
                       </p>
                     </div> : null}
+
+                    {/* Dates — no border/background, each date on its own row with avatar+username+timestamp */}
+                    <dl data-task-dates className="space-y-2 text-caption">
+                      <div data-task-date className="flex items-center gap-2">
+                        <span className="text-micro font-semibold uppercase tracking-wider text-text-muted">Created by</span>
+                        {createdActivity?.user ? (
+                          <MessageAvatar actor={createdActivity.user} size="sm" />
+                        ) : visibleReporter ? (
+                          <MessageAvatar actor={visibleReporter} size="sm" />
+                        ) : (
+                          <span aria-hidden="true" className="h-6 w-6 shrink-0 rounded-full bg-bg-elev" />
+                        )}
+                        <span className="truncate text-text-muted">
+                          {createdActivity?.user ? actorDisplayName(createdActivity.user) : visibleReporter ? actorDisplayName(visibleReporter) : "Unknown"}
+                        </span>
+                        <time
+                          dateTime={dateIso(task.createdAt) ?? undefined}
+                          title={dateIso(task.createdAt) ?? undefined}
+                          className="ml-auto tabular-nums text-text-muted"
+                        >
+                          {timeAgo(task.createdAt)}
+                        </time>
+                      </div>
+                      <div data-task-date className="flex items-center gap-2">
+                        <span className="text-micro font-semibold uppercase tracking-wider text-text-muted">Last updated by</span>
+                        {visibleUpdatedActor ? (
+                          <MessageAvatar actor={visibleUpdatedActor} size="sm" />
+                        ) : (
+                          <span aria-hidden="true" className="h-6 w-6 shrink-0 rounded-full bg-bg-elev" />
+                        )}
+                        <span className="truncate text-text-muted">
+                          {visibleUpdatedActor ? actorDisplayName(visibleUpdatedActor) : "Unknown"}
+                        </span>
+                        <time
+                          dateTime={dateIso(task.updatedAt) ?? undefined}
+                          title={dateIso(task.updatedAt) ?? undefined}
+                          className="ml-auto tabular-nums text-text-muted"
+                        >
+                          {timeAgo(task.updatedAt)}
+                        </time>
+                      </div>
+                      <div data-task-date className="flex items-center gap-2">
+                        <span className="text-micro font-semibold uppercase tracking-wider text-text-muted">Completed by</span>
+                        {visibleDoneActor ? (
+                          <MessageAvatar actor={visibleDoneActor} size="sm" />
+                        ) : (
+                          <span aria-hidden="true" className="h-6 w-6 shrink-0 rounded-full bg-bg-elev" />
+                        )}
+                        <span className="truncate text-text-muted">
+                          {visibleDoneActor ? actorDisplayName(visibleDoneActor) : "—"}
+                        </span>
+                        <time
+                          dateTime={dateIso(doneAt) ?? undefined}
+                          title={dateIso(doneAt) ?? undefined}
+                          className="ml-auto tabular-nums text-text-muted"
+                        >
+                          {doneAt ? timeAgo(doneAt) : "—"}
+                        </time>
+                      </div>
+                    </dl>
 
                     <div data-task-actions className="grid grid-cols-2 gap-3">
                       <form
@@ -2471,22 +2477,25 @@ export default async function TaskDetailPage({
                 />
               </TabPanel> : null}
             </div>
-            <TaskQuickAddFab
-              projectSlug={slug}
-              projectName={task.project.name}
-              taskId={task.id}
-              taskTitle={task.title}
-              epicId={task.epicId ?? undefined}
-              epicTitle={task.epic?.title ?? undefined}
-              canCreateProject={viewer.isOwner}
-              maxAttachmentLabel={formatBytes(attachmentMaxBytes())}
-              uploadAttachmentAction={uploadAttachment}
-              createCommentAction={createComment}
-            />
+            {!contained ? (
+              <TaskQuickAddFab
+                projectSlug={slug}
+                projectName={task.project.name}
+                taskId={task.id}
+                taskTitle={task.title}
+                epicId={task.epicId ?? undefined}
+                epicTitle={task.epic?.title ?? undefined}
+                canCreateProject={viewer.isOwner}
+                maxAttachmentLabel={formatBytes(attachmentMaxBytes())}
+                uploadAttachmentAction={uploadAttachment}
+                createCommentAction={createComment}
+              />
+            ) : null}
           </TabsProvider>
         </section>
       </div>
     </div>
+    </TaskDirtyGuard>
     </StickyViewportSurface>
   );
 }

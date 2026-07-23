@@ -28,16 +28,6 @@ export default function WorkspacePane({
       aria-label="Task detail workspace"
       className="relative min-w-0 4xl:sticky 4xl:top-[var(--board-sticky-top)] 4xl:flex 4xl:h-[var(--board-available-height)] 4xl:max-h-[var(--board-available-height)] 4xl:flex-col 4xl:overflow-hidden @min-[146rem]/ws:w-[70rem] @min-[146rem]/ws:shrink-0 @min-[185rem]/ws:w-[75rem]"
     >
-      <div className="hidden shrink-0 items-center justify-end pb-2 4xl:flex">
-        <button
-          type="button"
-          onClick={() => router.push(closeHref)}
-          className="rounded-lg px-2.5 py-1 text-caption font-medium text-text-muted transition hover:bg-panel-soft hover:text-text"
-          aria-label="Close task workspace"
-        >
-          Close ×
-        </button>
-      </div>
       <div
         data-task-pane-scroll
         className="4xl:min-h-0 4xl:flex-1 4xl:overflow-hidden"
