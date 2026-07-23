@@ -86,7 +86,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/(app)/system/activity` | system-wide ActivityLog stream. |
 | `app/(app)/system/settings` | system-wide setting defaults. |
 | `app/(app)/system/users` | owner-only human-user invitations, profiles, project visibility grants, and one-time password reset links. Workspace visibility is derived from granted projects. |
-| `app/(app)/workspaces` | workspace list + create; the sidebar groups projects by workspace. |
+| `app/(app)/workspaces` | unified landing board across every accessible workspace + project (task cards labelled `workspace / project`); archived list under `?archived=1`; the sidebar groups projects by workspace. |
 | `app/(app)/workspaces/[slug]` | cross-project workspace board. |
 | `app/(app)/workspaces/[slug]/settings` | workspace-level defaults (git identity, deployment, Done-card TTL) inherited by member projects — the layer between project settings and system settings. |
 | `app/api/system/worktree-switch/status` | admin-only poll of the runner-maintained worktree-switch state (served worktree, inventory, current job). Drives the per-project **Worktree live preview** panel. |

@@ -67,7 +67,7 @@ type Task = {
   subtaskMinutes: number;
   blockedByKey: string | null;
   activeWorking: boolean;
-  project: { slug: string; name: string } | null;
+  project: { slug: string; name: string; workspace?: { slug: string; name: string } | null } | null;
 };
 type Column = { id: string; label: string; description?: string };
 type BoardStats = {
@@ -712,6 +712,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
         task.title,
         task.epicTitle,
         task.project?.name,
+        task.project?.workspace?.name,
         ...actors,
       ].some((value) => value?.toLocaleLowerCase().includes(normalizedQuery));
     }),
@@ -2370,11 +2371,15 @@ function taskProjectSlug(task: Task, fallbackProjectSlug: string) {
   return task.project?.slug ?? fallbackProjectSlug;
 }
 
+function projectDisplayName(project: NonNullable<Task["project"]>) {
+  return project.workspace ? `${project.workspace.name} / ${project.name}` : project.name;
+}
+
 function ProjectMetaLine({ task }: { task: Task }) {
   if (!task.project) return null;
   return (
     <div className="mb-0.5 truncate text-micro font-semibold text-text-muted">
-      {task.project.name}
+      {projectDisplayName(task.project)}
     </div>
   );
 }
@@ -2383,8 +2388,8 @@ function CompactTaskMeta({ task }: { task: Task }) {
   return (
     <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-micro leading-none text-text-muted">
       {task.project ? (
-        <span className="min-w-0 truncate font-semibold" title={task.project.name}>
-          {task.project.name}
+        <span className="min-w-0 truncate font-semibold" title={projectDisplayName(task.project)}>
+          {projectDisplayName(task.project)}
         </span>
       ) : null}
       {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
