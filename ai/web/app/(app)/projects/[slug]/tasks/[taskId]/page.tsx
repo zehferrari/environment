@@ -1863,7 +1863,7 @@ export default async function TaskDetailPage({
                 >
                   Save changes
                 </button>
-                <CloseTaskButton slug={slug} />
+                <CloseTaskButton slug={slug} contained={contained} />
               </div>
             </div>
           </div>

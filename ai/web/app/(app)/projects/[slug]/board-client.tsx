@@ -1199,6 +1199,64 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
           data-board-sticky-track
           className="4xl:min-h-[calc(100dvh-var(--board-sticky-top))]"
         >
+          {/* Backlog before board in ultra-wide */}
+          {backlogVisible && !focusActive ? (
+            <section className="mb-5 hidden rounded-2xl border border-line bg-panel/95 shadow-[var(--shadow-sm)] backdrop-blur md:block 4xl:mb-3 4xl:max-h-[35%] 4xl:overflow-hidden">
+              <div className="flex items-center justify-between gap-3 border-b border-line bg-panel-soft/70 px-4 py-2">
+                <h2 className="flex items-center gap-2 text-subheading font-semibold text-text">
+                  Backlog
+                  <span className="rounded-full border border-line bg-panel px-2 py-0.5 text-caption font-semibold tabular-nums text-text-muted">
+                    {backlogCount}
+                  </span>
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setBacklogVisible(false)}
+                  className="rounded-lg border border-line bg-panel px-3 py-1.5 text-caption font-semibold text-text-muted shadow-[var(--shadow-xs)] hover:border-line-strong hover:text-text"
+                >
+                  Collapse backlog
+                </button>
+              </div>
+              <div className="overflow-x-auto">
+                <div className="sticky top-0 z-10 grid min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line bg-panel-soft px-3 py-2.5 text-caption font-semibold text-text-muted">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={backlogCount > 0 && backlogTasks.every((task) => selectedIds.has(task.id))}
+                      onChange={(event) => toggleSelectAllBacklog(event.target.checked)}
+                      onClick={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      className="h-6 w-6 accent-accent md:h-4 md:w-4"
+                      aria-label="Select all backlog tasks"
+                    />
+                    <span>Task</span>
+                  </div>
+                  <span>Epic</span>
+                  <span>Assignee</span>
+                  <span>Reviewer</span>
+                  <span className="text-right">Elapsed</span>
+                  <span className="text-right">Created</span>
+                  <span className="text-right">Updated</span>
+                  <span className="sr-only">Actions</span>
+                </div>
+                <div className="max-h-[320px] overflow-y-auto">
+                  <SortableContext items={backlogTasks.map((task) => task.id)} strategy={verticalListSortingStrategy}>
+                    {backlogTasks.map((task) => (
+                      <BacklogRow
+                        key={task.id}
+                        task={task}
+                        projectSlug={projectSlug}
+                        onDeleteRequest={() => setDeleteTarget(task)}
+                        selected={selectedIds.has(task.id)}
+                        onSelectionChange={toggleTaskSelection}
+                        now={now}
+                      />
+                    ))}
+                  </SortableContext>
+                </div>
+              </div>
+            </section>
+          ) : null}
           <div
             ref={boardSurfaceRef}
             data-board-surface
@@ -1249,8 +1307,9 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
         </div>
       )}
 
+      {/* Backlog after board on non-ultra-wide desktop */}
       {backlogVisible && !isMobileBoard && !focusActive ? (
-        <section className="mt-6 hidden md:block">
+        <section className="mt-6 hidden md:block 4xl:hidden">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
             <div>
               <h2 className="flex items-center gap-2 text-subheading font-semibold text-text">
@@ -2083,7 +2142,13 @@ function TaskCard({
               className="min-w-0 flex-1 rounded-md outline-none"
             >
               {compact ? (
-                <CompactTaskMeta task={task} />
+                <>
+                  <CompactTaskMeta task={task} />
+                  <div className="mt-0.5 line-clamp-1 text-caption font-medium leading-snug text-text">{task.title}</div>
+                  {task.epicTitle ? (
+                    <div className="mt-0.5 truncate text-micro text-text-muted">{task.epicTitle}</div>
+                  ) : null}
+                </>
               ) : (
                 <>
                   <div className="flex min-w-0 items-center justify-between gap-2">
@@ -2097,7 +2162,7 @@ function TaskCard({
                       </time>
                     </span>
                   </div>
-                  <div className={`${compact ? "mt-0.5 line-clamp-1 text-caption" : "mt-1 line-clamp-2"} font-medium leading-snug text-text`}>{task.title}</div>
+                  <div className="mt-1 line-clamp-2 font-medium leading-snug text-text">{task.title}</div>
                   <ProjectMetaLine task={task} />
                   <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-caption text-text-muted">
                     {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
@@ -2105,9 +2170,6 @@ function TaskCard({
                   </div>
                 </>
               )}
-              {compact ? (
-                <div className={`mt-0.5 line-clamp-1 text-caption font-medium leading-snug text-text`}>{task.title}</div>
-              ) : null}
             </Link>
           </div>
           <button
@@ -2140,7 +2202,7 @@ function TaskCard({
                 onDeleteRequest();
               }}
               onPointerDown={(event) => event.stopPropagation()}
-              className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
+              className="ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
               aria-label={`Move ${task.title} to bin`}
               title="Move to bin"
             >
@@ -2171,7 +2233,7 @@ function TaskCard({
                 onDeleteRequest();
               }}
               onPointerDown={(event) => event.stopPropagation()}
-              className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
+              className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
               aria-label={`Move ${task.title} to bin`}
               title="Move to bin"
             >
@@ -2434,7 +2496,7 @@ function DeploymentIndicator({ status }: { status: string }) {
 }
 
 function canShowTaskDeploymentIndicator(task: Task) {
-  return task.status === "Done" && canShowDeploymentForTask(task);
+  return task.status === "Done" && canShowDeploymentForTask(task) && task.deploymentStatus !== "Not Required";
 }
 
 function BoardReporterMarker({ task }: { task: Task }) {

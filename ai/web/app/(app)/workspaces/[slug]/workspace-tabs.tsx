@@ -67,14 +67,6 @@ export default function WorkspaceTabs({
               </Link>
             ) : null}
           </nav>
-          {canAccessSettings ? (
-            <Link
-              href="/?newProject=1"
-              className="shrink-0 rounded-lg border border-line bg-panel px-3 py-2 font-semibold text-text-muted shadow-[var(--shadow-xs)] transition hover:border-accent hover:text-accent"
-            >
-              New project
-            </Link>
-          ) : null}
           <div
             id={boardChromeSlotId(boardChromeScope, "controls")}
             data-board-controls-slot
