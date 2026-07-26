@@ -234,13 +234,16 @@ export default async function EpicsListPage({
         </div>
       )}
 
-      <NewEpicFab
-        projectSlug={slug}
-        principals={viewer.isOwner ? principals : []}
-        canManageAssignments={viewer.isOwner}
-        canSetPrivate={viewer.isOwner}
-        createEpicAction={createEpic}
-      />
+      {/* (+) hidden on ultra-wide (4xl), matching the Tasks tab. */}
+      <div className="contents 4xl:hidden">
+        <NewEpicFab
+          projectSlug={slug}
+          principals={viewer.isOwner ? principals : []}
+          canManageAssignments={viewer.isOwner}
+          canSetPrivate={viewer.isOwner}
+          createEpicAction={createEpic}
+        />
+      </div>
     </div>
     </StickyViewportSurface>
   );
