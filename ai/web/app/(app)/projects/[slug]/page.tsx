@@ -19,7 +19,6 @@ import { revalidateTaskShell } from "@/lib/tasks/cache";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
-import BoardCreateFab from "@/components/board-create-fab";
 import { COLUMNS, COLUMN_IDS } from "./columns";
 import {
   accessibleEpicWhere,
@@ -580,7 +579,6 @@ export default async function ProjectBoardPage({
         createTaskAction={createTask}
         hideTrigger
       />
-      <BoardCreateFab />
     </div>
   );
 }

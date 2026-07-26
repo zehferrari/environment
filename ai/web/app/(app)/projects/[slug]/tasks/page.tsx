@@ -10,7 +10,6 @@ import { formatGridDate } from "@/lib/date-format";
 import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 import { accessibleProjectWhere, accessibleTaskWhere, requireViewer } from "@/lib/auth/permissions";
 import StickyViewportSurface from "@/components/sticky-viewport-surface";
-import BoardCreateFab from "@/components/board-create-fab";
 import {
   getActorVisibility,
   serializeVisibleActor,
@@ -427,13 +426,7 @@ export default async function ProjectTasksPage({
           })}
         </div>
       )}
-    </div>
-    {/* Shared (+) speed-dial — hidden on ultra-wide (4xl), where board controls
-        move into the header slot instead. */}
-    <div className="contents 4xl:hidden">
-      <BoardCreateFab />
-    </div>
-    </StickyViewportSurface>
+    </div>    </StickyViewportSurface>
   );
 }
 

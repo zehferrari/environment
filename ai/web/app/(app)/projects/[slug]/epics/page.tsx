@@ -234,16 +234,16 @@ export default async function EpicsListPage({
         </div>
       )}
 
-      {/* (+) hidden on ultra-wide (4xl), matching the Tasks tab. */}
-      <div className="contents 4xl:hidden">
-        <NewEpicFab
-          projectSlug={slug}
-          principals={viewer.isOwner ? principals : []}
-          canManageAssignments={viewer.isOwner}
-          canSetPrivate={viewer.isOwner}
-          createEpicAction={createEpic}
-        />
-      </div>
+      {/* Consumer-only: the unified create FAB is the visible (+); this keeps the
+          ?newEpic=1 auto-open working for deep links into the epic-create modal. */}
+      <NewEpicFab
+        projectSlug={slug}
+        principals={viewer.isOwner ? principals : []}
+        canManageAssignments={viewer.isOwner}
+        canSetPrivate={viewer.isOwner}
+        createEpicAction={createEpic}
+        hideTrigger
+      />
     </div>
     </StickyViewportSurface>
   );

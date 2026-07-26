@@ -13,7 +13,6 @@ import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { normalizeWorkspaceSlug } from "@/lib/workspaces/service";
 import Board from "../../projects/[slug]/board-client";
-import BoardCreateFab from "@/components/board-create-fab";
 import { COLUMNS, COLUMN_IDS } from "../../projects/[slug]/columns";
 import type { MoveTaskResult } from "../../projects/[slug]/page";
 import {
@@ -415,7 +414,6 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
         reorderTasksAction={reorderWorkspaceTasks}
         deleteTaskAction={binTask}
       />
-      <BoardCreateFab />
     </div>
   );
 }

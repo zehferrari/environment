@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import PrivateToggle from "@/components/private-toggle";
+import type { CreateResult } from "@/lib/create/result";
 
 type Principal = {
   id: string;
@@ -24,14 +26,26 @@ export default function NewEpicFab({
   canManageAssignments,
   canSetPrivate,
   createEpicAction,
+  hideTrigger = false,
 }: {
   projectSlug: string;
   principals: Principal[];
   canManageAssignments: boolean;
   canSetPrivate: boolean;
-  createEpicAction: (formData: FormData) => Promise<void>;
+  createEpicAction: (formData: FormData) => Promise<CreateResult>;
+  // Consumer-only mode: no visible button, just the ?newEpic=1 auto-open modal.
+  // The unified create FAB is the visible create affordance.
+  hideTrigger?: boolean;
 }) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
+  const submitEpic = async (formData: FormData) => {
+    const result = await createEpicAction(formData);
+    if (result.ok) {
+      setOpen(false);
+      router.refresh();
+    }
+  };
   // Auto-open when arriving from the unified board's (+) menu.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -72,7 +86,7 @@ export default function NewEpicFab({
         >
           <form
             id="newEpicForm"
-            action={createEpicAction}
+            action={submitEpic}
             onClick={(e) => e.stopPropagation()}
             className="w-full max-w-lg space-y-3 rounded-panel border border-line bg-panel p-card-lg shadow-2xl"
           >
@@ -194,14 +208,16 @@ export default function NewEpicFab({
         </div>
       ) : null}
 
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        aria-label="New epic"
-        className="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-bg shadow-[var(--shadow-float)] transition-[transform,background-color,box-shadow] hover:-translate-y-0.5 hover:bg-accent-strong md:bottom-6 md:right-6 md:h-12 md:w-12"
-      >
-        <span className="text-2xl leading-none" aria-hidden="true">+</span>
-      </button>
+      {!hideTrigger ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-label="New epic"
+          className="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] right-4 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-accent text-bg shadow-[var(--shadow-float)] transition-[transform,background-color,box-shadow] hover:-translate-y-0.5 hover:bg-accent-strong md:bottom-6 md:right-6 md:h-12 md:w-12"
+        >
+          <span className="text-2xl leading-none" aria-hidden="true">+</span>
+        </button>
+      ) : null}
     </>
   );
 }

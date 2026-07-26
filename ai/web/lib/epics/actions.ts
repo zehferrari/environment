@@ -10,7 +10,7 @@
 // but cannot self-assign.
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
+import type { CreateResult } from "@/lib/create/result";
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { randomUUID } from "crypto";
@@ -181,7 +181,7 @@ async function notifyEpicActingManagerAssigned(args: {
   }
 }
 
-export async function createEpic(formData: FormData) {
+export async function createEpic(formData: FormData): Promise<CreateResult> {
   const actor = await requireActor();
   if (!actor.isOwner && (
     formData.has("reporterId") ||
@@ -206,16 +206,16 @@ export async function createEpic(formData: FormData) {
   const commitPrefix = commitRaw === "" ? null : commitRaw;
   if (formData.has("private") && !actor.isOwner) throw new Error("Not authorized");
   const isPrivate = actor.isOwner && formData.get("private") === "on";
-  if (!slug || !title) return;
-  if (title.length > 200) return;
-  if (branchName !== null && branchName.length > 200) return;
-  if (commitPrefix !== null && commitPrefix.length > 200) return;
+  if (!slug || !title) return { ok: false, error: "An Epic title and project are required." };
+  if (title.length > 200) return { ok: false, error: "Epic title must be 200 characters or fewer." };
+  if (branchName !== null && branchName.length > 200) return { ok: false, error: "Branch name is too long." };
+  if (commitPrefix !== null && commitPrefix.length > 200) return { ok: false, error: "Commit prefix is too long." };
 
   const project = await db.project.findUnique({
     where: { slug },
     select: { id: true },
   });
-  if (!project) return;
+  if (!project) return { ok: false, error: "Project not found." };
   await requireProjectAccess(actor, { id: project.id });
 
   // Acting manager picker on the create form follows the same
@@ -278,10 +278,13 @@ export async function createEpic(formData: FormData) {
 
   revalidatePath(`/projects/${slug}/epics`);
   revalidatePath(`/projects/${slug}`);
-  // Redirect into the new epic's detail page so attachments + other
-  // fields are immediately reachable. redirect() throws a special
-  // signal Next consumes — must run after all DB work.
-  redirect(`/projects/${slug}/epics/${epic.id}`);
+  // No redirect: the create FAB stays in place and shows a success toast that
+  // links into the new epic.
+  return {
+    ok: true,
+    message: `Epic "${epic.title}" created`,
+    href: `/projects/${slug}/epics/${epic.id}`,
+  };
 }
 
 export async function renameEpic(formData: FormData) {

@@ -35,7 +35,6 @@ import {
   serializeVisibleActorAs,
   type ActorVisibility,
 } from "@/lib/users/actor-visibility";
-import WorkspacesCreateFab from "@/components/workspaces-create-fab";
 import { LANDING_CHROME_SCOPE } from "./landing-chrome";
 
 type ActorRow = {
@@ -483,13 +482,6 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
           deleteTaskAction={binTask}
         />
       )}
-      <WorkspacesCreateFab
-        isOwner={viewer.isOwner}
-        projects={projects.map(({ slug, name, workspace }) => ({ slug, name, workspaceName: workspace.name }))}
-        maxAttachmentLabel={formatBytes(attachmentMaxBytes())}
-        uploadAttachmentAction={uploadAttachment}
-        createWorkspaceAction={createWorkspaceAction}
-      />
     </div>
   );
 }
