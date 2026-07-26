@@ -24,7 +24,7 @@ import { getActorVisibility, visibleActivityRows, visibleActivityWhere } from "@
 export const dynamic = "force-dynamic";
 
 const TASK_STATUSES = ["Backlog", "To Do", "In Progress", "Review", "Done"] as const;
-const EPIC_STATUSES = ["Backlog", "In Progress", "Ready to Deploy", "Done"] as const;
+const EPIC_STATUSES = ["Backlog", "To Do", "In Progress", "Done"] as const;
 const ACTIVE_TASK_STATUSES = new Set(["Backlog", "To Do", "In Progress", "Review"]);
 const ACTIVITY_FEED_LIMIT = 20;
 
@@ -161,7 +161,7 @@ async function createProject(
 function emptyStats(): ProjectDashboardStats {
   return {
     task: { Backlog: 0, "To Do": 0, "In Progress": 0, Review: 0, Done: 0 },
-    epic: { Backlog: 0, "In Progress": 0, "Ready to Deploy": 0, Done: 0 },
+    epic: { Backlog: 0, "To Do": 0, "In Progress": 0, Done: 0 },
     blocked: 0,
     recentActivityAt: null,
     deployment: emptyDeploymentRollup(),
@@ -614,8 +614,8 @@ function ProjectCard({ project, stats }: { project: ProjectRow; stats: ProjectDa
 
         <div className="grid grid-cols-4 gap-2 text-center text-caption">
           <StatPill label="Epics" value={totalEpics(stats)} />
+          <StatPill label="To Do" value={stats.epic["To Do"]} />
           <StatPill label="In Progress" value={stats.epic["In Progress"]} />
-          <StatPill label="Ready to Deploy" value={stats.epic["Ready to Deploy"]} />
           <StatPill label="Tasks" value={total} />
         </div>
         <DeploymentSummary rollup={stats.deployment} compact />

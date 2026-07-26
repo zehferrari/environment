@@ -33,7 +33,10 @@ export async function refillEpicQueue(args: {
       project: { select: { slug: true } },
     },
   });
-  if (!epic || epic.status !== "In Progress" || !epic.approvedOn) {
+  // A To Do epic is approved and queued (its tasks can be assigned before any
+  // has started); an In Progress epic already has work underway. Both feed the
+  // queue. Backlog/Done epics do not.
+  if (!epic || !(epic.status === "In Progress" || epic.status === "To Do") || !epic.approvedOn) {
     return { assignments: [], skipped: "epic_not_ready" as const, epic: null };
   }
 

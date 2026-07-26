@@ -2,7 +2,6 @@ import { db } from "@/lib/db";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { resolveDoneOwnerId, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { assignOpenEpicTasks, type EpicTaskAssignment } from "@/lib/epics/assignment";
-import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
 
 type Actor = {
   id: string;
@@ -58,7 +57,6 @@ export async function completeReviewedTaskAndAssignNext(args: {
   }
 
   const completion = await db.$transaction(async (tx) => {
-    let promotedEpicToReadyToDeploy = false;
     const maxRank = await tx.task.aggregate({
       where: { status: "Done", archivedAt: null, deletedAt: null },
       _max: { rank: true },
@@ -120,7 +118,11 @@ export async function completeReviewedTaskAndAssignNext(args: {
         },
       });
 
-      if (task.epicId && task.epic?.status === "In Progress") {
+      // When the last open child task of an epic reaches Done, the epic itself
+      // is Done. (Deployment is a separate, optional post-Done step expressed
+      // through the deploymentStatus field — see the epic deployment select —
+      // NOT a workflow status, so nothing deploy-related fires here.)
+      if (task.epicId && (task.epic?.status === "In Progress" || task.epic?.status === "To Do")) {
         const remainingOpenTasks = await tx.task.count({
           where: {
             epicId: task.epicId,
@@ -134,7 +136,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
           const now = new Date();
           await tx.epic.update({
             where: { id: task.epicId },
-            data: { status: "Ready to Deploy", statusChangedAt: now },
+            data: { status: "Done", statusChangedAt: now },
           });
           await tx.activityLog.create({
             data: {
@@ -144,24 +146,17 @@ export async function completeReviewedTaskAndAssignNext(args: {
               payload: JSON.stringify({
                 epicId: task.epicId,
                 from: task.epic.status,
-                to: "Ready to Deploy",
+                to: "Done",
                 via: args.via,
                 action: "last_task_done",
               }),
             },
           });
-          await resetEpicActionPlanForDeployReview(tx, {
-            projectId: task.projectId,
-            epicId: task.epicId,
-            actorId: args.actor.id,
-            now,
-          });
-          promotedEpicToReadyToDeploy = true;
         }
       }
     }
 
-    return { nextAssignments, promotedEpicToReadyToDeploy };
+    return { nextAssignments };
   });
 
   const nextTasks = completion.nextAssignments.map((assigned) => ({
@@ -170,10 +165,6 @@ export async function completeReviewedTaskAndAssignNext(args: {
     projectSlug: assigned.task.project.slug,
   }));
   const nextTask = nextTasks[0] ?? null;
-
-  if (completion.promotedEpicToReadyToDeploy && task.epicId) {
-    await triggerDeployReview({ projectSlug: task.project.slug, epicId: task.epicId, actorId: args.actor.id });
-  }
 
   for (const assigned of completion.nextAssignments) {
     await sendTaskWorkflowNotification({

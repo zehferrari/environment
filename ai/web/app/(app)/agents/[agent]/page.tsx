@@ -116,7 +116,7 @@ export default async function AgentProfilePage({
   const { agent: slug } = await params;
   const tabParam = (await searchParams)?.tab;
   const requestedTab: AgentTab =
-    tabParam === "images" ? "images" : tabParam === "operations" ? "operations" : tabParam === "activity" ? "activity" : "controls";
+    tabParam === "images" ? "images" : tabParam === "operations" ? "operations" : "controls";
   const session = await auth();
   const [agent, snapshot, allAgents] = await Promise.all([
     db.agent.findUnique({ where: { slug }, include: { user: true } }),
@@ -143,9 +143,13 @@ export default async function AgentProfilePage({
       include: { user: { select: actorSelect } },
     }),
     db.activityLog.findMany({
-      where: { OR: [{ targetAgent: slug }, { userId: agent.user?.id ?? "__none__" }] },
+      where: agent.user?.id
+        ? { userId: agent.user.id }
+        // No PM user yet: fall back to what was done *to* the agent so the
+        // panel still says something rather than rendering empty.
+        : { targetAgent: slug },
       orderBy: { createdAt: "desc" },
-      take: 12,
+      take: 20,
       include: { user: { select: actorSelect }, task: { select: { title: true } } },
     }),
     readAgentModelSettings(slug),
@@ -167,11 +171,18 @@ export default async function AgentProfilePage({
   const avatarSrc = localAvatarSrc(agent.avatar, live?.avatar_url, agent.name);
 
   return (
-    <div className="space-y-6">
+    <div className="@container/agent space-y-6">
       <nav className="text-body">
         <Link href="/agents" className="text-text-muted hover:text-text hover:underline">← Agents</Link>
       </nav>
 
+      {/* Profile/settings on the left (header included), the agent's own
+          latest activity pinned to the right and starting at the very top.
+          The 1fr / 0.5fr ratio is what turns the ultra-wide /agents pane into
+          the requested 0.5fr | 1fr | 0.5fr split: the hub's cards take the
+          outer 0.5fr and this grid supplies the rest. */}
+      <div className="grid gap-card @min-[64rem]/agent:grid-cols-[minmax(0,1fr)_minmax(0,0.5fr)] @min-[64rem]/agent:items-start">
+        <div className="@container/agent-main min-w-0 space-y-6">
       <header className="rounded-hero border border-line bg-panel p-card-lg shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-card">
           <div className="flex min-w-0 items-start gap-card">
@@ -206,7 +217,7 @@ export default async function AgentProfilePage({
         agent={slug}
         activeTab={requestedTab}
         controls={(
-          <div className="grid gap-card xl:grid-cols-[minmax(0,1fr)_280px]">
+          <div className="grid gap-card @min-[46rem]/agent-main:grid-cols-[minmax(0,1fr)_280px]">
             <div className="space-y-section-gap">
               <Panel title="Identity files">
                 {profileResult.profile ? (
@@ -260,7 +271,7 @@ export default async function AgentProfilePage({
           </Panel>
         )}
         operations={(
-          <div className="grid gap-card lg:grid-cols-2">
+          <div className="grid gap-card @min-[46rem]/agent-main:grid-cols-2">
             <div className="space-y-section-gap">
               <Panel title="Models Settings">
                 <ModelsSettings agent={slug} canEdit={canEdit} settings={modelSettings} liveModel={live?.model_primary} />
@@ -301,8 +312,14 @@ export default async function AgentProfilePage({
             </div>
           </div>
         )}
-        activity={(
-          <Panel title="Recent activity">
+      />
+        </div>
+
+        <aside
+          data-agent-activity
+          className="min-w-0 @min-[64rem]/agent:sticky @min-[64rem]/agent:top-4"
+        >
+          <Panel title="Last activities">
             {activity.length === 0 ? <p className="text-body text-text-muted">No activity recorded.</p> : (
               <ul className="divide-y divide-line text-body">
                 {activity.map((row) => {
@@ -324,8 +341,8 @@ export default async function AgentProfilePage({
               </ul>
             )}
           </Panel>
-        )}
-      />
+        </aside>
+      </div>
     </div>
   );
 }

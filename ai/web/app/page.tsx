@@ -1,17 +1,8 @@
-import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
-import AppLayout from "./(app)/layout";
-import ProjectsPage from "./(app)/projects/page";
 
+// The workspaces landing board *is* the home page. Keeping it mounted at
+// /workspaces (rather than moving it to "/") preserves its parallel-route
+// task interceptors and board chrome scope, so "/" just hands over.
 export default async function HomePage() {
-  const session = await auth();
-  if (!session?.user) {
-    redirect("/login");
-  }
-
-  return (
-    <AppLayout>
-      <ProjectsPage />
-    </AppLayout>
-  );
+  redirect("/workspaces");
 }

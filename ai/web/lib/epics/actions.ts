@@ -38,7 +38,7 @@ import {
   type Viewer,
 } from "@/lib/auth/permissions";
 
-const EPIC_STATUSES = ["Backlog", "In Progress", "Ready to Deploy", "Done"] as const;
+const EPIC_STATUSES = ["Backlog", "To Do", "In Progress", "Done"] as const;
 type EpicStatus = (typeof EPIC_STATUSES)[number];
 
 function isEpicStatus(value: unknown): value is EpicStatus {
@@ -494,10 +494,13 @@ export async function updateEpic(formData: FormData) {
   // Status
   const statusChangedAt = new Date();
   const statusChanged = status !== "" && status !== epic.status;
+  // To Do and In Progress are both "activated" states: the epic is approved and
+  // its child tasks should be To Do (approved to execute) and queued to workers.
+  const epicActivated = status === "To Do" || status === "In Progress";
   const taskCascade = statusChanged
     ? status === "Backlog"
       ? "Backlog"
-      : status === "In Progress"
+      : epicActivated
         ? "To Do"
         : null
     : null;
@@ -669,7 +672,13 @@ export async function updateEpic(formData: FormData) {
   // When an epic moves to Done, archive all of its live child tasks.
   const archiveChildrenOnDone = statusChanged && status === "Done";
   const canTriggerAgents = actor.isOwner || actor.kind === "agent";
-  const shouldStartDeployReview = statusChanged && status === "Ready to Deploy" && canTriggerAgents;
+  // Deploy-review now hangs off the deployment field, not the workflow status:
+  // opting a (Done) epic into deploymentStatus "Ready to Deploy" dispatches the
+  // whole-contribution pre-merge review to its Deploy Reviewer (else monitor).
+  const shouldStartDeployReview =
+    deploymentRaw === "Ready to Deploy" &&
+    deploymentRaw !== epic.deploymentStatus &&
+    canTriggerAgents;
 
   if (taskCascade) {
     await assertEpicTaskCascadeAllowed(actor, {
@@ -721,10 +730,10 @@ export async function updateEpic(formData: FormData) {
         data: {
           status: taskCascade,
           statusChangedAt,
-          ...(status === "In Progress" && canTriggerAgents ? { assigneeId: null } : {}),
+          ...(epicActivated && canTriggerAgents ? { assigneeId: null } : {}),
         },
       });
-      if (status === "In Progress" && canTriggerAgents) {
+      if (epicActivated && canTriggerAgents) {
         openAssignment = await assignOpenEpicTasks(tx, {
           epicId,
           projectId: epic.project.id,
@@ -938,10 +947,11 @@ export async function setEpicStatus(formData: FormData) {
   if (epic.status === status) return;
 
   const statusChangedAt = new Date();
+  const epicActivated = status === "To Do" || status === "In Progress";
   const taskCascade =
     status === "Backlog"
       ? "Backlog"
-      : status === "In Progress"
+      : epicActivated
         ? "To Do"
         : null;
 
@@ -978,12 +988,12 @@ export async function setEpicStatus(formData: FormData) {
         data: {
           status: taskCascade,
           statusChangedAt,
-          ...(status === "In Progress" && (actor.isOwner || actor.kind === "agent")
+          ...(epicActivated && (actor.isOwner || actor.kind === "agent")
             ? { assigneeId: null }
             : {}),
         },
       });
-      if (status === "In Progress" && (actor.isOwner || actor.kind === "agent")) {
+      if (epicActivated && (actor.isOwner || actor.kind === "agent")) {
         openAssignment = await assignOpenEpicTasks(tx, {
           epicId,
           projectId: epic.project.id,

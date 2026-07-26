@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 
-const OPTIONS = ["Backlog", "In Progress", "Ready to Deploy", "Done"] as const;
+const OPTIONS = ["Backlog", "To Do", "In Progress", "Done"] as const;
 
 export default function EpicStatusFilter({
   projectSlug,

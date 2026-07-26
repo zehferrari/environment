@@ -30,6 +30,7 @@ export default function AddTaskFab({
   canManageAssignments = false,
   canSetPrivate = false,
   createTaskAction,
+  hideTrigger = false,
 }: {
   projectId: string;
   projectSlug: string;
@@ -40,6 +41,9 @@ export default function AddTaskFab({
   canManageAssignments?: boolean;
   canSetPrivate?: boolean;
   createTaskAction: (formData: FormData) => Promise<void>;
+  // When the shared board (+) speed-dial is the visible FAB, this instance
+  // stays mounted only for its modal and its ?newTask=1 auto-open hook.
+  hideTrigger?: boolean;
 }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
@@ -207,7 +211,7 @@ export default function AddTaskFab({
         </div>
       ) : null}
 
-      {!taskOpen ? (
+      {!taskOpen && !hideTrigger ? (
         <button
           type="button"
           onClick={() => {

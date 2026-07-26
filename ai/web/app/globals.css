@@ -247,6 +247,18 @@ textarea::placeholder {
   }
 }
 
+/* Landing-board spotlight: while the sidebar marks a hovered workspace/project
+   scope on the board root, every card the sidebar tagged as off-scope
+   (.board-card--dim) fades back so only the related ones read. Desktop only —
+   the effect is driven by sidebar hover, which the mobile sheet never fires. */
+@media (min-width: 768px) {
+  [data-board-focus] .board-card--dim {
+    opacity: 0.12;
+    filter: grayscale(0.55);
+    transition: opacity 120ms ease, filter 120ms ease;
+  }
+}
+
 /* Board status treatments share one semantic color hook, supplied by each
    lane/card through --board-status. Keeping the tint here makes light/dark
    surfaces consistent and avoids hard-coded light-only utility palettes. */

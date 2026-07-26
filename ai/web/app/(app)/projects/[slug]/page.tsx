@@ -18,6 +18,8 @@ import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
+import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
+import BoardCreateFab from "@/components/board-create-fab";
 import { COLUMNS, COLUMN_IDS } from "./columns";
 import {
   accessibleEpicWhere,
@@ -335,6 +337,14 @@ async function moveTask(
       },
     }),
   ]);
+  if (status === "In Progress" && current.epicId) {
+    await promoteEpicOnTaskInProgress(db, {
+      epicId: current.epicId,
+      projectId: current.projectId,
+      actorId: actor.id,
+      via: "board_move",
+    });
+  }
   if (status === "To Do" && current.assigneeId) {
     const approved = Boolean(current.approvedOn);
     await sendTaskWorkflowNotification({
@@ -532,6 +542,9 @@ export default async function ProjectBoardPage({
         deleteTaskAction={binTask}
       />
 
+      {/* The shared board (+) speed-dial is the visible FAB; AddTaskFab stays
+          mounted (hidden trigger) purely for its New-task modal + the
+          ?newTask=1 hand-off the menu routes through. */}
       <AddTaskFab
         projectId={project.id}
         projectSlug={project.slug}
@@ -550,7 +563,9 @@ export default async function ProjectBoardPage({
         canManageAssignments={viewer.isOwner}
         canSetPrivate={viewer.isOwner}
         createTaskAction={createTask}
+        hideTrigger
       />
+      <BoardCreateFab />
     </div>
   );
 }

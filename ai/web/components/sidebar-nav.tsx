@@ -5,7 +5,7 @@ import AvatarStatus from "@/components/avatar-status";
 import AgentAvatar from "@/components/agent-avatar";
 import { useAgentPresenceMap } from "@/components/agent-presence-provider";
 import { agentStatusRank } from "@/lib/agents/presence";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 export type SidebarAgent = {
@@ -23,11 +23,19 @@ export type SidebarAgent = {
 export type SidebarProject = {
   slug: string;
   name: string;
+  /** Project background colour from settings; drives the row's left rail. */
+  color?: string | null;
+  /** Percent of this project's tasks that are Done; null when it has none. */
+  completion?: number | null;
 };
 
 export type SidebarWorkspace = {
   slug: string;
   name: string;
+  /** Workspace border colour — the same hue the board cards use. */
+  color?: string | null;
+  /** Percent Done across every project in this workspace; null when empty. */
+  completion?: number | null;
   logoSrc: string | null;
   projects: SidebarProject[];
   agentSlugs: string[];
@@ -73,6 +81,58 @@ const PROJECT_LABEL_COLORS: TileColor[] = [
   { bg: "rgba(219,39,119,0.13)", fg: "#db2777" },
   { bg: "rgba(22,101,52,0.14)", fg: "#166534" },
 ];
+
+// Completion meter: an empty grey track at 0/none, then a red → orange →
+// green gradient, with the percentage read out at the end. The gradient always
+// spans the *track*, not the fill, so a 20%-done bar reads red and only a
+// finished one reaches green — the fill's background is scaled back up to
+// full-track width to achieve that.
+function ProgressMeter({
+  value,
+  label,
+}: {
+  value: number | null | undefined;
+  label: string;
+}) {
+  const percent = value == null ? null : Math.max(0, Math.min(100, Math.round(value)));
+  return (
+    <span
+      className="flex items-center gap-1.5"
+      role="img"
+      aria-label={percent == null ? `${label}: no tasks yet` : `${label}: ${percent}% done`}
+      title={percent == null ? "No tasks yet" : `${percent}% done`}
+    >
+      <span className="block h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-line">
+        {percent && percent > 0 ? (
+          <span
+            className="block h-full rounded-full"
+            style={{
+              width: `${percent}%`,
+              backgroundImage: "linear-gradient(90deg,#ef4444 0%,#f97316 35%,#f59e0b 55%,#22c55e 100%)",
+              backgroundSize: `${(100 / percent) * 100}% 100%`,
+            }}
+          />
+        ) : null}
+      </span>
+      <span className="shrink-0 text-nano font-semibold tabular-nums text-text-muted">
+        {percent == null ? "—" : `${percent}%`}
+      </span>
+    </span>
+  );
+}
+
+/** Left rail colour for a sidebar row; falls back to the derived project hue. */
+function railStyle(color: string | null | undefined, fallback?: string) {
+  return { borderLeftColor: color ?? fallback ?? "var(--color-line-strong)" };
+}
+
+/** Selected-row wash. Keeps the established accent treatment when the entity
+ *  has no colour of its own, so an uncoloured workspace/project still reads as
+ *  selected. */
+function selectedTint(color: string | null | undefined) {
+  const hex = /^#[0-9a-f]{6}$/i.test(color ?? "") ? color : null;
+  return { backgroundColor: hex ? `${hex}26` : "var(--color-accent-soft)" };
+}
 
 function colorForProject(project: SidebarProject): TileColor {
   const source = project.slug || project.name;
@@ -241,7 +301,6 @@ export default function SidebarNav({
   const mobileSheetRef = useRef<HTMLDivElement | null>(null);
   const mobileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const pathname = usePathname();
-  const router = useRouter();
   // Live presence: overrides each agent's SSR status once the stream reports,
   // so busy-first ordering and busy-row visibility react without a refresh.
   const liveStatuses = useAgentPresenceMap();
@@ -273,8 +332,20 @@ export default function SidebarNav({
   }
 
   const meInitial = (meName || "?").slice(0, 1).toUpperCase();
-  const isProjectsActive = pathname === "/" || pathname === "/projects" || pathname?.startsWith("/projects/");
-  const isWorkspacesActive = pathname === "/workspaces" || pathname?.startsWith("/workspaces/");
+  const isProjectsActive = pathname === "/projects" || pathname?.startsWith("/projects/");
+  const isWorkspacesActive = pathname === "/" || pathname === "/workspaces" || pathname?.startsWith("/workspaces/");
+  // The aggregate landing board: no single workspace is selected there, so
+  // the sidebar opens all of them.
+  const onLanding = pathname === "/" || pathname === "/workspaces";
+  // Every board route (landing, a workspace board, a project board) shows the
+  // full expanded workspace/project tree — the homepage menu, replicated. Only
+  // the selected workspace or project carries a highlight; everything else is a
+  // plain white/transparent row inside its coloured-rail container.
+  const onBoardPage =
+    onLanding ||
+    pathname === "/projects" ||
+    pathname?.startsWith("/projects/") ||
+    pathname?.startsWith("/workspaces/");
   const isAgentsActive = pathname === "/agents" || pathname?.startsWith("/agents/");
   const isActivityActive = pathname === "/system/activity";
   const isSettingsActive = pathname === "/system/settings";
@@ -286,6 +357,10 @@ export default function SidebarNav({
       workspace.projects.some((project) => project.slug === activeProjectSlug),
     )?.slug ??
     null;
+  // A workspace expands to reveal its projects whenever the route lives under
+  // it, but it is only *highlighted* when its own hub page is open — a selected
+  // project is the single active row, its parent workspace is not.
+  const highlightedWorkspaceSlug = activeProjectSlug ? null : activeWorkspaceSlug;
   const selectedWorkspace = workspaces.find((workspace) => workspace.slug === selectedWorkspaceSlug) ?? null;
   const activeWorkspace = workspaces.find((workspace) => workspace.slug === activeWorkspaceSlug) ?? null;
   const soleWorkspace = workspaces.length === 1 ? workspaces[0] : null;
@@ -294,7 +369,9 @@ export default function SidebarNav({
   // shadows the workspace/project you just navigated into.
   const workspaceFilter = activeWorkspace ?? selectedWorkspace ?? soleWorkspace;
   const activeWorkspaceAgentSlugs = workspaceFilter?.agentSlugs ?? [];
-  const visibleAgents = workspaceFilter && activeWorkspaceAgentSlugs.length > 0
+  // The landing shows the whole fleet; elsewhere the list narrows to the
+  // workspace in context.
+  const visibleAgents = !onLanding && workspaceFilter && activeWorkspaceAgentSlugs.length > 0
     ? agents.filter((agent) => activeWorkspaceAgentSlugs.includes(agent.slug))
     : agents;
   // Busy-first ordering tracks the live statuses; stable sort keeps the
@@ -306,7 +383,6 @@ export default function SidebarNav({
   const hasUnreadAgents = visibleAgents.some((agent) => agent.unread);
   const assignedProjectSlugs = new Set(workspaces.flatMap((workspace) => workspace.projects.map((project) => project.slug)));
   const unassignedProjects = projects.filter((project) => !assignedProjectSlugs.has(project.slug));
-  const filteredWorkspaceProjects = workspaceFilter ? workspaceFilter.projects : unassignedProjects;
   const expandedWorkspaceSet = new Set(expandedWorkspaceSlugs);
   const mobilePrimaryItems = [
     { href: soleWorkspace ? `/workspaces/${soleWorkspace.slug}` : "/workspaces", icon: icons.workspaces, label: "Workspaces", active: isWorkspacesActive || isProjectsActive },
@@ -325,10 +401,30 @@ export default function SidebarNav({
     });
   }
 
-  function selectWorkspace(slug: string) {
+  function pinWorkspace(slug: string) {
     setSelectedWorkspaceSlug(slug);
     window.localStorage.setItem(SELECTED_WORKSPACE_STORAGE_KEY, slug);
-    router.push(`/workspaces/${slug}`);
+  }
+
+  // Landing-only "hover a nav row → only its cards stay lit" affordance. Rather
+  // than parameterise CSS by slug, mark the matching cards with a class and let
+  // one static rule dim the rest. Cheap DOM work on mouseenter/leave; the board
+  // and sidebar are separate server trees, so we reach across via a data hook.
+  function focusBoardScope(kind: "ws" | "proj", slug: string) {
+    const root = document.querySelector("[data-board-focus-root]");
+    if (!root) return;
+    const attr = kind === "ws" ? "data-scope-ws" : "data-scope-proj";
+    root.querySelectorAll<HTMLElement>("[data-board-card]").forEach((card) => {
+      card.classList.toggle("board-card--dim", card.getAttribute(attr) !== slug);
+    });
+    root.setAttribute("data-board-focus", "");
+  }
+
+  function clearBoardScope() {
+    const root = document.querySelector("[data-board-focus-root]");
+    if (!root) return;
+    root.removeAttribute("data-board-focus");
+    root.querySelectorAll(".board-card--dim").forEach((card) => card.classList.remove("board-card--dim"));
   }
 
   // Keep the persisted "pin" in sync with the workspace implied by the current
@@ -437,31 +533,42 @@ export default function SidebarNav({
       </div>
 
       <nav className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 text-body">
-        <div className="space-y-1">
-          {workspaces.length > 1 ? (
-            <NavItem
-              href="/workspaces"
-              icon={icons.workspaces}
-              label="Workspaces"
-              color={NAV_COLORS.workspaces}
+        {/* Every workspace is a first-class menu row. On any board page the
+            whole tree opens, each workspace bracketed by its own coloured rail;
+            off the boards only the workspace the current route belongs to
+            (falling back to the pinned one) expands, so the tree stays one
+            level deep there. Only the selected workspace/project is highlighted;
+            all other rows are plain white/transparent. */}
+        <div className={onBoardPage ? "space-y-2" : "space-y-1"}>
+          {workspaces.map((workspace) => (
+            <WorkspaceNavGroup
+              key={workspace.slug}
+              workspace={workspace}
               collapsed={collapsed}
-              active={isWorkspacesActive}
+              expanded={onBoardPage || workspaceFilter?.slug === workspace.slug}
+              active={highlightedWorkspaceSlug === workspace.slug}
+              landing={onBoardPage}
+              pathname={pathname}
+              onToggle={() => pinWorkspace(workspace.slug)}
+              onFocusScope={onLanding ? focusBoardScope : undefined}
+              onClearScope={onLanding ? clearBoardScope : undefined}
+            />
+          ))}
+          {unassignedProjects.length > 0 ? (
+            <WorkspaceNavGroup
+              workspace={{ slug: "__unassigned", name: "Other projects", color: null, completion: null, logoSrc: null, projects: unassignedProjects, agentSlugs: [] }}
+              collapsed={collapsed}
+              expanded={onBoardPage || expandedWorkspaceSet.has("__unassigned") || !workspaceFilter}
+              active={false}
+              landing={onBoardPage}
+              pathname={pathname}
+              onToggle={() => toggleWorkspace("__unassigned")}
+              onFocusScope={onLanding ? focusBoardScope : undefined}
+              onClearScope={onLanding ? clearBoardScope : undefined}
             />
           ) : null}
-          {workspaceFilter || filteredWorkspaceProjects.length > 0 ? (
-            <WorkspaceNavGroup
-              workspace={{ slug: workspaceFilter?.slug ?? "__unassigned", name: workspaceFilter?.name ?? "Other projects", logoSrc: workspaceFilter?.logoSrc ?? null, projects: filteredWorkspaceProjects, agentSlugs: workspaceFilter?.agentSlugs ?? [] }}
-              collapsed={collapsed}
-              expanded
-              active={Boolean(workspaceFilter && activeWorkspaceSlug === workspaceFilter.slug)}
-              pathname={pathname}
-              onToggle={() => toggleWorkspace(workspaceFilter?.slug ?? "__unassigned")}
-              workspaceChoices={workspaceFilter && workspaces.length > 1 ? workspaces : undefined}
-              selectedWorkspaceSlug={workspaceFilter?.slug ?? ""}
-              onSelectWorkspace={selectWorkspace}
-            />
-          ) : !collapsed ? (
-            <div className="rounded-lg px-3 py-2 text-caption text-text-muted">No projects in this workspace.</div>
+          {workspaces.length === 0 && unassignedProjects.length === 0 && !collapsed ? (
+            <div className="rounded-lg px-3 py-2 text-caption text-text-muted">No workspaces yet.</div>
           ) : null}
         </div>
 
@@ -490,7 +597,7 @@ export default function SidebarNav({
                 className={`items-center gap-3 rounded-lg py-1.5 transition-[background-color,color,box-shadow] hover:bg-accent-soft hover:text-accent ${
                   active ? "bg-accent-soft text-accent shadow-[inset_3px_0_0_var(--color-accent)]" : "text-text-muted"
                 } ${collapsed ? "justify-center px-0" : "px-3"} ${
-                  busy ? "flex" : "hidden group-hover/agents:flex group-focus-within/agents:flex"
+                  busy || onLanding ? "flex" : "hidden group-hover/agents:flex group-focus-within/agents:flex"
                 }`}
               >
                 {/* Avatar: busy → discreet pulsing ring; stale/offline →
@@ -522,10 +629,13 @@ export default function SidebarNav({
               </Link>
             );
           })}
-          {busyAgents.length === 0 && !collapsed ? (
+          {busyAgents.length === 0 && !onLanding && !collapsed ? (
             <p className="rounded-lg px-3 py-2 text-caption text-text-muted group-hover/agents:hidden group-focus-within/agents:hidden">
               {visibleAgents.length === 0 ? "No agents available." : "No agents are busy."}
             </p>
+          ) : null}
+          {onLanding && visibleAgents.length === 0 && !collapsed ? (
+            <p className="rounded-lg px-3 py-2 text-caption text-text-muted">No agents available.</p>
           ) : null}
         </div>
         </> : null}
@@ -680,7 +790,7 @@ export default function SidebarNav({
                     workspace={workspace}
                     collapsed={false}
                     expanded={expandedWorkspaceSet.has(workspace.slug) || activeWorkspaceSlug === workspace.slug}
-                    active={activeWorkspaceSlug === workspace.slug}
+                    active={highlightedWorkspaceSlug === workspace.slug}
                     pathname={pathname}
                     onToggle={() => toggleWorkspace(workspace.slug)}
                     onNavigate={closeMobileMenu}
@@ -690,10 +800,10 @@ export default function SidebarNav({
               )}
               {unassignedProjects.length > 0 ? (
                 <WorkspaceNavGroup
-                  workspace={{ slug: "__unassigned", name: "Other projects", logoSrc: null, projects: unassignedProjects, agentSlugs: [] }}
+                  workspace={{ slug: "__unassigned", name: "Other projects", color: null, completion: null, logoSrc: null, projects: unassignedProjects, agentSlugs: [] }}
                   collapsed={false}
                   expanded={expandedWorkspaceSet.has("__unassigned") || unassignedProjects.some((project) => project.slug === activeProjectSlug)}
-                  active={unassignedProjects.some((project) => project.slug === activeProjectSlug)}
+                  active={false}
                   pathname={pathname}
                   onToggle={() => toggleWorkspace("__unassigned")}
                   onNavigate={closeMobileMenu}
@@ -770,150 +880,186 @@ function WorkspaceNavGroup({
   collapsed,
   expanded,
   active,
+  landing = false,
   pathname,
   onToggle,
   onNavigate,
-  workspaceChoices,
-  selectedWorkspaceSlug,
-  onSelectWorkspace,
+  onFocusScope,
+  onClearScope,
   mobile = false,
 }: {
   workspace: SidebarWorkspace;
   collapsed: boolean;
   expanded: boolean;
   active: boolean;
+  /** Landing view: every workspace is shown as a bordered container that
+   *  wraps its own projects, so one coloured rail brackets the whole group. */
+  landing?: boolean;
   pathname: string | null;
   onToggle: () => void;
   onNavigate?: () => void;
-  workspaceChoices?: SidebarWorkspace[];
-  selectedWorkspaceSlug?: string;
-  onSelectWorkspace?: (slug: string) => void;
+  /** Landing-only: hovering a row spotlights its cards on the board. */
+  onFocusScope?: (kind: "ws" | "proj", slug: string) => void;
+  onClearScope?: () => void;
   mobile?: boolean;
 }) {
-  const visibleProjects = expanded;
+  const scopeHandlers = (kind: "ws" | "proj", slug: string) =>
+    onFocusScope
+      ? {
+          onMouseEnter: () => onFocusScope(kind, slug),
+          onMouseLeave: () => onClearScope?.(),
+        }
+      : undefined;
+  // "Other projects" is a bucket, not a real workspace: it has no hub page, so
+  // it stays a plain expand/collapse row.
+  const isBucket = workspace.slug === "__unassigned";
   const tileClass = mobile
     ? "grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-xl border border-line bg-panel-soft text-caption font-semibold uppercase text-text"
     : "grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-lg border border-line bg-panel-soft text-micro font-semibold uppercase text-text";
+  // The rail is 3px of border on every row so names stay aligned; only the
+  // selected row (or, on the landing, the wrapping container) paints it.
+  const railClass = landing ? "" : "border-l-[3px]";
   const rowClass = mobile
-    ? "flex min-h-11 w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left text-body hover:bg-accent-soft hover:text-accent"
-    : `flex w-full items-center gap-3 rounded-lg py-1.5 text-left hover:bg-accent-soft hover:text-accent ${collapsed ? "justify-center px-0" : "px-3"}`;
+    ? `group/row flex min-h-11 w-full items-center gap-3 rounded-2xl ${railClass} px-3 py-2.5 text-left text-body hover:bg-accent-soft hover:text-accent`
+    : `group/row flex w-full items-center gap-3 rounded-lg ${railClass} py-1.5 text-left hover:bg-accent-soft hover:text-accent ${collapsed ? "justify-center px-0" : "px-3"}`;
   const projectRowClass = mobile
-    ? "flex min-h-10 items-center gap-3 rounded-2xl px-3 py-2 text-caption hover:bg-accent-soft hover:text-accent"
+    ? `group/row flex min-h-10 items-center gap-3 rounded-2xl ${railClass} px-3 py-2 text-caption hover:bg-accent-soft hover:text-accent`
     : collapsed
-      ? "flex justify-center rounded-lg py-1.5 hover:bg-accent-soft hover:text-accent"
-      : "ml-5 flex items-center gap-2 rounded-lg py-1.5 pl-5 pr-3 text-caption hover:bg-accent-soft hover:text-accent";
+      ? "group/row flex justify-center rounded-lg py-1.5 hover:bg-accent-soft hover:text-accent"
+      : `group/row ml-5 flex items-center gap-2 rounded-lg ${railClass} py-1.5 pl-3 pr-3 text-caption hover:bg-accent-soft hover:text-accent`;
+
+  const badge = (
+    <span className={tileClass} aria-hidden="true">
+      {workspace.logoSrc ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={workspace.logoSrc} alt="" className="h-full w-full object-cover" />
+      ) : (
+        workspace.name.slice(0, 1)
+      )}
+    </span>
+  );
+
+  const rowBody = !collapsed ? (
+    <span className="min-w-0 flex-1">
+      <span className="flex min-w-0 items-center gap-2">
+        <span className="min-w-0 flex-1 truncate font-medium">{workspace.name}</span>
+        {isBucket ? (
+          <span className="shrink-0 text-nano text-text-muted" aria-hidden="true">
+            {expanded ? "▾" : "▸"}
+          </span>
+        ) : null}
+      </span>
+      {!isBucket ? (
+        <span className={`mt-1 block ${active ? "" : "hidden group-hover/row:block"}`}>
+          <ProgressMeter value={workspace.completion} label={workspace.name} />
+        </span>
+      ) : null}
+    </span>
+  ) : null;
+
+  const workspaceRow = isBucket ? (
+    <button
+      type="button"
+      title={collapsed ? workspace.name : undefined}
+      aria-expanded={expanded}
+      onClick={onToggle}
+      className={`${rowClass} border-transparent text-text-muted`}
+    >
+      {badge}
+      {rowBody}
+    </button>
+  ) : (
+    <Link
+      href={`/workspaces/${workspace.slug}`}
+      title={collapsed ? workspace.name : `${workspace.name} hub`}
+      aria-label={collapsed ? workspace.name : undefined}
+      aria-current={active ? "page" : undefined}
+      onClick={() => {
+        onToggle();
+        onNavigate?.();
+      }}
+      {...scopeHandlers("ws", workspace.slug)}
+      style={active ? { ...railStyle(workspace.color), ...selectedTint(workspace.color) } : undefined}
+      className={`${rowClass} ${active ? "text-accent" : "border-transparent text-text-muted"}`}
+    >
+      {badge}
+      {rowBody}
+    </Link>
+  );
+
+  const projectList = expanded ? (
+    workspace.projects.length > 0 ? (
+      <div className="space-y-1">
+        {workspace.projects.map((project) => {
+          const href = `/projects/${project.slug}`;
+          const projectActive = pathname === href || pathname?.startsWith(`${href}/`);
+          const projectColor = colorForProject(project);
+          // Only the selected project is highlighted; every other row stays
+          // white/transparent. In a landing container the workspace owns the
+          // rail, so the selected project shows just its colour wash; off the
+          // boards the selected project also gets its own colour rail.
+          const projectStyle = !projectActive
+            ? undefined
+            : collapsed || landing
+              ? selectedTint(project.color)
+              : { ...railStyle(project.color, projectColor.fg), ...selectedTint(project.color) };
+          return (
+            <Link
+              key={project.slug}
+              href={href}
+              onClick={onNavigate}
+              {...scopeHandlers("proj", project.slug)}
+              title={collapsed ? project.name : undefined}
+              aria-current={projectActive ? "page" : undefined}
+              style={projectStyle}
+              className={`${projectRowClass} ${projectActive ? "font-semibold text-accent" : `text-text-muted${landing ? "" : " border-transparent"}`}`}
+            >
+              <span
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-md border text-[10px] font-semibold uppercase"
+                style={{
+                  backgroundColor: projectColor.bg,
+                  borderColor: projectColor.fg,
+                  color: projectColor.fg,
+                }}
+                aria-hidden="true"
+              >
+                {project.name.slice(0, 1)}
+              </span>
+              {!collapsed ? (
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium">{project.name}</span>
+                  <span className={`mt-1 block ${projectActive ? "" : "hidden group-hover/row:block"}`}>
+                    <ProgressMeter value={project.completion} label={project.name} />
+                  </span>
+                </span>
+              ) : null}
+            </Link>
+          );
+        })}
+      </div>
+    ) : (
+      <div className={mobile ? "rounded-2xl px-3 py-2 text-caption text-text-muted" : "rounded-lg px-3 py-1.5 text-caption text-text-muted"}>
+        No projects in this workspace yet.
+      </div>
+    )
+  ) : null;
+
+  if (landing && !isBucket && !collapsed) {
+    return (
+      <div
+        className="space-y-1 rounded-lg border-l-[3px] bg-panel py-1 pr-1 shadow-[var(--shadow-xs)]"
+        style={railStyle(workspace.color)}
+      >
+        {workspaceRow}
+        {projectList}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-1">
-      {!collapsed && !mobile && workspaceChoices && workspaceChoices.length > 0 && onSelectWorkspace ? (
-        <div className={`${rowClass} ${active ? "text-accent" : "text-text-muted"}`}>
-          <Link
-            href={`/workspaces/${workspace.slug}`}
-            title={`${workspace.name} hub`}
-            aria-label={`${workspace.name} hub`}
-            className={`${tileClass} transition hover:border-accent hover:text-accent`}
-          >
-            {workspace.logoSrc ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={workspace.logoSrc} alt="" className="h-full w-full object-cover" />
-            ) : (
-              workspace.name.slice(0, 1)
-            )}
-          </Link>
-          <select
-            aria-label="Workspace"
-            value={selectedWorkspaceSlug || workspace.slug}
-            onChange={(event) => onSelectWorkspace(event.currentTarget.value)}
-            className="min-w-0 flex-1 rounded-md border border-line bg-bg px-2 py-1 text-caption font-semibold text-text outline-none focus:border-accent"
-          >
-            {workspaceChoices.map((choice) => (
-              <option key={choice.slug} value={choice.slug}>
-                {choice.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      ) : collapsed && !mobile && workspace.slug !== "__unassigned" ? (
-        <Link
-          href={`/workspaces/${workspace.slug}`}
-          title={`${workspace.name} hub`}
-          aria-label={`${workspace.name} hub`}
-          aria-current={active ? "page" : undefined}
-          className={`${rowClass} ${active ? "text-accent" : "text-text-muted"}`}
-        >
-          <span className={tileClass} aria-hidden="true">
-            {workspace.logoSrc ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={workspace.logoSrc} alt="" className="h-full w-full object-cover" />
-            ) : (
-              workspace.name.slice(0, 1)
-            )}
-          </span>
-        </Link>
-      ) : (
-        <button
-          type="button"
-          title={collapsed ? workspace.name : undefined}
-          aria-expanded={expanded}
-          onClick={onToggle}
-          className={`${rowClass} ${active ? "text-accent" : "text-text-muted"}`}
-        >
-          <span className={tileClass} aria-hidden="true">
-            {workspace.logoSrc ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={workspace.logoSrc} alt="" className="h-full w-full object-cover" />
-            ) : (
-              workspace.name.slice(0, 1)
-            )}
-          </span>
-          {!collapsed ? (
-            <>
-              <span className="min-w-0 flex-1 truncate font-medium">{workspace.name}</span>
-              <span className="shrink-0 text-nano text-text-muted" aria-hidden="true">
-                {expanded ? "▾" : "▸"}
-              </span>
-            </>
-          ) : null}
-        </button>
-      )}
-      {visibleProjects ? (
-        workspace.projects.length > 0 ? (
-          <div className="space-y-1">
-            {workspace.projects.map((project) => {
-              const href = `/projects/${project.slug}`;
-              const projectActive = pathname === href || pathname?.startsWith(`${href}/`);
-              const projectColor = colorForProject(project);
-              return (
-                <Link
-                  key={project.slug}
-                  href={href}
-                  onClick={onNavigate}
-                  title={collapsed ? project.name : undefined}
-                  aria-current={projectActive ? "page" : undefined}
-                  className={`${projectRowClass} ${projectActive ? "bg-accent-soft text-accent shadow-[inset_3px_0_0_var(--color-accent)]" : "text-text-muted"}`}
-                >
-                  <span
-                    className="grid h-6 w-6 shrink-0 place-items-center rounded-md border text-[10px] font-semibold uppercase"
-                    style={{
-                      backgroundColor: projectColor.bg,
-                      borderColor: projectColor.fg,
-                      color: projectColor.fg,
-                    }}
-                    aria-hidden="true"
-                  >
-                    {project.name.slice(0, 1)}
-                  </span>
-                  {!collapsed ? <span className="truncate font-medium">{project.name}</span> : null}
-                </Link>
-              );
-            })}
-          </div>
-        ) : (
-          <div className={mobile ? "rounded-2xl px-3 py-2 text-caption text-text-muted" : "rounded-lg px-3 py-1.5 text-caption text-text-muted"}>
-            No projects in this workspace yet.
-          </div>
-        )
-      ) : null}
+      {workspaceRow}
+      {projectList}
     </div>
   );
 }

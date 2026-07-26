@@ -4,7 +4,15 @@ import { PersistentPmStreamProvider } from "@/components/persistent-pm-stream-pr
 import Sidebar from "@/components/sidebar";
 import { requireViewer } from "@/lib/auth/permissions";
 
-export default async function AppLayout({ children }: { children: React.ReactNode }) {
+export default async function AppLayout({
+  children,
+  chatpane,
+}: {
+  children: React.ReactNode;
+  // Parallel slot: an intercepted agent chat renders here as a floating popup
+  // over whatever board is in `children`. Empty (default.tsx → null) otherwise.
+  chatpane: React.ReactNode;
+}) {
   // The presence SSE endpoint is owner-only (403 otherwise). Mounting the
   // provider for non-owners would loop it through 403 reconnects forever, so
   // only owners get the live stream; everyone else keeps the SSR status hint.
@@ -19,6 +27,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </main>
         <CommandDeck />
       </div>
+      {chatpane}
     </PersistentPmStreamProvider>
   );
 }

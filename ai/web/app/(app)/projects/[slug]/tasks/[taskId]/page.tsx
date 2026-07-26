@@ -1359,7 +1359,10 @@ export default async function TaskDetailPage({
       ? (actorVisibility.owner ? { username: actorVisibility.owner.username } : null)
       : attachment.uploader,
   }));
-  const hasDeploymentTab = canShowDeploymentTab(task);
+  // Deployment is an optional post-Done step for repo-backed projects, and only
+  // for standalone tasks (no epic parent — an epic owns its tasks' deploy gate).
+  const hasDeploymentTab =
+    canShowDeploymentTab(task) && Boolean(task.project.repositoryPath) && task.status === "Done";
   const showDeploymentTab = viewer.isOwner && hasDeploymentTab;
   const taskTabs = (hasDeploymentTab ? [...TASK_TABS] : TASK_TABS.filter((name) => name !== DEVELOPMENT_TAB))
     .filter((name) => viewer.isOwner || !OWNER_ONLY_TASK_TABS.has(name));
@@ -1848,7 +1851,10 @@ export default async function TaskDetailPage({
                 aria-label="Task title"
               />
             </label>
-            <div className="flex shrink-0 flex-col items-end gap-0.5">
+            {/* The close button only exists ultra-wide. Contained, the pane's
+                own × sits on this corner, so reserve room for it; canonical, the
+                form's button overhangs outside and needs none. */}
+            <div className={`flex shrink-0 flex-col items-end gap-0.5 ${contained ? "4xl:pr-12" : ""}`}>
               <span className="text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Updated{" "}
                 <time dateTime={dateIso(task.updatedAt) ?? undefined} title={dateIso(task.updatedAt) ?? undefined}>
@@ -1863,7 +1869,10 @@ export default async function TaskDetailPage({
                 >
                   Save changes
                 </button>
-                <CloseTaskButton slug={slug} contained={contained} />
+                {/* Canonical (full-page) task: the form owns its overhang close
+                    button. In the split pane the pane owns it (see
+                    WorkspacePane), so the form renders none. */}
+                {!contained ? <CloseTaskButton slug={slug} /> : null}
               </div>
             </div>
           </div>

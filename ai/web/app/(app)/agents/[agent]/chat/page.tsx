@@ -217,10 +217,13 @@ export default async function DirectAgentChatPage({
   searchParams,
 }: {
   params: Promise<{ agent: string }>;
-  searchParams: Promise<{ archive?: string }>;
+  // `embedded` is set only by the popup interceptor (never on the canonical
+  // URL): when "1", the chat fills its window instead of the full viewport.
+  searchParams: Promise<{ archive?: string; embedded?: string }>;
 }) {
   const { agent: slug } = await params;
-  const { archive: selectedArchiveId = "" } = await searchParams;
+  const { archive: selectedArchiveId = "", embedded: embeddedParam } = await searchParams;
+  const embedded = embeddedParam === "1";
   const session = await auth();
   const currentUserId = session?.user?.id ?? null;
   const agent = await db.agent.findUnique({
@@ -560,9 +563,14 @@ export default async function DirectAgentChatPage({
   const finalBinArchives = buildFinalArchives(binArchives);
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-2.5rem)] max-w-7xl flex-col gap-card overflow-hidden">
-      {/* Sticky Header Banner */}
-      <header className="sticky top-[-1.25rem] z-10 -mx-6 bg-bg pt-[1.25rem] pb-3 px-page-x lg:-mx-8 lg:px-page-x-lg border-b border-line flex items-center justify-between gap-card shrink-0">
+    <div className={embedded
+      ? "flex h-full min-h-0 flex-col gap-card overflow-hidden p-4"
+      : "mx-auto flex h-[calc(100vh-2.5rem)] max-w-7xl flex-col gap-card overflow-hidden"}>
+      {/* Sticky Header Banner. In the popup the negative page-margins/sticky
+          offsets don't apply — the window supplies its own bounds. */}
+      <header className={embedded
+        ? "flex items-center justify-between gap-card border-b border-line pb-3 shrink-0"
+        : "sticky top-[-1.25rem] z-10 -mx-6 bg-bg pt-[1.25rem] pb-3 px-page-x lg:-mx-8 lg:px-page-x-lg border-b border-line flex items-center justify-between gap-card shrink-0"}>
         <Link href={`/agents/${slug}`} className="flex items-center gap-3 hover:opacity-80 transition shrink-min min-w-0">
           <div className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-card border border-line bg-panel-soft text-body font-semibold">
             {avatarSrc ? (

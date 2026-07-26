@@ -137,7 +137,7 @@ export default async function SystemSettingsPage({
 
           <SettingsRow
             label="Deploy-review prompt"
-            hint="Default prompt sent to the Deploy Reviewer when an Epic moves to Ready to Deploy. Projects can override this."
+            hint="Default prompt sent to the Deploy Reviewer when a Done Epic is opted into deployment (Ready to Deploy). Projects can override this."
           >
             <textarea
               name="deployReviewPrompt"

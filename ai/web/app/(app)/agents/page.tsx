@@ -493,7 +493,7 @@ export default async function AgentsPage() {
         </Link>
       </div>
 
-      <section className="grid gap-3 md:grid-cols-6">
+      <section className="grid gap-3 @min-[30rem]/agents-col:grid-cols-3 @min-[60rem]/agents-col:grid-cols-6">
         <Kpi label="Agents online" value={`${onlineCount}`} foot={`/ ${agents.length} registered`} />
         <Kpi label="Open tickets" value={`${openTickets}`} foot="From live Atlas snapshot" />
         <Kpi label="Open PM tasks" value={`${totalOpenTasks}`} foot="Assigned and not Done" />
@@ -507,7 +507,7 @@ export default async function AgentsPage() {
           No agents have been synced yet. Trigger {`/api/debug/sync`} or wait for the next cycle.
         </p>
       ) : (
-        <section className="grid gap-card xl:grid-cols-2">
+        <section className="grid gap-card @min-[80rem]/agents-col:grid-cols-2">
           {agents.map((a) => {
             const live = liveAgents[a.slug];
             const recentAgentPmRuns = pmRunsByAgent.get(a.slug) ?? [];
@@ -584,8 +584,8 @@ export default async function AgentsPage() {
               >
                 <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_0%_0%,color-mix(in_srgb,var(--agent-hue)_14%,transparent),transparent_42%)]" />
 
-                <div className="relative grid gap-3 md:grid-cols-4">
-                  <div className="min-w-0 md:col-span-3">
+                <div className="relative grid gap-3 @min-[34rem]/agents-col:grid-cols-4">
+                  <div className="min-w-0 @min-[34rem]/agents-col:col-span-3">
                     <div className="flex items-start gap-2.5">
                       <Link href={`/agents/${a.slug}`} className="relative shrink-0" title={`${a.name} — profile`}>
                         <AgentAvatar
@@ -709,7 +709,7 @@ export default async function AgentsPage() {
                     </div>
                   </div>
 
-                  <div className="min-w-0 md:col-span-1">
+                  <div className="min-w-0 @min-[34rem]/agents-col:col-span-1">
                     <AgentServiceControls agent={a.slug} services={agentServices} />
                   </div>
                 </div>

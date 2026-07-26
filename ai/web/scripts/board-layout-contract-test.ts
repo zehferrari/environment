@@ -138,6 +138,7 @@ const workspaceTaskPane = read(
 );
 const workspaceTaskDefault = read("app/(app)/workspaces/[slug]/@workspace/default.tsx");
 const workspacePane = read("components/workspace-pane.tsx");
+const closeTaskButton = read("components/close-task-button.tsx");
 const stickyViewportSurface = read("components/sticky-viewport-surface.tsx");
 const taskTabs = read("components/task-tabs.tsx");
 const taskQuickAdd = read("components/task-quick-add-fab.tsx");
@@ -264,7 +265,15 @@ assert.match(
   "workspace parallel slot must have an empty default for unmatched routes",
 );
 assert.match(workspacePane, /closeHref:\s*string/, "shared task pane must accept a context-specific close URL");
-assert.match(workspacePane, /router\.push\(closeHref\)/, "shared task pane must navigate to its context-specific close URL");
+assert(
+  workspacePane.includes("<TaskCloseHrefContext.Provider value={closeHref}>"),
+  "shared task pane must publish its context-specific close URL to the task header",
+);
+assert(
+  closeTaskButton.includes("useTaskCloseHref(`/projects/${slug}`)") &&
+    closeTaskButton.includes("router.push(closeHref)"),
+  "the task close button must return to the hosting board and fall back to the project board",
+);
 assert(
   workspacePane.includes("usePathname()") && workspacePane.includes("if (!open) return null;") &&
     workspacePane.includes("data-ws-open"),
@@ -706,14 +715,20 @@ assert(!mobileGroup.includes("overflow-y-auto"), "mobile groups must keep docume
 assert.equal(attributeOccurrences(taskPage, "data-task-dates"), 1, "task detail must render one dates widget");
 const datesTag = openingTagWithMarker(taskPage, "data-task-dates", "task dates widget");
 const datesClasses = classTokens(datesTag.tag, "task dates widget");
-assertClasses(datesClasses, ["grid", "grid-cols-3"], "task dates widget");
+// One stacked row per date: label, actor avatar, actor name, then the
+// timestamp pushed to the right edge.
+assertClasses(datesClasses, ["space-y-2"], "task dates widget");
 assert.equal(attributeOccurrences(taskPage, "data-task-date"), 3, "task dates widget must always render three date cells");
 const datePositions = markerPositions(taskPage, "data-task-date(?=[\\s=>])");
-const roleWidgetStart = taskPage.indexOf("data-task-roles", datePositions.at(-1));
-assert(roleWidgetStart > datePositions.at(-1)!, "task role widget must follow the dates widget");
-const dateLabels = ["Created", "Updated", "Done"] as const;
+const datesRegionEnd = taskPage.indexOf("</dl>", datesTag.start);
+assert(datesRegionEnd > datesTag.start, "task dates widget must close its list");
+assert(
+  taskPage.indexOf("data-task-roles") < datesTag.start,
+  "the roles widget must precede the dates widget in the task sidebar",
+);
+const dateLabels = ["Created", "Last updated", "Completed"] as const;
 datePositions.forEach((start, index) => {
-  const end = datePositions[index + 1] ?? roleWidgetStart;
+  const end = datePositions[index + 1] ?? datesRegionEnd;
   const cell = taskPage.slice(start, end);
   assert(cell.includes(dateLabels[index]!), `task date cell ${index + 1} must be ${dateLabels[index]}`);
   const avatarIndex = cell.indexOf("<MessageAvatar");
@@ -722,8 +737,8 @@ datePositions.forEach((start, index) => {
   assert(timeIndex > avatarIndex, `${dateLabels[index]} avatar must render to the left of its date`);
 });
 assert(
-  !taskPage.slice(datesTag.start, roleWidgetStart).includes("Approved"),
-  "Approved date must move out of the three-column dates widget",
+  !taskPage.slice(datesTag.start, datesRegionEnd).includes("Approved"),
+  "Approved date must stay out of the dates widget",
 );
 assert(
   taskPage.includes("const doneActivity = allActivity.find") &&
@@ -780,33 +795,104 @@ assert(
   "Deployment status must render after Commit Prefix in the shared two-column row",
 );
 
-// Done cards show both responsibilities as two explicit, non-collapsing
-// identity cells: assignee first and resolved reviewer second.
-assert.equal(attributeOccurrences(boardClient, "data-done-card-people"), 1, "Done-card identities must have one shared renderer");
-const donePeopleTag = openingTagWithMarker(boardClient, "data-done-card-people", "Done-card identity grid");
-assertClasses(classTokens(donePeopleTag.tag, "Done-card identity grid"), ["grid", "grid-cols-2"], "Done-card identity grid");
-assert.equal(attributeOccurrences(boardClient, "data-done-card-assignee"), 1, "Done-card identity grid must have one assignee cell");
-assert.equal(attributeOccurrences(boardClient, "data-done-card-reviewer"), 1, "Done-card identity grid must have one reviewer cell");
-const donePeopleRegion = boardClient.slice(
-  boardClient.indexOf("function DoneActorColumns"),
-  boardClient.indexOf("function TrashIcon"),
-);
-const doneAssigneeIndex = donePeopleRegion.indexOf("data-done-card-assignee");
-const doneReviewerIndex = donePeopleRegion.indexOf("data-done-card-reviewer");
-assert(doneAssigneeIndex >= 0 && doneReviewerIndex > doneAssigneeIndex, "Done cards must place assignee before reviewer");
-assert(
-  donePeopleRegion.includes("const reviewer = task.reviewer ?? task.manager ?? task.reporter"),
-  "Done cards must use the resolved reviewer identity",
+// Every board surface renders one card layout — there is no density switch and
+// no per-surface variant. The card is a two-column grid: a 42px identity rail
+// (select box, primary avatar, Done-only reviewer avatar) beside explicitly
+// placed content rows (meta strip, title, scope links, epic, progress).
+assert.equal(occurrences(boardClient, "<BoardCardBody"), 2, "desktop and mobile cards must share one card body");
+assert.equal(attributeOccurrences(boardClient, "data-board-card-grid"), 1, "the shared card body must define one card grid");
+const cardGridTag = openingTagWithMarker(boardClient, "data-board-card-grid", "board card grid");
+assertClasses(
+  classTokens(cardGridTag.tag, "board card grid"),
+  ["grid", "grid-cols-[2.625rem_minmax(0,1fr)]"],
+  "board card grid",
 );
 assert(
-  donePeopleRegion.indexOf("<MessageAvatar actor={assignee}") < donePeopleRegion.indexOf("{assignee ? actorDisplayName(assignee)"),
-  "Done-card assignee avatar must render to the left of the assignee name",
+  !boardClient.includes("pm.board.compact.") && !boardClient.includes("DensityIcon"),
+  "the board must not keep a compact/comfortable density preference",
+);
+const cardBodyRegion = boardClient.slice(
+  boardClient.indexOf("function BoardCardBody"),
+  boardClient.indexOf("function BoardAvatar"),
+);
+for (const [marker, rowStart, label] of [
+  ["data-board-card-avatar", "row-start-2", "identity rail"],
+  ["data-board-card-scope", "row-start-3", "workspace/project scope links"],
+] as const) {
+  assert.equal(attributeOccurrences(boardClient, marker), 1, `board card must render one ${label} slot`);
+  const tag = openingTagWithMarker(cardBodyRegion, marker, `board card ${label}`);
+  assert(
+    classTokens(tag.tag, `board card ${label}`).has(rowStart),
+    `board card ${label} must stay on its fixed row (${rowStart})`,
+  );
+}
+// Both identities share the rail cell: the reviewer badges the builder's
+// avatar rather than claiming a row of its own.
+assert.equal(attributeOccurrences(boardClient, "data-board-card-reviewer"), 1, "board card must render one reviewer badge");
+const reviewerTag = openingTagWithMarker(cardBodyRegion, "data-board-card-reviewer", "board card reviewer badge");
+assertClasses(
+  classTokens(reviewerTag.tag, "board card reviewer badge"),
+  ["absolute", "rounded-full"],
+  "board card reviewer badge",
 );
 assert(
-  donePeopleRegion.indexOf("<MessageAvatar actor={reviewer}") < donePeopleRegion.indexOf("{reviewer ? actorDisplayName(reviewer)"),
-  "Done-card reviewer avatar must render to the left of the reviewer name",
+  cardBodyRegion.indexOf("data-board-card-avatar") < cardBodyRegion.indexOf("data-board-card-reviewer") &&
+    cardBodyRegion.indexOf("data-board-card-reviewer") < cardBodyRegion.indexOf("data-board-card-scope"),
+  "the reviewer badge must live inside the identity rail, above the scope line",
 );
-assert.equal(occurrences(boardClient, "<DoneActorColumns task={task}"), 3, "mobile, compact, and comfortable Done cards must share the identity grid");
+// The epic shares the scope row when there is one, and only claims its own
+// row on a project board (which serialises no scope at all).
+assert.equal(attributeOccurrences(boardClient, "data-board-card-epic"), 2, "each epic branch must mark itself once");
+assert(
+  cardBodyRegion.includes("{epicNode}") && cardBodyRegion.includes("const hasScope ="),
+  "the epic must be rendered from one node reused by both the scope row and its standalone row",
+);
+assert(
+  cardBodyRegion.includes('task.status === "Done" ? task.reviewer ?? task.manager ?? task.reporter : null'),
+  "only Done cards may credit a reviewer, resolved reviewer → epic manager → reporter",
+);
+assert(
+  cardBodyRegion.includes("const workspaceSlug = task.project?.workspace?.slug ?? null") &&
+    cardBodyRegion.includes("const scopeProjectSlug = task.project?.slug ?? null"),
+  "scope links must be derived from the serialized project/workspace, so a project board renders none",
+);
+assert(
+  cardBodyRegion.includes("href={`/workspaces/${workspaceSlug}`}") &&
+    cardBodyRegion.includes("href={`/projects/${scopeProjectSlug}`}") &&
+    cardBodyRegion.includes("href={`/projects/${cardProjectSlug}/epics/${task.epicId}`}"),
+  "workspace, project and epic labels must link to their hub pages",
+);
+// Selection and drag are hover-revealed on pointer devices (like the bin
+// button) but always visible on touch, where there is no hover.
+assert(
+  /const hoverOnly = selected\s*\?\s*"opacity-100"\s*:\s*"opacity-100 md:opacity-0 md:group-hover\/card:opacity-100 md:focus-visible:opacity-100";/s.test(cardBodyRegion),
+  "card checkbox and drag handle must reveal on card hover while staying visible on touch and when selected",
+);
+assert.equal(occurrences(cardBodyRegion, "${hoverOnly}"), 2, "exactly the checkbox and drag handle may be hover-revealed");
+assert(
+  boardClient.includes("<MessageAvatar actor={actor} size={size}") &&
+    boardClient.includes('size?: "lg" | "sm" | "xs"') &&
+    boardClient.includes("h-[2.625rem] w-[2.625rem]"),
+  "board identity avatars must default to the fixed 42px size with smaller badge variants",
+);
+assert(
+  boardClient.includes("group/avatar") && boardClient.includes("group-hover/avatar:block"),
+  "board avatars must reveal the actor name on hover",
+);
+assert.equal(
+  attributeOccurrences(boardClient, "data-board-card-progress"),
+  1,
+  "the card progress bar must have one renderer",
+);
+assert(
+  boardClient.includes("const percent = Math.round((d / n) * 100)") &&
+    boardClient.includes("{percent}% · {d}/{n}"),
+  "the card progress bar must read as a percentage plus its raw count",
+);
+assert(
+  boardClient.includes('fill: "var(--status-progress)"') && boardClient.includes('fill: "var(--status-review)"'),
+  "the card progress bar must take its fill from the phase's status colour",
+);
 
 assert.equal(attributeOccurrences(taskPage, "data-task-actions"), 1, "task detail must group archive and danger actions");
 const actionsTag = openingTagWithMarker(taskPage, "data-task-actions", "task action widgets");
@@ -861,7 +947,7 @@ assert(!taskPage.includes("<AttachmentUploadFab"), "attachment dialog must not r
 assert(!taskPage.includes("<CommentComposerFab"), "comment dialog must not remain inside the hidden Comments panel");
 assert(attachmentFab.includes("open: controlledOpen") && attachmentFab.includes("targets: targetOptions"), "attachment dialog must support controlled opening and scoped targets");
 assert(commentFab.includes("open: controlledOpen"), "comment dialog must support controlled opening from any active tab");
-assert(addTaskFab.includes("!taskOpen ? ("), "the project New task FAB must yield to the task-wide menu on task routes");
+assert(addTaskFab.includes("!taskOpen && !hideTrigger ? ("), "the project New task FAB must yield to the task-wide menu on task routes and to the shared board (+) speed-dial");
 assert(!addTaskFab.includes("getClientRects()"), "quick-add layout must not depend on hidden-tab geometry");
 for (const [source, label] of [
   [decomposedChatRoom, "action-plan composer"],

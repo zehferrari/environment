@@ -88,7 +88,7 @@ function BlockedBadge({ task }: { task: Task }) {
   if (!task.blockedByKey) return null;
   return (
     <span
-      className="ml-auto inline-flex items-center gap-1 rounded-md bg-crit/[0.07] px-1.5 py-0.5 text-micro font-semibold text-crit"
+      className="inline-flex shrink-0 items-center gap-1 rounded-md bg-crit/[0.07] px-1.5 py-0.5 text-micro font-semibold text-crit"
       title={`Blocked by ${task.blockedByKey} — it must be Done first`}
     >
       <LockGlyph />
@@ -115,45 +115,59 @@ function formatMinutes(total: number): string {
   return `${m}m`;
 }
 
-// Sub-task progress for a board card (ENV-60/61): a segmented bar with one node
-// per sub-task. Completed nodes fill on an orange→green gradient driven by
-// overall completion (greener nearer 100%); unfinished nodes are a solid dark
-// node. Column-aware: In Progress cards track the assignee's implementation
-// checklist; Review cards track the reviewer's topics-to-address list (a task
-// freshly in Review shows no bar until the first review item exists). Other
-// columns show no bar. Numeric count + rolled-up time live in the tooltip.
+// Sub-task progress for a board card (ENV-60/61): a solid bar whose colour
+// names the phase — In Progress fills green against a dark track, Review fills
+// orange against a grey one. Column-aware: In Progress cards track the
+// assignee's implementation checklist; Review cards track the reviewer's
+// topics-to-address list (a task freshly in Review shows no bar until the
+// first review item exists). Other columns show no bar. The readout carries
+// both the percentage and the raw count; rolled-up time stays in the tooltip.
 function SubtaskProgress({ task }: { task: Task }) {
   const phase =
     task.status === "In Progress"
-      ? { total: task.subtaskImplTotal, done: task.subtaskImplDone, noun: "sub-tasks done" }
+      ? {
+          total: task.subtaskImplTotal,
+          done: task.subtaskImplDone,
+          noun: "sub-tasks done",
+          fill: "var(--status-progress)",
+          track: "var(--color-line-strong)",
+        }
       : task.status === "Review"
-        ? { total: task.subtaskReviewTotal, done: task.subtaskReviewDone, noun: "review topics addressed" }
+        ? {
+            total: task.subtaskReviewTotal,
+            done: task.subtaskReviewDone,
+            noun: "review topics addressed",
+            fill: "var(--status-review)",
+            track: "var(--color-line)",
+          }
         : null;
   if (!phase) return null;
   const n = phase.total;
   if (!n) return null;
   const d = phase.done;
-  const ratio = d / n;
-  // hue 28 (orange) → 135 (green) as completion rises.
-  const fill = `hsl(${Math.round(28 + 107 * ratio)} 85% 45%)`;
+  const percent = Math.round((d / n) * 100);
   const time = task.subtaskMinutes > 0 ? ` · ${formatMinutes(task.subtaskMinutes)}` : "";
   return (
     <span
+      data-board-card-progress
       role="img"
-      aria-label={`${d} of ${n} ${phase.noun}`}
+      aria-label={`${percent}% — ${d} of ${n} ${phase.noun}`}
       title={`${d}/${n} ${phase.noun}${time}`}
-      className="inline-flex shrink-0 items-center gap-1.5"
+      className="inline-flex min-w-0 items-center gap-1.5"
     >
-      <span className="inline-flex h-1.5 w-12 items-center gap-[2px]" aria-hidden="true">
-        {Array.from({ length: n }, (_, i) => (
-          <span
-            key={i}
-            className="h-full min-w-0 flex-1 rounded-pixel"
-            style={{ backgroundColor: i < d ? fill : "var(--color-line-strong)" }}
-          />
-        ))}
+      <span
+        className="block h-1.5 w-16 shrink-0 overflow-hidden rounded-full"
+        style={{ backgroundColor: phase.track }}
+        aria-hidden="true"
+      >
+        <span
+          className="block h-full rounded-full transition-[width]"
+          style={{ width: `${percent}%`, backgroundColor: phase.fill }}
+        />
       </span>
-      <span className="text-micro font-medium tabular-nums text-text-muted">{d}/{n}</span>
+      <span className="shrink-0 text-micro font-medium tabular-nums text-text-muted">
+        {percent}% · {d}/{n}
+      </span>
     </span>
   );
 }
@@ -162,7 +176,6 @@ type BoardProps = {
   projectSlug: string;
   chromeSlotScope?: string;
   boardStreamUrl?: string | null;
-  hideWorkflowFocus?: boolean;
   columns: ReadonlyArray<Column>;
   tasks: Task[];
   moveTaskAction: (
@@ -183,7 +196,6 @@ const BACKLOG_VISIBLE_KEY_PREFIX = "pm.board.backlogVisible.";
 // preference persisted per board so each board remembers its own state.
 const FOCUS_VISIBLE_KEY_PREFIX = "pm.board.focusVisible.";
 
-const DENSITY_KEY_PREFIX = "pm.board.compact.";
 const DONE_VISIBLE_KEY_PREFIX = "pm.board.doneVisible.";
 
 // Backlog rows are full-width while the four workflow columns are
@@ -202,7 +214,7 @@ const boardCollisionDetection: CollisionDetection = (args) => {
   return pointer.length > 0 ? pointer : rectIntersection(args);
 };
 
-export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hideWorkflowFocus = false, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
+export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
   const router = useRouter();
   const resolvedBoardStreamUrl = boardStreamUrl === undefined ? `/api/projects/${projectSlug}/board/stream` : boardStreamUrl;
   const preferenceKey = resolvedBoardStreamUrl ?? projectSlug;
@@ -226,7 +238,6 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
   const [searchQuery, setSearchQuery] = useState("");
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [doneVisible, setDoneVisible] = useState(true);
-  const [compact, setCompact] = useState(false);
   const [preferencesScope, setPreferencesScope] = useState<string | null>(null);
   const [chromeTargets, setChromeTargets] = useState<{
     summary: HTMLElement | null;
@@ -344,8 +355,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
       const storedFocus = window.localStorage.getItem(
         FOCUS_VISIBLE_KEY_PREFIX + preferenceKey,
       ) ?? (legacyPreferenceKey ? window.localStorage.getItem(FOCUS_VISIBLE_KEY_PREFIX + legacyPreferenceKey) : null);
-      setFocusVisible(!hideWorkflowFocus && storedFocus === "true");
-      setCompact(window.localStorage.getItem(DENSITY_KEY_PREFIX + preferenceKey) === "true");
+      setFocusVisible(storedFocus === "true");
       const storedDone = window.localStorage.getItem(DONE_VISIBLE_KEY_PREFIX + preferenceKey);
       setDoneVisible(storedDone !== "false");
     } catch {
@@ -353,11 +363,10 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
       // fall back to the default (hidden) silently.
       setBacklogVisible(false);
       setFocusVisible(false);
-      setCompact(false);
       setDoneVisible(true);
     }
     setPreferencesScope(preferenceKey);
-  }, [hideWorkflowFocus, legacyPreferenceKey, preferenceKey]);
+  }, [legacyPreferenceKey, preferenceKey]);
 
   useEffect(() => {
     if (preferencesScope !== preferenceKey) return;
@@ -381,17 +390,16 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
     } catch {
       // Same fallback as the read: ignore storage failures.
     }
-  }, [focusVisible, hideWorkflowFocus, preferenceKey, preferencesScope]);
+  }, [focusVisible, preferenceKey, preferencesScope]);
 
   useEffect(() => {
     if (preferencesScope !== preferenceKey) return;
     try {
-      window.localStorage.setItem(DENSITY_KEY_PREFIX + preferenceKey, compact ? "true" : "false");
       window.localStorage.setItem(DONE_VISIBLE_KEY_PREFIX + preferenceKey, doneVisible ? "true" : "false");
     } catch {
       // Preferences are optional; keep the in-memory view if storage is unavailable.
     }
-  }, [compact, doneVisible, preferenceKey, preferencesScope]);
+  }, [doneVisible, preferenceKey, preferencesScope]);
 
   useEffect(() => {
     setNow(Date.now());
@@ -714,7 +722,9 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
         task.title,
         task.epicTitle,
         task.project?.name,
+        task.project?.slug,
         task.project?.workspace?.name,
+        task.project?.workspace?.slug,
         ...actors,
       ].some((value) => value?.toLocaleLowerCase().includes(normalizedQuery));
     }),
@@ -801,7 +811,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
   // While the Workflow Focus block is visible the board narrows to the two
   // active lanes: To Do and Done are hidden (Backlog keeps its own toggle but
   // stays hidden too). Toggling focus off restores every column.
-  const focusActive = !hideWorkflowFocus && focusVisible && workflowFocus.length > 0;
+  const focusActive = focusVisible && workflowFocus.length > 0;
   const visibleColumnLanes = focusActive
     ? columnLanes.filter(({ col }) => col.id === "In Progress" || col.id === "Review")
     : columnLanes.filter(({ col }) => doneVisible || col.id !== "Done");
@@ -975,14 +985,12 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
               doneVisible={doneVisible}
               onToggleDone={() => setDoneVisible((value) => !value)}
               focusVisible={focusVisible}
-              showFocus={!hideWorkflowFocus && workflowFocus.length > 0}
+              showFocus={workflowFocus.length > 0}
               focusCount={workflowFocus.length}
               onToggleFocus={() => setFocusVisible((value) => !value)}
               backlogVisible={backlogVisible}
               backlogCount={boardStats.byStatus.Backlog ?? 0}
               onToggleBacklog={() => setBacklogVisible((value) => !value)}
-              compact={compact}
-              onToggleCompact={() => setCompact((value) => !value)}
               filtersActive={filtersActive}
               onReset={() => {
                 setSearchQuery("");
@@ -1021,14 +1029,12 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
           doneVisible={doneVisible}
           onToggleDone={() => setDoneVisible((value) => !value)}
           focusVisible={focusVisible}
-          showFocus={!hideWorkflowFocus && workflowFocus.length > 0}
+          showFocus={workflowFocus.length > 0}
           focusCount={workflowFocus.length}
           onToggleFocus={() => setFocusVisible((value) => !value)}
           backlogVisible={backlogVisible}
           backlogCount={boardStats.byStatus.Backlog ?? 0}
           onToggleBacklog={() => setBacklogVisible((value) => !value)}
-          compact={compact}
-          onToggleCompact={() => setCompact((value) => !value)}
           filtersActive={filtersActive}
           onReset={() => {
             setSearchQuery("");
@@ -1182,7 +1188,6 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
                       projectSlug={projectSlug}
                       onDeleteRequest={() => setDeleteTarget(t)}
                       now={now}
-                      compact={compact}
                       selected={selectedIds.has(t.id)}
                       onSelectionChange={toggleTaskSelection}
                       onMove={(task, status) => crossColumnMove(task, status)}
@@ -1278,7 +1283,6 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
                     count={colTasks.length}
                     totalCount={boardStats.byStatus[col.id] ?? 0}
                     filtered={filtersActive}
-                    compact={compact}
                     allSelected={allSelected}
                     onSelectAll={(checked) => toggleSelectAllColumn(col.id, checked)}
                   >
@@ -1293,7 +1297,6 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, hi
                           projectSlug={projectSlug}
                           onDeleteRequest={() => setDeleteTarget(t)}
                           now={now}
-                          compact={compact}
                           selected={selectedIds.has(t.id)}
                           onSelectionChange={toggleTaskSelection}
                         />
@@ -1466,8 +1469,6 @@ function BoardControls({
   backlogVisible,
   backlogCount,
   onToggleBacklog,
-  compact,
-  onToggleCompact,
   filtersActive,
   onReset,
   boardStats,
@@ -1486,8 +1487,6 @@ function BoardControls({
   backlogVisible: boolean;
   backlogCount: number;
   onToggleBacklog: () => void;
-  compact: boolean;
-  onToggleCompact: () => void;
   filtersActive: boolean;
   onReset: () => void;
   boardStats: BoardStats;
@@ -1556,17 +1555,6 @@ function BoardControls({
           count={backlogCount}
           icon={<BacklogIcon />}
         />
-        <button
-          type="button"
-          onClick={onToggleCompact}
-          aria-pressed={compact}
-          aria-label={compact ? "Use comfortable board density" : "Use compact board density"}
-          className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-line bg-panel px-3 py-2 text-caption font-semibold text-text-muted shadow-[var(--shadow-xs)] transition hover:border-line-strong hover:text-text md:min-h-0"
-          title={compact ? "Use comfortable cards" : "Use compact cards"}
-        >
-          <DensityIcon compact={compact} />
-          <span className="hidden xl:inline">{compact ? "Compact" : "Comfortable"}</span>
-        </button>
         {filtersActive ? (
           <button
             type="button"
@@ -1735,18 +1723,6 @@ function BacklogIcon() {
   );
 }
 
-function DensityIcon({ compact }: { compact: boolean }) {
-  return (
-    <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-      {compact ? (
-        <><path d="M4 7h16M4 12h16M4 17h16" /></>
-      ) : (
-        <><path d="M4 5h16M4 12h16M4 19h16" /><path d="M7 8v1M7 15v1" /></>
-      )}
-    </svg>
-  );
-}
-
 function DragHandleIcon() {
   return (
     <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -1850,7 +1826,6 @@ function MobileTaskCard({
   projectSlug,
   onDeleteRequest,
   now,
-  compact,
   selected,
   onSelectionChange,
   onMove,
@@ -1860,7 +1835,6 @@ function MobileTaskCard({
   projectSlug: string;
   onDeleteRequest: () => void;
   now: number | null;
-  compact: boolean;
   selected: boolean;
   onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
   onMove: (task: Task, status: string) => void;
@@ -1875,8 +1849,6 @@ function MobileTaskCard({
     transition,
     isDragging,
   } = useSortable({ id: task.id });
-  const actor = boardActorForTask(task);
-  const isDone = task.status === "Done";
   const nextLabel = nextStatus === task.status ? "Move" : `Move → ${nextStatus}`;
 
   return (
@@ -1891,96 +1863,22 @@ function MobileTaskCard({
     >
       <div className="flex min-w-[calc(100%+9rem)] items-stretch">
         <div
+          data-board-card-mobile
           data-selected={selected ? "true" : "false"}
-          className={`${taskCardClass(task, false, compact, false)} min-w-[calc(100%-9rem)] touch-auto`}
+          className={`${taskCardClass(task, false, false)} min-w-[calc(100%-9rem)] touch-auto`}
           style={taskCardStyle(task)}
           title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
         >
-          <div className={`relative z-10 ${compact ? "space-y-0.5" : "space-y-2"}`}>
-            <HumanReviewSrLabel task={task} />
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex min-w-0 items-start gap-2">
-                <input
-                  type="checkbox"
-                  checked={selected}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onSelectionChange(task.id, !selected, event.shiftKey);
-                  }}
-                  onChange={() => {}}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  aria-label={`Select ${task.title}`}
-                  className="mt-0.5 h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
-                />
-                <Link
-                  href={taskHref(task, projectSlug)}
-                  className="min-w-0 flex-1 rounded-sm text-text hover:text-accent"
-                >
-                  {compact ? (
-                    <CompactTaskMeta task={task} />
-                  ) : (
-                    <>
-                      <ProjectMetaLine task={task} />
-                      <div className="flex min-w-0 items-center gap-1.5 text-micro text-text-muted">
-                        {!isDone && actor ? (
-                          <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
-                        ) : null}
-                        <span className="truncate font-mono uppercase tracking-wider">
-                          {task.workItemKey ?? "—"}
-                        </span>
-                        {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
-                      </div>
-                    </>
-                  )}
-                  <div className={`${compact ? "mt-0.5 line-clamp-1 text-caption" : "mt-1 line-clamp-2 text-body"} font-medium leading-snug`}>{task.title}</div>
-                  {!compact && task.epicTitle ? (
-                    <div className="mt-1 truncate text-caption text-text-muted">{task.epicTitle}</div>
-                  ) : null}
-                </Link>
-              </div>
-              <div className="flex shrink-0 items-center">
-                <button
-                  type="button"
-                  {...attributes}
-                  {...listeners}
-                  onClick={(event) => event.stopPropagation()}
-                  className="grid h-11 w-11 touch-none place-items-center rounded-md text-text-muted hover:bg-bg-elev hover:text-text"
-                  aria-label={`Drag ${task.title}`}
-                  title="Drag to reorder or move"
-                >
-                  <DragHandleIcon />
-                </button>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onDeleteRequest();
-                  }}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  className="grid h-11 w-11 place-items-center rounded-md text-text-muted hover:bg-crit/10 hover:text-crit md:h-auto md:w-auto md:p-1"
-                  aria-label={`Move ${task.title} to bin`}
-                  title="Move to bin"
-                >
-                  <TrashIcon />
-                </button>
-              </div>
-            </div>
-            <div className={`flex min-w-0 items-center text-micro text-text-muted ${compact ? "gap-1.5 overflow-hidden border-t border-line/60 pt-1" : "flex-wrap gap-2"} ${isDone ? "flex-wrap" : ""}`}>
-              {isDone ? (
-                <DoneActorColumns task={task} className="basis-full" />
-              ) : compact && actor ? (
-                <span className="min-w-0 flex-1 truncate" title={actorDisplayName(actor)}>
-                  {actorDisplayName(actor)}
-                </span>
-              ) : null}
-              <ElapsedClock task={task} now={now} />
-              <SubtaskProgress task={task} />
-              <time dateTime={task.updatedAt} title={task.updatedAt} className="tabular-nums" suppressHydrationWarning>
-                {relativeUpdated(task.updatedAt)}
-              </time>
-              <BlockedBadge task={task} />
-            </div>
-          </div>
+          <BoardCardBody
+            task={task}
+            projectSlug={projectSlug}
+            now={now}
+            selected={selected}
+            onSelectionChange={onSelectionChange}
+            onDeleteRequest={onDeleteRequest}
+            dragAttributes={attributes}
+            dragListeners={listeners}
+          />
         </div>
         <div className="ml-2 flex w-36 shrink-0 flex-col gap-2 py-1 pr-1">
           <button
@@ -2010,7 +1908,6 @@ function ColumnDroppable({
   count,
   totalCount,
   filtered,
-  compact,
   allSelected = false,
   onSelectAll,
   children,
@@ -2021,7 +1918,6 @@ function ColumnDroppable({
   count: number;
   totalCount: number;
   filtered: boolean;
-  compact: boolean;
   allSelected?: boolean;
   onSelectAll?: (checked: boolean) => void;
   children: React.ReactNode;
@@ -2066,7 +1962,7 @@ function ColumnDroppable({
       </div>
       <div
         data-board-lane-scroll
-        className={`min-h-0 flex-1 overflow-x-hidden pr-1 4xl:overflow-y-auto 4xl:overscroll-contain ${compact ? "space-y-1" : "space-y-2.5"}`}
+        className="min-h-0 flex-1 space-y-2.5 overflow-x-hidden pr-1 4xl:overflow-y-auto 4xl:overscroll-contain"
       >
         {children}
         {count === 0 ? (
@@ -2081,12 +1977,277 @@ function ColumnDroppable({
   );
 }
 
+// Every board card on every surface renders through this one body: the
+// desktop lanes, and the mobile swipe list. The layout is a fixed two-column
+// grid — a 42px identity rail and the task content beside it. Rows are placed
+// explicitly, so a card with no scope line and no epic collapses those tracks
+// without shifting the rail.
+//
+//   [x]      ENV-12  12h  3m  BLOCKED-BY              [::]
+//   (av)     Task title
+//   (rev)    workspace / project · epic name
+//            ▬▬▬▬▭▭ 66% · 2/3                        [bin]
+//
+// Scope line visibility is data-driven and needs no extra prop: a project
+// board serialises `project: null` (no scope line at all), a workspace board
+// serialises the project without its workspace (project slug only), and the
+// /workspaces landing board serialises both.
+function BoardCardBody({
+  task,
+  projectSlug,
+  now,
+  selected,
+  onSelectionChange,
+  onDeleteRequest,
+  dragAttributes,
+  dragListeners,
+}: {
+  task: Task;
+  projectSlug: string;
+  now: number | null;
+  selected: boolean;
+  onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
+  onDeleteRequest: () => void;
+  dragAttributes: React.HTMLAttributes<HTMLButtonElement>;
+  dragListeners: Record<string, unknown> | undefined;
+}) {
+  const actor = boardActorForTask(task);
+  // Done is the only column that credits a reviewer, resolved through the
+  // same chain the task detail uses: task reviewer, then the epic's acting
+  // manager, then the reporter.
+  const reviewer =
+    task.status === "Done" ? task.reviewer ?? task.manager ?? task.reporter : null;
+  const href = taskHref(task, projectSlug);
+  const cardProjectSlug = taskProjectSlug(task, projectSlug);
+  const workspaceSlug = task.project?.workspace?.slug ?? null;
+  const scopeProjectSlug = task.project?.slug ?? null;
+  const hasScope = Boolean(workspaceSlug || scopeProjectSlug);
+  // The epic rides along on the scope line only on a per-workspace board, where
+  // the scope is just the project slug. On the aggregate landing board (which
+  // also carries the workspace slug) and on a project board (no scope at all)
+  // the epic keeps its own row.
+  const epicInline = Boolean(scopeProjectSlug && !workspaceSlug);
+  // Selection and dragging are card affordances, not always-on chrome: on a
+  // pointer device they fade in with the card (like the bin button), while
+  // touch screens — which have no hover — always show them. A selected card
+  // keeps its box visible so the selection stays legible.
+  const hoverOnly = selected
+    ? "opacity-100"
+    : "opacity-100 md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100";
+
+  // The epic rides along on the scope line when there is one (a workspace
+  // board reads "project · epic" on a single row) and only claims its own row
+  // on a project board, where no scope line is rendered at all.
+  const epicNode = task.epicTitle ? (
+    task.epicId ? (
+      <Link
+        data-board-card-epic
+        href={`/projects/${cardProjectSlug}/epics/${task.epicId}`}
+        title={task.epicTitle}
+        className="min-w-0 truncate font-sans normal-case tracking-normal text-text-muted outline-none transition hover:text-accent hover:underline"
+      >
+        {task.epicTitle}
+      </Link>
+    ) : (
+      <span data-board-card-epic className="min-w-0 truncate font-sans normal-case tracking-normal text-text-muted" title={task.epicTitle}>
+        {task.epicTitle}
+      </span>
+    )
+  ) : null;
+
+  return (
+    <div className="relative z-10">
+      <HumanReviewSrLabel task={task} />
+      <div data-board-card-grid className="grid grid-cols-[2.625rem_minmax(0,1fr)] gap-x-2.5">
+        <div className="col-start-1 row-start-1 flex min-h-7 items-center justify-center">
+          <input
+            type="checkbox"
+            checked={selected}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSelectionChange(task.id, !selected, event.shiftKey);
+            }}
+            onChange={() => {}}
+            onPointerDown={(event) => event.stopPropagation()}
+            aria-label={`Select ${task.title}`}
+            className={`h-6 w-6 shrink-0 accent-accent transition-opacity md:h-4 md:w-4 ${hoverOnly}`}
+          />
+        </div>
+
+        <div className="col-start-2 row-start-1 flex min-h-7 min-w-0 items-center gap-1.5 overflow-hidden text-micro text-text-muted">
+          <Link
+            href={href}
+            className="min-w-0 truncate font-mono font-semibold tracking-wide outline-none transition hover:text-accent"
+          >
+            {task.workItemKey ?? "—"}
+          </Link>
+          <ElapsedClock task={task} now={now} />
+          <time
+            dateTime={task.updatedAt}
+            title={`Updated ${task.updatedAt}`}
+            className="shrink-0 tabular-nums"
+            suppressHydrationWarning
+          >
+            {relativeUpdated(task.updatedAt)}
+          </time>
+          <BlockedBadge task={task} />
+          {canShowTaskDeploymentIndicator(task) ? (
+            <DeploymentIndicator status={task.deploymentStatus} />
+          ) : null}
+          <button
+            type="button"
+            {...dragAttributes}
+            {...dragListeners}
+            onClick={(event) => event.stopPropagation()}
+            className={`ml-auto grid h-9 w-9 shrink-0 cursor-grab touch-none place-items-center rounded-md text-text-dim transition hover:bg-bg-elev hover:text-text active:cursor-grabbing md:h-7 md:w-7 ${hoverOnly}`}
+            aria-label={`Drag ${task.title}`}
+            title="Drag to reorder or move"
+          >
+            <DragHandleIcon />
+          </button>
+        </div>
+
+        {/* Both identities share the rail cell: the builder at full size with
+            the resolved reviewer riding its bottom-right corner, so a Done
+            card gains a second face without gaining a row. */}
+        <div
+          data-board-card-avatar
+          className="col-start-1 row-start-2 row-span-3 -mt-1 flex justify-center"
+        >
+          {/* The whole identity group is nudged a few px down/right off the
+              rail edge so it doesn't hug the card border. */}
+          <span className="relative inline-flex h-fit translate-x-[5px] translate-y-[5px]">
+            {/* On a Done card the builder shifts a quarter-width left so the
+                larger reviewer badge on its bottom-right corner still reads. */}
+            <span className={reviewer ? "-translate-x-1/4" : ""}>
+              <BoardAvatar actor={actor} busy={task.activeWorking} emptyLabel="Unassigned" />
+            </span>
+            {reviewer ? (
+              // Extra nudge (left 5px, down 10px) tucks the reviewer toward the
+              // builder's lower-left so both faces stay distinct.
+              <span
+                data-board-card-reviewer
+                className="absolute -bottom-1 -right-2 translate-x-[-5px] translate-y-[10px] rounded-full ring-2 ring-panel"
+              >
+                <BoardAvatar actor={reviewer} emptyLabel="No reviewer" size="sm" />
+              </span>
+            ) : null}
+          </span>
+        </div>
+
+        <Link href={href} className="col-start-2 row-start-2 min-w-0 rounded-md pt-0.5 outline-none">
+          <span className="line-clamp-2 font-medium leading-snug text-text">{task.title}</span>
+        </Link>
+
+        {hasScope ? (
+          <div
+            data-board-card-scope
+            className="col-start-2 row-start-3 flex min-w-0 flex-wrap items-center gap-x-1.5 pt-1 font-mono text-micro font-semibold text-text-muted"
+          >
+            {workspaceSlug ? (
+              <Link
+                href={`/workspaces/${workspaceSlug}`}
+                title={task.project?.workspace?.name ?? workspaceSlug}
+                className="min-w-0 truncate outline-none transition hover:text-accent hover:underline"
+              >
+                {workspaceSlug}
+              </Link>
+            ) : null}
+            {workspaceSlug && scopeProjectSlug ? (
+              <span className="shrink-0 text-text-dim" aria-hidden="true">/</span>
+            ) : null}
+            {scopeProjectSlug ? (
+              <Link
+                href={`/projects/${scopeProjectSlug}`}
+                title={task.project?.name ?? scopeProjectSlug}
+                className="min-w-0 truncate outline-none transition hover:text-accent hover:underline"
+              >
+                {scopeProjectSlug}
+              </Link>
+            ) : null}
+            {epicInline && epicNode ? (
+              <>
+                <span className="shrink-0 text-text-dim" aria-hidden="true">·</span>
+                {epicNode}
+              </>
+            ) : null}
+          </div>
+        ) : null}
+        {!epicInline && epicNode ? (
+          <div className="col-start-2 row-start-4 flex min-w-0 pt-1 text-micro">
+            {epicNode}
+          </div>
+        ) : null}
+
+        <div className="col-start-2 row-start-5 flex min-w-0 items-center gap-2 pt-2 text-caption text-text-muted">
+          <SubtaskProgress task={task} />
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onDeleteRequest();
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+            className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
+            aria-label={`Move ${task.title} to bin`}
+            title="Move to bin"
+          >
+            <TrashIcon />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Board identity avatar with an on-hover name popup. The popup opens to the
+// right so it stays inside the card's own (overflow-hidden) box; the native
+// title is suppressed so hovering shows one tooltip, not two.
+function BoardAvatar({
+  actor,
+  busy = false,
+  emptyLabel,
+  size = "lg",
+}: {
+  actor: BoardActor | null;
+  busy?: boolean;
+  emptyLabel: string;
+  size?: "lg" | "sm" | "xs";
+}) {
+  const label = actor ? actorDisplayName(actor) : emptyLabel;
+  const box =
+    size === "xs"
+      ? "h-[1.625rem] w-[1.625rem] text-nano"
+      : size === "sm"
+        ? "h-8 w-8 text-micro"
+        : "h-[2.625rem] w-[2.625rem] text-caption";
+  return (
+    <span className="group/avatar relative inline-flex">
+      {actor ? (
+        <MessageAvatar actor={actor} size={size} busy={busy} title="" />
+      ) : (
+        <span
+          aria-label={emptyLabel}
+          className={`grid shrink-0 place-items-center rounded-full border border-dashed border-line-strong bg-panel text-text-muted ${box}`}
+        >
+          ?
+        </span>
+      )}
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute left-full top-1/2 z-30 ml-1.5 hidden -translate-y-1/2 whitespace-nowrap rounded-md border border-line bg-panel px-2 py-1 text-micro font-semibold text-text shadow-[var(--shadow-md)] group-hover/avatar:block"
+      >
+        {label}
+      </span>
+    </span>
+  );
+}
+
 function TaskCard({
   task,
   projectSlug,
   onDeleteRequest,
   now,
-  compact,
   selected,
   onSelectionChange,
 }: {
@@ -2094,7 +2255,6 @@ function TaskCard({
   projectSlug: string;
   onDeleteRequest: () => void;
   now: number | null;
-  compact: boolean;
   selected: boolean;
   onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
 }) {
@@ -2106,11 +2266,14 @@ function TaskCard({
     transition,
     isDragging,
   } = useSortable({ id: task.id });
-  const actor = boardActorForTask(task);
-  const isDone = task.status === "Done";
   return (
     <div
       ref={setNodeRef}
+      data-board-card
+      // Scope tags let the sidebar dim non-matching cards on hover (landing
+      // board only; harmless elsewhere).
+      data-scope-ws={task.project?.workspace?.slug ?? undefined}
+      data-scope-proj={taskProjectSlug(task, projectSlug)}
       data-selected={selected ? "true" : "false"}
       style={{
         transform: CSS.Transform.toString(transform),
@@ -2118,130 +2281,19 @@ function TaskCard({
         "--board-status": boardStatusColor(task.status),
         ...taskCardStyle(task),
       } as React.CSSProperties}
-      className={taskCardClass(task, isDragging, compact, false)}
+      className={taskCardClass(task, isDragging, false)}
       title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
     >
-      <div className="relative z-10">
-        <HumanReviewSrLabel task={task} />
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex min-w-0 flex-1 items-start gap-2">
-            <input
-              type="checkbox"
-              checked={selected}
-              onClick={(event) => {
-                event.stopPropagation();
-                onSelectionChange(task.id, !selected, event.shiftKey);
-              }}
-              onChange={() => {}}
-              onPointerDown={(event) => event.stopPropagation()}
-              aria-label={`Select ${task.title}`}
-              className="h-6 w-6 shrink-0 accent-accent md:h-4 md:w-4"
-            />
-            <Link
-              href={taskHref(task, projectSlug)}
-              className="min-w-0 flex-1 rounded-md outline-none"
-            >
-              {compact ? (
-                <>
-                  <CompactTaskMeta task={task} />
-                  <div className="mt-0.5 line-clamp-1 text-caption font-medium leading-snug text-text">{task.title}</div>
-                  {task.epicTitle ? (
-                    <div className="mt-0.5 truncate text-micro text-text-muted">{task.epicTitle}</div>
-                  ) : null}
-                </>
-              ) : (
-                <>
-                  <div className="flex min-w-0 items-center justify-between gap-2">
-                    <span className="truncate font-mono text-micro font-semibold tracking-wide text-text-muted">
-                      {task.workItemKey ?? "—"}
-                    </span>
-                    <span className="inline-flex shrink-0 items-center gap-1.5 text-micro text-text-muted">
-                      <ElapsedClock task={task} now={now} />
-                      <time dateTime={task.updatedAt} title={`Updated ${task.updatedAt}`} className="tabular-nums" suppressHydrationWarning>
-                        {relativeUpdated(task.updatedAt)}
-                      </time>
-                    </span>
-                  </div>
-                  <div className="mt-1 line-clamp-2 font-medium leading-snug text-text">{task.title}</div>
-                  <ProjectMetaLine task={task} />
-                  <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-caption text-text-muted">
-                    {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
-                    {task.epicTitle ? <span className="max-w-full truncate rounded bg-bg-elev px-1.5 py-0.5 text-micro">{task.epicTitle}</span> : null}
-                  </div>
-                </>
-              )}
-            </Link>
-          </div>
-          <button
-            type="button"
-            {...attributes}
-            {...listeners}
-            onClick={(event) => event.stopPropagation()}
-            className={`grid shrink-0 cursor-grab touch-none place-items-center rounded-md text-text-dim transition hover:bg-bg-elev hover:text-text active:cursor-grabbing ${compact ? "h-7 w-7" : "h-8 w-8"}`}
-            aria-label={`Drag ${task.title}`}
-            title="Drag to reorder or move"
-          >
-            <DragHandleIcon />
-          </button>
-        </div>
-        {compact ? (
-          <div className={`mt-1 flex min-w-0 items-center gap-1.5 overflow-hidden border-t border-line/60 pt-1 text-micro text-text-muted ${isDone ? "flex-wrap" : ""}`}>
-            {isDone ? (
-              <DoneActorColumns task={task} className="basis-full" />
-            ) : (
-              <span className="min-w-0 flex-1 truncate" title={actor ? actorDisplayName(actor) : "Unassigned"}>
-                {actor ? actorDisplayName(actor) : "Unassigned"}
-              </span>
-            )}
-            <SubtaskProgress task={task} />
-            <BlockedBadge task={task} />
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onDeleteRequest();
-              }}
-              onPointerDown={(event) => event.stopPropagation()}
-              className="ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
-              aria-label={`Move ${task.title} to bin`}
-              title="Move to bin"
-            >
-              <TrashIcon />
-            </button>
-          </div>
-        ) : (
-          <div className="mt-3 flex min-w-0 items-center gap-2 border-t border-line/70 pt-2 text-caption text-text-muted">
-            {isDone ? (
-              <DoneActorColumns task={task} className="flex-1" />
-            ) : actor ? (
-              <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
-            ) : null}
-            {!isDone && !actor ? (
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-dashed border-line-strong text-micro">?</span>
-            ) : null}
-            {!isDone ? (
-              <span className="min-w-0 flex-1 truncate text-micro font-medium">
-                {actor ? actorDisplayName(actor) : "Unassigned"}
-              </span>
-            ) : null}
-            <SubtaskProgress task={task} />
-            <BlockedBadge task={task} />
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onDeleteRequest();
-              }}
-              onPointerDown={(event) => event.stopPropagation()}
-              className="ml-auto grid h-8 w-8 shrink-0 place-items-center rounded-md text-text-dim opacity-100 transition hover:bg-crit/10 hover:text-crit md:opacity-0 md:group-hover/card:opacity-100 md:focus-visible:opacity-100"
-              aria-label={`Move ${task.title} to bin`}
-              title="Move to bin"
-            >
-              <TrashIcon />
-            </button>
-          </div>
-        )}
-      </div>
+      <BoardCardBody
+        task={task}
+        projectSlug={projectSlug}
+        now={now}
+        selected={selected}
+        onSelectionChange={onSelectionChange}
+        onDeleteRequest={onDeleteRequest}
+        dragAttributes={attributes}
+        dragListeners={listeners}
+      />
     </div>
   );
 }
@@ -2450,27 +2502,6 @@ function ProjectMetaLine({ task }: { task: Task }) {
   );
 }
 
-function CompactTaskMeta({ task }: { task: Task }) {
-  return (
-    <div className="flex min-w-0 items-center gap-1.5 overflow-hidden text-micro leading-none text-text-muted">
-      <span className="shrink-0 font-mono font-semibold tracking-wide">
-        {task.workItemKey ?? "—"}
-      </span>
-      {task.project ? (
-        <span className="min-w-0 truncate font-semibold" title={projectDisplayName(task.project)}>
-          {projectDisplayName(task.project)}
-        </span>
-      ) : null}
-      {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
-      {task.epicTitle ? (
-        <span className="min-w-0 truncate rounded bg-bg-elev px-1 py-0.5" title={task.epicTitle}>
-          {task.epicTitle}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
 function DeploymentIndicator({ status }: { status: string }) {
   const icon = deploymentStatusIcon(status);
   if (icon === "—") {
@@ -2501,46 +2532,6 @@ function canShowTaskDeploymentIndicator(task: Task) {
 
 function BoardReporterMarker({ task }: { task: Task }) {
   return task.reporter ? <MessageAvatar actor={task.reporter} size="sm" /> : null;
-}
-
-// Done cards reserve one column for the assignee and one for the resolved
-// reviewer. Keep both cells when one person fills both roles so the two
-// responsibilities remain explicit.
-function DoneActorColumns({ task, className = "" }: { task: Task; className?: string }) {
-  const assignee = task.assignee;
-  const reviewer = task.reviewer ?? task.manager ?? task.reporter;
-  return (
-    <div data-done-card-people className={`grid min-w-0 grid-cols-2 gap-2 ${className}`}>
-      <span
-        data-done-card-assignee
-        className="flex min-w-0 items-center gap-1.5"
-        title={assignee ? `Assignee: ${actorDisplayName(assignee)}` : "Unassigned"}
-      >
-        {assignee ? (
-          <MessageAvatar actor={assignee} size="sm" />
-        ) : (
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-dashed border-line-strong text-micro">?</span>
-        )}
-        <span className="min-w-0 flex-1 truncate font-medium">
-          {assignee ? actorDisplayName(assignee) : "Unassigned"}
-        </span>
-      </span>
-      <span
-        data-done-card-reviewer
-        className="flex min-w-0 items-center gap-1.5"
-        title={reviewer ? `Reviewer: ${actorDisplayName(reviewer)}` : "No reviewer"}
-      >
-        {reviewer ? (
-          <MessageAvatar actor={reviewer} size="sm" />
-        ) : (
-          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-dashed border-line-strong text-micro">?</span>
-        )}
-        <span className="min-w-0 flex-1 truncate font-medium">
-          {reviewer ? actorDisplayName(reviewer) : "No reviewer"}
-        </span>
-      </span>
-    </div>
-  );
 }
 
 function TrashIcon() {
@@ -2581,7 +2572,9 @@ function boardActorForTask(task: Task): BoardActor | null {
   if (task.status === "Review") {
     return task.reviewer ?? task.manager ?? task.reporter;
   }
-  if (task.status === "Done") return task.reporter ?? task.assignee;
+  // Done credits the builder in the rail; the resolved reviewer gets its own
+  // avatar slot on the card, so it must not also win the primary slot.
+  if (task.status === "Done") return task.assignee ?? task.reporter;
   return task.reporter ?? task.assignee ?? task.reviewer ?? task.manager;
 }
 
@@ -2724,16 +2717,14 @@ function statusRowClass(status: string) {
   return "";
 }
 
-function taskCardClass(task: Task, isDragging = false, compact = false, interactive = true) {
+function taskCardClass(task: Task, isDragging = false, interactive = true) {
   const borderStyle = task.workspaceColor
     ? `border-l-[3px] border-l-[${task.workspaceColor}]`
     : "";
   const bgStyle = task.projectColor
     ? `background-color: ${task.projectColor}18`
     : "";
-  return `board-task-card group/card relative block w-full select-none overflow-hidden border transition-[transform,border-color,box-shadow,background-color,opacity] active:scale-[0.99] ${
-    compact ? "rounded-lg px-2 py-1.5 text-caption" : "rounded-xl p-3 text-body"
-  } ${interactive ? "cursor-pointer" : ""} ${isPlanningAssigned(task) ? "board-task-card--planning" : ""} ${
+  return `board-task-card group/card relative block w-full select-none overflow-hidden rounded-xl border p-3 text-body transition-[transform,border-color,box-shadow,background-color,opacity] active:scale-[0.99] ${interactive ? "cursor-pointer" : ""} ${isPlanningAssigned(task) ? "board-task-card--planning" : ""} ${
     waitingOnHumanReview(task) ? "board-task-card--human-review" : ""
   } ${isDragging ? "opacity-30" : "hover:-translate-y-px"} ${borderStyle}`;
 }

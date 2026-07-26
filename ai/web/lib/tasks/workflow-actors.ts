@@ -35,5 +35,7 @@ export function canApproveActionPlanForActor(
 }
 
 export function epicAllowsAgentAction(task: { epic: { status: string } | null }) {
-  return !task.epic || task.epic.status === "In Progress";
+  // To Do epics are approved-and-queued: an agent starting one of their tasks
+  // is exactly what flips the epic to In Progress, so allow it here too.
+  return !task.epic || task.epic.status === "In Progress" || task.epic.status === "To Do";
 }

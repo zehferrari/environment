@@ -5,6 +5,7 @@ import { checkStatusTransition, type WorkflowErrorCode } from "@/lib/workflow";
 import { reorderTasks } from "@/lib/tasks/reorder";
 import { binTask } from "@/lib/bin/actions";
 import { publishBoardTouch } from "@/lib/pm/board-events";
+import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { refillEpicQueue } from "@/lib/epics/queue";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
@@ -12,6 +13,7 @@ import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { normalizeWorkspaceSlug } from "@/lib/workspaces/service";
 import Board from "../../projects/[slug]/board-client";
+import BoardCreateFab from "@/components/board-create-fab";
 import { COLUMNS, COLUMN_IDS } from "../../projects/[slug]/columns";
 import type { MoveTaskResult } from "../../projects/[slug]/page";
 import {
@@ -187,6 +189,14 @@ async function moveTask(taskId: string, status: string, workspaceSlug: string): 
       },
     }),
   ]);
+  if (status === "In Progress" && current.epicId) {
+    await promoteEpicOnTaskInProgress(db, {
+      epicId: current.epicId,
+      projectId: current.projectId,
+      actorId: actor.id,
+      via: "board_move",
+    });
+  }
   if (status === "To Do" && current.assigneeId) {
     const approved = Boolean(current.approvedOn);
     await sendTaskWorkflowNotification({
@@ -352,7 +362,6 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
         projectSlug={workspace.slug}
         chromeSlotScope={boardChromeScope}
         boardStreamUrl={`/api/workspaces/${workspace.slug}/board/stream`}
-        hideWorkflowFocus
         columns={COLUMNS}
         tasks={tasks.map((t) => {
           const blocker = t.blockedById ? visibleBlockerById.get(t.blockedById) : null;
@@ -392,6 +401,7 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
         reorderTasksAction={reorderWorkspaceTasks}
         deleteTaskAction={binTask}
       />
+      <BoardCreateFab />
     </div>
   );
 }

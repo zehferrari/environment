@@ -6,6 +6,7 @@ import { checkStatusTransition } from "@/lib/workflow";
 import { reorderTasks } from "@/lib/tasks/reorder";
 import { binTask } from "@/lib/bin/actions";
 import { publishBoardTouch } from "@/lib/pm/board-events";
+import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { refillEpicQueue } from "@/lib/epics/queue";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
@@ -222,6 +223,14 @@ async function moveTask(taskId: string, status: string, _scopeSlug: string): Pro
       },
     }),
   ]);
+  if (status === "In Progress" && current.epicId) {
+    await promoteEpicOnTaskInProgress(db, {
+      epicId: current.epicId,
+      projectId: current.projectId,
+      actorId: actor.id,
+      via: "board_move",
+    });
+  }
   if (status === "To Do" && current.assigneeId) {
     const approved = Boolean(current.approvedOn);
     await sendTaskWorkflowNotification({
@@ -401,7 +410,9 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
   }
 
   return (
-    <div>
+    // data-board-focus-root scopes the sidebar's hover-to-highlight effect
+    // (desktop landing only) to this board's cards.
+    <div data-board-focus-root>
       {workspaces.length === 0 ? (
         <div className="rounded-panel border border-dashed border-line bg-panel p-card text-body text-text-muted">
           No active workspaces yet. Use the (+) button to create one, then manage projects, boards, and agents here.
@@ -411,7 +422,6 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
           projectSlug="workspaces"
           chromeSlotScope={LANDING_CHROME_SCOPE}
           boardStreamUrl="/api/workspaces/board/stream"
-          hideWorkflowFocus
           columns={COLUMNS}
           tasks={tasks.map((t) => {
             const blocker = t.blockedById ? visibleBlockerById.get(t.blockedById) : null;

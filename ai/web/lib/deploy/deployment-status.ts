@@ -1,5 +1,10 @@
+// The deployment field is the optional, post-`Done` "ship it" lane — separate
+// from the main workflow status. It applies only to repo-backed projects, on
+// standalone tasks (no epic parent) and epics. "Ready to Deploy" is the human
+// opt-in that (for epics) kicks off the pre-merge whole-contribution review.
 export const DEPLOYMENT_STATUSES = [
   "Not Required",
+  "Ready to Deploy",
   "Deployment Approved",
   "Successfully Deployed",
   "Deployment Error",
@@ -27,6 +32,8 @@ export function isDeploymentStatus(value: unknown): value is DeploymentStatus {
 
 export function deploymentStatusIcon(status: string | null | undefined) {
   switch (status) {
+    case "Ready to Deploy":
+      return "🚀";
     case "Deployment Approved":
       return "🟠";
     case "Successfully Deployed":
@@ -38,8 +45,11 @@ export function deploymentStatusIcon(status: string | null | undefined) {
   }
 }
 
+// Deployment applies only to standalone tasks — a task under an epic never
+// carries its own deploy state; the epic owns the whole implementation's
+// deploy gate.
 export function canShowDeploymentForTask(task: { epicId?: string | null; parentTaskId?: string | null }) {
-  return task.parentTaskId == null;
+  return task.epicId == null && task.parentTaskId == null;
 }
 
 export function checkDeploymentStatusWrite(args: {
@@ -57,8 +67,8 @@ export function checkDeploymentStatusWrite(args: {
   // automation remains constrained below so only the monitor agent can write
   // deployment result statuses.
   if (args.actor.kind === "human") return { ok: true as const };
-  if (args.to === "Deployment Approved" && args.actor.kind === "agent") {
-    return { ok: false as const, message: "Agents cannot set Deployment Approved." };
+  if ((args.to === "Deployment Approved" || args.to === "Ready to Deploy") && args.actor.kind === "agent") {
+    return { ok: false as const, message: "Agents cannot opt work into deployment." };
   }
   if (["Successfully Deployed", "Deployment Error"].includes(args.to)) {
     const isMonitorAgent = args.actor.kind === "agent" && args.actorAgentRole === "monitor";

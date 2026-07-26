@@ -349,7 +349,7 @@ export default async function ProjectSettingsPage({
             </SettingsRow>
             <SettingsRow
               label="Deploy-review prompt"
-              hint={`Prompt sent when an Epic moves to Ready to Deploy. Blank inherits system/default. Effective source: ${settingSourceLabel(effectiveSettings.deployReviewPrompt.source)}.`}
+              hint={`Prompt sent to the Deploy Reviewer when a Done Epic is opted into deployment (Ready to Deploy). Blank inherits system/default. Effective source: ${settingSourceLabel(effectiveSettings.deployReviewPrompt.source)}.`}
             >
               <textarea
                 name="deployReviewPrompt"

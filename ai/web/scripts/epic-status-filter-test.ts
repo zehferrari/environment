@@ -6,13 +6,13 @@ import {
 
 assert.deepEqual(
   DEFAULT_EPIC_BOARD_STATUSES,
-  ["In Progress", "Ready to Deploy"],
-  "the default Epic view focuses on active and deploy-ready work",
+  ["To Do", "In Progress"],
+  "the default Epic view focuses on active/queued work",
 );
 
 assert.deepEqual(
   parseEpicBoardStatuses(undefined, undefined),
-  ["In Progress", "Ready to Deploy"],
+  ["To Do", "In Progress"],
   "an Epic URL without a status query uses the focused defaults",
 );
 

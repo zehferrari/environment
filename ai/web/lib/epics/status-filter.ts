@@ -1,7 +1,7 @@
-export const EPIC_BOARD_STATUSES = ["Backlog", "In Progress", "Ready to Deploy", "Done"] as const;
+export const EPIC_BOARD_STATUSES = ["Backlog", "To Do", "In Progress", "Done"] as const;
 
-// Keep the default focused on work that is actively moving toward deployment.
-export const DEFAULT_EPIC_BOARD_STATUSES = ["In Progress", "Ready to Deploy"] as const;
+// Keep the default board focused on active/queued work.
+export const DEFAULT_EPIC_BOARD_STATUSES = ["To Do", "In Progress"] as const;
 
 export function parseEpicBoardStatuses(
   statuses: string | undefined,

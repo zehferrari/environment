@@ -232,8 +232,8 @@ async function approveEpicActionPlan(formData: FormData) {
         kind: "epic.action_plan.approve",
         payload: JSON.stringify({
           epicId: epic.id,
-          ...(approvalUpdate.promotedToInProgress
-            ? { status: "In Progress", from: "Backlog", via: "action_plan_approval" }
+          ...(approvalUpdate.promoted
+            ? { status: "To Do", from: "Backlog", via: "action_plan_approval" }
             : {}),
         }),
       },
@@ -257,7 +257,7 @@ async function approveEpicActionPlan(formData: FormData) {
     await sendAgentChatMessage(notify);
   } else if (
     epic._count.tasks > 0 &&
-    (approvalUpdate.promotedToInProgress || epic.status === "In Progress")
+    (approvalUpdate.promoted || epic.status === "To Do" || epic.status === "In Progress")
   ) {
     // Only start the queue when this approval puts the Epic INTO (or keeps it
     // in) In Progress. The deploy-review sign-off re-approves a
@@ -569,7 +569,11 @@ export default async function EpicDetailPage({
   if (!epic || epic.project.slug !== slug || epic.deletedAt) notFound();
 
   const canDeleteComments = viewer.isOwner;
-  const epicTabs = EPIC_TABS.filter((name) => viewer.isOwner || !OWNER_ONLY_EPIC_TABS.has(name));
+  // Deployment is an optional post-Done step, only for repo-backed projects.
+  const epicHasDeployment = Boolean(epic.project.repositoryPath) && epic.status === "Done";
+  const epicTabs = EPIC_TABS
+    .filter((name) => name !== DEVELOPMENT_TAB || epicHasDeployment)
+    .filter((name) => viewer.isOwner || !OWNER_ONLY_EPIC_TABS.has(name));
   if (!epicTabs.some((name) => name === selectedTab)) selectedTab = "Description";
   const taskIds = epic.tasks.map((task) => task.id);
   const [principals, recentReplyActivity, allActivity, taskActivityRows, deploymentPullRequests, busyAgentSlugs, actorVisibility, agentUsers] = await Promise.all([
@@ -1096,8 +1100,8 @@ export default async function EpicDetailPage({
                 aria-label="Status"
               >
                 <option value="Backlog">Backlog</option>
+                <option value="To Do">To Do</option>
                 <option value="In Progress">In Progress</option>
-                <option value="Ready to Deploy">Ready to Deploy</option>
                 <option value="Done">Done</option>
               </select>
             </label>
@@ -1261,9 +1265,11 @@ export default async function EpicDetailPage({
                         </label>
                     </div> : null}
 
-                    <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
-                      <DeploymentStatusSelect formId="epicMain" defaultValue={epic.deploymentStatus} />
-                    </div>
+                    {epicHasDeployment ? (
+                      <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
+                        <DeploymentStatusSelect formId="epicMain" defaultValue={epic.deploymentStatus} />
+                      </div>
+                    ) : null}
 
                     <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
                       <label className="block">
@@ -1384,10 +1390,14 @@ export default async function EpicDetailPage({
 
               <TabPanel name="Tasks">
                 <div>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-body font-semibold tracking-wide text-text">
-              Tasks ({epic.tasks.length})
-            </h2>
+          {/* Header mirrors the main Tasks tab: h2 heading + a count subtitle. */}
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h2 className="text-heading font-semibold tracking-tight">Tasks</h2>
+              <p className="mt-1 text-body text-text-muted">
+                {epic.tasks.length} task{epic.tasks.length === 1 ? "" : "s"} in implementation order.
+              </p>
+            </div>
             <Link
               href={`/projects/${slug}`}
               className="text-caption text-text-muted hover:text-accent"
@@ -1586,7 +1596,7 @@ export default async function EpicDetailPage({
                 </div>
               </TabPanel> : null}
 
-              {viewer.isOwner ? <TabPanel name={DEVELOPMENT_TAB}>
+              {viewer.isOwner && epicHasDeployment ? <TabPanel name={DEVELOPMENT_TAB}>
                 <DeploymentTab
                   mode="epic"
                   title={epic.title}

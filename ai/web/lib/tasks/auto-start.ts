@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { epicAllowsAgentAction } from "@/lib/tasks/workflow-actors";
+import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
 
 type Actor = {
   id: string;
@@ -52,6 +53,7 @@ export async function startApprovedTodoTaskIfIdle(args: {
       deletedAt: true,
       blockedById: true,
       blockedBy: { select: { id: true, title: true, status: true, workItemKey: true } },
+      epicId: true,
       epic: { select: { status: true } },
       project: { select: { slug: true } },
       assignee: {
@@ -158,6 +160,13 @@ export async function startApprovedTodoTaskIfIdle(args: {
           autoStart: true,
         }),
       },
+    });
+
+    await promoteEpicOnTaskInProgress(tx, {
+      epicId: task.epicId,
+      projectId: task.projectId,
+      actorId: args.actor.id,
+      via: args.via,
     });
 
     return {

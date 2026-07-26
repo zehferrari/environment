@@ -7,6 +7,7 @@
 import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
 import { accessibleTaskWhere, getViewer } from "@/lib/auth/permissions";
 import {
   autoTransitionOnAck,
@@ -38,6 +39,7 @@ export async function POST(
       assigneeId: true,
       approvedOn: true,
       projectId: true,
+      epicId: true,
       title: true,
       workItemKey: true,
       project: { select: { slug: true } },
@@ -95,6 +97,15 @@ export async function POST(
       },
     }),
   ]);
+
+  if (next === "In Progress") {
+    await promoteEpicOnTaskInProgress(db, {
+      epicId: task.epicId,
+      projectId: task.projectId,
+      actorId: userId,
+      via: "ack",
+    });
+  }
 
   // Surface the auto-transition to any open board (live SSE refresh).
   revalidateTaskShell(task.id);

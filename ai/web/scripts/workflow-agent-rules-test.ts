@@ -112,8 +112,8 @@ assert(taskPage.includes('defaultValue={task.branchName ?? ""}'), "the Task form
 assert(taskPage.includes('defaultValue={task.commitPrefix ?? ""}'), "the Task form must not submit an inherited prefix as an override");
 
 const reviewAutomation = readFileSync(join(root, "lib/tasks/review-automation.ts"), "utf8");
-assert(reviewAutomation.includes('status: "Ready to Deploy"'), "last Epic task completion must promote the Epic to Ready to Deploy");
-assert(reviewAutomation.includes("remainingOpenTasks === 0"), "Ready to Deploy promotion must only happen on the last open Epic task");
+assert(reviewAutomation.includes('status: "Done"'), "last Epic task completion must move the Epic to Done");
+assert(reviewAutomation.includes("remainingOpenTasks === 0"), "the Epic Done rollup must only happen on the last open Epic task");
 
 const taskNotifications = readFileSync(join(root, "lib/agents/workflow/notifications/task.ts"), "utf8");
 assert(taskNotifications.includes("never edit a primary checkout"), "worktree guidance must prohibit primary-checkout edits");

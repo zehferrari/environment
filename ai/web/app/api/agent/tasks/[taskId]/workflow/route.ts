@@ -23,6 +23,7 @@ import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignTaskAfterPlanApproval } from "@/lib/tasks/reviewer-assignment";
 import { refillEpicQueue } from "@/lib/epics/queue";
+import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
 import { isProtectedBranch, parseProtectedBranches } from "@/lib/projects/protected-branches";
 import { hasAuthorizedTaskAgentOrigin } from "@/lib/agents/owner-origin";
 
@@ -323,6 +324,12 @@ export async function POST(
       from: task.status,
       to: "In Progress",
       action,
+    });
+    await promoteEpicOnTaskInProgress(db, {
+      epicId: task.epicId,
+      projectId: task.projectId,
+      actorId: agent.user.id,
+      via: "agent-workflow",
     });
     await recordPmChannelRunWorkflowAction({
       taskId: task.id,

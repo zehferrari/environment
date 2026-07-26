@@ -93,7 +93,9 @@ export function MessageAvatar({
   title,
 }: {
   actor: MessageActor;
-  size?: "sm" | "md";
+  // "lg" is the fixed 42px board-card size and "xs" its 26px companion badge
+  // (see the Avatar primitive).
+  size?: "xs" | "sm" | "md" | "lg";
   busy?: boolean;
   // Optional tooltip override (e.g. "Built by X"); defaults to the actor name.
   title?: string;
@@ -115,7 +117,14 @@ export function MessageAvatar({
   const src = actorAvatarSrc(actor);
   const label = actorDisplayName(actor);
   const tooltip = title ?? label;
-  const sizeClass = size === "sm" ? "h-8 w-8" : "h-11 w-11 md:h-9 md:w-9";
+  const sizeClass =
+    size === "xs"
+      ? "h-[1.625rem] w-[1.625rem]"
+      : size === "sm"
+        ? "h-8 w-8"
+        : size === "lg"
+          ? "h-[2.625rem] w-[2.625rem]"
+          : "h-11 w-11 md:h-9 md:w-9";
 
   if (actor.kind === "synthetic") {
     // Masked non-owner identity: stylish inline glyph, no photo, no live

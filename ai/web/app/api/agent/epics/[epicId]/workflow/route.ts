@@ -279,9 +279,9 @@ export async function POST(
     return NextResponse.json({ ok: true, epicId: epic.id, status: epic.status, tasks: created });
   }
 
-  if (!epic.approvedOn || epic.status !== "In Progress") {
+  if (!epic.approvedOn || !(epic.status === "In Progress" || epic.status === "To Do")) {
     return NextResponse.json({
-      error: "Epic must be In Progress and human-approved before the manager can advance the queue",
+      error: "Epic must be To Do or In Progress and human-approved before the manager can advance the queue",
       currentStatus: epic.status,
       approved: Boolean(epic.approvedOn),
     }, { status: 409 });

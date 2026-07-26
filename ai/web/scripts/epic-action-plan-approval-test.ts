@@ -5,28 +5,22 @@ const approvedAt = new Date("2026-06-17T11:49:46.196Z");
 const actorId = "actor-1";
 
 {
+  // Approving a Backlog epic's plan promotes it to To Do (approved to execute),
+  // NOT straight to In Progress — the epic flips to In Progress only when a
+  // child task actually starts.
   const update = buildEpicActionPlanApprovalUpdate({ currentStatus: "Backlog", approvedAt, actorId });
-  assert.equal(update.promotedToInProgress, true);
+  assert.equal(update.promoted, true);
   assert.deepEqual(update.data, {
     approvedOn: approvedAt,
     approvedById: actorId,
-    status: "In Progress",
+    status: "To Do",
     statusChangedAt: approvedAt,
   });
 }
 
-{
-  const update = buildEpicActionPlanApprovalUpdate({ currentStatus: "In Progress", approvedAt, actorId });
-  assert.equal(update.promotedToInProgress, false);
-  assert.deepEqual(update.data, {
-    approvedOn: approvedAt,
-    approvedById: actorId,
-  });
-}
-
-for (const currentStatus of ["Ready to Deploy", "Done"] as const) {
+for (const currentStatus of ["To Do", "In Progress", "Done"] as const) {
   const update = buildEpicActionPlanApprovalUpdate({ currentStatus, approvedAt, actorId });
-  assert.equal(update.promotedToInProgress, false, currentStatus);
+  assert.equal(update.promoted, false, currentStatus);
   assert.deepEqual(update.data, {
     approvedOn: approvedAt,
     approvedById: actorId,

@@ -120,7 +120,9 @@ export const Textarea = React.forwardRef<
 export const Avatar = React.forwardRef<
   HTMLSpanElement,
   React.HTMLAttributes<HTMLSpanElement> & {
-    size?: "sm" | "md";
+    // "lg" is the fixed 42px board-card identity size — it does not shrink on
+    // small screens, because the board card rail is 42px on every breakpoint.
+    size?: "xs" | "sm" | "md" | "lg";
     shape?: "round" | "square";
   }
 >(function Avatar({ className, size = "md", shape = "round", ...props }, ref) {
@@ -129,7 +131,13 @@ export const Avatar = React.forwardRef<
       ref={ref}
       className={cn(
         "relative grid shrink-0 place-items-center overflow-hidden border border-line bg-panel font-semibold text-text-muted shadow-sm",
-        size === "sm" ? "h-11 w-11 text-micro md:h-7 md:w-7" : "h-11 w-11 text-caption md:h-9 md:w-9",
+        size === "xs"
+          ? "h-[1.625rem] w-[1.625rem] text-nano"
+          : size === "sm"
+            ? "h-11 w-11 text-micro md:h-7 md:w-7"
+            : size === "lg"
+              ? "h-[2.625rem] w-[2.625rem] text-caption"
+              : "h-11 w-11 text-caption md:h-9 md:w-9",
         shape === "round" ? "rounded-full" : "rounded-lg",
         className,
       )}
