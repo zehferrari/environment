@@ -79,11 +79,40 @@ export function canShowDeploymentAction(args: {
 
 function statusLabel(status: string) {
   switch (status) {
+    case "Ready to Deploy": return "Ready to Deploy";
     case "Deployment Approved": return "Approved";
-    case "Successfully Deployed": return "Succeeded";
+    case "Successfully Deployed": return "Deployed";
     case "Deployment Error": return "Error";
     default: return status || "Not Required";
   }
+}
+
+// The deploy pipeline stage, in plain language, for the git-detection model.
+function deployStageNote(mode: "task" | "epic", status: string, productionBranch: string | null) {
+  const prod = productionBranch ?? "the production branch";
+  switch (status) {
+    case "Ready to Deploy":
+      return mode === "epic"
+        ? "Awaiting the pre-merge deploy review of the whole contribution (Deploy Reviewer, or the monitor agent)."
+        : `Cleared for deployment. Watching origin/${prod} for the commit prefix — it resolves to Deployed automatically once the work lands there.`;
+    case "Deployment Approved":
+      return `Review approved — cleared for merge. Watching origin/${prod} for the commit prefix; it resolves to Deployed automatically once the work lands there.`;
+    case "Successfully Deployed":
+      return `The contribution has landed on origin/${prod}.`;
+    case "Deployment Error":
+      return "The deployment failed — see the details below.";
+    default:
+      return `Deployment is not required for this ${mode === "epic" ? "Epic" : "task"} (optional post-Done step).`;
+  }
+}
+
+function InfoCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-nano font-semibold uppercase tracking-wider text-text-muted">{label}</div>
+      <div className="mt-0.5 truncate font-mono text-caption text-text">{value}</div>
+    </div>
+  );
 }
 
 function prTitle(row: DeploymentPrRow, fallbackTitle: string) {
@@ -204,6 +233,9 @@ export default function DeploymentTab({
   mode,
   title,
   deploymentStatus,
+  branchName,
+  commitPrefix,
+  productionBranch,
   rows,
   canAct,
   approveLocalChangesAction,
@@ -212,42 +244,55 @@ export default function DeploymentTab({
   mode: "task" | "epic";
   title: string;
   deploymentStatus: string;
+  branchName?: string | null;
+  commitPrefix?: string | null;
+  productionBranch?: string | null;
   rows: DeploymentPrRow[];
   canAct: (row: DeploymentPrRow) => boolean;
   approveLocalChangesAction?: (formData: FormData) => void | Promise<void>;
   approveAndMergeAction?: (formData: FormData) => void | Promise<void>;
 }) {
-  const header = (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-card border border-line bg-panel-soft p-card">
-      <div>
-        <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">Deployment</div>
-        <div className="mt-1 text-body text-text-muted">
-          {mode === "epic" ? "Epic child PR rollup" : "Top-level task PR"}
+  // The deploy state, independent of any Bitbucket PR rows: which stage the
+  // work is at, and the branch/prefix/production-branch the merge-detection
+  // watches for. This renders whether or not the Bitbucket-PR path is in use.
+  const statePanel = (
+    <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">Deployment</div>
+          <div className="mt-1 text-body text-text-muted">
+            {mode === "epic" ? "Whole-Epic contribution" : "Standalone task"}
+          </div>
         </div>
+        <StatusPill>{statusLabel(deploymentStatus)}</StatusPill>
       </div>
-      <StatusPill>{statusLabel(deploymentStatus)}</StatusPill>
+      <p className="text-caption text-text-muted">{deployStageNote(mode, deploymentStatus, productionBranch ?? null)}</p>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <InfoCell label="Branch" value={branchName || "—"} />
+        <InfoCell label="Commit prefix" value={commitPrefix || "—"} />
+        <InfoCell label="Production branch" value={productionBranch || "main"} />
+      </div>
     </div>
   );
 
-  // Honest empty state — never a synthetic PR row (a mock row used to render
-  // here with a live Approve/Merge button that posted a fake id and silently
-  // did nothing).
   if (rows.length === 0) {
     return (
       <div className="space-y-section-gap">
-        {header}
-        <div className="rounded-card border border-line bg-panel-soft p-card text-body text-text-muted">
-          {deploymentStatus === "Not Required"
-            ? `No deployment PRs — deployment is not required for this ${mode === "epic" ? "Epic" : "task"}.`
-            : "No deployment PRs yet. Once a human sets “Deployment Approved”, the monitor verifies the pushed work branches and opens the pull request(s); rows appear here as they are created."}
-        </div>
+        {statePanel}
+        {deploymentStatus === "Deployment Approved" || deploymentStatus === "Ready to Deploy" ? (
+          <div className="rounded-card border border-line bg-panel-soft p-card text-caption text-text-muted">
+            No Bitbucket pull-request rows for this {mode === "epic" ? "Epic" : "task"}. Deployment resolves by detecting the
+            commit prefix on the production branch — a human (or CI) performs the merge; the poller does the rest. Provider PR
+            rows appear here only when the Bitbucket monitor path is configured and a human sets “Deployment Approved”.
+          </div>
+        ) : null}
       </div>
     );
   }
 
   return (
     <div className="space-y-section-gap">
-      {header}
+      {statePanel}
 
       <div className="overflow-x-auto rounded-card border border-line">
         <table className="min-w-full divide-y divide-line text-body">

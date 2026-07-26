@@ -312,7 +312,7 @@ function buildEpicWorkflowPrompt(args: {
     {
       messageId: args.messageId,
       token,
-      action: "<advance_queue | assign_next | create_tasks>",
+      action: "<advance_queue | assign_next | create_tasks | deploy_review_approve | deploy_review_reject>",
       summary: "<required for create_tasks: why the new tasks are needed to achieve the existing Epic goal>",
       tasks: [
         {
@@ -320,6 +320,8 @@ function buildEpicWorkflowPrompt(args: {
           description: "<optional markdown>",
         },
       ],
+      reason: "<required for deploy_review_reject: the technical reason the contribution is not safe to merge>",
+      taskId: "<optional for deploy_review_reject: the child task to send back to To Do>",
     },
     null,
     2,
@@ -334,6 +336,11 @@ function buildEpicWorkflowPrompt(args: {
     "- Do not use create_tasks to expand the Epic scope. Use it only to cover missing work required by the existing Epic goal.",
     "- Human approval remains required before queue advancement: only call `advance_queue` or `assign_next` after the Epic is In Progress and approved.",
     "- You must never change Epic status. If the Epic is not In Progress/approved, create or discuss planning artifacts only.",
+    "",
+    "DEPLOY-REVIEW CAPABILITY (only if you are this Epic's Deploy Reviewer, or the monitor agent when none is set, and the Epic's deployment status is \"Ready to Deploy\"):",
+    "You are performing the pre-merge review of the WHOLE contribution. The individual tasks were already reviewed and accepted — do NOT re-review each task line by line. Assess only (1) whether the combined contribution introduces any security or data-integrity risk, and (2) whether the original Epic request has been fully delivered.",
+    "- `deploy_review_approve`: the contribution is safe and complete — clear it for merge. It then waits for the merge to the production branch, which resolves the deployment automatically.",
+    "- `deploy_review_reject`: you found a genuine gap or risk. Provide `reason` (the technical detail) and, when a single child task is at fault, its `taskId`. PM returns that task AND the Epic to To Do with your reason recorded on the task.",
     "- If a workflow action fully handles the turn and you have nothing substantive to add, reply exactly with the silent reply token from the PM channel prompt.",
     "",
     "Workflow endpoint:",

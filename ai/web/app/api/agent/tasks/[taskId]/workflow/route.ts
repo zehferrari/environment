@@ -707,6 +707,9 @@ export async function POST(
         epicId: task.epicId,
         actor,
         via: "ready-for-review",
+        // 2b: hand the agent that just moved this task to Review the Epic's
+        // next unblocked task, so the same worker keeps driving its branch.
+        preferUserId: actor.id,
         contextLine: `"${task.title}" moved to Review — your review-stage feedback there stays priority one.`,
       });
       for (const assigned of refill.assignments) {

@@ -106,6 +106,8 @@ export type ActivityKind =
   | "pm.repo.verify.enqueue"
   | "pm.repo.verify.ok"
   | "pm.repo.verify.fail"
+  | "pm.epic.merge.ok"
+  | "pm.epic.merge.fail"
   | "pm.channel.latency_warning"
   | "agent.wake.delivered"
   | "agent.wake.unmatched"

@@ -420,6 +420,7 @@ export default async function EpicDetailPage({
           repositoryPath: true,
           onlyReportersCanApproveActionPlans: true,
           onlyReportersCanApprovePullRequests: true,
+          deploymentProductionBranch: true,
         },
       },
       actingManager: {
@@ -1079,32 +1080,6 @@ export default async function EpicDetailPage({
                 aria-label="Epic title"
               />
             </label>
-            {viewer.isOwner ? (
-              <div className="flex h-9 shrink-0 items-center rounded-lg border border-line bg-bg px-2.5">
-                <PrivateToggle
-                  formId="epicMain"
-                  defaultChecked={epic.private}
-                  includeSubmittedField
-                />
-              </div>
-            ) : null}
-            <label className="w-32 shrink-0">
-              <span className="mb-0.5 block text-left text-nano font-semibold uppercase tracking-wider text-text-muted">
-                Status
-              </span>
-              <select
-                form="epicMain"
-                name="status"
-                defaultValue={epic.status}
-                className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
-                aria-label="Status"
-              >
-                <option value="Backlog">Backlog</option>
-                <option value="To Do">To Do</option>
-                <option value="In Progress">In Progress</option>
-                <option value="Done">Done</option>
-              </select>
-            </label>
             <div className="flex shrink-0 flex-col items-end gap-0.5">
               <span className="text-nano font-semibold uppercase tracking-wider text-text-muted">
                 Updated{" "}
@@ -1159,7 +1134,152 @@ export default async function EpicDetailPage({
                   />
 
                   <aside className="space-y-section-gap xl:sticky xl:top-[calc(var(--detail-sticky-top)+var(--detail-header-height)+var(--detail-tabs-height)+1rem)] xl:self-start">
-                    {/* Dates */}
+                    {/* Status + Private — mirrors the Task form's sidebar top. */}
+                    <div className="flex items-end gap-3">
+                      <label className="min-w-0 flex-1">
+                        <span className="mb-0.5 block text-nano font-semibold uppercase tracking-wider text-text-muted">
+                          Status
+                        </span>
+                        <select
+                          form="epicMain"
+                          name="status"
+                          defaultValue={epic.status}
+                          className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
+                          aria-label="Status"
+                        >
+                          <option value="Backlog">Backlog</option>
+                          <option value="To Do">To Do</option>
+                          <option value="In Progress">In Progress</option>
+                          <option value="Done">Done</option>
+                        </select>
+                      </label>
+                      {viewer.isOwner ? (
+                        <PrivateToggle
+                          formId="epicMain"
+                          defaultChecked={epic.private}
+                          includeSubmittedField
+                        />
+                      ) : null}
+                    </div>
+
+                    {viewer.isOwner ? (
+                      <div className="grid grid-cols-2 gap-3 rounded-card border border-line bg-panel-soft p-card">
+                        <div className="min-w-0">
+                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Report by</span>
+                          <AvatarCombobox formId="epicMain" name="reporterId" defaultValue={epic.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Report by" />
+                        </div>
+                        <div className="min-w-0">
+                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Worker pool</span>
+                          <AvatarCombobox formId="epicMain" name="assigneeId" defaultValues={workerIds} options={workerOptions} emptyLabel="No workers" ariaLabel="Worker pool" multiple />
+                          <input form="epicMain" type="hidden" name="workerPoolSubmitted" value="1" />
+                        </div>
+                        <div className="min-w-0">
+                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Acting manager</span>
+                          <AvatarCombobox formId="epicMain" name="actingManagerId" defaultValue={epic.actingManagerId ?? ""} options={principalOptions} emptyLabel="No acting manager" ariaLabel="Acting manager" />
+                        </div>
+                        <div className="min-w-0">
+                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Deploy reviewer</span>
+                          <AvatarCombobox formId="epicMain" name="deployReviewerId" defaultValue={epic.deployReviewerId ?? ""} options={workerOptions} emptyLabel="Use Monitor Agent" ariaLabel="Deploy reviewer" />
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {/* Branch, commit prefix, and deployment — persisted by the card's single Save. */}
+                    <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
+                      <label className="block">
+                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
+                          Branch
+                        </span>
+                        <input
+                          form="epicMain"
+                          name="branchName"
+                          defaultValue={epic.branchName ?? ""}
+                          maxLength={200}
+                          placeholder={epicChangeBranchName ? `defaults to ${epicChangeBranchName}` : "feature/HOMELAB-99"}
+                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 font-mono text-caption outline-none focus:border-accent"
+                          aria-label="Branch"
+                        />
+                      </label>
+                      <div className="grid grid-cols-2 gap-3">
+                        <label className="block min-w-0">
+                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
+                            Commit prefix
+                          </span>
+                          <input
+                            form="epicMain"
+                            name="commitPrefix"
+                            defaultValue={epic.commitPrefix ?? ""}
+                            maxLength={200}
+                            placeholder={epicCommitPrefix ? `defaults to ${epicCommitPrefix}` : "HOMELAB-99"}
+                            className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 font-mono text-caption outline-none focus:border-accent"
+                            aria-label="Commit prefix"
+                          />
+                        </label>
+                        <div className="min-w-0">
+                          {epicHasDeployment ? (
+                            <DeploymentStatusSelect formId="epicMain" defaultValue={epic.deploymentStatus} />
+                          ) : (
+                            <div>
+                              <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Deployment status</span>
+                              <div className="flex min-h-9 items-center rounded-lg border border-line bg-bg px-2 text-caption text-text-muted">
+                                {epic.deploymentStatus}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <form
+                        action={epic.archivedAt ? unarchiveEpic : archiveEpic}
+                        className="flex h-full flex-col gap-2 rounded-card border border-line bg-panel-soft p-card"
+                      >
+                        <input type="hidden" name="epicId" value={epic.id} />
+                        <input type="hidden" name="projectSlug" value={slug} />
+                        <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
+                          Archive
+                        </div>
+                        <p className="flex-1 text-caption text-text-muted">
+                          {epic.archivedAt
+                            ? "Restore this epic to active project views without changing its status."
+                            : "Hide this epic from active grids without changing its status."}
+                        </p>
+                        <button
+                          type="submit"
+                          className="mt-auto w-full rounded-lg border border-line bg-transparent px-control-x py-control-y text-caption font-medium text-text hover:border-accent hover:text-accent"
+                        >
+                          {epic.archivedAt ? "Restore from archive" : "Archive epic"}
+                        </button>
+                      </form>
+
+                      {/* Danger zone — soft delete moves the Epic and all its non-deleted
+                          tasks (plus sub-tasks) to the bin. Its own form. Auto-purged after
+                          7 days. */}
+                      <form
+                        action={deleteEpic}
+                        className="flex h-full flex-col gap-2 rounded-card border border-line bg-panel-soft p-card"
+                      >
+                        <input type="hidden" name="epicId" value={epic.id} />
+                        <input type="hidden" name="projectSlug" value={slug} />
+                        <div className="text-micro font-semibold uppercase tracking-wider text-crit">
+                          Danger zone
+                        </div>
+                        <p className="flex-1 text-caption text-text-muted">
+                          Move this epic to the bin. The {epic.tasks.length} task
+                          {epic.tasks.length === 1 ? "" : "s"} under it (plus sub-tasks) go
+                          with it. Auto-purged after 7 days.
+                        </p>
+                        <button
+                          type="submit"
+                          className="mt-auto w-full rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-medium text-crit hover:bg-crit hover:text-on-crit"
+                        >
+                          Delete epic
+                        </button>
+                      </form>
+                    </div>
+
+                    {/* Dates — moved to the bottom to mirror the Task form. */}
                     <div className="rounded-card border border-line bg-panel-soft p-card">
                       <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
                         Dates
@@ -1244,110 +1364,6 @@ export default async function EpicDetailPage({
                         ) : null}
                       </dl>
                     </div>
-
-                    {viewer.isOwner ? <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
-                        <label className="block">
-                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Report by</span>
-                          <AvatarCombobox formId="epicMain" name="reporterId" defaultValue={epic.reporterId ?? ""} options={reporterOptions} emptyLabel="No reporter" ariaLabel="Report by" />
-                        </label>
-                        <label className="block">
-                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Worker pool</span>
-                          <AvatarCombobox formId="epicMain" name="assigneeId" defaultValues={workerIds} options={workerOptions} emptyLabel="No workers" ariaLabel="Worker pool" multiple />
-                          <input form="epicMain" type="hidden" name="workerPoolSubmitted" value="1" />
-                        </label>
-                        <label className="block">
-                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Acting manager</span>
-                          <AvatarCombobox formId="epicMain" name="actingManagerId" defaultValue={epic.actingManagerId ?? ""} options={principalOptions} emptyLabel="No acting manager" ariaLabel="Acting manager" />
-                        </label>
-                        <label className="block">
-                          <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">Deploy reviewer</span>
-                          <AvatarCombobox formId="epicMain" name="deployReviewerId" defaultValue={epic.deployReviewerId ?? ""} options={workerOptions} emptyLabel="Use Monitor Agent" ariaLabel="Deploy reviewer" />
-                        </label>
-                    </div> : null}
-
-                    {epicHasDeployment ? (
-                      <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
-                        <DeploymentStatusSelect formId="epicMain" defaultValue={epic.deploymentStatus} />
-                      </div>
-                    ) : null}
-
-                    <div className="space-y-3 rounded-card border border-line bg-panel-soft p-card">
-                      <label className="block">
-                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
-                          Branch
-                        </span>
-                        <input
-                          form="epicMain"
-                          name="branchName"
-                          defaultValue={epic.branchName ?? ""}
-                          maxLength={200}
-                          placeholder={epicChangeBranchName ? `defaults to ${epicChangeBranchName}` : "feature/HOMELAB-99"}
-                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 font-mono text-caption outline-none focus:border-accent"
-                          aria-label="Branch"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-micro font-semibold uppercase tracking-wider text-text-muted">
-                          Commit prefix
-                        </span>
-                        <input
-                          form="epicMain"
-                          name="commitPrefix"
-                          defaultValue={epic.commitPrefix ?? ""}
-                          maxLength={200}
-                          placeholder={epicCommitPrefix ? `defaults to ${epicCommitPrefix}` : "HOMELAB-99"}
-                          className="w-full rounded-lg border border-line bg-bg px-2 py-1.5 font-mono text-caption outline-none focus:border-accent"
-                          aria-label="Commit prefix"
-                        />
-                      </label>
-                    </div>
-
-                    <form
-                      action={epic.archivedAt ? unarchiveEpic : archiveEpic}
-                      className="space-y-2 rounded-card border border-line bg-panel-soft p-card"
-                    >
-                      <input type="hidden" name="epicId" value={epic.id} />
-                      <input type="hidden" name="projectSlug" value={slug} />
-                      <div className="text-micro font-semibold uppercase tracking-wider text-text-muted">
-                        Archive
-                      </div>
-                      <p className="text-caption text-text-muted">
-                        {epic.archivedAt
-                          ? "Restore this epic to active project views without changing its status."
-                          : "Hide this epic from active grids without changing its status."}
-                      </p>
-                      <button
-                        type="submit"
-                        className="w-full rounded-lg border border-line bg-transparent px-control-x py-control-y text-caption font-medium text-text hover:border-accent hover:text-accent"
-                      >
-                        {epic.archivedAt ? "Restore from archive" : "Archive epic"}
-                      </button>
-                    </form>
-
-                    {/* Danger zone — soft delete moves the Epic and all its non-deleted
-                        tasks (plus sub-tasks) to the bin. Its own form. Auto-purged after
-                        7 days. */}
-                    <form
-                      action={deleteEpic}
-                      className="space-y-2 rounded-card border border-line bg-panel-soft p-card"
-                    >
-                      <input type="hidden" name="epicId" value={epic.id} />
-                      <input type="hidden" name="projectSlug" value={slug} />
-                      <div className="text-micro font-semibold uppercase tracking-wider text-crit">
-                        Danger zone
-                      </div>
-                      <p className="text-caption text-text-muted">
-                        Move this epic to the bin. The {epic.tasks.length} task
-                        {epic.tasks.length === 1 ? "" : "s"} under it (plus sub-tasks) go
-                        with it. Auto-purged after 7 days.
-                      </p>
-                      <button
-                        type="submit"
-                        className="w-full rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-medium text-crit hover:bg-crit hover:text-on-crit"
-                      >
-                        Delete epic
-                      </button>
-                    </form>
                   </aside>
                 </div>
               </TabPanel>
@@ -1601,6 +1617,9 @@ export default async function EpicDetailPage({
                   mode="epic"
                   title={epic.title}
                   deploymentStatus={epic.deploymentStatus}
+                  branchName={epicChangeBranchName}
+                  commitPrefix={epicCommitPrefix}
+                  productionBranch={epic.project.deploymentProductionBranch}
                   rows={deploymentPullRequests}
                   canAct={(row) => canShowDeploymentAction({
                     provider: row.provider,
@@ -1624,6 +1643,10 @@ export default async function EpicDetailPage({
                   scopeLabel="epic"
                   baseHref={`/projects/${slug}/epics/${epic.id}`}
                   selectedDiff={selectedDiff}
+                  projectSlug={slug}
+                  epicId={epic.id}
+                  aiTargets={aiTargetOptions}
+                  defaultAiTarget={defaultAiTarget}
                 />
               </TabPanel> : null}
             </div>

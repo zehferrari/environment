@@ -5,6 +5,8 @@ import { purgeProjectBin } from "@/lib/bin/purge-projects";
 import { purgeDirectAgentChatBin } from "@/lib/bin/purge-chats";
 import { autoArchiveDoneTasks } from "@/lib/archive/auto";
 import { pollDeploymentPullRequests } from "@/lib/deploy/monitor";
+import { pollDeploymentMerges } from "@/lib/deploy/merge-detect";
+import { pollEpicTaskMerges } from "@/lib/deploy/epic-merge";
 import {
   pmAsyncDispatchEnabled,
   runPmChannelWorkerDrain,
@@ -36,6 +38,26 @@ function startDeploymentWatcherPoll() {
       }
     } catch (err) {
       console.error("[pm] deployment watcher failed:", err);
+    }
+    // Provider-agnostic git merge detection: flip approved/opted-in work to
+    // Successfully Deployed once its COMMIT_PREFIX lands on the production branch.
+    try {
+      const merges = await pollDeploymentMerges();
+      if (merges.deployed > 0) {
+        console.log("[pm] deployment merge detect:", JSON.stringify(merges));
+      }
+    } catch (err) {
+      console.error("[pm] deployment merge detect failed:", err);
+    }
+    // Epic integration: merge each Done Epic-child task's branch into the Epic
+    // branch (EPICS ONLY); a conflict bounces the task back to Review.
+    try {
+      const epicMerges = await pollEpicTaskMerges();
+      if (epicMerges.merged > 0 || epicMerges.bounced > 0) {
+        console.log("[pm] epic branch merge:", JSON.stringify(epicMerges));
+      }
+    } catch (err) {
+      console.error("[pm] epic branch merge failed:", err);
     } finally {
       running = false;
     }

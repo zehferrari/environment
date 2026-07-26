@@ -13,7 +13,15 @@ import { publishBoardTouch } from "@/lib/pm/board-events";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const ACTIONS = ["advance_queue", "assign_next", "create_tasks"] as const;
+const ACTIONS = [
+  "advance_queue",
+  "assign_next",
+  "create_tasks",
+  // Deploy-review actions — authorized for the epic's Deploy Reviewer (or the
+  // monitor agent when none is set), NOT the acting manager.
+  "deploy_review_approve",
+  "deploy_review_reject",
+] as const;
 
 type EpicWorkflowAction = (typeof ACTIONS)[number];
 
@@ -77,6 +85,8 @@ export async function POST(
     action?: unknown;
     summary?: unknown;
     tasks?: unknown;
+    reason?: unknown;
+    taskId?: unknown;
   };
   try {
     payload = (await req.json()) as typeof payload;
@@ -133,6 +143,7 @@ export async function POST(
       where: { slug: grantAgentSlug },
       select: {
         slug: true,
+        role: true,
         deactivatedAt: true,
         user: { select: { id: true, username: true, status: true } },
       },
@@ -146,6 +157,8 @@ export async function POST(
         projectId: true,
         actingManagerId: true,
         reporterId: true,
+        deployReviewerId: true,
+        deploymentStatus: true,
         approvedOn: true,
         branchName: true,
         commitPrefix: true,
@@ -161,15 +174,199 @@ export async function POST(
   if (!epic || epic.deletedAt) {
     return NextResponse.json({ error: "Epic not found" }, { status: 404 });
   }
-  if (epic.actingManagerId !== agent.user.id) {
-    return NextResponse.json({ error: "Only the Epic acting manager can use this workflow" }, { status: 403 });
-  }
 
   const actor = {
     id: agent.user.id,
     kind: "agent" as const,
     username: agent.user.username,
   };
+
+  // Deploy-review actions belong to the epic's Deploy Reviewer (or the monitor
+  // agent when none is set) — a distinct role from the acting manager who runs
+  // the queue actions below.
+  if (action === "deploy_review_approve" || action === "deploy_review_reject") {
+    const isDeployReviewer = epic.deployReviewerId
+      ? epic.deployReviewerId === agent.user.id
+      : agent.role === "monitor";
+    if (!isDeployReviewer) {
+      return NextResponse.json({ error: "Only the Epic's deploy reviewer (or the monitor agent) can review the deployment" }, { status: 403 });
+    }
+    if (epic.deploymentStatus !== "Ready to Deploy") {
+      return NextResponse.json({
+        error: "Epic is not awaiting deploy review",
+        deploymentStatus: epic.deploymentStatus,
+      }, { status: 409 });
+    }
+
+    if (action === "deploy_review_approve") {
+      await db.$transaction(async (tx) => {
+        await tx.epic.update({
+          where: { id: epic.id },
+          data: { deploymentStatus: "Deployment Approved" },
+        });
+        await tx.agentChatMessage.create({
+          data: {
+            projectId: epic.projectId,
+            taskId: null,
+            epicId: epic.id,
+            agentSlug: "room",
+            senderUserId: agent.user!.id,
+            body: [
+              `Deploy reviewer @${agent.slug} APPROVED this Epic's contribution for merge.`,
+              "The whole-contribution review found no unaddressed requests and no security/data-integrity risk.",
+              "Awaiting the merge to the production branch; the deployment will resolve automatically once the work lands there.",
+            ].join("\n"),
+            allowDescriptionEdit: false,
+            originChannel: "chat",
+          },
+        });
+        await tx.activityLog.create({
+          data: {
+            projectId: epic.projectId,
+            userId: agent.user!.id,
+            kind: "epic.deploy_review.approve",
+            targetAgent: agent.slug,
+            payload: JSON.stringify({ epicId: epic.id, from: "Ready to Deploy", to: "Deployment Approved" }),
+          },
+        });
+      });
+      await recordPmChannelRunWorkflowAction({ epicId: epic.id, agentSlug: agent.slug, messageId, action });
+      revalidatePath(`/projects/${epic.project.slug}`);
+      revalidatePath(`/projects/${epic.project.slug}/epics/${epic.id}`);
+      publishBoardTouch(epic.projectId);
+      return NextResponse.json({ ok: true, epicId: epic.id, deploymentStatus: "Deployment Approved" });
+    }
+
+    // deploy_review_reject
+    const reason = cleanText(payload.reason, 8000);
+    const flaggedTaskId = cleanText(payload.taskId, 100);
+    if (!reason) {
+      return NextResponse.json({ error: "reason is required for deploy_review_reject" }, { status: 400 });
+    }
+    let flaggedTask: { id: string; title: string; status: string; assigneeId: string | null } | null = null;
+    if (flaggedTaskId) {
+      flaggedTask = await db.task.findFirst({
+        where: { id: flaggedTaskId, epicId: epic.id, deletedAt: null },
+        select: { id: true, title: true, status: true, assigneeId: true },
+      });
+      if (!flaggedTask) {
+        return NextResponse.json({ error: "taskId must reference a task of this Epic" }, { status: 400 });
+      }
+    }
+
+    const now = new Date();
+    // Bounced work returns to the FRONT of this project's To Do column.
+    const minRank = await db.task.aggregate({
+      where: { projectId: epic.projectId, status: "To Do", deletedAt: null },
+      _min: { rank: true },
+    });
+    await db.$transaction(async (tx) => {
+      // The Epic drops out of the deploy gate and re-opens for work.
+      await tx.epic.update({
+        where: { id: epic.id },
+        data: { status: "To Do", statusChangedAt: now, deploymentStatus: "Not Required" },
+      });
+      await tx.activityLog.create({
+        data: {
+          projectId: epic.projectId,
+          userId: agent.user!.id,
+          kind: "epic.status",
+          payload: JSON.stringify({ epicId: epic.id, from: epic.status, to: "To Do", via: "deploy_review_reject" }),
+        },
+      });
+      if (flaggedTask) {
+        const commentRow = await tx.comment.create({
+          data: {
+            taskId: flaggedTask.id,
+            userId: agent.user!.id,
+            body: `Deploy review flagged this task and returned it to To Do:\n\n${reason}`,
+          },
+          select: { id: true },
+        });
+        await tx.task.update({
+          where: { id: flaggedTask.id },
+          data: {
+            status: "To Do",
+            statusChangedAt: now,
+            // The auto-Done rollup leaves child tasks live, but a human-closed
+            // Epic archives them — un-archive so the bounce is workable either way.
+            archivedAt: null,
+            archivedById: null,
+            rank: (minRank._min.rank ?? 0) - 1,
+          },
+        });
+        await tx.activityLog.create({
+          data: {
+            projectId: epic.projectId,
+            taskId: flaggedTask.id,
+            userId: agent.user!.id,
+            kind: "task.move",
+            targetAgent: agent.slug,
+            payload: JSON.stringify({ from: flaggedTask.status, to: "To Do", via: "deploy_review_reject", commentId: commentRow.id }),
+          },
+        });
+      }
+      await tx.agentChatMessage.create({
+        data: {
+          projectId: epic.projectId,
+          taskId: null,
+          epicId: epic.id,
+          agentSlug: "room",
+          senderUserId: agent.user!.id,
+          body: [
+            `Deploy reviewer @${agent.slug} REJECTED this Epic's contribution.`,
+            flaggedTask ? `Flagged task returned to To Do: ${flaggedTask.title}` : "No single task was flagged; the Epic returns to To Do for rework.",
+            "",
+            "Reason:",
+            reason,
+          ].join("\n"),
+          allowDescriptionEdit: false,
+          originChannel: "chat",
+        },
+      });
+      await tx.activityLog.create({
+        data: {
+          projectId: epic.projectId,
+          userId: agent.user!.id,
+          kind: "epic.deploy_review.reject",
+          targetAgent: agent.slug,
+          payload: JSON.stringify({ epicId: epic.id, taskId: flaggedTask?.id ?? null, reason }),
+        },
+      });
+    });
+
+    if (flaggedTask?.assigneeId) {
+      await sendTaskWorkflowNotification({
+        taskId: flaggedTask.id,
+        targetUserId: flaggedTask.assigneeId,
+        actor,
+        reason: "review_feedback",
+        body: [
+          `Deploy review flagged "${flaggedTask.title}" and moved it back to To Do (front of the queue).`,
+          "The whole-contribution deploy review found an issue with this task before merge. Read the reviewer's comment on the task for the technical reason.",
+          "Address it before starting or resuming any other task, then move it back through Review through the workflow endpoint.",
+          "Do not post an acknowledgement-only response.",
+        ].join("\n"),
+      });
+    }
+    await recordPmChannelRunWorkflowAction({ epicId: epic.id, agentSlug: agent.slug, messageId, action });
+    revalidatePath(`/projects/${epic.project.slug}`);
+    revalidatePath(`/projects/${epic.project.slug}/epics/${epic.id}`);
+    if (flaggedTask) revalidatePath(`/projects/${epic.project.slug}/tasks/${flaggedTask.id}`);
+    publishBoardTouch(epic.projectId);
+    return NextResponse.json({
+      ok: true,
+      epicId: epic.id,
+      epicStatus: "To Do",
+      deploymentStatus: "Not Required",
+      bouncedTaskId: flaggedTask?.id ?? null,
+    });
+  }
+
+  // All remaining actions are Epic-manager actions.
+  if (epic.actingManagerId !== agent.user.id) {
+    return NextResponse.json({ error: "Only the Epic acting manager can use this workflow" }, { status: 403 });
+  }
 
   if (action === "create_tasks") {
     const summary = cleanText(payload.summary, 4000);

@@ -29,35 +29,39 @@ assert(
   "legacy Epics without a human key must not leak their database id into a branch",
 );
 
+// Own branch per task: an Epic child with no explicit override works on its own
+// key-derived branch (not the shared Epic branch) so independent Epic tasks run
+// in parallel across agents. An explicit Task branch still wins; a keyless
+// legacy task falls back to the Epic branch.
 const taskWithChangingEpic = {
   workItemKey: "V23-3",
   branchName: null,
   epic: { workItemKey: "V23-2", branchName: "epic-before" },
 };
 assert(
-  effectiveTaskBranchName(taskWithChangingEpic) === "epic-before",
-  "an Epic child without an override must inherit the explicit Epic branch",
+  effectiveTaskBranchName(taskWithChangingEpic) === "v23-3",
+  "an Epic child without an override uses its own work-item branch (parallel per-task branches)",
 );
 taskWithChangingEpic.epic.branchName = "epic-after";
 assert(
-  effectiveTaskBranchName(taskWithChangingEpic) === "epic-after",
-  "an Epic branch change must propagate while the child override stays null",
+  effectiveTaskBranchName(taskWithChangingEpic) === "v23-3",
+  "an Epic branch change must not move a child that owns a key-derived branch",
 );
 assert(
   effectiveTaskBranchName({ ...taskWithChangingEpic, branchName: "task-override" }) === "task-override",
   "an explicit Task branch must override its Epic",
 );
 assert(
-  effectiveTaskBranchName({ workItemKey: "V23-3", branchName: null, epic: { workItemKey: "V23-2", branchName: null } }) === "v23-2",
-  "an Epic child without explicit branches must inherit the Epic human-key branch",
+  effectiveTaskBranchName({ workItemKey: "V23-3", branchName: null, epic: { workItemKey: "V23-2", branchName: null } }) === "v23-3",
+  "an Epic child without explicit branches uses its own human-key branch",
 );
 assert(
   effectiveTaskBranchName({ workItemKey: "V23-3", branchName: null, epic: null }) === "v23-3",
   "a standalone Task without an explicit branch must use its human key",
 );
 assert(
-  effectiveTaskBranchName({ workItemKey: "V23-3", branchName: null, epic: { workItemKey: null, branchName: null } }) === "v23-3",
-  "a Task must use its own human key when its legacy Epic has no usable branch key",
+  effectiveTaskBranchName({ workItemKey: null, branchName: null, epic: { workItemKey: "V23-2", branchName: "epic-branch" } }) === "epic-branch",
+  "a legacy Task without its own key falls back to the Epic branch",
 );
 
 assert(

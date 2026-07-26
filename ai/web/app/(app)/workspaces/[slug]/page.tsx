@@ -170,14 +170,28 @@ async function moveTask(taskId: string, status: string, workspaceSlug: string): 
     return { ok: true };
   }
 
-  const maxRank = await db.task.aggregate({
-    where: { status, archivedAt: null, deletedAt: null },
-    _max: { rank: true },
-  });
+  // Item 1: a task pulled back from Review to To Do returns to the FRONT of the
+  // To Do column (priority for the next assignee pick); every other move appends
+  // to the bottom of the target column.
+  const toTopOfTodo = current.status === "Review" && status === "To Do";
+  let nextRank: number;
+  if (toTopOfTodo) {
+    const minRank = await db.task.aggregate({
+      where: { status: "To Do", archivedAt: null, deletedAt: null },
+      _min: { rank: true },
+    });
+    nextRank = (minRank._min.rank ?? 0) - 1;
+  } else {
+    const maxRank = await db.task.aggregate({
+      where: { status, archivedAt: null, deletedAt: null },
+      _max: { rank: true },
+    });
+    nextRank = (maxRank._max.rank ?? 0) + 1;
+  }
   await db.$transaction([
     db.task.update({
       where: { id: taskId },
-      data: { status, rank: (maxRank._max.rank ?? 0) + 1, statusChangedAt: new Date() },
+      data: { status, rank: nextRank, statusChangedAt: new Date() },
     }),
     db.activityLog.create({
       data: {

@@ -184,7 +184,11 @@ export async function triggerDeployReview(args: {
     "Deploy-review prompt:",
     prompt,
     "",
-    "Inspect the current local worktree/branch and origin branch state for this Epic, then report in the Epic Action Plan whether every Epic request is addressed and whether the changes introduce security or data-integrity risk. Do not post an acknowledgement-only response.",
+    "This is the pre-merge review of the WHOLE contribution. The individual tasks were already reviewed and accepted — do NOT re-review each task line by line. Assess only (1) security/data-integrity risk across the combined change, and (2) whether the original Epic request is fully delivered.",
+    "Inspect the local worktree/branch and origin branch state, then RESOLVE the review through the Epic workflow endpoint:",
+    "- call `deploy_review_approve` if it is safe and complete, or",
+    "- call `deploy_review_reject` with a `reason` (and the offending `taskId` when one task is at fault) if you find a genuine gap or risk.",
+    "Report your findings in the Epic Action Plan alongside the action. Do not post an acknowledgement-only response.",
   ].join("\n"));
 
   const { sendAgentChatMessage } = await import("@/lib/agents/chat/actions");

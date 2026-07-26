@@ -73,6 +73,7 @@ export function getCachedTaskDetailShell(taskId: string) {
             slug: true,
             name: true,
             repositoryPath: true,
+            deploymentProductionBranch: true,
             onlyReportersCanApproveActionPlans: true,
             onlyReportersCanSetTasksDone: true,
             onlyReportersCanApprovePullRequests: true,

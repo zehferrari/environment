@@ -30,6 +30,19 @@ export function effectiveTaskBranchName(task: {
   const taskBranch = task.branchName?.trim();
   if (taskBranch) return taskBranch;
 
-  const epicBranch = task.epic ? effectiveEpicBranchName(task.epic) : null;
-  return epicBranch || branchNameFromWorkItemKey(task.workItemKey);
+  // Own branch per task: an Epic child works on its own branch (derived from its
+  // human work-item key) so multiple pool agents can implement independent parts
+  // of the same Epic in parallel without ever colliding on a single shared
+  // branch. Branch-keyed serialization (lib/tasks/auto-start.ts) then guarantees
+  // no two tasks on the same effective branch are In Progress at once. Managers
+  // force co-development by giving tasks an explicit shared branchName. The
+  // Epic's own branch is only a fallback for a legacy task with no key.
+  // NOTE: a dependent task (Blocked By) that must build on a predecessor's
+  // not-yet-merged work needs the Epic integration branch as its base — that
+  // git-orchestration piece lives in claim-branch (host tooling), tracked
+  // separately. The Blocked By gate keeps such a task from starting early.
+  const ownBranch = branchNameFromWorkItemKey(task.workItemKey);
+  if (ownBranch) return ownBranch;
+
+  return task.epic ? effectiveEpicBranchName(task.epic) : null;
 }

@@ -17,6 +17,9 @@ export async function refillEpicQueue(args: {
   epicId: string;
   actor: Actor;
   via: string;
+  // 2b: the worker that just freed itself (e.g. moved its task to Review) —
+  // preferred for the Epic's next unblocked task so the same agent keeps going.
+  preferUserId?: string | null;
   // Optional first line for the assignee notification, e.g. what event freed
   // the queue ("Previous epic task X was accepted...").
   contextLine?: string;
@@ -46,6 +49,7 @@ export async function refillEpicQueue(args: {
       projectId: epic.projectId,
       actorUserId: args.actor.id,
       excludeUserIds: [epic.actingManagerId, epic.reporterId],
+      preferUserId: args.preferUserId,
       via: args.via,
     }),
   );

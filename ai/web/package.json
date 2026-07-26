@@ -31,6 +31,7 @@
     "test:pm-acceptance-baseline": "tsx scripts/pm-acceptance-baseline-test.ts",
     "test:db-maintenance": "tsx scripts/db-maintenance-test.ts",
     "test:deployment-monitor": "tsx scripts/deployment-monitor-test.ts",
+    "test:epic-merge": "tsx scripts/epic-merge-test.ts",
     "test:deployment-tab": "tsx scripts/deployment-tab-test.tsx",
     "test:task-git-changes": "tsx scripts/task-git-changes-test.ts",
     "test:add-epic-task-fab": "tsx scripts/add-epic-task-fab-test.tsx",

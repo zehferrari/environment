@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { epicAllowsAgentAction } from "@/lib/tasks/workflow-actors";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
+import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 
 type Actor = {
   id: string;
@@ -51,10 +52,12 @@ export async function startApprovedTodoTaskIfIdle(args: {
       assigneeId: true,
       approvedOn: true,
       deletedAt: true,
+      workItemKey: true,
+      branchName: true,
       blockedById: true,
       blockedBy: { select: { id: true, title: true, status: true, workItemKey: true } },
       epicId: true,
-      epic: { select: { status: true } },
+      epic: { select: { status: true, workItemKey: true, branchName: true } },
       project: { select: { slug: true } },
       assignee: {
         select: {
@@ -117,6 +120,43 @@ export async function startApprovedTodoTaskIfIdle(args: {
         task: taskRef,
         activeTask,
       };
+    }
+
+    // Branch-keyed serialization: never let two tasks that resolve to the SAME
+    // effective branch be In Progress at once — two agents editing one branch
+    // collide. Per-task branches (lib/work-items/branches.ts) make Epic siblings
+    // independent so an Epic fans out to multiple agents; an explicit shared
+    // branchName (manager-forced co-development) or a legacy shared Epic branch
+    // still serializes here regardless of which agent holds each task.
+    const candidateBranch = effectiveTaskBranchName(task);
+    if (candidateBranch) {
+      const branchPeers = await tx.task.findMany({
+        where: {
+          id: { not: task.id },
+          projectId: task.projectId,
+          status: "In Progress",
+          archivedAt: null,
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          title: true,
+          workItemKey: true,
+          branchName: true,
+          epic: { select: { workItemKey: true, branchName: true } },
+        },
+      });
+      const branchClash = branchPeers.find(
+        (peer) => effectiveTaskBranchName(peer) === candidateBranch,
+      );
+      if (branchClash) {
+        return {
+          started: false as const,
+          reason: "busy" as const,
+          task: taskRef,
+          activeTask: { id: branchClash.id, title: branchClash.title },
+        };
+      }
     }
 
     const maxRank = await tx.task.aggregate({

@@ -16,6 +16,9 @@ export async function findAvailableEpicWorker(
     epicId: string;
     projectId: string;
     excludeUserIds?: Array<string | null | undefined>;
+    // 2b: when a worker just freed itself (moved its task to Review), prefer it
+    // for the Epic's next unblocked task so the same agent keeps driving.
+    preferUserId?: string | null;
   },
 ) {
   const excluded = new Set(args.excludeUserIds?.filter(Boolean) as string[]);
@@ -43,6 +46,7 @@ export async function findAvailableEpicWorker(
     },
   });
 
+  const eligible: Array<{ id: string; username: string }> = [];
   for (const worker of workers) {
     if (excluded.has(worker.userId)) continue;
     if (restricted && !allowed.has(worker.userId)) continue;
@@ -55,15 +59,20 @@ export async function findAvailableEpicWorker(
         status: { in: [...ACTIVE_TASK_ASSIGNMENT_STATUSES] },
       },
     });
+    // One active branch per agent: a worker already holding a To Do/In Progress
+    // task is not eligible for another. Parallelism across a big Epic comes from
+    // the pool's OTHER free workers each taking their own per-task branch.
     if (activeInProject === 0) {
-      return {
-        id: worker.userId,
-        username: worker.user.username,
-      };
+      eligible.push({ id: worker.userId, username: worker.user.username });
     }
   }
 
-  return null;
+  if (eligible.length === 0) return null;
+  if (args.preferUserId) {
+    const preferred = eligible.find((worker) => worker.id === args.preferUserId);
+    if (preferred) return preferred;
+  }
+  return eligible[0];
 }
 
 export type EpicTaskAssignment = {
@@ -149,6 +158,8 @@ export async function assignOpenEpicTasks(
     projectId: string;
     actorUserId: string;
     excludeUserIds?: Array<string | null | undefined>;
+    // 2b: the worker that just freed itself, preferred for the next task.
+    preferUserId?: string | null;
     via: string;
   },
 ) {
@@ -208,6 +219,7 @@ export async function assignOpenEpicTasks(
       epicId: args.epicId,
       projectId: args.projectId,
       excludeUserIds: [...(args.excludeUserIds ?? []), task.actingManagerId],
+      preferUserId: args.preferUserId,
     });
     if (!worker) continue;
 

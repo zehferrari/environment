@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { MessageTimestamp } from "@/components/message-avatar";
 import GitDiffPanel from "@/components/git-diff-panel";
+import CommitChatPopup from "@/components/commit-chat-popup";
+import { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import type { TaskGitChangesResult, TaskGitFileDiffResult } from "@/lib/tasks/git-changes";
 
 function changeLabel(status: string) {
@@ -20,6 +22,11 @@ export default function TaskChangesPanel({
   scopeLabel = "task",
   baseHref,
   selectedDiff,
+  projectSlug,
+  taskId,
+  epicId,
+  aiTargets = [],
+  defaultAiTarget = "",
 }: {
   changes: TaskGitChangesResult;
   branchName: string | null;
@@ -28,6 +35,11 @@ export default function TaskChangesPanel({
   scopeLabel?: string;
   baseHref: string;
   selectedDiff: TaskGitFileDiffResult | null;
+  projectSlug: string;
+  taskId?: string;
+  epicId?: string;
+  aiTargets?: AvatarComboboxOption[];
+  defaultAiTarget?: string;
 }) {
   const fileHref = (commitHash: string, path: string) => {
     const params = new URLSearchParams({ tab: "changes", commit: commitHash, file: path });
@@ -87,6 +99,18 @@ export default function TaskChangesPanel({
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2 text-caption text-text-muted">
+                  {aiTargets.length > 0 ? (
+                    <CommitChatPopup
+                      projectSlug={projectSlug}
+                      taskId={taskId}
+                      epicId={epicId}
+                      commitPrefix={commitPrefix}
+                      commitShortHash={commit.shortHash}
+                      commitSubject={commit.subject}
+                      aiTargets={aiTargets}
+                      defaultAiTarget={defaultAiTarget}
+                    />
+                  ) : null}
                   <span className="font-mono text-accent">{commit.shortHash}</span>
                   <span>{commit.authorName}</span>
                   <MessageTimestamp value={commit.authoredAt} />

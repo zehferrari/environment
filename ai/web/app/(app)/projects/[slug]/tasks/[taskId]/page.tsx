@@ -219,6 +219,7 @@ async function updateTask(formData: FormData) {
           slug: true,
           onlyReportersCanApproveActionPlans: true,
           onlyReportersCanApprovePullRequests: true,
+          deploymentProductionBranch: true,
         },
       },
       epic: { select: { id: true, title: true, status: true, actingManagerId: true } },
@@ -2462,6 +2463,9 @@ export default async function TaskDetailPage({
                     mode="task"
                     title={task.title}
                     deploymentStatus={task.deploymentStatus}
+                    branchName={taskBranchName}
+                    commitPrefix={taskCommitPrefix}
+                    productionBranch={task.project.deploymentProductionBranch}
                     rows={deploymentPullRequests}
                     canAct={(row) => canShowDeploymentAction({
                       provider: row.provider,
@@ -2485,6 +2489,10 @@ export default async function TaskDetailPage({
                   commitPrefixes={taskChangeCommitPrefixes}
                   baseHref={`/projects/${slug}/tasks/${task.id}`}
                   selectedDiff={selectedDiff}
+                  projectSlug={slug}
+                  taskId={task.id}
+                  aiTargets={aiTargetOptions}
+                  defaultAiTarget={defaultAiTarget}
                 />
               </TabPanel> : null}
             </div>

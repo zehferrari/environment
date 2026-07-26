@@ -4,7 +4,8 @@ import { db } from "@/lib/db";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { COLUMN_IDS } from "../columns";
 import { actorDisplayName, MessageAvatar, type MessageActor } from "@/components/message-avatar";
-import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
+import { type AvatarComboboxOption } from "@/components/avatar-combobox";
+import TaskFilters from "./task-filters";
 import { formatGridDate } from "@/lib/date-format";
 import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 import { accessibleProjectWhere, accessibleTaskWhere, requireViewer } from "@/lib/auth/permissions";
@@ -341,78 +342,18 @@ export default async function ProjectTasksPage({
         </div>
       </header>
 
-      <form
-        id="taskFilters"
-        className={`grid gap-3 rounded-card border border-line bg-panel p-3 text-body ${viewer.isOwner ? "md:grid-cols-3 xl:grid-cols-[repeat(6,minmax(0,1fr))_auto]" : "md:grid-cols-2 xl:grid-cols-[repeat(3,minmax(0,1fr))_auto]"}`}
-      >
-        <FilterSelect label="View" name="view" value={view}>
-          <option value="all">All</option>
-          <option value="board">Board</option>
-          <option value="archive">Archive</option>
-        </FilterSelect>
-        {viewer.isOwner ? <FilterField label="Reporter">
-          <AvatarCombobox
-            formId="taskFilters"
-            name="reporterId"
-            multiple
-            defaultValues={reporterIds}
-            options={principalFilterOptions}
-            emptyLabel="All reporters"
-            ariaLabel="Reporter filter"
-          />
-        </FilterField> : null}
-        {viewer.isOwner ? <FilterField label="Assignee">
-          <AvatarCombobox
-            formId="taskFilters"
-            name="assigneeId"
-            multiple
-            defaultValues={assigneeIds}
-            options={principalFilterOptions}
-            emptyLabel="All assignees"
-            ariaLabel="Assignee filter"
-          />
-        </FilterField> : null}
-        {viewer.isOwner ? <FilterField label="Reviewer">
-          <AvatarCombobox
-            formId="taskFilters"
-            name="reviewerId"
-            multiple
-            defaultValues={reviewerIds}
-            options={principalFilterOptions}
-            emptyLabel="All reviewers"
-            ariaLabel="Reviewer filter"
-          />
-        </FilterField> : null}
-        <FilterSelect label="Status" name="status" value={status}>
-          <option value="">All statuses</option>
-          {COLUMN_IDS.map((column) => (
-            <option key={column} value={column}>
-              {column}
-            </option>
-          ))}
-        </FilterSelect>
-        <FilterSelect label="Rows" name="pageSize" value={pageSize}>
-          {PAGE_SIZES.map((size) => (
-            <option key={size} value={size}>
-              {size === "all" ? "All" : size}
-            </option>
-          ))}
-        </FilterSelect>
-        <div className="flex items-end gap-2">
-          <button
-            type="submit"
-            className="h-9 rounded-lg bg-accent px-3 text-caption font-semibold text-bg hover:opacity-90"
-          >
-            Apply
-          </button>
-          <Link
-            href={`/projects/${slug}/tasks?view=${view}`}
-            className="grid h-9 place-items-center rounded-lg border border-line px-3 text-caption font-semibold text-text-muted hover:text-text"
-          >
-            Clear
-          </Link>
-        </div>
-      </form>
+      <TaskFilters
+        slug={slug}
+        isOwner={viewer.isOwner}
+        view={view}
+        reporterIds={reporterIds}
+        assigneeIds={assigneeIds}
+        reviewerIds={reviewerIds}
+        status={status}
+        pageSize={pageSize}
+        statusOptions={COLUMN_IDS}
+        options={principalFilterOptions}
+      />
 
       {tasks.length === 0 ? (
         <p className="rounded-card border border-dashed border-line p-6 text-center text-body text-text-muted">
@@ -530,44 +471,6 @@ function DeploymentIndicator({ status }: { status: string }) {
     >
       {icon}
     </span>
-  );
-}
-
-function FilterSelect({
-  label,
-  name,
-  value,
-  children,
-}: {
-  label: string;
-  name: string;
-  value: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-nano font-semibold uppercase tracking-wider text-text-muted">
-        {label}
-      </span>
-      <select
-        name={name}
-        defaultValue={value}
-        className="h-9 w-full rounded-lg border border-line bg-bg px-2 text-caption outline-none focus:border-accent"
-      >
-        {children}
-      </select>
-    </label>
-  );
-}
-
-function FilterField({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="block">
-      <span className="mb-1 block text-nano font-semibold uppercase tracking-wider text-text-muted">
-        {label}
-      </span>
-      {children}
-    </div>
   );
 }
 
