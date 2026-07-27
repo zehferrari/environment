@@ -16,6 +16,7 @@ export default function AvatarStatus({
   className = "",
   title,
   unread = false,
+  pulse,
   children,
 }: {
   status?: AvatarStatusTone | string | null;
@@ -24,12 +25,17 @@ export default function AvatarStatus({
   className?: string;
   title?: string;
   unread?: boolean;
+  /** Explicit pulse override. When omitted the pulse follows `status === "busy"`;
+   *  callers that scope the pulse to a context (e.g. a board card pulsing only on
+   *  the task an agent is actively working) pass it directly. */
+  pulse?: boolean;
   children: ReactNode;
 }) {
   const tone = avatarStatusTone(status);
+  const showPulse = pulse ?? tone.pulse;
   return (
     <span className={`relative inline-grid shrink-0 ${sizeClass}`} title={title}>
-      {tone.pulse ? (
+      {showPulse ? (
         <span
           className={`pointer-events-none absolute -inset-1 animate-ping ${roundedClass} bg-accent opacity-30`}
           aria-hidden="true"

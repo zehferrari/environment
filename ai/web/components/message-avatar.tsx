@@ -90,6 +90,7 @@ export function MessageAvatar({
   actor,
   size = "md",
   busy = false,
+  pulse,
   title,
 }: {
   actor: MessageActor;
@@ -97,6 +98,10 @@ export function MessageAvatar({
   // (see the Avatar primitive).
   size?: "xs" | "sm" | "md" | "lg";
   busy?: boolean;
+  // Scope the pulse to a context (board cards pass a task-scoped value so an
+  // agent only pulses on the task it is actively working). Omitted elsewhere,
+  // where the pulse follows the agent's live busy status.
+  pulse?: boolean;
   // Optional tooltip override (e.g. "Built by X"); defaults to the actor name.
   title?: string;
 }) {
@@ -170,6 +175,7 @@ export function MessageAvatar({
         roundedClass="rounded-full"
         title={tooltip}
         initialStatus={busy ? "busy" : undefined}
+        pulse={pulse}
       >
         {inner}
       </AgentAvatar>

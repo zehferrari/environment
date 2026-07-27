@@ -33,6 +33,7 @@ import {
   MessageAvatar,
   type MessageActor,
 } from "@/components/message-avatar";
+import { useAgentPresenceMap } from "@/components/agent-presence-provider";
 import { formatGridDate } from "@/lib/date-format";
 import { bulkBinTasks } from "@/lib/bin/actions";
 import ConfirmPopup from "@/components/confirm-popup";
@@ -2026,6 +2027,8 @@ function BoardCardBody({
   dragListeners: Record<string, unknown> | undefined;
 }) {
   const actor = boardActorForTask(task);
+  const presence = useAgentPresenceMap();
+  const avatarPulse = boardAvatarPulse(task, actor, presence);
   // Done is the only column that credits a reviewer, resolved through the
   // same chain the task detail uses: task reviewer, then the epic's acting
   // manager, then the reporter.
@@ -2134,7 +2137,7 @@ function BoardCardBody({
             {/* On a Done card the builder shifts a quarter-width left so the
                 larger reviewer badge on its bottom-right corner still reads. */}
             <span className={reviewer ? "-translate-x-1/4" : ""}>
-              <BoardAvatar actor={actor} busy={task.activeWorking} emptyLabel="Unassigned" />
+              <BoardAvatar actor={actor} busy={task.activeWorking} pulse={avatarPulse} emptyLabel="Unassigned" />
             </span>
             {reviewer ? (
               // Extra nudge (left 5px, down 10px) tucks the reviewer toward the
@@ -2220,11 +2223,13 @@ function BoardCardBody({
 function BoardAvatar({
   actor,
   busy = false,
+  pulse,
   emptyLabel,
   size = "lg",
 }: {
   actor: BoardActor | null;
   busy?: boolean;
+  pulse?: boolean;
   emptyLabel: string;
   size?: "lg" | "sm" | "xs";
 }) {
@@ -2238,7 +2243,7 @@ function BoardAvatar({
   return (
     <span className="group/avatar relative inline-flex">
       {actor ? (
-        <MessageAvatar actor={actor} size={size} busy={busy} title="" />
+        <MessageAvatar actor={actor} size={size} busy={busy} pulse={pulse} title="" />
       ) : (
         <span
           aria-label={emptyLabel}
@@ -2327,6 +2332,8 @@ function WorkflowFocusCard({
 }) {
   const router = useRouter();
   const actor = boardActorForTask(task);
+  const presence = useAgentPresenceMap();
+  const avatarPulse = boardAvatarPulse(task, actor, presence);
 
   return (
     <button
@@ -2342,7 +2349,7 @@ function WorkflowFocusCard({
           {task.status === "Done" ? (
             <BoardReporterMarker task={task} />
           ) : actor ? (
-            <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} />
+            <MessageAvatar actor={actor} size="sm" busy={task.activeWorking} pulse={avatarPulse} />
           ) : (
             <span className="text-caption text-text-muted">unassigned</span>
           )}
@@ -2553,7 +2560,7 @@ function canShowTaskDeploymentIndicator(task: Task) {
 }
 
 function BoardReporterMarker({ task }: { task: Task }) {
-  return task.reporter ? <MessageAvatar actor={task.reporter} size="sm" /> : null;
+  return task.reporter ? <MessageAvatar actor={task.reporter} size="sm" pulse={false} /> : null;
 }
 
 function TrashIcon() {
@@ -2578,7 +2585,7 @@ function PersonCell({
   return (
     <span className="flex min-w-0 items-center gap-2 text-caption text-text-muted">
       {actor ? (
-        <MessageAvatar actor={actor} size="sm" />
+        <MessageAvatar actor={actor} size="sm" pulse={false} />
       ) : (
         <span className="truncate">{emptyLabel}</span>
       )}
@@ -2598,6 +2605,23 @@ function boardActorForTask(task: Task): BoardActor | null {
   // avatar slot on the card, so it must not also win the primary slot.
   if (task.status === "Done") return task.assignee ?? task.reporter;
   return task.reporter ?? task.assignee ?? task.reviewer ?? task.manager;
+}
+
+// Live, task-scoped pulse for a board card: the shown identity
+// (boardActorForTask) pulses only while it is the agent actively working
+// (In Progress → assignee) or reviewing (Review → reviewer) THIS task, driven by
+// the live presence store so a busy flip pulses without a board refresh. Falls
+// back to the server's render-time flag until the presence stream has reported.
+function boardAvatarPulse(
+  task: Task,
+  actor: BoardActor | null,
+  presence: Record<string, string>,
+): boolean {
+  if (task.status !== "In Progress" && task.status !== "Review") return false;
+  const slug = actor?.agent?.slug ?? null;
+  if (!slug) return false;
+  if (Object.keys(presence).length === 0) return task.activeWorking;
+  return presence[slug] === "busy";
 }
 
 function completedAtMs(task: Task) {
@@ -2715,7 +2739,7 @@ function DateActorCell({
       >
         {dateOnly ? formatGridDate(iso) : relativeUpdated(iso)}
       </time>
-      {actor ? <MessageAvatar actor={actor} size="sm" /> : null}
+      {actor ? <MessageAvatar actor={actor} size="sm" pulse={false} /> : null}
     </span>
   );
 }

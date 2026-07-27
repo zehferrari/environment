@@ -21,6 +21,7 @@ export default function AgentAvatar({
   unread = false,
   title,
   fallback,
+  pulse,
   children,
 }: {
   slug?: string | null;
@@ -34,6 +35,9 @@ export default function AgentAvatar({
   title?: string;
   /** Shown when there is no image; defaults to the name's first character. */
   fallback?: ReactNode;
+  /** Scope the pulse to a context (e.g. a board card pulsing only on the task an
+   *  agent is actively working). When omitted the pulse follows live busy. */
+  pulse?: boolean;
   /** Full custom inner content (e.g. an Avatar primitive); wins over src/fallback. */
   children?: ReactNode;
 }) {
@@ -47,6 +51,7 @@ export default function AgentAvatar({
       className={className}
       title={title}
       unread={unread}
+      pulse={pulse}
     >
       {children ??
         (src ? (

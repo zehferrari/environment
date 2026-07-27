@@ -370,9 +370,11 @@ export default function SidebarNav({
   const workspaceFilter = activeWorkspace ?? selectedWorkspace ?? soleWorkspace;
   const activeWorkspaceAgentSlugs = workspaceFilter?.agentSlugs ?? [];
   // The landing shows the whole fleet; elsewhere the list narrows to the
-  // workspace in context.
+  // workspace in context — but a busy agent is always kept visible (even if it
+  // belongs to another workspace) so a working agent never silently disappears
+  // from the sidebar.
   const visibleAgents = !onLanding && workspaceFilter && activeWorkspaceAgentSlugs.length > 0
-    ? agents.filter((agent) => activeWorkspaceAgentSlugs.includes(agent.slug))
+    ? agents.filter((agent) => activeWorkspaceAgentSlugs.includes(agent.slug) || statusOf(agent) === "busy")
     : agents;
   // Busy-first ordering tracks the live statuses; stable sort keeps the
   // server's alphabetical order within each status band.

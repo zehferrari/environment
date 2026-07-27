@@ -1454,7 +1454,11 @@ export default async function EpicDetailPage({
                 assigneeName: viewer.isOwner ? (serializeActor(t.assignee, actorVisibility)?.username ?? null) : null,
                 reviewerName: viewer.isOwner ? (serializeActor(t.actingManager, actorVisibility)?.username ?? null) : null,
                 updatedAt: t.updatedAt.toISOString(),
-                activeWorking: t.status === "In Progress" && Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug)),
+                activeWorking:
+                  (t.status === "In Progress" &&
+                    Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||
+                  (t.status === "Review" &&
+                    Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug))),
               }))}
               projectSlug={slug}
               reorderEpicTasks={reorderEpicTasks}
