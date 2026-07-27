@@ -940,7 +940,7 @@ function WorkspaceNavGroup({
   );
 
   const rowBody = !collapsed ? (
-    <span className="relative min-w-0 flex-1">
+    <span className="min-w-0 flex-1">
       <span className="flex min-w-0 items-center gap-2">
         <span className="min-w-0 flex-1 truncate font-medium">{workspace.name}</span>
         {isBucket ? (
@@ -949,11 +949,12 @@ function WorkspaceNavGroup({
           </span>
         ) : null}
       </span>
-      {/* Absolute so the meter never changes the row's height — otherwise it
-          appears on hover and the whole menu jitters. */}
+      {/* Kept in flow directly under the label (tight gap) but its height is
+          always reserved — only opacity toggles — so the label + meter read as
+          one vertically-centred pair and hovering never jitters the menu. */}
       {!isBucket ? (
         <span
-          className={`pointer-events-none absolute inset-x-0 top-full mt-0.5 transition-opacity ${active ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"}`}
+          className={`mt-0.5 block transition-opacity ${active ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"}`}
         >
           <ProgressMeter value={workspace.completion} label={workspace.name} />
         </span>
@@ -1030,11 +1031,12 @@ function WorkspaceNavGroup({
                 {project.name.slice(0, 1)}
               </span>
               {!collapsed ? (
-                <span className="relative min-w-0 flex-1">
+                <span className="min-w-0 flex-1">
                   <span className="block truncate font-medium">{project.name}</span>
-                  {/* Absolute so hovering never grows the row (no menu jitter). */}
+                  {/* In flow under the label with height always reserved (opacity
+                      toggles) — centred pair, no hover jitter. */}
                   <span
-                    className={`pointer-events-none absolute inset-x-0 top-full mt-0.5 transition-opacity ${projectActive ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"}`}
+                    className={`mt-0.5 block transition-opacity ${projectActive ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"}`}
                   >
                     <ProgressMeter value={project.completion} label={project.name} />
                   </span>
