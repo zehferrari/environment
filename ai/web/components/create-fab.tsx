@@ -489,7 +489,10 @@ export default function CreateFab({
       {/* Ultra-wide: render the trigger inside the header controls / task-pane slot. */}
       {slot
         ? createPortal(
-            <div className="hidden 4xl:block">{triggerButton("slot")}</div>,
+            // The pane's fab slot is pointer-events-none so it doesn't block the
+            // task content behind it; the trigger must re-enable pointer events
+            // or it renders but can't be clicked.
+            <div className="pointer-events-auto hidden 4xl:block">{triggerButton("slot")}</div>,
             slot,
           )
         : null}
