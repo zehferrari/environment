@@ -4,13 +4,10 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import {
   updateEpic,
-  createTaskInEpic,
-  createEpicComment,
   deleteEpicComment,
   restoreEpicComment,
 } from "@/lib/epics/actions";
 import {
-  uploadAttachment,
   deleteAttachment,
 } from "@/lib/attachments/actions";
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
@@ -22,7 +19,6 @@ import { createdAtMs } from "@/lib/tasks/cache";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import SortableTaskList from "@/components/sortable-task-list";
 import AttachmentList from "@/components/attachment-list";
-import AttachmentUploadFab from "@/components/attachment-upload-fab";
 import { renderFullMarkdown, extractMentions } from "@/lib/markdown";
 import { listAssignablePrincipals } from "@/lib/principals";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
@@ -30,7 +26,6 @@ import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
 import ChatRoom from "@/components/chat-room";
 import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activity-timeline";
 import TaskChangesPanel from "@/components/task-changes-panel";
-import CommentComposerFab from "@/components/comment-composer-fab";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
 import DeletedMessageDivider from "@/components/deleted-message-divider";
 import {
@@ -44,7 +39,6 @@ import PrivateToggle from "@/components/private-toggle";
 import { TabsProvider, TabsNav, TabPanel } from "@/components/task-tabs";
 import StickyViewportSurface from "@/components/sticky-viewport-surface";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
-import AddEpicTaskFab from "./add-epic-task-fab";
 import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
 import EpicTasksClient from "./epic-tasks-client";
 import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
@@ -1054,7 +1048,7 @@ export default async function EpicDetailPage({
     <div className="mx-auto w-full max-w-none">
       {/* ----- Main -------------------------------------------------- */}
       <div className="min-w-0">
-        <section className="space-y-section-gap rounded-panel border border-line bg-panel p-card-lg shadow-sm">
+        <section data-task-quick-add-context className="space-y-section-gap rounded-panel border border-line bg-panel p-card-lg shadow-sm">
           {/* Sticky one-row editor header: title, privacy, status and save stay visible. */}
           <div
             data-detail-header
@@ -1469,17 +1463,6 @@ export default async function EpicDetailPage({
             />
           )}
 
-          <AddEpicTaskFab
-            projectSlug={slug}
-            epicId={epic.id}
-            createTaskAction={createTaskInEpic}
-            canCreateTask={Boolean(viewer.id && (
-              viewer.kind !== "agent" ||
-              viewer.id === epic.actingManagerId
-            ))}
-            actingManagerName={serializeActor(epic.actingManager, actorVisibility)?.username ?? null}
-            canSetPrivate={viewer.isOwner}
-          />
                 </div>
               </TabPanel>
 
@@ -1497,13 +1480,6 @@ export default async function EpicDetailPage({
           attachments={visibleAttachments}
             projectSlug={slug}
             deleteAction={deleteAttachment}
-          />
-
-          <AttachmentUploadFab
-            projectSlug={slug}
-            epicId={epic.id}
-            maxLabel={formatBytes(attachmentMaxBytes())}
-            uploadAction={uploadAttachment}
           />
                 </div>
               </TabPanel>
@@ -1596,13 +1572,6 @@ export default async function EpicDetailPage({
                     ) : null}
                   </div>
 
-                  <CommentComposerFab
-                    projectSlug={slug}
-                    epicId={epic.id}
-                    action={createEpicComment}
-                    title="Epic Comment"
-                    placeholder="Write a comment — **markdown** supported"
-                  />
                 </div>
               </TabPanel>
 

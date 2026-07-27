@@ -22,13 +22,12 @@ import {
 import { notifyDispatch } from "@/lib/pm-dispatch";
 import { isEffectivelyPublicTask } from "@/lib/pm-events/visibility";
 import {
-  sendTaskCommentNotifications,
   sendTaskWorkflowNotification,
 } from "@/lib/agents/workflow/notifications/task";
 import {
   listAssignablePrincipals,
 } from "@/lib/principals";
-import { uploadAttachment, deleteAttachment } from "@/lib/attachments/actions";
+import { deleteAttachment } from "@/lib/attachments/actions";
 import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteTask } from "@/lib/bin/actions";
 import { archiveTask, unarchiveTask } from "@/lib/archive/actions";
@@ -74,7 +73,6 @@ import TaskCommentStreams from "@/components/task-comment-streams";
 import ChatRoom from "@/components/chat-room";
 import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activity-timeline";
 import TaskChangesPanel from "@/components/task-changes-panel";
-import TaskQuickAddFab from "@/components/task-quick-add-fab";
 import CloseTaskButton from "@/components/close-task-button";
 import TaskDirtyGuard from "@/components/task-dirty-guard";
 import ConfirmedDeleteButton from "@/components/confirmed-delete-button";
@@ -788,82 +786,6 @@ async function approveTaskActionPlan(formData: FormData) {
   revalidateTaskShell(task.id);
   revalidatePath(`/projects/${slug}/tasks/${task.id}`);
   revalidatePath(`/projects/${slug}`);
-}
-
-async function createComment(formData: FormData) {
-  "use server";
-  const viewer = await requireActor();
-  const actorId = viewer.id;
-  const taskId = String(formData.get("taskId") ?? "");
-  const slug = String(formData.get("projectSlug") ?? "");
-  const body = String(formData.get("body") ?? "").trim();
-  if (!taskId || !slug || !body) return;
-  if (body.length > 8000) return;
-  await requireTaskAccess(viewer, taskId);
-
-  const task = await db.task.findUnique({
-    where: { id: taskId },
-    select: {
-      id: true,
-      projectId: true,
-      title: true,
-      project: { select: { slug: true } },
-    },
-  });
-  if (!task || task.project.slug !== slug) return;
-  await requireProjectAccess(viewer, { id: task.projectId });
-
-  const users = await db.user.findMany({
-    select: {
-      id: true,
-      username: true,
-      kind: true,
-      status: true,
-      agent: { select: { slug: true, deactivatedAt: true, gatewayPort: true } },
-    },
-  });
-  const mentions = extractMentions(
-    body,
-    users.map((u) => ({ username: u.username })),
-  );
-  const actorUser = users.find((u) => u.id === actorId);
-
-  const comment = await db.$transaction(async (tx) => {
-    const comment = await tx.comment.create({
-      data: { taskId, userId: actorId, body },
-      select: { id: true, createdAt: true },
-    });
-    await tx.activityLog.create({
-      data: {
-        projectId: task.projectId,
-        taskId,
-        userId: actorId,
-        kind: "task.comment",
-        payload: mentions.length > 0 ? JSON.stringify({ mentions }) : null,
-      },
-    });
-    return comment;
-  });
-
-  revalidateTaskReplyScope(taskId, "comment");
-  if (!viewer.isOwner) return;
-
-  const actor = {
-    id: actorId,
-    kind: (users.find((u) => u.id === actorId)?.kind === "agent"
-      ? "agent"
-      : "human") as "human" | "agent",
-  };
-  await sendTaskCommentNotifications({
-    taskId: task.id,
-    commentId: comment.id,
-    body,
-    actor: {
-      id: actor.id,
-      username: actorUser?.username,
-      kind: actor.kind,
-    },
-  });
 }
 
 // Human-only comment removal (HOMELAB-41). Agents post comments but
@@ -2496,18 +2418,6 @@ export default async function TaskDetailPage({
                 />
               </TabPanel> : null}
             </div>
-            <TaskQuickAddFab
-              projectSlug={slug}
-              projectName={task.project.name}
-              taskId={task.id}
-              taskTitle={task.title}
-              epicId={task.epicId ?? undefined}
-              epicTitle={task.epic?.title ?? undefined}
-              canCreateProject={viewer.isOwner}
-              maxAttachmentLabel={formatBytes(attachmentMaxBytes())}
-              uploadAttachmentAction={uploadAttachment}
-              createCommentAction={createComment}
-            />
           </TabsProvider>
         </section>
       </div>

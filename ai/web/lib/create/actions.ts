@@ -7,12 +7,18 @@ import {
   assertAgentAssignmentAllowed,
   requireOwner,
   requireProjectAccess,
+  requireTaskAccess,
   requireViewer,
 } from "@/lib/auth/permissions";
 import { allocateWorkItemKey, normalizeWorkItemKeyPrefix } from "@/lib/work-items/keys";
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { randomBoardColor } from "@/lib/board-colors";
-import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
+import {
+  sendTaskCommentNotifications,
+  sendTaskWorkflowNotification,
+} from "@/lib/agents/workflow/notifications/task";
+import { extractMentions } from "@/lib/markdown";
+import { revalidateTaskReplyScope } from "@/lib/tasks/cache";
 import { createWorkspace } from "@/lib/workspaces/service";
 import { uploadAttachment } from "@/lib/attachments/actions";
 import type { CreateResult } from "@/lib/create/result";
@@ -237,4 +243,77 @@ export async function uploadAttachmentFromFab(formData: FormData): Promise<Creat
     message: fileCount === 1 ? "Attachment uploaded" : `${fileCount} attachments uploaded`,
     href,
   };
+}
+
+// ---- Comment ---------------------------------------------------------------
+// Faithful port of the task page's inline createComment (mentions + owner
+// notifications) and the epic createEpicComment, unified so the create FAB can
+// post a comment onto either a task or an epic and return a CreateResult. The
+// target (taskId XOR epicId) is chosen by the FAB's "On" picker.
+export async function postCommentFromFab(formData: FormData): Promise<CreateResult> {
+  const actor = await requireViewer();
+  const slug = String(formData.get("projectSlug") ?? "");
+  const taskId = String(formData.get("taskId") ?? "");
+  const epicId = String(formData.get("epicId") ?? "");
+  const body = String(formData.get("body") ?? "").trim();
+  if (!slug || (!taskId && !epicId)) return { ok: false, error: "Choose a task or epic to comment on." };
+  if (!body) return { ok: false, error: "Write a comment first." };
+  if (body.length > 8000) return { ok: false, error: "Comment must be 8000 characters or fewer." };
+
+  if (taskId) {
+    await requireTaskAccess(actor, taskId);
+    const task = await db.task.findUnique({
+      where: { id: taskId },
+      select: { id: true, projectId: true, title: true, project: { select: { slug: true } } },
+    });
+    if (!task || task.project.slug !== slug) return { ok: false, error: "Task not found." };
+    await requireProjectAccess(actor, { id: task.projectId });
+
+    const users = await db.user.findMany({ select: { id: true, username: true } });
+    const mentions = extractMentions(body, users.map((u) => ({ username: u.username })));
+
+    const comment = await db.$transaction(async (tx) => {
+      const created = await tx.comment.create({
+        data: { taskId, userId: actor.id, body },
+        select: { id: true },
+      });
+      await tx.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId,
+          userId: actor.id,
+          kind: "task.comment",
+          payload: mentions.length > 0 ? JSON.stringify({ mentions }) : null,
+        },
+      });
+      return created;
+    });
+
+    revalidateTaskReplyScope(taskId, "comment");
+    if (actor.isOwner) {
+      await sendTaskCommentNotifications({
+        taskId: task.id,
+        commentId: comment.id,
+        body,
+        actor: { id: actor.id, kind: actor.kind, username: actor.username },
+      });
+    }
+    return { ok: true, message: `Comment added to "${task.title}"`, href: `/projects/${slug}/tasks/${taskId}` };
+  }
+
+  const epic = await db.epic.findFirst({
+    where: accessibleEpicWhere(actor, { id: epicId }),
+    select: { id: true, projectId: true, title: true, deletedAt: true, project: { select: { slug: true } } },
+  });
+  if (!epic || epic.project.slug !== slug || epic.deletedAt) return { ok: false, error: "Epic not found." };
+  await requireProjectAccess(actor, { id: epic.projectId });
+
+  await db.$transaction([
+    db.comment.create({ data: { epicId, userId: actor.id, body } }),
+    db.activityLog.create({
+      data: { projectId: epic.projectId, userId: actor.id, kind: "epic.comment", payload: JSON.stringify({ epicId }) },
+    }),
+  ]);
+  revalidatePath(`/projects/${slug}/epics/${epicId}`);
+  return { ok: true, message: `Comment added to "${epic.title}"`, href: `/projects/${slug}/epics/${epicId}` };
 }
