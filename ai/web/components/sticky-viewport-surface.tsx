@@ -53,6 +53,19 @@ export default function StickyViewportSurface({
         const toolbarMargin = toolbar
           ? Number.parseFloat(window.getComputedStyle(toolbar).marginBottom) || 0
           : 0;
+
+        // Stick the detail header flush against the toolbar's *own* height (not
+        // height + margin, and not the hardcoded --page-sticky-top). Otherwise
+        // the header parks a margin's-worth below the toolbar and scrolled
+        // content shows through the transparent band between the two sticky
+        // bars. At 4xl the surface becomes its own sticky scroll viewport, so
+        // the class-based --detail-sticky-top governs there — don't override it.
+        if (toolbarRect && !window.matchMedia("(min-width: 160rem)").matches) {
+          surface.style.setProperty("--detail-sticky-top", `${Math.floor(toolbarRect.height)}px`);
+        } else {
+          surface.style.removeProperty("--detail-sticky-top");
+        }
+
         const stickyTop = boardStickyTop({
           toolbarHeight: toolbarRect?.height ?? 0,
           toolbarMargin,
@@ -102,6 +115,7 @@ export default function StickyViewportSurface({
       observer?.disconnect();
       surface.style.removeProperty("--detail-header-height");
       surface.style.removeProperty("--detail-tabs-height");
+      surface.style.removeProperty("--detail-sticky-top");
       if (layout?.style.getPropertyValue("--board-sticky-top") === lastBoardTop) {
         layout.style.removeProperty("--board-sticky-top");
       }
