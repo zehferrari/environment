@@ -35,6 +35,10 @@ STATIC_PATHS = [
 
 
 EXCLUDES = [
+    # OpenClaw creates and removes session locks while a turn is active. They
+    # are coordination state, not recovery data, and can disappear while tar
+    # walks the tree.
+    "*.lock",
     "*/node_modules/*",
     "*/.cache/*",
     "*/tmp/*",
@@ -100,10 +104,14 @@ def inventory(paths):
     return rows
 
 
-def prune_old():
-    backups = sorted(DEST.glob("openclaw-state-*.tar.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
+def prune_old(dest):
+    backups = sorted(dest.glob("openclaw-state-*.tar.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
     for old in backups[KEEP:]:
+        manifest = old.with_name(
+            old.name.removesuffix(".tar.gz") + ".manifest.json"
+        )
         old.unlink()
+        manifest.unlink(missing_ok=True)
 
 
 def main():
@@ -123,7 +131,9 @@ def main():
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     archive = dest / f"openclaw-state-{stamp}.tar.gz"
+    archive_tmp = dest / f".{archive.name}.part-{os.getpid()}"
     manifest = dest / f"openclaw-state-{stamp}.manifest.json"
+    manifest_tmp = dest / f".{manifest.name}.part-{os.getpid()}"
 
     existing = [str(p) for p in paths if p.exists() or p.is_symlink()]
     if not existing:
@@ -140,7 +150,7 @@ def main():
         "--create",
         "--gzip",
         "--file",
-        str(archive),
+        str(archive_tmp),
         "--ignore-failed-read",
         "--warning=no-file-changed",
     ]
@@ -149,18 +159,38 @@ def main():
     cmd.extend(["--absolute-names"])
     cmd.extend(existing)
 
-    proc = subprocess.run(cmd, text=True, capture_output=True)
-    if proc.returncode != 0:
-        if proc.stdout:
-            print(proc.stdout)
-        if proc.stderr:
-            print(proc.stderr, file=sys.stderr)
-        return proc.returncode
+    try:
+        proc = subprocess.run(cmd, text=True, capture_output=True)
+        if proc.returncode != 0:
+            if proc.stdout:
+                print(proc.stdout)
+            if proc.stderr:
+                print(proc.stderr, file=sys.stderr)
+            return proc.returncode
 
-    os.chmod(archive, 0o600)
-    manifest.write_text(json.dumps(inventory(paths), indent=2) + "\n", encoding="utf-8")
-    os.chmod(manifest, 0o600)
-    prune_old()
+        # Prepare both members before publishing either one. Publish the
+        # manifest first: even an uncatchable interruption between the two
+        # renames can then leave only a harmless orphan manifest, never an
+        # apparently usable archive without its recovery inventory.
+        os.chmod(archive_tmp, 0o600)
+        manifest_tmp.write_text(
+            json.dumps(inventory(paths), indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.chmod(manifest_tmp, 0o600)
+        os.replace(manifest_tmp, manifest)
+        try:
+            os.replace(archive_tmp, archive)
+        except BaseException:
+            manifest.unlink(missing_ok=True)
+            raise
+    finally:
+        # Never leave an apparently usable partial archive behind after a tar
+        # failure, interruption, or a concurrent runtime-state mutation.
+        archive_tmp.unlink(missing_ok=True)
+        manifest_tmp.unlink(missing_ok=True)
+
+    prune_old(dest)
 
     print(str(archive))
     return 0

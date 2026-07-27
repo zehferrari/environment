@@ -147,6 +147,7 @@ function loadRegistry() {
     const defaults = loadAgentDefaults();
     const rawAgents = raw.agents || [];
     raw.agents = rawAgents.map(a => deriveEffectiveAgent(a, defaults, rawAgents));
+    reconcileSessionTailsWithRegistry(raw);
     registry = raw;
   } catch (e) {
     log('ERROR loading registry', p, String(e));
@@ -327,13 +328,48 @@ function pickActiveSessionInfo(user) {
 // Map per-user tail-F process
 const tails = {};
 
-function startSessionTail(user) {
-  // Stop existing tail if any
-  if (tails[user]) {
-    try { tails[user].child.kill(); } catch (_e) {}
-    delete tails[user];
+function stopSessionTail(user) {
+  const current = tails[user];
+  if (!current) return;
+
+  // Invalidate the entry before killing the child. Its asynchronous `exit`
+  // event must not be mistaken for an unexpected failure and schedule a
+  // second tail after the replacement has already started.
+  delete tails[user];
+  if (current.restartTimer) {
+    current.cancelRestart(current.restartTimer);
+    current.restartTimer = null;
   }
-  const info = pickActiveSessionInfo(user);
+  try { current.child.kill(); } catch (_e) {}
+}
+
+function reconcileSessionTailsWithRegistry(nextRegistry) {
+  const enabledUsers = new Set(
+    (nextRegistry.agents || [])
+      .filter(agent => agent && agent.enabled && agent.user)
+      .map(agent => agent.user),
+  );
+
+  // A registry reload is also the lifecycle boundary for existing tails.
+  // Removed/disabled agents must not leave a child or delayed crash restart
+  // behind after their runtime has been deprovisioned.
+  for (const user of Object.keys(tails)) {
+    if (!enabledUsers.has(user)) stopSessionTail(user);
+  }
+}
+
+function startSessionTail(user, testDeps = {}) {
+  stopSessionTail(user);
+
+  // These defaults keep production behaviour unchanged while giving the
+  // standalone regression test deterministic child processes and timers.
+  const resolveSession = testDeps.resolveSession || pickActiveSessionInfo;
+  const spawnTail = testDeps.spawnTail || spawn;
+  const scheduleRestart = testDeps.scheduleRestart || setTimeout;
+  const cancelRestart = testDeps.cancelRestart || clearTimeout;
+  const restartDelayMs = testDeps.restartDelayMs === undefined ? 3000 : testDeps.restartDelayMs;
+
+  const info = resolveSession(user);
   if (!info) {
     log(`no session jsonl for ${user}`);
     return;
@@ -341,7 +377,16 @@ function startSessionTail(user) {
   const { file, format } = info;
   log(`tail -F ${file} (user=${user}, format=${format})`);
   // tail -n 0 -F to start from EOF and follow; restart on rotation
-  const child = spawn('tail', ['-n', '0', '-F', file], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawnTail('tail', ['-n', '0', '-F', file], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const entry = {
+    child,
+    file,
+    format,
+    restartTimer: null,
+    cancelRestart,
+  };
+  tails[user] = entry;
+
   let buf = '';
   child.stdout.on('data', chunk => {
     buf += chunk.toString('utf8');
@@ -355,10 +400,18 @@ function startSessionTail(user) {
   });
   child.stderr.on('data', d => log(`tail[${user}] stderr: ${d.toString().trim()}`));
   child.on('exit', code => {
+    // A rotation calls stopSessionTail(), which removes this exact entry
+    // before killing it. Ignore that stale child's exit. Also keep at most
+    // one restart pending if an unusual child implementation emits twice.
+    if (tails[user] !== entry || entry.restartTimer) return;
     log(`tail[${user}] exited with ${code} — will restart in 3s`);
-    setTimeout(() => startSessionTail(user), 3000);
+    entry.restartTimer = scheduleRestart(() => {
+      if (tails[user] !== entry) return;
+      entry.restartTimer = null;
+      delete tails[user];
+      startSessionTail(user, testDeps);
+    }, restartDelayMs);
   });
-  tails[user] = { child, file, format };
 }
 
 function summarizeContent(content) {
@@ -1559,4 +1612,17 @@ process.on('SIGTERM', () => { log('SIGTERM, shutting down'); process.exit(0); })
 process.on('SIGINT', () => { log('SIGINT, shutting down'); process.exit(0); });
 process.on('uncaughtException', e => log('uncaughtException', e && e.stack || e));
 
-main();
+// Keep the executable directly runnable by systemd while allowing the focused
+// lifecycle regression test to load it without starting the HTTP server.
+if (require.main === module) main();
+
+module.exports = {
+  __test: {
+    broadcast,
+    clients,
+    reconcileSessionTailsWithRegistry,
+    startSessionTail,
+    stopSessionTail,
+    tails,
+  },
+};

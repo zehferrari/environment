@@ -1,9 +1,12 @@
 [Unit]
-Description=Run AI monitor every 2 minutes (offset from openclaw-integrity)
+Description=Run AI monitor 2 minutes after the previous tick completes
 
 [Timer]
 OnBootSec=3min
-OnUnitActiveSec=2min
+# Base the next run on completion, not activation. A slow bounded triage can
+# exceed two minutes; OnUnitActiveSec would then re-trigger immediately and
+# turn an external-service slowdown into continuous monitor activity.
+OnUnitInactiveSec=2min
 AccuracySec=15s
 RandomizedDelaySec=20s
 Persistent=true

@@ -414,6 +414,33 @@ setup_picture_dir() {
   fi
 }
 
+install_user_manager_resource_delegation() {
+  # install_user_manager_resource_delegation <uid>
+  #
+  # openSUSE clears Delegate= for user@.service by default. Install the
+  # instance-specific exception before the user's lingering manager starts so
+  # gateway MemoryHigh/MemoryMax controls receive the memory controller.
+  [[ "${OPENCLAW_SANDBOX_TESTING:-}" == "true" ]] && return 0
+  local uid="$1"
+  local source="$REPO_ROOT/ai/host/systemd/user-manager/80-openclaw-resource-controllers.conf"
+  local directory="/etc/systemd/system/user@$uid.service.d"
+  local destination="$directory/80-openclaw-resource-controllers.conf"
+  [[ -r "$source" ]] || die "missing user-manager resource policy: $source"
+  install -d -o root -g root -m 0755 "$directory"
+  install -o root -g root -m 0644 "$source" "$destination"
+  systemctl daemon-reload
+}
+
+remove_user_manager_resource_delegation() {
+  # remove_user_manager_resource_delegation <uid>
+  [[ "${OPENCLAW_SANDBOX_TESTING:-}" == "true" ]] && return 0
+  local uid="$1"
+  local directory="/etc/systemd/system/user@$uid.service.d"
+  rm -f "$directory/80-openclaw-resource-controllers.conf"
+  rmdir "$directory" 2>/dev/null || true
+  systemctl daemon-reload
+}
+
 install_gateway() {
   # install_gateway <user> <uid> <port>
   [[ "${OPENCLAW_SANDBOX_TESTING:-}" == "true" ]] && return 0
@@ -579,7 +606,10 @@ EOF
       reconcile_gateway_hooks "$user"
 
       gateway_port=$(jq -r '.gatewayPort // empty' "$payload")
-      [[ -n "$gateway_port" ]] && install_gateway "$user" "$uid" "$gateway_port"
+      if [[ -n "$gateway_port" ]]; then
+        install_user_manager_resource_delegation "$uid"
+        install_gateway "$user" "$uid" "$gateway_port"
+      fi
       install_pm_channel "$user"
       # NOTE: the global install.sh reconcile is intentionally NOT run here — it
       # restarts pm.service, which would kill the web request awaiting this job
@@ -629,6 +659,7 @@ EOF
     provision_maildir "$user" "$payload"
 
     reconcile_gateway_hooks "$user"
+    install_user_manager_resource_delegation "$uid"
     install_pm_channel "$user"
 
     if [[ "$(jq -r '.reinstallGateway // false' "$payload")" == "true" ]]; then
@@ -660,6 +691,9 @@ EOF
     loginctl terminate-user "$user" || true
     pkill -u "$user" || true
     sleep 1
+    if [[ -n "${target_uid:-}" ]]; then
+      remove_user_manager_resource_delegation "$target_uid"
+    fi
     
     # 2. Delete Linux user and group
     if id "$user" >/dev/null 2>&1; then

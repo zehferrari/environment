@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ai-monitor: AI judgment layer for the x1 agent host.
+ai-monitor: AI judgment layer for an OpenClaw agent host.
 
 Wraps /usr/local/bin/openclaw-integrity-check, augments with resource sensors
 and a functional ollama probe, asks a locally-hosted ollama model to reason
@@ -249,6 +249,237 @@ def probe_resources(thresholds):
             breaches.append(f"battery={b['capacity']}%")
     res["threshold_breaches"] = breaches
     return res
+
+
+def _parse_systemd_properties(blob):
+    properties = {}
+    for line in (blob or "").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            properties[key] = value.strip()
+    return properties
+
+
+def _parse_byte_count(value):
+    value = str(value or "").strip()
+    if not value or value in {"[not set]", "infinity", "max"}:
+        return None
+    try:
+        parsed = int(value)
+        return parsed if parsed >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_cgroup_memory(control_group):
+    """Return memory.current for a systemd cgroup, when delegated."""
+    parts = Path(str(control_group or "")).parts
+    if not control_group or ".." in parts:
+        return None
+    path = Path("/sys/fs/cgroup") / str(control_group).lstrip("/")
+    try:
+        return _parse_byte_count((path / "memory.current").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _read_process_rss(pid):
+    """Best-effort fallback when cgroup memory accounting is unavailable."""
+    try:
+        pid = int(pid)
+        if pid <= 0:
+            return None
+        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, TypeError, ValueError, IndexError):
+        pass
+    return None
+
+
+def probe_gateway_memory(cfg, registry):
+    """Measure each enabled agent's OpenClaw gateway cgroup.
+
+    MemoryCurrent is preferred because it includes gateway child processes.
+    Direct cgroup and main-process RSS reads keep the probe useful on older
+    systemd releases, while identifying the less-complete fallback source.
+    """
+    check = cfg.get("gateway_memory_check", {}) or {}
+    enabled = check.get("enabled", True)
+    unit = check.get("unit", "openclaw-gateway.service")
+    warn_bytes = int(check.get("warn_mib", 3072)) * 1024 * 1024
+    critical_bytes = int(check.get("critical_mib", 3840)) * 1024 * 1024
+    critical_bytes = max(critical_bytes, warn_bytes)
+    result = {
+        "enabled": bool(enabled),
+        "unit": unit,
+        "warn_bytes": warn_bytes,
+        "critical_bytes": critical_bytes,
+        "agents": {},
+    }
+    if not enabled:
+        return result
+
+    for agent in (registry or {}).get("agents", []):
+        if not agent.get("enabled"):
+            continue
+        if unit not in (agent.get("services") or []):
+            continue
+        user = agent.get("user")
+        uid = agent.get("uid")
+        if not user or uid is None:
+            continue
+        argv = [
+            "sudo", "-n", "-u", user, "env",
+            f"XDG_RUNTIME_DIR=/run/user/{uid}",
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+            "systemctl", "--user", "show", unit,
+            "--property=ActiveState",
+            "--property=MemoryCurrent",
+            "--property=MemoryPeak",
+            "--property=ControlGroup",
+            "--property=MainPID",
+        ]
+        rc, out, err = run_cmd(argv, timeout=5)
+        properties = _parse_systemd_properties(out)
+        current = _parse_byte_count(properties.get("MemoryCurrent"))
+        source = "systemd"
+        if current is None:
+            current = _read_cgroup_memory(properties.get("ControlGroup"))
+            source = "cgroup"
+        if current is None:
+            current = _read_process_rss(properties.get("MainPID"))
+            source = "main-pid-rss"
+        peak = _parse_byte_count(properties.get("MemoryPeak"))
+
+        state = "unavailable"
+        if current is not None:
+            state = "critical" if current >= critical_bytes else (
+                "warn" if current >= warn_bytes else "ok"
+            )
+        result["agents"][user] = {
+            "uid": uid,
+            "active_state": properties.get("ActiveState", "unknown"),
+            "current_bytes": current,
+            "peak_bytes": peak,
+            "source": source if current is not None else None,
+            "state": state,
+            "rc": rc,
+            "error": (err or "").strip()[:160],
+        }
+    return result
+
+
+_UNSAFE_SHUTDOWN_QUERIES = (
+    (
+        "systemd-journald",
+        r"corrupted or uncleanly shut down|was not closed properly",
+        ["-u", "systemd-journald.service"],
+    ),
+    (
+        "kernel",
+        (
+            r"not cleanly unmounted|recovering journal"
+            r"|previous shutdown was not clean"
+        ),
+        ["-k"],
+    ),
+)
+
+
+def _current_boot_epoch():
+    try:
+        for line in Path("/proc/stat").read_text().splitlines():
+            if line.startswith("btime "):
+                return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _probe_pstore(path):
+    """Return crash-record filenames left by firmware/kernel pstore."""
+    evidence = []
+    try:
+        for entry in sorted(Path(path).iterdir()):
+            name = entry.name
+            if not (
+                name.startswith("dmesg-")
+                or name.startswith("console-ramoops")
+            ):
+                continue
+            if entry.is_file() and entry.stat().st_size > 0:
+                evidence.append(name)
+    except OSError:
+        pass
+    return evidence
+
+
+def probe_previous_shutdown(cfg):
+    """Report only affirmative local evidence of an unsafe previous shutdown.
+
+    Absence of a clean-shutdown marker is deliberately not enough to alert:
+    boot journals can be vacuumed or incomplete. Current-boot recovery
+    messages and pstore crash records are explicit evidence.
+    """
+    check = cfg.get("previous_shutdown_check", {}) or {}
+    enabled = check.get("enabled", True)
+    result = {
+        "enabled": bool(enabled),
+        "status": "disabled" if not enabled else "no-unsafe-evidence",
+        "evidence": [],
+    }
+    if not enabled:
+        return result
+
+    max_lines = max(1, int(check.get("max_evidence_lines", 20)))
+    boot_epoch = _current_boot_epoch()
+    journal_errors = []
+    if boot_epoch is None:
+        journal_errors.append("cannot resolve current boot start")
+    else:
+        # Recovery messages relevant to the preceding shutdown happen during
+        # early boot. Bounding the journal window avoids mistaking a later
+        # journald/application restart for host-shutdown evidence.
+        until = f"@{boot_epoch + 15 * 60}"
+        for source, pattern, source_args in _UNSAFE_SHUTDOWN_QUERIES:
+            rc, out, err = run_cmd(
+                [
+                    "journalctl", "-b", "0", "--no-pager", "-o", "cat",
+                    *source_args,
+                    "--case-sensitive=no", f"--grep={pattern}",
+                    "--until", until, "-n", str(max_lines),
+                ],
+                timeout=10,
+            )
+            if rc not in (0, 1):
+                journal_errors.append(
+                    f"{source}: {(err or out or f'journalctl rc={rc}')[:160]}"
+                )
+                continue
+            matcher = re.compile(pattern, re.IGNORECASE)
+            for line in (out or "").splitlines():
+                line = line.strip()
+                if line and matcher.search(line):
+                    result["evidence"].append({
+                        "source": f"boot-journal:{source}",
+                        "detail": line[:300],
+                    })
+    if journal_errors:
+        result["journal_error"] = "; ".join(journal_errors)[:300]
+
+    pstore_path = check.get("pstore_path", "/sys/fs/pstore")
+    for name in _probe_pstore(pstore_path):
+        result["evidence"].append({
+            "source": "pstore",
+            "detail": name[:180],
+        })
+
+    if result["evidence"]:
+        result["status"] = "unsafe-evidence"
+    elif "journal_error" in result:
+        result["status"] = "unknown"
+    return result
 
 
 def probe_integrity_check(cfg):
@@ -1999,6 +2230,25 @@ def build_compact_input(probes):
             "battery": r.get("battery"),
             "threshold_breaches": r.get("threshold_breaches", []),
         },
+        "gateway_memory": [
+            {
+                "agent": user,
+                "state": state.get("state"),
+                "current_bytes": state.get("current_bytes"),
+                "peak_bytes": state.get("peak_bytes"),
+                "source": state.get("source"),
+            }
+            for user, state in probes.get("gateway_memory", {}).get(
+                "agents", {}
+            ).items()
+            if state.get("state") != "ok"
+        ],
+        "previous_shutdown": {
+            "status": probes.get("previous_shutdown", {}).get("status"),
+            "evidence": probes.get("previous_shutdown", {}).get(
+                "evidence", []
+            )[:5],
+        },
         "system_units": {
             u: s.get("is_active") for u, s in probes.get("system_units", {}).items()
         },
@@ -2119,6 +2369,57 @@ def deterministic_issues(probes):
             "severity": "warn",
             "reason": f"breach: {breach}",
             "suggested_action": "observe",
+        })
+    gateway_memory = probes.get("gateway_memory", {})
+    warn_bytes = gateway_memory.get("warn_bytes", 3 * 1024 ** 3)
+    critical_bytes = gateway_memory.get("critical_bytes", warn_bytes)
+    for user, state in gateway_memory.get("agents", {}).items():
+        current = state.get("current_bytes")
+        memory_state = state.get("state")
+        if memory_state in ("warn", "critical") and current is not None:
+            current_gib = current / 1024 ** 3
+            threshold = (
+                critical_bytes if memory_state == "critical" else warn_bytes
+            )
+            out.append({
+                "unit": f"{user}/openclaw-gateway.service",
+                "kind": "gateway-memory-high",
+                "severity": "crit" if memory_state == "critical" else "warn",
+                "reason": (
+                    f"gateway memory is {current_gib:.2f} GiB "
+                    f"(threshold {threshold / 1024 ** 3:.2f} GiB; "
+                    f"source={state.get('source') or 'unknown'})"
+                ),
+                "suggested_action": "investigate",
+            })
+        elif (
+            memory_state == "unavailable"
+            and state.get("active_state") == "active"
+            and state.get("rc") == 0
+        ):
+            out.append({
+                "unit": f"{user}/openclaw-gateway.service",
+                "kind": "gateway-memory-unavailable",
+                "severity": "warn",
+                "reason": (
+                    "gateway is active but MemoryCurrent, cgroup "
+                    "memory.current, and main-process RSS are unavailable"
+                ),
+                "suggested_action": "investigate",
+            })
+    previous_shutdown = probes.get("previous_shutdown", {})
+    if previous_shutdown.get("status") == "unsafe-evidence":
+        evidence = previous_shutdown.get("evidence", [])
+        first = evidence[0] if evidence else {}
+        out.append({
+            "unit": "host:previous-shutdown",
+            "kind": "previous-shutdown-unclean",
+            "severity": "warn",
+            "reason": (
+                f"{first.get('source', 'local evidence')}: "
+                f"{first.get('detail', 'unsafe shutdown evidence found')}"
+            )[:420],
+            "suggested_action": "investigate",
         })
     integ = probes.get("integrity_check", {})
     if integ.get("exit_code") is None:
@@ -3361,7 +3662,10 @@ def format_alerts_message(issues):
     """Build a single Telegram message for all new-alert issues in this tick."""
     head_icon = SEVERITY_ICON.get(_worst_severity(issues), "⚪")
     n = len(issues)
-    header = f"{head_icon} x1 — {n} issue{'s' if n != 1 else ''}"
+    header = (
+        f"{head_icon} {socket.gethostname()} — "
+        f"{n} issue{'s' if n != 1 else ''}"
+    )
     blocks = []
     for issue in issues:
         sev_icon = SEVERITY_ICON.get(issue.get("severity"), "⚪")
@@ -3376,7 +3680,7 @@ def format_alerts_message(issues):
 def format_resolved_message(issues):
     """Build a single Telegram message for all resolved issues in this tick."""
     n = len(issues)
-    header = f"✅ x1 — {n} resolved"
+    header = f"✅ {socket.gethostname()} — {n} resolved"
     lines = [
         f"{issue.get('unit','?')} — {issue.get('kind','?')}" for issue in issues
     ]
@@ -4350,11 +4654,13 @@ def gather_probes(cfg):
 
     probes = {
         "ts": int(time.time()),
-        "host": "x1",
+        "host": socket.gethostname(),
         "integrity_check": probe_integrity_check(cfg),
         "integrity_journal": probe_journal_integrity(cfg),
         "ollama_probe": probe_ollama(cfg),
         "resources": probe_resources(cfg["resources"]["thresholds"]),
+        "gateway_memory": probe_gateway_memory(cfg, registry),
+        "previous_shutdown": probe_previous_shutdown(cfg),
         "system_units": {
             u: probe_systemd_system(u) for u in cfg["watch"]["system_units"]
         },
@@ -4450,6 +4756,16 @@ def main():
             "mem_used_pct": probes["resources"].get("mem_used_pct"),
             "temp_max_c": probes["resources"].get("temp_max_c"),
             "threshold_breaches": probes["resources"].get("threshold_breaches", []),
+            "gateway_memory_high": [
+                user
+                for user, state in probes.get("gateway_memory", {}).get(
+                    "agents", {}
+                ).items()
+                if state.get("state") in ("warn", "critical")
+            ],
+            "previous_shutdown": probes.get(
+                "previous_shutdown", {}
+            ).get("status"),
             "pending_email_tasks": len(
                 probes.get("pending_email_tasks", {}).get("pending", [])
             ),

@@ -28,6 +28,7 @@ Every Markdown doc in the tree, grouped by folder. Agent-facing files (copied in
 | [`ai/README.md`](./ai/README.md) | thinkpad host doc: identity, disk, network, power, web/DB stack, Hyprland, OpenClaw architecture, Gmail automation, Ollama, monitoring/recovery, dashboard, yoga510 duplication guide. |
 | [`ai/THINKPAD.md`](./ai/THINKPAD.md) | thinkpad OpenClaw agents: runtime layout, agent lifecycle management, Gmail/Google watchers, models/providers, Jira/webhooks, services, validation, monitor-agent replication runbook. |
 | [`ai/CHANGELOG.md`](./ai/CHANGELOG.md) | Historical change notes for the thinkpad stack (dated 2026-05-08 → 2026-05-20). Frozen as-of each date. |
+| [`ai/host/README.md`](./ai/host/README.md) | Repo-managed thinkpad OS configuration: power policy, memory/PSI safeguards, temporary-file retention, nginx log rotation, and Tumbleweed updates. |
 
 ### `ai/openclaw/` — shared agent operating rules + skills
 

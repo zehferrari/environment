@@ -8,7 +8,7 @@ units are host-portable; deploy via `../install.sh`.
 |---|---|---|---|
 | `agent-dashboard.service` | simple | Node server on `127.0.0.1:3013` serving `/agents.html` + `/agents/events` SSE + `/agents/registry.json` | Yes |
 | `ai-monitor.service` | oneshot | AI judgment layer over `openclaw-integrity-check` — triages incidents, wakes/restarts agents, sends Telegram alerts via the monitor agent | Yes |
-| `ai-monitor.timer` | timer | Runs the AI monitor every 2 min (offset from integrity) | Yes |
+| `ai-monitor.timer` | timer | Runs the AI monitor 2 min after the previous tick completes | Yes |
 | `openclaw-integrity.service` | oneshot | Runs `openclaw-integrity-check` (validates registry, services, listeners, Gmail watches) | Yes |
 | `openclaw-integrity.timer` | timer | Runs the integrity check every 2 min | Yes |
 | `openclaw-backup.service` | oneshot | Daily root-only backup of small critical OpenClaw state to `/var/backups/openclaw` | Yes |
@@ -36,3 +36,9 @@ Cleaner separation: OpenClaw is the per-agent runtime gateway. Everything
 in this `systemd/` directory is host-level orchestration that ai-monitor
 and the dashboard rely on. Shipping these in the shared knowledge repo
 keeps them in lockstep with the bin/ scripts they depend on.
+
+`ai-monitor.service` has a twelve-minute outer timeout because one bounded tick
+can include external probes, every configured AI fallback timeout, a
+180-second monitor-agent decision window, and recovery confirmation. The timer
+uses `OnUnitInactiveSec`, so a slow tick cannot create overlapping or
+immediate back-to-back monitor runs.

@@ -22,6 +22,18 @@ the entry-point overview.
   the agent's `role` plus enabled `integrations` (e.g. `openclaw-gateway`,
   `openclaw-gmail-listener`, `openclaw-webhook-receiver`,
   `openclaw-mail-listener`). Per-agent `services` in `agents.json` adds extras.
+- **Per-agent gateway memory** from systemd's `MemoryCurrent` cgroup
+  accounting. `gateway_memory_check` defaults to a warning at 3072 MiB and a
+  critical issue at 3840 MiB, before the observed V8 out-of-memory range.
+  `memory.current` and main-process RSS are bounded fallbacks when systemd
+  cannot return the property. An active gateway with no usable accounting
+  raises `gateway-memory-unavailable` instead of silently leaving a blind
+  spot.
+- **Unsafe previous shutdown evidence** from the current boot journal's
+  explicit recovery/unclean-close messages and kernel/firmware pstore crash
+  records. `previous-shutdown-unclean` is emitted only for affirmative local
+  evidence. A missing clean-shutdown marker alone never alerts because journal
+  retention can make that inference unreliable.
 - **Listeners** declared under `listeners` in `agents.json`.
 - **Agent doc drift**. `probe_agent_symlinks` checks every enabled agent's
   `~/.openclaw/openclaw.json` resolves to

@@ -1,0 +1,19 @@
+[Unit]
+Description=Tumbleweed rolling update (zypper dup)
+After=network-online.target
+Wants=network-online.target
+ConditionACPower=true
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/zypper --non-interactive --gpg-auto-import-keys ref
+ExecStart=/usr/bin/zypper --non-interactive dup --auto-agree-with-licenses --replacefiles --download in-advance
+Nice=10
+IOSchedulingClass=idle
+# Never hard-kill RPM while it may be committing a rolling upgrade. Network
+# and repository failures remain bounded by zypper's own request handling; an
+# operator may inspect/cancel a genuinely wedged transaction deliberately.
+TimeoutStartSec=infinity
+# zypper uses these informational success codes when a reboot or service
+# restart is required after an otherwise successful transaction.
+SuccessExitStatus=0 102 103

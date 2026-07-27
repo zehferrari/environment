@@ -30,6 +30,17 @@
       "rootfs_used_pct": 90
     }
   },
+  "gateway_memory_check": {
+    "enabled": true,
+    "unit": "openclaw-gateway.service",
+    "warn_mib": 3072,
+    "critical_mib": 3840
+  },
+  "previous_shutdown_check": {
+    "enabled": true,
+    "max_evidence_lines": 20,
+    "pstore_path": "/sys/fs/pstore"
+  },
   "stalled_tasks_check": {
     "enabled": true,
     "jira_host": "example.atlassian.net",

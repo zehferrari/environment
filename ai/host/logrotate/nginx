@@ -1,0 +1,19 @@
+/var/log/nginx/*.log {
+    # nginx.conf runs workers as zeh:code-agents and the log directory is
+    # owned by zeh. The package default nginx:nginx identity cannot traverse
+    # the directory and makes the daily logrotate service fail.
+    su zeh zeh
+    compress
+    dateext
+    maxage 365
+    rotate 99
+    size 4096k
+    missingok
+    notifempty
+    delaycompress
+    sharedscripts
+    lastaction
+      # Reopen through the root nginx master after all matching logs rotate.
+      [ -f /run/nginx.pid ] && /usr/sbin/nginx -s reopen
+    endscript
+}
