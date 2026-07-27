@@ -954,7 +954,7 @@ function WorkspaceNavGroup({
           one vertically-centred pair and hovering never jitters the menu. */}
       {!isBucket ? (
         <span
-          className={`mt-0.5 block transition-opacity ${active ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"}`}
+          className={`-mt-1 block transition-opacity ${active ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"}`}
         >
           <ProgressMeter value={workspace.completion} label={workspace.name} />
         </span>
@@ -1036,7 +1036,7 @@ function WorkspaceNavGroup({
                   {/* In flow under the label with height always reserved (opacity
                       toggles) — centred pair, no hover jitter. */}
                   <span
-                    className={`mt-0.5 block transition-opacity ${projectActive ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"}`}
+                    className={`-mt-1 block transition-opacity ${projectActive ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"}`}
                   >
                     <ProgressMeter value={project.completion} label={project.name} />
                   </span>
