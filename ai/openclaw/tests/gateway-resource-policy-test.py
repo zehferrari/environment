@@ -32,6 +32,8 @@ def main() -> None:
     assert "ENABLED_AGENT_TSV" in host_installer
     assert "runuser -u zeh -- test -w /var/log/nginx" in host_installer
     assert "openclaw-backup.service" in host_installer
+    assert "reconcile_gateway_config_links" in host_installer
+    assert "refusing to replace divergent home gateway config" in host_installer
 
     update_service = (HOST / "systemd/zypper-dup.service").read_text()
     assert "TimeoutStartSec=infinity" in update_service

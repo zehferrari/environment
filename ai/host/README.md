@@ -33,7 +33,9 @@ ai/host/install.sh --dry-run
 The installer enables `tlp.service`, applies its policy immediately, enables
 the zypper timer without starting an upgrade, validates the nginx logrotate
 stanza in debug mode, enables redacted OpenClaw pre-OOM snapshots in every
-active agent config, and clears the old failed state for the repaired units.
+active agent config, reconciles each identical home config back to its
+canonical symlink, and clears the old failed state for the repaired units.
+It fails rather than overwrite a divergent home config.
 It deliberately does not start `zypper-dup.service`, force a log rotation,
 delete old `/tmp` entries immediately, restart agent user managers/gateways,
 or reboot the host.

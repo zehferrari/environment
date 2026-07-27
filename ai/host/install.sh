@@ -290,6 +290,38 @@ apply_gateway_diagnostics_policy() {
     done <<< "$ENABLED_AGENT_TSV"
 }
 
+reconcile_gateway_config_links() {
+    local user uid config home_config temporary resolved
+    while IFS=$'\t' read -r user uid; do
+        [ -n "$user" ] || continue
+        config="/srv/agents/openclaw/$user/openclaw.json"
+        home_config="/home/$user/.openclaw/openclaw.json"
+        resolved="$(readlink -f "$home_config" 2>/dev/null || true)"
+        if [ -L "$home_config" ] && [ "$resolved" = "$config" ]; then
+            printf 'gateway config link already canonical for %s\n' "$user"
+            continue
+        fi
+        if [ -e "$home_config" ] && ! cmp -s "$config" "$home_config"; then
+            printf 'error: refusing to replace divergent home gateway config for %s: %s\n' \
+                "$user" "$home_config" >&2
+            return 1
+        fi
+        if [ "$DRY_RUN" -eq 1 ]; then
+            printf 'would link %s -> %s\n' "$home_config" "$config"
+            continue
+        fi
+
+        # Publish a same-directory symlink atomically so a running config
+        # watcher never observes a missing path. A regular file is replaced
+        # only after the byte-for-byte comparison above succeeds.
+        temporary="${home_config}.tmp.$$"
+        ln -s "$config" "$temporary"
+        chown -h "$user:$user" "$temporary"
+        mv -Tf "$temporary" "$home_config"
+        printf 'linked canonical gateway config for %s\n' "$user"
+    done <<< "$ENABLED_AGENT_TSV"
+}
+
 reload_gateway_user_managers() {
     local user uid
     while IFS=$'\t' read -r user uid; do
@@ -310,6 +342,7 @@ reload_gateway_user_managers() {
 }
 
 apply_gateway_diagnostics_policy
+reconcile_gateway_config_links
 
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '%s\n' \
