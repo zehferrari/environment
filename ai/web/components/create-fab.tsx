@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import AvatarCombobox, { type AvatarComboboxOption } from "@/components/avatar-combobox";
 import AsyncCombobox, { type AsyncOption } from "@/components/async-combobox";
 import PrivateToggle from "@/components/private-toggle";
@@ -65,6 +65,10 @@ export default function CreateFab({
   const router = useRouter();
   const toast = useToast();
   const route = useRouteContext();
+  const pathname = usePathname();
+  // The create FAB is a work-item affordance; agent chat pages are not board
+  // context, so it stays out of the way there.
+  const onAgentsRoute = pathname?.startsWith("/agents") ?? false;
 
   const [menuOpen, setMenuOpen] = useState(false);
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
@@ -175,11 +179,14 @@ export default function CreateFab({
       }
       return false;
     };
-    if (clickComposer()) return;
+    // Always activate the Action Plan tab first (harmless if already active) so
+    // the popup opens with its tab in view; then open the composer once its
+    // trigger mounts.
     const tabButton = Array.from(document.querySelectorAll<HTMLElement>('[role="tab"]')).find((b) =>
       (b.textContent ?? "").trim().toLowerCase().startsWith("action plan"),
     );
     tabButton?.click();
+    if (clickComposer()) return;
     let tries = 0;
     const timer = window.setInterval(() => {
       if (clickComposer() || ++tries > 40) window.clearInterval(timer);
@@ -467,6 +474,8 @@ export default function CreateFab({
           document.body,
         )
       : null;
+
+  if (onAgentsRoute) return null;
 
   return (
     <>

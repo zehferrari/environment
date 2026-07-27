@@ -84,6 +84,9 @@ type BoardStats = {
 
 // Bottom-right lock badge (ENV-62): shown when the task is blocked by another
 // task that isn't Done yet. The key is the blocker's work-item id.
+// Which colour cues a board card paints, derived from the board's chrome scope.
+type CardScope = "home" | "workspace" | "project";
+
 function BlockedBadge({ task }: { task: Task }) {
   if (!task.blockedByKey) return null;
   return (
@@ -215,6 +218,15 @@ const boardCollisionDetection: CollisionDetection = (args) => {
 };
 
 export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
+  // Card colour context drives which identity cues a card shows:
+  //   home  (aggregate landing) → workspace left border + project background
+  //   workspace board           → project background only (no border)
+  //   project board             → plain (no border, no background)
+  const cardScope: CardScope = chromeSlotScope?.startsWith("project-")
+    ? "project"
+    : chromeSlotScope?.startsWith("workspace-")
+      ? "workspace"
+      : "home";
   const router = useRouter();
   const resolvedBoardStreamUrl = boardStreamUrl === undefined ? `/api/projects/${projectSlug}/board/stream` : boardStreamUrl;
   const preferenceKey = resolvedBoardStreamUrl ?? projectSlug;
@@ -968,12 +980,6 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         onConfirm={performSingleDelete}
         onCancel={() => setDeleteTarget(null)}
       />
-      {chromeTargets.summary
-        ? createPortal(
-            <BoardSummary boardStats={boardStats} placement="header" />,
-            chromeTargets.summary,
-          )
-        : null}
       {chromeTargets.controls
         ? createPortal(
             <BoardControls
@@ -1018,8 +1024,9 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         </div>
       ) : null}
 
-      <section className="mb-5 overflow-hidden rounded-2xl border border-line bg-panel/95 shadow-[var(--shadow-sm)] backdrop-blur 4xl:hidden">
-        <BoardSummary boardStats={boardStats} placement="stacked" />
+      {/* Below xl the controls live in this stacked card; at xl+ they portal
+          into the top toolbar (with the tabs) and this card is hidden. */}
+      <section className="mb-5 overflow-hidden rounded-2xl border border-line bg-panel/95 shadow-[var(--shadow-sm)] backdrop-blur xl:hidden">
         <BoardControls
           placement="stacked"
           searchQuery={searchQuery}
@@ -1055,7 +1062,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
       </section>
 
       {filtersActive ? (
-        <div className="mb-4 hidden rounded-xl border border-line bg-panel/90 shadow-[var(--shadow-xs)] 4xl:block">
+        <div className="mb-4 hidden rounded-xl border border-line bg-panel/90 shadow-[var(--shadow-xs)] xl:block">
           <BoardFilterStatus
             visibleCount={visibleItems.length}
             totalCount={items.length}
@@ -1151,6 +1158,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
                 task={task}
                 projectSlug={projectSlug}
                 now={now}
+                cardScope={cardScope}
               />
             ))}
           </div>
@@ -1192,6 +1200,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
                       onSelectionChange={toggleTaskSelection}
                       onMove={(task, status) => crossColumnMove(task, status)}
                       nextStatus={nextMobileStatus(t.status, columns)}
+                      cardScope={cardScope}
                     />
                   ))}
                 </SortableContext>
@@ -1206,7 +1215,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         >
           {/* Backlog before board in ultra-wide */}
           {backlogVisible && !focusActive ? (
-            <section className="mb-5 hidden rounded-2xl border border-line bg-panel/95 shadow-[var(--shadow-sm)] backdrop-blur md:block 4xl:mb-3 4xl:max-h-[35%] 4xl:overflow-hidden">
+            <section className="mb-5 hidden rounded-2xl border border-line bg-panel/95 shadow-[var(--shadow-sm)] backdrop-blur 4xl:block 4xl:mb-3 4xl:max-h-[35%] 4xl:overflow-hidden">
               <div className="flex items-center justify-between gap-3 border-b border-line bg-panel-soft/70 px-4 py-2">
                 <h2 className="flex items-center gap-2 text-subheading font-semibold text-text">
                   Backlog
@@ -1255,6 +1264,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
                         selected={selectedIds.has(task.id)}
                         onSelectionChange={toggleTaskSelection}
                         now={now}
+                        cardScope={cardScope}
                       />
                     ))}
                   </SortableContext>
@@ -1299,6 +1309,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
                           now={now}
                           selected={selectedIds.has(t.id)}
                           onSelectionChange={toggleTaskSelection}
+                          cardScope={cardScope}
                         />
                       ))}
                     </SortableContext>
@@ -1368,6 +1379,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
                         selected={selectedIds.has(task.id)}
                         onSelectionChange={toggleTaskSelection}
                         now={now}
+                        cardScope={cardScope}
                       />
                     ))}
                   </SortableContext>
@@ -1830,6 +1842,7 @@ function MobileTaskCard({
   onSelectionChange,
   onMove,
   nextStatus,
+  cardScope,
 }: {
   task: Task;
   projectSlug: string;
@@ -1839,6 +1852,7 @@ function MobileTaskCard({
   onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
   onMove: (task: Task, status: string) => void;
   nextStatus: string;
+  cardScope: CardScope;
 }) {
   const router = useRouter();
   const {
@@ -1865,8 +1879,8 @@ function MobileTaskCard({
         <div
           data-board-card-mobile
           data-selected={selected ? "true" : "false"}
-          className={`${taskCardClass(task, false, false)} min-w-[calc(100%-9rem)] touch-auto`}
-          style={taskCardStyle(task)}
+          className={`${taskCardClass(task, false, false, cardScope)} min-w-[calc(100%-9rem)] touch-auto`}
+          style={taskCardStyle(task, cardScope)}
           title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
         >
           <BoardCardBody
@@ -2250,6 +2264,7 @@ function TaskCard({
   now,
   selected,
   onSelectionChange,
+  cardScope,
 }: {
   task: Task;
   projectSlug: string;
@@ -2257,6 +2272,7 @@ function TaskCard({
   now: number | null;
   selected: boolean;
   onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
+  cardScope: CardScope;
 }) {
   const {
     attributes,
@@ -2279,9 +2295,9 @@ function TaskCard({
         transform: CSS.Transform.toString(transform),
         transition,
         "--board-status": boardStatusColor(task.status),
-        ...taskCardStyle(task),
+        ...taskCardStyle(task, cardScope),
       } as React.CSSProperties}
-      className={taskCardClass(task, isDragging, false)}
+      className={taskCardClass(task, isDragging, false, cardScope)}
       title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
     >
       <BoardCardBody
@@ -2302,10 +2318,12 @@ function WorkflowFocusCard({
   task,
   projectSlug,
   now,
+  cardScope,
 }: {
   task: Task;
   projectSlug: string;
   now: number | null;
+  cardScope: CardScope;
 }) {
   const router = useRouter();
   const actor = boardActorForTask(task);
@@ -2314,8 +2332,8 @@ function WorkflowFocusCard({
     <button
       type="button"
       onClick={() => router.push(taskHref(task, projectSlug))}
-      style={{ "--board-status": boardStatusColor(task.status), ...taskCardStyle(task) } as React.CSSProperties}
-      className={`${taskCardClass(task)} min-w-0 text-left`}
+      style={{ "--board-status": boardStatusColor(task.status), ...taskCardStyle(task, cardScope) } as React.CSSProperties}
+      className={`${taskCardClass(task, false, true, cardScope)} min-w-0 text-left`}
       title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
     >
       <HumanReviewSrLabel task={task} />
@@ -2391,6 +2409,7 @@ function BacklogRow({
   selected,
   onSelectionChange,
   now,
+  cardScope,
 }: {
   task: Task;
   projectSlug: string;
@@ -2398,6 +2417,7 @@ function BacklogRow({
   selected: boolean;
   onSelectionChange: (taskId: string, selected: boolean, shiftKey?: boolean) => void;
   now: number | null;
+  cardScope: CardScope;
 }) {
   const {
     attributes,
@@ -2413,7 +2433,9 @@ function BacklogRow({
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
-        ...(task.workspaceColor ? { borderLeftWidth: "3px", borderLeftColor: task.workspaceColor } : {}),
+        ...(cardScope === "home" && task.workspaceColor
+          ? { borderLeftWidth: "3px", borderLeftColor: task.workspaceColor }
+          : {}),
       }}
       className={`grid min-h-11 min-w-[68rem] grid-cols-[minmax(14rem,1fr)_10rem_10rem_10rem_7rem_6rem_6rem_2rem] items-center gap-3 border-b border-line px-3 py-2.5 text-body transition last:border-b-0 hover:bg-panel-soft ${
         isPlanningAssigned(task) ? "bg-yellow-300/[0.08]" : statusRowClass(task.status)
@@ -2717,25 +2739,25 @@ function statusRowClass(status: string) {
   return "";
 }
 
-function taskCardClass(task: Task, isDragging = false, interactive = true) {
-  const borderStyle = task.workspaceColor
-    ? `border-l-[3px] border-l-[${task.workspaceColor}]`
-    : "";
-  const bgStyle = task.projectColor
-    ? `background-color: ${task.projectColor}18`
-    : "";
+function taskCardClass(task: Task, isDragging = false, interactive = true, scope: CardScope = "home") {
+  // The workspace-hue left rail is only meaningful on the aggregate home board;
+  // the colour itself is applied inline (taskCardStyle) — this just reserves the
+  // 3px width so it isn't painted with the default border colour elsewhere.
+  const borderStyle = scope === "home" && task.workspaceColor ? "border-l-[3px]" : "";
   return `board-task-card group/card relative block w-full select-none overflow-hidden rounded-xl border p-3 text-body transition-[transform,border-color,box-shadow,background-color,opacity] active:scale-[0.99] ${interactive ? "cursor-pointer" : ""} ${isPlanningAssigned(task) ? "board-task-card--planning" : ""} ${
     waitingOnHumanReview(task) ? "board-task-card--human-review" : ""
   } ${isDragging ? "opacity-30" : "hover:-translate-y-px"} ${borderStyle}`;
 }
 
-function taskCardStyle(task: Task): React.CSSProperties {
+function taskCardStyle(task: Task, scope: CardScope = "home"): React.CSSProperties {
   const style: React.CSSProperties = {};
-  if (task.workspaceColor) {
+  // Workspace left border: home board only. Project background tint: home and
+  // per-workspace boards; a project board's own cards stay plain white.
+  if (scope === "home" && task.workspaceColor) {
     style.borderLeftWidth = "3px";
     style.borderLeftColor = task.workspaceColor;
   }
-  if (task.projectColor) {
+  if (scope !== "project" && task.projectColor) {
     style.backgroundColor = `${task.projectColor}18`;
   }
   return style;

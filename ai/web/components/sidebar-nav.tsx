@@ -940,7 +940,7 @@ function WorkspaceNavGroup({
   );
 
   const rowBody = !collapsed ? (
-    <span className="min-w-0 flex-1">
+    <span className="relative min-w-0 flex-1">
       <span className="flex min-w-0 items-center gap-2">
         <span className="min-w-0 flex-1 truncate font-medium">{workspace.name}</span>
         {isBucket ? (
@@ -949,8 +949,12 @@ function WorkspaceNavGroup({
           </span>
         ) : null}
       </span>
+      {/* Absolute so the meter never changes the row's height — otherwise it
+          appears on hover and the whole menu jitters. */}
       {!isBucket ? (
-        <span className={`mt-1 block ${active ? "" : "hidden group-hover/row:block"}`}>
+        <span
+          className={`pointer-events-none absolute inset-x-0 top-full mt-0.5 transition-opacity ${active ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"}`}
+        >
           <ProgressMeter value={workspace.completion} label={workspace.name} />
         </span>
       ) : null}
@@ -1026,9 +1030,12 @@ function WorkspaceNavGroup({
                 {project.name.slice(0, 1)}
               </span>
               {!collapsed ? (
-                <span className="min-w-0 flex-1">
+                <span className="relative min-w-0 flex-1">
                   <span className="block truncate font-medium">{project.name}</span>
-                  <span className={`mt-1 block ${projectActive ? "" : "hidden group-hover/row:block"}`}>
+                  {/* Absolute so hovering never grows the row (no menu jitter). */}
+                  <span
+                    className={`pointer-events-none absolute inset-x-0 top-full mt-0.5 transition-opacity ${projectActive ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"}`}
+                  >
                     <ProgressMeter value={project.completion} label={project.name} />
                   </span>
                 </span>

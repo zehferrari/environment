@@ -1647,7 +1647,7 @@ const Composer = React.memo(function Composer(props: any) {
         <>
           {composerOpen ? (
             <div
-              className="fixed inset-0 z-50 bg-black/10 p-card backdrop-blur-[1px] max-sm:p-0"
+              className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 p-3 backdrop-blur-[1px] sm:items-center sm:p-6"
               onClick={closeComposer}
             >
               <form
@@ -1655,7 +1655,7 @@ const Composer = React.memo(function Composer(props: any) {
                 action={actionHandler}
                 encType="multipart/form-data"
                 onClick={(event) => event.stopPropagation()}
-                className="absolute bottom-24 right-4 w-[calc(100vw-2rem)] max-w-2xl space-y-3 overflow-y-auto rounded-panel border border-line bg-panel p-card shadow-2xl sm:right-6 max-sm:bottom-[calc(env(safe-area-inset-bottom)+0.75rem)] max-sm:left-3 max-sm:right-3 max-sm:max-h-[calc(100dvh-env(safe-area-inset-bottom)-1.5rem)] max-sm:w-auto"
+                className="max-h-[85vh] w-full max-w-2xl space-y-3 overflow-y-auto rounded-panel border border-line bg-panel p-card shadow-2xl"
               >
                 <input type="hidden" name="projectSlug" value={projectSlug} />
                 {taskId ? (

@@ -57,11 +57,15 @@ export default function AsyncCombobox({
   const requestSeq = useRef(0);
   const listboxId = useId();
 
-  // Reset to the provided initial option whenever the reset signal changes.
+  // Reset to the provided initial option whenever the reset signal changes OR
+  // the initial option itself resolves. Route-derived pre-selections (epic /
+  // attach / comment target) arrive asynchronously *after* mount, so keying only
+  // off resetSignal left those pickers blank; tracking initialOption?.value lets
+  // a late-resolving pre-selection populate the control.
   useEffect(() => {
     setSelected(initialOption);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resetSignal]);
+  }, [resetSignal, initialOption?.value]);
 
   const runSearch = useCallback(
     async (q: string) => {

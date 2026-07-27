@@ -70,7 +70,7 @@ export default function WorkspaceTabs({
           <div
             id={boardChromeSlotId(boardChromeScope, "controls")}
             data-board-controls-slot
-            className="ml-auto hidden min-w-0 flex-1 items-center justify-end 4xl:flex"
+            className="ml-auto hidden min-w-0 flex-1 items-center justify-end xl:flex"
           />
         </div>
       </div>
