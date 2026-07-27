@@ -1511,7 +1511,7 @@ function BoardControls({
         ? "flex min-w-0 flex-1 items-center justify-end gap-2"
         : "flex flex-col gap-3 border-t border-line bg-panel-soft/70 px-3 py-3 lg:flex-row lg:items-center lg:justify-between lg:px-4"}
     >
-      <div className={toolbar ? "relative w-[clamp(18rem,24vw,42rem)] shrink-0" : "relative block min-w-0 flex-1 lg:max-w-md"}>
+      <div className={toolbar ? "relative w-[clamp(6rem,8vw,8rem)] shrink-0" : "relative block min-w-0 flex-1 lg:max-w-md"}>
         <span className="pointer-events-none absolute inset-y-0 left-3 grid place-items-center text-text-dim">
           <SearchIcon />
         </span>
@@ -1547,7 +1547,7 @@ function BoardControls({
         <BoardToggle
           active={!doneVisible}
           onClick={onToggleDone}
-          label={doneVisible ? "Hide done cards" : "Done cards hidden"}
+          label={doneVisible ? "Hide Done" : "Done Hidden"}
           count={boardStats.done}
           icon={<EyeIcon crossed={!doneVisible} />}
         />
