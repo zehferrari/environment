@@ -92,10 +92,15 @@ These usually self-heal — **observe, don't act**, and prefer suppress unless t
 | `load-high` (1-min load / cores > 3) | Re-probe; transient compile bursts are normal | Telegram if sustained |
 | `temp-high` (CPU > 92 °C) | Re-probe — cooling usually catches up within a window | Telegram if still > 92 °C after two windows |
 | `rootfs-used-pct` > 90 | Don't auto-prune — surface to zeh on tier 1 | n/a |
+| `gateway-memory-high` | Re-probe `MemoryCurrent`; inspect the agent's payload-free memory-pressure snapshot if present. Do not restart a busy gateway merely to lower memory. | Telegram if still high; include current/peak memory and whether a diagnostic snapshot exists. |
+| `gateway-memory-unavailable` | Verify the per-agent `user@<uid>` manager delegates the memory controller and the gateway unit has `MemoryAccounting=yes`. Arrange an idle restart if policy was installed after the manager started. | Telegram if accounting remains unavailable. |
 
 ### Escalate immediately (skip tiers)
 
 - **Self-incidents** — anything affecting the monitor agent user (e.g. `karen` on thinkpad) or `ai-monitor` itself. ai-monitor's self-incident guard already routes these direct to Telegram; you should not see them in your queue.
+- **`previous-shutdown-unclean`** — preserve the journal/pstore evidence and
+  page zeh; do not delete crash records or infer a cause from the monitor
+  signal alone.
 - **Unknown kinds** without a playbook entry above — don't improvise; escalate with `actions_taken: []` and a `reason` naming the kind so zeh can add it to the playbook.
 - **Repeated escalations of the same kind** within an hour for the same unit even after a tier-3 telegram already went out — page zeh again only if a new symptom is visible. Otherwise add a comment to the prior decision instead of re-paging.
 

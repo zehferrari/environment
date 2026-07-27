@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly Tumbleweed rolling update
+
+[Timer]
+OnCalendar=Sun 03:30
+RandomizedDelaySec=30min
+Persistent=true
+Unit=zypper-dup.service
+
+[Install]
+WantedBy=timers.target

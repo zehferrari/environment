@@ -10,4 +10,8 @@ Nice=10
 StandardOutput=journal
 StandardError=journal
 SuccessExitStatus=0 1
-TimeoutStartSec=180
+# A full tick may include bounded external probes, a 180-second monitor-agent
+# decision window, and a recovery confirmation. Keep a hard ceiling above that
+# internal budget—including the configured fallback-model chain—so systemd
+# does not kill a healthy in-flight handoff.
+TimeoutStartSec=12min

@@ -880,6 +880,9 @@ else
     for u in agent-dashboard.service \
              pm.service \
              pm-consumer.service \
+             ai-monitor.timer \
+             openclaw-integrity.timer \
+             openclaw-backup.timer \
              openclaw-typing-keepalive.service \
              openclaw-monitor-sync.path \
              openclaw-monitor-sync.timer \

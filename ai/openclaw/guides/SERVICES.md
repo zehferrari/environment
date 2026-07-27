@@ -5,7 +5,7 @@ Use `/etc/openclaw/agents.json` for the machine-readable monitoring roster.
 ## System Timers
 
 - `openclaw-integrity.timer`: runs `/usr/local/bin/openclaw-integrity-check` every 2 minutes.
-- `ai-monitor.timer`: runs `/usr/local/bin/ai-monitor` every 2 minutes, offset from integrity. Checks service health, Jira stalls/queues, pending mentions, and Gmail-derived `~/tasks/current.md` items still marked `Status: QUEUED`.
+- `ai-monitor.timer`: runs `/usr/local/bin/ai-monitor` two minutes after the previous tick completes. Checks service health, per-agent gateway cgroup memory (warn 3 GiB / critical 3.75 GiB by default), affirmative evidence of an unsafe prior shutdown, Jira stalls/queues, pending mentions, and Gmail-derived `~/tasks/current.md` items still marked `Status: QUEUED`. Completion-based scheduling prevents a slow bounded monitor-agent handoff from causing overlapping or immediately repeated runs.
 - `openclaw-backup.timer`: runs `/usr/local/bin/openclaw-backup` daily at 04:20 with up to 20 minutes randomized delay for small critical OpenClaw state.
 - `zypper-dup.timer`: runs weekly Tumbleweed updates.
 
@@ -94,7 +94,7 @@ thinkpad uses systemd timers for active automation. Cron references in old migra
   `GET /health` → 200, `GET /hooks` → 405, unauthenticated
   `POST /hooks/wake` → 401, authenticated `POST /hooks/wake` → 200, and
   `HEAD /pm-channel/ingest` → 405.
-- `openclaw-typing-keepalive.service`: Telegram typing-indicator sidecar for the openclaw `claude-cli` provider (`/usr/local/bin/openclaw-typing-keepalive`). The cli-backend is non-streaming, so openclaw's built-in typing keepalive (60 s TTL refreshed by stream events) lapses mid-turn on long opus runs. This service polls every registered agent's `~/.openclaw/agents/main/sessions/sessions.json` and re-fires `sendChatAction("typing")` every 4 s for any telegram conversation key currently `status=running` on `modelProvider=claude-cli`. Auto-discovers agents from `/etc/openclaw/agents.json`; no per-agent install. Runs as root because each agent's `sessions.json` and `~/.config/openclaw/openclaw-secrets.env` (where `TELEGRAM_BOT_TOKEN` lives) are mode `0600` per-user. Agents on `ollama` / `openai-codex` / other providers are skipped — they emit native streaming events that drive the in-process typing pipeline correctly.
+- `openclaw-typing-keepalive.service`: Telegram typing-indicator sidecar for the openclaw `claude-cli` provider (`/usr/local/bin/openclaw-typing-keepalive`). The cli-backend is non-streaming, so openclaw's built-in typing keepalive (60 s TTL refreshed by stream events) lapses mid-turn on long opus runs. This service stats every registered agent's `~/.openclaw/agents/main/sessions/sessions.json` once per second but parses a file only when its inode/size/timestamps change. It keeps just the derived active Telegram chats in memory and re-fires `sendChatAction("typing")` from that cache every 4 s for conversations currently `status=running` on `modelProvider=claude-cli`. Auto-discovers agents from `/etc/openclaw/agents.json`; no per-agent install. Runs as root because each agent's `sessions.json` and `~/.config/openclaw/openclaw-secrets.env` (where `TELEGRAM_BOT_TOKEN` lives) are mode `0600` per-user. Agents on `ollama` / `openai-codex` / other providers are skipped — they emit native streaming events that drive the in-process typing pipeline correctly.
 - `gmail-watch-renew.timer` → `gmail-watch-renew.service`: daily (04:00 ±10 min) auto-renewal of every per-agent Gmail push watch. Runs `/usr/local/sbin/gmail-watch-renew-all`, which discovers `/home/*/.openclaw/workspace/google/watch-state.json`, reads the topic and labels recorded there, and re-runs the per-user `gmail-watch.js` as the affected agent. Gmail watches expire in 7 days; daily renewal stays well inside the window. Without this timer, `openclaw-integrity-check` raises `gmail-watch-expiring` at <24 h, which used to escalate to the monitor agent and then to Telegram for a known-recurring, deterministic issue.
 - `openclaw-monitor-sync.path` → `openclaw-monitor-sync.service`: watches every per-agent `~/.local/openclaw/monitor.json`; on change (within ~1 s), runs `/usr/local/sbin/openclaw-monitor-sync` which reconciles per-agent project resources — `enabled: true` resources get `systemctl --user enable --now`, `enabled: false` resources get `systemctl --user stop`. Companion `openclaw-monitor-sync.timer` runs every 5 min for drift correction. Triggered manually with `sudo /usr/local/sbin/openclaw-monitor-sync [<user>]`.
 
@@ -146,5 +146,11 @@ Per-agent project resources (services that come from a side project the agent ha
 - `openclaw-jira-receiver.service` — Jira webhook receiver (`integrations.monitor: true` & `integrations.jira: true` on coding agents)
 - `openclaw-bitbucket-receiver.service` — Bitbucket webhook receiver (`integrations.monitor: true` & `integrations.bitbucket: true` on coding agents)
 - `ai-monitor.service` / `ai-monitor.timer` are **system** units (not per-user); the monitoring agent is the Telegram persona used for monitor alerts.
+
+On `thinkpad`, every gateway also receives the host policy from `ai/host`:
+payload-free critical memory-pressure snapshots plus `MemoryHigh=6G`,
+`MemoryMax=8G`, `MemorySwapMax=2G`, and `TasksMax=1024`. The corresponding
+agent `user@<uid>.service` must delegate the `memory` controller; the lifecycle
+helper installs that instance-specific delegation for newly provisioned users.
 
 The monitoring agent does not run Gmail/Jira/Bitbucket task intake yet.

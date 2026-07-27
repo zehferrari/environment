@@ -24,21 +24,43 @@ without service changes.
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import time
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
 
 REGISTRY_PATH = "/etc/openclaw/agents.json"
 
-POLL_INTERVAL_S = 1.0      # how often we scan all agents' sessions.json
+POLL_INTERVAL_S = 1.0      # how often we stat all agents' sessions.json
 TYPING_INTERVAL_S = 4.0    # how often we refresh sendChatAction (Telegram typing lasts ~5s)
 HTTP_TIMEOUT_S = 8.0
+PARSE_ERROR_RETRY_S = 30.0
 
 TG_KEY_RE = re.compile(r"^agent:main:telegram:(direct|group):(-?\d+)$")
+UNSEEN = object()
+
+FileFingerprint = tuple[int, int, int, int, int]
+TelegramStatus = tuple[object, object]
+
+
+@dataclass
+class SessionFileCache:
+    """Small derived view of a sessions.json file.
+
+    sessions.json can be tens of megabytes, so retaining or reparsing the full
+    document on every one-second typing tick is needlessly expensive. Keep only
+    the Telegram fields this service needs and reparse when file metadata
+    changes.
+    """
+
+    fingerprint: FileFingerprint | None | object = UNSEEN
+    active_chats: tuple[tuple[str, str], ...] = ()
+    telegram_statuses: dict[str, TelegramStatus] = field(default_factory=dict)
+    parse_failed: bool = False
+    retry_after: float = 0.0
 
 
 def log(msg: str) -> None:
@@ -64,12 +86,19 @@ def load_bot_token(home: str) -> str | None:
     return None
 
 
-def load_sessions(home: str) -> dict | None:
-    sj = Path(home) / ".openclaw/agents/main/sessions/sessions.json"
+def file_fingerprint(path: Path) -> FileFingerprint | None:
+    """Return metadata that changes for in-place writes and atomic replaces."""
     try:
-        return json.loads(sj.read_text())
-    except (OSError, ValueError):
+        stat = path.stat()
+    except OSError:
         return None
+    return (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+    )
 
 
 def send_typing(token: str, chat_id: str) -> bool:
@@ -99,22 +128,103 @@ def collect_active_chats(sessions: dict) -> list[tuple[str, str]]:
     return out
 
 
-def main() -> int:
-    log("started; scanning registry every tick")
+def collect_telegram_statuses(sessions: dict) -> dict[str, TelegramStatus]:
+    """Return the status/provider fields used for transition logging."""
+    out: dict[str, TelegramStatus] = {}
+    for key, entry in sessions.items():
+        if not TG_KEY_RE.match(key) or not isinstance(entry, dict):
+            continue
+        out[key] = (entry.get("status"), entry.get("modelProvider"))
+    return out
 
-    # Per-agent state: user -> { token, last_typing_sent: {chat_id: ts}, last_status: {key: status} }
+
+def refresh_session_cache(
+    path: Path,
+    cache: SessionFileCache,
+    now: float,
+) -> bool:
+    """Refresh a cached Telegram view when sessions.json has changed.
+
+    A stable malformed file is retried slowly rather than reparsed every second.
+    If the file changes while it is being read, its result is discarded and the
+    next tick retries it.
+    """
+    fingerprint = file_fingerprint(path)
+    unchanged = fingerprint == cache.fingerprint
+    if unchanged and (not cache.parse_failed or now < cache.retry_after):
+        return False
+
+    if fingerprint is None:
+        changed = (
+            cache.fingerprint is not None
+            or bool(cache.active_chats)
+            or bool(cache.telegram_statuses)
+        )
+        cache.fingerprint = None
+        cache.active_chats = ()
+        cache.telegram_statuses = {}
+        cache.parse_failed = False
+        cache.retry_after = 0.0
+        return changed
+
+    try:
+        sessions = json.loads(path.read_text())
+        if not isinstance(sessions, dict):
+            raise ValueError("sessions.json root must be an object")
+    except (OSError, ValueError):
+        cache.fingerprint = fingerprint
+        cache.active_chats = ()
+        cache.telegram_statuses = {}
+        cache.parse_failed = True
+        cache.retry_after = now + PARSE_ERROR_RETRY_S
+        return True
+
+    # OpenClaw normally atomically replaces this file. Do not cache a snapshot
+    # read across a concurrent in-place write or rename.
+    if file_fingerprint(path) != fingerprint:
+        return False
+
+    cache.fingerprint = fingerprint
+    cache.active_chats = tuple(collect_active_chats(sessions))
+    cache.telegram_statuses = collect_telegram_statuses(sessions)
+    cache.parse_failed = False
+    cache.retry_after = 0.0
+    return True
+
+
+def typing_chats_due(
+    active: tuple[tuple[str, str], ...],
+    last_sent: dict[str, float],
+    now: float,
+) -> tuple[list[str], set[str]]:
+    """Return chats due for a refresh and the complete active chat set."""
+    active_chats = {chat for chat, _ in active}
+    due = [
+        chat
+        for chat in active_chats
+        if chat not in last_sent
+        or now - last_sent[chat] >= TYPING_INTERVAL_S
+    ]
+    return due, active_chats
+
+
+def main() -> int:
+    log("started; watching sessions metadata and refreshing typing every 4s")
+
+    # Per-agent state: token, a compact sessions.json view, and typing timers.
     state: dict[str, dict] = {}
-    registry_loaded_at = 0.0
     registry_reload_s = 30.0
+    registry_loaded_at = float("-inf")
     agents: list[dict] = []
 
     while True:
         # Refresh registry periodically (catches new agents / re-enabled ones)
-        now = time.time()
+        now = time.monotonic()
         if now - registry_loaded_at > registry_reload_s:
             agents = load_registry()
             registry_loaded_at = now
 
+        covered_users: set[str] = set()
         for agent in agents:
             # Every enabled agent is covered; Telegram enablement is checked
             # below. (A legacy top-level "monitor" field check used to sit
@@ -127,7 +237,16 @@ def main() -> int:
             tg = agent.get("telegram") or {}
             if not user or not home or not tg.get("enabled"):
                 continue
-            ag = state.setdefault(user, {"token": None, "last_typing_sent": {}, "last_status": {}})
+            covered_users.add(user)
+            ag = state.setdefault(
+                user,
+                {
+                    "token": None,
+                    "last_typing_sent": {},
+                    "last_status": {},
+                    "sessions": SessionFileCache(),
+                },
+            )
             if ag["token"] is None:
                 ag["token"] = load_bot_token(home)
                 if ag["token"]:
@@ -135,31 +254,43 @@ def main() -> int:
                 else:
                     # No token — leave entry, will retry next tick.
                     continue
-            sessions = load_sessions(home)
-            if sessions is None:
-                continue
-            # Log status transitions for telegram keys (noisy but useful in early days)
-            for key, entry in sessions.items():
-                m = TG_KEY_RE.match(key)
-                if not m or not isinstance(entry, dict):
-                    continue
-                status = entry.get("status")
-                prev = ag["last_status"].get(key)
-                if prev != status:
-                    log(f"{user}: {key} status {prev} -> {status} (provider={entry.get('modelProvider')})")
-                    ag["last_status"][key] = status
-            active = collect_active_chats(sessions)
-            active_chats = {chat for chat, _ in active}
+
+            cache: SessionFileCache = ag["sessions"]
+            sessions_path = (
+                Path(home) / ".openclaw/agents/main/sessions/sessions.json"
+            )
+            if refresh_session_cache(sessions_path, cache, now):
+                # Log status transitions only after a changed file is parsed.
+                for key, (status, provider) in cache.telegram_statuses.items():
+                    prev = ag["last_status"].get(key)
+                    if prev != status:
+                        log(
+                            f"{user}: {key} status {prev} -> {status} "
+                            f"(provider={provider})"
+                        )
+                        ag["last_status"][key] = status
+
+            due_chats, active_chats = typing_chats_due(
+                cache.active_chats,
+                ag["last_typing_sent"],
+                now,
+            )
             # Refresh typing for each active chat that's due
-            for chat_id, _key in active:
-                if now - ag["last_typing_sent"].get(chat_id, 0.0) >= TYPING_INTERVAL_S:
-                    ok = send_typing(ag["token"], chat_id)
-                    log(f"{user}: sendChatAction(typing) chat={chat_id} -> {'ok' if ok else 'FAIL'}")
-                    ag["last_typing_sent"][chat_id] = now
+            for chat_id in due_chats:
+                ok = send_typing(ag["token"], chat_id)
+                log(
+                    f"{user}: sendChatAction(typing) chat={chat_id} "
+                    f"-> {'ok' if ok else 'FAIL'}"
+                )
+                ag["last_typing_sent"][chat_id] = now
             # Forget chats no longer active so the next activation refires immediately
             for chat_id in list(ag["last_typing_sent"].keys()):
                 if chat_id not in active_chats:
                     ag["last_typing_sent"].pop(chat_id, None)
+
+        # Drop cached credentials/state for removed or disabled agents.
+        for user in state.keys() - covered_users:
+            state.pop(user, None)
 
         time.sleep(POLL_INTERVAL_S)
 

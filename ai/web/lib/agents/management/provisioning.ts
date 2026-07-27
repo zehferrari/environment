@@ -306,6 +306,13 @@ export function renderOpenClawJson(args: {
     auth: { profiles },
     models: { mode: "merge", providers },
     gateway: { mode: "local" },
+    diagnostics: {
+      // Preserve a payload-free stability bundle before a gateway reaches its
+      // V8 heap limit. The host has enough storage for the bounded snapshot,
+      // and without it an automatically restarted gateway loses the evidence
+      // needed to distinguish retained session state from a true leak.
+      memoryPressureSnapshot: true,
+    },
     agents: {
       defaults: {
         model: { primary: args.primary, fallbacks: args.fallbacks },

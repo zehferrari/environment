@@ -1,0 +1,4 @@
+# One option per line. ai/host/install.sh merges these into
+# /etc/kernel/cmdline and asks sdbootutil to refresh the default snapshot's
+# boot entries. Options take effect after the next reboot.
+psi=1

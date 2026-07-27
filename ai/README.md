@@ -65,25 +65,37 @@ Firewalld zone: `public`. Allowed services: `ssh`, `http`, `https`, `dhcpv6-clie
 
 ### Charge thresholds (TLP)
 
+Repo source: `ai/host/tlp/30-charge-thresholds.conf`, installed at
 `/etc/tlp.d/30-charge-thresholds.conf`:
 
 ```
 START_CHARGE_THRESH_BAT0=75
 STOP_CHARGE_THRESH_BAT0=80
 CPU_BOOST_ON_AC=1
-CPU_SCALING_GOVERNOR_ON_AC=schedutil
-CPU_SCALING_GOVERNOR_ON_BAT=schedutil
+CPU_BOOST_ON_BAT=0
+CPU_SCALING_GOVERNOR_ON_AC=powersave
+CPU_SCALING_GOVERNOR_ON_BAT=powersave
+CPU_ENERGY_PERF_POLICY_ON_AC=balance_performance
+CPU_ENERGY_PERF_POLICY_ON_BAT=balance_power
 PLATFORM_PROFILE_ON_AC=balanced
 PLATFORM_PROFILE_ON_BAT=low-power
 ```
 
 **Why 75/80**: a li-poly battery sitting permanently at 100% AC degrades fast. This range cycles in a narrow band that maximizes lifetime at the cost of capacity-as-UPS.
 
-Live values readable at `/sys/class/power_supply/BAT0/charge_control_{start,end}_threshold`. Verify with `sudo tlp-stat -b`.
+The Ryzen 7840U uses `amd-pstate-epp`, which exposes `performance` and
+`powersave` governors—not `schedutil`. `powersave` still boosts dynamically;
+the EPP setting controls how eagerly it boosts. `tlp.service` must be enabled
+so the policy is reapplied on boot.
+
+Live values are readable at
+`/sys/class/power_supply/BAT0/charge_control_{start,end}_threshold`. Verify with
+`sudo tlp-stat -s -p -b`.
 
 ### Thermal: DYTC (NOT thermald)
 
-`thermald` was installed but **disabled** — the ThinkPad's firmware DYTC (Dynamic Thermal Control) runs proactively from the EC and intel_pstate, and thermald correctly refuses to fight it (logs `Thermald can't run on this platform` because `/sys/devices/platform/thinkpad_acpi/dytc_lapmode` is present).
+`thermald` is **disabled**. The ThinkPad firmware/EC platform profile and
+`amd-pstate-epp` manage the Ryzen CPU's thermal and frequency policy.
 
 TLP's `PLATFORM_PROFILE_*` settings drive DYTC via the kernel's `platform_profile` interface.
 
@@ -127,11 +139,15 @@ To verify: `busctl get-property org.freedesktop.login1 /org/freedesktop/login1 o
 
 ## 7. Auto-Updates
 
-Custom systemd unit + timer in `/etc/systemd/system/`:
+Repo sources are under `ai/host/systemd/` and install into
+`/etc/systemd/system/`:
 
-- `zypper-dup.service` — runs `zypper ref` then `zypper --non-interactive --auto-agree-with-licenses dup --replacefiles --download-in-advance`.
+- `zypper-dup.service` — runs `zypper ref` then `zypper --non-interactive dup --auto-agree-with-licenses --replacefiles --download in-advance`. The license option is a `dup` option and must follow the command.
 - `zypper-dup.timer` — `OnCalendar=Sun 03:30`, `RandomizedDelaySec=30min`, `Persistent=true`.
 - `ConditionACPower=true` on the service — won't run if on battery.
+- The service does not impose a systemd start timeout, because hard-killing an
+  RPM transaction can leave a partial rolling upgrade. It treats zypper's
+  informational reboot/service-restart codes as successful.
 
 ```
 systemctl list-timers zypper-dup.timer
@@ -649,7 +665,7 @@ Local fallback model (added 2026-05-08):
 - Boot readiness checker: `/usr/local/bin/openclaw-boot-readiness`; intended after reboot or larger service changes.
 - OpenClaw state backup: `/usr/local/bin/openclaw-backup`, scheduled by `openclaw-backup.timer`.
 - AI monitor: `/usr/local/bin/ai-monitor`, using the monitoring agent (Telegram bot from `agents.json`) as a **triage + remediation layer** before alerts reach Telegram. Reads the agent watch list dynamically from the registry every tick (no script reload needed when registry changes).
-- Monitor triage flow: ai-monitor writes the incident to `/var/lib/ai-monitor/incidents/<id>.json`, wakes the monitoring agent via `openclaw system event`, and polls `/var/lib/ai-monitor/decisions/<id>.json` (5 min timeout). The monitoring agent re-probes live state, attempts a bounded fix if applicable (see `~/.openclaw/workspace/INCIDENT_HANDLING.md`), and writes `{decision: 'suppress'|'escalate', reason, actions_taken, telegram_sent}`. Telegram is sent only on `escalate`. If the monitoring agent times out / errors, ai-monitor falls back to a direct Telegram with a `monitor unavailable` tag; alerts are never lost. Self-incidents (issues affecting the monitor user or ai-monitor itself) skip the handoff and go direct.
+- Monitor triage flow: ai-monitor writes the incident to `/var/lib/ai-monitor/incidents/<id>.json`, wakes the monitoring agent via `openclaw system event`, and polls `/var/lib/ai-monitor/decisions/<id>.json` (3 min timeout). The monitoring agent re-probes live state, attempts a bounded fix if applicable (see `~/.openclaw/workspace/INCIDENT_HANDLING.md`), and writes `{decision: 'suppress'|'escalate', reason, actions_taken, telegram_sent}`. Telegram is sent only on `escalate`. If the monitoring agent times out / errors, ai-monitor falls back to a direct Telegram with a `monitor unavailable` tag; alerts are never lost. Self-incidents (issues affecting the monitor user or ai-monitor itself) skip the handoff and go direct.
 - Active monitored-agent registry: `/etc/openclaw/agents.json`.
 - Registry `capabilities` fields are the machine-readable authority model. Coding agents may code/comment/transition/send email; the monitoring agent may triage incidents, wake/restart agents, and send Telegram monitor alerts, but may not modify code, transition Jira, comment Jira, or send email until those capabilities are explicitly granted.
 - Stalled-task detection (two complementary kinds, evaluated in order; secondary only fires if primary doesn't):
@@ -664,7 +680,9 @@ Local fallback model (added 2026-05-08):
 - Agent dashboard: `https://dev.vixi.au/agents.html` (basic auth — same `admin` user as the per-agent vhosts, htpasswd at `/etc/nginx/.htpasswd`). Real-time per-agent activity, AI monitor status, monitoring agent decisions, system service health. SSE-driven, no refresh needed. See **§16 Agent Dashboard** subsection below for the architecture.
 - ThinkPad cron job `/etc/cron.d/openclaw-integrity` was preserved for reference only. thinkpad's active automation uses systemd timers, not cron.
 - On openSUSE, the active scheduler is `openclaw-integrity.timer` plus `openclaw-integrity.service`, running every 2 minutes.
-- `ai-monitor.timer` runs the AI judgment layer every 2 minutes, offset from the integrity check.
+- `ai-monitor.timer` starts the next AI judgment tick two minutes after the
+  previous tick finishes. This keeps slow, bounded monitor-agent handoffs from
+  turning into an immediate continuous loop.
 - `openclaw-backup.timer` runs a daily root-only backup of small critical OpenClaw state to `/var/backups/openclaw`, scheduled at 04:20 with up to 20 minutes randomized delay, and keeps the latest 14 archives.
 - Remediation state path: `/var/lib/openclaw/remediation-state.json`.
 - Remediation log path: `/var/log/openclaw-remediation.log`.
@@ -686,9 +704,19 @@ sudo -u karen XDG_RUNTIME_DIR=/run/user/1003 DBUS_SESSION_BUS_ADDRESS=unix:path=
 /usr/local/bin/openclaw-backup --inventory
 ```
 
+Gateway resource policy is installed from `ai/host/`: OpenClaw configs enable
+payload-free critical memory-pressure snapshots; each gateway has
+`MemoryHigh=6G`, `MemoryMax=8G`, `MemorySwapMax=2G`, and `TasksMax=1024`.
+Because openSUSE disables user-manager resource delegation by default, the
+host installer adds `Delegate=pids memory` only to registered agent
+`user@<uid>.service` instances. Existing user managers must be restarted
+individually while idle before the limits become effective. The same installer
+enables kernel PSI telemetry with `psi=1` on the next reboot and reduces the
+RAM-backed `/tmp` retention from ten days to three.
+
 #### Backup scope
 
-openclaw-backup backs up small but high-value state only: /etc/openclaw, /etc/ai-monitor/config.json, /srv/Code/environment/ai/openclaw, /srv/Code/environment/ai/web, agent .openclaw and .config/openclaw directories, key workspace instruction files, webhook routing, and Ollama cloud identity keys. It excludes large caches, node_modules, browser data, git directories, and local model blobs. The archive and manifest are mode 0600 under /var/backups/openclaw.
+openclaw-backup backs up small but high-value state only: /etc/openclaw, /etc/ai-monitor/config.json, /srv/Code/environment/ai/openclaw, /srv/Code/environment/ai/web, agent .openclaw and .config/openclaw directories, key workspace instruction files, webhook routing, and Ollama cloud identity keys. It excludes large caches, node_modules, browser data, git directories, local model blobs, and transient runtime lock files. Archives are published atomically only after tar succeeds; the archive and manifest are mode 0600 under /var/backups/openclaw.
 
 This is a local safety net. Off-host copies should live on `moonlight` under `/srv/backups/openclaw/thinkpad`; the first manual copy was written there on 2026-05-08. Future automation should sync the latest archive and matching `.manifest.json` there after each local backup.
 
