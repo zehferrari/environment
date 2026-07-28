@@ -261,6 +261,32 @@ assert(
 );
 // P6 wording: epic children commit locally and never push.
 assert(taskNotifications.includes("NEVER push this branch to origin"), "epic-child commit hygiene must forbid origin pushes");
+const branchVerifier = readFileSync(join(root, "scripts/pm-verify-branch-pushed.ts"), "utf8");
+assert(
+  branchVerifier.includes("inspectOriginBranch(job.repositoryPath, job.branchName)"),
+  "the Epic-child reviewer gate must inspect the remote itself for forbidden task refs",
+);
+assert(
+  branchVerifier.includes("Epic-child policy breach"),
+  "the monitor must report a forbidden remote Epic-child ref visibly",
+);
+assert(
+  branchVerifier.includes("epicMode\n    ? !state.remoteSha"),
+  "a published Epic-child ref must fail reviewer hand-off",
+);
+const epicMerge = readFileSync(join(root, "lib/deploy/epic-merge.ts"), "utf8");
+assert(
+  epicMerge.includes("publishEpicBranch({"),
+  "Epic-Done finalization must explicitly publish the Epic branch",
+);
+assert(
+  !epicMerge.includes('if (branches.length === 0) return { enqueued: false'),
+  "Epic-Done publication must still enqueue when there are no child refs to clean",
+);
+assert(
+  epicMerge.includes("removeMergedOriginChildBranch({"),
+  "Epic-Done cleanup must safely remove leaked remote child refs",
+);
 
 // onlyReportersCanApprovePullRequests: the Development-section approve
 // actions enforce the flag server-side (reporter-only when set).

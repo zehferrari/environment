@@ -3,7 +3,12 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mergeTaskBranchIntoEpic } from "../lib/deploy/epic-merge-git";
+import {
+  inspectOriginBranch,
+  mergeTaskBranchIntoEpic,
+  publishEpicBranch,
+  removeMergedOriginChildBranch,
+} from "../lib/deploy/epic-merge-git";
 
 function git(cwd: string, ...args: string[]) {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -142,6 +147,54 @@ async function main() {
       git(cloneDir, "ls-tree", "-r", "--name-only", "origin/epic-z").includes("e.txt"),
       "the local-already path must push the Epic branch so origin has e.txt",
     );
+
+    // 9. Epic-Done finalization publishes a local-ahead Epic branch even when
+    //    no child merge happens during that transition.
+    git(cloneDir, "checkout", "-B", "epic-final", "main");
+    writeFileSync(join(cloneDir, "final.txt"), "final\n");
+    git(cloneDir, "add", "-A");
+    git(cloneDir, "commit", "-m", "local epic finalization");
+    const finalSha = git(cloneDir, "rev-parse", "HEAD");
+    git(cloneDir, "checkout", "main");
+    const published = await publishEpicBranch({ repoPath: cloneDir, epicBranch: "epic-final" });
+    assert(published.ok && published.kind === "pushed", "Epic finalization must push a local-ahead Epic branch");
+    assert.equal(
+      git(cloneDir, "ls-remote", "--heads", "origin", "epic-final").split(/\s+/)[0],
+      finalSha,
+      "origin Epic ref must equal the finalized local Epic tip",
+    );
+
+    // 10. A leaked remote task ref is removed only after its tip has been
+    //     merged into and published on the Epic branch.
+    makeBranch("feat-leaked", [{ path: "leaked.txt", content: "preserved\n" }], { push: true });
+    assert.equal((await inspectOriginBranch(cloneDir, "feat-leaked")).sha?.length, 40);
+    r = await mergeTaskBranchIntoEpic({
+      ...base,
+      epicBranch: "epic-final",
+      taskBranch: "feat-leaked",
+    });
+    assert(r.ok, "leaked task work must still be preserved in the Epic branch");
+    const removedRemote = await removeMergedOriginChildBranch({
+      repoPath: cloneDir,
+      epicBranch: "epic-final",
+      taskBranch: "feat-leaked",
+    });
+    assert.equal(removedRemote.outcome, "removed", "merged leaked remote task ref must be deleted");
+    assert.equal(
+      (await inspectOriginBranch(cloneDir, "feat-leaked")).sha,
+      null,
+      "only the Epic ref should remain on origin",
+    );
+
+    // 11. Never delete a remote child whose tip is not preserved by the Epic.
+    makeBranch("feat-unsafe", [{ path: "unsafe.txt", content: "not merged\n" }], { push: true });
+    const preservedRemote = await removeMergedOriginChildBranch({
+      repoPath: cloneDir,
+      epicBranch: "epic-final",
+      taskBranch: "feat-unsafe",
+    });
+    assert.equal(preservedRemote.outcome, "failed", "unmerged remote child must be preserved");
+    assert.equal((await inspectOriginBranch(cloneDir, "feat-unsafe")).sha?.length, 40);
 
     console.log("epic-merge-test passed");
   } finally {

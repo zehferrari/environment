@@ -10,9 +10,9 @@ deployment-watcher poll (lib/deploy/epic-merge.ts):
   * kind "merge"   — merge one Done Epic-child task's LOCAL branch into the
     Epic integration branch, push ONLY the Epic branch, record
     pm.epic.merge.ok, or bounce the task back to Review with a comment;
-  * kind "cleanup" — after an Epic reaches Done, remove merged local child
-    branches and their worktrees (each verified as an ancestor of the pushed
-    Epic branch); origin branches are never deleted.
+  * kind "cleanup" — after an Epic reaches Done, publish the Epic branch,
+    remove merged local child branches/worktrees, and remove leaked remote
+    child refs only after their tips are verified in the pushed Epic branch.
 
 For each job it finds the active PM web worktree by reading pm.service's
 WorkingDirectory and runs the TS executor (scripts/pm-epic-merge-job.ts)

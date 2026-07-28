@@ -7,7 +7,12 @@ import { db } from "@/lib/db";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
-import { mergeTaskBranchIntoEpic } from "@/lib/deploy/epic-merge-git";
+import {
+  inspectOriginBranch,
+  mergeTaskBranchIntoEpic,
+  publishEpicBranch,
+  removeMergedOriginChildBranch,
+} from "@/lib/deploy/epic-merge-git";
 
 // Auto-merge a Done Epic-child task's branch into the Epic integration branch.
 //
@@ -202,7 +207,13 @@ async function bounceTaskToReview(args: {
     });
     await tx.task.update({
       where: { id: task.id },
-      data: { status: "Review", rank: (maxRank._max.rank ?? 0) + 1, statusChangedAt: now },
+      data: {
+        status: "Review",
+        rank: (maxRank._max.rank ?? 0) + 1,
+        statusChangedAt: now,
+        archivedAt: null,
+        archivedById: null,
+      },
     });
     await tx.activityLog.create({
       data: {
@@ -290,7 +301,6 @@ export async function pollEpicTaskMerges(): Promise<{ checked: number; enqueued:
       epicId: { not: null },
       parentTaskId: null,
       deletedAt: null,
-      archivedAt: null,
       project: { repositoryPath: { not: null } },
       activity: { none: { kind: "pm.epic.merge.ok" } },
     },
@@ -335,12 +345,12 @@ export async function pollEpicTaskMerges(): Promise<{ checked: number; enqueued:
   return { checked, enqueued };
 }
 
-// Epic-Done hook: queue removal of the merged LOCAL child branches (and their
-// worktrees) once an Epic reaches Done. Called from the auto-rollup
+// Epic-Done hook: queue Epic publication plus removal of merged LOCAL child
+// branches/worktrees once an Epic reaches Done. Called from the auto-rollup
 // (lib/tasks/review-automation.ts) and the human epic-status paths
 // (lib/epics/actions.ts) AFTER their transactions commit. The runner verifies
-// each branch is an ancestor of the pushed Epic branch before deleting
-// anything; origin is never touched.
+// each branch is an ancestor of the pushed Epic branch before deleting it. A
+// leaked remote child ref is deleted only after the same ancestry proof.
 export async function enqueueEpicDoneCleanup(epicId: string): Promise<{ enqueued: boolean; note?: string }> {
   const epic = await db.epic.findUnique({
     where: { id: epicId },
@@ -371,8 +381,6 @@ export async function enqueueEpicDoneCleanup(epicId: string): Promise<{ enqueued
         .filter((branch): branch is string => Boolean(branch) && branch !== epicBranch),
     ),
   ];
-  if (branches.length === 0) return { enqueued: false, note: "no child branches" };
-
   const spooled = await enqueueEpicMergeJob({
     kind: "cleanup",
     jobId: `cleanup-${epic.id}`,
@@ -421,7 +429,6 @@ async function executeMergeJob(job: Extract<EpicMergeJob, { kind: "merge" }>) {
       epicId: { not: null },
       parentTaskId: null,
       deletedAt: null,
-      archivedAt: null,
       project: { repositoryPath: { not: null } },
       activity: { none: { kind: "pm.epic.merge.ok" } },
     },
@@ -442,6 +449,8 @@ async function executeMergeJob(job: Extract<EpicMergeJob, { kind: "merge" }>) {
   }
 
   const baseBranch = await productionBranchFor(task.projectId);
+  const remoteTaskBranch = await inspectOriginBranch(repoPath, taskBranch);
+  const remoteTaskBranchSha = remoteTaskBranch.ok ? remoteTaskBranch.sha : null;
   const result = await mergeTaskBranchIntoEpic({
     repoPath,
     epicBranch,
@@ -457,17 +466,56 @@ async function executeMergeJob(job: Extract<EpicMergeJob, { kind: "merge" }>) {
       kind: result.kind,
       ...(result.kind === "merged" ? { sha: result.sha } : {}),
       ...(result.kind === "noop" ? { note: result.note } : {}),
+      ...(remoteTaskBranchSha
+        ? { unexpectedRemoteTaskBranchSha: remoteTaskBranchSha }
+        : {}),
     });
+    if (remoteTaskBranchSha) {
+      const monitor = await monitorAgentUser();
+      await db.$transaction(async (tx) => {
+        if (monitor) {
+          await tx.comment.create({
+            data: {
+              taskId: task.id,
+              userId: monitor.id,
+              body: [
+                `⚠️ Epic-child policy breach detected: \`origin/${taskBranch}\` exists at \`${remoteTaskBranchSha.slice(0, 10)}\`.`,
+                `PM preserved the work by merging it into the Epic branch \`${epicBranch}\`. The leaked remote task ref will be removed only after ancestry is verified against the pushed Epic branch during Epic-Done finalization.`,
+              ].join("\n\n"),
+            },
+          });
+        }
+        await tx.activityLog.create({
+          data: {
+            projectId: task.projectId,
+            taskId: task.id,
+            userId: monitor?.id ?? null,
+            kind: "pm.epic.remote_branch.detected",
+            payload: JSON.stringify({
+              taskId: task.id,
+              taskBranch,
+              remoteSha: remoteTaskBranchSha,
+              epicBranch,
+            }),
+          },
+        });
+      });
+    }
     return { taskId: task.id, outcome: result.kind, epicBranch, taskBranch };
   }
   await bounceTaskToReview({ task, epicBranch, taskBranch, reason: result.reason });
   return { taskId: task.id, outcome: "bounced" as const, epicBranch, taskBranch, reason: result.reason };
 }
 
-type CleanupItem = {
+type LocalCleanupItem = {
   branch: string;
   outcome: "removed" | "absent" | "failed" | "needs-root";
   detail: string | null;
+};
+
+type CleanupItem = LocalCleanupItem & {
+  remoteOutcome: "removed" | "absent" | "failed";
+  remoteDetail: string | null;
 };
 
 function isPermissionError(detail: string) {
@@ -483,7 +531,7 @@ function worktreeRemoveScript() {
   return existsSync(local) ? local : "/usr/local/sbin/worktree-remove";
 }
 
-async function removeLocalBranch(job: Extract<EpicMergeJob, { kind: "cleanup" }>, branch: string): Promise<CleanupItem> {
+async function removeLocalBranch(job: Extract<EpicMergeJob, { kind: "cleanup" }>, branch: string): Promise<LocalCleanupItem> {
   const repo = job.repositoryPath;
   const hasLocal = await runGitOk(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
   if (!hasLocal) return { branch, outcome: "absent", detail: null };
@@ -531,8 +579,10 @@ function renderCleanupBody(job: Extract<EpicMergeJob, { kind: "cleanup" }>, item
   const absent = items.filter((item) => item.outcome === "absent");
   const failed = items.filter((item) => item.outcome === "failed");
   const needsRoot = items.filter((item) => item.outcome === "needs-root");
+  const remoteRemoved = items.filter((item) => item.remoteOutcome === "removed");
+  const remoteFailed = items.filter((item) => item.remoteOutcome === "failed");
   const lines = [
-    `🧹 Epic is Done — local child-branch cleanup for Epic branch \`${job.epicBranch}\`.`,
+    `🧹 Epic is Done — Epic branch \`${job.epicBranch}\` is published and child-branch cleanup is complete.`,
     "",
   ];
   if (removed.length > 0) {
@@ -547,7 +597,15 @@ function renderCleanupBody(job: Extract<EpicMergeJob, { kind: "cleanup" }>, item
   for (const item of needsRoot) {
     lines.push(`- Needs root (likely ACL/permission breakage): \`${item.branch}\` — ${item.detail}`);
   }
-  lines.push("", `Remote branches were not touched; the Epic integration branch \`${job.epicBranch}\` remains on origin.`);
+  if (remoteRemoved.length > 0) {
+    lines.push(
+      `- Removed leaked remote task refs after ancestry verification: ${remoteRemoved.map((item) => `\`origin/${item.branch}\``).join(", ")}`,
+    );
+  }
+  for (const item of remoteFailed) {
+    lines.push(`- Remote ref preserved: \`origin/${item.branch}\` — ${item.remoteDetail}`);
+  }
+  lines.push("", `The Epic integration branch \`${job.epicBranch}\` is the published origin record.`);
   return lines.join("\n");
 }
 
@@ -570,7 +628,6 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
       epicId: job.epicId,
       parentTaskId: null,
       deletedAt: null,
-      archivedAt: null,
       status: "Done",
       activity: { none: { kind: "pm.epic.merge.ok" } },
     },
@@ -579,34 +636,87 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
     return { epicId: job.epicId, outcome: "deferred" as const, note: `${pendingMerges} child merge(s) still pending` };
   }
 
-  // Refresh the pushed Epic ref: it is the merge record every deletion is
-  // verified against.
+  // Finalization invariant: an Epic cannot remain Done unless its integration
+  // branch is published. This covers manual Epic-Done transitions and legacy
+  // local-only integrations in addition to the normal per-child eager pushes.
+  const publish = await publishEpicBranch({
+    repoPath: job.repositoryPath,
+    epicBranch: job.epicBranch,
+  });
+  if (!publish.ok) {
+    const monitor = await monitorAgentUser();
+    const now = new Date();
+    const body = [
+      `🚫 Epic branch \`${job.epicBranch}\` could not be published, so the Epic is back in Review.`,
+      "",
+      publish.reason,
+      "",
+      "Resolve the Git/ref problem, then move the Epic to Done again. PM will retry publication before cleaning any child branches.",
+    ].join("\n");
+    await db.$transaction(async (tx) => {
+      await tx.epic.update({
+        where: { id: job.epicId },
+        data: { status: "Review", statusChangedAt: now },
+      });
+      if (monitor) {
+        await tx.comment.create({ data: { epicId: job.epicId, userId: monitor.id, body } });
+      }
+      await tx.activityLog.create({
+        data: {
+          projectId: job.projectId,
+          userId: monitor?.id ?? null,
+          kind: "epic.status",
+          payload: JSON.stringify({
+            epicId: job.epicId,
+            from: "Done",
+            to: "Review",
+            via: "epic_publish_failed",
+          }),
+        },
+      });
+      await tx.activityLog.create({
+        data: {
+          projectId: job.projectId,
+          userId: monitor?.id ?? null,
+          kind: "pm.epic.publish.fail",
+          payload: JSON.stringify({
+            epicId: job.epicId,
+            epicBranch: job.epicBranch,
+            reason: publish.reason,
+          }),
+        },
+      });
+    });
+    publishBoardTouch(job.projectId);
+    return {
+      epicId: job.epicId,
+      outcome: "publish-failed" as const,
+      reason: publish.reason,
+    };
+  }
+
+  // Refresh the pushed Epic ref: it is the merge record every local or leaked
+  // remote child deletion is verified against.
   await runGitOk(job.repositoryPath, [
     "fetch",
     "--quiet",
     "origin",
     `+refs/heads/${job.epicBranch}:refs/remotes/origin/${job.epicBranch}`,
   ], { timeout: 60_000 });
-  const epicPushed = await runGitOk(job.repositoryPath, [
-    "rev-parse",
-    "--verify",
-    "--quiet",
-    `refs/remotes/origin/${job.epicBranch}^{commit}`,
-  ]);
 
   const items: CleanupItem[] = [];
-  if (!epicPushed) {
-    for (const branch of job.branches) {
-      items.push({
-        branch,
-        outcome: "failed",
-        detail: `Epic branch \`${job.epicBranch}\` is not on origin — nothing to verify merges against`,
-      });
-    }
-  } else {
-    for (const branch of job.branches) {
-      items.push(await removeLocalBranch(job, branch));
-    }
+  for (const branch of job.branches) {
+    const remote = await removeMergedOriginChildBranch({
+      repoPath: job.repositoryPath,
+      epicBranch: job.epicBranch,
+      taskBranch: branch,
+    });
+    const local = await removeLocalBranch(job, branch);
+    items.push({
+      ...local,
+      remoteOutcome: remote.outcome,
+      remoteDetail: remote.detail,
+    });
   }
 
   const monitor = await monitorAgentUser();
@@ -620,7 +730,25 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
         projectId: job.projectId,
         userId: monitor?.id ?? null,
         kind: "pm.epic.cleanup",
-        payload: JSON.stringify({ epicId: job.epicId, epicBranch: job.epicBranch, items }),
+        payload: JSON.stringify({
+          epicId: job.epicId,
+          epicBranch: job.epicBranch,
+          publish,
+          items,
+        }),
+      },
+    });
+    await tx.activityLog.create({
+      data: {
+        projectId: job.projectId,
+        userId: monitor?.id ?? null,
+        kind: "pm.epic.publish.ok",
+        payload: JSON.stringify({
+          epicId: job.epicId,
+          epicBranch: job.epicBranch,
+          kind: publish.kind,
+          sha: publish.sha,
+        }),
       },
     });
   });

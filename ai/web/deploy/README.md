@@ -222,8 +222,9 @@ identity, and live-rebuild checks are unchanged.
 `ReadWritePaths`), so it cannot run `git worktree add`, fetch ref-writes, or
 push. All Epic git work is therefore spooled: the deployment-watcher poll
 (`lib/deploy/epic-merge.ts`) enqueues one JSON job per Done Epic-child task
-into `/var/lib/pm/epic-merge/`, and on Epic-Done a `kind:"cleanup"` job listing
-the Epic's child branches. The repo-push-user `pm-epic-merge-runner.service`
+into `/var/lib/pm/epic-merge/`, and on Epic-Done a `kind:"cleanup"`
+finalization job listing the Epic's child branches. The repo-push-user
+`pm-epic-merge-runner.service`
 consumes the spool and runs `scripts/pm-epic-merge-job.ts` in the active
 worktree, which:
 
@@ -233,11 +234,12 @@ worktree, which:
   merge), fast-forwards the local Epic ref, and records `pm.epic.merge.ok` —
   or bounces the task back to Review with a comment (conflict, or the task
   branch does not exist anywhere: a missing branch is never a silent no-op);
-- **cleanup**: after the Epic is Done, verifies each child branch is an
-  ancestor of the pushed Epic branch, removes its worktree and local branch
-  via `worktree-remove --branch`, and posts one monitor-authored Epic comment
-  summarizing removed/failed (ACL-locked → "needs root") entries. Origin
-  branches are never deleted.
+- **cleanup/finalize**: after the Epic is Done, waits for all child merges
+  (including archived children), publishes a local-ahead Epic branch, verifies
+  each child against that pushed ref, removes its worktree/local branch, and
+  posts one monitor-authored Epic comment. A leaked remote child ref is
+  deleted only after its remote tip is proven to be contained by the pushed
+  Epic branch; unsafe refs are preserved and reported.
 
 Install/refresh both runners with `install-pm-verify.sh`; `PM_MERGE_RUN_USER`
 (default: `PM_VERIFY_RUN_USER`) must have SSH **write** access to push the

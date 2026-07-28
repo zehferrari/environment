@@ -294,9 +294,16 @@ git config core.sshCommand     # → ssh -i $HOME/.ssh/bbZeh -o IdentitiesOnly=y
 git config user.email          # → agent's own (a@zeh.me / b@zeh.me)
 ```
 
-## Automated Enforcement (Pre-commit hook)
+## Automated Enforcement (Git hooks)
 
-Every repository and worktree under `/srv/Code/` is monitored by a global pre-commit hook (configured via `/srv/Code/.gitconfig-zeh` setting `core.hooksPath = /srv/Code/git-hooks`). The hook automatically validates:
+Every repository and worktree under `/srv/Code/` is monitored by global hooks
+(configured via `/srv/Code/.gitconfig-zeh` setting
+`core.hooksPath = /srv/Code/git-hooks`). They automatically validate:
 1. **Mandatory Worktree**: Commits directly to the primary repository `/srv/Code/<repo>/` are blocked. You MUST use a branch worktree.
 2. **Branch Match**: The current git branch name (slugified) must match the worktree directory name.
 3. **Identity Verification**: If an `expected-identity` file exists in the worktree's git directory (written by `claim-branch` or updated by you with project settings), the active `user.name` and `user.email` must match it exactly.
+4. **Local-only Epic children**: `claim-branch --epic` registers the task
+   branch in shared repository config. The pre-push hook rejects publication
+   of that task ref. PM independently queries origin at reviewer hand-off, so
+   a `--no-verify` bypass is detected and reported rather than silently
+   passing review.

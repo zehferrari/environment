@@ -4,9 +4,9 @@
 //   kind "merge"   — merge a Done Epic-child task's LOCAL branch into the Epic
 //                    integration branch and push only the Epic branch, or
 //                    bounce the task back to Review on conflict/absence;
-//   kind "cleanup" — after an Epic reaches Done, remove merged local child
-//                    branches + their worktrees (verified against the pushed
-//                    Epic branch; origin is never touched).
+//   kind "cleanup" — after an Epic reaches Done, publish the Epic branch,
+//                    remove merged local child branches/worktrees, and remove
+//                    leaked remote child refs only after ancestry verification.
 //
 // Runs inside the active PM worktree via the unsandboxed
 // pm-epic-merge-runner.service (pm-verify-runner pattern) so git worktree/

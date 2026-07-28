@@ -75,6 +75,10 @@ git -C "$CODE_ROOT/proj" config user.email "pm-test@example.invalid"
 #    branch is based on it and NEITHER branch is pushed.
 wt=$(cmd_claim proj ph-1-task epic-a)
 [ -d "$wt" ] || { printf 'epic-mode claim must create a worktree\n' >&2; exit 1; }
+[ "$(git -C "$CODE_ROOT/proj" config --get branch.ph-1-task.pmEpicBranch)" = "epic-a" ] || {
+  printf 'epic mode must register shared local-only branch metadata\n' >&2
+  exit 1
+}
 git -C "$CODE_ROOT/proj" rev-parse --verify --quiet refs/heads/epic-a >/dev/null || {
   printf 'epic mode must create the missing Epic branch locally\n' >&2
   exit 1
@@ -118,7 +122,24 @@ wt_again=$(cmd_claim proj ph-1-task epic-a)
   exit 1
 }
 
-# 4. Reviewer fallback: a local-only Epic-child branch (never on origin) can
+# 4. The host pre-push hook blocks both normal and explicit HEAD publication
+#    of a branch registered by --epic, while leaving deletion available for
+#    recovery of a leaked legacy ref.
+git -C "$CODE_ROOT/proj" config core.hooksPath "$HERE/../git-hooks"
+if git -C "$wt" push origin ph-1-task >/dev/null 2>&1; then
+  printf 'pre-push must reject publication of an Epic-child task branch\n' >&2
+  exit 1
+fi
+if git -C "$wt" push origin HEAD:ph-1-task >/dev/null 2>&1; then
+  printf 'pre-push must reject explicit HEAD publication of an Epic-child task branch\n' >&2
+  exit 1
+fi
+[ -z "$(git -C "$CODE_ROOT/proj" ls-remote --heads origin ph-1-task)" ] || {
+  printf 'blocked pre-push attempts must leave origin without the task branch\n' >&2
+  exit 1
+}
+
+# 5. Reviewer fallback: a local-only Epic-child branch (never on origin) can
 #    still be claimed for review, detached at the local refs/heads tip.
 printf 'local work\n' > "$wt/local-work.txt"
 git -C "$wt" add local-work.txt

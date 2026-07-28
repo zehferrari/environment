@@ -44,6 +44,7 @@ import {
   type BranchBaseValidation,
 } from "@/lib/deploy/branch-base";
 import { subjectHasCommitPrefix } from "@/lib/work-items/commit-prefix";
+import { inspectOriginBranch } from "@/lib/deploy/epic-merge-git";
 
 const exec = promisify(execFile);
 const SWITCH_SCRIPT = process.env.PM_SWITCH_SCRIPT ?? "/usr/local/sbin/pm-switch";
@@ -425,6 +426,12 @@ function renderFailBody(args: {
   if (args.fetchError) lines.push(`- Fetching origin/${args.baseValidation.baseBranch} and origin/${args.branchName} failed: ${args.fetchError}`);
   if (args.state.pushError) lines.push(`- Monitor could not push \`${args.branchName}\` to origin: \`${args.state.pushError}\``);
   if (args.logError) lines.push(`- \`git log\` failed: \`${args.logError}\``);
+  if (args.epicMode && args.state.remoteSha) {
+    lines.push(
+      `- Epic-child policy breach: forbidden remote ref \`origin/${args.branchName}\` exists at \`${args.state.remoteSha.slice(0, 10)}\`.`,
+      `- Preserve any remote-only commits locally, then delete \`origin/${args.branchName}\`. Only the Epic branch \`${args.baseValidation.baseBranch}\` may be published.`,
+    );
+  }
   if (!args.epicMode && args.state.localSha && args.state.remoteSha && args.state.localSha !== args.state.remoteSha) {
     lines.push(
       `- Local branch head \`${args.state.localSha.slice(0, 10)}\` does not match origin head \`${args.state.remoteSha.slice(0, 10)}\`.`,
@@ -622,7 +629,9 @@ async function main() {
     // No auto-push, no local-vs-origin sync gate.
     const epicBase = await resolveEpicVerificationBase(job.repositoryPath, job.epicBranch);
     state = await localState(job, true);
-    fetchError = null; // origin fetch is best-effort here; base problems surface via baseValidation
+    const remoteTaskBranch = await inspectOriginBranch(job.repositoryPath, job.branchName);
+    state.remoteSha = remoteTaskBranch.ok ? remoteTaskBranch.sha : null;
+    fetchError = remoteTaskBranch.ok ? null : remoteTaskBranch.reason;
     baseValidation = await validateEpicBase(job.repositoryPath, job.branchName, epicBase);
     if (epicBase.baseRef && state.localSha) {
       ({ commits, error: logError } = await readLog(job.repositoryPath, epicBase.baseRef, `refs/heads/${job.branchName}`));
@@ -651,7 +660,12 @@ async function main() {
 
   // The pushed/synced gate is standalone-only; an Epic child's local ref IS
   // the verified artifact (P6).
-  const branchSynced = epicMode || !state.localSha || !state.remoteSha || state.localSha === state.remoteSha;
+  // Epic-child branches must be absent from origin. This is checked against
+  // the remote itself (not a stale tracking ref), so --no-verify pushes and
+  // branches published before the pre-push hook fail reviewer hand-off.
+  const branchSynced = epicMode
+    ? !state.remoteSha
+    : !state.localSha || !state.remoteSha || state.localSha === state.remoteSha;
   const repoVerifiedOk =
     !fetchError &&
     !logError &&

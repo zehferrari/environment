@@ -138,6 +138,12 @@ do_install 755 "$REPO_ROOT/bin/code-tree-perms"           /usr/local/sbin/code-t
 do_install 755 "$REPO_ROOT/bin/openclaw-backup"           /usr/local/bin/openclaw-backup
 do_install 755 "$REPO_ROOT/bin/openclaw-boot-readiness"   /usr/local/bin/openclaw-boot-readiness
 do_install 755 "$REPO_ROOT/bin/pm-monitor-wake-agent"     /usr/local/sbin/pm-monitor-wake-agent
+if [ "$DRY" -eq 1 ]; then
+    log "  would ensure /srv/Code/git-hooks and install the Epic-child pre-push guard"
+elif [ ! -d /srv/Code/git-hooks ]; then
+    install -d -o root -g root -m 0755 /srv/Code/git-hooks
+fi
+do_install 755 "$REPO_ROOT/git-hooks/pre-push"             /srv/Code/git-hooks/pre-push
 
 # Shared derivation defaults consumed by step [7/7], ai-monitor,
 # agent-dashboard, and openclaw-integrity-check. Installed as a COPY (never a

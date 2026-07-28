@@ -43,6 +43,195 @@ async function isAncestor(repoPath: string, maybeAncestor: string, ref: string) 
   return gitOk(repoPath, ["merge-base", "--is-ancestor", maybeAncestor, ref]);
 }
 
+async function validBranchName(repoPath: string, branch: string) {
+  if (!branch.trim()) return false;
+  return gitOk(repoPath, ["check-ref-format", "--branch", branch]);
+}
+
+export type OriginBranchInspection =
+  | { ok: true; sha: string | null }
+  | { ok: false; sha: null; reason: string };
+
+// Read the remote itself rather than a potentially stale origin/* tracking
+// ref. The reviewer gate uses this to detect an Epic-child branch that was
+// published with --no-verify or before the local pre-push policy existed.
+export async function inspectOriginBranch(
+  repoPath: string,
+  branch: string,
+): Promise<OriginBranchInspection> {
+  if (!(await validBranchName(repoPath, branch))) {
+    return { ok: false, sha: null, reason: `Invalid branch name: ${branch}` };
+  }
+  try {
+    const out = await git(repoPath, [
+      "ls-remote",
+      "--heads",
+      "origin",
+      `refs/heads/${branch}`,
+    ]);
+    const sha = out.split(/\s+/)[0]?.trim() || null;
+    return { ok: true, sha };
+  } catch (err) {
+    return {
+      ok: false,
+      sha: null,
+      reason: String(err instanceof Error ? err.message : err).trim().slice(0, 400),
+    };
+  }
+}
+
+export type EpicPublishResult =
+  | { ok: true; kind: "pushed" | "already"; sha: string }
+  | { ok: false; reason: string };
+
+// Epic-Done finalization must leave the Epic integration branch on origin,
+// even when all child integrations happened locally before the P6 merge
+// runner existed. The push is fast-forward-only; divergent refs fail visibly.
+export async function publishEpicBranch(args: {
+  repoPath: string;
+  epicBranch: string;
+}): Promise<EpicPublishResult> {
+  const { repoPath, epicBranch } = args;
+  if (!(await validBranchName(repoPath, epicBranch))) {
+    return { ok: false, reason: `Invalid Epic branch name: ${epicBranch}` };
+  }
+  try {
+    await git(repoPath, ["fetch", "--quiet", "--prune", "origin"]);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Could not refresh origin before publishing the Epic branch: ${String(
+        err instanceof Error ? err.message : err,
+      ).trim().slice(0, 300)}`,
+    };
+  }
+
+  const localExists = await localRefExists(repoPath, epicBranch);
+  const originExists = await originRefExists(repoPath, epicBranch);
+  if (!localExists) {
+    if (originExists) {
+      return {
+        ok: true,
+        kind: "already",
+        sha: await git(repoPath, ["rev-parse", `refs/remotes/origin/${epicBranch}`]),
+      };
+    }
+    return {
+      ok: false,
+      reason: `Epic branch \`${epicBranch}\` exists neither locally nor on origin.`,
+    };
+  }
+
+  const localSha = await git(repoPath, ["rev-parse", `refs/heads/${epicBranch}`]);
+  if (originExists) {
+    const originRef = `refs/remotes/origin/${epicBranch}`;
+    const originSha = await git(repoPath, ["rev-parse", originRef]);
+    if (localSha === originSha || (await isAncestor(repoPath, `refs/heads/${epicBranch}`, originRef))) {
+      return { ok: true, kind: "already", sha: originSha };
+    }
+    if (!(await isAncestor(repoPath, originRef, `refs/heads/${epicBranch}`))) {
+      return {
+        ok: false,
+        reason: `Local Epic branch \`${epicBranch}\` and origin/${epicBranch} have diverged; refusing a force-push.`,
+      };
+    }
+  }
+
+  if (!(await gitOk(repoPath, [
+    "push",
+    "origin",
+    `refs/heads/${epicBranch}:refs/heads/${epicBranch}`,
+  ]))) {
+    return {
+      ok: false,
+      reason: `Pushing Epic branch \`${epicBranch}\` to origin failed (permissions or a concurrent update).`,
+    };
+  }
+  const remote = await inspectOriginBranch(repoPath, epicBranch);
+  if (!remote.ok || remote.sha !== localSha) {
+    return {
+      ok: false,
+      reason: remote.ok
+        ? `Origin/${epicBranch} did not resolve to the pushed local tip ${localSha}.`
+        : remote.reason,
+    };
+  }
+  return { ok: true, kind: "pushed", sha: localSha };
+}
+
+export type RemoteChildCleanupResult = {
+  branch: string;
+  outcome: "removed" | "absent" | "failed";
+  detail: string | null;
+};
+
+// Remove an accidentally published Epic-child ref only after proving its tip
+// is preserved by the pushed Epic branch. This is deliberately narrower than
+// a generic remote-branch cleanup: no ancestry, no deletion.
+export async function removeMergedOriginChildBranch(args: {
+  repoPath: string;
+  epicBranch: string;
+  taskBranch: string;
+}): Promise<RemoteChildCleanupResult> {
+  const { repoPath, epicBranch, taskBranch } = args;
+  if (taskBranch === epicBranch) {
+    return { branch: taskBranch, outcome: "failed", detail: "task branch is the Epic branch" };
+  }
+  if (!(await validBranchName(repoPath, taskBranch))) {
+    return { branch: taskBranch, outcome: "failed", detail: "invalid task branch name" };
+  }
+  try {
+    await git(repoPath, ["fetch", "--quiet", "--prune", "origin"]);
+  } catch (err) {
+    return {
+      branch: taskBranch,
+      outcome: "failed",
+      detail: `could not refresh origin: ${String(err instanceof Error ? err.message : err).trim().slice(0, 250)}`,
+    };
+  }
+
+  if (!(await originRefExists(repoPath, taskBranch))) {
+    return { branch: taskBranch, outcome: "absent", detail: null };
+  }
+  if (!(await originRefExists(repoPath, epicBranch))) {
+    return {
+      branch: taskBranch,
+      outcome: "failed",
+      detail: `Epic branch \`${epicBranch}\` is not on origin`,
+    };
+  }
+  if (!(await isAncestor(
+    repoPath,
+    `refs/remotes/origin/${taskBranch}`,
+    `refs/remotes/origin/${epicBranch}`,
+  ))) {
+    return {
+      branch: taskBranch,
+      outcome: "failed",
+      detail: `origin/${taskBranch} is not an ancestor of origin/${epicBranch}; remote ref preserved`,
+    };
+  }
+  if (!(await gitOk(repoPath, ["push", "origin", "--delete", taskBranch]))) {
+    return {
+      branch: taskBranch,
+      outcome: "failed",
+      detail: `deleting the merged leaked ref origin/${taskBranch} failed`,
+    };
+  }
+  await gitOk(repoPath, ["update-ref", "-d", `refs/remotes/origin/${taskBranch}`]);
+  const remaining = await inspectOriginBranch(repoPath, taskBranch);
+  if (!remaining.ok || remaining.sha) {
+    return {
+      branch: taskBranch,
+      outcome: "failed",
+      detail: remaining.ok
+        ? `origin/${taskBranch} still exists after deletion`
+        : `could not verify deletion: ${remaining.reason}`,
+    };
+  }
+  return { branch: taskBranch, outcome: "removed", detail: null };
+}
+
 // True when refs/heads/<branch> is checked out in the primary checkout or any
 // linked worktree — `git branch -f` refuses to move a checked-out ref.
 async function branchCheckedOut(repoPath: string, branch: string) {

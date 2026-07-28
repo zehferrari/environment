@@ -106,6 +106,17 @@ write_expected_identity() {
   fi
 }
 
+mark_epic_child_branch() {
+  local repo_root="$1" branch="$2" epic_branch="$3"
+  [ -n "$epic_branch" ] || return 0
+  [ "$branch" != "$epic_branch" ] || return 0
+
+  # Shared-repository metadata consumed by /srv/Code/git-hooks/pre-push.
+  # Store it in the common repository config (not worktree config) so the
+  # guard still applies when a caller runs `git -C <primary> push <task-ref>`.
+  git -C "$repo_root" config --local "branch.${branch}.pmEpicBranch" "$epic_branch"
+}
+
 resolve_base_branch() {
   local repo_root="$1"
   local main_error="" master_error=""
@@ -147,6 +158,7 @@ cmd_claim() {
   local wt; wt=$(worktree_path "$repo" "$branch" false)
 
   if git -C "$repo_root" worktree list --porcelain | grep -qE "^worktree ${wt}\$"; then
+    mark_epic_child_branch "$repo_root" "$branch" "$epic_branch"
     printf '%s\n' "$wt"
     return 0
   fi
@@ -222,6 +234,7 @@ cmd_claim() {
       git -C "$repo_root" worktree add --no-track -b "$branch" "$wt" "$base_ref" >&2
     fi
 
+    mark_epic_child_branch "$repo_root" "$branch" "$epic_branch"
     write_expected_identity "$repo_root" "$branch" false
     printf '%s\n' "$wt"
     return 0

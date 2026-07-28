@@ -47,7 +47,10 @@ task branches never reach origin** (policy P6). The lifecycle:
 
 1. **Claim**: `claim-branch <repo> <branch> --epic <epicBranch>` bases the
    child on the Epic integration branch (fetched fresh from origin, or created
-   locally from main/master). All worktrees share `/srv/Code/<repo>/.git`, so
+   locally from main/master) and registers it as local-only in the shared Git
+   config. The global pre-push hook rejects publication of that ref, including
+   explicit `HEAD:<taskBranch>` pushes. All worktrees share
+   `/srv/Code/<repo>/.git`, so
    a local branch committed in any agent worktree is visible repo-wide — no
    push is needed for other actors (verifier, merge runner, reviewers) to see
    it.
@@ -57,8 +60,10 @@ task branches never reach origin** (policy P6). The lifecycle:
 3. **Review gate**: the branch verifier runs in local mode for Epic children
    (`epicChild` on the spool job): it checks `refs/heads/<branch>` — dirty
    worktree, commit prefix, git identity — and requires the current Epic
-   branch tip to be an ancestor of the child branch. It never auto-pushes an
-   Epic child.
+   branch tip to be an ancestor of the child branch. It also queries origin
+   directly and fails reviewer hand-off with a visible monitor comment if the
+   task ref exists remotely (covering `--no-verify` and pre-policy branches).
+   It never auto-pushes an Epic child.
 4. **Done → merge**: `pm.service` is sandboxed and cannot run git, so its
    deployment-watcher poll only drops a JSON job into `/var/lib/pm/epic-merge/`
    (env `PM_EPIC_MERGE_DIR`). The unsandboxed
@@ -74,15 +79,16 @@ task branches never reach origin** (policy P6). The lifecycle:
    Review** (comment + `pm.epic.merge.fail`) — it is never recorded as a
    silent merge success. Conflicts bounce the same way; the assignee resolves
    locally and the merge retries when the task reaches Done again.
-5. **Epic Done → cleanup**: when an Epic reaches Done (auto-rollup or human
-   status change), PM enqueues a `kind:"cleanup"` job in the same spool. The
-   runner waits for pending child merges, verifies each child branch is an
-   ancestor of the **pushed** Epic branch, then removes its worktree and local
-   branch via `worktree-remove --branch` (protected-branch list, managed-root
-   and clean-worktree guards apply; worktrees are removed before `branch -D`).
-   It posts one monitor-authored Epic comment summarizing removed / already
-   absent / failed ("needs root" for ACL-mask breakage) entries. Origin
-   branches are never deleted.
+5. **Epic Done → publish + cleanup**: when an Epic reaches Done (auto-rollup
+   or human status change), PM enqueues a `kind:"cleanup"` finalization job in
+   the same spool even when no child refs need removal. The runner waits for
+   all child merges, including children archived by a human Done transition,
+   and fast-forward-pushes a local-ahead Epic branch. Publication failure
+   returns the Epic to Review before cleanup. It then verifies each local
+   child branch against the **pushed** Epic branch and removes its
+   worktree/branch. A leaked remote child ref is deleted only after its remote
+   tip is also proven to be an ancestor of the pushed Epic branch; an
+   unmerged/divergent ref is preserved and reported.
 
 Only the Epic integration branch and standalone task branches ever reach
 origin; the Epic branch is what deployment review/merge operates on.

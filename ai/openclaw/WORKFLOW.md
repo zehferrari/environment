@@ -756,8 +756,12 @@ the exact silent token and no other text.
   cannot be found locally or the merge fails, the task bounces back to
   `Review` with a comment and the epic queue steps back; fix it by
   committing your changes locally on the named branch, never by pushing
-  it. When the Epic itself reaches `Done`, its merged local child
-  branches and worktrees are cleaned up automatically.
+  it. The review verifier queries origin directly and rejects hand-off if
+  an Epic-child task ref was published despite the pre-push guard. When
+  the Epic itself reaches `Done`, PM waits for every child merge,
+  guarantees that the Epic branch is pushed, and then cleans merged local
+  branches/worktrees. A leaked remote child ref is removed only after its
+  tip is proven to be contained by the pushed Epic branch.
 - Approval-only reviewer comments are treated as a workflow error. The
   resolved reviewer must use `review_done`. PM also auto-completes a
   `Review` task when the resolved reviewer posts an **unmistakable

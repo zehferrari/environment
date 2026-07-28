@@ -1,0 +1,52 @@
+#!/bin/bash
+# Block publication of branches registered by claim-branch --epic.
+#
+# This is a guardrail, not a Bitbucket permission boundary: a caller with
+# repository write credentials can bypass local hooks with --no-verify. PM's
+# reviewer gate independently checks origin so bypasses are still detected.
+
+set -euo pipefail
+
+ZERO_SHA=0000000000000000000000000000000000000000
+CURRENT_BRANCH=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+CURRENT_SHA=""
+if [ -n "$CURRENT_BRANCH" ]; then
+  CURRENT_SHA=$(git rev-parse --verify "refs/heads/$CURRENT_BRANCH" 2>/dev/null || true)
+fi
+
+epic_for_branch() {
+  local branch="$1"
+  git config --get "branch.${branch}.pmEpicBranch" 2>/dev/null || true
+}
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # Deleting a leaked remote child ref is allowed.
+  [ "$local_sha" != "$ZERO_SHA" ] || continue
+
+  branch=""
+  case "$local_ref" in
+    refs/heads/*) branch=${local_ref#refs/heads/} ;;
+    HEAD)
+      if [ -n "$CURRENT_BRANCH" ] && [ "$local_sha" = "$CURRENT_SHA" ]; then
+        branch="$CURRENT_BRANCH"
+      fi
+      ;;
+  esac
+  [ -n "$branch" ] || continue
+
+  epic_branch=$(epic_for_branch "$branch")
+  [ -n "$epic_branch" ] || continue
+
+  cat >&2 <<EOF
+FAIL: Epic-child task branch '$branch' is local-only and cannot be pushed.
+
+Epic integration branch:
+  $epic_branch
+
+Commit locally and use the PM ready_for_review workflow. When the task reaches
+Done, PM merges '$branch' into '$epic_branch' and pushes only the Epic branch.
+EOF
+  exit 1
+done
+
+exit 0
