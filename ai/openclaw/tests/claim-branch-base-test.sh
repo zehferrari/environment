@@ -64,4 +64,74 @@ else
   exit 1
 fi
 
+# ── Epic mode (P6 local-only child branches) ─────────────────────────────
+CODE_ROOT="$tmp/code"
+mkdir -p "$CODE_ROOT"
+git clone --quiet "$remote" "$CODE_ROOT/proj"
+git -C "$CODE_ROOT/proj" config user.name "PM Test"
+git -C "$CODE_ROOT/proj" config user.email "pm-test@example.invalid"
+
+# 1. Epic branch absent on origin: created locally from origin/main; the task
+#    branch is based on it and NEITHER branch is pushed.
+wt=$(cmd_claim proj ph-1-task epic-a)
+[ -d "$wt" ] || { printf 'epic-mode claim must create a worktree\n' >&2; exit 1; }
+git -C "$CODE_ROOT/proj" rev-parse --verify --quiet refs/heads/epic-a >/dev/null || {
+  printf 'epic mode must create the missing Epic branch locally\n' >&2
+  exit 1
+}
+[ "$(git -C "$CODE_ROOT/proj" rev-parse refs/heads/ph-1-task)" = "$(git -C "$CODE_ROOT/proj" rev-parse refs/remotes/origin/main)" ] || {
+  printf 'a fresh Epic-child branch must start at the fetched origin/main tip (via the local Epic branch)\n' >&2
+  exit 1
+}
+[ -z "$(git -C "$CODE_ROOT/proj" ls-remote --heads origin ph-1-task)" ] || {
+  printf 'epic mode must NOT push the task branch\n' >&2
+  exit 1
+}
+[ -z "$(git -C "$CODE_ROOT/proj" ls-remote --heads origin epic-a)" ] || {
+  printf 'epic mode must NOT push the Epic branch\n' >&2
+  exit 1
+}
+
+# 2. Epic branch present on origin: the child is based on its freshly fetched
+#    tip, still without pushing anything.
+git -C "$publisher" fetch --quiet origin
+git -C "$publisher" checkout --quiet -b epic-b origin/main
+printf 'epic b\n' > "$publisher/epic-b.txt"
+git -C "$publisher" add epic-b.txt
+git -C "$publisher" commit --quiet -m epic-b
+git -C "$publisher" push --quiet -u origin epic-b
+wt2=$(cmd_claim proj ph-2-task epic-b)
+[ "$(git -C "$CODE_ROOT/proj" rev-parse refs/heads/ph-2-task)" = "$(git -C "$CODE_ROOT/proj" rev-parse refs/remotes/origin/epic-b)" ] || {
+  printf 'an Epic-child branch must start at the freshly fetched origin Epic tip\n' >&2
+  exit 1
+}
+[ -z "$(git -C "$CODE_ROOT/proj" ls-remote --heads origin ph-2-task)" ] || {
+  printf 'epic mode must NOT push the task branch (existing origin Epic case)\n' >&2
+  exit 1
+}
+
+# 3. Re-claim is idempotent and still does not push.
+wt_again=$(cmd_claim proj ph-1-task epic-a)
+[ "$wt_again" = "$wt" ] || { printf 're-claim must return the existing worktree\n' >&2; exit 1; }
+[ -z "$(git -C "$CODE_ROOT/proj" ls-remote --heads origin ph-1-task)" ] || {
+  printf 're-claim must NOT push the task branch\n' >&2
+  exit 1
+}
+
+# 4. Reviewer fallback: a local-only Epic-child branch (never on origin) can
+#    still be claimed for review, detached at the local refs/heads tip.
+printf 'local work\n' > "$wt/local-work.txt"
+git -C "$wt" add local-work.txt
+git -C "$wt" -c user.name="PM Test" -c user.email="pm-test@example.invalid" commit --quiet -m "ph-1 local work"
+rwt=$(cmd_claim_review proj ph-1-task)
+[ -d "$rwt" ] || { printf 'review fallback must create a worktree\n' >&2; exit 1; }
+[ "$(git -C "$rwt" rev-parse HEAD)" = "$(git -C "$CODE_ROOT/proj" rev-parse refs/heads/ph-1-task)" ] || {
+  printf 'review fallback must attach at the local branch tip\n' >&2
+  exit 1
+}
+[ "$(git -C "$rwt" rev-parse --abbrev-ref HEAD)" = "HEAD" ] || {
+  printf 'review fallback worktree must be detached\n' >&2
+  exit 1
+}
+
 printf 'claim-branch-base-test passed\n'

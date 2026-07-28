@@ -4,10 +4,13 @@
 // ready_for_review with repoTouched=true), PM drops a JSON job here. The
 // monitor-side runner (ai/web/scripts/pm-verify-branch-pushed.ts) consumes the
 // file before any reviewer is woken. It resolves the branch worktree, rejects
-// dirty local changes, pushes clean local branch commits when needed, verifies
-// origin/<branchName> has the task/epic commit prefix and expected git
-// identity, rebuilds the active PM worktree when this branch is live, then
-// posts a verification task comment + pm.repo.verify.* ActivityLog row.
+// dirty local changes, then verifies commit prefix + expected git identity and
+// rebuilds the active PM worktree when this branch is live, then posts a
+// verification task comment + pm.repo.verify.* ActivityLog row. Standalone
+// tasks are verified on origin/<branchName> (clean local commits are pushed
+// when needed); Epic children (epicChild) are verified on the LOCAL
+// refs/heads/<branchName> against the Epic integration branch and are never
+// pushed (P6 local-only model).
 //
 // The spool dir is shared by the PM web service user and the verify runner
 // user (2770, usually group code-agents) so the runner can use a dedicated
@@ -29,6 +32,14 @@ export interface BranchVerifyJob {
   // Effective deployment PR target branch at enqueue time. Optional so jobs
   // queued by older PM builds can resolve origin/HEAD safely.
   baseBranch?: string | null;
+  // Epic-child local-only mode (P6): when epicChild is true the verifier
+  // checks refs/heads/<branchName> against the Epic integration branch and
+  // never pushes; standalone tasks keep the origin-based flow. Optional so
+  // jobs queued by older PM builds behave as standalone.
+  epicChild?: boolean;
+  // Effective Epic integration branch at enqueue time (null when the Epic has
+  // no derivable branch).
+  epicBranch?: string | null;
   commitPrefix: string | null;
   expectedGitUserName: string | null;
   expectedGitUserEmail: string | null;

@@ -5,9 +5,17 @@
 # attached at their remote tip. The integration base is origin/main when
 # present, otherwise origin/master; callers cannot override it.
 #
-# Two modes:
+# Modes:
+#   --epic <e>   Epic-child worktree. The task branch is LOCAL-ONLY: it is
+#                based on freshly fetched origin/<e> when the Epic branch
+#                exists on origin (else the Epic branch is created locally
+#                from origin/main|master) and is NEVER pushed — the PM
+#                epic-merge runner merges it into the Epic branch on Done
+#                and only the Epic branch reaches origin.
 #   --review     attaches a *detached HEAD* worktree at origin/<branch>
-#                so a different agent can read/run-tests on the same
+#                (falling back to the local refs/heads/<branch> for
+#                Epic-child branches that never reach origin) so a
+#                different agent can read/run-tests on the same
 #                branch concurrently with the implementer (git only
 #                allows one worktree per branch ref; review mode
 #                sidesteps that with --detach).
@@ -15,6 +23,7 @@
 #
 # Usage:
 #   claim-branch <repo> <branch>                 # attach or create from origin/main|master
+#   claim-branch <repo> <branch> --epic <epicBranch>  # Epic-child worktree (local-only, no push)
 #   claim-branch <repo> <branch> --review        # reviewer worktree (detached HEAD)
 #   claim-branch --release <repo> <branch>       # tear down implementer worktree
 #   claim-branch --release <repo> <branch> --review  # tear down reviewer worktree
@@ -22,7 +31,9 @@
 #
 # There is deliberately no --from override. Allowing callers to choose a
 # local or stale ref is how an apparently valid worktree can be created from
-# an outdated checkout instead of the current integration branch.
+# an outdated checkout instead of the current integration branch. --epic is
+# not a --from: the Epic integration branch is itself always refreshed from
+# origin first.
 #
 # Output (claim path): the absolute worktree path on stdout, so the caller
 # can `cd "$(claim-branch v23 feature/foo)"`.
@@ -39,7 +50,7 @@ CODE_ROOT="/srv/Code"
 die() { printf 'claim-branch: %s\n' "$*" >&2; exit 1; }
 
 usage() {
-  sed -n '2,/^set/{ /^set/!{ s/^# \?//; p } }' "$0" | head -n 30 >&2
+  sed -n '2,/^set/{ /^set/!{ s/^# \?//; p } }' "$0" | head -n 45 >&2
   exit 2
 }
 
@@ -125,10 +136,13 @@ fetch_remote_branch() {
 }
 
 cmd_claim() {
-  local repo="$1" branch="$2"
+  local repo="$1" branch="$2" epic_branch="${3:-}"
   local repo_root="$CODE_ROOT/$repo"
   [ -d "$repo_root/.git" ] || die "no repo at $repo_root"
   git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "invalid branch name: $branch"
+  if [ -n "$epic_branch" ]; then
+    git check-ref-format --branch "$epic_branch" >/dev/null 2>&1 || die "invalid epic branch name: $epic_branch"
+  fi
 
   local wt; wt=$(worktree_path "$repo" "$branch" false)
 
@@ -138,6 +152,81 @@ cmd_claim() {
   fi
 
   git -C "$repo_root" worktree prune
+  mkdir -p "$CODE_ROOT/${repo}.worktrees"
+
+  if [ -n "$epic_branch" ]; then
+    # Epic-child mode (P6): the task branch stays LOCAL — no push, ever. Base
+    # is the freshly fetched Epic integration branch; when the Epic branch is
+    # not on origin yet it is created locally from the conventional base so
+    # the whole Epic lineage starts from current production.
+    local epic_fetch_ok=true
+    fetch_remote_branch "$repo_root" "$epic_branch" 2>/dev/null || epic_fetch_ok=false
+    # Mandatory Epic-branch sync: task branches are cut from the Epic
+    # integration branch, so the local Epic ref must be up to date with origin
+    # before any child is created. Fast-forward when behind; die on divergence
+    # rather than base new work on stale or forked state.
+    if git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${epic_branch}" >/dev/null; then
+      [ "$epic_fetch_ok" = true ] || \
+        die "could not refresh origin/${epic_branch}; refusing to cut ${branch} from a possibly stale Epic base"
+      if git -C "$repo_root" rev-parse --verify --quiet "refs/heads/${epic_branch}" >/dev/null; then
+        local epic_local_sha epic_origin_sha
+        epic_local_sha=$(git -C "$repo_root" rev-parse "refs/heads/${epic_branch}")
+        epic_origin_sha=$(git -C "$repo_root" rev-parse "refs/remotes/origin/${epic_branch}")
+        if [ "$epic_local_sha" != "$epic_origin_sha" ]; then
+          if git -C "$repo_root" merge-base --is-ancestor "$epic_local_sha" "$epic_origin_sha"; then
+            if git -C "$repo_root" fetch . "refs/remotes/origin/${epic_branch}:refs/heads/${epic_branch}" 2>/dev/null; then
+              printf 'Fast-forwarded local %s to origin/%s.\n' "$epic_branch" "$epic_branch" >&2
+            else
+              # Behind but checked out elsewhere: origin is used as the base
+              # below, so the new child is still cut from fresh state.
+              printf 'warning: local %s is behind origin and pinned by a worktree; basing %s on origin/%s.\n' \
+                "$epic_branch" "$branch" "$epic_branch" >&2
+            fi
+          elif git -C "$repo_root" merge-base --is-ancestor "$epic_origin_sha" "$epic_local_sha"; then
+            : # Local Epic ref is ahead (unpublished local merges); it contains origin and is used as the base below.
+          else
+            die "local ${epic_branch} and origin/${epic_branch} have diverged; reconcile the Epic branch before claiming ${branch}"
+          fi
+        fi
+      fi
+    fi
+    if git -C "$repo_root" rev-parse --verify --quiet "refs/heads/${branch}" >/dev/null; then
+      # Existing local task branch (e.g. worktree was released): re-attach at
+      # its current tip; never recreate from the base under an agent's work.
+      git -C "$repo_root" worktree add "$wt" "$branch" >&2
+    elif git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null; then
+      # Legacy: this task branch was pushed before the local-only policy.
+      git -C "$repo_root" worktree add -B "$branch" "$wt" "origin/${branch}" >&2
+    else
+      local base_ref
+      if git -C "$repo_root" rev-parse --verify --quiet "refs/heads/${epic_branch}" >/dev/null && \
+         { ! git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${epic_branch}" >/dev/null || \
+           git -C "$repo_root" merge-base --is-ancestor "refs/remotes/origin/${epic_branch}" "refs/heads/${epic_branch}"; }; then
+        # Local Epic ref contains origin after the mandatory sync above (or is
+        # local-only from an earlier --epic claim / ahead with unpublished
+        # merges).
+        base_ref="$epic_branch"
+      elif git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${epic_branch}" >/dev/null; then
+        # Local Epic ref is behind and pinned by another worktree — origin is
+        # the freshest state.
+        base_ref="origin/${epic_branch}"
+      else
+        local base_branch; base_branch=$(resolve_base_branch "$repo_root")
+        printf 'Epic branch %s not found on origin. Creating it locally from origin/%s...\n' "$epic_branch" "$base_branch" >&2
+        git -C "$repo_root" branch --no-track "$epic_branch" "origin/$base_branch" >&2
+        base_ref="$epic_branch"
+      fi
+      printf 'Creating local-only branch %s from %s (Epic-child branches are never pushed)...\n' "$branch" "$base_ref" >&2
+      # --no-track: a local-only branch must not carry upstream config that
+      # could make a bare `git push` publish it.
+      git -C "$repo_root" worktree add --no-track -b "$branch" "$wt" "$base_ref" >&2
+    fi
+
+    write_expected_identity "$repo_root" "$branch" false
+    printf '%s\n' "$wt"
+    return 0
+  fi
+
   # Fetch a conventional integration branch explicitly. Never use a local
   # checkout or a caller-supplied ref as the creation base.
   local base_branch; base_branch=$(resolve_base_branch "$repo_root")
@@ -145,7 +234,6 @@ cmd_claim() {
   # branch may not be present in a clone's configured fetch refspec or local
   # remote-tracking cache yet.
   fetch_remote_branch "$repo_root" "$branch" 2>/dev/null || true
-  mkdir -p "$CODE_ROOT/${repo}.worktrees"
 
   if git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null; then
     git -C "$repo_root" worktree add -B "$branch" "$wt" "origin/${branch}" >&2
@@ -173,14 +261,23 @@ cmd_claim_review() {
   fi
 
   git -C "$repo_root" worktree prune
-  git -C "$repo_root" fetch --quiet origin "$branch"
-  git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null || \
-    die "branch '${branch}' not found on origin — nothing to review yet"
+  fetch_remote_branch "$repo_root" "$branch" 2>/dev/null || true
+
+  # --detach attaches with no branch ref, so the implementer's worktree on the
+  # same branch is undisturbed. Origin is preferred; Epic-child branches are
+  # local-only (never pushed), so fall back to the local refs/heads tip.
+  local review_ref
+  if git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null; then
+    review_ref="origin/${branch}"
+  elif git -C "$repo_root" rev-parse --verify --quiet "refs/heads/${branch}" >/dev/null; then
+    printf 'Branch %s not on origin — attaching reviewer worktree at local refs/heads/%s.\n' "$branch" "$branch" >&2
+    review_ref="refs/heads/${branch}"
+  else
+    die "branch '${branch}' not found on origin or locally — nothing to review yet"
+  fi
 
   mkdir -p "$CODE_ROOT/${repo}.worktrees"
-  # --detach attaches at origin/<branch> with no branch ref, so the
-  # implementer's worktree on the same branch is undisturbed.
-  git -C "$repo_root" worktree add --detach "$wt" "origin/${branch}" >&2
+  git -C "$repo_root" worktree add --detach "$wt" "$review_ref" >&2
 
   write_expected_identity "$repo_root" "$branch" true
 
@@ -224,17 +321,22 @@ case "${1:-}" in
     [ -n "$repo" ] && [ -n "$branch" ] || usage
     shift 2
     review=false
+    epic_branch=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --review) review=true; shift ;;
+        --epic)
+          [ $# -ge 2 ] || die "--epic requires the Epic integration branch name"
+          epic_branch="$2"; shift 2 ;;
         --from) die "--from is disabled: every newly-created branch must start from the resolved origin/main or origin/master" ;;
         *) die "unknown arg: $1" ;;
       esac
     done
     if [ "$review" = true ]; then
+      [ -z "$epic_branch" ] || die "--epic applies to implementer claims; review mode already falls back to local Epic-child branches"
       cmd_claim_review "$repo" "$branch"
     else
-      cmd_claim "$repo" "$branch"
+      cmd_claim "$repo" "$branch" "$epic_branch"
     fi
     ;;
 esac

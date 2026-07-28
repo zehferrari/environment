@@ -35,7 +35,9 @@ the operator sees exactly what changes on the host.
 | `update-managed-host.sh` | run as root | — | guarded subsequent-release command: clean fast-forward, frozen install, helper refresh, migrate/build/restart, and verification. |
 | `pm-verify-runner` | `-> /usr/local/sbin/pm-verify-runner` | root | repo-fetch-user runner behind `pm-verify-runner.service`; polls `/var/lib/pm/branch-verify/*.json` and invokes the TS verifier in the active worktree. |
 | `systemd/pm-verify-runner.service` | `/etc/systemd/system/` | root | runner unit (`User=<repo-fetch-user>`, templated; PM comments still use `<monitor-user>`). No sudo / no privileged step. |
-| `install-pm-verify.sh` | run as root | — | idempotent installer for the branch verifier (runner, unit, spool, RW drop-in). |
+| `pm-epic-merge-runner` | `-> /usr/local/sbin/pm-epic-merge-runner` | root | repo-push-user runner behind `pm-epic-merge-runner.service`; polls `/var/lib/pm/epic-merge/*.json` and invokes the TS merge/cleanup executor (`scripts/pm-epic-merge-job.ts`) in the active worktree. pm.service only enqueues — its sandbox cannot run git. |
+| `systemd/pm-epic-merge-runner.service` | `/etc/systemd/system/` | root | runner unit (`User=<repo-push-user>`, templated; PM comments still use `<monitor-user>`). No sudo / no privileged step; deliberately unsandboxed (needs `git worktree` + push across `/srv/Code`). |
+| `install-pm-verify.sh` | run as root | — | idempotent installer for the branch verifier **and** the epic-merge runner (runners, units, spools, RW drop-ins). |
 | `worktree-switch.sh` | `-> /usr/local/sbin/worktree-switch` | root | generic (ENV-107) build-and-flip driver for registered non-PM projects; reads the project contract from `/etc/worktree-preview/<key>.env`. |
 | `worktree-switch-runner` | `-> /usr/local/sbin/worktree-switch-runner` | root | monitor-run spool consumer behind `worktree-switch-runner@<key>.service`; understands `switch`/`on`/`off`/`remove`. |
 | `worktree-preview-apply` | `-> /usr/local/sbin/worktree-preview-apply` | root | privileged apply step for `node-service` projects (drop-ins + restart of `worktree-preview@<key>`). |
@@ -181,7 +183,8 @@ with `repositoryPath`) to Review through the workflow endpoint with
 into `/var/lib/pm/branch-verify/<jobId>.json`. The repo-fetch-user
 `pm-verify-runner.service` picks it up, finds the active PM worktree (by
 reading `pm.service`'s `WorkingDirectory`), and runs the TS verifier
-(`ai/web/scripts/pm-verify-branch-pushed.ts`) inside it. The verifier:
+(`ai/web/scripts/pm-verify-branch-pushed.ts`) inside it. For a standalone
+task the verifier:
 
 - fetches the effective deployment PR target branch and `<branchName>` on the
   local clone, then verifies the current target is an ancestor of
@@ -204,6 +207,42 @@ reading `pm.service`'s `WorkingDirectory`), and runs the TS verifier
 - writes a monitor-authored task Comment plus a `pm.repo.verify.ok` or
   `pm.repo.verify.fail` `ActivityLog` row.
 
+For an **Epic child** the job carries `epicChild: true` + the effective
+`epicBranch`, and the verifier switches to the local-only model (see
+[`MULTI_AGENT_WORKTREES.md`](./MULTI_AGENT_WORKTREES.md) § Local-only
+Epic-child branches): it verifies LOCAL `refs/heads/<branchName>` — Epic-child
+branches are never pushed and there is no auto-push — and the base gate runs
+against the Epic integration branch (local ref first, `origin/<epicBranch>`
+fallback) instead of the deployment target. Dirty-worktree, commit-prefix,
+identity, and live-rebuild checks are unchanged.
+
+## Epic-merge runner (local-only branch integration)
+
+`pm.service` runs sandboxed (`ProtectSystem=strict`, no repo in
+`ReadWritePaths`), so it cannot run `git worktree add`, fetch ref-writes, or
+push. All Epic git work is therefore spooled: the deployment-watcher poll
+(`lib/deploy/epic-merge.ts`) enqueues one JSON job per Done Epic-child task
+into `/var/lib/pm/epic-merge/`, and on Epic-Done a `kind:"cleanup"` job listing
+the Epic's child branches. The repo-push-user `pm-epic-merge-runner.service`
+consumes the spool and runs `scripts/pm-epic-merge-job.ts` in the active
+worktree, which:
+
+- **merge**: merges the task's LOCAL branch (`refs/heads/<taskBranch>`,
+  legacy `origin/<taskBranch>` fallback) into the Epic integration branch in a
+  throwaway detached worktree, pushes ONLY the Epic branch (eagerly after each
+  merge), fast-forwards the local Epic ref, and records `pm.epic.merge.ok` —
+  or bounces the task back to Review with a comment (conflict, or the task
+  branch does not exist anywhere: a missing branch is never a silent no-op);
+- **cleanup**: after the Epic is Done, verifies each child branch is an
+  ancestor of the pushed Epic branch, removes its worktree and local branch
+  via `worktree-remove --branch`, and posts one monitor-authored Epic comment
+  summarizing removed/failed (ACL-locked → "needs root") entries. Origin
+  branches are never deleted.
+
+Install/refresh both runners with `install-pm-verify.sh`; `PM_MERGE_RUN_USER`
+(default: `PM_VERIFY_RUN_USER`) must have SSH **write** access to push the
+Epic integration branch.
+
 If `pm.repo.verify.fail` reports `Unauthorized`, `permission denied`, or
 `Could not read from remote repository`, that is a monitor verifier
 credential problem. Set `PM_VERIFY_RUN_USER` to a local account that can fetch
@@ -213,8 +252,9 @@ then re-trigger `ready_for_review`. `PM_MONITOR_USER` is only the PM identity
 used for verifier comments and activity rows.
 
 The reviewer is only woken after `pm.repo.verify.ok`. If verification fails,
-the assignee is woken to commit/push/fix the branch unless the failure is a
-monitor repository-access problem. The task page also shows a Review
+the assignee is woken to commit/fix the branch (standalone tasks are also told
+to push; Epic children are explicitly told NOT to push) unless the failure is
+a monitor repository-access problem. The task page also shows a Review
 verification panel reading the latest `pm.repo.verify.*` row, so humans can see
 why the review is waiting. Install with
 `sudo PM_MONITOR_USER=<monitor-user> PM_VERIFY_RUN_USER=<repo-fetch-user> ai/web/deploy/install-pm-verify.sh`.

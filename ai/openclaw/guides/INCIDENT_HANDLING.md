@@ -6,15 +6,16 @@ You receive a system event whose text starts with `INCIDENT <id>` (where `<id>` 
 
 **Default to silence.** Most flaps self-heal before you even read them. If you can confirm the host is fine *right now*, suppress and log — don't bother zeh.
 
-## The tier framework — try twice, telegram on the third
+## The tier framework — three recovery attempts, telegram after the third fails
 
-Every alert key gets up to **three attempts** before zeh is paged:
+Every alert key gets up to **three recovery attempts** before zeh is
+paged; Telegram goes out only after the third attempt fails:
 
 | Tier | What happens | Telegram? |
 |---|---|---|
 | **1** | You take a bounded fix. ai-monitor checks if it worked after a 300 s confirmation window. | **No.** |
 | **2** | If the issue is still present after the window, you get a second handoff with `escalation_context` listing what tier 1 tried and why it didn't take. Try a different fix (usually heavier — restart over wake, restart-and-wake over wake-agent). | **No.** |
-| **3** | Still failing after a second window — ai-monitor sends Telegram itself with the full attempt history. You don't have to send it. | **Yes (by ai-monitor).** |
+| **3** | Your final recovery attempt — try the heaviest sensible fix. If the issue is still present after the confirmation window, Telegram goes out with the full attempt history (yours with context, or ai-monitor's if you didn't send one). | **Only if the fix fails.** |
 
 How you know which tier you're on:
 
@@ -59,7 +60,7 @@ The action you take depends on **kind** and **tier**. Look up your kind in this 
 | `task-stalled-no-progress` (session active, Jira not updating — heartbeat loop) | `restart-and-wake <user> "<key + focused brief>"` | `restart-and-wake <user>` again with sharper brief naming the file/test that's failing | Telegram. Probably a real bug the agent can't break out of. |
 | `agent-idle-with-queue` (idle, has Selected for Development / To Do tickets) | **Bypassed by ai-monitor** — ai-monitor runs `wake-agent` directly. You won't see this incident unless wake fails. If you do see it: tier-1 = `restart-and-wake`. | `restart-and-wake` again | Telegram. |
 | `email-awaiting-action` (Gmail task still `QUEUED` in `~/tasks/current.md`) | **Bypassed by ai-monitor** — ai-monitor runs `wake-agent` directly with the pending email subjects/message IDs. You won't see this incident unless wake fails. If you do see it: tier-1 = `restart-and-wake` and remind the agent to reply in the source email thread, include the required signature/runtime model, and move the task out of `QUEUED`. | `restart-and-wake` again | Telegram. |
-| `pm-*` workflow action (Mission Control rule drift) | **Bypassed by ai-monitor** — ai-monitor sends a native PM-channel workflow nudge with the full task context packet. You won't see this incident unless the deterministic ladder exhausts or a future config deliberately disables auto-action. | Restart agent services, then send the same PM-channel nudge again | Telegram with attempt history. |
+| `pm-*` workflow action (Mission Control rule drift) | **Bypassed by ai-monitor** — ai-monitor sends a native PM-channel workflow nudge with the full task context packet. `pm-epic-not-open` (task under a non-actionable Epic — status `Backlog`/`Done`) targets the Epic's acting manager. When the resolved nudge target is a human rather than an active agent, ai-monitor skips the ladder and service restarts and sends the human a single notification instead. A nudge run counts as recovered only when the run is alive (status `streaming`/`complete`, or freshly `accepted`) — a `failed` run never confirms. All pm-* kinds re-enter the recovery cycle after `pm_workflow.retry_after_tier3_seconds` following a Telegram. You won't see this incident unless the deterministic ladder exhausts or a future config deliberately disables auto-action. | Restart agent services, then send the same PM-channel nudge again | Telegram with attempt history. |
 | Stuck `openclaw-*` user service (`inactive`/`failed`/crash-loop) | `sudo /usr/local/sbin/openclaw-control restart-services <user> "ai-monitor incident <id>"` (idempotent — restarts every enabled `openclaw-*` unit for that user) | Same `restart-services <user>` again — sometimes a slow service needed a second pass | Telegram. |
 
 ### System service kinds (you now have permission to restart these)

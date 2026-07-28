@@ -71,7 +71,7 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/(app)/projects/[slug]` | kanban board (four workflow columns + a separate Backlog table, drag-and-drop, Backlog show/hide toggle); per-project tab bar (`project-tabs.tsx` in `layout.tsx`: Summary · Board · Epics · Tasks · Library · Code · Changes · Settings · Activity · Bin — Summary/Code/Changes only with a configured repo, Activity only when there is no Summary, Bin only when non-empty). Done cards older than `doneTtlDays` drop off the board. Task cards show the current workflow actor + `updated` time; Done cards show the reporter. |
 | `app/(app)/projects/[slug]/tasks` | flat task list across all statuses; shows the deployment indicator for standalone tasks. |
 | `app/(app)/projects/[slug]/tasks/[taskId]` | task editor — two-column. Main: inline title, description editor, sub-tasks (progress checklist), attachments, comments, Development section (deployment PRs) for standalone tasks. Sidebar: status, assignee, reviewer, epic picker, deployment status, dates. |
-| `app/(app)/projects/[slug]/epics` | epic list with status filter (Backlog / In Progress / Ready to Deploy / Done) + inline create (title + description + Acting Manager picker, then redirects into detail for attachments). |
+| `app/(app)/projects/[slug]/epics` | epic list with status filter (Backlog / To Do / In Progress / Done) + inline create (title + description + Acting Manager picker, then redirects into detail for attachments). |
 | `app/(app)/projects/[slug]/epics/[epicId]` | epic detail — acting manager + deploy reviewer, worker pool, status, deployment status + Development section (deployment PRs), attachments, tasks grouped by their own status, chat sidebar, Delete. |
 | `app/(app)/projects/[slug]/summary` | repo README render for repo-configured projects (hosts the activity agenda). |
 | `app/(app)/projects/[slug]/code` (+ `/code/raw`) | repo file browser / raw file serving. |
@@ -92,7 +92,8 @@ pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
 | `app/api/system/worktree-switch/status` | admin-only poll of the runner-maintained worktree-switch state (served worktree, inventory, current job). Drives the per-project **Worktree live preview** panel. |
 | `app/api/auth/[...nextauth]` | NextAuth route. |
 | `app/api/debug/sync` | owner-only manual trigger for the agent sync. |
-| `app/api/tasks/[id]/ack` | agent ack endpoint — auto To Do → In Progress, emits `task.ack_ready`. |
+| `app/api/tasks/[id]/ack` | agent ack endpoint — liveness ping only, no status transition (work starts via the workflow `start` action). |
+| `app/api/agent/tasks/[taskId]/{workflow,request-workflow-turn}` | token-scoped role-aware workflow actions (contract: [docs/agent-interaction.md](./docs/agent-interaction.md)); `request-workflow-turn` lets the task's current assignee request a fresh workflow turn with its PM-channel bearer (task in To Do/In Progress/Review, rate-limited 1 per task per 5 min, logged as `task.workflow.turn_requested`). |
 | `app/api/tasks/[id]/description` | agent description write-back. One-shot grant validated against the `allowDescriptionEdit` chat message. |
 | `app/api/epics/[id]/description` | agent description write-back for Epics. Same one-shot model. |
 | `app/api/agent/projects/[projectId]/proposals` | agent work-item proposal submission — grant-gated change-set (epics/tasks/sub-tasks + updates/comments), dry-run-validated and stored pending for human apply. Idempotent on `planId`. |
@@ -335,13 +336,21 @@ the task to `In Progress` and start immediately without posting a
 visible acknowledgement unless there is new task information.
 `Review` is reserved for completed implementation review; the resolved
 reviewer moves satisfied work to `Done` without approval-only comments,
-or leaves concise feedback/blockers while the task stays in `Review`.
+or returns it with concise feedback via `review_feedback`, which sends
+the task (feedback attached) to the FRONT of the To Do queue — agents
+never resume a task from `Review` in place. A human drag into `Review`
+triggers the same side effects as an agent `ready_for_review` (verify
+enqueue, reviewer wake, epic-queue refill preferring the freed worker).
 Server-side enforcement lives in `lib/workflow.ts`:
 `checkStatusTransition`, `checkAssignment`, `checkHierarchy`,
 `checkActingManager`, plus the token-scoped
 `POST /api/agent/tasks/[taskId]/workflow` endpoint for role-aware agent
-actions (`start`, `ready_for_review`, `review_feedback`, `review_done`,
-`triage_to_todo`; `submit_review` is a legacy alias for
+actions (`start` — To Do → In Progress only, gated on ≤1 In Progress
+task per agent per project plus a branch-clash check; `ready_for_review`
+— rejected while implementation sub-tasks remain open;
+`review_feedback`, `review_done`, `triage_to_todo`, `approve_plan`,
+`assign_after_plan_approval`, `add_subtask`, `complete_subtask`;
+`submit_review` is a deprecated alias for
 `ready_for_review`). Client rolls back optimistic moves on rejection. Done
 cards older than the project's `doneTtlDays` (default 5) are filtered
 out of the board server-side so the column doesn't grow without bound.
@@ -371,8 +380,10 @@ assignee, reviewer, status, key, or board presence. A task's board card shows a
 gradient as completion rises; To Do reads as an empty bar), and the per-step
 minutes sum into a cost roll-up shown on the task. Agent guidance pushes
 decomposing a Plan of Action into **independent, parallelizable** steps so the
-assignee can dispatch parallel sub-agents across multiple fronts and tick each
-off (with minutes) as it lands; when a task bounces back from Review, the
+assignee can dispatch parallel sub-agents across multiple fronts, and requires
+ticking each off (with minutes) the moment it lands — `ready_for_review` is
+refused while implementation sub-tasks remain open; when a task comes back
+from Review (`review_feedback` returns it to the front of To Do), the
 assignee adds a sub-task per feedback item so the bar stays honest. (The legacy
 self-referential `Task.parentTaskId` hierarchy is removed/dormant.) A task may
 also declare one **`blockedBy`** dependency (ENV-62) — another task that must
@@ -388,18 +399,26 @@ unchanged), epic picker (with "No epic"), and a
 created/updated dates panel. Tasks may live without an Epic; an Epic
 and its tasks can be assigned to different principals and the task
 keeps its own kanban status independent of the Epic's
-Backlog / In Progress / Ready to Deploy / Done status. All mutations
+Backlog / To Do / In Progress / Done status. All mutations
 write `ActivityLog`.
 
 **Epics (HOMELAB-47; principals reworked since).** `/projects/<slug>/epics`
 is a status-filtered list with inline create; `/projects/<slug>/epics/<id>`
 is the detail view. Epics have **no assignee**: they carry an **Acting
 manager** (workflow owner), a **Deploy reviewer** (for the
-Ready-to-Deploy review pass), and a **worker pool** (`EpicWorker`) of
+deployment-review pass), and a **worker pool** (`EpicWorker`) of
 coding agents the acting manager assigns child tasks from — one active
-task per worker per project (To Do / In Progress / Review), assigned
-sequentially. Status is Backlog / In Progress / Ready to Deploy / Done;
-child tasks are agent-actionable only while the Epic is In Progress.
+task per worker per project (To Do / In Progress; Review does not
+count), assigned
+sequentially. Status is Backlog / To Do / In Progress / Done —
+deployment lives on the separate `deploymentStatus` lane;
+child tasks are agent-actionable only while the Epic is To Do / In
+Progress. Child-task branches are LOCAL-ONLY: on task Done, PM's merge
+runner merges the local task branch into the epic integration branch
+and pushes only the epic branch to origin (child branches never reach
+origin — origin pushes trigger unwanted deployments); when the Epic
+reaches Done, merged local child branches and their worktrees are
+cleaned up.
 The detail view also shows status, description, attachments, the
 Development section (deployment status + PRs), and a tasks panel grouped
 by each task's own kanban status. Tasks linked into an Epic still drive
@@ -409,10 +428,13 @@ their workflow from the project board.
 `deploymentStatus` (default `Not Required`) plus a **Development**
 section listing `DeploymentPullRequest` rows; epic-child tasks deploy
 through their Epic, so deployment fields are shown/written only at the
-Epic level for them. Moving an Epic to **Ready to Deploy** kicks off the
+Epic level for them. The lane runs Not Required / Ready to Deploy /
+Deployment Approved / Successfully Deployed / Deployment Error;
+setting an Epic's deployment status to **Ready to Deploy** kicks off the
 deploy review (`Project.deployReviewPrompt` → deploy reviewer). A human
 approval emits `deployment.approved`; the monitor verifies pushed
-branches, opens the Bitbucket PR(s) (or records
+branches (for an Epic that is its integration branch — child branches
+stay local), opens the Bitbucket PR(s) (or records
 `local_changes_pending_approval`), and `instrumentation.node.ts` polls
 them — merge runs the project's on-merge script and each row ends in
 `deployed` / `deployment_error` / `declined` / `pipeline_failed` with the
@@ -542,7 +564,7 @@ session middleware; the route handler validates the grant, token, active
 agent, project binding, and single-use stamp. PM dry-run-validates every
 op under human-triggered grant semantics (active principals, project
 scope, hierarchy, known statuses, and valid task-status transitions; new
-tasks land in Backlog, new epics open) and stores a pending
+tasks and new epics land in Backlog) and stores a pending
 `WorkItemProposal`. The human reviews it in the chat
 (`proposal-review.tsx`) and clicks Apply — the whole change-set commits in
 one transaction (`lib/work-items/apply.ts`), attributed to the agent in

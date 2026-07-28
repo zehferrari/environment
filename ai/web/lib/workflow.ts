@@ -24,11 +24,15 @@ export function isTaskStatus(value: unknown): value is TaskStatus {
   );
 }
 
-// Allowed direct transitions per Stage 0 / HOMELAB-44:
+// Allowed direct transitions per Stage 0 / HOMELAB-44, amended by the
+// 2026-07 workflow overhaul (P1):
 //   Backlog → To Do
 //   To Do → In Progress  (also reversible to Backlog for re-triage)
 //   In Progress → Review (also reversible to To Do if work is dropped)
-//   Review → Done        (also reversible to In Progress if review re-opens)
+//   Review → Done        (review feedback returns Review → To Do FRONT via
+//                         the agent workflow endpoint's review_feedback
+//                         action or a human drag — there is NO
+//                         Review → In Progress resume edge)
 //   Done → Review        (re-open path; final close is still Done)
 //
 // "Reversible" edges exist for humans walking work back. Browser-session
@@ -39,7 +43,7 @@ const ALLOWED: Record<TaskStatus, ReadonlySet<TaskStatus>> = {
   Backlog: new Set<TaskStatus>(["To Do"]),
   "To Do": new Set<TaskStatus>(["In Progress", "Backlog"]),
   "In Progress": new Set<TaskStatus>(["Review", "To Do"]),
-  Review: new Set<TaskStatus>(["Done", "In Progress"]),
+  Review: new Set<TaskStatus>(["Done"]),
   Done: new Set<TaskStatus>(["Review"]),
 };
 
@@ -215,21 +219,8 @@ export function checkHierarchy(input: HierarchyInput): RuleResult {
   return { ok: true };
 }
 
-export interface AckInput {
-  status: TaskStatus | string;
-  actor: { id: string; kind: ActorKind };
-  assigneeId: string | null;
-}
-
-// Agent-ack auto-transition: when an agent acknowledges a wake on a
-// task they are assigned to and the task is in To Do, the server moves
-// the task to In Progress. Returns the next status, or null when no
-// auto-transition applies. Agents should normally use the native PM
-// workflow endpoint; this remains as a compatibility path for older
-// wake/ack clients.
-export function autoTransitionOnAck(input: AckInput): TaskStatus | null {
-  if (input.actor.kind !== "agent") return null;
-  if (input.assigneeId !== input.actor.id) return null;
-  if (input.status !== "To Do") return null;
-  return "In Progress";
-}
+// Agent-ack auto-transition was removed (2026-07 workflow overhaul): an ack
+// is a liveness ping only and never changes task status. Entering In Progress
+// happens exclusively through the workflow endpoint's `start` action (or
+// PM auto-start), where the per-project WIP and branch-clash guards run.
+// See app/api/tasks/[id]/ack/route.ts.

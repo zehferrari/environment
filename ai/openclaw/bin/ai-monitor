@@ -1703,11 +1703,13 @@ def _pm_current_workflow_slugs(row):
         slug = _pm_actor_slug(row, "assigneeAgentSlug", "assigneeUsername")
         return {slug} if slug else set()
     if status == "Review":
+        # Mirrors the webapp's resolveReviewOwnerId: the epic manager only
+        # backstops the review while the epic itself is In Progress.
         slug = (
             _pm_actor_slug(row, "reviewerAgentSlug", "reviewerUsername")
             or (
                 _pm_actor_slug(row, "epicManagerAgentSlug", "epicManagerUsername")
-                if row["epicStatus"] == "Open"
+                if row["epicStatus"] == "In Progress"
                 else None
             )
             or row["reporterUsername"]
@@ -1963,23 +1965,28 @@ def probe_pm_workflow(cfg, registry):
             status = row["status"]
             changed_age = _pm_age_s(row["statusChangedAt"]) or _pm_age_s(row["updatedAt"]) or 0
             assignee_slug = row["assigneeAgentSlug"] or row["assigneeUsername"]
+            # Reviewer fallback mirrors the webapp's resolveReviewOwnerId:
+            # epic manager only while the epic is In Progress, else reporter.
             reviewer_id = row["actingManagerId"] or (
-                row["epicManagerId"] if row["epicStatus"] == "Open" else None
+                row["epicManagerId"] if row["epicStatus"] == "In Progress" else None
             ) or row["reporterId"]
             reviewer_slug = (
                 row["reviewerAgentSlug"]
-                or (row["epicManagerAgentSlug"] if row["epicStatus"] == "Open" else None)
+                or (row["epicManagerAgentSlug"] if row["epicStatus"] == "In Progress" else None)
                 or row["reporterUsername"]
             )
 
-            if row["epicStatus"] and row["epicStatus"] != "Open" and status in ("To Do", "In Progress"):
+            # Epic actionability mirrors the webapp's epicAllowsAgentAction:
+            # tasks under an epic are workable only while the epic is
+            # To Do/In Progress; Backlog/Done epics gate their tasks.
+            if row["epicStatus"] and row["epicStatus"] not in ("To Do", "In Progress") and status in ("To Do", "In Progress"):
                 manager = row["epicManagerAgentSlug"] or row["epicManagerUsername"] or reviewer_slug
                 add(
                     row,
                     "pm-epic-not-open",
                     manager,
                     changed_age,
-                    "Open the Epic before agent work continues, or move the task back to Backlog.",
+                    "The parent Epic is not actionable (Backlog/Done). Move the Epic to To Do or In Progress before agent work continues, or move the task back to Backlog.",
                     extra={"assignee": assignee_slug},
                 )
                 continue
@@ -2086,13 +2093,18 @@ def probe_pm_workflow(cfg, registry):
                         row["assigneeId"],
                         _parse_pm_ts(feedback["createdAt"]),
                     ):
+                        # P1: agents cannot resume a Review task with start.
+                        # Informal feedback that never became review_feedback/
+                        # review_done leaves the task stuck — the REVIEWER
+                        # must formalize, so target them (kind slug kept for
+                        # state continuity).
                         add(
                             row,
                             "pm-review-feedback-awaiting-assignee",
-                            assignee_slug,
+                            reviewer_slug,
                             feedback_age,
-                            "Read the review feedback, respond in comments, and keep the task in Review until feedback is addressed.",
-                            extra={"reviewer": reviewer_slug, "comment_preview": (feedback["body"] or "")[:180]},
+                            "Feedback exists in comments but was never formalized. Call action=review_feedback with a concise summary (the task returns to the front of To Do for the assignee) or action=review_done if the work is acceptable.",
+                            extra={"assignee": assignee_slug, "comment_preview": (feedback["body"] or "")[:180]},
                         )
                     continue
                 response = _pm_latest_comment_not_by(conn, row["id"], row["assigneeId"], status_s)
@@ -2111,7 +2123,7 @@ def probe_pm_workflow(cfg, registry):
                                 "pm-review-response-awaiting-assignee",
                                 assignee_slug,
                                 response_age,
-                                "A reviewer/manager/reporter/human response arrived while this task is in Review. If this unblocks the assignee, resume with action=start, finish the follow-up, then call action=ready_for_review again.",
+                                "A reviewer/manager/reporter/human response arrived while this task is in Review. Reply in the task comments if a response is needed. Do not call action=start from Review — if code changes are required, the reviewer must call action=review_feedback to return the task to the front of To Do.",
                                 extra={"reviewer": reviewer_slug, "comment_preview": (response["body"] or "")[:180]},
                             )
                     continue
@@ -2121,7 +2133,7 @@ def probe_pm_workflow(cfg, registry):
                         "pm-review-awaiting-reviewer",
                         reviewer_slug,
                         changed_age,
-                        "Review the completed work. Move to Done if satisfied without posting an approval-only comment, or leave concise feedback/blockers while keeping the task in Review.",
+                        "Review the completed work. Move to Done if satisfied without posting an approval-only comment, or call action=review_feedback with concise feedback to send the task back to the front of To Do.",
                         extra={"assignee": assignee_slug},
                     )
     except Exception as e:
@@ -2802,11 +2814,35 @@ PM_WORKFLOW_RETRY_KINDS = {
     "pm-review-awaiting-reviewer",
     "pm-channel-no-start",
     "pm-channel-stalled",
+    "pm-epic-not-open",
 }
 
 
 def _is_pm_workflow_retry_kind(kind):
     return kind in PM_WORKFLOW_RETRY_KINDS
+
+
+def _pm_issue_target_user(issue):
+    """Target user/agent-slug of a pm:* workflow issue (unit pm:<user>/<taskId>)."""
+    unit = issue.get("unit", "") or ""
+    if not unit.startswith("pm:"):
+        return None
+    rest = unit[3:]
+    if "/" not in rest:
+        return None
+    return rest.split("/", 1)[0] or None
+
+
+def _is_active_agent_user(user, registry):
+    """True when `user` matches an enabled agent registry entry (user or slug).
+    PM workflow targets can resolve to humans (reporter, epic manager) —
+    those must never receive wake/restart/nudge actions."""
+    if not user or not registry:
+        return False
+    for a in (registry.get("agents") or []):
+        if a.get("enabled") and user in (a.get("user"), a.get("slug")):
+            return True
+    return False
 
 
 def get_monitor_agent(registry):
@@ -2980,15 +3016,19 @@ def _pm_channel_run_snapshot(cfg, agent, message_id):
     }
 
 
-def _pm_channel_run_confirmed(snapshot):
+def _pm_channel_run_confirmed(snapshot, accepted_window_s=120):
+    """Confirmed only when the run is actually alive: streaming/complete, or
+    accepted with a fresh lastEventAt. A failed run never confirms recovery
+    — streamSeq>0 on a failed run is a dead stream, not progress."""
     if not snapshot or not snapshot.get("ok"):
         return False
-    if snapshot.get("status") in ("streaming", "complete"):
+    status = snapshot.get("status")
+    if status in ("streaming", "complete"):
         return True
-    try:
-        return int(snapshot.get("streamSeq") or 0) > 0
-    except Exception:
-        return False
+    if status == "accepted":
+        age_s = _pm_age_s(snapshot.get("lastEventAt"))
+        return age_s is not None and age_s <= accepted_window_s
+    return False
 
 
 def _confirm_pm_nudge_results(cfg, user, nudge_results):
@@ -3088,7 +3128,7 @@ def _merge_recovery_results(*parts):
     return merged
 
 
-def restart_and_wake_stalled_agents(no_agent_issues, cfg=None):
+def restart_and_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
     """Tier-2 escalation for bypass-monitor kinds: instead of `wake-agent`,
     run `openclaw-control restart-and-wake <user> <reminder>`. Same shape
     as auto_wake_stalled_agents — same grouping by user, same idle re-probe
@@ -3133,11 +3173,33 @@ def restart_and_wake_stalled_agents(no_agent_issues, cfg=None):
             bucket["pm_tasks"].append({
                 "task_id": tail,
                 "kind": kind,
-                "reason": (issue.get("reason") or "")[:240],
+                # Keep the probe's full "Required action:" tail intact — a
+                # tighter cap truncated the nudge's required-action text
+                # mid-sentence.
+                "reason": (issue.get("reason") or "")[:600],
             })
 
     results = {}
     for user, b in by_user.items():
+        if registry is not None and not _is_active_agent_user(user, registry):
+            # Human (or inactive-agent) target: never restart services or
+            # send agent nudges at a non-agent user. The bypass ladder
+            # telegrams the human separately; just record the skip here.
+            results[user] = {
+                "tickets": b["tickets"],
+                "queue_keys": b["queue_keys"],
+                "emails": b["emails"],
+                "pm_tasks": b["pm_tasks"],
+                "wake_rc": 0,
+                "wake_err": "",
+                "post_idle_s": None,
+                "recovered": False,
+                "email_results": {},
+                "all_email_resolved": None,
+                "action": "human-target-skip",
+                "human_target": True,
+            }
+            continue
         if _bucket_only_pm(b):
             restart_cmd = [
                 "sudo", "-n", "/usr/local/sbin/openclaw-control",
@@ -3235,7 +3297,7 @@ def restart_and_wake_stalled_agents(no_agent_issues, cfg=None):
     return results
 
 
-def auto_wake_stalled_agents(no_agent_issues, cfg=None):
+def auto_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
     """Deterministic fallback when the monitor suppresses an issue that REQUIRED
     a wake without performing one. Handles two kinds:
       - task-stalled-no-agent (ticket-attached) — reminder names the ticket(s)
@@ -3290,11 +3352,33 @@ def auto_wake_stalled_agents(no_agent_issues, cfg=None):
             bucket["pm_tasks"].append({
                 "task_id": tail,
                 "kind": kind,
-                "reason": (issue.get("reason") or "")[:240],
+                # Keep the probe's full "Required action:" tail intact — a
+                # tighter cap truncated the nudge's required-action text
+                # mid-sentence.
+                "reason": (issue.get("reason") or "")[:600],
             })
 
     results = {}
     for user, b in by_user.items():
+        if registry is not None and not _is_active_agent_user(user, registry):
+            # Human (or inactive-agent) target: never wake/restart or send
+            # agent nudges at a non-agent user. The bypass ladder telegrams
+            # the human separately; just record the skip here.
+            results[user] = {
+                "tickets": b["tickets"],
+                "queue_keys": b["queue_keys"],
+                "emails": b["emails"],
+                "pm_tasks": b["pm_tasks"],
+                "wake_rc": 0,
+                "wake_err": "",
+                "post_idle_s": None,
+                "recovered": False,
+                "email_results": {},
+                "all_email_resolved": None,
+                "action": "human-target-skip",
+                "human_target": True,
+            }
+            continue
         if _bucket_only_pm(b):
             restart_rc = None
             restart_err = ""
@@ -3870,6 +3954,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
             "pm-review-awaiting-reviewer",
             "pm-channel-no-start",
             "pm-channel-stalled",
+            "pm-epic-not-open",
         }
         configured_auto_action_kinds = (
             triage_cfg.get("auto_action_kinds_bypass_monitor")
@@ -3888,6 +3973,58 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
         max_attempts = int(ladder_cfg.get("max_attempts", 3))
 
         if auto_issues and not dry_run:
+            # Human-target safety: pm-* drift whose resolved target is not an
+            # active agent (e.g. a human reporter or epic manager) must never
+            # enter the wake/restart/nudge ladder. Send one Telegram for the
+            # human and park the event on the post-tier-3 cooldown.
+            human_target_issues = []
+            routed_issues = []
+            for i in auto_issues:
+                target = _pm_issue_target_user(i)
+                if target and not _is_active_agent_user(target, registry):
+                    human_target_issues.append(i)
+                else:
+                    routed_issues.append(i)
+            if human_target_issues:
+                pm_retry_cooldown_s = int(
+                    (cfg.get("pm_workflow") or {}).get(
+                        "retry_after_tier3_seconds",
+                        max(1800, confirmation_window_s),
+                    )
+                )
+                tg_parts = ["👤 PM workflow: human action required (agent ladder skipped)"]
+                for i in human_target_issues:
+                    tg_parts.append(
+                        f"\n• @{_pm_issue_target_user(i)} — {i.get('kind')}: "
+                        f"{(i.get('reason') or '')[:300]}"
+                    )
+                r = send_telegram(cfg, "".join(tg_parts), registry=registry)
+                for i in human_target_issues:
+                    k = event_key(i)
+                    ev = state["events"].get(k, {})
+                    ev.setdefault("attempt_history", []).append({
+                        "ts": now,
+                        "tier": 0,
+                        "kind": i.get("kind"),
+                        "route": "human-target",
+                        "action": "telegram-human",
+                        "target": _pm_issue_target_user(i),
+                        "telegram_result": r,
+                    })
+                    if r.get("ok"):
+                        ev["attempts"] = 0
+                        ev["next_attempt_after"] = now + max(300, pm_retry_cooldown_s)
+                        ev["last_human_notify"] = now
+                actions.append({
+                    "type": "pm_human_target_notified",
+                    "keys": [event_key(i) for i in human_target_issues],
+                    "targets": sorted({
+                        _pm_issue_target_user(i) for i in human_target_issues
+                    }),
+                    "result": r,
+                })
+                auto_issues = routed_issues
+
             # Tier framework for bypass-monitor kinds:
             #   T1 = wake-agent / native PM-channel nudge
             #   T2 = restart-and-wake / restart services + PM-channel nudge
@@ -3922,7 +4059,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                     if i.get("kind") != "user-manager-bus-broken"
                 ]
                 wake_results = _merge_recovery_results(
-                    auto_wake_stalled_agents(wake_issues, cfg) if wake_issues else {},
+                    auto_wake_stalled_agents(wake_issues, cfg, registry) if wake_issues else {},
                     auto_repair_user_managers(manager_issues) if manager_issues else {},
                 )
                 for i in tier1_issues:
@@ -3954,7 +4091,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                     if i.get("kind") != "user-manager-bus-broken"
                 ]
                 rw_results = _merge_recovery_results(
-                    restart_and_wake_stalled_agents(wake_issues, cfg) if wake_issues else {},
+                    restart_and_wake_stalled_agents(wake_issues, cfg, registry) if wake_issues else {},
                     auto_repair_user_managers(manager_issues) if manager_issues else {},
                 )
                 for i in tier2_issues:
@@ -3986,7 +4123,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                     if i.get("kind") != "user-manager-bus-broken"
                 ]
                 final_results = _merge_recovery_results(
-                    restart_and_wake_stalled_agents(wake_issues, cfg) if wake_issues else {},
+                    restart_and_wake_stalled_agents(wake_issues, cfg, registry) if wake_issues else {},
                     auto_repair_user_managers(manager_issues) if manager_issues else {},
                 )
                 for i in tier3_issues:
@@ -4177,6 +4314,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                         "pm-review-feedback-awaiting-assignee": ("wake-agent", "restart-and-wake"),
                         "pm-review-response-awaiting-assignee": ("wake-agent", "restart-and-wake"),
                         "pm-review-awaiting-reviewer": ("wake-agent", "restart-and-wake"),
+                        "pm-epic-not-open": ("wake-agent", "restart-and-wake"),
                         "pm-channel-no-start": ("pm-channel-nudge", "restart-services"),
                         "pm-channel-stalled": ("pm-channel-nudge", "restart-services"),
                     }
@@ -4208,12 +4346,13 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                                 "pm-review-feedback-awaiting-assignee",
                                 "pm-review-response-awaiting-assignee",
                                 "pm-review-awaiting-reviewer",
+                                "pm-epic-not-open",
                                 "pm-channel-no-start",
                                 "pm-channel-stalled",
                             )
                         ]
                         wake_results = (
-                            auto_wake_stalled_agents(no_agent_issues, cfg)
+                            auto_wake_stalled_agents(no_agent_issues, cfg, registry)
                             if no_agent_issues else {}
                         )
                         all_recovered = bool(wake_results) and all(

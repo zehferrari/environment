@@ -6,8 +6,8 @@ import { join } from "node:path";
 
 // Pure git operations for Epic-branch auto-merge — deliberately free of any DB /
 // app imports so the merge logic can be unit-tested against real throwaway
-// repositories. The DB orchestration (poll / record / bounce) lives in
-// lib/deploy/epic-merge.ts.
+// repositories. The DB orchestration (poll / enqueue / record / bounce) lives in
+// lib/deploy/epic-merge.ts and runs through the pm-epic-merge-runner spool.
 
 const execFileAsync = promisify(execFile);
 
@@ -35,16 +35,56 @@ async function originRefExists(repoPath: string, branch: string) {
   return gitOk(repoPath, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}^{commit}`]);
 }
 
+async function localRefExists(repoPath: string, branch: string) {
+  return gitOk(repoPath, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
+}
+
+async function isAncestor(repoPath: string, maybeAncestor: string, ref: string) {
+  return gitOk(repoPath, ["merge-base", "--is-ancestor", maybeAncestor, ref]);
+}
+
+// True when refs/heads/<branch> is checked out in the primary checkout or any
+// linked worktree — `git branch -f` refuses to move a checked-out ref.
+async function branchCheckedOut(repoPath: string, branch: string) {
+  try {
+    const out = await git(repoPath, ["worktree", "list", "--porcelain"]);
+    return out.split("\n").includes(`branch refs/heads/${branch}`);
+  } catch {
+    return true; // unknown — be conservative, skip the ref update
+  }
+}
+
+// Best-effort: keep the local Epic ref in step with what was just pushed so
+// local-only child branches (P6) always have a fresh local merge target and
+// claim-branch --epic bases new siblings on current work. Never moves a
+// checked-out or diverged ref; failures are ignored (origin stays canonical).
+async function fastForwardLocalEpicRef(repoPath: string, epicBranch: string, sha: string) {
+  if (await branchCheckedOut(repoPath, epicBranch)) return;
+  if (!(await localRefExists(repoPath, epicBranch))) {
+    await gitOk(repoPath, ["branch", epicBranch, sha]);
+    return;
+  }
+  if (await isAncestor(repoPath, `refs/heads/${epicBranch}`, sha)) {
+    await gitOk(repoPath, ["branch", "-f", epicBranch, sha]);
+  }
+}
+
 export type EpicMergeResult =
   | { ok: true; kind: "merged"; sha: string }
   | { ok: true; kind: "already" }
   | { ok: true; kind: "noop"; note: string }
   | { ok: false; reason: string };
 
-// Merge origin/<taskBranch> into origin/<epicBranch> (creating the Epic branch
-// from origin/<baseBranch> when it does not exist yet) and push it back. Never
-// touches the shared working tree: all work happens in a throwaway detached
-// worktree. Returns a discriminated result; the caller decides how to record it.
+// Merge a Done task's branch into the Epic integration branch (creating the
+// Epic branch from origin/<baseBranch> when it does not exist yet) and push
+// only the Epic branch back. Task branches are LOCAL-ONLY under the P6 model:
+// the merge source is refs/heads/<taskBranch> first, with origin/<taskBranch>
+// kept as a legacy fallback for branches pushed before the policy change. A
+// task branch missing from BOTH is a bounce (ok:false), never a silent no-op —
+// treating it as a no-op would record pm.epic.merge.ok for work that was never
+// integrated. Never touches the shared working tree: all work happens in a
+// throwaway detached worktree. Returns a discriminated result; the caller
+// decides how to record it.
 export async function mergeTaskBranchIntoEpic(args: {
   repoPath: string;
   epicBranch: string;
@@ -63,31 +103,71 @@ export async function mergeTaskBranchIntoEpic(args: {
 
   // Refresh origin refs. An earlier task in the same poll may have advanced the
   // Epic branch; --prune keeps deleted branches from lingering as stale refs.
-  await git(repoPath, ["fetch", "--quiet", "--prune", "origin"]).catch(() => {});
-
-  if (!(await originRefExists(repoPath, taskBranch))) {
-    // No branch on origin means the task carried no pushed code (e.g. a non-code
-    // Epic child). Nothing to integrate — treat as a clean no-op.
-    return { ok: true, kind: "noop", note: `no origin branch \`${taskBranch}\` — nothing to merge` };
-  }
-
-  const epicExists = await originRefExists(repoPath, epicBranch);
-  if (epicExists) {
-    const already = await gitOk(repoPath, [
-      "merge-base",
-      "--is-ancestor",
-      `origin/${taskBranch}`,
-      `origin/${epicBranch}`,
-    ]);
-    if (already) return { ok: true, kind: "already" };
-  } else if (!(await originRefExists(repoPath, baseBranch))) {
+  // The runner executing this has full network/SSH, so a fetch failure means
+  // every origin/* decision below would run on stale refs — bounce instead.
+  try {
+    await git(repoPath, ["fetch", "--quiet", "--prune", "origin"]);
+  } catch (err) {
+    const detail = String(err instanceof Error ? err.message : err).slice(0, 200);
     return {
       ok: false,
-      reason: `Neither the Epic branch \`${epicBranch}\` nor its base branch \`${baseBranch}\` exists on origin, so the Epic integration branch could not be created.`,
+      reason: `\`git fetch origin\` failed for the merge runner (${detail}) — refusing to merge \`${taskBranch}\` against possibly stale refs. Fix runner connectivity/credentials, then move the task to Done again.`,
     };
   }
 
-  const base = epicExists ? `origin/${epicBranch}` : `origin/${baseBranch}`;
+  let source: string;
+  if (await localRefExists(repoPath, taskBranch)) {
+    source = `refs/heads/${taskBranch}`;
+  } else if (await originRefExists(repoPath, taskBranch)) {
+    source = `refs/remotes/origin/${taskBranch}`;
+  } else {
+    return {
+      ok: false,
+      reason: `Task branch \`${taskBranch}\` was not found locally (refs/heads) or on origin — do not mark the task Done until the branch exists. Commit your work locally on \`${taskBranch}\` (Epic-child branches are never pushed), then move the task to Done again.`,
+    };
+  }
+
+  const localEpicExists = await localRefExists(repoPath, epicBranch);
+  const originEpicExists = await originRefExists(repoPath, epicBranch);
+
+  // Ancestor short-circuit, local ref first: a manual/local integration counts,
+  // but origin must contain it too before we call it done — push the Epic
+  // branch eagerly when origin is behind so the pushed Epic ref stays the
+  // canonical record (cleanup verifies against it).
+  const inLocalEpic = localEpicExists && (await isAncestor(repoPath, source, `refs/heads/${epicBranch}`));
+  const inOriginEpic = originEpicExists && (await isAncestor(repoPath, source, `refs/remotes/origin/${epicBranch}`));
+  if (inOriginEpic) {
+    if (inLocalEpic || !localEpicExists) return { ok: true, kind: "already" };
+    // origin has it, local ref is stale — refresh it best-effort.
+    const originSha = await git(repoPath, ["rev-parse", `refs/remotes/origin/${epicBranch}`]).catch(() => null);
+    if (originSha) await fastForwardLocalEpicRef(repoPath, epicBranch, originSha);
+    return { ok: true, kind: "already" };
+  }
+  if (inLocalEpic) {
+    if (!(await gitOk(repoPath, ["push", "origin", `refs/heads/${epicBranch}:refs/heads/${epicBranch}`]))) {
+      return {
+        ok: false,
+        reason: `\`${taskBranch}\` is already merged into the local Epic branch \`${epicBranch}\`, but pushing the Epic branch to origin failed (permissions or a concurrent update).`,
+      };
+    }
+    return { ok: true, kind: "already" };
+  }
+
+  let base: string;
+  if (originEpicExists) {
+    base = `refs/remotes/origin/${epicBranch}`;
+  } else if (localEpicExists) {
+    // Epic branch created locally (claim-branch --epic) but never pushed yet.
+    base = `refs/heads/${epicBranch}`;
+  } else if (await originRefExists(repoPath, baseBranch)) {
+    base = `refs/remotes/origin/${baseBranch}`;
+  } else {
+    return {
+      ok: false,
+      reason: `Neither the Epic branch \`${epicBranch}\` (local or origin) nor its base branch \`${baseBranch}\` exists on origin, so the Epic integration branch could not be created.`,
+    };
+  }
+
   const identityEnv: Record<string, string> = {
     GIT_AUTHOR_NAME: args.gitUserName,
     GIT_AUTHOR_EMAIL: args.gitUserEmail,
@@ -103,14 +183,14 @@ export async function mergeTaskBranchIntoEpic(args: {
     }
     const merged = await gitOk(
       wt,
-      ["merge", "--no-ff", "--no-edit", "-m", args.message, `origin/${taskBranch}`],
+      ["merge", "--no-ff", "--no-edit", "-m", args.message, source],
       identityEnv,
     );
     if (!merged) {
       await gitOk(wt, ["merge", "--abort"]);
       return {
         ok: false,
-        reason: `Merging \`${taskBranch}\` into the Epic branch \`${epicBranch}\` hit a conflict. Rebase your branch on \`${epicBranch}\`, resolve the conflict, push, then move the task to Done again.`,
+        reason: `Merging \`${taskBranch}\` into the Epic branch \`${epicBranch}\` hit a conflict. Merge the Epic branch \`${epicBranch}\` into your task branch (or rebase onto it), resolve the conflict, commit the resolution locally, then move the task to Done again. Do not push Epic-child branches.`,
       };
     }
     const sha = await git(wt, ["rev-parse", "HEAD"]);
@@ -120,6 +200,7 @@ export async function mergeTaskBranchIntoEpic(args: {
         reason: `Merged \`${taskBranch}\` locally but pushing the Epic branch \`${epicBranch}\` to origin failed (permissions or a concurrent update).`,
       };
     }
+    await fastForwardLocalEpicRef(repoPath, epicBranch, sha);
     return { ok: true, kind: "merged", sha };
   } finally {
     await gitOk(repoPath, ["worktree", "remove", "--force", wt]);

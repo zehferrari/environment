@@ -1,7 +1,10 @@
 // pm-verify-branch-pushed — monitor-side branch verifier.
 //
 // Consumes ONE spool job dropped when an assignee moves a code-touching task to
-// Review. The monitor verifies the task branch before any reviewer is woken:
+// Review. The monitor verifies the task branch before any reviewer is woken.
+//
+// Standalone tasks (no epic — the branch goes to origin and PRs against the
+// deployment target):
 //   1. resolve the branch's local worktree when available;
 //   2. fail if that worktree still has uncommitted changes;
 //   3. push clean local branch commits that have not reached origin yet;
@@ -9,6 +12,13 @@
 //   5. verify origin/<branch> contains the task prefix with the right identity;
 //   6. if this branch is the currently served PM worktree, rebuild/restart it;
 //   7. wake the reviewer only after the gate passes, otherwise wake the assignee.
+//
+// Epic children (job.epicChild — P6 local-only branches, NEVER pushed):
+//   the verified ref is LOCAL refs/heads/<branch>; the base gate runs against
+//   the Epic integration branch (local refs/heads/<epicBranch>, falling back
+//   to origin/<epicBranch>) instead of the deployment target; there is no
+//   auto-push and no local-vs-origin sync check. Commit-prefix, identity,
+//   dirty-worktree, live-rebuild, and wake gating are unchanged.
 //
 // Invoked as: pnpm exec tsx scripts/pm-verify-branch-pushed.ts <job-file>
 
@@ -28,6 +38,8 @@ import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { isProtectedBranch, parseProtectedBranches } from "@/lib/projects/protected-branches";
 import {
   fetchVerificationBranch,
+  resolveEpicVerificationBase,
+  validateEpicBase,
   validateOriginBase,
   type BranchBaseValidation,
 } from "@/lib/deploy/branch-base";
@@ -168,11 +180,11 @@ async function currentBranch(repo: string) {
   return gitOrNull(repo, ["rev-parse", "--abbrev-ref", "HEAD"], { timeout: 10_000 });
 }
 
-async function readLog(repo: string, branch: string, baseBranch: string): Promise<{ commits: GitCommit[]; error: string | null }> {
+async function readLog(repo: string, baseRef: string, branchRef: string): Promise<{ commits: GitCommit[]; error: string | null }> {
   try {
     const stdout = await git(
       repo,
-      ["log", `origin/${baseBranch}..origin/${branch}`, "--format=%H|%an|%ae|%cn|%ce|%aI|%s"],
+      ["log", `${baseRef}..${branchRef}`, "--format=%H|%an|%ae|%cn|%ce|%aI|%s"],
       { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
     );
     return { commits: parseLog(stdout), error: null };
@@ -206,7 +218,7 @@ function identityMismatch(commit: GitCommit | null, expected: ExpectedIdentity |
   };
 }
 
-async function localState(job: BranchVerifyJob): Promise<LocalState> {
+async function localState(job: BranchVerifyJob, epicMode: boolean): Promise<LocalState> {
   const worktreePath = await branchWorktree(job.repositoryPath, job.branchName);
   const repoBranch = await currentBranch(job.repositoryPath);
   const checkPath = worktreePath ?? (repoBranch === job.branchName ? job.repositoryPath : null);
@@ -223,14 +235,18 @@ async function localState(job: BranchVerifyJob): Promise<LocalState> {
   }
 
   const localSha = await gitOrNull(commandPath, ["rev-parse", "--verify", `refs/heads/${job.branchName}`], { timeout: 10_000 });
-  let remoteSha = await gitOrNull(commandPath, ["rev-parse", "--verify", `refs/remotes/origin/${job.branchName}`], { timeout: 10_000 });
+  let remoteSha = epicMode
+    ? null
+    : await gitOrNull(commandPath, ["rev-parse", "--verify", `refs/remotes/origin/${job.branchName}`], { timeout: 10_000 });
   let pushed = false;
   let pushError: string | null = null;
 
-  // A missing remote feature branch makes the initial fetch fail, but a clean
-  // local branch is precisely what the monitor is expected to publish. Git
-  // still rejects non-fast-forward pushes, so attempting this is fail-safe.
-  if (!dirtyStatus && !dirtyError && localSha && localSha !== remoteSha) {
+  // Standalone recovery push only. A missing remote feature branch makes the
+  // initial fetch fail, but a clean local branch is precisely what the monitor
+  // is expected to publish. Git still rejects non-fast-forward pushes, so
+  // attempting this is fail-safe. Epic children are NEVER pushed (P6): the
+  // local ref is the verified artifact and the epic-merge runner consumes it.
+  if (!epicMode && !dirtyStatus && !dirtyError && localSha && localSha !== remoteSha) {
     try {
       await git(commandPath, ["push", "origin", `${job.branchName}:${job.branchName}`], { timeout: 90_000, maxBuffer: 1024 * 1024 });
       pushed = true;
@@ -312,6 +328,8 @@ function authLikeError(value: string | null) {
 
 function renderOkBody(args: {
   branchName: string;
+  branchRefLabel: string;
+  epicMode: boolean;
   head: GitCommit;
   match: GitCommit;
   commitPrefix: string | null;
@@ -321,7 +339,7 @@ function renderOkBody(args: {
   rebuild: RebuildResult;
 }): string {
   const lines = [
-    `origin/${args.branchName} verified by the monitor agent.`,
+    `${args.branchRefLabel} verified by the monitor agent.`,
     "",
     `- HEAD: \`${args.head.sha.slice(0, 10)}\` - ${args.head.subject}`,
     `  - ${authorLabel(args.head)} @ ${args.head.date}`,
@@ -338,9 +356,16 @@ function renderOkBody(args: {
   } else {
     lines.push("- No COMMIT_PREFIX configured on task/epic; HEAD treated as the verified state.");
   }
-  lines.push(
-    `- Base verified: origin/${args.baseValidation.baseBranch} \`${args.baseValidation.originBaseSha?.slice(0, 10)}\` is an ancestor of \`origin/${args.branchName}\`.`,
-  );
+  if (args.epicMode) {
+    lines.push(
+      `- Base verified: Epic branch \`${args.baseValidation.baseBranch}\` \`${args.baseValidation.originBaseSha?.slice(0, 10)}\` is an ancestor of \`refs/heads/${args.branchName}\`.`,
+      `- Epic-child branch: local-only by design — never pushed. It is auto-merged into \`${args.baseValidation.baseBranch}\` when the task reaches Done.`,
+    );
+  } else {
+    lines.push(
+      `- Base verified: origin/${args.baseValidation.baseBranch} \`${args.baseValidation.originBaseSha?.slice(0, 10)}\` is an ancestor of \`origin/${args.branchName}\`.`,
+    );
+  }
   if (args.state.pushed) {
     lines.push(`- Monitor pushed the clean local branch to \`origin/${args.branchName}\`.`);
   }
@@ -356,19 +381,23 @@ function renderOkBody(args: {
   return lines.join("\n");
 }
 
-function renderProtectedBranchBody(args: { branchName: string; protectedBranches: string[] }) {
+function renderProtectedBranchBody(args: { branchName: string; epicMode: boolean; protectedBranches: string[] }) {
   return [
-    `origin/${args.branchName} is blocked from reviewer hand-off.`,
+    `Branch \`${args.branchName}\` is blocked from reviewer hand-off.`,
     "",
     `- Branch \`${args.branchName}\` is configured as a protected agent branch for this project.`,
     args.protectedBranches.length > 0 ? `- Protected branches: ${args.protectedBranches.map((branch) => `\`${branch}\``).join(", ")}.` : null,
     "",
-    "Assignee: resume the task, move code-changing work to an allowed task branch, push it, then call `ready_for_review` again.",
+    args.epicMode
+      ? "Assignee: move code-changing work to an allowed task branch, commit it locally (Epic-child branches are never pushed), then call `ready_for_review` again."
+      : "Assignee: move code-changing work to an allowed task branch, push it, then call `ready_for_review` again.",
   ].filter(Boolean).join("\n");
 }
 
 function renderFailBody(args: {
   branchName: string;
+  branchRefLabel: string;
+  epicMode: boolean;
   head: GitCommit | null;
   match: GitCommit | null;
   commitPrefix: string | null;
@@ -380,7 +409,10 @@ function renderFailBody(args: {
   rebuild: RebuildResult | null;
 }): string {
   const monitorAccessError = authLikeError(args.fetchError) || authLikeError(args.state.pushError);
-  const lines = [`origin/${args.branchName} is not ready for reviewer hand-off.`, ""];
+  const baseLabel = args.epicMode
+    ? `Epic branch ${args.baseValidation.baseBranch}`
+    : `origin/${args.baseValidation.baseBranch}`;
+  const lines = [`${args.branchRefLabel} is not ready for reviewer hand-off.`, ""];
   if (args.state.dirtyError) lines.push(`- Local worktree status check failed: \`${args.state.dirtyError}\``);
   if (args.state.dirtyStatus) {
     lines.push(
@@ -393,21 +425,25 @@ function renderFailBody(args: {
   if (args.fetchError) lines.push(`- Fetching origin/${args.baseValidation.baseBranch} and origin/${args.branchName} failed: ${args.fetchError}`);
   if (args.state.pushError) lines.push(`- Monitor could not push \`${args.branchName}\` to origin: \`${args.state.pushError}\``);
   if (args.logError) lines.push(`- \`git log\` failed: \`${args.logError}\``);
-  if (args.state.localSha && args.state.remoteSha && args.state.localSha !== args.state.remoteSha) {
+  if (!args.epicMode && args.state.localSha && args.state.remoteSha && args.state.localSha !== args.state.remoteSha) {
     lines.push(
       `- Local branch head \`${args.state.localSha.slice(0, 10)}\` does not match origin head \`${args.state.remoteSha.slice(0, 10)}\`.`,
     );
   }
   if (!args.head) {
-    lines.push(`- No commits found on \`origin/${args.branchName}\`. Was the branch pushed?`);
+    lines.push(
+      args.epicMode
+        ? `- No commits found on \`refs/heads/${args.branchName}\` beyond the Epic branch base. Commit your work locally on the task branch.`
+        : `- No commits found on \`origin/${args.branchName}\`. Was the branch pushed?`,
+    );
   } else {
-    lines.push(`- HEAD on origin/${args.branchName}: \`${args.head.sha.slice(0, 10)}\` - ${args.head.subject} (${authorLabel(args.head)} @ ${args.head.date})`);
+    lines.push(`- HEAD on ${args.branchRefLabel}: \`${args.head.sha.slice(0, 10)}\` - ${args.head.subject} (${authorLabel(args.head)} @ ${args.head.date})`);
     if (args.commitPrefix) {
       if (args.match) {
         lines.push(`- Latest \`${args.commitPrefix}\`-prefixed commit visible locally: \`${args.match.sha.slice(0, 10)}\` - ${args.match.subject}`);
       } else {
         lines.push(
-          `- None of the last 20 commits on \`origin/${args.branchName}\` start with \`${args.commitPrefix}\`.`,
+          `- None of the last 20 commits on \`${args.branchRefLabel}\` start with \`${args.commitPrefix}\`.`,
         );
       }
     }
@@ -415,8 +451,8 @@ function renderFailBody(args: {
   if (!args.baseValidation.ok) {
     lines.push(
       `- Branch-base validation failed: ${args.baseValidation.error}.`,
-      `  - origin/${args.baseValidation.baseBranch}: ${args.baseValidation.originBaseSha?.slice(0, 10) ?? "unavailable"}`,
-      `  - origin/${args.branchName}: ${args.baseValidation.branchSha?.slice(0, 10) ?? "unavailable"}`,
+      `  - ${baseLabel}: ${args.baseValidation.originBaseSha?.slice(0, 10) ?? "unavailable"}`,
+      `  - ${args.branchRefLabel}: ${args.baseValidation.branchSha?.slice(0, 10) ?? "unavailable"}`,
       `  - merge base: ${args.baseValidation.mergeBaseSha?.slice(0, 10) ?? "unavailable"}`,
     );
   }
@@ -437,9 +473,13 @@ function renderFailBody(args: {
     );
   } else if (args.rebuild?.attempted && !args.rebuild.ok) {
     lines.push("Fix the live PM rebuild/restart failure, then re-trigger `ready_for_review` so the reviewer is woken only after the live build is healthy.");
+  } else if (args.epicMode) {
+    lines.push(
+      `Assignee: commit any local changes with \`${args.commitPrefix ?? "<COMMIT_PREFIX not set>"}\` at the start of every commit message on the LOCAL branch \`${args.branchName}\` — do NOT push Epic-child branches — then call \`ready_for_review\` again.`,
+    );
   } else {
     lines.push(
-      `Assignee: resume the task, commit any local changes with \`${args.commitPrefix ?? "<COMMIT_PREFIX not set>"}\` at the start of every commit message, push \`origin/${args.branchName}\`, then call \`ready_for_review\` again.`,
+      `Assignee: commit any local changes with \`${args.commitPrefix ?? "<COMMIT_PREFIX not set>"}\` at the start of every commit message, push \`origin/${args.branchName}\`, then call \`ready_for_review\` again.`,
     );
   }
   return lines.join("\n");
@@ -462,6 +502,7 @@ async function monitorActor() {
 async function notifyAfterGate(args: {
   job: BranchVerifyJob;
   actor: Awaited<ReturnType<typeof monitorActor>>;
+  epicMode: boolean;
   verifiedOk: boolean;
   reviewReady: boolean;
   summary: string;
@@ -507,7 +548,9 @@ async function notifyAfterGate(args: {
     body: [
       `Monitor validation did not pass for "${task.title}".`,
       args.summary,
-      "Resume the task with action=start, fix the branch/commits, push the branch, then call action=ready_for_review again. Do not leave repository changes uncommitted.",
+      args.epicMode
+        ? "Fix the branch/commits and commit your work locally on the task branch — never push Epic-child branches — then call action=ready_for_review again. Do not leave repository changes uncommitted."
+        : "Fix the branch/commits, push the branch, then call action=ready_for_review again. Do not leave repository changes uncommitted.",
     ].join("\n"),
   });
 }
@@ -521,13 +564,18 @@ async function main() {
   }
 
   const job = JSON.parse(readFileSync(jobFile, "utf8")) as BranchVerifyJob;
+  // P6 local-only mode: an Epic child is verified on its LOCAL ref against the
+  // Epic integration branch and never pushed, even when the job predates the
+  // epicBranch field (epicChild alone forces the no-push rule).
+  const epicMode = Boolean(job.epicChild);
+  const branchRefLabel = epicMode ? `refs/heads/${job.branchName}` : `origin/${job.branchName}`;
   const project = await db.project.findUnique({
     where: { id: job.projectId },
     select: { agentChangeBlockedBranches: true },
   });
   if (project && isProtectedBranch(project.agentChangeBlockedBranches, job.branchName)) {
     const protectedBranches = parseProtectedBranches(project.agentChangeBlockedBranches);
-    const body = renderProtectedBranchBody({ branchName: job.branchName, protectedBranches });
+    const body = renderProtectedBranchBody({ branchName: job.branchName, epicMode, protectedBranches });
     const actor = await monitorActor();
     await db.$transaction([
       db.comment.create({
@@ -552,6 +600,7 @@ async function main() {
     await notifyAfterGate({
       job,
       actor,
+      epicMode,
       verifiedOk: false,
       reviewReady: false,
       summary: body,
@@ -562,16 +611,37 @@ async function main() {
     return;
   }
 
-  let fetched = await fetchVerificationBranch(job.repositoryPath, job.branchName, job.baseBranch);
-  const state = await localState(job);
-  // A successful recovery push can turn an initial "remote ref not found"
-  // into a valid verification state. Resolve/fetch once more before gating.
-  if (state.pushed) {
-    fetched = await fetchVerificationBranch(job.repositoryPath, job.branchName, job.baseBranch);
+  let fetchError: string | null;
+  let baseValidation: BranchBaseValidation;
+  let commits: GitCommit[];
+  let logError: string | null;
+  let state: LocalState;
+  if (epicMode) {
+    // Local-only verification: the base is the Epic integration branch (local
+    // ref first, origin fallback) and the verified ref is refs/heads/<branch>.
+    // No auto-push, no local-vs-origin sync gate.
+    const epicBase = await resolveEpicVerificationBase(job.repositoryPath, job.epicBranch);
+    state = await localState(job, true);
+    fetchError = null; // origin fetch is best-effort here; base problems surface via baseValidation
+    baseValidation = await validateEpicBase(job.repositoryPath, job.branchName, epicBase);
+    if (epicBase.baseRef && state.localSha) {
+      ({ commits, error: logError } = await readLog(job.repositoryPath, epicBase.baseRef, `refs/heads/${job.branchName}`));
+    } else {
+      commits = [];
+      logError = null;
+    }
+  } else {
+    let fetched = await fetchVerificationBranch(job.repositoryPath, job.branchName, job.baseBranch);
+    state = await localState(job, false);
+    // A successful recovery push can turn an initial "remote ref not found"
+    // into a valid verification state. Resolve/fetch once more before gating.
+    if (state.pushed) {
+      fetched = await fetchVerificationBranch(job.repositoryPath, job.branchName, job.baseBranch);
+    }
+    fetchError = fetched.error;
+    ({ commits, error: logError } = await readLog(job.repositoryPath, `origin/${fetched.baseBranch}`, `origin/${job.branchName}`));
+    baseValidation = await validateOriginBase(job.repositoryPath, job.branchName, fetched.baseBranch);
   }
-  const fetchError = fetched.error;
-  const { commits, error: logError } = await readLog(job.repositoryPath, job.branchName, fetched.baseBranch);
-  const baseValidation = await validateOriginBase(job.repositoryPath, job.branchName, fetched.baseBranch);
   const head = commits[0] ?? null;
   const match = job.commitPrefix
     ? commits.find((c) => subjectHasCommitPrefix(c.subject, job.commitPrefix!)) ?? null
@@ -579,7 +649,9 @@ async function main() {
   const requiredIdentity = expectedIdentity(job);
   const mismatch = identityMismatch(match, requiredIdentity);
 
-  const branchSynced = !state.localSha || !state.remoteSha || state.localSha === state.remoteSha;
+  // The pushed/synced gate is standalone-only; an Epic child's local ref IS
+  // the verified artifact (P6).
+  const branchSynced = epicMode || !state.localSha || !state.remoteSha || state.localSha === state.remoteSha;
   const repoVerifiedOk =
     !fetchError &&
     !logError &&
@@ -599,8 +671,8 @@ async function main() {
   const kind = reviewReady ? "pm.repo.verify.ok" : "pm.repo.verify.fail";
 
   const body = reviewReady
-    ? renderOkBody({ branchName: job.branchName, head: head!, match: match!, commitPrefix: job.commitPrefix, expectedIdentity: requiredIdentity, baseValidation, state, rebuild: rebuild! })
-    : renderFailBody({ branchName: job.branchName, head, match, commitPrefix: job.commitPrefix, fetchError, logError, identityMismatch: mismatch, baseValidation, state, rebuild });
+    ? renderOkBody({ branchName: job.branchName, branchRefLabel, epicMode, head: head!, match: match!, commitPrefix: job.commitPrefix, expectedIdentity: requiredIdentity, baseValidation, state, rebuild: rebuild! })
+    : renderFailBody({ branchName: job.branchName, branchRefLabel, epicMode, head, match, commitPrefix: job.commitPrefix, fetchError, logError, identityMismatch: mismatch, baseValidation, state, rebuild });
 
   const actor = await monitorActor();
   await db.$transaction([
@@ -617,6 +689,8 @@ async function main() {
           jobId: job.jobId,
           branchName: job.branchName,
           baseBranch: baseValidation.baseBranch,
+          epicChild: epicMode,
+          epicBranch: job.epicBranch ?? null,
           commitPrefix: job.commitPrefix,
           headSha: head?.sha ?? null,
           matchSha: match?.sha ?? null,
@@ -645,6 +719,7 @@ async function main() {
   await notifyAfterGate({
     job,
     actor,
+    epicMode,
     verifiedOk: repoVerifiedOk,
     reviewReady,
     summary: body,
@@ -658,6 +733,8 @@ async function main() {
         repoVerifiedOk,
         taskId: job.taskId,
         branch: job.branchName,
+        epicChild: epicMode,
+        epicBranch: job.epicBranch ?? null,
         headSha: head?.sha ?? null,
         matchSha: match?.sha ?? null,
         dirty: Boolean(state.dirtyStatus),

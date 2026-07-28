@@ -45,13 +45,16 @@ Backlog | To Do | In Progress | Review | Done
 Epic:
 
 ```text
-Backlog | In Progress | Ready to Deploy | Done
+Backlog | To Do | In Progress | Done
 ```
 
 Tasks under an Epic are agent-actionable only while that Epic is
-**In Progress**. Moving an Epic to `Ready to Deploy` starts the
-deployment flow (see [Deployment](#deployment) below). Agents cannot set
-or change Epic status — humans (and the deploy flow) move Epics.
+**To Do** or **In Progress**. Deployment is a separate lane —
+`deploymentStatus`: `Not Required | Ready to Deploy | Deployment
+Approved | Successfully Deployed | Deployment Error` — and setting it to
+`Ready to Deploy` starts the deployment flow (see
+[Deployment](#deployment) below). Agents cannot set or change Epic
+status — humans (and the deploy flow) move Epics.
 
 See [`../WORKFLOW.md`](../WORKFLOW.md) § *Picking your next task* and
 § *Working a Mission Control task* for what each status authorises.
@@ -76,7 +79,7 @@ it holds something.
 | `app/(app)/projects/[slug]` | kanban board — four workflow columns (To Do · In Progress · Review · Done) with drag-and-drop; Backlog is a separate table below with a show/hide toggle. When the Workflow Focus block is shown, the board narrows to In Progress + Review only. Done cards older than `doneTtlDays` drop off and show the assignee + resolved reviewer avatar pair (built-by / accepted-by). Task cards show the current workflow actor + `updated` time, and a checklist progress bar that is column-aware: implementation items in In Progress, review items in Review. |
 | `app/(app)/projects/[slug]/tasks/[taskId]` | task editor — two-column. **Main**: inline title, markdown description editor, sub-tasks progress checklist, attachments, comments. **Sidebar**: status, assignee, reviewer, epic picker, dates. |
 | `app/(app)/projects/[slug]/tasks` | flat task list across all statuses (search/filter; shows the deployment indicator for standalone tasks). |
-| `app/(app)/projects/[slug]/epics` | epic list (status filter: Backlog / In Progress / Ready to Deploy / Done) + inline create. |
+| `app/(app)/projects/[slug]/epics` | epic list (status filter: Backlog / To Do / In Progress / Done) + inline create. |
 | `app/(app)/projects/[slug]/epics/[epicId]` | epic detail — acting manager + deploy reviewer, status, deployment status + Development section (deployment PRs), attachments, worker pool, tasks grouped by their own status, chat sidebar, Delete. |
 | `app/(app)/projects/[slug]/summary` | repo README render (repo-configured projects; hosts the activity agenda). |
 | `app/(app)/projects/[slug]/code` | repo file browser (`/code/raw` serves raw files). |
@@ -112,11 +115,12 @@ workspace group.
 
 | Route | Purpose |
 |---|---|
-| `app/api/tasks/[id]/ack` | agent ack — auto To Do → In Progress, emits `task.ack_ready`. |
+| `app/api/tasks/[id]/ack` | agent ack — liveness ping only. It never changes task status; the response directs the agent to use workflow `start` from `To Do`. |
 | `app/api/tasks/[id]/description` | agent description write-back (one-shot grant). |
 | `app/api/epics/[id]/description` | agent Epic description write-back (one-shot grant). |
 | `app/api/agent/projects/[projectId]/proposals` | work-item proposal submission (grant-gated, idempotent on `planId`). |
-| `app/api/agent/tasks/[taskId]/workflow` | one-shot-token task workflow actions — `start`, `ready_for_review`/`submit_review`, `review_feedback`, `review_done`, `triage_to_todo`, `approve_plan`, `assign_after_plan_approval`, `add_subtask` (`subtaskKind: implementation\|review`), `complete_subtask` (full contract in `agent-interaction.md`). Sub-tasks carry a `kind`: implementation items belong to the assignee, review items to the resolved reviewer. |
+| `app/api/agent/tasks/[taskId]/workflow` | one-shot-token task workflow actions — `start` (To Do → In Progress only), `ready_for_review` (deprecated alias `submit_review`), `review_feedback` (→ front of To Do), `review_done`, `triage_to_todo`, `approve_plan`, `assign_after_plan_approval`, `add_subtask` (`subtaskKind: implementation\|review`), `complete_subtask` (full contract in `agent-interaction.md`). Sub-tasks carry a `kind`: implementation items belong to the assignee, review items to the resolved reviewer. |
+| `app/api/agent/tasks/[taskId]/request-workflow-turn` | assignee-only request for a fresh workflow turn when no token-bearing turn is live — PM-channel bearer auth, task in To Do / In Progress / Review, rate-limited to 1 request per task per 5 min. |
 | `app/api/agent/epics/[epicId]/workflow` | one-shot-token epic-manager workflow actions — `advance_queue`, `assign_next`, `create_tasks`. |
 | `app/api/agents/context/{task,epic,project}/[id]` | loopback-only live PM read API; scoped `?grant=` URLs preferred. |
 | `app/api/openclaw/pm-channel/stream` | token-scoped native PM channel live partial-reply callback. |
@@ -155,10 +159,11 @@ workspace group.
 - `Epic.workers` — the coding-agent pool the acting manager assigns
   child tasks from (ordered queue, one active task per pool worker).
 - `Epic.deployReviewerId` — the reviewer for the deploy-review pass when
-  the Epic reaches `Ready to Deploy`.
-- `Epic.status` — `Backlog` | `In Progress` | `Ready to Deploy` | `Done`.
+  the Epic's `deploymentStatus` reaches `Ready to Deploy`.
+- `Epic.status` — `Backlog` | `To Do` | `In Progress` | `Done`.
   Tasks under an Epic are agent-actionable only while the Epic is
-  **In Progress**; agents cannot change Epic status.
+  **To Do** or **In Progress**; agents cannot change Epic status.
+  Deployment state lives on `deploymentStatus`, never on `status`.
 - `Task.deploymentStatus` / `Epic.deploymentStatus` — deployment state
   (default `Not Required`). Humans are authoritative; only the monitor
   agent writes result statuses. See [Deployment](#deployment).
@@ -171,9 +176,9 @@ Standalone Tasks (no Epic, no parent task) and Epics carry the
 deployment pipeline; Epic-child tasks deploy through their Epic, so
 their own `deploymentStatus` is never set.
 
-1. Moving an Epic to **Ready to Deploy** starts the deploy review: PM
-   prompts the Epic's deploy reviewer with the project's
-   `deployReviewPrompt`.
+1. Setting an Epic's `deploymentStatus` to **Ready to Deploy** starts
+   the deploy review: PM prompts the Epic's deploy reviewer with the
+   project's `deployReviewPrompt`.
 2. A human setting **Deployment Approved** emits `deployment.approved`;
    the monitor verifies the work branches are pushed, then opens the
    provider pull request(s) (Bitbucket) — or records a

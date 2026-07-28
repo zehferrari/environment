@@ -135,6 +135,108 @@ export async function fetchVerificationBranch(
   };
 }
 
+// Epic-child local-only mode (P6): the task branch lives ONLY in
+// refs/heads/<branch>; its review base is the Epic integration branch, not
+// origin/master. Prefer the local Epic ref (kept fresh by the epic-merge
+// runner's fast-forward) and fall back to origin/<epicBranch>; refresh the
+// origin ref best-effort first so a stale remote-tracking ref cannot pass a
+// branch that no longer contains the current Epic tip.
+export type EpicVerificationBase = {
+  epicBranch: string;
+  baseRef: string | null;
+  error: string | null;
+};
+
+export async function resolveEpicVerificationBase(
+  repo: string,
+  epicBranch: string | null | undefined,
+): Promise<EpicVerificationBase> {
+  const validEpicBranch = await validBranchName(repo, epicBranch);
+  if (!validEpicBranch) {
+    return {
+      epicBranch: epicBranch?.trim() || "(unset)",
+      baseRef: null,
+      error: `No valid Epic integration branch on the verify job: ${epicBranch ?? "(unset)"}`,
+    };
+  }
+  await gitOrNull(
+    repo,
+    ["fetch", "--quiet", "origin", `+refs/heads/${validEpicBranch}:refs/remotes/origin/${validEpicBranch}`],
+    { timeout: 60_000 },
+  );
+  for (const baseRef of [`refs/heads/${validEpicBranch}`, `refs/remotes/origin/${validEpicBranch}`]) {
+    const sha = await gitOrNull(repo, ["rev-parse", "--verify", `${baseRef}^{commit}`], { timeout: 10_000 });
+    if (sha) return { epicBranch: validEpicBranch, baseRef, error: null };
+  }
+  return {
+    epicBranch: validEpicBranch,
+    baseRef: null,
+    error: `Epic branch ${validEpicBranch} was not found locally (refs/heads) or on origin — create it with claim-branch --epic before review`,
+  };
+}
+
+export async function validateEpicBase(
+  repo: string,
+  branch: string,
+  base: EpicVerificationBase,
+): Promise<BranchBaseValidation> {
+  const baseBranch = base.epicBranch;
+  if (!base.baseRef) {
+    return {
+      ok: false,
+      baseBranch,
+      originBaseSha: null,
+      branchSha: await gitOrNull(repo, ["rev-parse", "--verify", `refs/heads/${branch}`], { timeout: 10_000 }),
+      mergeBaseSha: null,
+      error: base.error ?? `Epic branch ${baseBranch} is unavailable`,
+    };
+  }
+
+  const baseSha = await gitOrNull(repo, ["rev-parse", "--verify", base.baseRef], { timeout: 10_000 });
+  const branchSha = await gitOrNull(repo, ["rev-parse", "--verify", `refs/heads/${branch}`], { timeout: 10_000 });
+  if (!baseSha) {
+    return {
+      ok: false,
+      baseBranch,
+      originBaseSha: null,
+      branchSha,
+      mergeBaseSha: null,
+      error: `${base.baseRef} is unavailable`,
+    };
+  }
+  if (!branchSha) {
+    return {
+      ok: false,
+      baseBranch,
+      originBaseSha: baseSha,
+      branchSha: null,
+      mergeBaseSha: null,
+      error: `refs/heads/${branch} does not exist — Epic-child branches are local-only; commit your work on the local branch (do not push it)`,
+    };
+  }
+
+  const mergeBaseSha = await gitOrNull(repo, ["merge-base", base.baseRef, `refs/heads/${branch}`], { timeout: 10_000 });
+  if (mergeBaseSha !== baseSha) {
+    return {
+      ok: false,
+      baseBranch,
+      originBaseSha: baseSha,
+      branchSha,
+      mergeBaseSha,
+      error: `refs/heads/${branch} does not contain the current Epic branch ${baseBranch}; merge ${baseBranch} into your branch (or rebase onto it) and commit locally before review`,
+    };
+  }
+
+  return {
+    ok: true,
+    baseBranch,
+    originBaseSha: baseSha,
+    branchSha,
+    mergeBaseSha,
+    error: null,
+  };
+}
+
 export async function validateOriginBase(
   repo: string,
   branch: string,

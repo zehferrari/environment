@@ -84,7 +84,12 @@ The implementer flow is:
    creates a worktree on it. If it does not exist, it creates and pushes the
    branch from that freshly fetched integration ref. New branches must never
    be based on a local checkout or a caller-supplied ref; `claim-branch`
-   rejects `--from`.
+   rejects `--from`. For an **Epic-child** Mission Control task, use
+   `claim-branch <repo> <branch> --epic <epic-branch>` instead: the task
+   branch is based on the freshly fetched epic integration branch
+   (`origin/<epic-branch>` when it exists, else the epic branch is
+   created locally from origin main/master) and is **not** pushed —
+   epic-child branches stay local.
 3. `cd "$(claim-branch <repo> <branch>)"` and work there.
 4. Make sure the git user name and email match the project settings.
    - If the project settings define a custom git identity, you MUST configure them locally in the worktree:
@@ -99,22 +104,35 @@ The implementer flow is:
      ```
    - If no project-specific identity is configured, it defaults to the host identity `Zeh Ferrari <e@zeh.me>`.
 5. Make your changes; `git add` + `git commit` as normal.
-6. **Push the branch to origin** — `git push` works as-is on a freshly
-   claimed branch (the worktree was created with upstream tracking).
-   For a brand-new branch, the helper has already done
+6. **Standalone task branch: push to origin** — `git push` works as-is
+   on a freshly claimed branch (the worktree was created with upstream
+   tracking). For a brand-new branch, the helper has already done
    the initial `git push -u origin <branch>` for you. Auth resolves
    as zeh via `bbZeh` — no flags or env needed.
+   **Epic-child task branch: do not push.** Commit locally only; PM's
+   auto-merge folds the branch into the epic integration branch when the
+   task reaches Done, and only the epic branch is pushed.
 7. Stop. Do **not** create a pull request. Report the branch, commit, tests,
    and residual risk in the source channel so zeh can create the PR.
 8. After zeh confirms the PR has landed, `claim-branch --release <repo>
    <branch>` to tear down the worktree. The remote branch is cleaned up on
    Bitbucket separately by whoever lands the PR.
 
-> Pushing is **not optional**. Until the branch is pushed, no one else can
-> review it (a reviewer's `claim-branch <repo> <branch>` only sees what's on
-> origin). Push as often as you'd commit on a normal machine — at minimum once
-> per logical step before reporting the branch ready, and again after every
-> fix-up that responds to review feedback.
+> For **standalone** task branches, pushing is **not optional**. Until the
+> branch is pushed, no one else can review it (a reviewer's `claim-branch
+> <repo> <branch>` only sees what's on origin). Push as often as you'd commit
+> on a normal machine — at minimum once per logical step before reporting the
+> branch ready, and again after every fix-up that responds to review feedback.
+>
+> **Epic-child task branches are the exception: they are local-only and must
+> never be pushed to origin** (origin pushes trigger unwanted Bitbucket
+> deployment pipelines). Commit locally — all `/srv/Code` worktrees share one
+> object store, so your local branch is visible repo-wide. The verifier checks
+> the local ref against the epic integration branch, PM's auto-merge folds the
+> branch into the epic branch when the task reaches Done, and the epic branch
+> is the only ref that reaches origin. Reviewers attach a never-pushed
+> epic-child branch with `claim-branch <repo> <branch> --review`, which falls
+> back to the local ref when the branch isn't on origin.
 
 ## Review flow — sequential or concurrent
 
@@ -125,7 +143,9 @@ A different agent reviews the changes. Pick one:
    `claim-branch --release <repo> <branch>`.
 2. Reviewer runs `claim-branch <repo> <branch>` — same command. The
    helper fetches origin first and lands the reviewer on the latest
-   pushed tip.
+   pushed tip. For a local-only epic-child branch use
+   `claim-branch <repo> <branch> --review` instead — it falls back to
+   the local ref when the branch isn't on origin.
 3. Reviewer reads code, runs tests, reports findings in Jira/email, then
    `claim-branch --release <repo> <branch>`.
 
@@ -137,7 +157,9 @@ no shared branch ref:
 
 1. Reviewer runs `claim-branch <repo> <branch> --review` — creates
    `/srv/Code/<repo>.worktrees/<branch>__review/` with detached HEAD
-   at the latest pushed commit.
+   at the latest pushed commit (for a local-only epic-child branch that
+   isn't on origin, the helper falls back to the local
+   `refs/heads/<branch>` tip).
 2. They read / grep / run tests there. The implementer keeps
    committing on the branch worktree without conflict.
 3. If the reviewer wants to propose fixups, they cut a sibling branch
@@ -197,6 +219,10 @@ claim-branch <repo> <branch>
 # create a brand-new branch from the current integration branch
 claim-branch <repo> <branch>
 
+# create/attach an epic-child task branch based on the epic integration
+# branch (local-only; never pushed)
+claim-branch <repo> <branch> --epic <epic-branch>
+
 # attach a detached-HEAD review worktree (concurrent with implementer)
 claim-branch <repo> <branch> --review
 
@@ -217,6 +243,13 @@ For a new branch, the helper first tries `origin/main`, falls back to
 remote-tracking ref as the creation base. It has no `--from` override. If a
 branch already exists on origin, the helper attaches it at its existing remote
 tip; it does not recreate or rebase that branch.
+
+In `--epic` mode the base is instead the freshly fetched
+`origin/<epic-branch>` when it exists; otherwise the helper creates the epic
+branch locally from origin main/master first. Epic mode never pushes — the
+task branch stays local. In `--review` mode the helper attaches
+`origin/<branch>` when it exists and falls back to a detached worktree at the
+local `refs/heads/<branch>` for never-pushed epic-child branches.
 
 A repeated `claim-branch <repo> <branch>` is a no-op — it just prints
 the existing worktree's path. So agents can run it freely to find

@@ -47,6 +47,7 @@ import {
   resolveReviewOwnerId,
 } from "@/lib/tasks/workflow-actors";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
+import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
 import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
@@ -293,7 +294,11 @@ async function updateTask(formData: FormData) {
       statusChangedTo = newStatus;
       activity.push({
         kind: "task.move",
-        payload: JSON.stringify({ from: task.status, to: newStatus }),
+        payload: JSON.stringify({
+          from: task.status,
+          to: newStatus,
+          via: actor.kind === "human" ? "human-board-move" : "agent-board-move",
+        }),
       });
     }
   }
@@ -629,26 +634,21 @@ async function updateTask(formData: FormData) {
   }
 
   if (statusChangedTo === "Review") {
-    const updatedTask = await db.task.findUnique({
-      where: { id: task.id },
-      select: {
-        actingManagerId: true,
-        reporterId: true,
-        epic: { select: { status: true, actingManagerId: true } },
-      },
+    // Human status saves run the SAME Review-entry pipeline as the agent
+    // ready_for_review action: verify enqueue, verify-gated reviewer wake,
+    // epic queue refill preferring the freed worker.
+    const actorUser = await db.user.findUnique({
+      where: { id: actor.id },
+      select: { username: true },
     });
-    const reviewerId = updatedTask ? resolveReviewOwnerId(updatedTask) : null;
-    if (reviewerId) {
-      await sendTaskWorkflowNotification({
-        taskId: task.id,
-        targetUserId: reviewerId,
-        actor,
-        reason: "review_requested",
-        body: [
-          `Task "${titleRaw}" was moved to Review.`,
-          "Review the completed work and full task context. If satisfied, move the task to Done through the workflow endpoint without posting an approval-only comment. If changes or blockers remain, leave concise feedback while keeping it in Review.",
-        ].join("\n"),
-      });
+    const handoff = await runTaskReviewHandoff({
+      taskId: task.id,
+      actor: { id: actor.id, kind: actor.kind, username: actorUser?.username ?? null },
+      via: "human-board-move",
+      movedFromStatus: task.status,
+    });
+    for (const assigned of handoff.refillAssignments) {
+      revalidatePath(`/projects/${slug}/tasks/${assigned.taskId}`);
     }
   }
 }
@@ -761,7 +761,7 @@ async function approveTaskActionPlan(formData: FormData) {
         : [
             `The Action Plan for "${task.title}" was approved.`,
             autoStart.reason === "busy"
-              ? "You already have another In Progress task, so this task remains in To Do until you are idle."
+              ? "You already have another In Progress task in this project, so this task remains in To Do until you are idle."
               : "You may now call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
             "Keep visible replies concise; use a comment only if a blocker or material plan change appears.",
           ].join("\n"),

@@ -8,7 +8,7 @@ import { publishBoardTouch } from "@/lib/pm/board-events";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { refillEpicQueue } from "@/lib/epics/queue";
-import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { normalizeWorkspaceSlug } from "@/lib/workspaces/service";
@@ -198,7 +198,11 @@ async function moveTask(taskId: string, status: string, workspaceSlug: string): 
         taskId,
         userId: actor.id,
         kind: "task.move",
-        payload: JSON.stringify({ from: current.status, to: status }),
+        payload: JSON.stringify({
+          from: current.status,
+          to: status,
+          via: actor.kind === "human" ? "human-board-move" : "agent-board-move",
+        }),
       },
     }),
   ]);
@@ -231,18 +235,21 @@ async function moveTask(taskId: string, status: string, workspaceSlug: string): 
     });
   }
   if (status === "Review") {
-    const reviewerId = resolveReviewOwnerId(current);
-    if (reviewerId) {
-      await sendTaskWorkflowNotification({
-        taskId,
-        targetUserId: reviewerId,
-        actor,
-        reason: "review_requested",
-        body: [
-          `Task "${current.title}" was moved to Review.`,
-          "Review the completed work and full task context. If satisfied, move the task to Done through the workflow endpoint without posting an approval-only comment. If changes or blockers remain, leave concise feedback while keeping it in Review.",
-        ].join("\n"),
-      });
+    // Human drags run the SAME Review-entry pipeline as the agent
+    // ready_for_review action: verify enqueue, verify-gated reviewer wake,
+    // epic queue refill preferring the freed worker.
+    const actorUser = await db.user.findUnique({
+      where: { id: actor.id },
+      select: { username: true },
+    });
+    const handoff = await runTaskReviewHandoff({
+      taskId,
+      actor: { id: actor.id, kind: actor.kind, username: actorUser?.username ?? null },
+      via: "human-board-move",
+      movedFromStatus: current.status,
+    });
+    for (const assigned of handoff.refillAssignments) {
+      revalidatePath(`/projects/${current.project.slug}/tasks/${assigned.taskId}`);
     }
   }
   // Proactive queue refill — same trigger as the project board: a human

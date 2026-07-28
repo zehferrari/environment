@@ -25,6 +25,7 @@ import { buildDeploymentApproved } from "@/lib/pm-events";
 import { notifyDispatch } from "@/lib/pm-dispatch";
 import { isPublicEpic } from "@/lib/pm-events/visibility";
 import { checkDeploymentStatusWrite, isDeploymentStatus } from "@/lib/deploy/deployment-status";
+import { enqueueEpicDoneCleanup } from "@/lib/deploy/epic-merge";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignOpenEpicTasks } from "@/lib/epics/assignment";
 import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
@@ -764,6 +765,16 @@ export async function updateEpic(formData: FormData) {
     }
   });
 
+  // Epic moved to Done by a human: queue local child-branch cleanup for the
+  // pm-epic-merge-runner (P6). Runs after the transaction; the runner
+  // re-verifies the Epic is still Done and that each branch is merged into
+  // the pushed Epic branch before deleting anything.
+  if (archiveChildrenOnDone) {
+    await enqueueEpicDoneCleanup(epicId).catch((err) =>
+      console.error("[pm] epic cleanup enqueue failed:", epicId, err),
+    );
+  }
+
   for (const assigned of openAssignment?.assignments ?? []) {
     await sendTaskWorkflowNotification({
       taskId: assigned.task.id,
@@ -1026,6 +1037,13 @@ export async function setEpicStatus(formData: FormData) {
       },
     });
   });
+
+  // Same epic-Done cleanup hook as updateEpic (P6 local branch removal).
+  if (status === "Done") {
+    await enqueueEpicDoneCleanup(epicId).catch((err) =>
+      console.error("[pm] epic cleanup enqueue failed:", epicId, err),
+    );
+  }
 
   for (const assigned of openAssignment?.assignments ?? []) {
     await sendTaskWorkflowNotification({

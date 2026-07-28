@@ -43,26 +43,38 @@ Workflow:
    The helper first fetches `origin/main`, or `origin/master` when main is
    absent. If the branch does not exist on origin, it cuts it from that
    freshly fetched integration ref, pushes it, and sets up upstream tracking.
-   It rejects caller-supplied `--from` refs.
+   It rejects caller-supplied `--from` refs. For an **Epic-child** Mission
+   Control task, run `claim-branch <repo> <branch> --epic <epic-branch>`
+   instead — the task branch is based on the epic integration branch and
+   is never pushed.
 3. Work inside the path printed by `claim-branch`. Never edit the
    primary `/srv/Code/<repo>/` tree directly for task work. You MUST configure
    the local worktree's git identity (user.name and user.email) to match the
    project settings (refer to [`CODE_REPOS.md`](./CODE_REPOS.md) for how to
    use `git config --worktree` and `expected-identity`).
 4. Make focused commits with the required work item key or commit prefix.
-5. Push the branch to origin. On a freshly claimed branch, `git push`
-   works as-is because upstream tracking is already configured.
+5. **Standalone task branch**: push to origin. On a freshly claimed
+   branch, `git push` works as-is because upstream tracking is already
+   configured. **Epic-child task branch**: do **not** push — commit
+   locally only.
 6. Stop. Do **not** create a pull request. Report the branch, commit,
    tests, and residual risk in the source channel so zeh can create the
    PR.
 7. After zeh confirms the PR has landed, run
    `claim-branch --release <repo> <branch>` to tear down the worktree.
    The remote branch is cleaned up on Bitbucket separately by whoever
-   lands the PR.
+   lands the PR. (Epic-child worktrees and their merged local branches
+   are cleaned up automatically when the Epic reaches Done.)
 
-Pushing is **not optional**. Until the branch is pushed, no one else can
-review it. Push at least once before reporting the branch ready, and
-again after every fix requested during review.
+For **standalone** task branches, pushing is **not optional**: until the
+branch is pushed no one else can review it. Push at least once before
+reporting the branch ready, and again after every fix requested during
+review. **Epic-child task branches are local-only — never push them to
+origin** (origin pushes trigger unwanted Bitbucket deployment
+pipelines). Commit locally; the monitor verifies the local ref against
+the epic integration branch, PM auto-merges the task branch into the
+epic branch when the task reaches Done, and only the epic branch reaches
+origin.
 
 ---
 
@@ -139,7 +151,8 @@ Concurrent review while the implementer is still iterating:
 1. Reviewer runs `claim-branch <repo> <branch> --review`.
 2. The helper creates a detached-HEAD review worktree at
    `/srv/Code/<repo>.worktrees/<branch>__review/` using the latest pushed
-   commit.
+   commit — or, for a local-only epic-child branch that isn't on origin,
+   the local `refs/heads/<branch>` tip.
 3. If the reviewer wants to propose fixups, they create a sibling branch
    from the current integration branch, for example:
 
@@ -194,6 +207,10 @@ claim-branch <repo> <branch>
 # create a brand-new branch from the freshly fetched integration branch
 claim-branch <repo> <branch>
 
+# create/attach an epic-child task branch based on the epic integration
+# branch (local-only; never pushed)
+claim-branch <repo> <branch> --epic <epic-branch>
+
 # attach a detached-HEAD review worktree
 claim-branch <repo> <branch> --review
 
@@ -211,6 +228,10 @@ under `/srv/Code/<repo>.worktrees/`. A repeated
 path.
 
 New branches are always created from freshly fetched `origin/main`, or
-`origin/master` when main is absent. Existing origin branches are attached at
-their remote tip; they are not silently rebased. Do not use raw
+`origin/master` when main is absent — except in `--epic` mode, where the base
+is the freshly fetched `origin/<epic-branch>` (created locally from origin
+main/master when the epic branch isn't on origin yet) and nothing is pushed.
+Existing origin branches are attached at their remote tip; they are not
+silently rebased. Review mode falls back to the local `refs/heads/<branch>`
+for never-pushed epic-child branches. Do not use raw
 `git worktree add -b` or a local integration-branch checkout for task branches.

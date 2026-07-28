@@ -49,12 +49,14 @@ function startDeploymentWatcherPoll() {
     } catch (err) {
       console.error("[pm] deployment merge detect failed:", err);
     }
-    // Epic integration: merge each Done Epic-child task's branch into the Epic
-    // branch (EPICS ONLY); a conflict bounces the task back to Review.
+    // Epic integration: enqueue a pm-epic-merge-runner spool job for each Done
+    // Epic-child task whose branch is not yet merged into the Epic branch
+    // (EPICS ONLY). The runner does the git work outside pm.service's sandbox;
+    // a conflict bounces the task back to Review.
     try {
       const epicMerges = await pollEpicTaskMerges();
-      if (epicMerges.merged > 0 || epicMerges.bounced > 0) {
-        console.log("[pm] epic branch merge:", JSON.stringify(epicMerges));
+      if (epicMerges.enqueued > 0) {
+        console.log("[pm] epic branch merge enqueue:", JSON.stringify(epicMerges));
       }
     } catch (err) {
       console.error("[pm] epic branch merge failed:", err);

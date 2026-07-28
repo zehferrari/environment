@@ -46,10 +46,10 @@ function reasonForKind(kind: string | undefined): TaskWorkflowNotificationReason
     case "pm-in-progress-stale":
       return "monitor_recovery";
     case "pm-review-awaiting-reviewer":
-      return "review_requested";
+    // Targets the REVIEWER: informal feedback was never formalized via
+    // review_feedback/review_done, so the review turn is theirs to finish.
     case "pm-review-feedback-awaiting-assignee":
-    case "pm-review-response-awaiting-assignee":
-      return "review_feedback";
+      return "review_requested";
     default:
       return "monitor_recovery";
   }
@@ -69,10 +69,16 @@ function defaultRequiredAction(status: string, kind: string | undefined): string
     return "Continue implementation now, or move the task to Review through the workflow endpoint with one concise note if work is complete or waiting for reviewer/manager/reporter feedback.";
   }
   if (kind === "pm-review-awaiting-reviewer") {
-    return "Review the completed work using the full task context. If satisfied, move the task to Done without posting an approval-only comment. Leave concise feedback only when changes or blockers remain.";
+    return "Review the completed work using the full task context. If satisfied, move the task to Done without posting an approval-only comment. If changes or blockers remain, call action=review_feedback with concise feedback so the task returns to the front of To Do for the assignee.";
   }
-  if (kind === "pm-review-feedback-awaiting-assignee" || kind === "pm-review-response-awaiting-assignee") {
-    return "If the task is in Review because it was waiting for feedback or an external response, call action=start to resume it in In Progress. Address the feedback/response, then call action=ready_for_review again with one concise note.";
+  if (kind === "pm-review-feedback-awaiting-assignee") {
+    return "You left review feedback as a comment but never formalized it. Call action=review_feedback with a concise summary so the task returns to the front of To Do for the assignee, or action=review_done if the work is acceptable.";
+  }
+  if (kind === "pm-review-response-awaiting-assignee") {
+    return "A response arrived while this task is in Review. Reply in the task comments if a response is needed. Do not call action=start from Review — if code changes are required, the reviewer must call action=review_feedback to return the task to the front of To Do.";
+  }
+  if (kind === "pm-epic-not-open") {
+    return "This task's parent Epic is not actionable (Backlog/Done). Move the Epic to To Do or In Progress if its work should continue, or move the task back to Backlog.";
   }
   return `Follow the Mission Control workflow for the current ${status} task state.`;
 }
@@ -83,7 +89,7 @@ async function main() {
     throw new Error("Usage: pm-workflow-nudge --task-id <id> --agent <slug> [--kind <kind>] [--required-action <text>]");
   }
 
-  const [task, targetUser, sender] = await Promise.all([
+  const [task, targetUser, monitorSender] = await Promise.all([
     db.task.findUnique({
       where: { id: args.taskId },
       select: {
@@ -109,15 +115,37 @@ async function main() {
         agent: { is: { role: "monitor", deactivatedAt: null } },
       },
       select: { id: true, username: true, kind: true },
-    }) ?? db.user.findFirst({
-      where: { kind: "human", status: "active", isOwner: true },
-      orderBy: { createdAt: "asc" },
-      select: { id: true, username: true, kind: true },
     }),
   ]);
 
   if (!task || task.deletedAt) throw new Error(`Task not found or deleted: ${args.taskId}`);
-  if (!targetUser) throw new Error(`Active agent user not found for ${args.agent}`);
+  if (!targetUser) {
+    // Human (or inactive-agent) target: degrade to a clear rc=0 skip so the
+    // monitor ladder never burns wake/restart attempts on a non-agent user.
+    const namedUser = await db.user.findFirst({
+      where: { username: args.agent },
+      select: { username: true, kind: true, status: true },
+    });
+    console.log(JSON.stringify({
+      ok: true,
+      skipped: true,
+      reason: "target-not-active-agent",
+      taskId: task.id,
+      project: task.project.slug,
+      agent: args.agent,
+      kind: args.kind ?? null,
+      target: namedUser,
+      message: namedUser
+        ? `${args.agent} is a ${namedUser.status} ${namedUser.kind} user — PM-channel nudges only reach active agents; notify them via Telegram or the board instead.`
+        : `No user matches agent slug ${args.agent} — nothing to nudge.`,
+    }, null, 2));
+    return;
+  }
+  const sender = monitorSender ?? await db.user.findFirst({
+    where: { kind: "human", status: "active", isOwner: true },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, username: true, kind: true },
+  });
   if (!sender) throw new Error("No active sender found for PM workflow nudge");
 
   const actor = {

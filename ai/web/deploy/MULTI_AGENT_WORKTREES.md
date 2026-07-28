@@ -14,19 +14,78 @@ per branch**, reviewers on detached-HEAD worktrees, enforced by the `/srv/Code`
 pre-commit hook. Two agents must never both *write* the same branch worktree —
 that produces entangled diffs and broken builds.
 
-New task branches are created only from freshly fetched `origin/main`, or
-`origin/master` when main is absent. The host helper rejects `--from` and
-local branch refs, so a stale primary checkout cannot silently become the
-base of a new worktree. A branch that already exists on origin is attached at
-its existing remote tip; it is not rebased by the helper.
+New **standalone** task branches are created only from freshly fetched
+`origin/main`, or `origin/master` when main is absent. The host helper rejects
+`--from` and local branch refs, so a stale primary checkout cannot silently
+become the base of a new worktree. A branch that already exists on origin is
+attached at its existing remote tip; it is not rebased by the helper.
 
-At review time, the monitor fetches the project's effective deployment PR
-target branch and rejects the task branch unless that commit is an ancestor
-of `origin/<branch>`. This is the review-time backstop for raw Git worktree
-creation and for branches created from a stale local checkout; update or
-recreate the branch from the base named in the verifier result before retrying
-review. Legacy jobs without a snapshotted base use remote HEAD, then
-`main`/`master`.
+**Epic-child** task branches use `claim-branch <repo> <branch> --epic
+<epicBranch>`: the base is the freshly fetched `origin/<epicBranch>` when the
+Epic integration branch exists on origin, otherwise the Epic branch is first
+created locally from `origin/main|master`. Epic-child branches are
+**local-only** — `claim-branch` never pushes them (no `push -u`, `--no-track`)
+— see § Local-only Epic-child branches below. Reviewer claims
+(`--review`) attach detached at `origin/<branch>` and fall back to the local
+`refs/heads/<branch>` tip for these never-pushed branches.
+
+At review time, the monitor verifies a standalone task branch by fetching the
+project's effective deployment PR target branch and rejecting the task branch
+unless that commit is an ancestor of `origin/<branch>`. This is the
+review-time backstop for raw Git worktree creation and for branches created
+from a stale local checkout; update or recreate the branch from the base named
+in the verifier result before retrying review. Legacy jobs without a
+snapshotted base use remote HEAD, then `main`/`master`. Epic children are
+instead verified on their LOCAL ref against the Epic integration branch
+(local `refs/heads/<epicBranch>` first, `origin/<epicBranch>` fallback), which
+removes the recurring "does not contain origin/master" churn for Epic work.
+
+## 1b. Local-only Epic-child branches + the epic-merge runner
+
+Origin pushes trigger provider-side deployment automation, so **Epic-child
+task branches never reach origin** (policy P6). The lifecycle:
+
+1. **Claim**: `claim-branch <repo> <branch> --epic <epicBranch>` bases the
+   child on the Epic integration branch (fetched fresh from origin, or created
+   locally from main/master). All worktrees share `/srv/Code/<repo>/.git`, so
+   a local branch committed in any agent worktree is visible repo-wide — no
+   push is needed for other actors (verifier, merge runner, reviewers) to see
+   it.
+2. **Work**: the implementer commits locally on the child branch and never
+   pushes it. Standalone (non-Epic) branches keep the old push-before-review
+   rule.
+3. **Review gate**: the branch verifier runs in local mode for Epic children
+   (`epicChild` on the spool job): it checks `refs/heads/<branch>` — dirty
+   worktree, commit prefix, git identity — and requires the current Epic
+   branch tip to be an ancestor of the child branch. It never auto-pushes an
+   Epic child.
+4. **Done → merge**: `pm.service` is sandboxed and cannot run git, so its
+   deployment-watcher poll only drops a JSON job into `/var/lib/pm/epic-merge/`
+   (env `PM_EPIC_MERGE_DIR`). The unsandboxed
+   `pm-epic-merge-runner.service` (clone of the pm-verify-runner pattern:
+   repo-push user, `Group=code-agents`, reads
+   `/etc/default/pm-active-worktree`) executes
+   `scripts/pm-epic-merge-job.ts` in the active PM worktree. The merge
+   consumes the LOCAL child ref (`origin/<taskBranch>` remains as a legacy
+   fallback), runs in a throwaway detached worktree, pushes **only the Epic
+   integration branch** (eagerly after every merge), and fast-forwards the
+   local Epic ref so the next sibling claim/verify sees current state. A task
+   branch found neither locally nor on origin **bounces the task back to
+   Review** (comment + `pm.epic.merge.fail`) — it is never recorded as a
+   silent merge success. Conflicts bounce the same way; the assignee resolves
+   locally and the merge retries when the task reaches Done again.
+5. **Epic Done → cleanup**: when an Epic reaches Done (auto-rollup or human
+   status change), PM enqueues a `kind:"cleanup"` job in the same spool. The
+   runner waits for pending child merges, verifies each child branch is an
+   ancestor of the **pushed** Epic branch, then removes its worktree and local
+   branch via `worktree-remove --branch` (protected-branch list, managed-root
+   and clean-worktree guards apply; worktrees are removed before `branch -D`).
+   It posts one monitor-authored Epic comment summarizing removed / already
+   absent / failed ("needs root" for ACL-mask breakage) entries. Origin
+   branches are never deleted.
+
+Only the Epic integration branch and standalone task branches ever reach
+origin; the Epic branch is what deployment review/merge operates on.
 
 ## 2. Collaborative permissions (any code-agent can build)
 
@@ -172,7 +231,9 @@ Versioned under `ai/web/deploy/` (PM-specific) and `ai/openclaw/` (generic):
 | `ai/web/lib/deploy/{worktrees.ts,actions.ts,switch-registry.ts,repo-key.ts}` · `app/api/system/worktree-switch/status` · `components/worktree-switcher.tsx` | the browser UI + project registry |
 | `ai/web/deploy/worktree-switch.sh` | generic build-and-flip driver for registered non-PM projects |
 | `ai/web/deploy/worktree-switch-runner` · `systemd/worktree-switch-runner@.service` | generic per-project spool runner (`switch`/`on`/`off`/`remove`) |
-| `ai/web/deploy/worktree-remove` | monitor-run clean local worktree/branch cleanup helper; never deletes remote refs |
+| `ai/web/deploy/worktree-remove` | monitor-run clean local worktree/branch cleanup helper (`--branch` mode serves the Epic-Done cleanup); never deletes remote refs |
+| `ai/web/deploy/pm-epic-merge-runner` · `systemd/pm-epic-merge-runner.service` | repo-push-user spool runner for Epic merges + Epic-Done cleanup (`/var/lib/pm/epic-merge`); installed by `install-pm-verify.sh` |
+| `ai/web/scripts/pm-epic-merge-job.ts` · `lib/deploy/epic-merge{,-git}.ts` | the merge/cleanup executor + poll/enqueue/bookkeeping library |
 | `ai/web/deploy/worktree-preview-apply` · `worktree-docroot-apply` | **root** apply helpers for the `node-service` / `nginx-docroot` drivers |
 | `ai/web/deploy/worktree-preview-serve` · `systemd/worktree-preview@.service` | templated preview service for `node-service` projects |
 | `ai/web/deploy/sudoers.d/worktree-preview` · `worktree-preview-install.sh` · `worktree-preview.env.example` | generic-stack sudoers, installer, and per-project env contract |

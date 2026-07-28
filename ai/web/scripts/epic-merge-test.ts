@@ -25,12 +25,18 @@ async function main() {
     git(cloneDir, "commit", "-m", "base");
     git(cloneDir, "push", "-u", "origin", "main");
 
-    const makeBranch = (name: string, changes: Array<{ path: string; content: string }>) => {
+    // P6: task branches are LOCAL-ONLY by default; `push` covers the legacy
+    // origin-branch fallback.
+    const makeBranch = (
+      name: string,
+      changes: Array<{ path: string; content: string }>,
+      opts: { push?: boolean } = {},
+    ) => {
       git(cloneDir, "checkout", "-B", name, "main");
       for (const c of changes) writeFileSync(join(cloneDir, c.path), c.content);
       git(cloneDir, "add", "-A");
       git(cloneDir, "commit", "-m", `${name} change`);
-      git(cloneDir, "push", "-u", "origin", name);
+      if (opts.push) git(cloneDir, "push", "-u", "origin", name);
       git(cloneDir, "checkout", "main");
     };
 
@@ -46,43 +52,95 @@ async function main() {
     let r = await mergeTaskBranchIntoEpic({ ...base, epicBranch: "epic-x", taskBranch: "epic-x" });
     assert(r.ok && r.kind === "noop", "shared branch must be a no-op");
 
-    // 2. task branch absent on origin -> no-op (non-code Epic child)
+    // 2. task branch absent locally AND on origin -> bounce, never noop-ok
+    //    (a silent noop would record pm.epic.merge.ok for unintegrated work)
     r = await mergeTaskBranchIntoEpic({ ...base, epicBranch: "epic-x", taskBranch: "nope" });
-    assert(r.ok && r.kind === "noop", "missing task branch must be a no-op");
+    assert(!r.ok, "missing task branch must bounce (ok:false)");
+    assert(/not found locally/i.test(r.ok ? "" : r.reason), "bounce must say the branch was not found locally");
 
-    // 3. first Done task creates the Epic branch from base and merges in
+    // 3. first Done task (LOCAL-ONLY branch) creates the Epic branch from base
+    //    and merges in via refs/heads
     makeBranch("feat-a", [{ path: "a.txt", content: "aaa\n" }]);
+    assert(
+      git(cloneDir, "ls-remote", "--heads", "origin", "feat-a") === "",
+      "test setup: feat-a must not be on origin",
+    );
     r = await mergeTaskBranchIntoEpic({ ...base, epicBranch: "epic-x", taskBranch: "feat-a" });
-    assert(r.ok && r.kind === "merged", "feat-a must merge and create epic-x");
+    assert(r.ok && r.kind === "merged", "local-only feat-a must merge and create epic-x");
     git(cloneDir, "fetch", "--quiet", "origin");
     assert(
       git(cloneDir, "ls-tree", "-r", "--name-only", "origin/epic-x").includes("a.txt"),
       "epic-x must contain a.txt",
     );
+    // Local Epic ref fast-forwarded to the pushed merge (not checked out anywhere).
+    assert(
+      git(cloneDir, "rev-parse", "refs/heads/epic-x") === git(cloneDir, "rev-parse", "origin/epic-x"),
+      "local refs/heads/epic-x must be fast-forwarded to the pushed Epic tip",
+    );
 
-    // 4. second Done task accumulates onto the same Epic branch
+    // 4. second Done task (local-only) accumulates onto the same Epic branch
     makeBranch("feat-b", [{ path: "b.txt", content: "bbb\n" }]);
     r = await mergeTaskBranchIntoEpic({ ...base, epicBranch: "epic-x", taskBranch: "feat-b" });
     assert(r.ok && r.kind === "merged", "feat-b must merge into epic-x");
     git(cloneDir, "fetch", "--quiet", "origin");
     const files = git(cloneDir, "ls-tree", "-r", "--name-only", "origin/epic-x");
     assert(files.includes("a.txt") && files.includes("b.txt"), "epic-x must contain a.txt and b.txt");
+    assert(
+      git(cloneDir, "rev-parse", "refs/heads/epic-x") === git(cloneDir, "rev-parse", "origin/epic-x"),
+      "local refs/heads/epic-x must track the pushed Epic tip after each merge",
+    );
 
-    // 5. idempotent — an already-integrated task is detected, not re-merged
+    // 5. idempotent — an already-integrated task is detected via the LOCAL
+    //    Epic ref, not re-merged
     r = await mergeTaskBranchIntoEpic({ ...base, epicBranch: "epic-x", taskBranch: "feat-a" });
     assert(r.ok && r.kind === "already", "feat-a must be detected as already merged");
 
-    // 6. conflicting task bounces (ok:false) and leaves the Epic branch untouched
+    // 6. legacy fallback — a task branch that exists ONLY on origin still merges
+    makeBranch("feat-legacy", [{ path: "legacy.txt", content: "legacy\n" }], { push: true });
+    git(cloneDir, "branch", "-D", "feat-legacy");
+    r = await mergeTaskBranchIntoEpic({ ...base, epicBranch: "epic-x", taskBranch: "feat-legacy" });
+    assert(r.ok && r.kind === "merged", "origin-only feat-legacy must merge via the origin fallback");
+    git(cloneDir, "fetch", "--quiet", "origin");
+    assert(
+      git(cloneDir, "ls-tree", "-r", "--name-only", "origin/epic-x").includes("legacy.txt"),
+      "epic-x must contain legacy.txt",
+    );
+
+    // 7. conflicting task bounces (ok:false) and leaves the Epic branch untouched
     makeBranch("feat-c", [{ path: "base.txt", content: "lineC\nline2\nline3\n" }]);
     makeBranch("feat-d", [{ path: "base.txt", content: "lineD\nline2\nline3\n" }]);
     r = await mergeTaskBranchIntoEpic({ ...base, epicBranch: "epic-y", taskBranch: "feat-c" });
     assert(r.ok && r.kind === "merged", "feat-c must merge into fresh epic-y");
     r = await mergeTaskBranchIntoEpic({ ...base, epicBranch: "epic-y", taskBranch: "feat-d" });
     assert(!r.ok && /conflict/i.test(r.reason), "feat-d must conflict against epic-y");
+    assert(
+      !/push your branch|push \`/i.test(r.ok ? "" : r.reason),
+      "conflict bounce must never instruct pushing the task branch",
+    );
     git(cloneDir, "fetch", "--quiet", "origin");
     assert(
       !/feat-d/.test(git(cloneDir, "log", "--format=%s", "origin/epic-y")),
       "an aborted conflict must not advance the Epic branch",
+    );
+
+    // 8. local-already short-circuit pushes a lagging origin Epic ref: merge
+    //    feat-e into the LOCAL epic-z only, then let the module detect
+    //    "already merged locally" and publish the Epic branch itself.
+    makeBranch("feat-e", [{ path: "e.txt", content: "eee\n" }]);
+    git(cloneDir, "branch", "epic-z", "main");
+    git(cloneDir, "checkout", "epic-z");
+    git(cloneDir, "merge", "--no-ff", "--no-edit", "feat-e");
+    git(cloneDir, "checkout", "main");
+    assert(
+      git(cloneDir, "ls-remote", "--heads", "origin", "epic-z") === "",
+      "test setup: epic-z must not be on origin yet",
+    );
+    r = await mergeTaskBranchIntoEpic({ ...base, epicBranch: "epic-z", taskBranch: "feat-e" });
+    assert(r.ok && r.kind === "already", "feat-e must be detected as merged into the local epic-z");
+    git(cloneDir, "fetch", "--quiet", "origin");
+    assert(
+      git(cloneDir, "ls-tree", "-r", "--name-only", "origin/epic-z").includes("e.txt"),
+      "the local-already path must push the Epic branch so origin has e.txt",
     );
 
     console.log("epic-merge-test passed");

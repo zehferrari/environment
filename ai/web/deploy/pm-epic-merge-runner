@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""pm-epic-merge-runner — Epic branch merge/cleanup runner.
+
+Runs as the configured repo-push OS user as a systemd service (clone of the
+pm-verify-runner pattern — pm.service's sandbox blocks git worktree/fetch/push,
+so all Epic git work happens out-of-process here). Polls PM_EPIC_MERGE_DIR
+(default /var/lib/pm/epic-merge) for *.json job files dropped by the PM
+deployment-watcher poll (lib/deploy/epic-merge.ts):
+
+  * kind "merge"   — merge one Done Epic-child task's LOCAL branch into the
+    Epic integration branch, push ONLY the Epic branch, record
+    pm.epic.merge.ok, or bounce the task back to Review with a comment;
+  * kind "cleanup" — after an Epic reaches Done, remove merged local child
+    branches and their worktrees (each verified as an ancestor of the pushed
+    Epic branch); origin branches are never deleted.
+
+For each job it finds the active PM web worktree by reading pm.service's
+WorkingDirectory and runs the TS executor (scripts/pm-epic-merge-job.ts)
+inside it via `pnpm exec tsx`. The TS script does the git work + all DB
+bookkeeping and deletes the job file on success.
+
+No sudo / no privileged step — the runner pushes with this OS user's SSH
+credentials and writes only via the PM database (DATABASE_URL from
+PM_ACTIVE_ENV_FILE). Decoupled from pm.service so a worktree switch can't
+interrupt a merge in flight.
+
+Config via env (set in the systemd unit):
+  PM_EPIC_MERGE_DIR, PM_MONITOR_USER, PM_EPIC_MERGE_POLL_SECONDS,
+  PM_ACTIVE_ENV_FILE
+"""
+import datetime
+import os
+import re
+import shlex
+import subprocess
+import time
+
+MERGE_DIR = os.environ.get("PM_EPIC_MERGE_DIR", "/var/lib/pm/epic-merge")
+ACTIVE_ENV_FILE = os.environ.get("PM_ACTIVE_ENV_FILE", "/etc/default/pm-active-worktree")
+POLL = float(os.environ.get("PM_EPIC_MERGE_POLL_SECONDS", "5"))
+ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def active_app_dir():
+    """ai/web dir of the worktree pm.service is currently serving."""
+    try:
+        wd = subprocess.run(
+            ["systemctl", "show", "-p", "WorkingDirectory", "--value", "pm.service"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        suffix = "/.next/standalone"
+        if wd.endswith(suffix):
+            return wd[: -len(suffix)]
+    except Exception:
+        pass
+    return None
+
+
+def active_env():
+    """Reload the active PM env file for every job.
+
+    systemd EnvironmentFile values are fixed at service start, but worktree
+    switches rewrite /etc/default/pm-active-worktree while leaving this runner
+    alive. Re-reading here keeps DATABASE_URL aligned with the live PM DB.
+    """
+    env = os.environ.copy()
+    try:
+        with open(ACTIVE_ENV_FILE, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                try:
+                    parts = shlex.split(line, comments=True, posix=True)
+                except ValueError:
+                    parts = [line]
+                if not parts or "=" not in parts[0]:
+                    continue
+                key, value = parts[0].split("=", 1)
+                if ENV_KEY_RE.match(key):
+                    env[key] = value
+    except OSError:
+        pass
+    return env
+
+
+def process_one(jobfile, app_dir):
+    running = jobfile + ".running"
+    try:
+        os.rename(jobfile, running)
+    except OSError as err:
+        print(f"[{now()}] could not claim {jobfile}: {err}", flush=True)
+        return
+
+    print(f"[{now()}] processing {running}", flush=True)
+    try:
+        proc = subprocess.run(
+            ["pnpm", "exec", "tsx", "scripts/pm-epic-merge-job.ts", running],
+            cwd=app_dir,
+            env=active_env(),
+            capture_output=True, text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"[{now()}] epic-merge job timeout on {running}", flush=True)
+        try:
+            os.rename(running, jobfile + ".failed")
+        except OSError:
+            pass
+        return
+    if proc.stdout:
+        print(proc.stdout, flush=True)
+    if proc.returncode != 0:
+        print(f"[{now()}] epic-merge job exited {proc.returncode}: {proc.stderr}", flush=True)
+        # Move to .failed so we don't spin on the same job. Operator can
+        # rename back to .json to retry.
+        try:
+            if os.path.exists(running):
+                os.rename(running, jobfile + ".failed")
+        except OSError:
+            pass
+    elif os.path.exists(running):
+        try:
+            os.unlink(running)
+        except OSError:
+            pass
+
+
+def main():
+    print(f"pm-epic-merge-runner watching {MERGE_DIR}", flush=True)
+    while True:
+        app = active_app_dir()
+        if app and os.path.isdir(MERGE_DIR):
+            try:
+                files = sorted(
+                    f for f in os.listdir(MERGE_DIR)
+                    if f.endswith(".json") and not f.startswith(".")
+                )
+            except OSError:
+                files = []
+            for f in files:
+                process_one(os.path.join(MERGE_DIR, f), app)
+        time.sleep(POLL)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass

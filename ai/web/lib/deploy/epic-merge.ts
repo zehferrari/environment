@@ -1,3 +1,8 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { existsSync } from "node:fs";
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { db } from "@/lib/db";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
@@ -7,18 +12,68 @@ import { mergeTaskBranchIntoEpic } from "@/lib/deploy/epic-merge-git";
 // Auto-merge a Done Epic-child task's branch into the Epic integration branch.
 //
 // EPICS ONLY: a standalone task (no epic parent) is never merged here — its
-// branch lands on production directly and is picked up by merge-detect. This
-// runs in-process on the deployment-watcher poll (same karen/monitor process
-// that already does `git fetch` for merge detection), so it needs no new
-// service. Each merge happens in an EPHEMERAL detached worktree so the shared
-// checkout and any agent worktrees are never disturbed.
+// branch lands on production directly and is picked up by merge-detect.
+//
+// Split execution model: pm.service runs inside a systemd sandbox
+// (ProtectSystem=strict, no repo in ReadWritePaths) that blocks `git worktree
+// add`, fetch ref-writes, and push/SSH — so the poll below only SELECTS
+// candidates and ENQUEUES spool jobs. The unsandboxed pm-epic-merge-runner
+// (same pattern as pm-verify-runner) picks each job up and calls
+// runEpicMergeSpoolJob() via scripts/pm-epic-merge-job.ts, which does the git
+// work and the DB bookkeeping (merge.ok record / Review bounce / cleanup).
 //
 // Idempotency + retry: a successful (or no-op) merge records a
 // `pm.epic.merge.ok` activity; the poll query excludes tasks that already have
-// one, so each task is merged at most once. A merge conflict (or any git
-// failure) bounces the task back to Review with a comment — once it leaves Done
-// it drops out of the poll set, and re-completing it (after a rebase/fix)
-// retries the merge.
+// one, and the spool uses one deterministic file per task, so each task is
+// merged at most once. A merge conflict (or any git failure) bounces the task
+// back to Review with a comment — once it leaves Done it drops out of the poll
+// set, and re-completing it (after a local fix) retries the merge.
+
+export const EPIC_MERGE_DIR = process.env.PM_EPIC_MERGE_DIR ?? "/var/lib/pm/epic-merge";
+
+export type EpicMergeJob =
+  | {
+      kind: "merge";
+      jobId: string;
+      taskId: string;
+      projectId: string;
+      enqueuedAt: string;
+    }
+  | {
+      kind: "cleanup";
+      jobId: string;
+      epicId: string;
+      projectId: string;
+      repositoryPath: string;
+      epicBranch: string;
+      branches: string[];
+      enqueuedAt: string;
+    };
+
+// One deterministic spool filename per subject so a 60s poll tick can never
+// stack duplicate jobs while the runner is busy. `.running`/`.failed` suffixes
+// are runner claim states (see deploy/pm-epic-merge-runner).
+function jobFileName(job: EpicMergeJob) {
+  return job.kind === "merge" ? `merge-${job.taskId}.json` : `cleanup-${job.epicId}.json`;
+}
+
+async function enqueueEpicMergeJob(job: EpicMergeJob): Promise<string | null> {
+  await mkdir(EPIC_MERGE_DIR, { recursive: true, mode: 0o770 });
+  const name = jobFileName(job);
+  const target = path.join(EPIC_MERGE_DIR, name);
+  if (
+    existsSync(target) ||
+    existsSync(`${target}.running`) ||
+    existsSync(`${target}.failed`)
+  ) {
+    return null; // already queued / in flight / awaiting operator retry
+  }
+  // Atomic write (write tmp + rename) so the runner never reads a partial file.
+  const tmp = path.join(EPIC_MERGE_DIR, `.${name}.tmp`);
+  await writeFile(tmp, JSON.stringify(job, null, 2), { mode: 0o660 });
+  await rename(tmp, target);
+  return target;
+}
 
 // The production branch the Epic integration branch is cut from when it does
 // not exist yet: project override -> first workspace default -> "main".
@@ -41,6 +96,15 @@ async function productionBranchFor(projectId: string): Promise<string> {
   );
 }
 
+async function monitorAgentUser(): Promise<{ id: string; username: string } | null> {
+  const monitor = await db.agent.findFirst({
+    where: { role: "monitor", deactivatedAt: null, user: { is: { status: "active" } } },
+    orderBy: { createdAt: "asc" },
+    select: { user: { select: { id: true, username: true } } },
+  });
+  return monitor?.user ?? null;
+}
+
 // The agent user that authors the merge-failure comment / bounce: the Epic's
 // Deploy Reviewer when it is an active agent, else the monitor agent.
 async function resolveEpicMergeActor(
@@ -58,12 +122,7 @@ async function resolveEpicMergeActor(
     });
     if (reviewer) return reviewer;
   }
-  const monitor = await db.agent.findFirst({
-    where: { role: "monitor", deactivatedAt: null, user: { is: { status: "active" } } },
-    orderBy: { createdAt: "asc" },
-    select: { user: { select: { id: true, username: true } } },
-  });
-  return monitor?.user ?? null;
+  return monitorAgentUser();
 }
 
 type MergeCandidate = {
@@ -87,6 +146,32 @@ type MergeCandidate = {
     deployReviewerId: string | null;
   } | null;
 };
+
+const MERGE_CANDIDATE_SELECT = {
+  id: true,
+  title: true,
+  projectId: true,
+  workItemKey: true,
+  branchName: true,
+  assigneeId: true,
+  project: {
+    select: {
+      slug: true,
+      repositoryPath: true,
+      defaultGitUserName: true,
+      defaultGitUserEmail: true,
+    },
+  },
+  epic: {
+    select: {
+      id: true,
+      status: true,
+      workItemKey: true,
+      branchName: true,
+      deployReviewerId: true,
+    },
+  },
+} as const;
 
 async function recordMergeOk(task: MergeCandidate, epicBranch: string, detail: Record<string, unknown>) {
   await db.activityLog.create({
@@ -186,7 +271,7 @@ async function bounceTaskToReview(args: {
       body: [
         `Your task "${task.title}" could not be auto-merged into the Epic branch \`${epicBranch}\` and is back in Review.`,
         reason,
-        "Resolve it, push your branch, then move the task to Done again to retry the integration.",
+        `Resolve it and commit your changes locally on \`${taskBranch}\` — never push Epic-child branches. When the task is moved to Done again the integration retries automatically.`,
       ].join("\n"),
     }).catch((err) => console.error("[pm] epic merge bounce notify failed:", task.id, err));
   }
@@ -194,11 +279,11 @@ async function bounceTaskToReview(args: {
   publishBoardTouch(task.projectId);
 }
 
-// Deployment-watcher poll step: integrate every Done Epic-child task whose
-// branch has not yet been merged into its Epic branch. Mirrors
-// pollDeploymentMerges() — one fetch per repo, sequential per task so a shared
-// Epic branch never races itself.
-export async function pollEpicTaskMerges(): Promise<{ checked: number; merged: number; bounced: number }> {
+// Deployment-watcher poll step (runs inside pm.service): select every Done
+// Epic-child task whose branch has not yet been merged into its Epic branch
+// and enqueue one spool job each for the pm-epic-merge-runner. No git runs
+// here — the pm.service sandbox cannot do git work (see header).
+export async function pollEpicTaskMerges(): Promise<{ checked: number; enqueued: number }> {
   const tasks = (await db.task.findMany({
     where: {
       status: "Done",
@@ -211,36 +296,11 @@ export async function pollEpicTaskMerges(): Promise<{ checked: number; merged: n
     },
     orderBy: { statusChangedAt: "asc" },
     take: 25,
-    select: {
-      id: true,
-      title: true,
-      projectId: true,
-      workItemKey: true,
-      branchName: true,
-      assigneeId: true,
-      project: {
-        select: {
-          slug: true,
-          repositoryPath: true,
-          defaultGitUserName: true,
-          defaultGitUserEmail: true,
-        },
-      },
-      epic: {
-        select: {
-          id: true,
-          status: true,
-          workItemKey: true,
-          branchName: true,
-          deployReviewerId: true,
-        },
-      },
-    },
+    select: MERGE_CANDIDATE_SELECT,
   })) as MergeCandidate[];
 
   let checked = 0;
-  let merged = 0;
-  let bounced = 0;
+  let enqueued = 0;
 
   for (const task of tasks) {
     const repoPath = task.project.repositoryPath;
@@ -252,39 +312,324 @@ export async function pollEpicTaskMerges(): Promise<{ checked: number; merged: n
     });
     if (!repoPath || !epicBranch || !taskBranch) {
       // Nothing actionable (e.g. no derivable branch) — mark done so we stop
-      // re-scanning it every tick.
+      // re-scanning it every tick. No git involved, safe in-process.
       await recordMergeOk(task, epicBranch ?? "", { note: "no derivable branch" });
       continue;
     }
 
     checked++;
     try {
-      const baseBranch = await productionBranchFor(task.projectId);
-      const result = await mergeTaskBranchIntoEpic({
-        repoPath,
-        epicBranch,
-        taskBranch,
-        baseBranch,
-        gitUserName: task.project.defaultGitUserName?.trim() || "PM Monitor",
-        gitUserEmail: task.project.defaultGitUserEmail?.trim() || "pm-monitor@localhost",
-        message: `Merge ${task.workItemKey ?? taskBranch} into Epic branch ${epicBranch}`,
+      const spooled = await enqueueEpicMergeJob({
+        kind: "merge",
+        jobId: `merge-${task.id}`,
+        taskId: task.id,
+        projectId: task.projectId,
+        enqueuedAt: new Date().toISOString(),
       });
-      if (result.ok) {
-        await recordMergeOk(task, epicBranch, {
-          taskBranch,
-          kind: result.kind,
-          ...(result.kind === "merged" ? { sha: result.sha } : {}),
-          ...(result.kind === "noop" ? { note: result.note } : {}),
-        });
-        if (result.kind === "merged") merged++;
-      } else {
-        await bounceTaskToReview({ task, epicBranch, taskBranch, reason: result.reason });
-        bounced++;
-      }
+      if (spooled) enqueued++;
     } catch (err) {
-      console.error("[pm] epic merge failed:", task.id, err);
+      console.error("[pm] epic merge enqueue failed:", task.id, err);
     }
   }
 
-  return { checked, merged, bounced };
+  return { checked, enqueued };
+}
+
+// Epic-Done hook: queue removal of the merged LOCAL child branches (and their
+// worktrees) once an Epic reaches Done. Called from the auto-rollup
+// (lib/tasks/review-automation.ts) and the human epic-status paths
+// (lib/epics/actions.ts) AFTER their transactions commit. The runner verifies
+// each branch is an ancestor of the pushed Epic branch before deleting
+// anything; origin is never touched.
+export async function enqueueEpicDoneCleanup(epicId: string): Promise<{ enqueued: boolean; note?: string }> {
+  const epic = await db.epic.findUnique({
+    where: { id: epicId },
+    select: {
+      id: true,
+      status: true,
+      projectId: true,
+      workItemKey: true,
+      branchName: true,
+      project: { select: { repositoryPath: true } },
+      // Include archived children: moving an Epic to Done archives its tasks
+      // in the same transaction that precedes this hook.
+      tasks: {
+        where: { parentTaskId: null, deletedAt: null },
+        select: { workItemKey: true, branchName: true },
+      },
+    },
+  });
+  if (!epic || epic.status !== "Done") return { enqueued: false, note: "epic not Done" };
+  const repositoryPath = epic.project.repositoryPath;
+  const epicBranch = effectiveEpicBranchName(epic);
+  if (!repositoryPath || !epicBranch) return { enqueued: false, note: "no repository or epic branch" };
+
+  const branches = [
+    ...new Set(
+      epic.tasks
+        .map((task) => effectiveTaskBranchName({ ...task, epic }))
+        .filter((branch): branch is string => Boolean(branch) && branch !== epicBranch),
+    ),
+  ];
+  if (branches.length === 0) return { enqueued: false, note: "no child branches" };
+
+  const spooled = await enqueueEpicMergeJob({
+    kind: "cleanup",
+    jobId: `cleanup-${epic.id}`,
+    epicId: epic.id,
+    projectId: epic.projectId,
+    repositoryPath,
+    epicBranch,
+    branches,
+    enqueuedAt: new Date().toISOString(),
+  });
+  return { enqueued: Boolean(spooled) };
+}
+
+// ---------------------------------------------------------------------------
+// Runner-side execution (invoked by scripts/pm-epic-merge-job.ts inside the
+// unsandboxed pm-epic-merge-runner service — it has DB access like
+// pm-verify-branch-pushed.ts and full git/SSH capability).
+// ---------------------------------------------------------------------------
+
+const exec = promisify(execFile);
+
+async function runGit(repo: string, args: string[], opts: { timeout?: number } = {}) {
+  const { stdout } = await exec("git", ["-C", repo, ...args], {
+    timeout: opts.timeout ?? 60_000,
+    maxBuffer: 1024 * 1024,
+  });
+  return stdout.trim();
+}
+
+async function runGitOk(repo: string, args: string[], opts: { timeout?: number } = {}) {
+  try {
+    await runGit(repo, args, opts);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function executeMergeJob(job: Extract<EpicMergeJob, { kind: "merge" }>) {
+  // Re-load the candidate with the poll's exact predicate: the task may have
+  // moved, been merged, or been bounced between enqueue and execution.
+  const task = (await db.task.findFirst({
+    where: {
+      id: job.taskId,
+      status: "Done",
+      epicId: { not: null },
+      parentTaskId: null,
+      deletedAt: null,
+      archivedAt: null,
+      project: { repositoryPath: { not: null } },
+      activity: { none: { kind: "pm.epic.merge.ok" } },
+    },
+    select: MERGE_CANDIDATE_SELECT,
+  })) as MergeCandidate | null;
+  if (!task) return { taskId: job.taskId, outcome: "skipped" as const, note: "no longer a merge candidate" };
+
+  const repoPath = task.project.repositoryPath!;
+  const epicBranch = task.epic ? effectiveEpicBranchName(task.epic) : null;
+  const taskBranch = effectiveTaskBranchName({
+    workItemKey: task.workItemKey,
+    branchName: task.branchName,
+    epic: task.epic,
+  });
+  if (!epicBranch || !taskBranch) {
+    await recordMergeOk(task, epicBranch ?? "", { note: "no derivable branch" });
+    return { taskId: task.id, outcome: "noop" as const, note: "no derivable branch" };
+  }
+
+  const baseBranch = await productionBranchFor(task.projectId);
+  const result = await mergeTaskBranchIntoEpic({
+    repoPath,
+    epicBranch,
+    taskBranch,
+    baseBranch,
+    gitUserName: task.project.defaultGitUserName?.trim() || "PM Monitor",
+    gitUserEmail: task.project.defaultGitUserEmail?.trim() || "pm-monitor@localhost",
+    message: `Merge ${task.workItemKey ?? taskBranch} into Epic branch ${epicBranch}`,
+  });
+  if (result.ok) {
+    await recordMergeOk(task, epicBranch, {
+      taskBranch,
+      kind: result.kind,
+      ...(result.kind === "merged" ? { sha: result.sha } : {}),
+      ...(result.kind === "noop" ? { note: result.note } : {}),
+    });
+    return { taskId: task.id, outcome: result.kind, epicBranch, taskBranch };
+  }
+  await bounceTaskToReview({ task, epicBranch, taskBranch, reason: result.reason });
+  return { taskId: task.id, outcome: "bounced" as const, epicBranch, taskBranch, reason: result.reason };
+}
+
+type CleanupItem = {
+  branch: string;
+  outcome: "removed" | "absent" | "failed" | "needs-root";
+  detail: string | null;
+};
+
+function isPermissionError(detail: string) {
+  return /permission denied|operation not permitted|read-only file system/i.test(detail);
+}
+
+// Locate the repo-relative worktree-remove helper first (versioned with this
+// worktree), falling back to the host-installed copy.
+function worktreeRemoveScript() {
+  const override = process.env.PM_WORKTREE_REMOVE_SCRIPT;
+  if (override) return override;
+  const local = path.join(process.cwd(), "deploy", "worktree-remove");
+  return existsSync(local) ? local : "/usr/local/sbin/worktree-remove";
+}
+
+async function removeLocalBranch(job: Extract<EpicMergeJob, { kind: "cleanup" }>, branch: string): Promise<CleanupItem> {
+  const repo = job.repositoryPath;
+  const hasLocal = await runGitOk(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
+  if (!hasLocal) return { branch, outcome: "absent", detail: null };
+
+  const merged = await runGitOk(repo, [
+    "merge-base",
+    "--is-ancestor",
+    `refs/heads/${branch}`,
+    `refs/remotes/origin/${job.epicBranch}`,
+  ]);
+  if (!merged) {
+    return {
+      branch,
+      outcome: "failed",
+      detail: `not an ancestor of the pushed Epic branch \`${job.epicBranch}\` — left in place`,
+    };
+  }
+
+  try {
+    // Branch-only mode of the shared cleanup helper: removes the branch's
+    // clean worktree (when one exists under <repo>.worktrees) then deletes
+    // the local ref. Never contacts origin.
+    await exec(
+      "python3",
+      [
+        worktreeRemoveScript(),
+        "--branch",
+        repo,
+        `${repo}.worktrees`,
+        branch,
+        JSON.stringify([job.epicBranch]),
+      ],
+      { timeout: 60_000, maxBuffer: 1024 * 1024 },
+    );
+    return { branch, outcome: "removed", detail: null };
+  } catch (err) {
+    const anyErr = err as { stderr?: string; stdout?: string; message?: string };
+    const detail = (anyErr.stderr || anyErr.stdout || anyErr.message || String(err)).trim().slice(0, 400);
+    return { branch, outcome: isPermissionError(detail) ? "needs-root" : "failed", detail };
+  }
+}
+
+function renderCleanupBody(job: Extract<EpicMergeJob, { kind: "cleanup" }>, items: CleanupItem[]) {
+  const removed = items.filter((item) => item.outcome === "removed");
+  const absent = items.filter((item) => item.outcome === "absent");
+  const failed = items.filter((item) => item.outcome === "failed");
+  const needsRoot = items.filter((item) => item.outcome === "needs-root");
+  const lines = [
+    `🧹 Epic is Done — local child-branch cleanup for Epic branch \`${job.epicBranch}\`.`,
+    "",
+  ];
+  if (removed.length > 0) {
+    lines.push(`- Removed (worktree + local branch): ${removed.map((item) => `\`${item.branch}\``).join(", ")}`);
+  }
+  if (absent.length > 0) {
+    lines.push(`- Already absent locally: ${absent.map((item) => `\`${item.branch}\``).join(", ")}`);
+  }
+  for (const item of failed) {
+    lines.push(`- Failed: \`${item.branch}\` — ${item.detail}`);
+  }
+  for (const item of needsRoot) {
+    lines.push(`- Needs root (likely ACL/permission breakage): \`${item.branch}\` — ${item.detail}`);
+  }
+  lines.push("", `Remote branches were not touched; the Epic integration branch \`${job.epicBranch}\` remains on origin.`);
+  return lines.join("\n");
+}
+
+async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>) {
+  const epic = await db.epic.findUnique({
+    where: { id: job.epicId },
+    select: { id: true, status: true, projectId: true },
+  });
+  if (!epic || epic.status !== "Done") {
+    return { epicId: job.epicId, outcome: "skipped" as const, note: "epic no longer Done" };
+  }
+
+  // The Epic can roll to Done before its last child's merge job has run
+  // (rollup fires on review_done; the merge poll runs on its own tick). Defer
+  // cleanup while any unarchived Done child still lacks a merge record — the
+  // job script re-queues the spool file so this retries after the merges land
+  // (or drops out via the epic-not-Done skip when a merge bounces).
+  const pendingMerges = await db.task.count({
+    where: {
+      epicId: job.epicId,
+      parentTaskId: null,
+      deletedAt: null,
+      archivedAt: null,
+      status: "Done",
+      activity: { none: { kind: "pm.epic.merge.ok" } },
+    },
+  });
+  if (pendingMerges > 0) {
+    return { epicId: job.epicId, outcome: "deferred" as const, note: `${pendingMerges} child merge(s) still pending` };
+  }
+
+  // Refresh the pushed Epic ref: it is the merge record every deletion is
+  // verified against.
+  await runGitOk(job.repositoryPath, [
+    "fetch",
+    "--quiet",
+    "origin",
+    `+refs/heads/${job.epicBranch}:refs/remotes/origin/${job.epicBranch}`,
+  ], { timeout: 60_000 });
+  const epicPushed = await runGitOk(job.repositoryPath, [
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `refs/remotes/origin/${job.epicBranch}^{commit}`,
+  ]);
+
+  const items: CleanupItem[] = [];
+  if (!epicPushed) {
+    for (const branch of job.branches) {
+      items.push({
+        branch,
+        outcome: "failed",
+        detail: `Epic branch \`${job.epicBranch}\` is not on origin — nothing to verify merges against`,
+      });
+    }
+  } else {
+    for (const branch of job.branches) {
+      items.push(await removeLocalBranch(job, branch));
+    }
+  }
+
+  const monitor = await monitorAgentUser();
+  const body = renderCleanupBody(job, items);
+  await db.$transaction(async (tx) => {
+    if (monitor) {
+      await tx.comment.create({ data: { epicId: job.epicId, userId: monitor.id, body } });
+    }
+    await tx.activityLog.create({
+      data: {
+        projectId: job.projectId,
+        userId: monitor?.id ?? null,
+        kind: "pm.epic.cleanup",
+        payload: JSON.stringify({ epicId: job.epicId, epicBranch: job.epicBranch, items }),
+      },
+    });
+  });
+  publishBoardTouch(job.projectId);
+
+  return { epicId: job.epicId, outcome: "done" as const, items };
+}
+
+export async function runEpicMergeSpoolJob(job: EpicMergeJob) {
+  if (job.kind === "merge") return executeMergeJob(job);
+  return executeCleanupJob(job);
 }

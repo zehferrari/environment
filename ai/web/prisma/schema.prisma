@@ -294,7 +294,9 @@ model Epic {
   workItemKey      String?   @unique @map("work_item_key")
   description      String?
   private          Boolean   @default(false)
-  status           String    @default("Backlog") // "Backlog" | "In Progress" | "Ready to Deploy" | "Done"
+  // "Backlog" | "To Do" | "In Progress" | "Done" — deployment readiness is
+  // NOT a status: Ready-to-Deploy lives on the separate deploymentStatus lane.
+  status           String    @default("Backlog")
   statusChangedAt  DateTime?
   // Epic-level acting manager plus a multi-agent worker pool. Task
   // assignee stays single; Epic workers define which coding agents the

@@ -48,7 +48,8 @@ When acting as coordinator:
 - Jira and PM differ here. In Jira, move assignable work to the normal
   implementation-ready column. In Mission Control / PM, assigning a
   **Backlog** ticket asks the agent for a plan/opinion only; moving it to
-  **To Do** is the approval-to-execute signal.
+  **To Do** queues it — execution starts only after the assignee's
+  Action Plan is approved (`approved_on` set).
 - Review work for correctness, risk, and acceptance-criteria fit.
 - Hold the line on architectural decisions. Escalate to zeh only when
   the decision crosses external comms, credentials, billing, or safety.
@@ -61,9 +62,10 @@ When acting as coordinator:
   haven't yet promoted them out of the backlog.
 - When another agent moves a child ticket of your Epic to **Review**,
   pick it up promptly: verify it against the acceptance criteria and
-  either transition it to **Done** if it's complete without posting an
-  approval-only comment, or leave a comment with the specific feedback /
-  changes you need before it can land.
+  either transition it to **Done** (`review_done`) if it's complete
+  without posting an approval-only comment, or record the specific
+  feedback / changes you need with `review_feedback` — that returns the
+  ticket to the **front** of To Do for the assignee.
   Don't let Review tickets sit idle on your Epic.
 
 No additional session-start steps beyond `AGENTS.md`.
@@ -86,9 +88,14 @@ When acting as implementer:
   residual risk).
 - For Mission Control / PM, follow `WORKFLOW.md` § *Working a Mission
   Control task* (`MISSION_CONTROL.md` is the interface doc): Backlog
-  assignment is a mandatory plan/opinion comment only, `To Do` means
-  start immediately (after Action Plan approval), `In Progress` is
-  active work, and `Review` is completed-work review.
+  assignment is a mandatory plan/opinion comment only; `To Do` means
+  start immediately once the Action Plan is approved (`start` works only
+  from `To Do`, at most one `In Progress` task per project);
+  `In Progress` is active work — tick each implementation subtask the
+  moment it completes; `Review` is completed-work review, and reviewer
+  `review_feedback` returns the task to the **front** of To Do.
+  Epic-child task branches stay local — commit, never push; standalone
+  task branches are pushed before `ready_for_review`.
 
 When to escalate to another agent/reviewer — treat as **getting another
 perspective**, not as your model failing:
@@ -131,7 +138,8 @@ You **do**:
   restart-and-wake <user>` to nudge stalled coding agents.
 - Enforce Mission Control / PM workflow drift surfaced by ai-monitor:
   missing Backlog plans, stale To Do/In Progress work, Review waiting on
-  reviewer or assignee feedback, and tasks blocked by non-Open Epics.
+  reviewer or assignee feedback, and tasks blocked by non-actionable
+  Epics (`Backlog`/`Done`).
   These PM workflow kinds normally bypass your judgment path; ai-monitor
   sends native PM-channel workflow nudges with the full task context,
   restarts the target coding agent on tier 2, and pages only after the

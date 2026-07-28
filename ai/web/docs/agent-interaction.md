@@ -245,13 +245,11 @@ enough. The live context endpoints can return:
   parent/subtask context;
 - Epic title, status, description, acting-manager and deploy-reviewer
   context;
-- **every** comment on the item (up to a generous breadth cap, currently
-  1000 for coding agents and 500 in the monitor packet; when over the
-  cap, the newest N), regardless of who wrote it or whether the agent
-  was directly addressed by it;
-- **every** live Task/Epic Action Plan message on the item (up to a
-  generous breadth cap, currently 1000 for coding agents and 500 in the
-  monitor packet), plus the archived-discussion
+- **every** comment on the item (when over the cap, the newest N),
+  regardless of who wrote it or whether the agent was directly addressed
+  by it;
+- **every** live Task/Epic Action Plan message on the item, plus the
+  archived-discussion
   chain that produced the current room, regardless of which agent each
   message was directed at and including other agents' replies and
   routing labels such as `All Coders` or a specific target;
@@ -262,6 +260,11 @@ enough. The live context endpoints can return:
 Rendered inline packets and fetched JSON preserve row identity,
 authorship, ordering, truncation notes, and `[partial context: ...]`
 markers so the agent can tell when older rows may exist beyond the cap.
+Cap numbers: the authoritative statement is
+[`agent-pm-api.md`](./agent-pm-api.md) § Limits — fetched JSON uses the
+read-API serializer caps (2000 newest comment/discussion rows), while
+the inline per-turn packet uses the smaller role-based caps (currently
+1000 rows for coding agents, 500 for the monitor profile).
 
 PM owns this context data. OpenClaw private memory may help the agent
 reason, but PM task/Epic/comment/activity/attachment data is the source
@@ -406,19 +409,56 @@ POST /api/agent/tasks/<taskId>/workflow
 Allowed actions are `start`, `ready_for_review`, `review_feedback`,
 `review_done`, `triage_to_todo`, `approve_plan`,
 `assign_after_plan_approval`, `add_subtask`, and `complete_subtask`
-(`submit_review` is accepted as a legacy alias for `ready_for_review`).
-`approve_plan` lets the resolved reviewer stamp `approved_on` on the
-Action Plan; `assign_after_plan_approval` lets the reviewer ask PM to
-pick an eligible coding agent (moving Backlog to To Do when needed).
+(`submit_review` is accepted as a deprecated alias for
+`ready_for_review`). Core transition semantics:
+
+- `start` — To Do → In Progress ONLY. There is no `start` from Review or
+  any other status. PM also rejects `start` when the assignee already
+  has another In Progress task in the same project (at most ONE In
+  Progress task per agent per project, enforced at every entry into In
+  Progress including auto-start) or when the task's effective branch
+  clashes with another agent's active work; the rejection names exactly
+  what to finish first.
+- `ready_for_review` — In Progress → Review. Rejected with 409 while any
+  implementation sub-task is still open (see the sub-task gate below).
+- `review_feedback` — reviewer-only. Returns the task, feedback
+  attached, to the FRONT of the project's To Do queue. The task does not
+  stay in Review and is never resumed from Review; the assignee
+  addresses the feedback with a fresh `start` from To Do.
+- `review_done` — reviewer-only promotion to Done.
+- `triage_to_todo` — reviewer-only Backlog → To Do promotion. It queues
+  the task but assigns nobody, and the Action Plan approval gate still
+  applies before execution; tasks under an Epic can be triaged only
+  while the Epic is To Do / In Progress.
+- `approve_plan` — the resolved reviewer stamps `approved_on` on the
+  Action Plan.
+- `assign_after_plan_approval` — the resolved reviewer asks PM to pick
+  an eligible coding agent, or names one via the optional
+  `{assignee: "<username>"}` body field. Callable on an UNASSIGNED task
+  in Backlog / To Do regardless of plan state (moving Backlog to To Do
+  when needed). PM validates the choice — an active coding agent that is
+  not the task's reviewer/manager/reporter — then asks the new assignee
+  for an Action Plan when none is approved yet, or sends a start-work
+  turn when the plan is already approved. When a task has a reviewer but
+  no assignee, picking the assignee this way is the reviewer's job.
+
 PM validates the addressed agent,
 task assignee/reviewer role, task status, and parent Epic status before
 writing. Agent replies to workflow turns are stored as normal task
 comments only when they add useful task information; no-contribution
 turns use the silent reply token.
 
+The task `ack` endpoint (`POST /api/tasks/<taskId>/ack`) is a liveness
+ping only: it acknowledges receipt and never changes status. Begin work
+with the workflow `start` action.
+
 Backlog assignment is planning/opinion only: the assigned agent replies
 in Action Plan with a technical implementation plan and does not change
-status. `To Do` is executable only after the Action Plan has
+status. The Action Plan is authored by the ASSIGNEE only — reviewers,
+managers, and reporters never write it on the assignee's behalf.
+Approval falls to the resolved reviewer: the task's reviewer, else the
+epic's acting manager while the Epic is In Progress, else the reporter.
+`To Do` is executable only after the Action Plan has
 `approved_on` and `approved_by`; until then the assignee waits for the
 reviewer or reporter. Reviewers/reporters reply in Action Plan with
 consolidated feedback when the plan needs adjustment, or approve with a
@@ -432,7 +472,16 @@ open questions are not sub-tasks. The assignee keeps the checklist current
 as work proceeds so the board card shows how close the Task is to done.
 Break the work into **independent, parallelizable** steps and dispatch
 parallel sub-agents to tackle the independent ones at once whenever the work
-allows — don't serialize work that could run on multiple fronts. POST
+allows — don't serialize work that could run on multiple fronts.
+After plan approval, breaking the task into implementation sub-tasks is
+MANDATORY, and each sub-task must be ticked Done (`complete_subtask`) the
+moment it completes — not batched at the end. `ready_for_review` is
+rejected with 409 while any implementation sub-task is open: complete
+them, or delete/convert stale ones, then retry. Ticking the LAST open
+implementation sub-task returns an explicit instruction to call
+`ready_for_review` in the same breath with the same messageId + token
+(workflow tokens are reusable within their turn) — follow it; never end
+the turn with the work silently finished. POST
 `action=add_subtask` (`{subtaskText, subtaskKind?}`) to add a step and
 `action=complete_subtask` (`{subtaskId, completed, minutesSpent}`) as each
 lands — `minutesSpent` is the optional self-reported minutes that step took,
@@ -463,17 +512,42 @@ must not add another actor's implementation sub-tasks directly. Instead:
   extra sub-task/task as blocking the current scope: PM raises it to the owner
   (`alert_reporter`) and wakes the reviewer + reporter for a decision. Use this
   instead of silently absorbing unbounded scope.
-When a task returns from Review with feedback, add a sub-task per feedback item
-before resuming so the bar reflects the remaining work. The task context also
+When a task returns from Review (`review_feedback` places it at the front of
+To Do), add a sub-task per feedback item
+before starting so the bar reflects the remaining work. The task context also
 shows **Blocked by** when the task has an open hard-dependency; the workflow
 `start` action refuses such a task until its blocker reaches Done. Epic
 implementation tasks can be created only by the Epic acting manager, only
 after the Epic Action Plan is approved, and only when the Epic has no
 existing child tasks. `Review` is only for completed
 implementation review or a real blocker/question that needs reviewer,
-manager, or reporter input; when the awaited response arrives, the
-assignee resumes with workflow action `start`, completes the follow-up,
-then calls `ready_for_review` again.
+manager, or reporter input. Either way the task leaves Review through
+the reviewer: `review_done` to Done, or `review_feedback` (carrying the
+answer/feedback) back to the front of To Do, where the assignee `start`s
+again, completes the follow-up, and calls `ready_for_review` afresh.
+There is no in-place Review resume.
+
+### Requesting a workflow turn
+
+Workflow tokens are delivered only inside a live workflow turn's system
+prompt. If you completed work but no workflow turn is live (a sub-agent
+finished the job, a stream died, or your token-bearing turn ended), do
+not wait to be nudged — request a fresh turn:
+
+```text
+POST /api/agent/tasks/<taskId>/request-workflow-turn
+Authorization: Bearer <pm channel token>
+```
+
+Auth is the same per-agent PM-channel bearer used by
+`/api/openclaw/pm-channel/reply`. Constraints: the caller must be the
+task's CURRENT assignee and an active agent; the task must be in To Do,
+In Progress, or Review; and the endpoint is rate-limited to one request
+per task per 5 minutes. PM dispatches a fresh workflow-notification turn
+to you with the required action derived from status — To Do: start the
+task; In Progress: verify every sub-task is ticked, then
+`ready_for_review`; Review: a re-send of the current state. Each request
+is logged as a `task.workflow.turn_requested` activity row.
 
 ### Epic workflow endpoint (acting managers)
 
@@ -489,7 +563,8 @@ Epic's acting manager. Allowed actions:
 - `assign_next` — assign unassigned To Do tasks (queue order) to
   available workers from the Epic's pool, one task per free worker.
   A worker already holding an active task in the project (active means
-  To Do / In Progress / Review) is skipped, but other free pool workers
+  To Do / In Progress — a task the worker sent to Review does NOT
+  count) is skipped, but other free pool workers
   are still assigned — the pool works in parallel, one active task per
   agent. Tasks with an uncleared blocker (`blocked_by` task not Done)
   are never assigned; the queue skips past them to the next unblocked
@@ -508,8 +583,15 @@ does not implicitly compound the Epic and Task keys. The assignee must:
 
 - prefix every commit on the branch with the resolved COMMIT_PREFIX
   (e.g. `HOMELAB-41: short imperative summary`),
-- commit ALL local changes and push to `origin/<branchName>` BEFORE
-  calling `action: ready_for_review`,
+- commit ALL local changes BEFORE calling `action: ready_for_review`;
+  where the branch goes next depends on the task shape:
+  - **standalone task** (no Epic): push to `origin/<branchName>` before
+    `ready_for_review`, as always;
+  - **epic-child task** (task under an Epic): commit LOCALLY and NEVER
+    push the task branch — origin pushes of child branches trigger
+    unwanted deployments. PM's merge runner consumes the local ref and
+    merges it into the epic integration branch when the task reaches
+    Done; only the epic branch is pushed to origin,
 - include `repoTouched: true` in the workflow POST when calling
   `ready_for_review` (default when branchName + repositoryPath are
   set), or `repoTouched: false` for docs-only / decision-only tasks.
@@ -526,7 +608,12 @@ effective deployment PR target branch and `origin/<branchName>` on the
 already-cloned repo, and requires that base to be an ancestor of the task
 branch before it checks the COMMIT_PREFIX on `origin/<branchName>`. Legacy
 jobs without a recorded base resolve the remote default, then try
-`main`/`master`. It posts a `pm.repo.verify.ok`
+`main`/`master`. The verify job also carries `epicChild` + `epicBranch`:
+for epic-child tasks the runner verifies the LOCAL `refs/heads/<branchName>`
+instead — nothing is expected on origin and nothing is auto-pushed — and
+requires the EPIC branch (local `refs/heads/<epicBranch>`, falling back
+to `origin/<epicBranch>`) as the base rather than the deployment target.
+Standalone tasks keep the origin-based flow above. It posts a `pm.repo.verify.ok`
 task comment (with HEAD sha, the verified base, the latest prefix-matching
 commit, and push timestamp) or `pm.repo.verify.fail` (no push found / no
 prefix match / protected branch / stale or unrelated configured base /
@@ -538,7 +625,9 @@ The reviewer's `review_requested` workflow turn adds a **Review
 verification** block instructing them to read the latest
 `pm.repo.verify.*` comment first: on `ok` proceed; on fail because no
 branch/no commit/no prefix match, send `review_feedback` asking the
-assignee to push with the prefix before review. On a stale or unrelated
+assignee to commit with the prefix before review — push for a standalone
+task, a LOCAL commit for an epic-child task (never ask an assignee to
+push an epic-child branch). On a stale or unrelated
 configured base, send `review_feedback` asking the assignee to update or
 recreate the task branch from the base named in the verifier result. On fail because the
 monitor verifier cannot fetch the remote (`Unauthorized`, permission denied,

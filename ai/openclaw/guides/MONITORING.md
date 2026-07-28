@@ -4,7 +4,7 @@ The monitoring agent runs under a host-local monitor user. Identity,
 capabilities, and Telegram bot handle live in `/etc/openclaw/agents.json`.
 
 For full architecture (triage flow, decision contract, fallback rules,
-self-incident guard), see [`../README.md`](../README.md) § *Monitoring and Recovery*. This file is
+self-incident guard), see [`../../README.md`](../../README.md) § *Monitoring and Recovery*. This file is
 the entry-point overview.
 
 ## What gets watched
@@ -109,8 +109,9 @@ the entry-point overview.
   mutating rows. It alerts/wakes for missing Backlog implementation
   plans, `To Do` tasks not moved to `In Progress`, stale `In Progress`
   tasks, `Review` tasks waiting on the resolved reviewer, review feedback
-  waiting on the assignee, and actionable tasks blocked by a non-Open
-  Epic. It also reports stale active workflow live-bubble turns whose
+  waiting on the assignee, and tasks blocked by a non-actionable Epic
+  (status `Backlog` or `Done` — `pm-epic-not-open`, targeted at the
+  Epic's acting manager). It also reports stale active workflow live-bubble turns whose
   original PM notification no longer matches the task's current
   owner/status. Defaults are intentionally short because Mission Control is
   the source of truth and the first wake already happened: Backlog plan
@@ -127,9 +128,15 @@ the entry-point overview.
   recovery attempt. Telegram is sent only on the next tick if the same issue
   is still present after T3's confirmation window. Wake reminders include
   task id, project, status, Epic status, and the required next PM action.
-  PM workflow drift is retryable after Telegram via
-  `pm_workflow.retry_after_tier3_seconds` instead of being permanently
-  suppressed while the task remains stale.
+  PM workflow drift — including `pm-epic-not-open` — is retryable after
+  Telegram via `pm_workflow.retry_after_tier3_seconds` instead of being
+  permanently suppressed while the task remains stale. A PM-channel nudge
+  run counts as confirmed only when the run is alive — status `streaming`
+  or `complete`, or freshly `accepted`; a `failed` run never counts as
+  recovery. When a resolved
+  nudge target is a human rather than an active agent, the recovery
+  ladder and service restarts are skipped — the human gets a single
+  Telegram/board notification instead.
 
 ## Registry-driven
 
@@ -240,9 +247,10 @@ Telegram bot, secrets, and chat allowlist are per-agent — see the registry
 (`telegram.bot` for the monitor user), `~/.config/openclaw/openclaw-secrets.env`,
 and `~/.openclaw/credentials/telegram-allowFrom.json`.
 
-### Tier framework — recover first, telegram after failure
+### Tier framework — three recovery attempts, telegram after the third fails
 
-Every alert key gets up to **3 recovery attempts** before zeh is paged.
+Every alert key gets up to **three recovery attempts**; Telegram is sent
+only after the third attempt fails.
 Configured under `monitor_triage.escalation_ladder` in
 `/etc/ai-monitor/config.json` (`max_attempts: 3`,
 `confirmation_window_s: 300`). Two execution paths:
@@ -378,7 +386,7 @@ Read-only, real-time, basic-auth-gated:
 - URL: `https://dev.vixi.au/agents.html`
 - Backend: `agent-dashboard.service` on `127.0.0.1:3013` (HTTP + SSE),
   registry hydration via `/agents/registry.json`.
-- Architecture detail: [`../README.md`](../README.md) § *Agent Dashboard*.
+- Architecture detail: [`../../README.md`](../../README.md) § *Agent Dashboard*.
 
 ## Known risks
 

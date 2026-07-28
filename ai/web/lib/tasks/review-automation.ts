@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { resolveDoneOwnerId, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { assignOpenEpicTasks, type EpicTaskAssignment } from "@/lib/epics/assignment";
+import { enqueueEpicDoneCleanup } from "@/lib/deploy/epic-merge";
 
 type Actor = {
   id: string;
@@ -87,6 +88,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
 
     let nextAssignments: EpicTaskAssignment[] = [];
     let skipReason: string | null = null;
+    let epicRolledToDone = false;
 
     if (!task.epicId) {
       skipReason = "no_epic";
@@ -152,12 +154,24 @@ export async function completeReviewedTaskAndAssignNext(args: {
               }),
             },
           });
+          epicRolledToDone = true;
         }
       }
     }
 
-    return { nextAssignments };
+    return { nextAssignments, epicRolledToDone };
   });
+
+  // Epic auto-rolled to Done: queue local child-branch cleanup for the
+  // pm-epic-merge-runner (P6 — local-only branches + worktrees are removed
+  // once merged into the pushed Epic branch). Outside the transaction: the
+  // enqueue writes a spool file, and the runner re-checks the Epic is still
+  // Done before touching anything.
+  if (completion.epicRolledToDone && task.epicId) {
+    await enqueueEpicDoneCleanup(task.epicId).catch((err) =>
+      console.error("[pm] epic cleanup enqueue failed:", task.epicId, err),
+    );
+  }
 
   const nextTasks = completion.nextAssignments.map((assigned) => ({
     id: assigned.task.id,

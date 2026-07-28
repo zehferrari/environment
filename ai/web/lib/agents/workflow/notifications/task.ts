@@ -26,7 +26,7 @@ import {
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { resolveGitIdentity } from "@/lib/settings/system";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
-import { effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 
 type Actor = {
   id: string;
@@ -53,6 +53,7 @@ type AgentUser = {
 export type TaskWorkflowNotificationReason =
   | "backlog_plan_requested"
   | "todo_start_required"
+  | "ready_for_review_available"
   | "monitor_recovery"
   | "review_requested"
   | "review_feedback"
@@ -120,6 +121,11 @@ function workflowPrompt(args: {
   branchName: string | null;
   commitPrefix: string | null;
   repositoryPath: string | null;
+  // P6: epic-child tasks work on LOCAL-ONLY branches (never pushed to
+  // origin); the epic integration branch is what reaches origin after PM
+  // merges each task branch. Standalone tasks still push.
+  epicChild: boolean;
+  epicBranch: string | null;
   expectedGitUserName: string | null;
   expectedGitUserEmail: string | null;
   onlyReportersCanApproveActionPlans: boolean;
@@ -173,8 +179,16 @@ function workflowPrompt(args: {
       args.commitPrefix
         ? `- COMMIT_PREFIX: ${args.commitPrefix} — every commit message on this task MUST start with this exact prefix (e.g. "${args.commitPrefix} short imperative summary").`
         : "- COMMIT_PREFIX is not set. Ask an admin to set a project key or task/epic commit prefix before committing.",
-      `- All local changes must be committed (each with the prefix) and pushed to origin/${args.branchName} BEFORE you call action=ready_for_review.`,
-      "- On ready_for_review: include `repoTouched: true` in the body. PM will dispatch the monitor verifier to verify origin reflects your work and post a pm.repo.verify.* comment.",
+      ...(args.epicChild
+        ? [
+            `- EPIC-CHILD BRANCH RULE: this task belongs to an Epic. COMMIT LOCALLY on ${args.branchName} and NEVER push this branch to origin — origin pushes trigger unwanted deployments. PM merges your local task branch into the Epic integration branch${args.epicBranch ? ` (${args.epicBranch})` : ""}; only the Epic branch is pushed.`,
+            `- All local changes must be committed (each with the prefix) on ${args.branchName} BEFORE you call action=ready_for_review. Do NOT push.`,
+            "- On ready_for_review: include `repoTouched: true` in the body. PM will dispatch the monitor verifier to verify your LOCAL branch reflects the work (checked against the Epic branch) and post a pm.repo.verify.* comment.",
+          ]
+        : [
+            `- All local changes must be committed (each with the prefix) and pushed to origin/${args.branchName} BEFORE you call action=ready_for_review.`,
+            "- On ready_for_review: include `repoTouched: true` in the body. PM will dispatch the monitor verifier to verify origin reflects your work and post a pm.repo.verify.* comment.",
+          ]),
       "- If this task changed nothing in the repository (docs-only, decision-only, etc.), set `repoTouched: false` on ready_for_review and the monitor verifier will skip the check.",
     );
   }
@@ -184,9 +198,13 @@ function workflowPrompt(args: {
     reviewerVerify.push(
       "",
       "REVIEW VERIFICATION (first check, you are the resolved reviewer):",
-      `- This task touched ${args.repositoryPath} on branch ${args.branchName}. Before reviewing, look for a pm.repo.verify.* task comment from the monitor verifier confirming origin/${args.branchName} reflects the work.`,
+      args.epicChild
+        ? `- This task touched ${args.repositoryPath} on LOCAL branch ${args.branchName} (epic-child branches are never pushed to origin). Before reviewing, look for a pm.repo.verify.* task comment from the monitor verifier confirming the local branch reflects the work${args.epicBranch ? ` against Epic branch ${args.epicBranch}` : ""}.`
+        : `- This task touched ${args.repositoryPath} on branch ${args.branchName}. Before reviewing, look for a pm.repo.verify.* task comment from the monitor verifier confirming origin/${args.branchName} reflects the work.`,
       "- If pm.repo.verify.ok is present and recent, proceed with the review.",
-      "- If pm.repo.verify.fail reports no branch/no commits/no prefix match, leave concise review_feedback asking the assignee to commit (with the prefix) and push BEFORE you proceed. Do not approve work that isn't on origin yet.",
+      args.epicChild
+        ? "- If pm.repo.verify.fail reports no branch/no commits/no prefix match, leave concise review_feedback asking the assignee to commit locally (with the prefix) BEFORE you proceed — do not ask them to push an epic-child branch. Do not approve work whose branch isn't committed yet."
+        : "- If pm.repo.verify.fail reports no branch/no commits/no prefix match, leave concise review_feedback asking the assignee to commit (with the prefix) and push BEFORE you proceed. Do not approve work that isn't on origin yet.",
       "- If pm.repo.verify.fail reports Unauthorized, permission denied, or cannot read from remote, treat it as a monitor verifier credential problem. Do not tell the assignee to repush solely for a verifier credential failure.",
       "- If no pm.repo.verify.* comment has appeared yet, wait briefly for the monitor verifier to publish one. The runner picks up the job within seconds of the assignee's ready_for_review call.",
     );
@@ -205,14 +223,16 @@ function workflowPrompt(args: {
       ? "- Project policy: only the reporter can approve Action Plans. Reviewers and acting managers should comment with feedback or agreement, but must wait for reporter approval."
       : "- Project policy: the reporter or resolved reviewer may approve Action Plans.",
     "- If you are the assigned task reviewer, the plan is approved, and the task still has no assignee, call action=assign_after_plan_approval. PM will choose an eligible coding agent and move the task from Backlog to To Do if needed.",
-    "- If you are the assignee and the task is in To Do with approved_on set, call the workflow endpoint with action=start, then begin work immediately.",
-    "- If you are the assignee and the task is in Review because you were waiting for reviewer, manager, reporter, or human input, and that response has now arrived, call action=start to move it back to In Progress and continue. When the follow-up work is complete, call action=ready_for_review again.",
+    "- If you are the assignee and the task is in To Do with approved_on set, call the workflow endpoint with action=start, then begin work immediately. start works ONLY from To Do — there is no start/resume from Review.",
+    "- If a reviewer leaves review_feedback, PM returns the task to the FRONT of To Do. Address the feedback by starting the task from To Do (action=start) — never expect to resume it in place from Review.",
     "- In Progress means active implementation. When implementation is complete, call the workflow endpoint with action=ready_for_review.",
+    "- Tick each implementation sub-task Done (action=complete_subtask) the MOMENT it completes — not in batches later. ready_for_review is REJECTED while open implementation sub-tasks exist; complete or remove stale items first.",
+    "- If you complete work and no workflow turn is live (your token-bearing turn already ended), POST /api/agent/tasks/<taskId>/request-workflow-turn with your PM bearer token to receive a fresh workflow turn. It is rate-limited to once per task per 5 minutes and only works for the task's current assignee.",
     "- After Action Plan approval, do not keep discussing straightforward implementation. Start it, complete it, then use one concise ready_for_review note when the work is ready.",
     "- Sub-tasks are a lightweight progress checklist (text + done + minutes), NOT child tasks. Break the work into INDEPENDENT, PARALLELIZABLE steps and dispatch parallel sub-agents to tackle the independent ones at once whenever the work allows — don't serialize work that could run on multiple fronts. Keep the checklist current so the board shows how close the task is to done: action=add_subtask {subtaskText} to add a step, action=complete_subtask {subtaskId, completed, minutesSpent} as each lands (include the minutes it took for the task cost roll-up). Ids are in the SUB-TASKS list in your context. Do not create child Tasks for steps inside one task.",
     "- If you are the assignee and you are waiting for reviewer, manager, or reporter feedback/response, call action=ready_for_review with one concise `comment` explaining the blocker/question. Do not leave waiting work in In Progress.",
     "- If a task is blocked in a way agents cannot resolve and human/reporter intervention is required, set `alert_reporter` to true/1 via a task update proposal so the task is visually highlighted for the reporter.",
-    "- Review means the completed work is waiting for reviewer feedback. If you are allowed by project policy to complete the task and are satisfied, call action=review_done; do not write an approval-only comment. PM will then assign the next unassigned To Do task in the same In Progress Epic to the next eligible Epic worker and wake them; if that was the Epic's last open task, PM moves the Epic to Done. If changes or blockers remain, call action=review_feedback with a clear comment.",
+    "- Review means the completed work is waiting for reviewer feedback. If you are allowed by project policy to complete the task and are satisfied, call action=review_done; do not write an approval-only comment. PM will then assign the next unassigned To Do task in the same In Progress Epic to the next eligible Epic worker and wake them; if that was the Epic's last open task, PM moves the Epic to Done. If changes or blockers remain, call action=review_feedback with a clear comment — PM returns the task to the FRONT of To Do for the assignee.",
     args.onlyReportersCanSetTasksDone
       ? "- Project policy: only the reporter can set Tasks to Done. Reviewers should leave concise review feedback or agreement, then wait for the reporter to complete it."
       : "- Project policy: the resolved reviewer can set Tasks to Done.",
@@ -432,6 +452,8 @@ export async function sendTaskWorkflowNotification(args: {
           branchName,
           commitPrefix,
           repositoryPath: task.project.repositoryPath ?? null,
+          epicChild: Boolean(task.epic),
+          epicBranch: task.epic ? effectiveEpicBranchName(task.epic) : null,
           expectedGitUserName: gitIdentity.name,
           expectedGitUserEmail: gitIdentity.email,
           onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,
@@ -808,6 +830,8 @@ export async function sendTaskCommentNotifications(args: {
             branchName,
             commitPrefix,
             repositoryPath: task.project.repositoryPath ?? null,
+            epicChild: Boolean(task.epic),
+            epicBranch: task.epic ? effectiveEpicBranchName(task.epic) : null,
             expectedGitUserName: gitIdentity.name,
             expectedGitUserEmail: gitIdentity.email,
             onlyReportersCanApproveActionPlans: task.project.onlyReportersCanApproveActionPlans,

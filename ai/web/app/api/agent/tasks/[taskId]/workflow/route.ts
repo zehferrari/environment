@@ -1,6 +1,5 @@
 import { revalidatePath } from "next/cache";
 import { NextResponse, type NextRequest } from "next/server";
-import { randomUUID } from "crypto";
 import { db } from "@/lib/db";
 import { sendTaskCommentNotifications, sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { recordPmChannelRunWorkflowAction } from "@/lib/agents/pm-channel/runs";
@@ -11,14 +10,12 @@ import {
   resolveDoneOwnerId,
   resolveReviewOwnerId,
 } from "@/lib/tasks/workflow-actors";
-import { enqueueBranchVerifyJob } from "@/lib/deploy/branch-verify";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
-import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
+import { findInProgressStartConflict, startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
+import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
 import { createSubTaskItem, normalizeSubTaskKind, setSubTaskCompletion } from "@/lib/tasks/subtasks";
-import { resolveEffectiveProjectSettings } from "@/lib/settings/effective";
-import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignTaskAfterPlanApproval } from "@/lib/tasks/reviewer-assignment";
@@ -50,42 +47,6 @@ type WorkflowAction = (typeof ACTIONS)[number];
 
 function isWorkflowAction(value: unknown): value is WorkflowAction {
   return typeof value === "string" && (ACTIONS as readonly string[]).includes(value);
-}
-
-async function workflowNotificationReason(taskId: string, messageId: string) {
-  const rows = await db.activityLog.findMany({
-    where: {
-      taskId,
-      kind: "task.workflow.notify",
-    },
-    orderBy: { createdAt: "desc" },
-    take: 200,
-    select: { payload: true },
-  });
-  for (const row of rows) {
-    try {
-      const payload = JSON.parse(row.payload ?? "{}") as {
-        messageId?: unknown;
-        reason?: unknown;
-      };
-      if (payload.messageId === messageId) {
-        return typeof payload.reason === "string" ? payload.reason : null;
-      }
-    } catch {
-      // Ignore malformed historical activity rows; they cannot authorize
-      // state-sensitive workflow actions.
-    }
-  }
-  return null;
-}
-
-async function commentAuthorId(commentId: string | null) {
-  if (!commentId) return null;
-  const comment = await db.comment.findUnique({
-    where: { id: commentId },
-    select: { userId: true, deletedAt: true },
-  });
-  return comment && !comment.deletedAt ? comment.userId : null;
 }
 
 async function moveTaskStatus(args: {
@@ -144,6 +105,7 @@ export async function POST(
     subtaskKind?: unknown;
     completed?: unknown;
     minutesSpent?: unknown;
+    assignee?: unknown;
   };
   try {
     payload = (await req.json()) as typeof payload;
@@ -285,8 +247,16 @@ export async function POST(
 
   if (action === "start") {
     if (!isAssignee) return NextResponse.json({ error: "Only the assignee can start this task" }, { status: 403 });
-    if (task.status !== "To Do" && task.status !== "Review") {
-      return NextResponse.json({ error: "Task must be in To Do or Review before start/resume" }, { status: 409 });
+    // P1: start is To Do → In Progress ONLY. There is no resume from Review —
+    // a task not promoted to Done comes back via the reviewer's
+    // review_feedback, which returns it to the FRONT of To Do.
+    if (task.status !== "To Do") {
+      return NextResponse.json({
+        error: task.status === "Review"
+          ? "start cannot resume a task from Review. If the reviewer leaves feedback (review_feedback), the task returns to the front of To Do and must be started from there. If the work is complete and this task is already in Review, there is nothing to start."
+          : "Task must be in To Do before start.",
+        currentStatus: task.status,
+      }, { status: 409 });
     }
     // Hard dependency (ENV-62): can't start while a blocker is still open.
     if (task.blockedById && task.blockedBy && task.blockedBy.status !== "Done") {
@@ -299,23 +269,33 @@ export async function POST(
           : task.blockedBy.workItemKey ?? null,
       }, { status: 409 });
     }
-    if (task.status === "Review") {
-      const reason = await workflowNotificationReason(task.id, messageId);
-      const authorId = reason === "review_feedback"
-        ? null
-        : await commentAuthorId(original.originCommentId);
-      if (reason !== "review_feedback" && authorId !== reviewerId && authorId !== doneOwnerId) {
-        return NextResponse.json({
-          error: "This workflow turn cannot resume a task from Review. Wait for review feedback or call ready_for_review only if the work is already complete.",
-          currentStatus: task.status,
-          workflowReason: reason,
-        }, { status: 409 });
-      }
-    }
     if (!task.approvedOn) {
       return NextResponse.json({ error: "Action Plan must be approved before start" }, { status: 409 });
     }
     if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be In Progress before task work starts" }, { status: 409 });
+
+    // P4: every entry into In Progress passes the shared per-project WIP +
+    // effective-branch-clash gate (same helper as PM auto-start).
+    const startConflict = await findInProgressStartConflict(db, {
+      taskId: task.id,
+      projectId: task.projectId,
+      assigneeId: agent.user.id,
+      candidateBranch: effectiveTaskBranchName(task),
+    });
+    if (startConflict) {
+      const conflictRef = startConflict.activeTask.workItemKey ?? startConflict.activeTask.title;
+      return NextResponse.json({
+        error: startConflict.kind === "wip"
+          ? `You already have an In Progress task in this project (${conflictRef}). The WIP limit is 1 In Progress task per agent per project: finish that task first (call ready_for_review on it), then start this one.`
+          : `Another In Progress task (${conflictRef}) resolves to the same effective branch as this one. Wait for it to leave In Progress (ready_for_review) before starting this task — two tasks must never work one branch at once.`,
+        conflict: {
+          kind: startConflict.kind,
+          taskId: startConflict.activeTask.id,
+          workItemKey: startConflict.activeTask.workItemKey ?? null,
+          title: startConflict.activeTask.title,
+        },
+      }, { status: 409 });
+    }
 
     await moveTaskStatus({
       taskId: task.id,
@@ -339,7 +319,7 @@ export async function POST(
     });
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
-    return NextResponse.json({ ok: true, taskId: task.id, status: "In Progress", resumed: task.status === "Review" });
+    return NextResponse.json({ ok: true, taskId: task.id, status: "In Progress" });
   }
 
   if (action === "approve_plan") {
@@ -460,7 +440,7 @@ export async function POST(
           : [
               `The Action Plan for "${task.title}" was approved by @${agent.user.username}.`,
               autoStart.reason === "busy"
-                ? "You already have another In Progress task, so this task remains in To Do until you are idle."
+                ? "You already have another In Progress task in this project, so this task remains in To Do until you are idle."
                 : "You may now call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
               "Do not post a visible acknowledgement unless a blocker or material plan change appears.",
             ].join("\n"),
@@ -523,9 +503,16 @@ export async function POST(
     if (!isReviewer) {
       return NextResponse.json({ error: "Only the resolved task reviewer can assign this task after plan approval" }, { status: 403 });
     }
+    // P2: the reviewer may pick the assignee explicitly ({assignee:
+    // "<username>"}) on an unassigned task regardless of plan state — the
+    // chosen assignee then authors the Action Plan (assignee-only authorship).
+    const requestedAssignee = typeof payload.assignee === "string"
+      ? payload.assignee.trim().replace(/^@/, "")
+      : "";
     const result = await assignTaskAfterPlanApproval({
       taskId: task.id,
       actor,
+      assigneeUsername: requestedAssignee || undefined,
     });
     if (!result.ok) {
       return NextResponse.json({ error: result.error }, { status: result.status ?? 400 });
@@ -545,6 +532,7 @@ export async function POST(
       status: result.task.status,
       assignedTo: result.assignee,
       movedToTodo: result.movedToTodo,
+      planRequested: result.planRequested,
     });
   }
 
@@ -555,6 +543,25 @@ export async function POST(
     }
     if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be In Progress before task work advances" }, { status: 409 });
 
+    // P3: the implementation checklist is the progress contract — a task with
+    // open implementation sub-tasks is by definition not ready for review.
+    const openImplementationSubtasks = await db.subTask.findMany({
+      where: { taskId: task.id, completedAt: null, kind: { not: "review" } },
+      orderBy: { rank: "asc" },
+      select: { id: true, text: true },
+    });
+    if (openImplementationSubtasks.length > 0) {
+      return NextResponse.json({
+        error: [
+          `ready_for_review rejected: ${openImplementationSubtasks.length} implementation sub-task(s) are still open.`,
+          "Tick each completed one with action=complete_subtask (you must tick sub-tasks the moment they complete), or delete/convert stale items that no longer apply, then call ready_for_review again.",
+          "Open items:",
+          ...openImplementationSubtasks.map((s) => `- ${s.text} (id: ${s.id})`),
+        ].join("\n"),
+        openImplementationSubtasks: openImplementationSubtasks.map((s) => ({ id: s.id, text: s.text })),
+      }, { status: 409 });
+    }
+
     // Resolve repoTouched. The assignee can override by sending an explicit
     // boolean; otherwise default to "yes, it touched the repo" iff the task
     // resolves a branch on a project with a repositoryPath set.
@@ -563,11 +570,10 @@ export async function POST(
     const repoTouched = typeof payload.repoTouched === "boolean"
       ? payload.repoTouched
       : codeTouching;
-    const resolvedCommitPrefix = effectiveTaskCommitPrefix(task);
 
     if (repoTouched && isProtectedBranch(task.project.agentChangeBlockedBranches, branchName)) {
       return NextResponse.json({
-        error: `Agents cannot submit code-changing work from protected branch ${branchName}. Move the work to an allowed task branch, push it, then call ready_for_review again.`,
+        error: `Agents cannot submit code-changing work from protected branch ${branchName}. Move the work to an allowed task branch, commit it there, then call ready_for_review again.`,
         branchName,
         protectedBranches: parseProtectedBranches(task.project.agentChangeBlockedBranches),
       }, { status: 409 });
@@ -616,110 +622,24 @@ export async function POST(
       reviewCommentId = created.id;
     }
 
-    // Monitor verifier: only enqueue when the task plausibly touched the repo.
-    // If the effective branch or repositoryPath is unset, there's nothing for the verifier to
-    // check against — skip silently. If the assignee declared repoTouched=
-    // false (e.g., doc-only task), also skip.
-    let verifyJobId: string | null = null;
-    if (repoTouched && branchName && task.project.repositoryPath) {
-      const jobId = randomUUID();
-      const effectiveSettings = await resolveEffectiveProjectSettings({
-        id: task.projectId,
-        defaultGitUserName: task.project.defaultGitUserName,
-        defaultGitUserEmail: task.project.defaultGitUserEmail,
-        deploymentProductionBranch: task.project.deploymentProductionBranch,
-        deploymentPrTargetBranch: task.project.deploymentPrTargetBranch,
-      });
-      const gitIdentity = {
-        name: effectiveSettings.gitIdentity.name.value,
-        email: effectiveSettings.gitIdentity.email.value,
-      };
-      const baseBranch = effectiveSettings.deployment.prTargetBranch.value;
-      try {
-        await enqueueBranchVerifyJob({
-          jobId,
-          taskId: task.id,
-          projectId: task.projectId,
-          projectSlug: task.project.slug,
-          repositoryPath: task.project.repositoryPath,
-          branchName,
-          baseBranch,
-          commitPrefix: resolvedCommitPrefix,
-          expectedGitUserName: gitIdentity.name,
-          expectedGitUserEmail: gitIdentity.email,
-          requestedByAgentSlug: agent.slug,
-          requestedByUserId: agent.user.id,
-          requestedAt: new Date().toISOString(),
-        });
-        verifyJobId = jobId;
-        await db.activityLog.create({
-          data: {
-            projectId: task.projectId,
-            taskId: task.id,
-            userId: agent.user.id,
-            kind: "pm.repo.verify.enqueue",
-            targetAgent: agent.slug,
-            payload: JSON.stringify({
-              jobId,
-              branchName,
-              baseBranch,
-              commitPrefix: resolvedCommitPrefix,
-              repositoryPath: task.project.repositoryPath,
-              expectedGitUserName: gitIdentity.name,
-              expectedGitUserEmail: gitIdentity.email,
-            }),
-          },
-        });
-      } catch (err) {
-        // Enqueue failure is non-fatal to the Review transition, but it must
-        // not wake the reviewer for code work. The reviewer gate is the
-        // monitor's pm.repo.verify.ok result.
-        console.warn(`[workflow] failed to enqueue branch verify for ${task.id}`, err);
-      }
-    }
-
-    const reviewerShouldWaitForMonitor = repoTouched && Boolean(verifyJobId);
-    if (reviewerId && !reviewerShouldWaitForMonitor) {
-      await sendTaskWorkflowNotification({
-        taskId: task.id,
-        targetUserId: reviewerId,
-        actor,
-        reason: "review_requested",
-        body: [
-          `Task "${task.title}" was moved to Review by @${agent.user.username}.`,
-          comment
-            ? `Assignee note:\n${comment}`
-            : null,
-          repoTouched
-            ? "No monitor branch verification could be queued, so treat this as a workflow/setup issue before approving code work."
-            : "The assignee indicated this task did not change the repository (or no branch is set). Verify the non-code work directly.",
-          "BEFORE reviewing: add the topics you will address as review sub-tasks (action=add_subtask with subtaskKind:\"review\", one per topic), then mark each complete (action=complete_subtask) as you address it — the board shows your review progress from these.",
-          "Review the completed work or respond to the assignee's blocker/question using the full task context. If satisfied, move the task to Done through the workflow endpoint without posting an approval-only comment. If changes or blockers remain, leave concise feedback while keeping it in Review.",
-        ].filter(Boolean).join("\n"),
-      });
-    }
-    // A task entering Review frees its worker (Review no longer counts
-    // toward the per-agent WIP limit): immediately hand the assignee the
-    // next unblocked To Do task in the epic queue so nobody idles while a
-    // reviewer looks at finished work.
-    if (task.epicId && task.status !== "Review") {
-      const refill = await refillEpicQueue({
-        epicId: task.epicId,
-        actor,
-        via: "ready-for-review",
-        // 2b: hand the agent that just moved this task to Review the Epic's
-        // next unblocked task, so the same worker keeps driving its branch.
-        preferUserId: actor.id,
-        contextLine: `"${task.title}" moved to Review — your review-stage feedback there stays priority one.`,
-      });
-      for (const assigned of refill.assignments) {
-        revalidateTaskShell(assigned.task.id);
-        revalidatePath(`/projects/${task.project.slug}/tasks/${assigned.task.id}`);
-      }
+    // Shared Review-entry side effects (verify enqueue with epicChild fields,
+    // verify-gated reviewer wake vs immediate non-code wake, epic queue
+    // refill preferring the freed worker). Human board drags run the SAME
+    // handoff — see lib/tasks/review-handoff.ts.
+    const handoff = await runTaskReviewHandoff({
+      taskId: task.id,
+      actor,
+      via: "ready-for-review",
+      movedFromStatus: task.status,
+      repoTouched,
+      assigneeNote: comment || null,
+    });
+    for (const assigned of handoff.refillAssignments) {
+      revalidatePath(`/projects/${task.project.slug}/tasks/${assigned.taskId}`);
     }
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
-    return NextResponse.json({ ok: true, taskId: task.id, status: "Review", verifyJobId, repoTouched, commentId: reviewCommentId });
+    return NextResponse.json({ ok: true, taskId: task.id, status: "Review", verifyJobId: handoff.verifyJobId, repoTouched: handoff.repoTouched, commentId: reviewCommentId });
   }
 
   if (action === "review_feedback") {
@@ -802,9 +722,9 @@ export async function POST(
         reason: "review_feedback",
         body: [
           `Review feedback for "${task.title}" moved the task back to To Do, at the front of the queue.`,
-          "Unanswered review feedback is your top priority — address it before starting or resuming any other task (WORKFLOW.md § Picking your next task, tier 1).",
-          "Add a sub-task (action=add_subtask) for each concrete item in the reviewer's feedback BEFORE resuming, so the progress checklist reflects the remaining work and the board bar stays honest (your earlier items are already ticked). Tick each new item off (with minutesSpent) as you address it.",
-          "Keep the approved Action Plan unless a material plan change is required, then start/resume work through the workflow endpoint.",
+          "Unanswered review feedback is your top priority — address it before starting any other task (WORKFLOW.md § Picking your next task, tier 1).",
+          "Add a sub-task (action=add_subtask) for each concrete item in the reviewer's feedback BEFORE starting, so the progress checklist reflects the remaining work and the board bar stays honest (your earlier items are already ticked). Tick each new item off (with minutesSpent) as you address it.",
+          "Keep the approved Action Plan unless a material plan change is required, then start the task from To Do through the workflow endpoint (action=start).",
           "Do not post an acknowledgement-only response.",
         ].join("\n"),
       });
@@ -952,7 +872,51 @@ export async function POST(
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     publishBoardTouch(task.projectId);
-    return NextResponse.json({ ok: true, taskId: task.id, subtaskId, completed: result.completedAt !== null, minutesSpent: result.minutesSpent });
+
+    // Close the loop (PH-124): when the assignee ticks the LAST open
+    // implementation sub-task on an In Progress task, tell them — in this
+    // same response, while they still hold a valid reusable token — to call
+    // ready_for_review immediately, and belt-and-braces dispatch a fresh
+    // workflow turn in case this turn ends without acting.
+    let allImplementationSubtasksComplete = false;
+    if (
+      result.completedAt !== null &&
+      subtaskRow.kind !== "review" &&
+      isAssignee &&
+      task.status === "In Progress"
+    ) {
+      const remainingOpen = await db.subTask.count({
+        where: { taskId: task.id, completedAt: null, kind: { not: "review" } },
+      });
+      if (remainingOpen === 0) {
+        allImplementationSubtasksComplete = true;
+        await sendTaskWorkflowNotification({
+          taskId: task.id,
+          targetUserId: agent.user.id,
+          actor,
+          reason: "ready_for_review_available",
+          body: [
+            `All implementation sub-tasks on "${task.title}" are complete.`,
+            "Verify every sub-task is genuinely ticked and the work is committed per the commit-hygiene rules, then call the workflow endpoint with action=ready_for_review NOW.",
+            "Do not leave finished work sitting in In Progress, and do not post an acknowledgement-only reply.",
+          ].join("\n"),
+        });
+      }
+    }
+    return NextResponse.json({
+      ok: true,
+      taskId: task.id,
+      subtaskId,
+      completed: result.completedAt !== null,
+      minutesSpent: result.minutesSpent,
+      ...(allImplementationSubtasksComplete
+        ? {
+            allImplementationSubtasksComplete: true,
+            instruction:
+              "All implementation sub-tasks are complete — call action=ready_for_review NOW with this same messageId and token (workflow tokens are reusable; you already hold everything you need).",
+          }
+        : {}),
+    });
   }
 
   // Scope-negotiation flow (all in comments): a reviewer/manager asks the

@@ -149,6 +149,7 @@
       "pm-in-progress-stale",
       "pm-review-feedback-awaiting-assignee",
       "pm-review-awaiting-reviewer",
+      "pm-epic-not-open",
       "pm-channel-no-start",
       "pm-channel-stalled"
     ]

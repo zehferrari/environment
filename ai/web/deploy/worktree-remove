@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Safely remove one linked local worktree and its local branch.
 
-This helper is run by the monitor-owned worktree runners, never by the web
-process. It refuses dirty, live, protected, or unsafe worktrees, but an
-unmerged local branch may be discarded explicitly. It never contacts a
-remote; callers supply only a worktree name from the runner inventory.
+This helper is run by the monitor-owned worktree runners and the
+pm-epic-merge-runner, never by the web process. It refuses dirty, live,
+protected, or unsafe worktrees, but an unmerged local branch may be discarded
+explicitly. It never contacts a remote; callers supply only a worktree name
+from the runner inventory (default mode) or a local branch name (--branch
+mode, used by the Epic-Done cleanup for P6 local-only child branches — the
+caller verifies each branch is merged into the pushed Epic branch first).
 """
 import fcntl
 import json
@@ -215,17 +218,85 @@ def remove_local_worktree(repo, worktrees_root, target, driver, served_reference
         os.close(lock_fd)
 
 
-def main(argv):
-    if len(argv) == 9:
+def remove_local_branch(repo, worktrees_root, branch, protected_branches):
+    """Branch-first removal (Epic-Done cleanup): delete refs/heads/<branch>
+    and, when one exists, the linked worktree checked out on it. Unlike the
+    name-based mode there is no operation lock and no served-worktree driver —
+    the caller (pm-epic-merge-runner) only names branches it has verified as
+    ancestors of the pushed Epic branch, and protected/live/primary/dirty
+    guards below still refuse anything unsafe. Remote refs are never touched.
+    """
+    repo_real = os.path.realpath(repo)
+    root_real = os.path.realpath(worktrees_root)
+    if not os.path.isdir(repo_real):
+        raise RemovalError(f"repository does not exist: {repo}")
+    if not branch or branch.startswith("-"):
+        raise RemovalError("invalid branch name")
+    if git(repo_real, ["check-ref-format", "--branch", branch], check=False).returncode:
+        raise RemovalError(f"invalid branch name: {branch}")
+    if branch.lower() in PROTECTED_BRANCHES | {item.lower() for item in protected_branches}:
+        raise RemovalError(f"refused to remove protected local branch: {branch}")
+
+    ref = f"refs/heads/{branch}"
+    branch_exists = git(repo_real, ["rev-parse", "--verify", "--quiet", ref], check=False).returncode == 0
+
+    inventory = worktrees(repo_real)
+    holders = [record for record in inventory if record.get("branch") == ref]
+    removed_worktree = None
+    for record in holders:
+        holder_path = os.path.abspath(record["path"])
+        holder_real = os.path.realpath(holder_path)
+        if holder_path != holder_real:
+            raise RemovalError("refused worktree path that resolves through a symlink")
+        if not is_descendant(root_real, holder_path):
+            raise RemovalError(
+                f"branch {branch} is checked out outside the managed worktree root: {holder_path}"
+            )
+        if record.get("locked"):
+            raise RemovalError(f"worktree for branch {branch} is locked")
+        if not os.path.isdir(holder_path):
+            git(repo_real, ["worktree", "prune"])
+            continue
+        clean_or_discard_generated_changes(holder_path)
+        git(repo_real, ["worktree", "remove", holder_path])
+        removed_worktree = holder_path
+
+    if branch_exists:
         try:
-            protected_branches = json.loads(argv[8])
-        except json.JSONDecodeError as exc:
-            raise RemovalError(f"invalid protected branch list: {exc}")
-        if not isinstance(protected_branches, list) or not all(isinstance(item, str) for item in protected_branches):
-            raise RemovalError("invalid protected branch list")
+            git(repo_real, ["branch", "-D", "--", branch])
+        except RemovalError as exc:
+            raise RemovalError(f"local branch {branch} could not be deleted: {exc}")
+    git(repo_real, ["worktree", "prune"])
+
+    if not branch_exists and not removed_worktree:
+        return f"Local branch {branch} is already absent. Remote branches were not changed."
+    if removed_worktree:
+        return f"Removed local branch {branch} and its worktree {removed_worktree}. Remote branches were not changed."
+    return f"Removed local branch {branch} (no worktree was attached). Remote branches were not changed."
+
+
+def parse_protected_branches(raw):
+    try:
+        protected_branches = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RemovalError(f"invalid protected branch list: {exc}")
+    if not isinstance(protected_branches, list) or not all(isinstance(item, str) for item in protected_branches):
+        raise RemovalError("invalid protected branch list")
+    return protected_branches
+
+
+def main(argv):
+    if len(argv) == 6 and argv[1] == "--branch":
+        print(remove_local_branch(argv[2], argv[3], argv[4], parse_protected_branches(argv[5])))
+        return
+    if len(argv) == 9:
+        protected_branches = parse_protected_branches(argv[8])
         print(remove_local_worktree(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], protected_branches))
         return
-    raise RemovalError("usage: worktree-remove <repo> <worktrees-root> <worktree-name> <driver> <served-reference> <app-subdir> <lock-file> <protected-branches-json>")
+    raise RemovalError(
+        "usage: worktree-remove <repo> <worktrees-root> <worktree-name> <driver> <served-reference> <app-subdir> <lock-file> <protected-branches-json>\n"
+        "       worktree-remove --branch <repo> <worktrees-root> <branch> <protected-branches-json>"
+    )
 
 
 if __name__ == "__main__":

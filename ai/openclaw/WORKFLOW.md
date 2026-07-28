@@ -190,12 +190,14 @@ the status names differ (see [`guides/JIRA.md`](./guides/JIRA.md) § *Picking Ji
    unanswered when the latest source-channel comment/request is authorized
    by that source's policy (PM: the Mission Control owner or a trusted workflow notification), postdates your last response, and postdates
    the most recent move into review. Oldest comment first. Respond with
-   **concrete action** (code change pushed, plan revised, question
-   answered), not just acknowledgement. In Mission Control / PM the system
-   backs this rule: you hold at most one active task per project (To Do /
-   In Progress — a task you sent to Review does NOT count, and PM assigns
-   you the next unblocked To Do task in the same `ready_for_review`
-   request). Unresolved feedback on your Review-stage work still outranks
+   **concrete action** (code change committed — and pushed where the
+   branch policy pushes — plan revised, question answered), not just
+   acknowledgement. In Mission Control / PM the system
+   backs this rule: you hold at most **one In Progress task per project**
+   (enforced at every `start`); To Do + In Progress define assignment
+   eligibility, and a task you sent to Review never counts — when your
+   task moves to Review, PM prefers you for the Epic's next unblocked
+   To Do task. Unresolved feedback on your Review-stage work still outranks
    the new assignment: reviewer `review_feedback` returns the task to the
    **front** of To Do, and you clear that feedback before advancing other
    work.
@@ -232,25 +234,35 @@ agent.
 ## Action Plan approval
 
 Every Epic and Task assignment requires a concrete Action Plan **before**
-implementation begins. The approver chain, in order:
+implementation begins. A Task Action Plan is authored by the task
+**assignee only** (an Epic Action Plan by the Epic acting manager). The
+approver chain, in order:
 
 1. **Task reviewer** — the first approver. If the task has a reviewer set,
    they review and approve the plan.
 2. **Epic acting manager** — if the reviewer is empty, the acting manager
-   of the task's Open parent Epic approves.
-3. **Task reporter** — if there is no reviewer and no Open parent Epic
-   acting manager, the reporter approves.
+   of the task's parent Epic approves while that Epic is In Progress.
+3. **Task reporter** — if there is no reviewer and no In Progress parent
+   Epic acting manager, the reporter approves.
+
+If a task has a reviewer but **no assignee**, the reviewer picks the
+assignee with `assign_after_plan_approval` (optional `{assignee}`) and
+then awaits that assignee's plan — the reviewer never authors the plan
+themselves.
 
 The approver reviews the Action Plan in the Action Plan tab. If it needs
-adjustment, they reply there with one consolidated feedback comment. If
-it is acceptable, they approve with a concise note explaining why the
+adjustment, they reply there with one consolidated feedback comment
+(`request_subtask` for extra implementation scope). If it is acceptable,
+they approve with `approve_plan` and a concise note explaining why the
 plan is acceptable or naming any constraints; approval stamps
 `approved_on` and `approved_by`.
 
 Approval stamps `approved_on` and `approved_by` on the task. Only an
 approved `To Do` task can move to `In Progress`. Do not start
 implementation before the plan is approved unless zeh explicitly
-overrides for that specific task.
+overrides for that specific task. After approval the assignee **must**
+break the task into implementation subtasks — ideally parallelizable so
+sub-agents can run them.
 
 When an Action Plan has an explicit `Deliverables`, `Implementation
 steps`, `Checklist`, `Subtasks`, or `Milestones` section and the Task has
@@ -284,12 +296,14 @@ Two distinct decomposition levels, each with its own creator and gate:
 
 ### Task-local subtasks (created by the task assignee/reviewer)
 
-- A reviewer assigned to a Task posts the **Task Action Plan** first. The
-  first thing the reviewer does on an assigned Task is create a detailed
-  plan of action.
-- Once the Task Action Plan is approved, if applicable, the reviewer
-  should divide the task into subtasks to allow multiple subagents working
-  in the same task in parallel.
+- The task **assignee** posts the **Task Action Plan** first. The first
+  thing the assignee does on an assigned Task is create a detailed plan
+  of action. (A reviewer never authors the plan; on an unassigned task
+  the reviewer picks the assignee with `assign_after_plan_approval` and
+  awaits that assignee's plan.)
+- Once the Task Action Plan is approved, the assignee **must** divide the
+  task into implementation subtasks — ideally parallelizable so multiple
+  subagents can work the same task in parallel.
 - Subtasks are a **lightweight progress checklist** (`SubTask` model: text
   + `kind` + `completedAt` + optional `minutesSpent`), not child Tasks —
   they have no assignee, reviewer, status, key, or board presence.
@@ -313,15 +327,22 @@ Two distinct decomposition levels, each with its own creator and gate:
   - Assignee thinks the requested extra work should block or needs an owner
     call → `flag_extra_work_blocker` (`{comment=reason}`); PM raises it to the
     owner and the reviewer/reporter. Every request carries a described reason.
-- When a task bounces back from `Review`, the assignee adds a subtask per
-  feedback item so the progress bar stays honest.
-- The assignee must set each subtask as `Done` (tick it) as it completes.
+- When a task bounces back from `Review` (reviewer `review_feedback` →
+  front of To Do), the assignee adds a subtask per feedback item so the
+  progress bar stays honest.
+- The assignee must tick each subtask `Done` (`complete_subtask`) **the
+  moment it completes** — never in a batch at the end.
+  `ready_for_review` is **rejected while open implementation subtasks
+  exist**; complete them, or delete/convert stale ones, first. When you
+  tick the last open implementation subtask, call `ready_for_review` in
+  the same turn — the workflow token is reusable and the
+  `complete_subtask` response tells you when you are clear.
 - A task's board card shows a segmented progress bar (one node per
   subtask, filling on an orange→green gradient as completion rises). To
   Do reads as an empty bar.
 - Subtasks are checklist/progress rows and must not be used as the next
   Epic implementation task. After `review_done`, PM assigns the next
-  unassigned top-level `To Do` task in the same Open Epic — never a
+  unassigned top-level `To Do` task in the same Epic — never a
   subtask.
 
 ---
@@ -362,9 +383,9 @@ match a known username exactly, including case. When an owner-authored task
 comment mentions an active agent, PM mirrors that comment into the agent's PM
 channel turn so the agent can answer back in the original task-comment thread.
 It can also target the assigned active agent, the task reviewer, the acting
-manager of an Open parent Epic, and explicit mentions, with duplicates removed.
-If no reviewer or Open Epic manager exists, the task reporter is the review
-fallback. Non-owner mentions are never an action grant.
+manager of an In Progress parent Epic, and explicit mentions, with duplicates
+removed. If no reviewer or In Progress parent Epic manager exists, the task
+reporter is the review fallback. Non-owner mentions are never an action grant.
 
 Task and Epic descriptions support full markdown preview, but they do
 **not** resolve `@mentions` or dispatch mention notifications. Treat
@@ -422,12 +443,16 @@ Latency / PM queue/status names:
    unanswered when the latest PM comment/chat turn is from the Mission
    Control owner or a trusted workflow notification, postdates your last response, and postdates the most recent
    move into `Review`. Oldest comment first. Respond with **concrete
-   action** (code change pushed, plan revised, question answered), not
-   just acknowledgement.
+   action** (code change committed — and pushed where the branch policy
+   pushes — plan revised, question answered), not just acknowledgement.
 2. **`To Do` tasks assigned to you and approved to start.** If
    `approved_on` is set, move the task to `In Progress` through PM
    workflow and start immediately. If `approved_on` is empty, post one
    technical plan in the task's Action Plan tab and wait for approval.
+   `start` works only from `To Do`, and is rejected while you hold
+   another `In Progress` task in the same project or the task's
+   effective branch clashes with another active task — finish that
+   first.
 3. **`In Progress` tasks waiting on reviewer/manager/reporter input.**
    Move the task to `Review` through PM workflow with one concise note
    explaining the blocker, question, or response needed. Do not leave
@@ -480,10 +505,13 @@ Latency / PM queue/status names:
    PM creates those entries as ordered task-local subtasks for progress
    tracking. Bullets under `Inputs`, `Rule logic`, context, risks, or
    open questions are not subtasks.
-10. If your task is in `Review` because you were waiting for feedback or
-    an external response, and that response arrives, resume with workflow
-    action `start`, complete the follow-up, then call `ready_for_review`
-    again with one concise visible note.
+10. If your task is in `Review` and the reviewer needs changes — or the
+    response you were waiting for arrives — the reviewer records it with
+    `review_feedback`, which returns the task to the **front** of To Do
+    and wakes you. Address the feedback by starting the task again from
+    `To Do` (`start`), completing the follow-up, then calling
+    `ready_for_review` again with one concise visible note. There is no
+    Review-resume: `start` works only from `To Do`.
 11. For code tasks, use the PM project settings and task fields:
     - `Project.repositoryPath` tells you the repo path when configured.
     - `Project.defaultGitUserName` / `defaultGitUserEmail` describe the
@@ -499,20 +527,37 @@ Latency / PM queue/status names:
     If no explicit branch is stored, use the resolved human-key fallback from
     PM context; do not invent a branch from a system/database ID.
 13. Run relevant tests/builds, or state plainly what could not be tested.
-14. Push the branch when code is ready. Do **not** create or update a pull
-    request. PR creation and landing are human-only.
-15. On completion, move the task to `Review` through the PM workflow
-    endpoint and include one concise note with branch, commit, tests, and
-    residual risk when applicable. Sign formal completion notes.
+14. When code is ready: a **standalone** task branch (no Epic) is pushed
+    to origin before `ready_for_review`. An **Epic-child task branch is
+    local-only — never push it to origin** (origin pushes trigger
+    unwanted Bitbucket deployment pipelines); commit locally and let
+    PM's auto-merge fold it into the epic integration branch, the only
+    ref that reaches origin. In both cases do **not** create or update a
+    pull request. PR creation and landing are human-only.
+15. On completion, tick any remaining implementation subtasks
+    (`ready_for_review` is rejected while open ones exist), then move
+    the task to `Review` through the PM workflow endpoint and include
+    one concise note with branch, commit, tests, and residual risk when
+    applicable. Sign formal completion notes.
 16. When you are waiting for reviewer/manager/reporter feedback or
     response, move the task to `Review` through the PM workflow endpoint
     with one concise blocker/question note. If you are the resolved
     reviewer, review the completed work, move it to `Done` when satisfied
-    without posting an approval-only comment, or leave concrete
-    feedback/blockers while keeping it in `Review`.
+    without posting an approval-only comment, or record concrete
+    feedback/blockers with `review_feedback` — that returns the task to
+    the **front** of To Do for the assignee.
 17. When you flip the matching `~/tasks/current.md` entry to a terminal
     status, move it to `~/tasks/log.md` in the same edit. See
     [Maintaining `tasks/current.md`](#maintaining-taskscurrentmd).
+
+**No live workflow turn?** Workflow actions need the token delivered in a
+workflow turn's system prompt. If you complete work and no workflow turn
+is live (for example a subagent finished the work, or your token-bearing
+turn ended), POST `/api/agent/tasks/<taskId>/request-workflow-turn` with
+your PM-channel bearer to receive a fresh workflow turn. Only the task's
+current assignee may call it, the task must be in `To Do` /
+`In Progress` / `Review`, and it is rate-limited to one request per task
+per 5 minutes.
 
 ### Assignment and workflow mutations
 
@@ -532,12 +577,19 @@ Latency / PM queue/status names:
   not blocked.
 - Role-aware PM workflow actions are allowed only through the native
   workflow endpoint supplied in a PM-channel turn. Assignees may
-  `start` and `ready_for_review`; the resolved reviewer may
-  `review_feedback`, `review_done`, or `triage_to_todo`.
+  `start` (To Do → In Progress only), `add_subtask`/`complete_subtask`,
+  and `ready_for_review`; the resolved reviewer may `approve_plan`,
+  `assign_after_plan_approval` (optionally naming the assignee for an
+  unassigned task), `request_subtask`, `review_feedback`, `review_done`,
+  or `triage_to_todo`.
+- `triage_to_todo` is the reviewer-only promotion of a `Backlog` task to
+  `To Do`. It is allowed only when the parent Epic (if any) is
+  actionable (`To Do`/`In Progress`), assigns nobody, and the Action
+  Plan approval gate still applies before the task can be started.
 - Review owner resolution is: task Reviewer / acting manager, then the
-  acting manager of an Open parent Epic, then the task reporter.
-- Tasks under an Epic are actionable only when that Epic status is
-  `Open`.
+  acting manager of an In Progress parent Epic, then the task reporter.
+- Tasks under an Epic are actionable only while that Epic status is
+  `To Do` or `In Progress`.
 - If a PM event says "assigned to me" but the actor is yourself, treat it
   as a policy error and do not start work.
 
@@ -577,7 +629,7 @@ Rules:
 - New items use `tmp:` refs so later operations can refer to them.
 - Existing items are addressed by real IDs from the PM project context.
 - `assignee` and `actingManager` values are usernames or `null`.
-- New tasks land in `Backlog`; new epics land `open`.
+- New tasks and new epics land in `Backlog`.
 - PM dry-run-validates every operation under the human-triggered grant:
   active principals, project scoping, hierarchy, known statuses, and
   valid task-status transitions are checked before the proposal is stored.
@@ -596,34 +648,41 @@ The durable workflow contract for the local PM workflow.
 
 **Manager / assignee / reviewer loop:**
 
-1. A manager opens an Epic and posts the Epic Action Plan. Once approved,
-   the manager creates all the implementation tasks, with titles starting
-   `1.`, `2.`, `3.` in implementation order.
+1. A manager takes on an assigned Epic and posts the Epic Action Plan.
+   Once approved, the manager creates all the implementation tasks, with
+   titles starting `1.`, `2.`, `3.` in implementation order.
 2. The manager moves the ordered tasks to `To Do` and assigns only the
    first executable task.
-3. The assignee (or reviewer) posts one concrete technical Action Plan in
-   the task's Action Plan tab before implementation. See
+3. The assignee posts one concrete technical Action Plan in the task's
+   Action Plan tab before implementation. See
    [Action Plan approval](#action-plan-approval) for the approver chain.
 4. The assignee starts the approved task by moving it to `In Progress`
-   through the PM workflow endpoint, then does the work. If the reviewer
-   divided the task into subtasks, the assignee (or parallel subagents)
-   works each subtask and ticks it `Done` as it completes.
+   through the PM workflow endpoint (`start` works only from `To Do`,
+   and only while the assignee has no other `In Progress` task in the
+   project and no effective-branch clash), breaks it into implementation
+   subtasks, then does the work — alone or with parallel subagents —
+   ticking each subtask `Done` the moment it completes.
 5. When implementation is complete, or when the assignee is waiting for
    reviewer/manager/reporter feedback or response, the assignee moves the
    task to `Review` through the PM workflow endpoint with one concise note
-   explaining the result, blocker, or question. For code-touching tasks
-   this immediately wakes the monitor agent to verify the repository
-   before any reviewer is woken.
-6. If the task was in `Review` only because the assignee was waiting for
-   feedback or an external response, and that response arrives, the
-   assignee resumes with workflow action `start`, completes the follow-up,
-   then calls `ready_for_review` again with one concise note.
+   explaining the result, blocker, or question. `ready_for_review` is
+   rejected while open implementation subtasks remain. For code-touching
+   tasks this immediately wakes the monitor agent to verify the
+   repository before any reviewer is woken.
+6. `review_feedback` returns the task to the **front** of To Do and
+   wakes the assignee. The assignee addresses the feedback by starting
+   the task again from `To Do` — `start` never applies to a task in
+   `Review`.
 7. The resolved reviewer reviews the task **only after monitor validation
    (`pm.repo.verify.ok`) has passed** for code-touching tasks. If
-   satisfied, the reviewer moves it to `Done`; otherwise they leave
-   concrete feedback while the task stays in `Review`.
+   satisfied, the reviewer moves it to `Done`; otherwise they record
+   concrete feedback with `review_feedback`, returning the task to the
+   front of To Do.
 8. After `review_done`, PM assigns the next unassigned top-level `To Do`
-   task in the same Open Epic to the completed task's assignee.
+   task in the same Epic to the completed task's assignee. The same
+   preference applies as soon as a task moves to `Review` (agent action
+   or human board drag): the freed worker is preferred for the Epic's
+   next unblocked `To Do` task.
 9. Assignees must always answer unresolved review feedback before taking
    a new `To Do` task. If no feedback is waiting, they should start the
    next assigned and approved `To Do` task while waiting for review on
@@ -668,19 +727,37 @@ the exact silent token and no other text.
 - Assigned `To Do` work asks the assignee to post an Action Plan if
   `approved_on` is empty. Only approved `To Do` work can move to
   `In Progress`.
-- Moving code-touching work to `Review` wakes the monitor agent first.
-  The monitor rejects dirty worktrees, pushes clean local branch commits
-  when it can, verifies the remote branch/prefix/git author and committer
-  against the project git identity or global git identity fallback,
-  rebuilds the live PM worktree if that branch is serving the website, and
-  only then wakes the resolved reviewer. Non-code Review work can wake the
-  reviewer directly.
+- Moving work to `Review` — by workflow action **or by a human dragging
+  the card on the board** — runs the same handoff: repo verify enqueue
+  for code-touching tasks, a verify-gated reviewer wake, and an
+  epic-queue refill that prefers the freed worker.
+- For code-touching tasks the monitor agent is woken first. The monitor
+  rejects dirty worktrees and verifies the branch/prefix/git author and
+  committer against the project git identity or global git identity
+  fallback. For **standalone** task branches it verifies the pushed
+  remote branch, auto-pushing clean local commits when it can. For
+  **epic-child** task branches it verifies the **local** branch ref
+  against the epic integration branch — epic-child branches are never
+  pushed. It rebuilds the live PM worktree if that branch is serving the
+  website, and only then wakes the resolved reviewer. Non-code Review
+  work can wake the reviewer directly.
 - Waiting for reviewer/manager/reporter feedback is a `Review` state, not
   a stale `In Progress` state. The assignee should include one concise
   blocker/question/comment in the `ready_for_review` workflow call.
-- `review_feedback` keeps the task in `Review` and wakes the assignee.
+- `review_feedback` returns the task to the **front** of To Do and wakes
+  the assignee; the assignee restarts it from `To Do` with `start`.
+  There is no Review-resume.
 - `review_done` moves the task to `Done` and triggers the next-task Epic
   handoff when one exists.
+- When an epic-child task reaches `Done`, PM automatically merges the
+  task's local branch into the epic integration branch (an external
+  runner does the git work) and eagerly pushes the epic branch — the
+  epic branch is the only ref that reaches origin. If the task branch
+  cannot be found locally or the merge fails, the task bounces back to
+  `Review` with a comment and the epic queue steps back; fix it by
+  committing your changes locally on the named branch, never by pushing
+  it. When the Epic itself reaches `Done`, its merged local child
+  branches and worktrees are cleaned up automatically.
 - Approval-only reviewer comments are treated as a workflow error. The
   resolved reviewer must use `review_done`. PM also auto-completes a
   `Review` task when the resolved reviewer posts an **unmistakable
@@ -707,8 +784,10 @@ The PM workflow probe detects: assigned `Backlog` tasks missing a
 plan/opinion comment; assigned `To Do` tasks not moved to `In Progress`;
 stale `In Progress` tasks; `Review` tasks waiting on the reviewer; review
 feedback waiting on the assignee; reviewer/manager/reporter responses
-waiting on the assignee while the task is in `Review`; active PM-channel
-turns that never started or stopped producing output.
+waiting on the assignee while the task is in `Review`; tasks under a
+non-actionable Epic (`Backlog`/`Done`), flagged to the Epic's acting
+manager (`pm-epic-not-open`); active PM-channel turns that never started
+or stopped producing output.
 
 For `In Progress`, the stale timer uses the assignee's latest task comment
 after the task entered `In Progress`. A real progress comment resets the
@@ -730,7 +809,12 @@ T4 = Telegram only if the issue is still present after T3's confirmation window
 attempt count, and `pm_workflow.retry_after_tier3_seconds` controls when
 PM workflow drift starts a new recovery cycle after a Telegram. A nudge or
 Telegram does not resolve a PM workflow issue; only the PM probe no longer
-emitting that issue resolves it.
+emitting that issue resolves it. A PM-channel nudge run counts as
+confirmed only when the run is alive — status `streaming`/`complete`, or
+freshly `accepted` — a `failed` run never confirms recovery. When a
+resolved nudge target is a human rather than an active agent, the
+recovery ladder and service restarts are skipped; the human gets a
+single notification instead.
 
 Live monitor ticks must be single-instance locked. `--dry-run` and
 `--probe-only` must not write monitor state, otherwise debugging can
@@ -744,8 +828,8 @@ accidentally suppress recovery or duplicate nudges.
 - Ensure `monitor_triage.auto_action_kinds_bypass_monitor` includes PM
   workflow kinds: `pm-backlog-plan-missing`, `pm-todo-not-started`,
   `pm-in-progress-stale`, `pm-review-feedback-awaiting-assignee`,
-  `pm-review-awaiting-reviewer`, `pm-channel-no-start`, and
-  `pm-channel-stalled`.
+  `pm-review-awaiting-reviewer`, `pm-epic-not-open`,
+  `pm-channel-no-start`, and `pm-channel-stalled`.
 - Ensure the monitor can discover the active PM database from
   `/etc/default/pm-active-worktree` or `/etc/default/pm`.
 - Install changed host helpers after deployment:
@@ -844,14 +928,18 @@ any other agent to create or merge a PR.
 **Monitor validation first (code-touching tasks).** The resolved reviewer
 reviews the task **only after** the monitor agent has verified the
 repository (`pm.repo.verify.ok`). Moving a code-touching task to `Review`
-wakes the monitor agent first; the monitor rejects dirty worktrees,
-pushes clean local branch commits when it can, verifies the remote
-branch/prefix/git author and committer against the project git identity
-or global git identity fallback, verifies the current effective deployment PR
-target branch is an ancestor of the task branch, rebuilds the live PM worktree if that branch
-is serving the website, and only then wakes the resolved reviewer. A stale
-branch fails this gate until it is updated or recreated from the base named in
-the verifier result.
+wakes the monitor agent first; the monitor rejects dirty worktrees and
+verifies the branch/prefix/git author and committer against the project
+git identity or global git identity fallback. For **standalone** task
+branches it verifies the pushed remote branch (auto-pushing clean local
+commits when it can) and that the current effective deployment PR target
+branch is an ancestor of the task branch. For **epic-child** task
+branches it verifies the **local** branch ref against the epic
+integration branch — epic-child branches are never pushed to origin. It
+rebuilds the live PM worktree if that branch is serving the website, and
+only then wakes the resolved reviewer. A stale branch fails this gate
+until it is updated or recreated from the base named in the verifier
+result.
 Non-code Review work can wake the reviewer directly. Do not approve or
 `review_done` a code task before `pm.repo.verify.ok` is present.
 
@@ -859,7 +947,9 @@ Output: concise and findings-first. In Mission Control / PM, if the review
 is satisfied, move the task to `Done` through the workflow endpoint
 (`review_done`) and do not post an approval-only comment. The keyword
 `looks good, ship it` in an approval comment also triggers PM
-auto-complete, but prefer the workflow endpoint. If a visible review
+auto-complete, but prefer the workflow endpoint. If changes are needed,
+record them with `review_feedback` — the task returns to the **front** of
+To Do for the assignee. If a visible review
 handoff is needed in another source channel, say no issues and mention
 remaining risk. Sign the review handoff when the destination calls for the
 signature rule.

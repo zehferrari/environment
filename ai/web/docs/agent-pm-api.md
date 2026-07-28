@@ -291,19 +291,30 @@ agents; they define which agents an Acting Manager may choose from when
 assigning child Tasks. Task assignee remains a single user.
 
 An agent may have only one active Task per project. Active means `To Do`
-or `In Progress`. A task you moved to `Review` does NOT count — sending
-work to Review frees you for the next assignment, and PM assigns it in
-the same request. Unresolved review feedback on a Review-stage task stays
-your top priority (WORKFLOW.md tier 1): address feedback before advancing
-your new task. The same agent may hold active Tasks in different
+or `In Progress` — Review NEVER counts, here or in any other WIP rule.
+Sending work to Review frees you for the next assignment, and PM assigns
+it in the same request. When a reviewer returns your Review-stage task
+with `review_feedback`, it lands at the FRONT of the project's To Do
+queue, so addressing that feedback is your next `start` (WORKFLOW.md
+tier 1). The same agent may hold active Tasks in different
 projects. The limit is per agent, not per epic: an Epic with several free
 pool workers gets one task assigned to each, so pool workers progress the
 queue in parallel. Humans may still assign explicitly as a deliberate
 override.
 
+Assignment eligibility (To Do + In Progress per project) is one gate;
+entering In Progress is another. At EVERY entry into In Progress — the
+workflow `start` action and post-approval auto-start alike — PM enforces
+at most ONE In Progress task per agent per project plus an
+effective-branch clash check, and a rejection names the task to finish
+first. `start` itself is To Do → In Progress only: there is no agent
+path back from Review (human board drags remain authoritative).
+
 The queue is self-driving. PM automatically assigns the next unblocked
 To Do task to every free pool worker when: a task reaches Done (any
-path), an assignee calls `ready_for_review`, an Action Plan is approved
+path), a task moves to Review (assignee `ready_for_review` or a human
+board drag — both prefer the freed worker for the epic's next unblocked
+To Do task), an Action Plan is approved
 on an unassigned task, a human unassigns or returns a task to the queue,
 or the Epic's Action Plan is approved (which also promotes its Backlog
 tasks to To Do and starts the queue). Acting managers keep `assign_next`
@@ -331,11 +342,23 @@ tasks, and post-approval auto-start refuses them. If you are assigned a
 blocked task anyway (human override), do not start it — plan in the
 Action Plan tab and wait for the blocker to reach Done.
 
-Review-stage work that received reviewer/reporter feedback and awaits the
-assignee's response is always the assignee's first priority (WORKFLOW.md
-§ Picking your next task, tier 1). A reviewer `review_feedback` action
-returns the task to the **front** of the project's To Do queue so it is
-picked up before any other pending work.
+A reviewer `review_feedback` action returns the task to the **front** of
+the project's To Do queue so it is picked up before any other pending
+work (WORKFLOW.md § Picking your next task, tier 1). That — or
+`review_done` — is the only way out of Review: the assignee never
+resumes a Review-stage task in place. Feedback left only as a comment
+does not move the task; the reviewer must formalize it with
+`review_feedback`.
+
+Workflow mutations ride workflow turns: tokens are delivered only inside
+a workflow turn's system prompt. If you finish work and no workflow turn
+is live, request one —
+`POST /api/agent/tasks/<taskId>/request-workflow-turn` with your
+PM-channel bearer (current-assignee-only, task in To Do / In Progress /
+Review, rate-limited to one request per task per 5 minutes). Full
+contract: [`agent-interaction.md`](./agent-interaction.md) § Requesting a
+workflow turn. The task `ack` endpoint is a liveness ping only — it
+never changes status; begin work with the workflow `start` action.
 
 Monitor agents are intentionally excluded from those picker and validator
 pools. They can observe, triage, wake/restart agents, submit proposals
@@ -602,6 +625,17 @@ ever bumps them, page back through history is a future Phase 2 work —
 **not implemented yet.** For now: a busy task that exceeds the cap
 returns the most recent N rows and the agent treats anything older as
 absent.
+
+Two cap families exist and they are not the same thing — this paragraph
+is the authoritative statement wherever docs quote different numbers.
+The table above is the **read-API serializer cap**
+(`lib/agents/context/api/serialize.ts`), applied to fetched JSON. The
+**inline per-turn packet** instead uses the smaller role-based caps from
+[`lib/agents/context/caps.ts`](../lib/agents/context/caps.ts) —
+currently 1000 comment/discussion rows for coding agents and 500 for the
+monitor profile, plus per-body clips. The read API is therefore always
+at least as complete as the inline packet: when the packet notes
+truncation, fetch the JSON.
 
 ## Future Phase 2 (not yet done)
 
