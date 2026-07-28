@@ -587,6 +587,24 @@ def check_bitbucket(user, user_cfg, workspace, repo):
         emit("FAIL", f"{user}: Bitbucket credentials incomplete")
         return
     emit("OK", f"{user}: Bitbucket token file present")
+    # Atlassian API tokens expire and cannot be renewed automatically — the
+    # operator records the expiry date (shown once at creation) in a sidecar
+    # `<tokenFile>.expiry` (ISO YYYY-MM-DD) so this check can warn BEFORE the
+    # 401s start instead of after.
+    expiry_path = Path(str(token_path) + ".expiry")
+    if expiry_path.exists():
+        raw_expiry = expiry_path.read_text().strip()
+        try:
+            expiry = datetime.fromisoformat(raw_expiry).date()
+            days_left = (expiry - datetime.now(timezone.utc).date()).days
+            if days_left < 0:
+                emit("FAIL", f"{user}: Bitbucket token expiry date passed ({raw_expiry}) — mint a new Atlassian API token")
+            elif days_left <= 14:
+                emit("WARN", f"{user}: Bitbucket token expires in {days_left}d ({raw_expiry}) — renew soon")
+            else:
+                emit("OK", f"{user}: Bitbucket token expiry {raw_expiry} ({days_left}d left)")
+        except ValueError:
+            emit("WARN", f"{user}: Bitbucket token expiry sidecar unreadable ({trim(raw_expiry)}) — expected ISO YYYY-MM-DD")
     auth = base64.b64encode(f"{email}:{token}".encode("utf-8")).decode("ascii")
     try:
         status, data, body = http_json(

@@ -45,6 +45,12 @@ the entry-point overview.
   evidence. A missing clean-shutdown marker alone never alerts because journal
   retention can make that inference unreliable.
 - **Listeners** declared under `listeners` in `agents.json`.
+- **Bitbucket token expiry (early warning)**: Atlassian API tokens expire and
+  cannot be renewed automatically, so renewal is always an operator action.
+  When the operator records the expiry date in `<bitbucketTokenFile>.expiry`
+  (ISO `YYYY-MM-DD`, shown once at token creation), `openclaw-integrity-check`
+  fails past the date and warns within 14 days — surfacing renewal *before*
+  the API starts returning 401s instead of after.
 - **Agent doc drift**. `probe_agent_symlinks` checks every enabled agent's
   `~/.openclaw/openclaw.json` resolves to
   `/srv/agents/openclaw/<agent>/openclaw.json` (the home config stays a
