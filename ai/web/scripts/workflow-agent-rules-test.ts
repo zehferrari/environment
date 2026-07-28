@@ -8,6 +8,7 @@ import {
 import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "../lib/work-items/keys";
 import { subjectHasCommitPrefix } from "../lib/work-items/commit-prefix";
 import { checkStatusTransition } from "../lib/workflow";
+import { syncEpicOnHumanTaskStatus } from "../lib/epics/sync-on-human-task-move";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -212,6 +213,10 @@ assert(reviewHandoff.includes("export async function runTaskReviewHandoff"), "re
 assert(reviewHandoff.includes("epicChild"), "the verify job must carry epicChild");
 assert(reviewHandoff.includes("epicBranch"), "the verify job must carry epicBranch");
 assert(reviewHandoff.includes("preferUserId"), "the Review refill must prefer the freed worker");
+assert(
+  reviewHandoff.includes("syncEpicOnHumanTaskStatus"),
+  "the shared Review handoff must reopen a Done parent Epic for human Review moves",
+);
 assert(taskWorkflowRoute.includes("runTaskReviewHandoff"), "the agent workflow route must use the shared Review handoff");
 for (const pagePath of [
   "app/(app)/projects/[slug]/page.tsx",
@@ -222,6 +227,10 @@ for (const pagePath of [
   const pageSource = readFileSync(join(root, pagePath), "utf8");
   assert(pageSource.includes("runTaskReviewHandoff"), `${pagePath} must run the shared Review handoff on human moves to Review`);
   assert(pageSource.includes("human-board-move"), `${pagePath} must audit human moves with via: human-board-move`);
+  assert(
+    pageSource.includes("syncEpicOnHumanTaskStatus"),
+    `${pagePath} must keep a parent Epic actionable after a human child-task move`,
+  );
 }
 
 // PH-124 item B: every workflow action with a durable outcome settles the
@@ -262,6 +271,86 @@ assert(
 );
 
 console.log("workflow-agent-rules static checks passed");
+
+async function testHumanTaskMoveEpicSync() {
+  function fakeClient(initialStatus: string) {
+    let status = initialStatus;
+    const activities: Array<Record<string, unknown>> = [];
+    const client = {
+      epic: {
+        findUnique: async () => ({ id: "epic-1", status }),
+        updateMany: async (args: {
+          where: { status: string };
+          data: { status: string };
+        }) => {
+          if (args.where.status !== status) return { count: 0 };
+          status = args.data.status;
+          return { count: 1 };
+        },
+      },
+      activityLog: {
+        create: async (args: { data: Record<string, unknown> }) => {
+          activities.push(args.data);
+          return args.data;
+        },
+      },
+    };
+    return {
+      client,
+      status: () => status,
+      activities,
+    };
+  }
+
+  const queued = fakeClient("Done");
+  assert(
+    await syncEpicOnHumanTaskStatus(queued.client as never, {
+      epicId: "epic-1",
+      projectId: "project-1",
+      taskId: "task-1",
+      actorId: "human-1",
+      actorKind: "human",
+      targetStatus: "To Do",
+      via: "human-board-move",
+    }),
+    "a human reopening a child to To Do must reopen its Done parent Epic",
+  );
+  assert(queued.status() === "To Do", "a queued child must reopen its parent Epic to To Do");
+
+  const reviewing = fakeClient("Done");
+  await syncEpicOnHumanTaskStatus(reviewing.client as never, {
+    epicId: "epic-1",
+    projectId: "project-1",
+    taskId: "task-1",
+    actorId: "human-1",
+    actorKind: "human",
+    targetStatus: "Review",
+    via: "human-board-move",
+  });
+  assert(
+    reviewing.status() === "In Progress",
+    "a human reopening a child to Review must reopen its parent Epic to In Progress",
+  );
+  assert(
+    reviewing.activities.length === 1,
+    "the derived Epic transition must be audited exactly once",
+  );
+
+  const agentMove = fakeClient("Done");
+  assert(
+    !(await syncEpicOnHumanTaskStatus(agentMove.client as never, {
+      epicId: "epic-1",
+      projectId: "project-1",
+      taskId: "task-1",
+      actorId: "agent-1",
+      actorKind: "agent",
+      targetStatus: "In Progress",
+      via: "agent-workflow",
+    })),
+    "an agent task move must never reopen a Done Epic",
+  );
+  assert(agentMove.status() === "Done", "agent moves must leave a Done Epic unchanged");
+}
 
 // --- PH-124 item B (scratch-DB slice): the five formerly-unsettled actions
 // must settle both PM-channel runs (task-comment + task-chat target keys) and
@@ -497,6 +586,7 @@ async function pmRunSettlementSlice() {
 }
 
 async function runPmRunSettlementSliceInChild() {
+  await testHumanTaskMoveEpicSync();
   const { execFile } = await import("node:child_process");
   const { mkdtemp, rm } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");

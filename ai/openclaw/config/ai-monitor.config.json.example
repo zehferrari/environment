@@ -151,7 +151,8 @@
       "pm-review-awaiting-reviewer",
       "pm-epic-not-open",
       "pm-channel-no-start",
-      "pm-channel-stalled"
+      "pm-channel-stalled",
+      "pm-channel-failed"
     ]
   },
   "pending_email_tasks": {
@@ -168,6 +169,7 @@
     "in_progress_stale_minutes": 5,
     "review_wait_warn_minutes": 10,
     "channel_no_start_warn_minutes": 2,
+    "gateway_ready_wait_seconds": 45,
     "failed_run_max_age_hours": 48,
     "retry_after_tier3_seconds": 1800
   }

@@ -2,7 +2,18 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { chmod, chown, copyFile, mkdir, rename, rm, stat } from "node:fs/promises";
+import {
+  chmod,
+  chown,
+  copyFile,
+  lchown,
+  lstat,
+  mkdir,
+  rename,
+  rm,
+  stat,
+  symlink,
+} from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -17,6 +28,7 @@ const PLUGIN_FILES = [
   // index.js imports ./session-key.js — it MUST be staged together with
   // index.js or a divergence between the two bricks every agent gateway.
   "session-key.js",
+  "runtime-compat.js",
   "openclaw.plugin.json",
   "package.json",
   "README.md",
@@ -203,6 +215,41 @@ function runOpenClawInstall(agent, home, pluginPath, openclawBin) {
   ], { stdio: "inherit" });
 }
 
+async function reconcileAgentConfigLink(agent, home, canonicalConfigPath) {
+  const homeConfigPath = path.join(home, ".openclaw/openclaw.json");
+  if (!existsSync(canonicalConfigPath) || !existsSync(homeConfigPath)) return;
+
+  const homeStat = await lstat(homeConfigPath);
+  if (
+    homeStat.isSymbolicLink()
+    && samePath(existingRealPath(homeConfigPath), existingRealPath(canonicalConfigPath))
+  ) {
+    return;
+  }
+  if (!homeStat.isFile()) {
+    throw new Error(`Refusing to replace non-file OpenClaw config: ${homeConfigPath}`);
+  }
+
+  // `openclaw plugins install --link` writes current schema metadata through an
+  // atomic rename, replacing the managed home symlink with a regular file.
+  // Promote that validated runtime result back to the canonical config before
+  // restoring the single-source link.
+  const runtimeConfig = readJson(homeConfigPath, null);
+  if (!runtimeConfig) {
+    throw new Error(`OpenClaw wrote an invalid config: ${homeConfigPath}`);
+  }
+  const canonicalStat = await stat(canonicalConfigPath);
+  await writeJsonAtomic(
+    canonicalConfigPath,
+    runtimeConfig,
+    canonicalStat.mode & 0o777,
+    { uid: canonicalStat.uid, gid: canonicalStat.gid },
+  );
+  await rm(homeConfigPath, { force: true });
+  await symlink(canonicalConfigPath, homeConfigPath);
+  await lchown(homeConfigPath, Number(uidFor(agent)), Number(gidFor(agent)));
+}
+
 function restartGateway(agent, home) {
   const uid = uidFor(agent);
   execFileSync("sudo", [
@@ -306,6 +353,11 @@ for (const agent of uniqueAgents) {
   }
 
   runOpenClawInstall(agent, home, installedPluginPath, openclawBin);
+  await reconcileAgentConfigLink(
+    agent,
+    home,
+    path.join(agentRoot, agent, "openclaw.json"),
+  );
   if (restart) {
     restartGateway(agent, home);
     await waitForGatewayActive(agent, home);

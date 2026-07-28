@@ -19,6 +19,7 @@ import { db } from "@/lib/db";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { enqueueBranchVerifyJob, type BranchVerifyJob } from "@/lib/deploy/branch-verify";
 import { refillEpicQueue } from "@/lib/epics/queue";
+import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
 import { resolveEffectiveProjectSettings } from "@/lib/settings/effective";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
@@ -85,6 +86,22 @@ export async function runTaskReviewHandoff(args: {
     },
   });
   if (!task) return { verifyJobId: null, repoTouched: false, branchName: null, refillAssignments: [] };
+
+  const epicSynced = await syncEpicOnHumanTaskStatus(db, {
+    epicId: task.epicId,
+    projectId: task.projectId,
+    taskId: task.id,
+    actorId: args.actor.id,
+    actorKind: args.actor.kind,
+    targetStatus: "Review",
+    via: args.via,
+  });
+  if (epicSynced && task.epic) {
+    // Keep reviewer resolution and queue refill consistent with the state
+    // just persisted above; otherwise a reopened Review task would still use
+    // the Done-Epic reporter fallback for this request.
+    task.epic.status = "In Progress";
+  }
 
   const branchName = effectiveTaskBranchName(task);
   const codeTouching = Boolean(branchName && task.project.repositoryPath);

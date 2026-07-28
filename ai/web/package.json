@@ -38,6 +38,7 @@
     "test:epic-status-filter": "tsx scripts/epic-status-filter-test.ts",
     "test:pm-channel-stream-protocol": "tsx scripts/pm-channel-stream-protocol-test.ts",
     "test:pm-channel-transport": "tsx scripts/pm-channel-transport-test.ts",
+    "test:pm-channel-runtime-compat": "node scripts/pm-channel-runtime-compat-test.mjs",
     "test:chat-room-decomposition": "tsx scripts/chat-room-decomposition-test.ts",
     "test:chat-message-delete": "tsx scripts/chat-message-delete-test.ts",
     "test:chat-composer-keyboard": "tsx scripts/chat-composer-keyboard-test.ts",

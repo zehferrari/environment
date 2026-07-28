@@ -7,6 +7,7 @@ import { reorderTasks } from "@/lib/tasks/reorder";
 import { binTask } from "@/lib/bin/actions";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
+import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { refillEpicQueue } from "@/lib/epics/queue";
 import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
@@ -240,6 +241,15 @@ async function moveTask(taskId: string, status: string, _scopeSlug: string): Pro
       },
     }),
   ]);
+  await syncEpicOnHumanTaskStatus(db, {
+    epicId: current.epicId,
+    projectId: current.projectId,
+    taskId,
+    actorId: actor.id,
+    actorKind: actor.kind,
+    targetStatus: status,
+    via: "human-board-move",
+  });
   if (status === "In Progress" && current.epicId) {
     await promoteEpicOnTaskInProgress(db, {
       epicId: current.epicId,

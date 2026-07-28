@@ -12,6 +12,7 @@ import {
   defineChannelMessageAdapter,
 } from "openclaw/plugin-sdk/channel-message";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
+import { resolvePmInboundRuntime } from "./runtime-compat.js";
 import { canonicalizePmStoreSessionKey } from "./session-key.js";
 
 const CHANNEL_ID = "pm";
@@ -487,6 +488,7 @@ function writeJson(res, status, body) {
 
 async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   const runtime = getPmRuntime();
+  const inbound = resolvePmInboundRuntime(runtime);
   const account = resolvePmAccount({ cfg, accountId });
   if (!account.enabled || !account.configured) {
     throw new Error(`PM channel account "${account.accountId}" is not configured`);
@@ -531,7 +533,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   const stream = createPmStreamPublisher({ account, target, logger });
   let visibleReplySent = false;
 
-  const ctxPayload = runtime.channel.turn.buildContext({
+  const ctxPayload = await inbound.buildContext({
     channel: CHANNEL_ID,
     accountId: account.accountId,
     messageId,
@@ -595,7 +597,7 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
   });
 
   try {
-    await runtime.channel.turn.runAssembled({
+    await inbound.dispatchReply({
       cfg,
       channel: CHANNEL_ID,
       accountId: account.accountId,

@@ -48,6 +48,7 @@ import {
 } from "@/lib/tasks/workflow-actors";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
+import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
 import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
@@ -510,6 +511,16 @@ async function updateTask(formData: FormData) {
       ),
     ]);
   }
+
+  await syncEpicOnHumanTaskStatus(db, {
+    epicId: newEpicId,
+    projectId: task.projectId,
+    taskId,
+    actorId: actor.id,
+    actorKind: actor.kind,
+    targetStatus: statusChangedTo ?? task.status,
+    via: "task-edit",
+  });
 
   try {
     const { deleteDescriptionDraft } = await import("@/lib/description-drafts");

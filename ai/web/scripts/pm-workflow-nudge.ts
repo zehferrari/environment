@@ -78,7 +78,7 @@ function defaultRequiredAction(status: string, kind: string | undefined): string
     return "A response arrived while this task is in Review. Reply in the task comments if a response is needed. Do not call action=start from Review — if code changes are required, the reviewer must call action=review_feedback to return the task to the front of To Do.";
   }
   if (kind === "pm-epic-not-open") {
-    return "This task's parent Epic is not actionable (Backlog/Done). Move the Epic to To Do or In Progress if its work should continue, or move the task back to Backlog.";
+    return "This task's parent Epic is not actionable (Backlog/Done). A human must move the Epic to To Do or In Progress if work should continue, or return the task to Backlog/Done. Agents must not change Epic status.";
   }
   return `Follow the Mission Control workflow for the current ${status} task state.`;
 }

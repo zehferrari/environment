@@ -19,6 +19,7 @@ import { revalidateTaskShell } from "@/lib/tasks/cache";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
+import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
 import { COLUMNS, COLUMN_IDS } from "./columns";
 import {
   accessibleEpicWhere,
@@ -355,6 +356,15 @@ async function moveTask(
       },
     }),
   ]);
+  await syncEpicOnHumanTaskStatus(db, {
+    epicId: current.epicId,
+    projectId: current.projectId,
+    taskId,
+    actorId: actor.id,
+    actorKind: actor.kind,
+    targetStatus: status,
+    via: "human-board-move",
+  });
   if (status === "In Progress" && current.epicId) {
     await promoteEpicOnTaskInProgress(db, {
       epicId: current.epicId,

@@ -1659,24 +1659,54 @@ def _pm_latest_comment_by(conn, task_id, user_id, since_s):
     return None
 
 
-def _pm_latest_comment_not_by(conn, task_id, user_id, since_s):
+def _pm_mentions_username(body, username):
+    if not username:
+        return False
+    return re.search(
+        rf"(^|[^A-Za-z0-9_])@{re.escape(username)}(?![A-Za-z0-9_])",
+        body or "",
+        flags=re.IGNORECASE,
+    ) is not None
+
+
+def _pm_latest_comment_not_by(
+    conn,
+    task_id,
+    user_id,
+    since_s,
+    assignee_username=None,
+    reviewer_username=None,
+):
     if not user_id:
         return None
     rows = conn.execute(
         """
-        SELECT c.id, c.body, c.createdAt, u.username, u.kind
+        SELECT
+          c.id, c.body, c.createdAt, u.username, u.kind,
+          agent.role AS agentRole
         FROM Comment c
         LEFT JOIN User u ON u.id = c.userId
-        WHERE c.taskId = ? AND c.userId != ?
+        LEFT JOIN Agent agent ON agent.id = u.agentId
+        WHERE c.taskId = ?
+          AND c.userId != ?
+          AND c.deletedAt IS NULL
         ORDER BY c.createdAt DESC
-        LIMIT 10
+        LIMIT 50
         """,
         (task_id, user_id),
     ).fetchall()
     for row in rows:
         ts = _parse_pm_ts(row["createdAt"])
-        if ts is not None and (since_s is None or ts >= since_s):
-            return row
+        if ts is None or (since_s is not None and ts < since_s):
+            continue
+        if row["agentRole"] == "monitor":
+            continue
+        if (
+            _pm_mentions_username(row["body"], reviewer_username)
+            and not _pm_mentions_username(row["body"], assignee_username)
+        ):
+            continue
+        return row
     return None
 
 
@@ -1691,6 +1721,17 @@ def _pm_workflow_notification_status(body):
     if " was moved to Review" in text:
         return "Review"
     return None
+
+
+def _pm_closed_epic_human_target(row):
+    if (
+        row["epicStatus"] in (None, "To Do", "In Progress")
+        or row["status"] not in ("To Do", "In Progress", "Review")
+    ):
+        return None
+    if row["reporterKind"] == "human" and row["reporterUsername"]:
+        return row["reporterUsername"]
+    return row["ownerUsername"]
 
 
 def _pm_actor_slug(row, agent_key, username_key):
@@ -1793,10 +1834,20 @@ def probe_pm_workflow(cfg, registry):
               r.username AS reviewerUsername,
               ra.slug AS reviewerAgentSlug,
               rep.username AS reporterUsername,
+              rep.kind AS reporterKind,
               er.username AS epicManagerUsername,
               era.slug AS epicManagerAgentSlug,
               e.status AS epicStatus,
-              e.actingManagerId AS epicManagerId
+              e.actingManagerId AS epicManagerId,
+              (
+                SELECT owner.username
+                FROM User owner
+                WHERE owner.kind = 'human'
+                  AND owner.status = 'active'
+                  AND owner.is_owner = 1
+                ORDER BY owner.createdAt ASC
+                LIMIT 1
+              ) AS ownerUsername
             FROM Task t
             JOIN Project p ON p.id = t.projectId
             LEFT JOIN User a ON a.id = t.assigneeId
@@ -2026,18 +2077,27 @@ def probe_pm_workflow(cfg, registry):
                 or (row["epicManagerAgentSlug"] if row["epicStatus"] == "In Progress" else None)
                 or row["reporterUsername"]
             )
+            reviewer_username = (
+                row["reviewerUsername"]
+                or (row["epicManagerUsername"] if row["epicStatus"] == "In Progress" else None)
+                or row["reporterUsername"]
+            )
 
             # Epic actionability mirrors the webapp's epicAllowsAgentAction:
             # tasks under an epic are workable only while the epic is
             # To Do/In Progress; Backlog/Done epics gate their tasks.
-            if row["epicStatus"] and row["epicStatus"] not in ("To Do", "In Progress") and status in ("To Do", "In Progress"):
-                manager = row["epicManagerAgentSlug"] or row["epicManagerUsername"] or reviewer_slug
+            human_owner = _pm_closed_epic_human_target(row)
+            if human_owner:
+                # Epic status is human-owned. Never wake/restart an agent for
+                # a correction its workflow endpoint forbids. Route this to
+                # the human reporter (or host owner) so the human-target
+                # safety path sends one Telegram and skips the agent ladder.
                 add(
                     row,
                     "pm-epic-not-open",
-                    manager,
+                    human_owner,
                     changed_age,
-                    "The parent Epic is not actionable (Backlog/Done). Move the Epic to To Do or In Progress before agent work continues, or move the task back to Backlog.",
+                    "A human must reopen the parent Epic before agent work continues, or return the child task to Backlog/Done. Agents are forbidden from changing Epic status; do not wake or restart them for this state.",
                     extra={"assignee": assignee_slug},
                 )
                 continue
@@ -2158,7 +2218,14 @@ def probe_pm_workflow(cfg, registry):
                             extra={"assignee": assignee_slug, "comment_preview": (feedback["body"] or "")[:180]},
                         )
                     continue
-                response = _pm_latest_comment_not_by(conn, row["id"], row["assigneeId"], status_s)
+                response = _pm_latest_comment_not_by(
+                    conn,
+                    row["id"],
+                    row["assigneeId"],
+                    status_s,
+                    row["assigneeUsername"],
+                    reviewer_username,
+                )
                 if response and row["assigneeId"] and assignee_slug:
                     response_ts = _parse_pm_ts(response["createdAt"])
                     if response_ts and not _pm_has_comment_since(
@@ -2177,7 +2244,7 @@ def probe_pm_workflow(cfg, registry):
                                 "A reviewer/manager/reporter/human response arrived while this task is in Review. Reply in the task comments if a response is needed. Do not call action=start from Review — if code changes are required, the reviewer must call action=review_feedback to return the task to the front of To Do.",
                                 extra={"reviewer": reviewer_slug, "comment_preview": (response["body"] or "")[:180]},
                             )
-                    continue
+                        continue
                 if changed_age >= warn_review_s:
                     add(
                         row,
@@ -2681,11 +2748,6 @@ def deterministic_issues(probes):
     for item in pmw.get("items", []) or []:
         age_min = (item.get("age_s") or 0) // 60
         unit = f"pm:{item['agent']}/{item['task_id']}"
-        if item.get("kind") == "pm-channel-failed":
-            # Failure-instance-scoped unit: each failure epoch gets a fresh
-            # event key (one bounded ladder cycle per terminal failure), and
-            # the old key evicts via missed_runs once the row clears.
-            unit = f"{unit}/failed:{item.get('run_failed_at') or 'unknown'}"
         out.append({
             "unit": unit,
             "kind": item.get("kind", "pm-workflow"),
@@ -2871,6 +2933,7 @@ PM_WORKFLOW_RETRY_KINDS = {
     "pm-review-awaiting-reviewer",
     "pm-channel-no-start",
     "pm-channel-stalled",
+    "pm-channel-failed",
     "pm-epic-not-open",
 }
 
@@ -3116,6 +3179,84 @@ def _bucket_needs_pm_restart(bucket):
     )
 
 
+def _gateway_listener_for_user(registry, user):
+    for agent in (registry or {}).get("agents") or []:
+        if not agent.get("enabled"):
+            continue
+        if user not in (agent.get("user"), agent.get("slug")):
+            continue
+        for listener in agent.get("listeners") or []:
+            if listener.get("owner") != "openclaw-gateway":
+                continue
+            host = listener.get("host") or "127.0.0.1"
+            port = listener.get("port")
+            if isinstance(port, int) and port > 0:
+                return host, port
+    return None
+
+
+def _wait_for_gateway_ready(user, registry, cfg=None):
+    """Wait for a restarted gateway to mount plugins and report ready.
+
+    systemctl restart returns while OpenClaw is still starting. Sending the
+    native PM nudge in that gap creates a terminal `fetch failed` turn and a
+    new recovery ladder. A failed readiness wait deliberately skips the
+    nudge so a later monitor tier can retry without manufacturing a doomed
+    PM message.
+    """
+    listener = _gateway_listener_for_user(registry, user)
+    if not listener:
+        return {
+            "ready": False,
+            "error": f"no openclaw-gateway listener registered for {user}",
+        }
+    host, port = listener
+    pm_cfg = (cfg or {}).get("pm_workflow") or {}
+    try:
+        timeout_s = max(5, int(pm_cfg.get("gateway_ready_wait_seconds", 45)))
+    except Exception:
+        timeout_s = 45
+    url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    url = f"http://{url_host}:{port}/readyz"
+    deadline = time.time() + timeout_s
+    last_error = ""
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:
+                body = response.read().decode("utf-8", errors="replace")
+                payload = json.loads(body)
+                if response.status == 200 and payload.get("ready") is True:
+                    return {
+                        "ready": True,
+                        "url": url,
+                        "failing": payload.get("failing") or [],
+                    }
+                last_error = f"HTTP {response.status}: ready={payload.get('ready')}"
+        except Exception as error:
+            last_error = str(error)[:200]
+        time.sleep(0.5)
+    return {
+        "ready": False,
+        "url": url,
+        "error": last_error or f"gateway not ready after {timeout_s}s",
+    }
+
+
+def _skipped_pm_nudge_results(bucket, error):
+    return [
+        {
+            "task_id": item.get("task_id"),
+            "kind": item.get("kind"),
+            "rc": 1,
+            "ok": False,
+            "out": "",
+            "err": error[:300],
+            "parsed": None,
+        }
+        for item in bucket.get("pm_tasks") or []
+    ]
+
+
 def _user_from_user_manager_issue(issue):
     unit = issue.get("unit", "")
     if not unit.startswith("user-manager:"):
@@ -3266,7 +3407,15 @@ def restart_and_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
                 "restart-services", user, "ai-monitor PM workflow retry",
             ]
             restart_rc, _, restart_err = run_cmd(restart_cmd, timeout=120)
-            nudge_results = _run_pm_workflow_nudges(user, b, cfg)
+            gateway_ready = _wait_for_gateway_ready(user, registry, cfg)
+            nudge_results = (
+                _run_pm_workflow_nudges(user, b, cfg)
+                if gateway_ready.get("ready")
+                else _skipped_pm_nudge_results(
+                    b,
+                    gateway_ready.get("error") or "gateway readiness check failed",
+                )
+            )
             time.sleep(_pm_recovery_confirm_delay_s(cfg, 20))
             confirmed = _confirm_pm_nudge_results(cfg, user, nudge_results)
             post_idle_s, _ = probe_session_idle_for_user(user, f"/home/{user}")
@@ -3285,6 +3434,7 @@ def restart_and_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
                 "action": "restart-services-and-pm-channel-nudge",
                 "restart_rc": restart_rc,
                 "restart_err": restart_err.strip()[:200],
+                "gateway_ready": gateway_ready,
                 "pm_nudge_results": nudge_results,
             }
             continue
@@ -3444,13 +3594,22 @@ def auto_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
         if _bucket_only_pm(b):
             restart_rc = None
             restart_err = ""
+            gateway_ready = None
             if _bucket_needs_pm_restart(b):
                 restart_cmd = [
                     "sudo", "-n", "/usr/local/sbin/openclaw-control",
                     "restart-services", user, "ai-monitor PM channel no-start",
                 ]
                 restart_rc, _, restart_err = run_cmd(restart_cmd, timeout=120)
-            nudge_results = _run_pm_workflow_nudges(user, b, cfg)
+                gateway_ready = _wait_for_gateway_ready(user, registry, cfg)
+            nudge_results = (
+                _run_pm_workflow_nudges(user, b, cfg)
+                if gateway_ready is None or gateway_ready.get("ready")
+                else _skipped_pm_nudge_results(
+                    b,
+                    gateway_ready.get("error") or "gateway readiness check failed",
+                )
+            )
             time.sleep(_pm_recovery_confirm_delay_s(cfg, 15))
             confirmed = _confirm_pm_nudge_results(cfg, user, nudge_results)
             post_idle_s, _ = probe_session_idle_for_user(user, f"/home/{user}")
@@ -3472,6 +3631,7 @@ def auto_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
                 ),
                 "restart_rc": restart_rc,
                 "restart_err": restart_err.strip()[:200],
+                "gateway_ready": gateway_ready,
                 "pm_nudge_results": nudge_results,
             }
             continue
