@@ -130,12 +130,13 @@ group-write permissions so PM manual uploads and agent-generated profile images
 can write `profile.png` and `avatar.png`.
 
 The installer also runs `/usr/local/sbin/openclaw-patch-session-fence`
-against the installed OpenClaw runtime. That patch keeps provider timeout
-records written during a PM channel turn from being misclassified as an
-external session takeover, so OpenClaw can continue into the configured
-model fallback chain instead of returning a generic PM failure. Re-run
-`install.sh` after upgrading or reinstalling the global `openclaw`
-package.
+against the installed OpenClaw runtime. OpenClaw 2026.5.22 needs the local
+compatibility patch so provider-timeout records written during a PM channel
+turn are not misclassified as an external session takeover. Newer OpenClaw
+releases own and merge prompt-time transcript writes upstream; the helper
+detects that implementation and exits successfully without modifying the
+package. Re-run `install.sh` after upgrading, reinstalling, or rolling back
+the global `openclaw` package.
 
 Gateway hook config lives in `/srv/agents/openclaw/<agent>/openclaw.json`;
 `/home/<agent>/.openclaw/openclaw.json` should be a symlink to that

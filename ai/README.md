@@ -480,6 +480,12 @@ Expected listeners on `thinkpad` (concrete `user → port` map is in `agents.jso
 | `11434` | system (`ollama`) | Ollama API, loopback |
 | `3013` | system (`root`, `agent-dashboard.service`) | Agent dashboard backend (HTTP + SSE), loopback only — public access via nginx at `https://dev.vixi.au/agents.html` with basic auth |
 
+OpenClaw 2026.7+ makes the standalone browser-control listener opt-in. Coding
+agent gateways keep the existing monitored topology through the managed
+`25-browser-control.conf` drop-in
+(`OPENCLAW_EAGER_BROWSER_CONTROL_SERVER=1`), with the loopback sidecar at
+`gateway port + 2`. Monitor gateways do not advertise this optional listener.
+
 The exact port numbers per registered user live in `agents.json` (`listeners[].host:port`); `openclaw-registry-check --runtime` validates that the listed ports are actually bound.
 
 ### Project Manager (Mission Control) Services

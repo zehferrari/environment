@@ -5,6 +5,11 @@ import path from "node:path";
 const DEFAULT_TARGET = "/usr/local/lib/node_modules/openclaw/dist/selection-hR-AeOeU.js";
 const PATCH_MARKER = "isPromptAbortAssistantErrorLine";
 const BACKUP_SUFFIX = ".pre-pm-fallback-fence-fix";
+const UPSTREAM_FENCE_MARKERS = [
+  "shouldPreservePromptErrorAfterCleanupError",
+  "ownedSessionFileWrites",
+  "preserving prompt error",
+];
 
 function argValue(name) {
   const index = process.argv.indexOf(name);
@@ -21,6 +26,20 @@ const target = path.resolve(
 function fail(message) {
   console.error(`[session-fence-patch] ${message}`);
   process.exit(1);
+}
+
+function hasUpstreamSessionFenceFix(targetPath) {
+  const distDir = path.dirname(targetPath);
+  if (!fs.existsSync(distDir)) return false;
+
+  for (const name of fs.readdirSync(distDir)) {
+    if (!/^selection-.*\.js$/.test(name)) continue;
+    const source = fs.readFileSync(path.join(distDir, name), "utf8");
+    if (UPSTREAM_FENCE_MARKERS.every((marker) => source.includes(marker))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function patchSource(source) {
@@ -76,6 +95,10 @@ function isBenignSessionFenceAdvanceLine(line) {
 }
 
 if (!fs.existsSync(target)) {
+  if (hasUpstreamSessionFenceFix(target)) {
+    console.log("[session-fence-patch] upstream session fencing detected; no local patch needed");
+    process.exit(0);
+  }
   fail(`target file not found: ${target}`);
 }
 

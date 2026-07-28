@@ -44,6 +44,12 @@ def main() -> None:
     ).read_text()
     assert "install_user_manager_resource_delegation" in lifecycle
     assert "remove_user_manager_resource_delegation" in lifecycle
+    assert "reconcile_browser_control" in lifecycle
+
+    browser_control = (
+        ROOT / "ai/openclaw/systemd/openclaw-browser-control.conf"
+    ).read_text()
+    assert "OPENCLAW_EAGER_BROWSER_CONTROL_SERVER=1" in browser_control
 
     cmdline = (HOST / "kernel/required-cmdline").read_text().splitlines()
     assert "psi=1" in cmdline

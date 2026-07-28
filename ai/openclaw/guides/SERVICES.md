@@ -62,6 +62,7 @@ thinkpad uses systemd timers for active automation. Cron references in old migra
   `/etc/default/pm`. Decoupled from `pm.service` like the switch runner.
   Installed by `ai/web/deploy/install-pm-verify.sh`.
 - OpenClaw Control UIs: per-agent gateway dashboards exposed through nginx behind basic auth. thinkpad exposes primary, secondary, and monitoring gateway dashboards through role-based nginx routes. OpenClaw uses trusted-proxy auth with `X-Forwarded-User` from nginx, so nginx basic auth is the browser login. Gateway ports bind to LAN but remain blocked from direct network access by firewalld. This is an admin surface; do not expose without auth.
+  - OpenClaw 2026.7+ makes its standalone loopback browser-control server opt-in. Coding-agent gateway units install `25-browser-control.conf` with `OPENCLAW_EAGER_BROWSER_CONTROL_SERVER=1`, so the registry's monitored browser sidecar remains available at `gateway port + 2`. Monitoring agents do not advertise or eagerly start this optional listener; their CLI and agent browser tools remain available through the gateway's lazy in-process runtime.
   - OpenClaw 2026.5.7 dashboard note: nginx also sends X-OpenClaw-Scopes: operator.admin. Coding agents set gateway.controlUi.dangerouslyDisableDeviceAuth=true so trusted-proxy WebSocket sessions keep operator scope; this depends on nginx basic auth and firewalld remaining in place.
   - No-slash dashboard paths redirect to trailing-slash paths. Do not proxy exact no-slash paths directly, or OpenClaw emits root-relative assets (/assets/...) that 404.
   - Chrome fetches some OpenClaw bootstrap endpoints (control-ui-config.json, manifest.webmanifest, avatar metadata) without Basic auth. nginx leaves only those bootstrap endpoints auth_basic off and forwards trusted admin headers; the dashboard HTML, API, and WebSocket routes remain behind basic auth.
@@ -104,11 +105,11 @@ thinkpad uses systemd timers for active automation. Cron references in old migra
 - `/usr/local/bin/openclaw-registry-check --runtime`: also validates declared user services and listener ports.
 - `/usr/local/bin/openclaw-boot-readiness`: post-reboot readiness check; runs registry runtime validation, linger checks, integrity check, and ai-monitor probe.
 - `/usr/local/bin/openclaw-backup`: creates a root-only tarball of critical OpenClaw state under `/var/backups/openclaw`.
-- `/usr/local/sbin/openclaw-patch-session-fence`: idempotent OpenClaw
-  runtime patch applied by `install.sh`. It prevents provider timeout
-  transcript markers from being treated as external session takeovers,
-  preserving normal model fallback behavior for PM channel turns after
-  a primary model stalls.
+- `/usr/local/sbin/openclaw-patch-session-fence`: version-aware OpenClaw
+  compatibility helper applied by `install.sh`. It patches the 2026.5.22
+  runtime so provider-timeout transcript markers do not look like external
+  session takeovers; on newer releases it detects the upstream owned-write
+  session fencing and exits without modifying the package.
 - `/usr/local/sbin/openclaw-control`: restart/wake helper used by ai-monitor,
   the monitor agent, and mail intake listeners. Before every wake it clears
   stale non-running `pendingFinalDelivery*` state and quarantines a broken

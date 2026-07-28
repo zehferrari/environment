@@ -89,9 +89,10 @@ export function allocateUid(agents: Array<{ uid?: number }>): number {
 /**
  * Allocate gateway (+ browser sidecar for coding agents) ports.
  *
- * OpenClaw's gateway process also binds a local browser/control listener at
- * gatewayPort + 2. Treat both as one allocation unit and prove the candidate
- * ports are bindable on loopback before committing them to the registry.
+ * A coding agent's OpenClaw gateway also binds an opt-in local browser/control
+ * listener at gatewayPort + 2. Treat both as one allocation unit and prove the
+ * required candidate ports are bindable before committing them to the
+ * registry. Monitor agents only advertise their gateway listener.
  */
 export async function allocatePorts(
   agents: Array<{ listeners?: Array<{ port?: number; owner?: string }> }>,
@@ -111,12 +112,17 @@ export async function allocatePorts(
   for (let gw = 18789; gw <= 19999; gw++) {
     const bs = browserPortForGateway(gw);
     if (ports.has(gw) || ports.has(bs)) continue;
-    if (!(await areLoopbackPortsAvailable([gw, bs]))) continue;
+    const requiredPorts = role === "coding" ? [gw, bs] : [gw];
+    if (!(await areLoopbackPortsAvailable(requiredPorts))) continue;
 
     const listeners: ProvisionListener[] = [
       { host: "127.0.0.1", port: gw, owner: "openclaw-gateway", expected: true },
-      { host: "127.0.0.1", port: bs, owner: "browser sidecar", expected: true },
     ];
+    if (role === "coding") {
+      listeners.push(
+        { host: "127.0.0.1", port: bs, owner: "browser sidecar", expected: true },
+      );
+    }
     return { listeners, gatewayPort: gw };
   }
 
@@ -281,11 +287,13 @@ export function renderOpenClawJson(args: {
   for (const [pid, models] of byProvider) {
     const def = getProvider(pid);
     if (!def) continue;
+    const configId = def.configId ?? pid;
+    const modelNamespace = def.modelNamespace ?? pid;
     const connection = { ...def.connection };
     if (pid === "openrouter" && args.openRouterApiKey) {
       connection.apiKey = args.openRouterApiKey;
     }
-    providers[pid] = {
+    providers[configId] = {
       ...connection,
       models: models.map((m) => ({
         id: m.id,
@@ -295,14 +303,21 @@ export function renderOpenClawJson(args: {
       })),
     };
     if (def.authMode) {
-      profiles[`${pid}:default`] = { provider: def.authProvider ?? pid, mode: def.authMode, email: args.email };
+      profiles[`${configId}:default`] = { provider: def.authProvider ?? configId, mode: def.authMode, email: args.email };
     }
-    for (const m of models) aliases[`${pid}/${m.id}`] = { alias: m.name || m.id };
+    for (const m of models) aliases[`${modelNamespace}/${m.id}`] = { alias: m.name || m.id };
   }
 
+  const canonicalModelRef = (ref: string): string => {
+    const providerId = ref.split("/")[0] ?? "";
+    const modelId = ref.includes("/") ? ref.slice(ref.indexOf("/") + 1) : ref;
+    const provider = getProvider(providerId);
+    return `${provider?.modelNamespace ?? providerId}/${modelId}`;
+  };
+
   const config = {
-    meta: { lastTouchedVersion: "2026.5.22", lastTouchedAt: now },
-    wizard: { lastRunAt: now, lastRunVersion: "2026.5.22", lastRunCommand: "configure", lastRunMode: "local" },
+    meta: { lastTouchedVersion: "2026.7.1-2", lastTouchedAt: now },
+    wizard: { lastRunAt: now, lastRunVersion: "2026.7.1-2", lastRunCommand: "configure", lastRunMode: "local" },
     auth: { profiles },
     models: { mode: "merge", providers },
     gateway: { mode: "local" },
@@ -315,7 +330,10 @@ export function renderOpenClawJson(args: {
     },
     agents: {
       defaults: {
-        model: { primary: args.primary, fallbacks: args.fallbacks },
+        model: {
+          primary: canonicalModelRef(args.primary),
+          fallbacks: args.fallbacks.map(canonicalModelRef),
+        },
         models: aliases,
         reasoningDefault: args.reasoning,
         workspace: `/home/${args.user}/workspace`,

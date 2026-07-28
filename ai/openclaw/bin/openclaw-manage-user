@@ -451,6 +451,31 @@ install_gateway() {
   link_home_openclaw_config "$user"
 }
 
+reconcile_browser_control() {
+  # reconcile_browser_control <user> <uid> <role>
+  #
+  # OpenClaw 2026.7 made the standalone loopback browser-control listener
+  # opt-in. Coding agents keep that listener because it is registered and
+  # monitored at gatewayPort + 2; monitoring agents use lazy in-process browser
+  # tools and do not advertise a standalone sidecar.
+  [[ "${OPENCLAW_SANDBOX_TESTING:-}" == "true" ]] && return 0
+  local user="$1" uid="$2" role="$3"
+  local dropin_dir="/home/$user/.config/systemd/user/openclaw-gateway.service.d"
+  local dropin="$dropin_dir/25-browser-control.conf"
+  local source="$REPO_ROOT/ai/openclaw/systemd/openclaw-browser-control.conf"
+
+  install -d -o "$user" -g "$user" -m 0755 "$dropin_dir"
+  if [[ "$role" == "coding" ]]; then
+    [[ -r "$source" ]] || die "missing browser-control policy: $source"
+    install -o "$user" -g "$user" -m 0644 "$source" "$dropin"
+  else
+    rm -f "$dropin"
+  fi
+
+  sudo -n -u "$user" env "HOME=/home/$user" "XDG_RUNTIME_DIR=/run/user/$uid" \
+    systemctl --user daemon-reload
+}
+
 install_pm_channel() {
   [[ "${OPENCLAW_SANDBOX_TESTING:-}" == "true" ]] && return 0
   local user="$1"
@@ -610,6 +635,7 @@ EOF
         install_user_manager_resource_delegation "$uid"
         install_gateway "$user" "$uid" "$gateway_port"
       fi
+      reconcile_browser_control "$user" "$uid" "$role"
       install_pm_channel "$user"
       # NOTE: the global install.sh reconcile is intentionally NOT run here — it
       # restarts pm.service, which would kill the web request awaiting this job
@@ -666,6 +692,7 @@ EOF
       gateway_port=$(jq -r '.gatewayPort // empty' "$payload")
       [[ -n "$gateway_port" ]] && install_gateway "$user" "$uid" "$gateway_port"
     fi
+    reconcile_browser_control "$user" "$uid" "$role"
     # A model/provider/profile edit needs no PM-channel reinstall or global
     # reconcile — rewriting files + registry + sudoers is sufficient. install.sh
     # is deliberately NOT run here (it would restart pm.service mid-request).

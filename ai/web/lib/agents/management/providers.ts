@@ -24,6 +24,10 @@ export type RefreshKind = "ollama" | "openrouter" | "anthropic" | "codex";
 export type ProviderDef = {
   id: ProviderId;
   name: string;
+  /** Canonical OpenClaw config key when it differs from the PM/UI provider id. */
+  configId?: string;
+  /** Canonical model-ref namespace when it differs from the PM/UI provider id. */
+  modelNamespace?: string;
   /** Verbatim openclaw.json `models.providers[id]` block (minus `.models`). */
   connection: { baseUrl: string; apiKey: string; api: string; auth?: "oauth" | "token" };
   /** When set, an `auth.profiles[id:default]` entry is written with this mode. */
@@ -42,13 +46,16 @@ export const PROVIDERS: ProviderDef[] = [
   {
     id: "openai-codex",
     name: "OpenAI Codex",
+    configId: "openai",
+    modelNamespace: "openai",
     connection: {
       baseUrl: "https://chatgpt.com/backend-api/v1",
       apiKey: "codex-app-server",
-      api: "openai-codex-responses",
+      api: "openai-chatgpt-responses",
       auth: "token",
     },
     authMode: "token",
+    authProvider: "openai",
     refresh: "codex",
     seedModels: [{ id: "gpt-5.5", name: "gpt-5.5" }],
   },
