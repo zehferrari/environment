@@ -1,5 +1,16 @@
 import { db } from "@/lib/db";
 
+type ClearReason = {
+  rule: "unattributed-agent-self-write";
+  activityId: string;
+  activityUserId: string | null;
+  activityCreatedAt: string;
+  via: string | null;
+  assignedBy: string | null;
+  proposalId: string | null;
+  ageMs: number;
+};
+
 type Repair = {
   scope: "task" | "epic";
   id: string;
@@ -7,15 +18,23 @@ type Repair = {
   field: "reporterId" | "assigneeId" | "actingManagerId";
   agentUsername: string;
   action: "cleared";
+  // Why the guard fired: the matched activity row + the rule. Reporter
+  // clears are separate unconditional policy and carry no reason.
+  reason?: ClearReason;
 };
 
-async function latestActivityUser(args: {
+// Rows younger than this are never acted on: an in-flight assignment
+// transaction (or its follow-up writes) must be allowed to settle before
+// the guard treats the log as the final word.
+const SETTLE_WINDOW_MS = 60_000;
+
+async function latestActivityRow(args: {
   taskId?: string;
   projectId?: string;
   payloadContains?: string;
   kinds: string[];
 }) {
-  const row = await db.activityLog.findFirst({
+  return db.activityLog.findFirst({
     where: {
       ...(args.taskId ? { taskId: args.taskId } : {}),
       ...(args.projectId ? { projectId: args.projectId } : {}),
@@ -23,9 +42,62 @@ async function latestActivityUser(args: {
       kind: { in: args.kinds },
     },
     orderBy: { createdAt: "desc" },
-    select: { userId: true },
+    select: { id: true, userId: true, payload: true, createdAt: true },
   });
-  return row?.userId ?? null;
+}
+
+type ParsedAttribution = {
+  attributed: boolean;
+  via: string | null;
+  assignedBy: string | null;
+  proposalId: string | null;
+};
+
+// Every legitimate app path stamps at least one of via / assignedBy /
+// proposalId into the payload. Rows without any of them are either the
+// human UI edit (human actor, excluded by the actor rules below) or
+// out-of-band writes — exactly what this guard exists for. Unparseable or
+// missing payloads count as unattributed: no app path emits those.
+function parseAttribution(payload: string | null): ParsedAttribution {
+  let parsed: unknown = null;
+  if (payload) {
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      parsed = null;
+    }
+  }
+  const obj = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  const str = (key: string): string | null => (typeof obj[key] === "string" ? (obj[key] as string) : null);
+  const attributed = obj.via !== undefined || obj.assignedBy !== undefined || obj.proposalId !== undefined;
+  return { attributed, via: str("via"), assignedBy: str("assignedBy"), proposalId: str("proposalId") };
+}
+
+// Clear only when the latest matching row was written BY the current holder
+// themselves, that actor is an agent, the payload carries no attribution,
+// and the row is old enough to be settled. Returns the reason to log, or
+// null when the assignment must be left alone.
+async function unattributedSelfWriteReason(
+  row: Awaited<ReturnType<typeof latestActivityRow>>,
+  holderUserId: string,
+): Promise<ClearReason | null> {
+  if (!row || row.userId !== holderUserId) return null;
+  const actor = await db.user.findUnique({ where: { id: holderUserId }, select: { kind: true } });
+  if (actor?.kind !== "agent") return null;
+  const attribution = parseAttribution(row.payload);
+  if (attribution.attributed) return null;
+  const ageMs = Date.now() - row.createdAt.getTime();
+  if (ageMs < SETTLE_WINDOW_MS) return null;
+  return {
+    rule: "unattributed-agent-self-write",
+    activityId: row.id,
+    activityUserId: row.userId,
+    activityCreatedAt: row.createdAt.toISOString(),
+    via: attribution.via,
+    assignedBy: attribution.assignedBy,
+    proposalId: attribution.proposalId,
+    ageMs,
+  };
 }
 
 async function main() {
@@ -81,35 +153,41 @@ async function main() {
         action: "cleared",
       });
     }
-    if (
-      task.assigneeId &&
-      task.assignee?.kind === "agent" &&
-      await latestActivityUser({ taskId: task.id, kinds: ["task.assign"] }) === task.assigneeId
-    ) {
-      data.assigneeId = null;
-      localRepairs.push({
-        scope: "task",
-        id: task.id,
-        title: task.title,
-        field: "assigneeId",
-        agentUsername: task.assignee.username,
-        action: "cleared",
-      });
+    if (task.assigneeId && task.assignee?.kind === "agent") {
+      const reason = await unattributedSelfWriteReason(
+        await latestActivityRow({ taskId: task.id, kinds: ["task.assign"] }),
+        task.assigneeId,
+      );
+      if (reason) {
+        data.assigneeId = null;
+        localRepairs.push({
+          scope: "task",
+          id: task.id,
+          title: task.title,
+          field: "assigneeId",
+          agentUsername: task.assignee.username,
+          action: "cleared",
+          reason,
+        });
+      }
     }
-    if (
-      task.actingManagerId &&
-      task.actingManager?.kind === "agent" &&
-      await latestActivityUser({ taskId: task.id, kinds: ["task.acting_manager"] }) === task.actingManagerId
-    ) {
-      data.actingManagerId = null;
-      localRepairs.push({
-        scope: "task",
-        id: task.id,
-        title: task.title,
-        field: "actingManagerId",
-        agentUsername: task.actingManager.username,
-        action: "cleared",
-      });
+    if (task.actingManagerId && task.actingManager?.kind === "agent") {
+      const reason = await unattributedSelfWriteReason(
+        await latestActivityRow({ taskId: task.id, kinds: ["task.acting_manager"] }),
+        task.actingManagerId,
+      );
+      if (reason) {
+        data.actingManagerId = null;
+        localRepairs.push({
+          scope: "task",
+          id: task.id,
+          title: task.title,
+          field: "actingManagerId",
+          agentUsername: task.actingManager.username,
+          action: "cleared",
+          reason,
+        });
+      }
     }
     if (Object.keys(data).length > 0) {
       await db.$transaction([
@@ -161,24 +239,27 @@ async function main() {
         action: "cleared",
       });
     }
-    if (
-      epic.actingManagerId &&
-      epic.actingManager?.kind === "agent" &&
-      await latestActivityUser({
-        projectId: epic.projectId,
-        payloadContains: epic.id,
-        kinds: ["epic.acting_manager"],
-      }) === epic.actingManagerId
-    ) {
-      data.actingManagerId = null;
-      localRepairs.push({
-        scope: "epic",
-        id: epic.id,
-        title: epic.title,
-        field: "actingManagerId",
-        agentUsername: epic.actingManager.username,
-        action: "cleared",
-      });
+    if (epic.actingManagerId && epic.actingManager?.kind === "agent") {
+      const reason = await unattributedSelfWriteReason(
+        await latestActivityRow({
+          projectId: epic.projectId,
+          payloadContains: epic.id,
+          kinds: ["epic.acting_manager"],
+        }),
+        epic.actingManagerId,
+      );
+      if (reason) {
+        data.actingManagerId = null;
+        localRepairs.push({
+          scope: "epic",
+          id: epic.id,
+          title: epic.title,
+          field: "actingManagerId",
+          agentUsername: epic.actingManager.username,
+          action: "cleared",
+          reason,
+        });
+      }
     }
     if (Object.keys(data).length > 0) {
       await db.$transaction([

@@ -174,6 +174,9 @@ export async function sendEpicWorkflowNotification(args: {
     agentSlug,
     sessionKey: sessionBinding.openclawSessionKey,
     kind: "epic-chat",
+    // PM-generated notification turn: safe for the turn-failure auto-retry
+    // ladder (see retryOrFailPmChannelJobForTurnFailure).
+    turnClass: "notification",
     text: body,
     contextText: nullPmContextText(),
     systemPrompt,

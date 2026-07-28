@@ -247,6 +247,11 @@ export async function assignOpenEpicTasks(
           from: null,
           to: worker.username,
           via: args.via,
+          // The engine decided this assignment; actorUserId is merely the
+          // request that triggered the refill (may equal the new assignee on
+          // the ready_for_review continuation path). The self-assignment
+          // guard treats attributed payloads as authorized.
+          assignedBy: "engine",
           epicId: args.epicId,
           approvedPlanPreserved: approvedPlan,
         }),

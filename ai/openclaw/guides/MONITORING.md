@@ -29,6 +29,16 @@ the entry-point overview.
   cannot return the property. An active gateway with no usable accounting
   raises `gateway-memory-unavailable` instead of silently leaving a blind
   spot.
+- **Gateway stalled-session watchdog** (in-gateway, not an ai-monitor
+  probe): `diagnostics.stuckSessionAbortMs` is set to `7200000` (2 h)
+  fleet-wide in each per-agent
+  `/srv/agents/openclaw/<agent>/openclaw.json`. The default ~6 min
+  active-abort was killing healthy long claude-cli embedded runs — that
+  backend emits no internal progress events, so a long turn looks stalled
+  to the gateway watchdog. The knob is hot-reloaded (the heartbeat
+  re-resolves it every 30 s tick; no gateway restart needed). True hangs
+  are still covered by the claude-cli subprocess's own no-output and
+  whole-turn timers, which reset on every stdout chunk.
 - **Unsafe previous shutdown evidence** from the current boot journal's
   explicit recovery/unclean-close messages and kernel/firmware pstore crash
   records. `previous-shutdown-unclean` is emitted only for affirmative local
@@ -133,7 +143,15 @@ the entry-point overview.
   permanently suppressed while the task remains stale. A PM-channel nudge
   run counts as confirmed only when the run is alive — status `streaming`
   or `complete`, or freshly `accepted`; a `failed` run never counts as
-  recovery. When a resolved
+  recovery. The stalled-turn scan also covers runs that ended badly: a
+  terminally `failed` PM-channel run with no durable reply raises
+  **`pm-channel-failed`** (warn). Its unit is failure-instance-scoped
+  (`pm:<agent>/<task>/failed:<failedAt>`), so each failure epoch gets one
+  bounded nudge/restart recovery cycle instead of re-alerting forever on
+  the same terminal row; failures older than
+  `pm_workflow.failed_run_max_age_hours` (default 48) never alert, and
+  `retryable` runs (mid retry-backoff) are suppressed until twice the
+  channel-stall warn threshold. When a resolved
   nudge target is a human rather than an active agent, the recovery
   ladder and service restarts are skipped — the human gets a single
   Telegram/board notification instead.

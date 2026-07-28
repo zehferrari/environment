@@ -285,7 +285,7 @@ requires every service below to be installed and enabled.
 | `/etc/logrotate.d/nginx` | `ai/host/logrotate/nginx` | Host-specific nginx log ownership policy. |
 | `/etc/systemd/system/zypper-dup.{service,timer}` | `ai/host/systemd/zypper-dup.{service,timer}` | Weekly Tumbleweed rolling update. |
 | `/etc/tmpfiles.d/fs-tmp.conf` | `ai/host/tmpfiles/fs-tmp.conf` | Three-day retention for RAM-backed `/tmp`. |
-| `/etc/systemd/user/openclaw-gateway.service.d/30-memory-policy.conf` | `ai/host/systemd/user/openclaw-gateway.service.d/30-memory-policy.conf` | Shared per-gateway memory limits. |
+| `/etc/systemd/user/openclaw-gateway.service.d/30-memory-policy.conf` | `ai/host/systemd/user/openclaw-gateway.service.d/30-memory-policy.conf` | Shared per-gateway memory limits (8G high / 10G max / no swap) + Node heap cap. |
 | `/etc/systemd/system/user@<uid>.service.d/80-openclaw-resource-controllers.conf` | `ai/host/systemd/user-manager/80-openclaw-resource-controllers.conf` | Per-agent memory-controller delegation. |
 | `/etc/kernel/cmdline` option `psi=1` | `ai/host/kernel/required-cmdline` (merged by installer) | Kernel pressure telemetry after reboot. |
 

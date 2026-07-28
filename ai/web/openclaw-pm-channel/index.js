@@ -647,11 +647,24 @@ async function runPmTurn({ cfg, payload, accountId, logger, acceptedId }) {
     if (visibleReplySent) {
       await stream.done();
     } else {
-      logger.warn?.("[pm-channel] turn ended without a visible reply");
-      await stream.error(new Error("Agent finished without posting a reply."));
+      // Distinguish "gateway aborted this turn" (cancel endpoint) from "agent
+      // chose silence" so the web run row records the real cause.
+      const active = activeTurns.get(rawSessionKey);
+      if (active?.abortedAt && active.acceptedId === acceptedId) {
+        logger.warn?.("[pm-channel] turn aborted by gateway before a visible reply");
+        await stream.error(new Error("gateway aborted turn (cancel endpoint)"));
+      } else {
+        logger.warn?.("[pm-channel] turn ended without a visible reply");
+        await stream.error(new Error("Agent finished without posting a reply."));
+      }
     }
   } catch (err) {
-    await stream.error(err);
+    const message = String(err?.message ?? err);
+    if (err?.name === "AbortError" || /abort/i.test(message)) {
+      await stream.error(new Error(`gateway aborted turn: ${message}`));
+    } else {
+      await stream.error(err);
+    }
     throw err;
   } finally {
     const active = activeTurns.get(rawSessionKey);
@@ -671,8 +684,11 @@ async function abortActiveTurn(sessionKey) {
         ? await harness.resolveActiveEmbeddedRunSessionId(sessionKey)
         : sessionKey;
     if (typeof harness.abortAgentHarnessRun === "function") {
+      // Mark BEFORE aborting and keep the entry: runPmTurn reads abortedAt to
+      // report "gateway aborted turn" instead of "agent chose silence", then
+      // its finally block cleans the map (keyed on acceptedId).
+      active.abortedAt = Date.now();
       await harness.abortAgentHarnessRun(embeddedSessionId);
-      activeTurns.delete(sessionKey);
       return { aborted: true };
     }
     return { aborted: false, reason: "abort_unavailable" };
@@ -703,6 +719,10 @@ async function handleIngress({ cfg, logger, req, res }) {
   }
 
   const acceptedId = randomUUID();
+  // Register the turn so the cancel endpoint can find and abort it (the map
+  // was previously never populated, making /pm-channel/cancel dead code).
+  // runPmTurn's finally removes the entry once this acceptedId settles.
+  activeTurns.set(payload.sessionKey.trim(), { acceptedId, abortedAt: null });
   setImmediate(() => {
     runPmTurn({ cfg, payload, accountId, logger, acceptedId }).catch((err) => {
       logger.error?.(`[pm-channel] turn ${acceptedId} failed: ${String(err)}`);
@@ -827,6 +847,21 @@ const pmPlugin = createChatChannelPlugin({
         connected: account.enabled && account.configured,
         healthState: account.configured ? "ok" : "missing_config",
       }),
+    },
+    gateway: {
+      // The PM channel is HTTP-ingress-only (no long-running transport), but
+      // without a gateway.startAccount the channel manager returns before ever
+      // marking the account running, so the in-gateway health monitor
+      // "restarts" pm:default as a no-op every cooldown (~4/hr per agent,
+      // fleet-wide log spam). A start task that resolves ONLY on the abort
+      // signal keeps runtime.running true for the account's whole lifetime;
+      // resolving earlier would log "channel exited without an error".
+      startAccount: async ({ abortSignal }) => {
+        if (abortSignal?.aborted) return;
+        await new Promise((resolve) => {
+          abortSignal.addEventListener("abort", resolve, { once: true });
+        });
+      },
     },
     message: pmMessageAdapter,
   },

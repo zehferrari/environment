@@ -168,6 +168,7 @@
     "in_progress_stale_minutes": 5,
     "review_wait_warn_minutes": 10,
     "channel_no_start_warn_minutes": 2,
+    "failed_run_max_age_hours": 48,
     "retry_after_tier3_seconds": 1800
   }
 }

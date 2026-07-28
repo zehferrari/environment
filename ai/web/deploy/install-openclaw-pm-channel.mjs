@@ -2,7 +2,7 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { chmod, chown, copyFile, mkdir, rename, stat } from "node:fs/promises";
+import { chmod, chown, copyFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -14,9 +14,18 @@ const DEFAULT_OPENCLAW_BIN = "/usr/local/bin/openclaw";
 const DEFAULT_DEPLOY_PATH = "/usr/local/share/openclaw/plugins/pm-channel";
 const PLUGIN_FILES = [
   "index.js",
+  // index.js imports ./session-key.js — it MUST be staged together with
+  // index.js or a divergence between the two bricks every agent gateway.
+  "session-key.js",
   "openclaw.plugin.json",
   "package.json",
   "README.md",
+];
+// Files found in older deployments that are not part of the plugin anymore
+// (e.g. a stray reasoning-stream.js from Jun 18 that never lived in the
+// repo). Removed at stage time so the deployed dir mirrors PLUGIN_FILES.
+const STALE_PLUGIN_FILES = [
+  "reasoning-stream.js",
 ];
 
 function argValue(name, fallback = null) {
@@ -113,6 +122,13 @@ async function stagePlugin(sourcePath, deployPath) {
     await copyFile(source, target);
     await chown(target, 0, 0);
     await chmod(target, 0o644);
+  }
+  for (const file of STALE_PLUGIN_FILES) {
+    const target = path.join(deployPath, file);
+    if (existsSync(target)) {
+      await rm(target, { force: true });
+      console.log(`[pm-channel] removed stale plugin file: ${target}`);
+    }
   }
   return deployPath;
 }

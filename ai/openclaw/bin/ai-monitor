@@ -1754,6 +1754,7 @@ def probe_pm_workflow(cfg, registry):
     warn_progress_s = int(pc.get("in_progress_stale_minutes", 5)) * 60
     warn_review_s = int(pc.get("review_wait_warn_minutes", 10)) * 60
     warn_channel_s = int(pc.get("channel_no_start_warn_minutes", 2)) * 60
+    failed_run_max_age_hours = int(pc.get("failed_run_max_age_hours", 48))
     max_items = int(pc.get("max_items", 50))
 
     if pc.get("self_assignment_guard_enabled", True):
@@ -1828,6 +1829,8 @@ def probe_pm_workflow(cfg, registry):
               m.createdAt AS messageCreatedAt,
               r.status AS runStatus,
               r.lastEventAt AS runLastEventAt,
+              r.error AS runError,
+              r.failedAt AS runFailedAt,
               t.id, t.title, t.status, t.statusChangedAt, t.createdAt, t.updatedAt,
               t.approved_on AS approvedOn,
               t.assigneeId, t.actingManagerId, t.reporterId,
@@ -1862,12 +1865,16 @@ def probe_pm_workflow(cfg, registry):
             LEFT JOIN Epic e ON e.id = t.epicId
             LEFT JOIN User er ON er.id = e.actingManagerId
             LEFT JOIN Agent era ON era.id = er.agentId
-            WHERE m.body LIKE 'PM workflow notification for @%'
+            WHERE (
+                m.body LIKE 'PM workflow notification for @%'
+                OR (r.id IS NOT NULL AND sender.kind = 'human')
+              )
               AND t.deletedAt IS NULL
               AND p.deletedAt IS NULL
               AND t.parentTaskId IS NULL
               AND t.status != 'Done'
-              AND (r.status IS NULL OR r.status IN ('queued', 'accepted', 'streaming'))
+              AND (r.status IS NULL OR r.status IN ('queued', 'accepted', 'streaming', 'retryable', 'failed'))
+              AND (COALESCE(r.status, '') != 'failed' OR m.createdAt >= ?)
               AND NOT EXISTS (
                 SELECT 1
                 FROM PmChannelRun rr
@@ -1880,9 +1887,24 @@ def probe_pm_workflow(cfg, registry):
                   AND rr.status IN ('streaming', 'complete')
                   AND COALESCE(rr.lastEventAt, rr.updatedAt, rr.createdAt) >= m.createdAt
               )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM ActivityLog al
+                WHERE al.targetAgent = CASE
+                    WHEN m.agentSlug = 'room' AND m.targetValue LIKE 'agent:%'
+                      THEN substr(m.targetValue, 7)
+                    ELSE m.agentSlug
+                  END
+                  AND al.kind IN ('task.comment', 'task.chat.reply', 'task.comment.silent', 'task.chat.silent')
+                  AND al.payload LIKE '%"inReplyToMessageId":"' || m.id || '"%'
+              )
             ORDER BY m.createdAt DESC
             LIMIT 200
-            """
+            """,
+            # Prisma stores DateTime as integer epoch-milliseconds in SQLite,
+            # so the failed-run age floor is a ms cutoff computed here rather
+            # than a datetime('now', ...) expression.
+            (int((time.time() - failed_run_max_age_hours * 3600) * 1000),),
         ).fetchall()
 
         def add(row, kind, target_agent, age_s, required_action, severity="warn", extra=None):
@@ -1915,7 +1937,8 @@ def probe_pm_workflow(cfg, registry):
                 break
             if row["status"] == "Done":
                 continue
-            dedupe_key = (row["id"], row["messageAgentSlug"], row["status"])
+            run_status = row["runStatus"] or "missing"
+            dedupe_key = (row["id"], row["messageAgentSlug"], row["status"], run_status)
             if dedupe_key in seen_orphan_rows:
                 continue
             seen_orphan_rows.add(dedupe_key)
@@ -1926,9 +1949,37 @@ def probe_pm_workflow(cfg, registry):
                 or 0
             )
             if is_current:
-                if age_s < warn_channel_s:
+                if run_status == "failed":
+                    if age_s < warn_channel_s:
+                        continue
+                    run_error = (row["runError"] or "")[:200]
+                    add(
+                        row,
+                        "pm-channel-failed",
+                        row["messageAgentSlug"],
+                        age_s,
+                        (
+                            "The native PM-channel turn failed terminally "
+                            f"({run_error or 'no error recorded'}) and no durable "
+                            "reply exists. Resend the PM-channel context "
+                            "(pm-channel-nudge); restart the agent services first "
+                            "if the gateway looks unhealthy."
+                        ),
+                        extra={
+                            "message_id": row["messageId"],
+                            "run_status": run_status,
+                            "run_error": run_error,
+                            "run_failed_at": row["runFailedAt"],
+                        },
+                    )
                     continue
-                run_status = row["runStatus"] or "missing"
+                if run_status == "retryable":
+                    # Mid-ladder webapp retry with a scheduled backoff — give
+                    # the retry ladder room before flagging a stall.
+                    if age_s < warn_channel_s * 2:
+                        continue
+                elif age_s < warn_channel_s:
+                    continue
                 kind = (
                     "pm-channel-no-start"
                     if run_status in ("queued", "accepted", "missing")
@@ -2629,8 +2680,14 @@ def deterministic_issues(probes):
         })
     for item in pmw.get("items", []) or []:
         age_min = (item.get("age_s") or 0) // 60
+        unit = f"pm:{item['agent']}/{item['task_id']}"
+        if item.get("kind") == "pm-channel-failed":
+            # Failure-instance-scoped unit: each failure epoch gets a fresh
+            # event key (one bounded ladder cycle per terminal failure), and
+            # the old key evicts via missed_runs once the row clears.
+            unit = f"{unit}/failed:{item.get('run_failed_at') or 'unknown'}"
         out.append({
-            "unit": f"pm:{item['agent']}/{item['task_id']}",
+            "unit": unit,
             "kind": item.get("kind", "pm-workflow"),
             "severity": item.get("severity", "warn"),
             "reason": (
@@ -3053,7 +3110,8 @@ def _bucket_only_pm(bucket):
 
 def _bucket_needs_pm_restart(bucket):
     return any(
-        (p.get("kind") or "") in ("pm-channel-no-start", "pm-channel-stalled")
+        (p.get("kind") or "")
+        in ("pm-channel-no-start", "pm-channel-stalled", "pm-channel-failed")
         for p in bucket.get("pm_tasks") or []
     )
 
@@ -3171,7 +3229,9 @@ def restart_and_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
             bucket["emails"].append({"message_id": tail, "subject": subject[:100]})
         elif kind.startswith("pm-"):
             bucket["pm_tasks"].append({
-                "task_id": tail,
+                # pm-channel-failed units carry a /failed:<ts> instance
+                # suffix after the task id — strip it for the nudge target.
+                "task_id": tail.split("/", 1)[0],
                 "kind": kind,
                 # Keep the probe's full "Required action:" tail intact — a
                 # tighter cap truncated the nudge's required-action text
@@ -3350,7 +3410,9 @@ def auto_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
             bucket["emails"].append({"message_id": tail, "subject": subject[:100]})
         elif kind.startswith("pm-"):
             bucket["pm_tasks"].append({
-                "task_id": tail,
+                # pm-channel-failed units carry a /failed:<ts> instance
+                # suffix after the task id — strip it for the nudge target.
+                "task_id": tail.split("/", 1)[0],
                 "kind": kind,
                 # Keep the probe's full "Required action:" tail intact — a
                 # tighter cap truncated the nudge's required-action text
@@ -4317,6 +4379,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                         "pm-epic-not-open": ("wake-agent", "restart-and-wake"),
                         "pm-channel-no-start": ("pm-channel-nudge", "restart-services"),
                         "pm-channel-stalled": ("pm-channel-nudge", "restart-services"),
+                        "pm-channel-failed": ("pm-channel-nudge", "restart-services"),
                     }
                     actions_taken_lc = [a.lower() for a in (decision.get("actions_taken") or [])]
                     violations = []
@@ -4349,6 +4412,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                                 "pm-epic-not-open",
                                 "pm-channel-no-start",
                                 "pm-channel-stalled",
+                                "pm-channel-failed",
                             )
                         ]
                         wake_results = (

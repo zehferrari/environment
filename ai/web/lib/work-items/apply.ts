@@ -508,7 +508,10 @@ export async function commitProposal(
             data.assigneeId = asg;
             data.approvedOn = null;
             data.approvedById = null;
-            logs.push({ kind: "task.assign", payload: { from: task.assignee?.username ?? null, to: asg ? usernameById.get(asg) ?? null : null, proposalId: proposal.id } });
+            // Attributed to the APPROVER, not the proposing agent: a
+            // human-approved proposal assigning the proposer must not look
+            // like an agent self-assignment to the guard.
+            logs.push({ kind: "task.assign", userId: approverUserId, payload: { from: task.assignee?.username ?? null, to: asg ? usernameById.get(asg) ?? null : null, assignedBy: "proposal-apply", proposalId: proposal.id } });
             logs.push({ kind: "task.action_plan.reset", payload: { reason: "assignee_changed", from: task.assignee?.username ?? null, to: asg ? usernameById.get(asg) ?? null : null, proposalId: proposal.id } });
           }
           const am = resolvePrincipal(op.actingManager);
@@ -647,7 +650,7 @@ export async function commitProposal(
           if (Object.keys(data).length > 0) {
             await tx.task.update({ where: { id }, data });
             for (const l of logs) {
-              await tx.activityLog.create({ data: { projectId, taskId: id, userId: agentId, kind: l.kind as string, payload: JSON.stringify(l.payload) } });
+              await tx.activityLog.create({ data: { projectId, taskId: id, userId: typeof l.userId === "string" ? l.userId : agentId, kind: l.kind as string, payload: JSON.stringify(l.payload) } });
             }
             counts.updates++;
 

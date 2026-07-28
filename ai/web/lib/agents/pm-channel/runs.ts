@@ -6,6 +6,7 @@ import type {
 } from "@/lib/agents/pm-channel/openclaw";
 import type { PmChannelStreamEventKind } from "@/lib/agents/pm-channel/stream";
 import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/bus";
+import { retryOrFailPmChannelJobForTurnFailure } from "@/lib/agents/pm-channel/jobs";
 
 // Re-exported for existing importers; the definition moved to bus.ts so the
 // bus envelope id and the run identity can never drift apart.
@@ -74,6 +75,39 @@ async function record(run: () => Promise<unknown>, label: string) {
   } catch (err) {
     console.warn(`[pm-channel] failed to persist ${label}`, err);
   }
+}
+
+// PH-124: a late error event on an already-settled run must not flip the
+// legitimate settle, but it must not vanish either. The anomaly lives on the
+// run row (completionAnomaly/completionAnomalyAt) plus this durable audit row
+// so ai-monitor probes and the run inspector can see the masked failure.
+// userId is intentionally absent — precedent: pm.channel.latency_warning.
+async function recordCompletionAnomaly(args: {
+  target: PmChannelReplyTarget;
+  targetKey: string;
+  event: "done" | "error";
+  error: string | null;
+  settledStatus: string | null;
+  hadDurableReply: boolean;
+}) {
+  const payload = {
+    targetKey: args.targetKey,
+    kind: args.target.kind,
+    agentSlug: args.target.agentSlug,
+    messageId: args.target.messageId,
+    event: args.event,
+    error: args.error,
+    settledStatus: args.settledStatus,
+    hadDurableReply: args.hadDurableReply,
+  };
+  console.warn("[pm-channel] completion anomaly on settled run", payload);
+  await db.activityLog.create({
+    data: {
+      kind: "pm.channel.completion_anomaly",
+      targetAgent: args.target.agentSlug,
+      payload: JSON.stringify(payload),
+    },
+  });
 }
 
 function timeoutMs(value: number, fallback: number) {
@@ -358,7 +392,16 @@ export async function recordPmChannelRunEvent(args: {
           select: { status: true },
         });
         if (existing?.status === "canceled") return;
-        if (existing?.status === "complete" || await pmChannelTargetHasDurableReply(args.target)) {
+        const hadDurableReply = await pmChannelTargetHasDurableReply(args.target);
+        if (existing?.status === "complete" || hadDurableReply) {
+          // Legitimate settle. A plain done stays anomaly-free; a done that
+          // still CARRIES an error (the stream-callback durable-reply
+          // conversion passes it through) records the masked failure as a
+          // completion anomaly without touching the settled status.
+          const anomalyError = args.error ? clippedError(args.error) : null;
+          const anomaly = anomalyError
+            ? { completionAnomaly: anomalyError, completionAnomalyAt: now }
+            : {};
           await db.pmChannelRun.upsert({
             where: { targetKey },
             create: {
@@ -372,6 +415,7 @@ export async function recordPmChannelRunEvent(args: {
               completedAt: now,
               failedAt: null,
               lastEventAt: now,
+              ...anomaly,
             },
             update: {
               status: "complete",
@@ -379,11 +423,29 @@ export async function recordPmChannelRunEvent(args: {
               completedAt: now,
               failedAt: null,
               lastEventAt: now,
+              ...anomaly,
             },
           });
+          if (anomalyError) {
+            await recordCompletionAnomaly({
+              target: args.target,
+              targetKey,
+              event: "done",
+              error: anomalyError,
+              settledStatus: existing?.status ?? null,
+              hadDurableReply,
+            });
+          }
           await settlePmChannelJobsForTargetKey({ targetKey, status: "complete", now });
           return;
         }
+        // No visible reply and no durable settle: route through the shared
+        // retry policy. Notification turns retry with backoff; conversation
+        // turns (and exhausted retries) fail terminally with the incremental
+        // chat baseline rolled back.
+        const error = "Agent finished without posting a reply.";
+        const outcome = await retryOrFailPmChannelJobForTurnFailure({ targetKey, error, now });
+        if (outcome !== "no_job") return;
         await db.pmChannelRun.upsert({
           where: { targetKey },
           create: {
@@ -394,13 +456,13 @@ export async function recordPmChannelRunEvent(args: {
             taskId: ids.taskId,
             epicId: ids.epicId,
             status: "failed",
-            error: "Agent finished without posting a reply.",
+            error,
             failedAt: now,
             lastEventAt: now,
           },
           update: {
             status: "failed",
-            error: "Agent finished without posting a reply.",
+            error,
             failedAt: now,
             lastEventAt: now,
           },
@@ -409,7 +471,7 @@ export async function recordPmChannelRunEvent(args: {
           targetKey,
           status: "failed",
           now,
-          error: "Agent finished without posting a reply.",
+          error,
         });
       },
       "done run state",
@@ -425,7 +487,12 @@ export async function recordPmChannelRunEvent(args: {
           select: { status: true },
         });
         if (existing?.status === "canceled") return;
-        if (existing?.status === "complete" || await pmChannelTargetHasDurableReply(args.target)) {
+        const hadDurableReply = await pmChannelTargetHasDurableReply(args.target);
+        if (existing?.status === "complete" || hadDurableReply) {
+          // The run already settled (workflow action or durable reply). Keep
+          // the settle, but persist the late error as a completion anomaly
+          // instead of discarding it (PH-124).
+          const anomalyError = clippedError(args.error) ?? "late stream error on settled run";
           await db.pmChannelRun.upsert({
             where: { targetKey },
             create: {
@@ -439,6 +506,8 @@ export async function recordPmChannelRunEvent(args: {
               completedAt: now,
               failedAt: null,
               lastEventAt: now,
+              completionAnomaly: anomalyError,
+              completionAnomalyAt: now,
             },
             update: {
               status: "complete",
@@ -446,13 +515,25 @@ export async function recordPmChannelRunEvent(args: {
               completedAt: now,
               failedAt: null,
               lastEventAt: now,
+              completionAnomaly: anomalyError,
+              completionAnomalyAt: now,
             },
+          });
+          await recordCompletionAnomaly({
+            target: args.target,
+            targetKey,
+            event: "error",
+            error: anomalyError,
+            settledStatus: existing?.status ?? null,
+            hadDurableReply,
           });
           await settlePmChannelJobsForTargetKey({ targetKey, status: "complete", now });
           return;
         }
 
         const error = clippedError(args.error) ?? "OpenClaw stream failed";
+        const outcome = await retryOrFailPmChannelJobForTurnFailure({ targetKey, error, now });
+        if (outcome !== "no_job") return;
         await db.pmChannelRun.upsert({
           where: { targetKey },
           create: {

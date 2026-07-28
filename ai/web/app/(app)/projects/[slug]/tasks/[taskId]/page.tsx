@@ -402,6 +402,7 @@ async function updateTask(formData: FormData) {
       payload: JSON.stringify({
         from: task.assignee?.username ?? null,
         to: assignmentTarget?.username ?? null,
+        assignedBy: "human-edit",
       }),
     });
     activity.push({

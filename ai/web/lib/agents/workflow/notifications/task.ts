@@ -426,6 +426,9 @@ export async function sendTaskWorkflowNotification(args: {
     agentSlug: targetUser.agent.slug,
     sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
     kind,
+    // PM-generated notification turn: safe for the turn-failure auto-retry
+    // ladder (see retryOrFailPmChannelJobForTurnFailure).
+    turnClass: "notification" as const,
     text: args.body,
     contextText: nullPmContextText(),
     systemPrompt: buildUnifiedPmTurnSystemPrompt({

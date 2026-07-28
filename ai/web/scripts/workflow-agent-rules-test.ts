@@ -224,6 +224,15 @@ for (const pagePath of [
   assert(pageSource.includes("human-board-move"), `${pagePath} must audit human moves with via: human-board-move`);
 }
 
+// PH-124 item B: every workflow action with a durable outcome settles the
+// PM-channel run. 7 original actions + the 5 that used to leave the run
+// dangling (add_subtask, complete_subtask, request_subtask, request_task,
+// flag_extra_work_blocker) = 12 call sites.
+assert(
+  taskWorkflowRoute.split("recordPmChannelRunWorkflowAction(").length - 1 === 12,
+  "all 12 durable-outcome workflow actions must settle the PM-channel run",
+);
+
 // request-workflow-turn: PM-bearer-authenticated self-service turn re-arm.
 const requestTurnRoute = readFileSync(join(root, "app/api/agent/tasks/[taskId]/request-workflow-turn/route.ts"), "utf8");
 assert(requestTurnRoute.includes("authorizePmChannelCallback"), "request-workflow-turn must reuse the PM-channel bearer auth");
@@ -252,4 +261,299 @@ assert(
   "deployment PR approval must be reporter-only server-side when the project flag is set",
 );
 
-console.log("workflow-agent-rules-test passed");
+console.log("workflow-agent-rules static checks passed");
+
+// --- PH-124 item B (scratch-DB slice): the five formerly-unsettled actions
+// must settle both PM-channel runs (task-comment + task-chat target keys) and
+// their jobs; a role-violation (403) must leave the run untouched.
+//
+// The static imports above transitively construct the shared Prisma client
+// (lib/work-items/keys.ts -> lib/db), so DATABASE_URL cannot be pointed at
+// the scratch DB from inside this process. The parent run prepares the
+// scratch DB and re-spawns this same script with WORKFLOW_RULES_DB_SLICE=1
+// and the env set at spawn; the child executes the slice. ---
+async function pmRunSettlementSlice() {
+  // MUST come before any Next internal (the route module) is evaluated: it
+  // installs globalThis.AsyncLocalStorage for Next's async-local-storage.
+  await import("./lib/next-als-polyfill");
+  const [{ db }, route, { createTaskWorkflowToken }, { runRouteHandler }, { NextRequest }] =
+    await Promise.all([
+      import("../lib/db"),
+      import("../app/api/agent/tasks/[taskId]/workflow/route"),
+      import("../lib/agents/workflow/token/task"),
+      import("./lib/next-route-harness"),
+      import("next/server"),
+    ]);
+
+  try {
+    const owner = await db.user.create({
+      data: {
+        username: "wf-owner",
+        email: "wf-owner@example.test",
+        kind: "human",
+        isOwner: true,
+        mustRotatePassword: false,
+      },
+    });
+    const assigneeAgent = await db.agent.create({
+      data: { slug: "wf-assignee", name: "WF Assignee", role: "coding" },
+    });
+    const assigneeUser = await db.user.create({
+      data: {
+        username: "wf-assignee",
+        email: "wf-assignee@example.test",
+        kind: "agent",
+        agentId: assigneeAgent.id,
+        mustRotatePassword: false,
+      },
+    });
+    const reviewerAgent = await db.agent.create({
+      data: { slug: "wf-reviewer", name: "WF Reviewer", role: "coding" },
+    });
+    const reviewerUser = await db.user.create({
+      data: {
+        username: "wf-reviewer",
+        email: "wf-reviewer@example.test",
+        kind: "agent",
+        agentId: reviewerAgent.id,
+        mustRotatePassword: false,
+      },
+    });
+    const project = await db.project.create({
+      data: { slug: "wf-settle", name: "Workflow Settle" },
+    });
+    const epic = await db.epic.create({
+      data: {
+        projectId: project.id,
+        title: "Settle epic",
+        status: "In Progress",
+        actingManagerId: reviewerUser.id,
+      },
+    });
+    const task = await db.task.create({
+      data: {
+        projectId: project.id,
+        epicId: epic.id,
+        title: "Settle task",
+        status: "In Progress",
+        assigneeId: assigneeUser.id,
+        actingManagerId: reviewerUser.id,
+        reporterId: owner.id,
+        approvedOn: new Date(),
+      },
+    });
+
+    // One grant per action: message + BOTH PM run target keys + jobs, seeded
+    // in the settleable "accepted" state (the state a live turn is in while
+    // the agent works).
+    const grantFor = async (slug: string) => {
+      const msg = await db.agentChatMessage.create({
+        data: {
+          projectId: project.id,
+          taskId: task.id,
+          agentSlug: slug,
+          senderUserId: owner.id,
+          body: "workflow grant",
+          originChannel: "comment",
+        },
+        select: { id: true },
+      });
+      for (const kind of ["task-comment", "task-chat"] as const) {
+        const run = await db.pmChannelRun.create({
+          data: {
+            targetKey: `${kind}:${slug}:${task.id}:${msg.id}`,
+            kind,
+            agentSlug: slug,
+            messageId: msg.id,
+            projectId: project.id,
+            taskId: task.id,
+            status: "accepted",
+          },
+        });
+        await db.pmChannelJob.create({
+          data: {
+            runId: run.id,
+            agentSlug: slug,
+            kind,
+            payload: "{}",
+            status: "accepted",
+          },
+        });
+      }
+      return msg.id;
+    };
+
+    const runStates = async (slug: string, messageId: string) => {
+      const runs = await db.pmChannelRun.findMany({
+        where: { messageId, agentSlug: slug },
+        select: { status: true, jobs: { select: { status: true } } },
+      });
+      return {
+        runStatuses: runs.map((run) => run.status),
+        jobStatuses: runs.flatMap((run) => run.jobs.map((job) => job.status)),
+      };
+    };
+
+    const call = async (slug: string, messageId: string, body: Record<string, unknown>) => {
+      const token = createTaskWorkflowToken(messageId, task.id, slug);
+      const req = new NextRequest(`http://127.0.0.1/api/agent/tasks/${task.id}/workflow`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messageId, token, ...body }),
+      });
+      const res = await runRouteHandler(() => route.POST(req, {
+        params: Promise.resolve({ taskId: task.id }),
+      }));
+      return { status: res.status, body: await res.json() as Record<string, unknown> };
+    };
+
+    const assertSettled = async (slug: string, messageId: string, action: string) => {
+      const { runStatuses, jobStatuses } = await runStates(slug, messageId);
+      assert(runStatuses.length === 2, `${action}: both target-key runs must exist`);
+      assert(
+        runStatuses.every((status) => status === "complete"),
+        `${action}: both PM runs must settle complete (got ${runStatuses.join(", ")})`,
+      );
+      assert(
+        jobStatuses.every((status) => status === "complete"),
+        `${action}: both PM jobs must settle complete (got ${jobStatuses.join(", ")})`,
+      );
+    };
+
+    // add_subtask (assignee)
+    const addGrant = await grantFor("wf-assignee");
+    const added = await call("wf-assignee", addGrant, {
+      action: "add_subtask",
+      subtaskText: "settle step one",
+    });
+    assert(added.status === 200, `add_subtask must succeed (got ${added.status}: ${JSON.stringify(added.body)})`);
+    await assertSettled("wf-assignee", addGrant, "add_subtask");
+
+    // complete_subtask (assignee)
+    const completeGrant = await grantFor("wf-assignee");
+    const completed = await call("wf-assignee", completeGrant, {
+      action: "complete_subtask",
+      subtaskId: added.body.subtaskId,
+      minutesSpent: 3,
+    });
+    assert(completed.status === 200, `complete_subtask must succeed (got ${completed.status}: ${JSON.stringify(completed.body)})`);
+    await assertSettled("wf-assignee", completeGrant, "complete_subtask");
+
+    // request_subtask (resolved reviewer)
+    const requestSubtaskGrant = await grantFor("wf-reviewer");
+    const requestedSubtask = await call("wf-reviewer", requestSubtaskGrant, {
+      action: "request_subtask",
+      subtaskText: "add regression coverage",
+      comment: "the fix needs a test",
+    });
+    assert(
+      requestedSubtask.status === 200,
+      `request_subtask must succeed (got ${requestedSubtask.status}: ${JSON.stringify(requestedSubtask.body)})`,
+    );
+    await assertSettled("wf-reviewer", requestSubtaskGrant, "request_subtask");
+
+    // request_task (assignee -> epic acting manager)
+    const requestTaskGrant = await grantFor("wf-assignee");
+    const requestedTask = await call("wf-assignee", requestTaskGrant, {
+      action: "request_task",
+      subtaskText: "Follow-up task title",
+      comment: "out of current scope",
+    });
+    assert(
+      requestedTask.status === 200,
+      `request_task must succeed (got ${requestedTask.status}: ${JSON.stringify(requestedTask.body)})`,
+    );
+    await assertSettled("wf-assignee", requestTaskGrant, "request_task");
+
+    // flag_extra_work_blocker (assignee)
+    const blockerGrant = await grantFor("wf-assignee");
+    const flagged = await call("wf-assignee", blockerGrant, {
+      action: "flag_extra_work_blocker",
+      comment: "requested extra scope blocks the approved plan",
+    });
+    assert(flagged.status === 200, `flag_extra_work_blocker must succeed (got ${flagged.status}: ${JSON.stringify(flagged.body)})`);
+    await assertSettled("wf-assignee", blockerGrant, "flag_extra_work_blocker");
+
+    // Role violation: a reviewer calling add_subtask (implementation kind)
+    // 403s and must NOT settle its runs — error paths leave the turn live.
+    const deniedGrant = await grantFor("wf-reviewer");
+    const denied = await call("wf-reviewer", deniedGrant, {
+      action: "add_subtask",
+      subtaskText: "not allowed",
+    });
+    assert(denied.status === 403, `non-assignee add_subtask must 403 (got ${denied.status})`);
+    const deniedStates = await runStates("wf-reviewer", deniedGrant);
+    assert(
+      deniedStates.runStatuses.every((status) => status === "accepted"),
+      `403 path must leave the PM runs untouched (got ${deniedStates.runStatuses.join(", ")})`,
+    );
+    assert(
+      deniedStates.jobStatuses.every((status) => status === "accepted"),
+      `403 path must leave the PM jobs untouched (got ${deniedStates.jobStatuses.join(", ")})`,
+    );
+  } finally {
+    await db.$disconnect();
+  }
+}
+
+async function runPmRunSettlementSliceInChild() {
+  const { execFile } = await import("node:child_process");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { promisify } = await import("node:util");
+  const path = await import("node:path");
+  const execFileP = promisify(execFile);
+
+  const sandbox = await mkdtemp(path.join(tmpdir(), "workflow-agent-rules-db-"));
+  const dbUrl = `file:${path.join(sandbox, "test.db")}`;
+  const childEnv = {
+    ...process.env,
+    DATABASE_URL: dbUrl,
+    WORKFLOW_RULES_DB_SLICE: "1",
+    AUTH_SECRET: process.env.AUTH_SECRET ?? "workflow-agent-rules-test-secret",
+    PM_ASYNC_DISPATCH: "1",
+    PM_ASYNC_DISPATCH_INLINE_NUDGE: "0",
+  };
+  try {
+    await execFileP(
+      "pnpm",
+      ["prisma", "db", "push", "--skip-generate", "--accept-data-loss", "--schema=prisma/schema.prisma"],
+      { env: childEnv, cwd: process.cwd() },
+    );
+    const { stdout } = await execFileP(
+      "pnpm",
+      ["exec", "tsx", "scripts/workflow-agent-rules-test.ts"],
+      { env: childEnv, cwd: process.cwd() },
+    );
+    assert(
+      stdout.includes("workflow-agent-rules PM-run settlement slice passed"),
+      "the DB slice child must report success",
+    );
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+  }
+}
+
+if (process.env.WORKFLOW_RULES_DB_SLICE === "1") {
+  pmRunSettlementSlice()
+    .then(() => {
+      console.log("workflow-agent-rules PM-run settlement slice passed");
+    })
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+} else {
+  runPmRunSettlementSliceInChild()
+    .then(() => {
+      console.log("workflow-agent-rules-test passed");
+    })
+    .catch((err) => {
+      if (err && typeof err === "object" && "stdout" in err) {
+        console.error(String((err as { stdout?: unknown }).stdout ?? ""));
+        console.error(String((err as { stderr?: unknown }).stderr ?? ""));
+      }
+      console.error(err);
+      process.exit(1);
+    });
+}

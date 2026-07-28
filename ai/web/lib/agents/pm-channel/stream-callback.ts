@@ -168,7 +168,14 @@ export async function applyPmChannelStreamCallback(args: {
   if (event === "error" && await pmChannelTargetHasDurableReply(target)) {
     const persisted = await appendPmChannelStreamEventForTarget({ target, event: "done" });
     const state = publishPmChannelStreamEvent({ target, event: "done", seq: persisted.seq });
-    await recordPmChannelRunEvent({ target, event: "done" });
+    // The durable reply makes this a legitimate settle for the UI, but the
+    // error text must survive the done-conversion so the run can record it as
+    // a completion anomaly instead of silently discarding it (PH-124).
+    await recordPmChannelRunEvent({
+      target,
+      event: "done",
+      error: stringField(args.payload.error, 2_000),
+    });
     await recordStreamTransport(target, transportMode);
     await markPmChannelJobCompleteForTarget(target);
     return { status: 200, body: { ok: true, key: state.key, status: state.status } };

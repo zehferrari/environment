@@ -228,6 +228,9 @@ export async function assignTaskAfterPlanApproval(args: {
           from: null,
           to: assignee.username,
           via: "reviewer-plan-approval",
+          // Reviewer authority: assignee !== reviewer is enforced above, so
+          // this row can never be an agent granting itself a task.
+          assignedBy: "reviewer",
           named: Boolean(args.assigneeUsername),
         }),
       },

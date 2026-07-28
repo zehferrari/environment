@@ -14,7 +14,7 @@ operating system itself, not the portable OpenClaw runtime.
 | `systemd/zypper-dup.timer` | `/etc/systemd/system/zypper-dup.timer` | Schedule for the distribution upgrade |
 | `kernel/required-cmdline` | merged into `/etc/kernel/cmdline` | Enables PSI telemetry on the next boot |
 | `tmpfiles/fs-tmp.conf` | `/etc/tmpfiles.d/fs-tmp.conf` | Keeps RAM-backed `/tmp` retention to three days |
-| `systemd/user/openclaw-gateway.service.d/30-memory-policy.conf` | `/etc/systemd/user/openclaw-gateway.service.d/30-memory-policy.conf` | Per-gateway memory containment |
+| `systemd/user/openclaw-gateway.service.d/30-memory-policy.conf` | `/etc/systemd/user/openclaw-gateway.service.d/30-memory-policy.conf` | Per-gateway memory containment + Node heap cap |
 | `systemd/user-manager/80-openclaw-resource-controllers.conf` | `/etc/systemd/system/user@<agent-uid>.service.d/80-openclaw-resource-controllers.conf` | Delegates the memory controller only to agent user managers |
 
 Deploy from the active worktree:
@@ -40,8 +40,17 @@ It deliberately does not start `zypper-dup.service`, force a log rotation,
 delete old `/tmp` entries immediately, restart agent user managers/gateways,
 or reboot the host.
 
-The gateway policy starts cgroup reclaim at 6 GiB and caps one gateway at
-8 GiB plus 2 GiB of swap. The host installer creates a `Delegate=pids memory`
+The gateway policy starts cgroup reclaim at 8 GiB, caps one gateway at
+10 GiB, and allows no swap. The earlier 6 GiB high / 8 GiB max / 2 GiB swap
+budget let `memory.high` reclaim throttling freeze a busy gateway's event
+loop for minutes once heavy claude-cli turns filled it — turns stalled until
+the watchdog or monitor killed them. With `MemorySwapMax=0` a genuine
+overrun instead fails fast: OOM-kill at `MemoryMax` plus `Restart=always`
+recovers in seconds. The same drop-in caps the node gateway heap
+(`NODE_OPTIONS=--max-old-space-size=2560`, repeating
+`--dns-result-order=ipv4first` because a drop-in assignment replaces the
+unit's own value) so the remaining cgroup budget stays available to
+claude-cli child processes. The host installer creates a `Delegate=pids memory`
 override only for enabled agent UIDs because openSUSE otherwise withholds the
 memory controller from user services. Existing `user@<uid>.service` instances
 must be restarted one at a time while their agent is idle; then restart that

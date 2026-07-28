@@ -15,7 +15,17 @@ import {
 import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel/stream-log";
 import { rollbackDispatchedMessageId } from "@/lib/agents/auth/session-bindings";
 
-type DispatchJobPayload = Omit<SendPmChannelTurnArgs, "fetchImpl">;
+// Idempotency discriminator for the turn-failure retry policy: only
+// PM-generated notification/nudge turns are safe to auto-replay. Stamped at
+// enqueue by sendTaskWorkflowNotification / sendEpicWorkflowNotification;
+// everything else defaults to "conversation" (terminal on turn failure).
+export type PmChannelTurnClass = "notification" | "conversation";
+
+export type SendPmChannelTurnRequest = SendPmChannelTurnArgs & {
+  turnClass?: PmChannelTurnClass;
+};
+
+type DispatchJobPayload = Omit<SendPmChannelTurnRequest, "fetchImpl">;
 
 const MAX_ATTEMPTS = Number.parseInt(process.env.PM_CHANNEL_JOB_MAX_ATTEMPTS ?? "3", 10);
 const CLAIM_TIMEOUT_MS = Number.parseInt(process.env.PM_CHANNEL_JOB_CLAIM_TIMEOUT_MS ?? "120000", 10);
@@ -43,7 +53,7 @@ function clippedError(error: string | null | undefined) {
   return error.length > 2_000 ? error.slice(0, 2_000) : error;
 }
 
-function serializableArgs(args: SendPmChannelTurnArgs): DispatchJobPayload {
+function serializableArgs(args: SendPmChannelTurnRequest): DispatchJobPayload {
   const { fetchImpl: _fetchImpl, ...rest } = args;
   return rest;
 }
@@ -126,6 +136,41 @@ function retryDelayMs(attemptCount: number) {
   return Math.min(5 * 60_000, boundedBase * Math.max(1, 2 ** Math.max(0, attemptCount - 1)));
 }
 
+function maxAttempts() {
+  return Number.isFinite(MAX_ATTEMPTS) && MAX_ATTEMPTS > 0 ? MAX_ATTEMPTS : 3;
+}
+
+// Same marker sendTaskWorkflowNotification/epic notifications put on the
+// mirrored message body and ai-monitor keys its orphan scan on. Used only as
+// a fallback classifier for jobs enqueued before turnClass existed.
+const WORKFLOW_NOTIFICATION_PREFIX = "PM workflow notification for @";
+
+function payloadTurnClass(payload: DispatchJobPayload): PmChannelTurnClass {
+  if (payload.turnClass === "notification" || payload.turnClass === "conversation") {
+    return payload.turnClass;
+  }
+  return payload.text.startsWith(WORKFLOW_NOTIFICATION_PREFIX) ? "notification" : "conversation";
+}
+
+// Turn-failure error classes that are safe to retry: the turn provably ended
+// without a durable outcome (no visible reply / in-process gateway abort, the
+// distinct strings the driver emits). Watchdog-labeled failures and dispatch
+// errors are NOT in this set — they have their own ladders.
+export function isRetryablePmChannelTurnFailure(error: string) {
+  return (
+    error === "Agent finished without posting a reply." ||
+    error.startsWith("gateway aborted turn")
+  );
+}
+
+// Second idempotency layer for retried turns: the agent is told the previous
+// attempt may have partially completed. Prepended to the DISPATCHED copy of
+// the payload only — never persisted into the job payload.
+const RETRY_TURN_FAILURE_PREAMBLE =
+  "NOTE: a previous attempt of this turn aborted mid-run and may have partially completed. "
+  + "Verify the current task state (status, subtasks, comments) before repeating any action; "
+  + "do not duplicate work already done.";
+
 function claimTimeoutMs() {
   return Number.isFinite(CLAIM_TIMEOUT_MS) && CLAIM_TIMEOUT_MS > 0
     ? CLAIM_TIMEOUT_MS
@@ -152,7 +197,7 @@ async function appendAndPublishStatus(args: {
 }
 
 export async function enqueueOpenClawPmChannelTurn(
-  args: SendPmChannelTurnArgs,
+  args: SendPmChannelTurnRequest,
 ): Promise<SendPmChannelTurnResult> {
   const payload = serializableArgs(args);
   const run = await recordPmChannelRunQueued({
@@ -245,7 +290,7 @@ async function channelBreakerOpen(agentSlug: string): Promise<{ open: boolean; f
 }
 
 export async function sendOrQueueOpenClawPmChannelTurn(
-  args: SendPmChannelTurnArgs,
+  args: SendPmChannelTurnRequest,
 ): Promise<SendPmChannelTurnResult> {
   const breaker = await channelBreakerOpen(args.agentSlug);
   if (breaker.open) {
@@ -423,7 +468,17 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
       error: "PM channel dispatch canceled: private or unavailable work cannot be delivered to agents",
     });
   }
-  const result = await dispatchOpenClawPmChannelTurn(payload);
+  // A job whose last failure was a retryable TURN failure (no-reply/abort) is
+  // being re-run: warn the agent the previous attempt may have partially
+  // completed. Dispatch-copy only; the stored payload stays pristine.
+  const retryingAfterTurnFailure = Boolean(
+    job.lastError && isRetryablePmChannelTurnFailure(job.lastError),
+  );
+  const result = await dispatchOpenClawPmChannelTurn(
+    retryingAfterTurnFailure
+      ? { ...payload, text: `${RETRY_TURN_FAILURE_PREAMBLE}\n\n${payload.text}` }
+      : payload,
+  );
   const now = new Date();
 
   if (result.ok) {
@@ -495,6 +550,97 @@ async function rollbackDispatchedTurnBinding(payload: DispatchJobPayload) {
       messageId: target.messageId,
     });
   }
+}
+
+// Turn-failure retry policy (PH-124 item D). A no-reply/abort ending used to
+// bypass the job retry ladder entirely: runs.ts wrote a terminal failed run
+// and marked the job failed WITHOUT rolling back the incremental chat
+// baseline. Now a notification-class turn with a retryable error class gets
+// the shared ladder (same MAX_ATTEMPTS counter as dispatch retries, so the
+// two ladders can never multiply into 2xN attempts); everything else fails
+// terminally WITH the binding rollback. Conversation (human-authored) turns
+// stay terminal on purpose: the human can resend, and auto-replaying an
+// implementation instruction risks re-running partially-completed work. With
+// item B in place, any turn that performed a durable workflow action settles
+// complete and never reaches this path.
+export async function retryOrFailPmChannelJobForTurnFailure(args: {
+  targetKey: string;
+  error: string;
+  now?: Date;
+}): Promise<"retried" | "exhausted" | "no_job"> {
+  const now = args.now ?? new Date();
+  const run = await db.pmChannelRun.findUnique({
+    where: { targetKey: args.targetKey },
+    select: { id: true, status: true },
+  });
+  if (!run || run.status === "canceled") return "no_job";
+  const job = await db.pmChannelJob.findUnique({
+    where: { runId: run.id },
+    select: { id: true, attemptCount: true, payload: true },
+  });
+  if (!job) return "no_job";
+  let payload: DispatchJobPayload;
+  try {
+    payload = parseJobPayload(job.payload);
+  } catch {
+    return "no_job";
+  }
+
+  const error = clippedError(args.error) ?? args.error;
+  const eligible =
+    job.attemptCount < maxAttempts() &&
+    payloadTurnClass(payload) === "notification" &&
+    isRetryablePmChannelTurnFailure(args.error);
+
+  if (eligible) {
+    await db.$transaction([
+      db.pmChannelJob.updateMany({
+        where: { id: job.id, status: { in: ["queued", "claimed", "accepted", "retryable"] } },
+        data: {
+          status: "retryable",
+          availableAt: new Date(now.getTime() + retryDelayMs(job.attemptCount)),
+          claimedBy: null,
+          claimedAt: null,
+          lastError: error,
+        },
+      }),
+      db.pmChannelRun.update({
+        where: { id: run.id },
+        data: {
+          status: "retryable",
+          error,
+          failedAt: null,
+          lastEventAt: now,
+        },
+      }),
+    ]);
+    await appendAndPublishStatus({ payload, runStatus: "retryable", error });
+    return "retried";
+  }
+
+  await db.$transaction([
+    db.pmChannelJob.updateMany({
+      where: { id: job.id, status: { in: ["queued", "claimed", "accepted", "retryable"] } },
+      data: {
+        status: "failed",
+        claimedBy: null,
+        claimedAt: null,
+        lastError: error,
+      },
+    }),
+    db.pmChannelRun.update({
+      where: { id: run.id },
+      data: {
+        status: "failed",
+        error,
+        failedAt: now,
+        lastEventAt: now,
+      },
+    }),
+  ]);
+  await appendAndPublishStatus({ payload, runStatus: "failed", error });
+  await rollbackDispatchedTurnBinding(payload);
+  return "exhausted";
 }
 
 export async function runPmChannelWorkerOnce(workerId = `pm-channel-worker:${process.pid}`) {

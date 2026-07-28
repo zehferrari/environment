@@ -840,6 +840,14 @@ export async function POST(
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     publishBoardTouch(task.projectId);
+    // The sub-task row is a durable outcome of this turn: settle the PM run
+    // so a post-action gateway abort cannot mask the completed work (PH-124).
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
     return NextResponse.json({ ok: true, taskId: task.id, subtaskId: created.id, subtaskKind: kind });
   }
 
@@ -903,6 +911,15 @@ export async function POST(
         });
       }
     }
+    // Durable outcome: the tick/reopen persisted, so settle the PM run. The
+    // ready_for_review_available notification above targets a NEW messageId
+    // (its own run), so settling this grant's run does not interfere.
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
     return NextResponse.json({
       ok: true,
       taskId: task.id,
@@ -982,6 +999,13 @@ export async function POST(
     revalidateTaskReplyScope(task.id, "chat");
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    // Durable outcome (request comment + notification): settle the PM run.
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
     return NextResponse.json({ ok: true, taskId: task.id, requested: "subtask", commentId });
   }
 
@@ -1026,6 +1050,13 @@ export async function POST(
     revalidateTaskReplyScope(task.id, "chat");
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    // Durable outcome (request comment + manager notification): settle the run.
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
     return NextResponse.json({ ok: true, taskId: task.id, requested: "task", commentId });
   }
 
@@ -1069,6 +1100,13 @@ export async function POST(
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
     publishBoardTouch(task.projectId);
+    // Durable outcome (blocker comment + alertReporter flag): settle the run.
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
     return NextResponse.json({ ok: true, taskId: task.id, flagged: "extra_work_blocker", commentId });
   }
 

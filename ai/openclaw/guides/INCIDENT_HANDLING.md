@@ -93,8 +93,21 @@ These usually self-heal — **observe, don't act**, and prefer suppress unless t
 | `load-high` (1-min load / cores > 3) | Re-probe; transient compile bursts are normal | Telegram if sustained |
 | `temp-high` (CPU > 92 °C) | Re-probe — cooling usually catches up within a window | Telegram if still > 92 °C after two windows |
 | `rootfs-used-pct` > 90 | Don't auto-prune — surface to zeh on tier 1 | n/a |
-| `gateway-memory-high` | Re-probe `MemoryCurrent`; inspect the agent's payload-free memory-pressure snapshot if present. Do not restart a busy gateway merely to lower memory. | Telegram if still high; include current/peak memory and whether a diagnostic snapshot exists. |
+| `gateway-memory-high` | Re-probe `MemoryCurrent`; inspect the agent's payload-free memory-pressure snapshot if present. Do not restart a busy gateway merely to lower memory. **Never `restart-services` a gateway whose diagnostics show an active `processing/embedded_run` session unless `MemoryCurrent` is ≥ 95 % of `MemoryMax`** — prefer waiting one confirmation window and re-probing (a tier-2 restart on 2026-07-28 09:45 killed an in-flight task turn that a restart could never save). High-but-under-max memory does not need you: `MemorySwapMax=0` on the gateway units means a true overrun OOM-kills at `MemoryMax` and `Restart=always` brings the gateway back in seconds on its own. | Telegram if still high; include current/peak memory and whether a diagnostic snapshot exists. |
 | `gateway-memory-unavailable` | Verify the per-agent `user@<uid>` manager delegates the memory controller and the gateway unit has `MemoryAccounting=yes`. Arrange an idle restart if policy was installed after the manager started. | Telegram if accounting remains unavailable. |
+
+### Known benign log noise (never an incident on its own)
+
+- `[pm:default] health-monitor: restarting (reason: stopped)` in a gateway
+  journal was a structural false positive: the PM channel plugin is
+  HTTP-ingress-only and historically registered no `gateway.startAccount`,
+  so the channel manager could never mark the channel running and
+  "restarted" it (a no-op) every cooldown — roughly 4/hr on every agent.
+  The plugin now registers a long-lived no-op `startAccount`, so the spam
+  ends once the restaged plugin is installed and that gateway restarts. If
+  the line still appears on an agent, the plugin restage has not reached it
+  yet — do not treat the message as a channel failure or restart anything
+  because of it.
 
 ### Escalate immediately (skip tiers)
 

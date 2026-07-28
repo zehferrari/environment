@@ -706,7 +706,13 @@ sudo -u karen XDG_RUNTIME_DIR=/run/user/1003 DBUS_SESSION_BUS_ADDRESS=unix:path=
 
 Gateway resource policy is installed from `ai/host/`: OpenClaw configs enable
 payload-free critical memory-pressure snapshots; each gateway has
-`MemoryHigh=6G`, `MemoryMax=8G`, `MemorySwapMax=2G`, and `TasksMax=1024`.
+`MemoryHigh=8G`, `MemoryMax=10G`, `MemorySwapMax=0`, `TasksMax=1024`, and a
+Node heap cap (`NODE_OPTIONS=--max-old-space-size=2560`) that keeps the
+gateway process well below the cgroup budget so the remainder stays
+available to claude-cli child processes. Swap is disallowed on purpose:
+under the old 6G/8G/2G-swap budget, `memory.high` reclaim throttling froze
+busy gateway event loops for minutes mid-turn; with no swap a true overrun
+OOM-kills at `MemoryMax` and `Restart=always` recovers in seconds.
 Because openSUSE disables user-manager resource delegation by default, the
 host installer adds `Delegate=pids memory` only to registered agent
 `user@<uid>.service` instances. Existing user managers must be restarted

@@ -13,11 +13,12 @@ def main() -> None:
         HOST
         / "systemd/user/openclaw-gateway.service.d/30-memory-policy.conf"
     ).read_text()
-    assert "MemoryHigh=6G" in gateway_policy
-    assert "MemoryMax=8G" in gateway_policy
-    assert "MemorySwapMax=2G" in gateway_policy
+    assert "MemoryHigh=8G" in gateway_policy
+    assert "MemoryMax=10G" in gateway_policy
+    assert "MemorySwapMax=0" in gateway_policy
     assert "TasksMax=1024" in gateway_policy
-    assert "max-old-space-size" not in gateway_policy
+    assert "--max-old-space-size=2560" in gateway_policy
+    assert "--dns-result-order=ipv4first" in gateway_policy
 
     delegation = (
         HOST / "systemd/user-manager/80-openclaw-resource-controllers.conf"

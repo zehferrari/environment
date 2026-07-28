@@ -148,8 +148,13 @@ Per-agent project resources (services that come from a side project the agent ha
 - `ai-monitor.service` / `ai-monitor.timer` are **system** units (not per-user); the monitoring agent is the Telegram persona used for monitor alerts.
 
 On `thinkpad`, every gateway also receives the host policy from `ai/host`:
-payload-free critical memory-pressure snapshots plus `MemoryHigh=6G`,
-`MemoryMax=8G`, `MemorySwapMax=2G`, and `TasksMax=1024`. The corresponding
+payload-free critical memory-pressure snapshots plus `MemoryHigh=8G`,
+`MemoryMax=10G`, `MemorySwapMax=0`, `TasksMax=1024`, and a Node heap cap of
+`--max-old-space-size=2560` (under the old 6G/8G/2G-swap budget, cgroup
+reclaim throttling froze busy event loops for minutes mid-turn; with no
+swap a true overrun OOM-kills at `MemoryMax` and restarts in seconds,
+and the heap cap keeps the gateway process itself well below the cgroup
+budget so the rest serves claude-cli children). The corresponding
 agent `user@<uid>.service` must delegate the `memory` controller; the lifecycle
 helper installs that instance-specific delegation for newly provisioned users.
 

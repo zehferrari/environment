@@ -721,6 +721,12 @@ model PmChannelRun {
   httpStatus          Int?
   status              String                 @default("queued") // queued | accepted | streaming | complete | failed
   error               String?
+  // Late error evidence on an already-settled run (PH-124): a workflow action
+  // settles the run complete, then the gateway aborts the post-action phase.
+  // The abort must not flip the legitimate settle, but it must not vanish
+  // either — it lands here (plus a pm.channel.completion_anomaly ActivityLog).
+  completionAnomaly   String?
+  completionAnomalyAt DateTime?
   acceptedAt          DateTime?
   streamingAt         DateTime?
   completedAt         DateTime?
