@@ -1010,12 +1010,17 @@ def main():
             check_openai_auth(user)
         # Outbound API token checks are only meaningful for coding agents
         # (who actually call Jira/Bitbucket). The monitor agent may have
-        # integrations.jira/bitbucket=true to gate its inbound RECEIVERS,
-        # but has no token file by design — checking would always FAIL.
+        # integrations.jira/bitbucket=true to gate its inbound RECEIVERS
+        # and historically had no token file — but the deployment-PR flow
+        # runs as the monitor, so when a Bitbucket token file exists for a
+        # monitor-role agent it is probed (and its expiry tracked) too.
         if integrations.get("jira") and agent.get("role") == "coding":
             check_jira(user, user_cfg)
-        if integrations.get("bitbucket") and agent.get("role") == "coding" and bitbucket_workspace and bitbucket_repo:
-            check_bitbucket(user, user_cfg, bitbucket_workspace, bitbucket_repo)
+        if bitbucket_workspace and bitbucket_repo:
+            if integrations.get("bitbucket") and agent.get("role") == "coding":
+                check_bitbucket(user, user_cfg, bitbucket_workspace, bitbucket_repo)
+            elif agent.get("role") == "monitor" and Path(user_cfg.get("bitbucketTokenFile") or "/nonexistent").exists():
+                check_bitbucket(user, user_cfg, bitbucket_workspace, bitbucket_repo)
 
     print(f"[SUMMARY] ok={ok_count} warn={warn_count} fail={fail_count}")
     return 1 if fail_count else 0
