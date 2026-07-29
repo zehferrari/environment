@@ -38,7 +38,7 @@ die(){ printf 'install-pm-verify: %s\n' "$*" >&2; exit 1; }
 say(){ printf '\n==> %s\n' "$*"; }
 
 [[ $EUID -eq 0 ]] || die "run as root (sudo)"
-id "$MON" >/dev/null 2>&1 || die "monitor user not found: $MON"
+id "$MON" >/dev/null 2>&1 || die "PM service/spool owner not found: $MON"
 id "$RUN" >/dev/null 2>&1 || die "verify run user not found: $RUN"
 id "$MERGE_RUN" >/dev/null 2>&1 || die "merge run user not found: $MERGE_RUN"
 getent group "$SHARED_GROUP" >/dev/null 2>&1 || die "shared group not found: $SHARED_GROUP"
@@ -88,4 +88,4 @@ if [[ "$spool_changed" == 1 ]]; then
   systemctl restart pm.service
 fi
 
-say "Done. verify=$(systemctl is-active pm-verify-runner.service)  merge=$(systemctl is-active pm-epic-merge-runner.service)  monitor=$MON  verify_user=$RUN  merge_user=$MERGE_RUN"
+say "Done. verify=$(systemctl is-active pm-verify-runner.service)  merge=$(systemctl is-active pm-epic-merge-runner.service)  spool_owner=$MON  verify_user=$RUN  merge_user=$MERGE_RUN"
