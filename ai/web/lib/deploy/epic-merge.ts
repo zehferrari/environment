@@ -42,6 +42,9 @@ export type EpicMergeJob =
       jobId: string;
       taskId: string;
       projectId: string;
+      // Only Epic-Done finalization may merge a child archived by the same
+      // human Done transition. The background poll never opts into this.
+      includeArchived?: boolean;
       enqueuedAt: string;
     }
   | {
@@ -301,6 +304,7 @@ export async function pollEpicTaskMerges(): Promise<{ checked: number; enqueued:
       epicId: { not: null },
       parentTaskId: null,
       deletedAt: null,
+      archivedAt: null,
       project: { repositoryPath: { not: null } },
       activity: { none: { kind: "pm.epic.merge.ok" } },
     },
@@ -365,7 +369,17 @@ export async function enqueueEpicDoneCleanup(epicId: string): Promise<{ enqueued
       // in the same transaction that precedes this hook.
       tasks: {
         where: { parentTaskId: null, deletedAt: null },
-        select: { workItemKey: true, branchName: true },
+        select: {
+          id: true,
+          status: true,
+          workItemKey: true,
+          branchName: true,
+          activity: {
+            where: { kind: "pm.epic.merge.ok" },
+            take: 1,
+            select: { id: true },
+          },
+        },
       },
     },
   });
@@ -381,6 +395,21 @@ export async function enqueueEpicDoneCleanup(epicId: string): Promise<{ enqueued
         .filter((branch): branch is string => Boolean(branch) && branch !== epicBranch),
     ),
   ];
+  // A human Epic-Done transition archives its children in the transaction
+  // immediately before this hook. Queue only those explicit children here;
+  // the global poll remains restricted to unarchived live work and therefore
+  // can never reconsider historical auto-archived Done tasks.
+  for (const task of epic.tasks) {
+    if (task.status !== "Done" || task.activity.length > 0) continue;
+    await enqueueEpicMergeJob({
+      kind: "merge",
+      jobId: `merge-${task.id}`,
+      taskId: task.id,
+      projectId: epic.projectId,
+      includeArchived: true,
+      enqueuedAt: new Date().toISOString(),
+    });
+  }
   const spooled = await enqueueEpicMergeJob({
     kind: "cleanup",
     jobId: `cleanup-${epic.id}`,
@@ -429,6 +458,7 @@ async function executeMergeJob(job: Extract<EpicMergeJob, { kind: "merge" }>) {
       epicId: { not: null },
       parentTaskId: null,
       deletedAt: null,
+      ...(job.includeArchived ? {} : { archivedAt: null }),
       project: { repositoryPath: { not: null } },
       activity: { none: { kind: "pm.epic.merge.ok" } },
     },

@@ -280,6 +280,14 @@ assert(
   "Epic-Done finalization must explicitly publish the Epic branch",
 );
 assert(
+  epicMerge.includes("includeArchived: true"),
+  "only the explicit Epic-Done hook may queue archived child merges",
+);
+assert(
+  epicMerge.includes("...(job.includeArchived ? {} : { archivedAt: null })"),
+  "ordinary merge jobs must reject archived historical tasks",
+);
+assert(
   !epicMerge.includes('if (branches.length === 0) return { enqueued: false'),
   "Epic-Done publication must still enqueue when there are no child refs to clean",
 );
