@@ -1,0 +1,58 @@
+    # Block bad bots and scanners
+    if ($external_bad_bot) { return 444; }
+    if ($bad_referer) { return 403; }
+    if ($external_block_scanner) { return 444; }
+    if ($block_sensitive) { return 444; }
+
+    location = /robots.txt {
+        allow all;
+        access_log off;
+    }
+
+    location ~* /(\.env|wp-config.php|configuration.php|README.md|readme.html|licence.txt) {
+        deny all;
+        access_log off;
+    }
+
+    # favicon handled by upstream app/proxy
+
+    location ~* /nginx/.*$ {
+        deny all;
+        access_log off;
+    }
+
+    location ^~ /config/.*$ {
+        return 404;
+    }
+
+    # Home Assistant exposes its log viewer at /api/error_log. Keep blocking
+    # direct /error_log probes while allowing the HA API path through.
+    location = /error_log {
+        deny all;
+        access_log off;
+    }
+
+    location ~* /debug.log$ {
+        deny all;
+        access_log off;
+    }
+
+    location = /xmlrpc.php {
+        deny all;
+        access_log off;
+    }
+
+    location ~* /uploads/.*.php$ {
+        deny all;
+        access_log off;
+    }
+
+    location ~* \.(blade\.php)$ {
+		deny all;
+    }
+
+    # Block .pl/.cgi/.sh/.lua files (disabled .py blocking to allow stockmarket API)
+    # .py files are only served from /stockmarket/api/proxy.py which is safe
+    location ~* \.(pl|cgi|sh|lua)$ {
+        return 444;
+    }

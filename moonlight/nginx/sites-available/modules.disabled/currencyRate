@@ -1,0 +1,5 @@
+    location ~* ^/converter/(.*)$ {
+	resolver 8.8.8.8;
+	proxy_pass https://www.google.com/finance/converter?a=1&from=AUD&to=$1;
+    }
+

@@ -1,0 +1,44 @@
+server {
+    server_name rachaelsmith.net.au;
+
+    include /etc/nginx/sites-available/modules/443/rachaelsmith.net.au;
+
+    root /home/zeh/www/rachael;
+    access_log /var/log/nginx/rachael.access zehlog;
+    error_log /var/log/nginx/rachael.error;
+
+    location ^~ /mackay-whitsunday/ {
+        return 301 https://eurekafiles.com$request_uri;
+    }
+
+    location ^~ /seagrass-chapter/ {
+        return 301 https://eurekafiles.com$request_uri;
+    }
+
+    # Redirect root domain and 404s to LinkedIn profile
+    rewrite ^/$ https://www.linkedin.com/in/rachael-smith-02aab5157/ permanent;
+    error_page 404 =301 https://www.linkedin.com/in/rachael-smith-02aab5157/;
+}
+
+server {
+    server_name eurekafiles.rachaelsmith.net.au;
+
+    include /etc/nginx/sites-available/modules/443/rachaelsmith.net.au;
+
+    root /home/zeh/www/rachael/eureka/web;
+
+    access_log /var/log/nginx/eureka.access zehlog;
+    error_log /var/log/nginx/eureka.error;
+
+    include /etc/nginx/sites-available/modules/sitemapRules/wordpress;
+}
+
+server {
+    server_name eurekafiles.rachaelsmith.net.au rachaelsmith.net.au;
+
+    listen [::]:80;
+    listen 80;
+
+    include /etc/nginx/sites-available/modules/restrictionsRules;
+    return 301 https://$host$request_uri;
+}

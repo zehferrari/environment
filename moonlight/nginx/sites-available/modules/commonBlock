@@ -1,0 +1,16 @@
+    listen 80;
+
+    charset utf-8;
+
+    index index.php index.html index.htm;
+
+    autoindex on;
+    rewrite_log on;
+    log_not_found off;
+
+    real_ip_header $http_x_forwarded_for;
+
+    location / {
+			autoindex off;
+			try_files $uri $uri/ /index.php?$args;
+    }

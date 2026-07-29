@@ -1,0 +1,83 @@
+server {
+    server_name drive.zeh.me;
+
+    listen [::]:80;
+    listen 80;
+
+    include /etc/nginx/sites-available/modules/443/zeh.me;
+    include /etc/nginx/sites-available/modules/restrictionsRules;
+
+    access_log /var/log/nginx/drive.access zehlog;
+    error_log /var/log/nginx/drive.error;
+
+    charset utf-8;
+
+    root /home/zeh/www/drive;
+    index index.php index.html index.htm;
+
+    autoindex on;
+    rewrite_log on;
+    log_not_found off;
+
+    real_ip_header $http_x_forwarded_for;
+    add_header Strict-Transport-Security "max-age=15552000; includeSubDomains" always;
+
+    location = /.well-known/carddav {
+	return 301 /nextcloud/remote.php/dav;
+    }
+
+    location = /.well-known/caldav {
+	return 301 /nextcloud/remote.php/dav;
+    }
+
+    location = /.well-known/webfinger {
+	return 301 /nextcloud/index.php/.well-known/webfinger;
+    }
+
+    location = /.well-known/nodeinfo {
+	return 301 /nextcloud/index.php/.well-known/nodeinfo;
+    }
+
+
+    location / {
+	rewrite ^ /index.php$request_uri;
+    }
+
+   location ~ ^/(?:build|tests|config|lib|3rdparty|templates|data)/ {
+      deny all;
+   }
+   location ~ ^/(?:\.|autotest|occ|issue|indie|db_|console) {
+      deny all;
+   }
+
+   location ~ ^/(?:index|remote|public|cron|core/ajax/update|status|ocs/v[12]|updater/.+|oc[ms]-provider/.+).php(?:$|/) {
+      fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+      include fastcgi_params;
+      fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+      fastcgi_param PATH_INFO $fastcgi_path_info;
+      fastcgi_pass php-fpm;
+      fastcgi_intercept_errors on;
+      fastcgi_request_buffering off;
+   }
+
+   location ~ ^/(?:updater|oc[ms]-provider)(?:$|/) {
+      try_files $uri/ =404;
+      index index.php;
+   }
+
+   location ~ .(?:css|js|woff2?|svg|gif)$ {
+      try_files $uri /index.php$request_uri;
+      add_header Cache-Control "public, max-age=15778463";
+      add_header X-Content-Type-Options nosniff;
+      add_header X-XSS-Protection "1; mode=block";
+      add_header X-Robots-Tag none;
+      add_header X-Download-Options noopen;
+      add_header X-Permitted-Cross-Domain-Policies none;
+      access_log off;
+   }
+
+   location ~ .(?:png|html|ttf|ico|jpg|jpeg|bcmap)$ {
+      try_files $uri /index.php$request_uri;
+      access_log off;
+   }
+}

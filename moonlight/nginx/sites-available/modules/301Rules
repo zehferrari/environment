@@ -1,0 +1,4 @@
+    if ( $request_filename ~ favicon.ico ) {
+        rewrite ^(.*)$ /favicon.ico last;
+    }
+

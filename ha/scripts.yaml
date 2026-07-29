@@ -226,10 +226,7 @@ off_if_not_occupied:
             - ab5f4e53a180832f47b09942c305a032
             - c35fe53aabce6bf6e196b871f9167d3f
           action: light.turn_off
-        - type: turn_off
-          device_id: 321eba43c5eccd04ebf19e5405182031
-          entity_id: b3da1a38a82c86944f5d559106d293c7
-          domain: switch
+        enabled: true
       - if:
         - type: is_not_occupied
           condition: device

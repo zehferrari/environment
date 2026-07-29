@@ -1,0 +1,36 @@
+server {
+#    server_name deploy.*;
+
+    listen 8080;
+    listen [::]:8080;
+    listen [::]:443 ssl;
+    listen 443 ssl; 
+
+    # Only allow connections from bitbucket network
+    allow 127.0.0.1;		## Localhost
+    allow 13.55.242.199;	## webserver public IP
+    allow 131.103.20.160/27;	## Bitbucket network
+    allow 165.254.145.0/26;	##      "      " 
+    allow 104.192.143.0/24;	##      "      "
+    allow 104.194.203.0/24;     ## Zeh's VPN
+    deny all;
+
+    root   /var/www/html/;
+
+    access_log /var/log/nginx/deploy-access zehlog;
+    error_log /var/log/nginx/deploy-error warn;
+
+    autoindex off;
+    rewrite_log on;
+    log_not_found off;
+    real_ip_header $http_x_forwarded_for;
+
+    # aptitude install fcgiwrap
+    include /etc/nginx/fcgiwrap.conf;
+
+    location / {
+	content_by_lua 'os.execute("/bin/bash /var/www/html/deploy.sh &")';
+    }
+
+}
+

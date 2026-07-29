@@ -1,0 +1,31 @@
+    location ~* ^/resize/(-|[0-9]+)/(-|[0-9]+)/(.*)$ {
+        expires max;
+#        resolver 8.8.8.8;
+	resolver 127.0.0.53;
+        proxy_pass http://$host/$3;
+        image_filter test;
+		image_filter_jpeg_quality 90;
+		image_filter_interlace on;
+        image_filter_buffer 12M;
+        image_filter resize $1 $2;
+    }
+
+    location ~* ^/crop/(-|[0-9]+)/(-|[0-9]+)/(.*)$ {
+		expires max;
+#		resolver 8.8.8.8;
+	resolver 127.0.0.53;
+        proxy_pass http://$host/$3;
+        image_filter test;
+		image_filter_jpeg_quality 90;
+		image_filter_interlace on;
+        image_filter_buffer 12M;
+        image_filter crop $1 $2;
+    }
+
+    location ~ \.(png)$ {
+      add_header Content-Type "image/png";
+   }
+
+    location ~ \.(jpg)$ {
+      add_header Content-Type "image/jpg";
+    }
