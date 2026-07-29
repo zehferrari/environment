@@ -63,18 +63,20 @@ Workflow:
 7. After zeh confirms the PR has landed, run
    `claim-branch --release <repo> <branch>` to tear down the worktree.
    The remote branch is cleaned up on Bitbucket separately by whoever
-   lands the PR. (Epic-child worktrees and their merged local branches
-   are cleaned up automatically when the Epic reaches Done.)
+   lands the PR. (For Mission Control, Epic-child worktrees and merged local
+   branches are removed during PM-owned review finalization before their task
+   reaches Done.)
 
 For **standalone** task branches, pushing is **not optional**: until the
 branch is pushed no one else can review it. Push at least once before
 reporting the branch ready, and again after every fix requested during
 review. **Epic-child task branches are local-only — never push them to
 origin** (origin pushes trigger unwanted Bitbucket deployment
-pipelines). Commit locally; the monitor verifies the local ref against
-the epic integration branch, PM auto-merges the task branch into the
-epic branch when the task reaches Done, and only the epic branch reaches
-origin.
+pipelines). For Mission Control, leave changes uncommitted; PM creates the
+submission commit, the Monitor Agent verifies the local ref against the Epic
+integration branch, and after reviewer acceptance PM merges the task branch
+into the Epic branch. Only the Epic branch reaches origin, and cleanup must
+succeed before the task becomes Done.
 
 ---
 

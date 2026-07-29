@@ -13,8 +13,9 @@ deployment-watcher poll (lib/deploy/epic-merge.ts):
   * kind "cleanup" — after an Epic reaches Done, publish the Epic branch,
     remove merged local child branches/worktrees, and remove leaked remote
     child refs only after their tips are verified in the pushed Epic branch.
-  * kind "claim"   — create and validate the linked task worktree when an
-    Action Plan is approved, then return the result to pm.service.
+  * kind "finalize" — after reviewer acceptance, publish a standalone branch
+    or merge a child into its Epic branch, verify origin, remove the task
+    worktree/local branch, and only then mark the task Done.
 
 For each job it finds the active PM web worktree by reading pm.service's
 WorkingDirectory and runs the TS executor (scripts/pm-epic-merge-job.ts)
@@ -27,8 +28,7 @@ PM_ACTIVE_ENV_FILE). Decoupled from pm.service so a worktree switch can't
 interrupt a merge in flight.
 
 Config via env (set in the systemd unit):
-  PM_EPIC_MERGE_DIR, PM_MONITOR_USER, PM_EPIC_MERGE_POLL_SECONDS,
-  PM_ACTIVE_ENV_FILE
+  PM_EPIC_MERGE_DIR, PM_EPIC_MERGE_POLL_SECONDS, PM_ACTIVE_ENV_FILE
 """
 import datetime
 import os

@@ -28,7 +28,7 @@ For broader context:
 │   ├── SERVICES.md        service catalog
 │   ├── MONITORING.md      monitoring topology overview
 │   ├── CODE_REPOS.md      shared /srv/Code/ project repos + mandatory branch workflow
-│   ├── INCIDENT_HANDLING.md  Karen's incident triage protocol
+│   ├── INCIDENT_HANDLING.md  Monitor Agent incident triage protocol
 │   ├── JIRA.md            Jira-specific workflow (comments, mentions, queue, assignment, working a ticket)
 │   ├── BITBUCKET.md       Bitbucket-specific workflow (branches, commits, Smart Commits, review, PR boundary)
 │   └── MISSION_CONTROL.md Mission Control / ai/web PM interface guide (routes, tabs, fields, agent runtime contract)
@@ -42,15 +42,16 @@ For broader context:
 The split between `AGENTS.md` and `guides/ROLES.md` is deliberate: every agent reads the
 **same** `AGENTS.md` (operating baseline). Coding agents then use `guides/ROLES.md` to
 map the live ticket/Epic context to a task role; `manager` and `developer` are
-not standing personas. `monitor` remains a standing operational role for Karen.
+not standing personas. `monitor` remains a standing operational role resolved
+from the active agent registry.
 One unique source per concern: identity baseline (`AGENTS.md`), task-role
 behaviour (`guides/ROLES.md`), task workflow (`WORKFLOW.md`).
 
 The versioned `bin/claim-branch` helper is installed by `install.sh` as
 `/usr/local/bin/claim-branch`; it is the only supported way for agents to
-create or attach shared repository worktrees. Mission Control invokes it
-through the repository runner when an Action Plan is approved and revalidates
-the registered worktree before a task enters In Progress.
+create or attach shared repository worktrees. Mission Control reserves the
+branch contract when an Action Plan is approved, then invokes the helper
+through the repository runner when the task enters In Progress.
 
 ## How agents see this repo
 

@@ -18,9 +18,9 @@ thinkpad uses systemd timers for active automation. Cron references in old migra
 - `mariadb.service`: local DB.
 - `php-fpm.service`: local PHP runtime.
 - `agent-dashboard.service`: real-time per-agent dashboard backend on `127.0.0.1:3013` (HTTP + SSE). Front-end at `https://dev.vixi.au/agents.html` behind nginx basic auth.
-- `pm.service`: one host-wide PM web app for `agents.vixi.au`, normally
-  running as the monitor agent user (`karen` on thinkpad). This is a system unit under
-  `/etc/systemd/system` with `User=karen`, not a per-agent user unit. It
+- `pm.service`: one host-wide PM web app for `agents.vixi.au`, running as the
+  configured Monitor Agent service account. This is a system unit under
+  `/etc/systemd/system`, not a per-agent user unit. It
   serves the Next.js standalone app, persists PM tasks/comments/chats,
   sends chat/comment turns into each agent's native OpenClaw `pm`
   channel, receives partial reply streams at
@@ -42,24 +42,23 @@ thinkpad uses systemd timers for active automation. Cron references in old migra
   package-manager files. Stale per-agent user units named `pm.service` or
   `pm-consumer.service` should be removed.
 - `pm-switch-runner.service`: monitor-driven worktree switch runner (system
-  unit, `User=karen` on thinkpad). Watches `/var/lib/pm/switch/request.json`, builds
+  unit using the configured Monitor Agent service account). Watches `/var/lib/pm/switch/request.json`, builds
   the requested worktree with `pm-switch`, and flips `pm.service` to serve it via
   the root helper `pm-apply-worktree` (one NOPASSWD sudoers rule). Deliberately
   decoupled from `pm.service` so the restart at the end of a switch can't kill
   it. Publishes `state.json` for the project-settings "Worktree live preview"
   panel to poll. Installed by `ai/web/deploy/install-pm-switch.sh`; full design in
   `ai/web/deploy/MULTI_AGENT_WORKTREES.md`.
-- `pm-verify-runner.service`: monitor-driven branch verification runner (system
-  unit, `User=karen` on thinkpad). Watches `/var/lib/pm/branch-verify/*.json` job
-  files dropped by the PM workflow endpoint when an assignee moves a
-  code-touching task to Review (with `repoTouched: true`). For each job runs
-  fetches the effective deployment PR target and `origin/<branchName>` on the
-  already-cloned local repo, requires that target to be an ancestor of the
-  task branch, then reads `origin/<branchName>` and looks for commits whose subject
-  starts with the task/epic `commitPrefix`. It writes a monitor-authored task
-  `Comment` plus a `pm.repo.verify.ok` or `pm.repo.verify.fail` `ActivityLog`
-  row. No sudo / no privileged step — DB writes go through `DATABASE_URL` from
-  `/etc/default/pm`. Decoupled from `pm.service` like the switch runner.
+- `pm-verify-runner.service`: PM repository submission/validation runner. It
+  watches `/var/lib/pm/branch-verify/*.json` jobs created by
+  `ready_for_review` while a code task remains In Progress. It creates the
+  PM-owned submission commit, publishes standalone branches (Epic children
+  remain local-only), validates base/prefix/identity, and resolves the active
+  Monitor Agent by registry role for comments and activity. Valid or advisory
+  results release the task to Review; concrete errors return it to To Do;
+  operational errors leave status unchanged and retry. The system service's OS
+  account supplies repository credentials but is not workflow authority.
+  No sudo / no privileged step — DB writes use the active PM `DATABASE_URL`.
   Installed by `ai/web/deploy/install-pm-verify.sh`.
 - OpenClaw Control UIs: per-agent gateway dashboards exposed through nginx behind basic auth. thinkpad exposes primary, secondary, and monitoring gateway dashboards through role-based nginx routes. OpenClaw uses trusted-proxy auth with `X-Forwarded-User` from nginx, so nginx basic auth is the browser login. Gateway ports bind to LAN but remain blocked from direct network access by firewalld. This is an admin surface; do not expose without auth.
   - OpenClaw 2026.7+ makes its standalone loopback browser-control server opt-in. Coding-agent gateway units install `25-browser-control.conf` with `OPENCLAW_EAGER_BROWSER_CONTROL_SERVER=1`, so the registry's monitored browser sidecar remains available at `gateway port + 2`. Monitoring agents do not advertise or eagerly start this optional listener; their CLI and agent browser tools remain available through the gateway's lazy in-process runtime.
@@ -141,7 +140,7 @@ Derived from enabled integrations (`agent-defaults.json` `byIntegration[k]`):
 
 Per-agent project resources (services that come from a side project the agent has installed) live in `~/<user>/.local/openclaw/monitor.json`. Each resource declares `services[]` and a single `enabled` flag — when `enabled: true`, `openclaw-monitor-sync` keeps the services running and the loaders add them to the monitoring sweep. When `enabled: false`, the services are stopped and dropped from the sweep. See `MONITORING.md` → *Per-agent project resources* for the schema.
 
-### Monitoring agent (`role: monitor`, runs as user `karen` on thinkpad)
+### Monitor Agent (`role: monitor`)
 
 - `openclaw-gateway.service`
 - `openclaw-jira-receiver.service` — Jira webhook receiver (`integrations.monitor: true` & `integrations.jira: true` on coding agents)

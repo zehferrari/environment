@@ -7,8 +7,8 @@
 //   kind "cleanup" — after an Epic reaches Done, publish the Epic branch,
 //                    remove merged local child branches/worktrees, and remove
 //                    leaked remote child refs only after ancestry verification.
-//   kind "claim"   — provision and validate a task's linked worktree when its
-//                    Action Plan is approved (and re-check it before start).
+//   kind "claim"   — provision and validate a task's linked worktree at the
+//                    In Progress boundary.
 //
 // Runs inside the active PM worktree via the unsandboxed
 // pm-epic-merge-runner.service (pm-verify-runner pattern) so git worktree/
@@ -36,7 +36,7 @@ async function main() {
   const job = JSON.parse(readFileSync(jobFile, "utf8")) as
     | EpicMergeJob
     | WorktreeClaimJob;
-  if (job.kind !== "merge" && job.kind !== "cleanup" && job.kind !== "claim") {
+  if (job.kind !== "merge" && job.kind !== "cleanup" && job.kind !== "finalize" && job.kind !== "claim") {
     throw new Error(`Unknown repository job kind: ${(job as { kind?: string }).kind}`);
   }
 

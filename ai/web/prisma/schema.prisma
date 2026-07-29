@@ -452,6 +452,7 @@ model Task {
   // Lightweight sub-task checklist (ENV-60). NOT the legacy self-referential
   // child-Task hierarchy above (parentTaskId) — that is now dormant. See SubTask.
   checklist              SubTask[]               @relation("TaskChecklist")
+  repositoryRun          TaskRepositoryRun?
 
   @@index([projectId])
   @@index([workItemKey])
@@ -468,6 +469,34 @@ model Task {
   @@index([archivedById])
   @@index([deletedAt])
   @@index([alertReporter])
+}
+
+// PM-owned repository lifecycle for one Task. Board status remains the
+// human-facing workflow; this row records the asynchronous Git phase so
+// provisioning, validation, review and finalization can be retried safely.
+model TaskRepositoryRun {
+  id                String   @id @default(cuid())
+  taskId            String   @unique @map("task_id")
+  task              Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  repositoryPath    String?  @map("repository_path")
+  branchName        String?  @map("branch_name")
+  worktreePath      String?  @map("worktree_path")
+  epicBranch        String?  @map("epic_branch")
+  baseSha           String?  @map("base_sha")
+  candidateSha      String?  @map("candidate_sha")
+  reviewedSha       String?  @map("reviewed_sha")
+  phase             String   @default("reserved")
+  validationOutcome String?  @map("validation_outcome")
+  repoTouched       Boolean? @map("repo_touched")
+  lastError         String?  @map("last_error")
+  attempt           Int      @default(0)
+  version           Int      @default(0)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@index([phase])
+  @@index([validationOutcome])
+  @@map("task_repository_runs")
 }
 
 // Lightweight sub-task checklist (ENV-60). A SubTask is NOT a Task: it has no

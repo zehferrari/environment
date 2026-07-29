@@ -47,7 +47,7 @@ revokes `other`, so it can't break a co-hosted app's runtime user.
 
 **Runtime secrets belong to the monitor agent, not the coders.** A service's
 live secrets and data (e.g. the PM webapp's `ai/web/.env.local` and its SQLite
-DB dir `ai/web/prisma/prisma/`) are owned by the monitor (karen) and locked
+DB dir `ai/web/prisma/prisma/`) are owned by the configured Monitor Agent service account and locked
 (`600` / `0700`) so the coding agents cannot read them — even though the
 surrounding source tree is group-collaborative. `code-tree-perms --secret
 <file> --secret-dir <dir> --monitor <user>` applies this.
@@ -79,12 +79,12 @@ The implementer flow is:
 
 1. Read the Jira or Mission Control ticket and note the designated/resolved
    branch (for example `feature/HOMELAB-12-foo` or `homelab-12`).
-2. For Mission Control tasks, Action Plan approval runs `claim-branch`
-   centrally and returns the validated `worktreePath`; `start` validates it
-   again before In Progress. Use that path. Never create or populate a
+2. For Mission Control tasks, Action Plan approval reserves the branch
+   contract only. Moving the task to `In Progress` runs `claim-branch`
+   centrally and returns the validated `worktreePath`. Use that path. Never create or populate a
    `*.worktrees/<branch>` directory with `mkdir`, `cp`, `rsync`, an archive, or
-   a partial checkout. If provisioning fails, approval/start is rejected and
-   the task stays non-active.
+   a partial checkout. If provisioning fails, `start` is rejected and the
+   task stays non-active.
 3. Manual/Jira-only claims use `claim-branch <repo> <branch>` — it fetches `origin/main` when present,
    otherwise `origin/master`, checks if the branch exists on origin, and
    creates a worktree on it. If it does not exist, it creates and pushes the
@@ -100,7 +100,7 @@ The implementer flow is:
    `cd "$(claim-branch <repo> <branch>)"`) and verify both:
    `git rev-parse --show-toplevel` and `git branch --show-current`.
 5. Make sure the git user name and email match the project settings. PM
-   configures both in Mission Control task worktrees at approval time.
+   configures both in Mission Control task worktrees at start time.
    - If the project settings define a custom git identity, you MUST configure them locally in the worktree:
      ```bash
      git config extensions.worktreeConfig true
@@ -112,34 +112,39 @@ The implementer flow is:
      echo '{"name": "Project.defaultGitUserName", "email": "Project.defaultGitUserEmail"}' > "$(git rev-parse --git-dir)/expected-identity"
      ```
    - If no project-specific identity is configured, it defaults to the host identity `Zeh Ferrari <e@zeh.me>`.
-6. Make your changes; `git add` + `git commit` as normal.
-7. **Standalone task branch: push to origin** — `git push` works as-is
+6. Make your changes. For Mission Control tasks, leave them uncommitted and
+   call `ready_for_review`; PM creates the commit using the configured identity
+   and prefix. Manual/Jira-only work still uses `git add` + `git commit`.
+7. **Mission Control tasks:** do not push. PM publishes a standalone task
+   branch after validation, or merges a local Epic child and publishes only
+   the Epic branch after reviewer acceptance.
+   **Manual/Jira-only standalone branch: push to origin** — `git push` works as-is
    on a freshly claimed branch (the worktree was created with upstream
    tracking). For a brand-new branch, the helper has already done
    the initial `git push -u origin <branch>` for you. Auth resolves
    as zeh via `bbZeh` — no flags or env needed.
-   **Epic-child task branch: do not push.** Commit locally only; PM's
-   auto-merge folds the branch into the epic integration branch when the
-   task reaches Done, and only the epic branch is pushed.
-8. Stop. Do **not** create a pull request. Report the branch, commit, tests,
+8. Stop. Do **not** create a pull request. Report the branch, tests,
    and residual risk in the source channel so zeh can create the PR.
 9. After zeh confirms the PR has landed, `claim-branch --release <repo>
    <branch>` to tear down the worktree. The remote branch is cleaned up on
    Bitbucket separately by whoever lands the PR.
 
-> For **standalone** task branches, pushing is **not optional**. Until the
+> For **manual/Jira-only standalone** task branches, pushing is not optional. Until the
 > branch is pushed, no one else can review it (a reviewer's `claim-branch
 > <repo> <branch>` only sees what's on origin). Push as often as you'd commit
 > on a normal machine — at minimum once per logical step before reporting the
 > branch ready, and again after every fix-up that responds to review feedback.
 >
-> **Epic-child task branches are the exception: they are local-only and must
-> never be pushed to origin** (origin pushes trigger unwanted Bitbucket
-> deployment pipelines). Commit locally — all `/srv/Code` worktrees share one
+> **Mission Control task branches are PM-owned at submission.** Assignees
+> leave changes in the worktree and call `ready_for_review`. PM commits and
+> publishes standalone branches. Epic-child task branches are local-only and
+> must never be pushed to origin (origin pushes trigger unwanted Bitbucket
+> deployment pipelines). PM commits locally — all `/srv/Code` worktrees share one
 > object store, so your local branch is visible repo-wide. The verifier checks
-> the local ref against the epic integration branch, PM's auto-merge folds the
-> branch into the epic branch when the task reaches Done, and the epic branch
-> is the only ref that reaches origin. Reviewers attach a never-pushed
+> the local ref against the Epic integration branch. After reviewer acceptance,
+> PM folds the validated branch into the Epic branch, pushes that branch,
+> removes the child worktree/local branch, and only then marks the task Done.
+> The Epic branch is the only ref that reaches origin. Reviewers attach a never-pushed
 > epic-child branch with `claim-branch <repo> <branch> --review`, which falls
 > back to the local ref when the branch isn't on origin.
 
@@ -147,9 +152,8 @@ The implementer flow is:
 
 A different agent reviews the changes. Pick one:
 
-**Sequential** (the default — implementer is done iterating):
-1. Implementer pushes, reports the branch ready, and runs
-   `claim-branch --release <repo> <branch>`.
+**Sequential** (manual/Jira-only flow):
+1. Implementer pushes, reports the branch ready, and releases the worktree.
 2. Reviewer runs `claim-branch <repo> <branch>` — same command. The
    helper fetches origin first and lands the reviewer on the latest
    pushed tip. For a local-only epic-child branch use
@@ -158,7 +162,7 @@ A different agent reviews the changes. Pick one:
 3. Reviewer reads code, runs tests, reports findings in Jira/email, then
    `claim-branch --release <repo> <branch>`.
 
-**Concurrent** (implementer is still iterating, reviewer wants to read in parallel):
+**Concurrent / Mission Control review:**
 
 Git allows only one worktree per branch ref, so the reviewer attaches
 a *detached HEAD* worktree at `origin/<branch>` instead — same code,
@@ -169,18 +173,10 @@ no shared branch ref:
    at the latest pushed commit (for a local-only epic-child branch that
    isn't on origin, the helper falls back to the local
    `refs/heads/<branch>` tip).
-2. They read / grep / run tests there. The implementer keeps
-   committing on the branch worktree without conflict.
-3. If the reviewer wants to propose fixups, they cut a sibling branch
-   (`claim-branch <repo> <branch>-review-fixes`). New branches still start
-   from freshly fetched `origin/main`, or `origin/master` when main is absent;
-   the helper already did the
-   initial `git push -u origin` for the new branch on creation, so the branch
-   exists on Bitbucket immediately.
-   Subsequent commits still need an explicit `git push` to land on
-   origin where the implementer and zeh can see them.
-   Detached HEAD itself doesn't accept commits without checking out
-   a branch first — that's the point.
+2. They read / grep / run tests there. Reviewers do not edit the
+   implementation branch; requested fixes return to the assignee through
+   `review_feedback`.
+3. Detached HEAD does not accept commits without checking out a branch first.
 4. When done, `claim-branch --release <repo> <branch> --review`.
 
 ## Pull Requests — Humans Only

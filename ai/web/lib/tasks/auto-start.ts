@@ -162,6 +162,7 @@ export async function startApprovedTodoTaskIfIdle(args: {
     task.assignee?.kind !== "agent" ||
     task.assignee.status !== "active" ||
     !task.assignee.agent ||
+    task.assignee.agent.role !== "coding" ||
     task.assignee.agent.deactivatedAt
   ) {
     return { started: false, reason: "not_agent_assignee", task: taskRef };

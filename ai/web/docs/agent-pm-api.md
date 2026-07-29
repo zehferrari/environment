@@ -291,9 +291,10 @@ agents; they define which agents an Acting Manager may choose from when
 assigning child Tasks. Task assignee remains a single user.
 
 An agent may have only one active Task per project. Active means `To Do`
-or `In Progress` — Review NEVER counts, here or in any other WIP rule.
-Sending work to Review frees you for the next assignment, and PM assigns
-it in the same request. When a reviewer returns your Review-stage task
+or `In Progress` — Review NEVER counts. A code submission remains In Progress
+while the role-resolved Monitor Agent commits and validates it; only a valid
+or advisory-warning result moves it to Review, frees the assignee, and lets PM
+assign the next task. When a reviewer returns your Review-stage task
 with `review_feedback`, it lands at the FRONT of the project's To Do
 queue, so addressing that feedback is your next `start` (WORKFLOW.md
 tier 1). The same agent may hold active Tasks in different
@@ -312,9 +313,8 @@ path back from Review (human board drags remain authoritative).
 
 The queue is self-driving. PM automatically assigns the next unblocked
 To Do task to every free pool worker when: a task reaches Done (any
-path), a task moves to Review (assignee `ready_for_review` or a human
-board drag — both prefer the freed worker for the epic's next unblocked
-To Do task), an Action Plan is approved
+path), a task passes validation and moves to Review (`ready_for_review`
+or a human Review request), an Action Plan is approved
 on an unassigned task, a human unassigns or returns a task to the queue,
 or the Epic's Action Plan is approved (which also promotes its Backlog
 tasks to To Do and starts the queue). Acting managers keep `assign_next`

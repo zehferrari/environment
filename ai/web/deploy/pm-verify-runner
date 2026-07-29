@@ -3,27 +3,28 @@
 
 Runs as the configured repo-fetch OS user as a systemd service. Polls
 PM_BRANCH_VERIFY_DIR (default /var/lib/pm/branch-verify) for *.json job files
-dropped by the PM workflow endpoint when an assignee moves a code-touching
-task to Review (with repoTouched=true). For each job, finds the active PM web
+dropped by the PM workflow endpoint when an assignee requests review for a
+code-touching task. The task remains In Progress until validation succeeds.
+For each job, finds the active PM web
 worktree by reading pm.service's WorkingDirectory and runs the TS verifier
 script (scripts/pm-verify-branch-pushed.ts) inside it via `pnpm exec tsx`.
 
 The TS script:
-  * `git fetch origin main <branchName>` on the local clone at the project's
-    repositoryPath, then verifies current `origin/main` is an ancestor of
-    `origin/<branchName>`,
-  * confirms HEAD + a recent commit starting with COMMIT_PREFIX,
-  * posts a PM_MONITOR_USER-authored task Comment plus a
-    pm.repo.verify.{ok,fail} ActivityLog row,
-  * deletes the job file on success.
+  * creates one PM-owned submission commit when the worktree has changes,
+  * verifies the configured base, commit prefix, identity, and publication
+    policy (standalone branches on origin; Epic children local-only),
+  * resolves the active Monitor Agent by role and posts its task Comment plus
+    pm.repo.verify.{ok,warning,fail,operational_error} activity,
+  * moves only valid/advisory results to Review; concrete failures return to
+    To Do, while operational failures leave status unchanged,
+  * deletes the claimed job file when handled.
 
 No sudo / no privileged step — verifier reads the project repository and writes
 only via the SQLite DB (DATABASE_URL from /etc/default/pm-active-worktree).
 Decoupled from pm.service so a Review-time switch can't interrupt verification.
 
 Config via env (set in the systemd unit):
-  PM_BRANCH_VERIFY_DIR, PM_MONITOR_USER, PM_VERIFY_POLL_SECONDS,
-  PM_ACTIVE_ENV_FILE
+  PM_BRANCH_VERIFY_DIR, PM_VERIFY_POLL_SECONDS, PM_ACTIVE_ENV_FILE
 """
 import datetime
 import os

@@ -14,11 +14,11 @@ per branch**, reviewers on detached-HEAD worktrees, enforced by the `/srv/Code`
 pre-commit hook. Two agents must never both *write* the same branch worktree —
 that produces entangled diffs and broken builds.
 
-For Mission Control code tasks, **Action Plan approval is the worktree
-provisioning boundary**. PM spools a repository-owner `kind:"claim"` job,
-persists approval only after the returned directory is a registered linked
-worktree on the exact effective branch, and returns `worktreePath`. Every route
-into In Progress revalidates it. A plain/copy directory under `*.worktrees/`
+For Mission Control code tasks, Action Plan approval reserves the branch
+contract only. **In Progress is the worktree provisioning boundary.** PM
+spools a repository-owner `kind:"claim"` job and starts the assignee only
+after the returned directory is a registered linked worktree on the exact
+effective branch. A plain/copy directory under `*.worktrees/`
 is a hard blocker and is never overwritten; agents must not use
 `mkdir`/`cp`/`rsync` as a substitute for `git worktree add`.
 
@@ -62,18 +62,18 @@ task branches never reach origin** (policy P6). The lifecycle:
    a local branch committed in any agent worktree is visible repo-wide — no
    push is needed for other actors (verifier, merge runner, reviewers) to see
    it.
-2. **Work**: the implementer commits locally on the child branch and never
-   pushes it. Standalone (non-Epic) branches keep the old push-before-review
-   rule.
-3. **Review gate**: the branch verifier runs in local mode for Epic children
+2. **Work**: the implementer edits only while the task is In Progress and
+   leaves the complete changes in the task worktree.
+3. **Review gate**: PM creates one submission commit. The role-resolved
+   Monitor Agent then runs the verifier in local mode for Epic children
    (`epicChild` on the spool job): it checks `refs/heads/<branch>` — dirty
    worktree, commit prefix, git identity — and requires the current Epic
    branch tip to be an ancestor of the child branch. It also queries origin
    directly and fails reviewer hand-off with a visible monitor comment if the
    task ref exists remotely (covering `--no-verify` and pre-policy branches).
    It never auto-pushes an Epic child.
-4. **Done → merge**: `pm.service` is sandboxed and cannot run git, so its
-   deployment-watcher poll only drops a JSON job into `/var/lib/pm/epic-merge/`
+4. **Review acceptance → merge**: `review_done` leaves the task in Review and
+   drops a finalization job into `/var/lib/pm/epic-merge/`
    (env `PM_EPIC_MERGE_DIR`). The unsandboxed
    `pm-epic-merge-runner.service` (clone of the pm-verify-runner pattern:
    repo-push user, `Group=code-agents`, reads
@@ -83,10 +83,11 @@ task branches never reach origin** (policy P6). The lifecycle:
    fallback), runs in a throwaway detached worktree, pushes **only the Epic
    integration branch** (eagerly after every merge), and fast-forwards the
    local Epic ref so the next sibling claim/verify sees current state. A task
-   branch found neither locally nor on origin **bounces the task back to
-   Review** (comment + `pm.epic.merge.fail`) — it is never recorded as a
-   silent merge success. Conflicts bounce the same way; the assignee resolves
-   locally and the merge retries when the task reaches Done again.
+   branch found neither locally nor on origin returns the task to the front of
+   To Do with a Monitor Agent comment; the reviewer is not woken again.
+   Conflicts behave the same way. The assignee resolves locally and the merge
+   retries only after the task is resubmitted and accepted again. The child
+   worktree/local branch is removed before Done.
 5. **Epic Done → publish + cleanup**: when an Epic reaches Done (auto-rollup
    or human status change), PM enqueues a `kind:"cleanup"` finalization job in
    the same spool even when no child refs need removal. The runner waits for

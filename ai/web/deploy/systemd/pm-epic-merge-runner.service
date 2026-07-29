@@ -6,8 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 # Runs as the repo-push user so `git fetch`/`git push` of the Epic integration
-# branch use that account's SSH credentials. PM_MONITOR_USER controls which PM
-# user authors merge/cleanup comments. Deliberately NOT sandboxed: it needs
+# branch use that account's SSH credentials. The application resolves workflow
+# authority from agent roles; this OS account only supplies repository access.
+# Deliberately NOT sandboxed: it needs
 # task worktree creation plus git ref writes across /srv/Code, which pm.service's
 # ProtectSystem=strict sandbox forbids (same split as pm-verify-runner).
 # Decoupled from pm.service: a worktree switch must not kill a merge in flight.
@@ -16,7 +17,6 @@ Group=code-agents
 Environment=HOME=/home/__PM_MERGE_RUN_USER__
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PM_EPIC_MERGE_DIR=/var/lib/pm/epic-merge
-Environment=PM_MONITOR_USER=__PM_MONITOR_USER__
 EnvironmentFile=/etc/default/pm-active-worktree
 ExecStart=/usr/local/sbin/pm-epic-merge-runner
 Restart=on-failure

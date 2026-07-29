@@ -3,12 +3,12 @@
 // When an assignee moves a code-touching task to Review (workflow action
 // ready_for_review with repoTouched=true), PM drops a JSON job here. The
 // monitor-side runner (ai/web/scripts/pm-verify-branch-pushed.ts) consumes the
-// file before any reviewer is woken. It resolves the branch worktree, rejects
-// dirty local changes, then verifies commit prefix + expected git identity and
-// rebuilds the active PM worktree when this branch is live, then posts a
-// verification task comment + pm.repo.verify.* ActivityLog row. Standalone
-// tasks are verified on origin/<branchName> (clean local commits are pushed
-// when needed); Epic children (epicChild) are verified on the LOCAL
+// file before any reviewer is woken. It resolves the branch worktree, creates
+// the PM-owned submission commit for pending changes, then verifies commit
+// prefix + expected git identity and rebuilds the active PM worktree when this
+// branch is live. It posts a verification task comment +
+// pm.repo.verify.* ActivityLog row. Standalone tasks are published and
+// verified on origin/<branchName>; Epic children (epicChild) are verified on the LOCAL
 // refs/heads/<branchName> against the Epic integration branch and are never
 // pushed (P6 local-only model).
 //
@@ -43,6 +43,20 @@ export interface BranchVerifyJob {
   commitPrefix: string | null;
   expectedGitUserName: string | null;
   expectedGitUserEmail: string | null;
+  // Immutable semantic/commit packet captured at submission time. The
+  // repository runner creates the PM-owned commit when the worktree is dirty
+  // and compares the resulting description with the task request.
+  taskTitle?: string;
+  taskDescription?: string | null;
+  assigneeNote?: string | null;
+  baseSha?: string | null;
+  previousCandidateSha?: string | null;
+  // Role-resolved monitor identity. New jobs never depend on a deployment-
+  // specific username; optional fields keep queued jobs from older builds
+  // readable during rolling deploys.
+  monitorUserId?: string;
+  monitorAgentSlug?: string;
+  attempt?: number;
   requestedByAgentSlug: string;
   requestedByUserId: string;
   requestedAt: string;

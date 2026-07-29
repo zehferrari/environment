@@ -419,19 +419,24 @@ Allowed actions are `start`, `ready_for_review`, `review_feedback`,
   Progress including auto-start) or when the task's effective branch
   clashes with another agent's active work; the rejection names exactly
   what to finish first.
-- `ready_for_review` — In Progress → Review. Rejected with 409 while any
-  implementation sub-task is still open (see the sub-task gate below).
+- `ready_for_review` — starts PM-owned commit/validation while the task
+  remains In Progress. Rejected with 409 while any implementation sub-task
+  is still open. A valid or advisory-warning result moves the task to Review;
+  a concrete repository error returns it to the front of To Do without
+  notifying the reviewer; an infrastructure error leaves status unchanged.
 - `review_feedback` — reviewer-only. Returns the task, feedback
   attached, to the FRONT of the project's To Do queue. The task does not
   stay in Review and is never resumed from Review; the assignee
   addresses the feedback with a fresh `start` from To Do.
-- `review_done` — reviewer-only promotion to Done.
+- `review_done` — reviewer-only acceptance. Repository-backed tasks remain
+  in Review with repository phase `finalizing` until publication/merge,
+  remote verification, and local cleanup succeed; only then are they Done.
 - `triage_to_todo` — reviewer-only Backlog → To Do promotion. It queues
   the task but assigns nobody, and the Action Plan approval gate still
   applies before execution; tasks under an Epic can be triaged only
   while the Epic is To Do / In Progress.
-- `approve_plan` — the resolved reviewer stamps `approved_on` on the
-  Action Plan.
+- `approve_plan` — the resolved reviewer stamps `approved_on` and reserves
+  the repository contract. It does not create a worktree; In Progress does.
 - `assign_after_plan_approval` — the resolved reviewer asks PM to pick
   an eligible coding agent, or names one via the optional
   `{assignee: "<username>"}` body field. Callable on an UNASSIGNED task
@@ -519,13 +524,14 @@ shows **Blocked by** when the task has an open hard-dependency; the workflow
 `start` action refuses such a task until its blocker reaches Done. Epic
 implementation tasks can be created only by the Epic acting manager, only
 after the Epic Action Plan is approved, and only when the Epic has no
-existing child tasks. `Review` is only for completed
-implementation review or a real blocker/question that needs reviewer,
-manager, or reporter input. Either way the task leaves Review through
-the reviewer: `review_done` to Done, or `review_feedback` (carrying the
-answer/feedback) back to the front of To Do, where the assignee `start`s
-again, completes the follow-up, and calls `ready_for_review` afresh.
-There is no in-place Review resume.
+existing child tasks. `Review` is only for completed implementation review;
+questions and blockers remain comment interactions and do not turn Review
+into a waiting room. The task leaves Review through the reviewer:
+`review_done` accepts it for PM-owned finalization, while `review_feedback`
+returns it to the front of To Do, where the assignee `start`s again,
+completes the follow-up, and calls `ready_for_review` afresh. There is no
+in-place Review resume. Repository-backed tasks become Done only after
+finalization succeeds.
 
 ### Requesting a workflow turn
 
@@ -572,68 +578,59 @@ Epic's acting manager. Allowed actions:
 - `advance_queue` — promote the Epic's Backlog tasks to To Do, then
   assign like `assign_next` (same per-worker availability rules).
 
-### Commit hygiene + Review verification
+### PM-owned commit + Review verification
 
 For code-touching tasks (the Task resolves a branch on a project with a
 `repositoryPath`), workflow turns inject a **Commit hygiene** block with the
 resolved branch and COMMIT_PREFIX. Branch precedence is Task override → Epic
 explicit branch → lowercased Epic `workItemKey` → lowercased Task `workItemKey`;
-prefix precedence is Task override → Epic override → Task `workItemKey`. Database IDs are never fallbacks, and PM
-does not implicitly compound the Epic and Task keys. The assignee must:
+prefix precedence is Task override → Epic override → Task `workItemKey`.
+Database IDs are never fallbacks, and PM does not implicitly compound the
+Epic and Task keys. The assignee must:
 
-- prefix every commit on the branch with the resolved COMMIT_PREFIX
-  (e.g. `HOMELAB-41: short imperative summary`),
-- commit ALL local changes BEFORE calling `action: ready_for_review`;
-  where the branch goes next depends on the task shape:
-  - **standalone task** (no Epic): push to `origin/<branchName>` before
-    `ready_for_review`, as always;
-  - **epic-child task** (task under an Epic): commit LOCALLY and NEVER
-    push the task branch — origin pushes of child branches trigger
-    unwanted deployments. PM's merge runner consumes the local ref and
-    merges it into the epic integration branch when the task reaches
-    Done; only the epic branch is pushed to origin,
+- leave the complete working-tree changes in the PM-provisioned task worktree;
+- not commit or push Mission Control task work directly—the repository runner
+  creates one commit per submission using the effective prefix and identity;
+- never publish an Epic-child task branch; only the Epic branch reaches origin;
 - include `repoTouched: true` in the workflow POST when calling
   `ready_for_review` (default when branchName + repositoryPath are
   set), or `repoTouched: false` for docs-only / decision-only tasks.
 
 When `repoTouched` resolves true, PM first checks the project's protected
-agent branch list. If `<branchName>` is configured there, `ready_for_review`
-is rejected before the task moves to Review; the assignee must move the work
-to an allowed branch and retry.
+agent branch list. A protected branch is a concrete validation failure: the
+Monitor Agent comments, PM returns the task to To Do, and no reviewer wakes.
 
-For allowed branches, PM drops a JSON job into
+For allowed branches, PM leaves the task In Progress with repository phase
+`validating` and drops a JSON job into
 `/var/lib/pm/branch-verify/<jobId>.json`. The branch-verify runner
 (`pm-verify-runner.service`) runs as `PM_VERIFY_RUN_USER`, fetches the current
 effective deployment PR target branch and `origin/<branchName>` on the
 already-cloned repo, and requires that base to be an ancestor of the task
 branch before it checks the COMMIT_PREFIX on `origin/<branchName>`. Legacy
 jobs without a recorded base resolve the remote default, then try
-`main`/`master`. The verify job also carries `epicChild` + `epicBranch`:
+`main`/`master`. Before checking, the runner creates one PM-owned commit when
+the worktree has changes. The verify job also carries `epicChild` + `epicBranch`:
 for epic-child tasks the runner verifies the LOCAL `refs/heads/<branchName>`
 instead — nothing is expected on origin and nothing is auto-pushed — and
 requires the EPIC branch (local `refs/heads/<epicBranch>`, falling back
 to `origin/<epicBranch>`) as the base rather than the deployment target.
-Standalone tasks keep the origin-based flow above. It posts a `pm.repo.verify.ok`
-task comment (with HEAD sha, the verified base, the latest prefix-matching
-commit, and push timestamp) or `pm.repo.verify.fail` (no push found / no
-prefix match / protected branch / stale or unrelated configured base /
-verifier credential failure) as `PM_MONITOR_USER`. The Review transition for
-allowed branches itself is NOT blocked — the verifier publishes its result
-asynchronously and the reviewer reads it before approving.
+Standalone tasks keep the origin-based flow. The active agent with role
+`monitor` authors the result; no username is hardcoded:
 
-The reviewer's `review_requested` workflow turn adds a **Review
-verification** block instructing them to read the latest
-`pm.repo.verify.*` comment first: on `ok` proceed; on fail because no
-branch/no commit/no prefix match, send `review_feedback` asking the
-assignee to commit with the prefix before review — push for a standalone
-task, a LOCAL commit for an epic-child task (never ask an assignee to
-push an epic-child branch). On a stale or unrelated
-configured base, send `review_feedback` asking the assignee to update or
-recreate the task branch from the base named in the verifier result. On fail because the
-monitor verifier cannot fetch the remote (`Unauthorized`, permission denied,
-cannot read from remote), treat it as monitor credential configuration, not
-an assignee push problem. If neither has appeared, wait briefly for the
-monitor verifier.
+- `valid`: comment, move to Review, then wake the related reviewer.
+- `valid_with_warning`: a semantic commit-description mismatch is advisory;
+  comment, move to Review, and let the reviewer decide.
+- `invalid`: comment with evidence, move to the front of To Do, wake the
+  assignee, and do not wake the reviewer.
+- `operational_error`: retry twice, leave board status unchanged, flag the
+  operator, and do not wake the reviewer.
+
+The reviewer receives a workflow turn only after `valid` or
+`valid_with_warning`. `review_done` then queues repository finalization while
+the task remains in Review. A standalone branch is verified on origin and its
+local worktree/branch is removed; an Epic child is merged locally into the
+Epic branch, only the Epic branch is pushed, and the child worktree/branch is
+removed. PM marks Done only after these operations succeed.
 
 ## Future Agent Actions
 

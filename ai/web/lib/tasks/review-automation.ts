@@ -2,7 +2,11 @@ import { db } from "@/lib/db";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
 import { resolveDoneOwnerId, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { assignOpenEpicTasks, type EpicTaskAssignment } from "@/lib/epics/assignment";
-import { enqueueEpicDoneCleanup } from "@/lib/deploy/epic-merge";
+import {
+  enqueueEpicDoneCleanup,
+  enqueueTaskReviewFinalization,
+} from "@/lib/deploy/epic-merge";
+import { updateTaskRepositoryState } from "@/lib/tasks/repository-state";
 
 type Actor = {
   id: string;
@@ -31,6 +35,7 @@ export async function completeReviewedTaskAndAssignNext(args: {
   via: string;
   requireReviewerUserId?: string | null;
   commentId?: string | null;
+  repositoryFinalized?: boolean;
 }) {
   const task = await db.task.findUnique({
     where: { id: args.taskId },
@@ -44,8 +49,15 @@ export async function completeReviewedTaskAndAssignNext(args: {
       actingManagerId: true,
       reporterId: true,
       deletedAt: true,
-      project: { select: { slug: true, onlyReportersCanSetTasksDone: true } },
+      project: {
+        select: {
+          slug: true,
+          repositoryPath: true,
+          onlyReportersCanSetTasksDone: true,
+        },
+      },
       epic: { select: { status: true, actingManagerId: true } },
+      repositoryRun: { select: { phase: true, repoTouched: true } },
     },
   });
   if (!task || task.deletedAt) return { completed: false as const, reason: "not_found" as const };
@@ -55,6 +67,79 @@ export async function completeReviewedTaskAndAssignNext(args: {
   const doneOwnerId = resolveDoneOwnerId(task);
   if (args.requireReviewerUserId && doneOwnerId !== args.requireReviewerUserId) {
     return { completed: false as const, reason: "not_reviewer" as const };
+  }
+
+  // Repository-backed tasks are accepted by the reviewer now but remain in
+  // Review until the external repository runner publishes/merges, verifies,
+  // and removes the local worktree. The runner calls this function again with
+  // repositoryFinalized=true to perform the actual Done transition.
+  if (task.project.repositoryPath && task.repositoryRun && !args.repositoryFinalized) {
+    if (task.repositoryRun?.phase !== "review_ready" && task.repositoryRun?.phase !== "finalizing") {
+      return { completed: false as const, reason: "repository_not_ready" as const };
+    }
+    if (task.repositoryRun.phase !== "finalizing") {
+      const finalization = await enqueueTaskReviewFinalization({
+        taskId: task.id,
+        projectId: task.projectId,
+        requestedByUserId: args.actor.id,
+        requestedByUsername: args.actor.username,
+      });
+      if (finalization.blockedByFailedJob) {
+        await db.$transaction([
+          db.task.update({
+            where: { id: task.id },
+            data: { alertReporter: true },
+          }),
+          db.activityLog.create({
+            data: {
+              projectId: task.projectId,
+              taskId: task.id,
+              userId: args.actor.id,
+              kind: "pm.repo.verify.operational_error",
+              payload: JSON.stringify({
+                via: args.via,
+                error: "A failed repository finalization spool job requires operator recovery.",
+              }),
+            },
+          }),
+        ]);
+        await updateTaskRepositoryState(task.id, {
+          phase: "operational_error",
+          validationOutcome: "operational_error",
+          lastError: "A failed repository finalization spool job requires operator recovery.",
+        });
+        return {
+          completed: false as const,
+          reason: "repository_finalization_job_failed" as const,
+        };
+      }
+      await updateTaskRepositoryState(task.id, {
+        phase: "finalizing",
+        lastError: null,
+      });
+      await db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId: task.id,
+          userId: args.actor.id,
+          kind: "task.review.accepted",
+          payload: JSON.stringify({
+            via: args.via,
+            commentId: args.commentId ?? null,
+            repositoryFinalization: true,
+          }),
+        },
+      });
+    }
+    return {
+      completed: true as const,
+      finalizing: true as const,
+      status: "Review" as const,
+      taskId: task.id,
+      projectSlug: task.project.slug,
+      nextTask: null,
+      nextTasks: [],
+    };
   }
 
   const completion = await db.$transaction(async (tx) => {
@@ -215,6 +300,8 @@ export async function completeReviewedTaskAndAssignNext(args: {
 
   return {
     completed: true as const,
+    finalizing: false as const,
+    status: "Done" as const,
     taskId: task.id,
     projectSlug: task.project.slug,
     nextTask,

@@ -32,9 +32,11 @@ import {
 import path from "node:path";
 import { promisify } from "node:util";
 import { db } from "@/lib/db";
-import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
-import { BRANCH_VERIFY_DIR, type BranchVerifyJob } from "@/lib/deploy/branch-verify";
-import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import {
+  BRANCH_VERIFY_DIR,
+  enqueueBranchVerifyJob,
+  type BranchVerifyJob,
+} from "@/lib/deploy/branch-verify";
 import { isProtectedBranch, parseProtectedBranches } from "@/lib/projects/protected-branches";
 import {
   fetchVerificationBranch,
@@ -45,6 +47,16 @@ import {
 } from "@/lib/deploy/branch-base";
 import { subjectHasCommitPrefix } from "@/lib/work-items/commit-prefix";
 import { inspectOriginBranch } from "@/lib/deploy/epic-merge-git";
+import {
+  completeTaskReviewHandoffAfterValidation,
+  failTaskReviewValidation,
+  recordTaskReviewOperationalError,
+} from "@/lib/tasks/review-handoff";
+import { resolveActiveMonitorAgent, updateTaskRepositoryState } from "@/lib/tasks/repository-state";
+import {
+  isOperationalRepositoryFailure,
+  semanticCommitDescriptionWarning,
+} from "@/lib/tasks/repository-validation";
 
 const exec = promisify(execFile);
 const SWITCH_SCRIPT = process.env.PM_SWITCH_SCRIPT ?? "/usr/local/sbin/pm-switch";
@@ -83,6 +95,11 @@ type RebuildResult =
   | { attempted: false; reason: string }
   | { attempted: true; ok: true; target: string; log: string }
   | { attempted: true; ok: false; target: string; error: string; log: string };
+
+type CommitResult =
+  | { ok: true; created: false; sha: null }
+  | { ok: true; created: true; sha: string; subject: string }
+  | { ok: false; error: string };
 
 function parseLog(out: string): GitCommit[] {
   return out
@@ -270,6 +287,66 @@ async function localState(job: BranchVerifyJob, epicMode: boolean): Promise<Loca
   };
 }
 
+function commitSubject(job: BranchVerifyJob) {
+  const prefix = job.commitPrefix?.trim();
+  const summary = job.taskTitle?.trim() || `Update ${job.branchName}`;
+  return `${prefix ? `${prefix} ` : ""}${summary}`.slice(0, 240);
+}
+
+async function commitPendingWorktreeChanges(job: BranchVerifyJob): Promise<CommitResult> {
+  const worktreePath = await branchWorktree(job.repositoryPath, job.branchName);
+  if (!worktreePath) {
+    return { ok: false, error: `No registered worktree was found for ${job.branchName}.` };
+  }
+  let status: string;
+  try {
+    status = await git(worktreePath, ["status", "--porcelain"], {
+      timeout: 30_000,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+  } catch (err) {
+    return { ok: false, error: `Could not inspect the task worktree: ${trimError(err, 500)}` };
+  }
+  if (!status) return { ok: true, created: false, sha: null };
+  if (!job.expectedGitUserName || !job.expectedGitUserEmail) {
+    return {
+      ok: false,
+      error: "The effective project Git identity is incomplete; PM cannot create the submission commit.",
+    };
+  }
+
+  const subject = commitSubject(job);
+  try {
+    await git(worktreePath, ["add", "--all"], { timeout: 30_000, maxBuffer: 2 * 1024 * 1024 });
+    await git(
+      worktreePath,
+      [
+        "-c",
+        `user.name=${job.expectedGitUserName}`,
+        "-c",
+        `user.email=${job.expectedGitUserEmail}`,
+        "commit",
+        "-m",
+        subject,
+      ],
+      { timeout: 90_000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    const sha = await git(worktreePath, ["rev-parse", "HEAD"], { timeout: 10_000 });
+    return { ok: true, created: true, sha, subject };
+  } catch (err) {
+    return { ok: false, error: `PM could not create the submission commit: ${trimError(err, 700)}` };
+  }
+}
+
+function semanticDescriptionWarning(job: BranchVerifyJob, head: GitCommit | null) {
+  return semanticCommitDescriptionWarning({
+    taskTitle: job.taskTitle,
+    taskDescription: job.taskDescription,
+    commitPrefix: job.commitPrefix,
+    commitSubject: head?.subject,
+  });
+}
+
 async function gitCommonDir(repo: string) {
   const out = await gitOrNull(repo, ["rev-parse", "--git-common-dir"], { timeout: 10_000 });
   if (!out) return null;
@@ -360,7 +437,7 @@ function renderOkBody(args: {
   if (args.epicMode) {
     lines.push(
       `- Base verified: Epic branch \`${args.baseValidation.baseBranch}\` \`${args.baseValidation.originBaseSha?.slice(0, 10)}\` is an ancestor of \`refs/heads/${args.branchName}\`.`,
-      `- Epic-child branch: local-only by design — never pushed. It is auto-merged into \`${args.baseValidation.baseBranch}\` when the task reaches Done.`,
+      `- Epic-child branch: local-only by design — never pushed. After reviewer acceptance PM merges it into \`${args.baseValidation.baseBranch}\`, removes the child worktree/local branch, and only then marks the task Done.`,
     );
   } else {
     lines.push(
@@ -389,9 +466,7 @@ function renderProtectedBranchBody(args: { branchName: string; epicMode: boolean
     `- Branch \`${args.branchName}\` is configured as a protected agent branch for this project.`,
     args.protectedBranches.length > 0 ? `- Protected branches: ${args.protectedBranches.map((branch) => `\`${branch}\``).join(", ")}.` : null,
     "",
-    args.epicMode
-      ? "Assignee: move code-changing work to an allowed task branch, commit it locally (Epic-child branches are never pushed), then call `ready_for_review` again."
-      : "Assignee: move code-changing work to an allowed task branch, push it, then call `ready_for_review` again.",
+    "Assignee: start the task on an allowed task branch, leave the corrected changes uncommitted and unpushed, then call `ready_for_review` again. PM owns commit and publication.",
   ].filter(Boolean).join("\n");
 }
 
@@ -476,90 +551,71 @@ function renderFailBody(args: {
   lines.push("");
   if (monitorAccessError) {
     lines.push(
-      "This includes a monitor repository-access problem. Fix the monitor/verifier Git credentials, or have the assignee push with the required commit prefix, then re-trigger `ready_for_review`.",
+      "This includes a Monitor Agent repository-access problem. Fix the runner Git credentials, then re-trigger `ready_for_review`; do not ask the assignee to commit or push around the failure.",
     );
   } else if (args.rebuild?.attempted && !args.rebuild.ok) {
     lines.push("Fix the live PM rebuild/restart failure, then re-trigger `ready_for_review` so the reviewer is woken only after the live build is healthy.");
-  } else if (args.epicMode) {
-    lines.push(
-      `Assignee: commit any local changes with \`${args.commitPrefix ?? "<COMMIT_PREFIX not set>"}\` at the start of every commit message on the LOCAL branch \`${args.branchName}\` — do NOT push Epic-child branches — then call \`ready_for_review\` again.`,
-    );
   } else {
     lines.push(
-      `Assignee: commit any local changes with \`${args.commitPrefix ?? "<COMMIT_PREFIX not set>"}\` at the start of every commit message, push \`origin/${args.branchName}\`, then call \`ready_for_review\` again.`,
+      `Assignee: start the task again, correct the reported problem in the PM-provisioned worktree on \`${args.branchName}\`, leave the changes uncommitted and unpushed, then call \`ready_for_review\` again. PM owns the submission commit and publication.`,
     );
   }
   return lines.join("\n");
 }
 
-async function monitorActor() {
-  const monitorUsername = process.env.PM_MONITOR_USER ?? process.env.USER ?? "monitor";
-  const monitor = await db.user.findFirst({
-    where: { username: monitorUsername, status: "active" },
-    select: { id: true, username: true, kind: true },
-  });
-  if (!monitor) throw new Error(`monitor user ${monitorUsername} not found - cannot post verifier comment`);
+async function monitorActor(job: BranchVerifyJob) {
+  if (job.monitorUserId) {
+    const selected = await db.user.findFirst({
+      where: {
+        id: job.monitorUserId,
+        status: "active",
+        kind: "agent",
+        agent: { is: { role: "monitor", deactivatedAt: null } },
+      },
+      select: { id: true, username: true },
+    });
+    if (selected) return { ...selected, kind: "agent" as const };
+  }
+  const monitor = await resolveActiveMonitorAgent();
+  if (!monitor.ok) throw new Error(monitor.error);
   return {
-    id: monitor.id,
-    username: monitor.username,
-    kind: monitor.kind === "agent" ? "agent" as const : "human" as const,
+    id: monitor.user.id,
+    username: monitor.user.username,
+    kind: "agent" as const,
   };
 }
 
-async function notifyAfterGate(args: {
-  job: BranchVerifyJob;
-  actor: Awaited<ReturnType<typeof monitorActor>>;
-  epicMode: boolean;
-  verifiedOk: boolean;
-  reviewReady: boolean;
-  summary: string;
-  monitorAccessProblem: boolean;
-}) {
-  const task = await db.task.findUnique({
-    where: { id: args.job.taskId },
-    select: {
-      id: true,
-      title: true,
-      assigneeId: true,
-      actingManagerId: true,
-      reporterId: true,
-      epic: { select: { status: true, actingManagerId: true } },
-    },
-  });
-  if (!task) return;
-
-  if (args.reviewReady) {
-    const reviewerId = resolveReviewOwnerId(task);
-    if (!reviewerId) return;
-    await sendTaskWorkflowNotification({
-      taskId: args.job.taskId,
-      targetUserId: reviewerId,
-      actor: args.actor,
-      reason: "review_requested",
-      body: [
-        `Monitor validation passed for "${task.title}".`,
-        args.summary,
-        "BEFORE reviewing: add the topics you will address as review sub-tasks (action=add_subtask with subtaskKind:\"review\", one per topic), then mark each complete (action=complete_subtask) as you address it — the board shows your review progress from these.",
-        "You may now review the completed work. If satisfied, use action=review_done. If changes or blockers remain, use action=review_feedback with one concise comment.",
-      ].join("\n"),
+async function recordOperationalFailure(
+  job: BranchVerifyJob,
+  actor: Awaited<ReturnType<typeof monitorActor>> | null,
+  error: string,
+) {
+  await recordTaskReviewOperationalError({ taskId: job.taskId, actor, error });
+  const attempt = job.attempt ?? 0;
+  if (attempt < 2) {
+    await enqueueBranchVerifyJob({
+      ...job,
+      attempt: attempt + 1,
+      requestedAt: new Date().toISOString(),
     });
-    return;
+    return { retrying: true, attempt: attempt + 1 };
   }
-
-  if (!task.assigneeId || args.monitorAccessProblem) return;
-  await sendTaskWorkflowNotification({
-    taskId: args.job.taskId,
-    targetUserId: task.assigneeId,
-    actor: args.actor,
-    reason: "review_feedback",
-    body: [
-      `Monitor validation did not pass for "${task.title}".`,
-      args.summary,
-      args.epicMode
-        ? "Fix the branch/commits and commit your work locally on the task branch — never push Epic-child branches — then call action=ready_for_review again. Do not leave repository changes uncommitted."
-        : "Fix the branch/commits, push the branch, then call action=ready_for_review again. Do not leave repository changes uncommitted.",
-    ].join("\n"),
-  });
+  if (actor) {
+    await db.comment.create({
+      data: {
+        taskId: job.taskId,
+        userId: actor.id,
+        body: [
+          "⚙️ Repository validation could not complete because of an operational failure.",
+          "",
+          error,
+          "",
+          "The task status was left unchanged and the reviewer was not notified. Operator intervention is required.",
+        ].join("\n"),
+      },
+    });
+  }
+  return { retrying: false, attempt };
 }
 
 async function main() {
@@ -571,6 +627,16 @@ async function main() {
   }
 
   const job = JSON.parse(readFileSync(jobFile, "utf8")) as BranchVerifyJob;
+  let actor: Awaited<ReturnType<typeof monitorActor>> | null = null;
+  try {
+    actor = await monitorActor(job);
+  } catch (err) {
+    const error = trimError(err, 600);
+    const retry = await recordOperationalFailure(job, null, error);
+    console.log(JSON.stringify({ ok: false, operationalError: error, ...retry }, null, 2));
+    unlinkSync(jobFile);
+    return;
+  }
   // P6 local-only mode: an Epic child is verified on its LOCAL ref against the
   // Epic integration branch and never pushed, even when the job predates the
   // epicBranch field (epicChild alone forces the no-push rule).
@@ -583,7 +649,6 @@ async function main() {
   if (project && isProtectedBranch(project.agentChangeBlockedBranches, job.branchName)) {
     const protectedBranches = parseProtectedBranches(project.agentChangeBlockedBranches);
     const body = renderProtectedBranchBody({ branchName: job.branchName, epicMode, protectedBranches });
-    const actor = await monitorActor();
     await db.$transaction([
       db.comment.create({
         data: { taskId: job.taskId, userId: actor.id, body },
@@ -604,16 +669,56 @@ async function main() {
         },
       }),
     ]);
-    await notifyAfterGate({
-      job,
+    await failTaskReviewValidation({
+      taskId: job.taskId,
       actor,
-      epicMode,
-      verifiedOk: false,
-      reviewReady: false,
-      summary: body,
-      monitorAccessProblem: false,
+      error: body,
     });
     console.log(JSON.stringify({ ok: false, taskId: job.taskId, branch: job.branchName, protectedBranch: true }, null, 2));
+    unlinkSync(jobFile);
+    return;
+  }
+
+  const commitResult = await commitPendingWorktreeChanges(job);
+  if (!commitResult.ok) {
+    const operational = isOperationalRepositoryFailure(commitResult.error);
+    const body = [
+      operational
+        ? "PM could not create or inspect the submission commit because of an operational failure."
+        : "The submission commit could not be validated.",
+      "",
+      commitResult.error,
+    ].join("\n");
+    if (operational) {
+      const retry = await recordOperationalFailure(job, actor, body);
+      console.log(JSON.stringify({ ok: false, operationalError: body, ...retry }, null, 2));
+    } else {
+      await db.$transaction([
+        db.comment.create({
+          data: { taskId: job.taskId, userId: actor.id, body },
+        }),
+        db.activityLog.create({
+          data: {
+            projectId: job.projectId,
+            taskId: job.taskId,
+            userId: actor.id,
+            kind: "pm.repo.verify.fail",
+            payload: JSON.stringify({
+              jobId: job.jobId,
+              branchName: job.branchName,
+              reason: "commit-creation-failed",
+              error: commitResult.error,
+            }),
+          },
+        }),
+      ]);
+      await failTaskReviewValidation({
+        taskId: job.taskId,
+        actor,
+        error: body,
+      });
+      console.log(JSON.stringify({ ok: false, validationError: body }, null, 2));
+    }
     unlinkSync(jobFile);
     return;
   }
@@ -682,13 +787,44 @@ async function main() {
     ? await rebuildLiveWorktreeIfNeeded(job, state)
     : null;
   const reviewReady = repoVerifiedOk && (!rebuild?.attempted || rebuild.ok);
-  const kind = reviewReady ? "pm.repo.verify.ok" : "pm.repo.verify.fail";
+  const semanticWarning = reviewReady ? semanticDescriptionWarning(job, head) : null;
+  const successfulOutcome = semanticWarning ? "valid_with_warning" as const : "valid" as const;
+  const validationOutcome = reviewReady ? successfulOutcome : "invalid" as const;
+  const kind = reviewReady
+    ? semanticWarning ? "pm.repo.verify.warning" : "pm.repo.verify.ok"
+    : "pm.repo.verify.fail";
 
-  const body = reviewReady
+  const baseBody = reviewReady
     ? renderOkBody({ branchName: job.branchName, branchRefLabel, epicMode, head: head!, match: match!, commitPrefix: job.commitPrefix, expectedIdentity: requiredIdentity, baseValidation, state, rebuild: rebuild! })
     : renderFailBody({ branchName: job.branchName, branchRefLabel, epicMode, head, match, commitPrefix: job.commitPrefix, fetchError, logError, identityMismatch: mismatch, baseValidation, state, rebuild });
+  const body = semanticWarning
+    ? `${baseBody}\n\n⚠️ Advisory validation warning\n\n${semanticWarning}`
+    : baseBody;
+  const operationalError =
+    (isOperationalRepositoryFailure(fetchError) ? fetchError : null) ||
+    (isOperationalRepositoryFailure(state.pushError) ? state.pushError : null) ||
+    (isOperationalRepositoryFailure(state.dirtyError) ? state.dirtyError : null) ||
+    (rebuild?.attempted && !rebuild.ok ? rebuild.error : null);
 
-  const actor = await monitorActor();
+  if (operationalError) {
+    const retry = await recordOperationalFailure(job, actor, operationalError);
+    console.log(
+      JSON.stringify(
+        {
+          ok: false,
+          taskId: job.taskId,
+          branch: job.branchName,
+          operationalError,
+          ...retry,
+        },
+        null,
+        2,
+      ),
+    );
+    unlinkSync(jobFile);
+    return;
+  }
+
   await db.$transaction([
     db.comment.create({
       data: { taskId: job.taskId, userId: actor.id, body },
@@ -723,22 +859,36 @@ async function main() {
           pushed: state.pushed,
           pushError: state.pushError,
           rebuild,
+          validationOutcome,
+          semanticWarning,
+          pmCreatedCommitSha: commitResult.created ? commitResult.sha : null,
           requestedByAgentSlug: job.requestedByAgentSlug,
         }),
       },
     }),
   ]);
-
-  const monitorAccessProblem = authLikeError(fetchError);
-  await notifyAfterGate({
-    job,
-    actor,
-    epicMode,
-    verifiedOk: repoVerifiedOk,
-    reviewReady,
-    summary: body,
-    monitorAccessProblem,
+  await updateTaskRepositoryState(job.taskId, {
+    phase: reviewReady ? "review_ready" : "action_required",
+    candidateSha: head?.sha ?? null,
+    validationOutcome,
+    lastError: reviewReady ? null : body,
   });
+  if (reviewReady) {
+    await completeTaskReviewHandoffAfterValidation({
+      taskId: job.taskId,
+      actor,
+      candidateSha: head?.sha ?? null,
+      validationOutcome: successfulOutcome,
+      validationSummary: semanticWarning ?? baseBody,
+    });
+  } else {
+    await failTaskReviewValidation({
+      taskId: job.taskId,
+      actor,
+      error: body,
+      candidateSha: head?.sha ?? null,
+    });
+  }
 
   console.log(
     JSON.stringify(
@@ -759,6 +909,9 @@ async function main() {
         pushError: state.pushError,
         logError,
         rebuild,
+        validationOutcome,
+        semanticWarning,
+        pmCreatedCommitSha: commitResult.created ? commitResult.sha : null,
       },
       null,
       2,

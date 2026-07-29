@@ -159,35 +159,32 @@ function workflowPrompt(args: {
     const identityConfigured = Boolean(args.expectedGitUserName && args.expectedGitUserEmail);
     commitHygiene.push(
       "",
-      "COMMIT HYGIENE (this task touches the repository):",
+      "REPOSITORY WORKFLOW (this task touches the repository):",
       `- Repository: ${args.repositoryPath}`,
       `- Branch: ${args.branchName}`,
-      "- Action Plan approval provisions and validates the exact linked Git worktree. Use the `worktreePath` returned by approve_plan/start; verify `git rev-parse --show-toplevel` and `git branch --show-current` before editing.",
+      "- Action Plan approval reserves the repository contract. The start action provisions and validates the exact linked Git worktree; do not edit until the task is In Progress and start returns `worktreePath`.",
+      "- Use the `worktreePath` returned by start; verify `git rev-parse --show-toplevel` and `git branch --show-current` before editing.",
       "- Worktrees ONLY, no exceptions: never edit a primary checkout, never create the branch directory with mkdir/cp/rsync, and never substitute an ordinary folder for a Git worktree.",
-      "- If PM cannot create or validate the required worktree, the approval/start action is rejected and the task stays non-active; tag the reporter in a task comment with the returned error before making changes.",
+      "- If PM cannot create or validate the required worktree, start is rejected and the task stays non-active; tag the reporter in a task comment with the returned error before making changes.",
       identityConfigured
-        ? `- Required Git identity: ${args.expectedGitUserName} <${args.expectedGitUserEmail}>. PM configures it in the task worktree; verify it before committing:`
-        : "- Required Git identity is not configured on the project/system settings. Ask an admin to configure defaultGitUserName/defaultGitUserEmail before committing.",
+        ? `- PM submission identity: ${args.expectedGitUserName} <${args.expectedGitUserEmail}>. PM uses it when creating the submission commit.`
+        : "- PM submission identity is not configured. Ask an admin to configure defaultGitUserName/defaultGitUserEmail before requesting review.",
       ...(identityConfigured
-        ? [
-            `  test "$(git config --get user.name)" = ${shellQuote(args.expectedGitUserName!)} && test "$(git config --get user.email)" = ${shellQuote(args.expectedGitUserEmail!)}`,
-            "- Do not commit if the identity check fails. PM verifier rejects branches whose matching commit author or committer differs from the required identity.",
-          ]
+        ? [`  test "$(git config --get user.name)" = ${shellQuote(args.expectedGitUserName!)} && test "$(git config --get user.email)" = ${shellQuote(args.expectedGitUserEmail!)}`]
         : []),
       args.commitPrefix
-        ? `- COMMIT_PREFIX: ${args.commitPrefix} — every commit message on this task MUST start with this exact prefix (e.g. "${args.commitPrefix} short imperative summary").`
-        : "- COMMIT_PREFIX is not set. Ask an admin to set a project key or task/epic commit prefix before committing.",
+        ? `- COMMIT_PREFIX: ${args.commitPrefix} — PM prepends this to its submission commit.`
+        : "- COMMIT_PREFIX is not set. Ask an admin to set a project key or task/epic commit prefix before requesting review.",
       ...(args.epicChild
         ? [
-            `- EPIC-CHILD BRANCH RULE: this task belongs to an Epic. COMMIT LOCALLY on ${args.branchName} and NEVER push this branch to origin — origin pushes trigger unwanted deployments. PM merges your local task branch into the Epic integration branch${args.epicBranch ? ` (${args.epicBranch})` : ""}; only the Epic branch is pushed.`,
-            `- All local changes must be committed (each with the prefix) on ${args.branchName} BEFORE you call action=ready_for_review. Do NOT push.`,
-            "- On ready_for_review: include `repoTouched: true` in the body. PM will dispatch the monitor verifier to verify your LOCAL branch reflects the work (checked against the Epic branch) and post a pm.repo.verify.* comment.",
+            `- EPIC-CHILD BRANCH RULE: NEVER commit or push this branch yourself. Origin pushes trigger unwanted deployments. PM creates the local submission commit, and after reviewer acceptance merges it into the Epic integration branch${args.epicBranch ? ` (${args.epicBranch})` : ""}; only the Epic branch is pushed.`,
+            `- Leave all completed changes in ${args.branchName} and call action=ready_for_review with repoTouched=true. The task remains In Progress while the role-resolved Monitor Agent validates the local branch.`,
           ]
         : [
-            `- All local changes must be committed (each with the prefix) and pushed to origin/${args.branchName} BEFORE you call action=ready_for_review.`,
-            "- On ready_for_review: include `repoTouched: true` in the body. PM will dispatch the monitor verifier to verify origin reflects your work and post a pm.repo.verify.* comment.",
+            `- NEVER commit or push this Mission Control branch yourself. Leave all completed changes in ${args.branchName} and call action=ready_for_review with repoTouched=true.`,
+            `- PM creates the submission commit, publishes origin/${args.branchName}, and the role-resolved Monitor Agent validates it before Review.`,
           ]),
-      "- If this task changed nothing in the repository (docs-only, decision-only, etc.), set `repoTouched: false` on ready_for_review and the monitor verifier will skip the check.",
+      "- If this task changed nothing in the repository, set `repoTouched: false` on ready_for_review and PM will skip repository validation.",
     );
   }
 
@@ -228,9 +225,9 @@ function workflowPrompt(args: {
     "- If you complete work and no workflow turn is live (your token-bearing turn already ended), POST /api/agent/tasks/<taskId>/request-workflow-turn with your PM bearer token to receive a fresh workflow turn. It is rate-limited to once per task per 5 minutes and only works for the task's current assignee.",
     "- After Action Plan approval, do not keep discussing straightforward implementation. Start it, complete it, then use one concise ready_for_review note when the work is ready.",
     "- Sub-tasks are a lightweight progress checklist (text + done + minutes), NOT child tasks. Break the work into INDEPENDENT, PARALLELIZABLE steps and dispatch parallel sub-agents to tackle the independent ones at once whenever the work allows — don't serialize work that could run on multiple fronts. Keep the checklist current so the board shows how close the task is to done: action=add_subtask {subtaskText} to add a step, action=complete_subtask {subtaskId, completed, minutesSpent} as each lands (include the minutes it took for the task cost roll-up). Ids are in the SUB-TASKS list in your context. Do not create child Tasks for steps inside one task.",
-    "- If you are the assignee and you are waiting for reviewer, manager, or reporter feedback/response, call action=ready_for_review with one concise `comment` explaining the blocker/question. Do not leave waiting work in In Progress.",
+    "- Questions and blockers may be discussed in comments at any status, but ready_for_review is only for completed implementation. Do not use Review as a waiting room.",
     "- If a task is blocked in a way agents cannot resolve and human/reporter intervention is required, set `alert_reporter` to true/1 via a task update proposal so the task is visually highlighted for the reporter.",
-    "- Review means the completed work is waiting for reviewer feedback. If you are allowed by project policy to complete the task and are satisfied, call action=review_done; do not write an approval-only comment. PM will then assign the next unassigned To Do task in the same In Progress Epic to the next eligible Epic worker and wake them; if that was the Epic's last open task, PM moves the Epic to Done. If changes or blockers remain, call action=review_feedback with a clear comment — PM returns the task to the FRONT of To Do for the assignee.",
+    "- Review means completed work is waiting for reviewer judgment. If you are allowed by project policy to accept it and are satisfied, call action=review_done; do not write an approval-only comment. Repository tasks remain in Review while PM publishes/merges, verifies, and removes the local worktree; only successful finalization moves them to Done. If changes or blockers remain, call action=review_feedback with a clear comment — PM returns the task to the FRONT of To Do for the assignee.",
     args.onlyReportersCanSetTasksDone
       ? "- Project policy: only the reporter can set Tasks to Done. Reviewers should leave concise review feedback or agreement, then wait for the reporter to complete it."
       : "- Project policy: the resolved reviewer can set Tasks to Done.",

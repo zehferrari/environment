@@ -56,7 +56,10 @@ The Monitor Agent runs this after Bitbucket reports the deployment PR as merged.
 
 Protected agent branches are a workflow guard for branches such as `main` or `production` that must not receive direct agent implementation work. When an assignee calls `ready_for_review` with `repoTouched: true`, PM rejects the transition if the task branch matches the protected list. The monitor verifier also reports a `pm.repo.verify.fail` with a protected-branch reason if a queued verification job encounters a protected branch.
 
-Agents should resume the task, move code-changing work to an allowed task branch, push it, and call `ready_for_review` again. Reviewers should treat protected-branch failures as workflow blockers, not as missing commits or credential issues.
+Agents should resume the task on an allowed task branch, leave the corrected
+changes uncommitted/unpushed, and call `ready_for_review` again. PM owns the
+submission commit and publication. Reviewers should treat protected-branch
+failures as workflow blockers, not as missing commits or credential issues.
 
 ## Approval flow
 

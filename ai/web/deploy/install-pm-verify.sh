@@ -13,8 +13,11 @@
 #     to locate the active worktree).
 #
 # Config via env:
-#   PM_MONITOR_USER         PM app user that authors verifier/merge comments (default: monitor)
-#   PM_VERIFY_RUN_USER      OS user that runs git fetch; needs repo read credentials (default: PM_MONITOR_USER)
+#   PM_MONITOR_USER         PM service OS account/spool owner (default: monitor);
+#                           retained for deployment compatibility, never used
+#                           as application workflow authority
+#   PM_VERIFY_RUN_USER      OS user that runs git fetch/commit/push; needs repo
+#                           credentials (default: PM_MONITOR_USER)
 #   PM_MERGE_RUN_USER       OS user that pushes the Epic branch; needs repo WRITE credentials (default: PM_VERIFY_RUN_USER)
 #   PM_SHARED_GROUP         group shared by pm.service + runner users (default: code-agents)
 #   PM_BRANCH_VERIFY_DIR    verify spool dir (default: /var/lib/pm/branch-verify)
@@ -44,12 +47,12 @@ say "Install runners → /usr/local/sbin/pm-verify-runner, /usr/local/sbin/pm-ep
 install -o root -g root -m 0755 "$HERE/pm-verify-runner" /usr/local/sbin/pm-verify-runner
 install -o root -g root -m 0755 "$HERE/pm-epic-merge-runner" /usr/local/sbin/pm-epic-merge-runner
 
-say "Render verify runner unit (User=$RUN, monitor=$MON) → /etc/systemd/system/pm-verify-runner.service"
+say "Render verify runner unit (User=$RUN) → /etc/systemd/system/pm-verify-runner.service"
 sed "s/__PM_MONITOR_USER__/$MON/g; s/__PM_VERIFY_RUN_USER__/$RUN/g; s#/var/lib/pm/branch-verify#$VERIFY_DIR#g" \
   "$HERE/systemd/pm-verify-runner.service" > /etc/systemd/system/pm-verify-runner.service
 chmod 0644 /etc/systemd/system/pm-verify-runner.service
 
-say "Render epic-merge runner unit (User=$MERGE_RUN, monitor=$MON) → /etc/systemd/system/pm-epic-merge-runner.service"
+say "Render epic-merge runner unit (User=$MERGE_RUN) → /etc/systemd/system/pm-epic-merge-runner.service"
 sed "s/__PM_MONITOR_USER__/$MON/g; s/__PM_MERGE_RUN_USER__/$MERGE_RUN/g; s#/var/lib/pm/epic-merge#$MERGE_DIR#g" \
   "$HERE/systemd/pm-epic-merge-runner.service" > /etc/systemd/system/pm-epic-merge-runner.service
 chmod 0644 /etc/systemd/system/pm-epic-merge-runner.service

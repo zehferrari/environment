@@ -53,6 +53,7 @@ import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
 import { ensureTaskCodeWorktree } from "@/lib/tasks/worktree-claim";
+import { reserveTaskRepositoryState } from "@/lib/tasks/repository-state";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import {
   getCachedLatestRepoVerifyActivity,
@@ -215,6 +216,7 @@ async function updateTask(formData: FormData) {
       blockedBy: { select: { workItemKey: true } },
       approvedOn: true,
       workItemKey: true,
+      repositoryRun: { select: { phase: true } },
       project: {
         select: {
           slug: true,
@@ -241,6 +243,7 @@ async function updateTask(formData: FormData) {
   let reviewerPlanTargetId: string | null = null;
   let statusChangedTo: string | null = null;
   let completeReviewAfterSave = false;
+  let requestReviewAfterSave = false;
 
   if (hasPrivateField && newPrivate !== task.private) {
     data.private = newPrivate;
@@ -269,6 +272,9 @@ async function updateTask(formData: FormData) {
 
   // Status (workflow-validated, recomputes rank like the board move)
   if (newStatus !== "" && newStatus !== task.status) {
+    if (task.repositoryRun?.phase === "finalizing") {
+      throw new Error("Repository finalization is running; wait for it to complete before changing status.");
+    }
     // Browser-session human saves are authoritative. Workflow policy still
     // constrains agent/generic automation paths, but a human task-form action
     // must persist once the target column is a known PM status.
@@ -291,6 +297,11 @@ async function updateTask(formData: FormData) {
     }
     if (task.status === "Review" && newStatus === "Done" && canTriggerAgents) {
       completeReviewAfterSave = true;
+    } else if (newStatus === "Review") {
+      if (task.status !== "In Progress") {
+        throw new Error("A task can enter Review only through validation from In Progress.");
+      }
+      requestReviewAfterSave = true;
     } else {
       const maxRank = await db.task.aggregate({
         where: { status: newStatus, archivedAt: null, deletedAt: null },
@@ -500,7 +511,7 @@ async function updateTask(formData: FormData) {
     });
   }
 
-  if (activity.length === 0 && !completeReviewAfterSave) return; // nothing changed
+  if (activity.length === 0 && !completeReviewAfterSave && !requestReviewAfterSave) return; // nothing changed
 
   if (activity.length > 0) {
     await db.$transaction([
@@ -652,10 +663,9 @@ async function updateTask(formData: FormData) {
     });
   }
 
-  if (statusChangedTo === "Review") {
-    // Human status saves run the SAME Review-entry pipeline as the agent
-    // ready_for_review action: verify enqueue, verify-gated reviewer wake,
-    // epic queue refill preferring the freed worker.
+  if (requestReviewAfterSave) {
+    // Human status saves request the same validation gate as ready_for_review.
+    // Code tasks stay In Progress until the repository runner releases them.
     const actorUser = await db.user.findUnique({
       where: { id: actor.id },
       select: { username: true },
@@ -707,10 +717,9 @@ async function approveTaskActionPlan(formData: FormData) {
   }
   if (task.approvedOn) return;
 
-  // Approval is not persisted until the code task's exact linked worktree is
-  // present. This keeps the primary checkout immutable and gives every agent
-  // the same ready-to-use branch directory.
-  await ensureTaskCodeWorktree(task.id, actor.id, { reconcile: true });
+  // Approval reserves the repository contract. Worktree provisioning belongs
+  // to the In Progress transition so queued work has no writable tree.
+  await reserveTaskRepositoryState(task.id);
 
   const approvedAt = new Date();
   const statusUpdate =
@@ -1825,11 +1834,22 @@ export default async function TaskDetailPage({
               </div>
             </div>
           </div>
-          {/* Review verification panel — only shown on tasks in Review with
-              a branchName set on the task or its epic. Surfaces the monitor
-              verifier's
-              latest pm.repo.verify.* result so the reviewer doesn't approve
-              work that isn't on origin/<branch> yet. */}
+          {task.repositoryRun ? (
+            <div className="flex flex-wrap items-center gap-2 text-caption text-text-muted">
+              <span className="rounded-full border border-line bg-surface-muted px-2 py-1 font-semibold uppercase tracking-wide text-text">
+                Repository: {task.repositoryRun.phase.replaceAll("_", " ")}
+              </span>
+              {task.repositoryRun.validationOutcome ? (
+                <span>validation: {task.repositoryRun.validationOutcome.replaceAll("_", " ")}</span>
+              ) : null}
+              {task.repositoryRun.candidateSha ? (
+                <span>candidate <code className="text-text">{task.repositoryRun.candidateSha.slice(0, 10)}</code></span>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* Review verification panel. Status changes only after the monitor
+              gate, while repositoryRun exposes validating/finalizing errors. */}
           {task.status === "Review" && taskBranchName ? (() => {
             const branchName = taskBranchName;
             const commitPrefix = taskCommitPrefix;
@@ -1844,12 +1864,16 @@ export default async function TaskDetailPage({
             );
             const tone =
               kind === "pm.repo.verify.ok" ? "ok" :
+              kind === "pm.repo.verify.warning" ? "warning" :
               kind === "pm.repo.verify.fail" ? "fail" :
+              kind === "pm.repo.verify.operational_error" ? "operational" :
               kind === "pm.repo.verify.enqueue" ? "pending" :
               "missing";
             const palette = {
               ok:      { border: "var(--color-line)", bg: "rgba(34,197,94,0.08)",  dot: "#22c55e", title: "✓ origin verified" },
+              warning: { border: "var(--color-line)", bg: "rgba(245,158,11,0.10)", dot: "#f59e0b", title: "⚠ verified with advisory warning" },
               fail:    { border: "var(--color-line)", bg: "rgba(239,68,68,0.10)",  dot: "#ef4444", title: "⚠ origin not verified" },
+              operational: { border: "var(--color-line)", bg: "rgba(168,85,247,0.10)", dot: "#a855f7", title: "⚙ verifier operational error" },
               pending: { border: "var(--color-line)", bg: "rgba(59,130,246,0.08)", dot: "#3b82f6", title: "... monitor verifier running" },
               missing: { border: "var(--color-line)", bg: "rgba(148,163,184,0.10)", dot: "#94a3b8", title: "Repo verification not yet requested" },
             }[tone];
@@ -1869,6 +1893,12 @@ export default async function TaskDetailPage({
                 <div className="mt-1 text-caption text-text-muted">
                   {tone === "ok" && payload.headSha
                     ? <>HEAD <code className="text-text">{payload.headSha.slice(0, 10)}</code> matches the COMMIT_PREFIX — safe to review.</>
+                    : null}
+                  {tone === "warning"
+                    ? <>Repository checks passed with an advisory description mismatch. Read the Monitor Agent comment and decide whether to accept the update.</>
+                    : null}
+                  {tone === "operational"
+                    ? <>The branch was not rejected. PM kept the current task status, did not notify the reviewer, and requires operator recovery.</>
                     : null}
                   {tone === "fail"
                     ? fetchAuthError

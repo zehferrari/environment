@@ -18,6 +18,10 @@ import {
   effectiveEpicBranchName,
   effectiveTaskBranchName,
 } from "@/lib/work-items/branches";
+import {
+  reserveTaskRepositoryState,
+  updateTaskRepositoryState,
+} from "@/lib/tasks/repository-state";
 
 const exec = promisify(execFile);
 
@@ -48,6 +52,7 @@ export type WorktreeClaimResult =
       repositoryRoot: string;
       worktreePath: string;
       branchName: string;
+      headSha: string;
       mode: "existing" | "provisioned";
     }
   | {
@@ -66,6 +71,7 @@ export type TaskWorktreeResult =
       repositoryRoot: string;
       worktreePath: string;
       branchName: string;
+      headSha: string;
       mode: "existing" | "provisioned";
     };
 
@@ -242,6 +248,7 @@ export async function runWorktreeClaimJob(
         repositoryRoot: before.repositoryRoot,
         worktreePath: before.worktreePath,
         branchName: job.branchName,
+        headSha: await runGit(before.worktreePath, ["rev-parse", "HEAD"]),
         mode: "existing",
       };
     }
@@ -275,6 +282,7 @@ export async function runWorktreeClaimJob(
       repositoryRoot: after.repositoryRoot,
       worktreePath: after.worktreePath,
       branchName: job.branchName,
+      headSha: await runGit(after.worktreePath, ["rev-parse", "HEAD"]),
       mode: "provisioned",
     };
   } catch (err) {
@@ -390,11 +398,23 @@ export async function ensureTaskCodeWorktree(
     branchName,
   });
   if (current.ok && !options.reconcile) {
+    const headSha = await runGit(current.worktreePath, ["rev-parse", "HEAD"]);
+    await updateTaskRepositoryState(task.id, {
+      phase: "active",
+      repositoryPath: current.repositoryRoot,
+      branchName,
+      worktreePath: current.worktreePath,
+      epicBranch,
+      baseSha: headSha,
+      validationOutcome: null,
+      lastError: null,
+    });
     return {
       required: true,
       repositoryRoot: current.repositoryRoot,
       worktreePath: current.worktreePath,
       branchName,
+      headSha,
       mode: "existing",
     };
   }
@@ -417,6 +437,15 @@ export async function ensureTaskCodeWorktree(
   };
 
   try {
+    await updateTaskRepositoryState(task.id, {
+      phase: "provisioning",
+      repositoryPath: task.project.repositoryPath,
+      branchName,
+      epicBranch,
+      validationOutcome: null,
+      lastError: null,
+      incrementAttempt: true,
+    });
     await enqueueClaimJob(job);
     const result = await waitForClaimResult(responsePath);
     if (!result.ok) throw new Error(result.error);
@@ -434,15 +463,35 @@ export async function ensureTaskCodeWorktree(
         }),
       },
     });
+    await updateTaskRepositoryState(task.id, {
+      phase: "active",
+      repositoryPath: result.repositoryRoot,
+      branchName,
+      worktreePath: result.worktreePath,
+      epicBranch,
+      baseSha: result.headSha,
+      validationOutcome: null,
+      lastError: null,
+    });
     return {
       required: true,
       repositoryRoot: result.repositoryRoot,
       worktreePath: result.worktreePath,
       branchName,
+      headSha: result.headSha,
       mode: result.mode,
     };
   } catch (err) {
     const detail = conciseError(err);
+    await reserveTaskRepositoryState(task.id);
+    await updateTaskRepositoryState(task.id, {
+      phase: "action_required",
+      repositoryPath: task.project.repositoryPath,
+      branchName,
+      epicBranch,
+      validationOutcome: "invalid",
+      lastError: detail,
+    });
     await db.activityLog.create({
       data: {
         projectId: task.projectId,

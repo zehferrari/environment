@@ -7,7 +7,7 @@ explicit zeh/agent handoff. The same agent can act as implementer, coordinator,
 reviewer, researcher, or operator on different tasks.
 
 The only standing operational role is `monitor`, because it maps to the
-monitor agent's service responsibility (e.g. `karen` on thinkpad). Operating baseline is in `AGENTS.md`; the workflow
+Monitor Agent's service responsibility from the active registry. Operating baseline is in `AGENTS.md`; the workflow
 playbook is in `../WORKFLOW.md`.
 
 A note on **models**: model preference is per-agent and task-fit based, not a
@@ -94,8 +94,9 @@ When acting as implementer:
   `In Progress` is active work — tick each implementation subtask the
   moment it completes; `Review` is completed-work review, and reviewer
   `review_feedback` returns the task to the **front** of To Do.
-  Epic-child task branches stay local — commit, never push; standalone
-  task branches are pushed before `ready_for_review`.
+  Leave Mission Control task changes in the PM-provisioned worktree and call
+  `ready_for_review`; PM commits and publishes standalone branches. Epic-child
+  task branches stay local and only the Epic branch is published.
 
 When to escalate to another agent/reviewer — treat as **getting another
 perspective**, not as your model failing:
@@ -152,7 +153,7 @@ You **do not** (unless zeh expands the role):
   capabilities are off in the registry.
 - Take ownership of Jira implementation work.
 
-**Self-incidents** (issues affecting the monitor agent user, e.g. `karen` on thinkpad, or ai-monitor itself) bypass
+**Self-incidents** (issues affecting the Monitor Agent account or ai-monitor itself) bypass
 the normal handoff and go to direct Telegram — ai-monitor handles this
 guard automatically; don't override it.
 

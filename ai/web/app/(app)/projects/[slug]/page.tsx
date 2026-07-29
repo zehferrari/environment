@@ -254,6 +254,7 @@ async function moveTask(
       approvedOn: true,
       deletedAt: true,
       epicId: true,
+      repositoryRun: { select: { phase: true } },
       epic: { select: { status: true, actingManagerId: true } },
     },
   });
@@ -262,6 +263,13 @@ async function moveTask(
   }
   await requireProjectAccess(actor, { id: current.projectId });
   if (current.status === status) return { ok: true };
+  if (current.repositoryRun?.phase === "finalizing") {
+    return {
+      ok: false,
+      code: "EXPLICIT_USER_ACTION_REQUIRED",
+      message: "Repository finalization is running; wait for it to complete before changing status.",
+    };
+  }
 
   // Browser-session human moves are authoritative. Workflow policy still
   // constrains agent/generic automation paths, but a human board action must
@@ -324,6 +332,33 @@ async function moveTask(
       revalidateTaskShell(next.id);
       revalidatePath(`/projects/${slug}/tasks/${next.id}`);
     }
+    publishBoardTouch(current.projectId);
+    return { ok: true };
+  }
+
+  if (status === "Review") {
+    if (current.status !== "In Progress") {
+      return {
+        ok: false,
+        code: "EXPLICIT_USER_ACTION_REQUIRED",
+        message: "A task can enter Review only through validation from In Progress.",
+      };
+    }
+    const actorUser = await db.user.findUnique({
+      where: { id: actor.id },
+      select: { username: true },
+    });
+    const handoff = await runTaskReviewHandoff({
+      taskId,
+      actor: { id: actor.id, kind: actor.kind, username: actorUser?.username ?? null },
+      via: "human-board-move",
+      movedFromStatus: current.status,
+    });
+    for (const assigned of handoff.refillAssignments) {
+      revalidatePath(`/projects/${slug}/tasks/${assigned.taskId}`);
+    }
+    revalidateTaskShell(taskId);
+    revalidatePath(`/projects/${slug}`);
     publishBoardTouch(current.projectId);
     return { ok: true };
   }
@@ -406,24 +441,6 @@ async function moveTask(
             "Do not move it to In Progress until approved_on is set.",
           ].join("\n"),
     });
-  }
-  if (status === "Review") {
-    // Human drags run the SAME Review-entry pipeline as the agent
-    // ready_for_review action: verify enqueue, verify-gated reviewer wake,
-    // epic queue refill preferring the freed worker.
-    const actorUser = await db.user.findUnique({
-      where: { id: actor.id },
-      select: { username: true },
-    });
-    const handoff = await runTaskReviewHandoff({
-      taskId,
-      actor: { id: actor.id, kind: actor.kind, username: actorUser?.username ?? null },
-      via: "human-board-move",
-      movedFromStatus: current.status,
-    });
-    for (const assigned of handoff.refillAssignments) {
-      revalidatePath(`/projects/${slug}/tasks/${assigned.taskId}`);
-    }
   }
   // Proactive queue refill: any human board correction that completes a task
   // or parks one unassigned frees capacity — hand the next unblocked To Do

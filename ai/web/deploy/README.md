@@ -177,15 +177,19 @@ own within a few seconds).
 
 ## Branch-push verifier (Review verification)
 
-When an assignee moves a code-touching task (`branchName` set on a project
-with `repositoryPath`) to Review through the workflow endpoint with
-`repoTouched: true` (default for branch-bearing tasks), PM drops a JSON job
+When an assignee requests review for a code-touching task with
+`repoTouched: true`, PM leaves the task In Progress with repository phase
+`validating` and drops a JSON job
 into `/var/lib/pm/branch-verify/<jobId>.json`. The repo-fetch-user
 `pm-verify-runner.service` picks it up, finds the active PM worktree (by
 reading `pm.service`'s `WorkingDirectory`), and runs the TS verifier
 (`ai/web/scripts/pm-verify-branch-pushed.ts`) inside it. For a standalone
 task the verifier:
 
+- resolves the role-assigned Monitor Agent; no deployment username is
+  hardcoded;
+- creates one PM-owned commit when the worktree has pending changes, using
+  the effective task prefix and project Git identity;
 - fetches the effective deployment PR target branch and `<branchName>` on the
   local clone, then verifies the current target is an ancestor of
   `origin/<branchName>`. The base is snapshotted in each new job; legacy jobs
@@ -193,8 +197,6 @@ task the verifier:
   but the runner reuses the
   SSH credentials configured for `PM_VERIFY_RUN_USER` on the local clone (no
   Bitbucket REST in this pass);
-- resolves the local branch worktree when available and fails fast if it still
-  has uncommitted changes;
 - pushes clean local branch commits to `origin/<branchName>` when the local
   branch is ahead and the runner has write credentials;
 - looks for a commit on `origin/<branchName>` whose subject starts with the
@@ -204,8 +206,9 @@ task the verifier:
   system settings) when one is configured;
 - if the verified branch is the currently served PM worktree, rebuilds and
   restarts the live PM service before releasing the task for review;
-- writes a monitor-authored task Comment plus a `pm.repo.verify.ok` or
-  `pm.repo.verify.fail` `ActivityLog` row.
+- writes a role-resolved Monitor Agent comment and one of
+  `pm.repo.verify.ok`, `pm.repo.verify.warning`, `pm.repo.verify.fail`, or
+  `pm.repo.verify.operational_error`.
 
 For an **Epic child** the job carries `epicChild: true` + the effective
 `epicBranch`, and the verifier switches to the local-only model (see
@@ -213,7 +216,7 @@ For an **Epic child** the job carries `epicChild: true` + the effective
 Epic-child branches): it verifies LOCAL `refs/heads/<branchName>` — Epic-child
 branches are never pushed and there is no auto-push — and the base gate runs
 against the Epic integration branch (local ref first, `origin/<epicBranch>`
-fallback) instead of the deployment target. Dirty-worktree, commit-prefix,
+fallback) instead of the deployment target. Commit-prefix,
 identity, and live-rebuild checks are unchanged.
 
 ## Repository runner (worktree claims + local-only Epic integration)
@@ -221,9 +224,10 @@ identity, and live-rebuild checks are unchanged.
 `pm.service` runs sandboxed (`ProtectSystem=strict`, no repo in
 `ReadWritePaths`), so it cannot run `git worktree add`, fetch ref-writes, or
 push. All repository mutations are therefore spooled to the same unsandboxed
-runner. On Action Plan approval PM submits a `kind:"claim"` job and waits for
-it to create/validate the exact linked worktree before persisting approval;
-every In Progress entry revalidates the result. The deployment-watcher poll
+runner. Action Plan approval reserves the repository contract. On In Progress
+PM submits a `kind:"claim"` job and starts work only after the linked worktree
+validates. Review acceptance submits a `kind:"finalize"` job. The legacy
+deployment-watcher poll
 (`lib/deploy/epic-merge.ts`) also enqueues one JSON job per Done Epic-child
 task into `/var/lib/pm/epic-merge/`, and on Epic-Done a `kind:"cleanup"`
 finalization job listing the Epic's child branches. The repo-push-user
@@ -234,13 +238,17 @@ worktree, which:
 - **claim**: resolves the project path back to the immutable primary checkout,
   runs `claim-branch` with the task/Epic branch contract, validates the `.git`
   link/common repository/current branch, applies the effective Git identity,
-  and returns `worktreePath` to approval/start. An ordinary directory at the
+  and returns `worktreePath` to start. An ordinary directory at the
   target path is preserved and rejected;
-- **merge**: merges the task's LOCAL branch (`refs/heads/<taskBranch>`,
+- **finalize**: after reviewer acceptance, verifies/publishes a standalone
+  branch or merges an Epic child's LOCAL branch into the Epic integration
+  branch, pushes only the Epic branch, verifies the candidate SHA, removes the
+  task worktree/local branch, and only then moves the task to Done;
+- **merge**: legacy recovery for already-Done Epic children; merges the task's LOCAL branch (`refs/heads/<taskBranch>`,
   legacy `origin/<taskBranch>` fallback) into the Epic integration branch in a
   throwaway detached worktree, pushes ONLY the Epic branch (eagerly after each
   merge), fast-forwards the local Epic ref, and records `pm.epic.merge.ok` —
-  or bounces the task back to Review with a comment (conflict, or the task
+  or reports a workflow error (conflict, or the task
   branch does not exist anywhere: a missing branch is never a silent no-op);
 - **cleanup/finalize**: after the Epic is Done, waits for all child merges
   (including archived children), publishes a local-ahead Epic branch, verifies
@@ -256,20 +264,18 @@ Install/refresh both runners with `install-pm-verify.sh`; `PM_MERGE_RUN_USER`
 (default: `PM_VERIFY_RUN_USER`) must have SSH **write** access to push the
 Epic integration branch.
 
-If `pm.repo.verify.fail` reports `Unauthorized`, `permission denied`, or
-`Could not read from remote repository`, that is a monitor verifier
+If validation reports `Unauthorized`, `permission denied`, or
+`Could not read from remote repository`, that is an operational verifier
 credential problem. Set `PM_VERIFY_RUN_USER` to a local account that can fetch
 the project repository, add that account's SSH public key as a read-capable
 Bitbucket repo/workspace key, or configure an equivalent read-only deploy key,
-then re-trigger `ready_for_review`. `PM_MONITOR_USER` is only the PM identity
-used for verifier comments and activity rows.
+then re-trigger `ready_for_review`.
 
-The reviewer is only woken after `pm.repo.verify.ok`. If verification fails,
-the assignee is woken to commit/fix the branch (standalone tasks are also told
-to push; Epic children are explicitly told NOT to push) unless the failure is
-a monitor repository-access problem. The task page also shows a Review
-verification panel reading the latest `pm.repo.verify.*` row, so humans can see
-why the review is waiting. Install with
+The reviewer is woken only after `pm.repo.verify.ok` or the advisory
+`pm.repo.verify.warning`. Concrete failures comment and return the task to the
+front of To Do without a reviewer wake. Operational failures retry twice and
+leave board status unchanged. The task page exposes the persisted repository
+phase and validation outcome. Install with
 `sudo PM_MONITOR_USER=<monitor-user> PM_VERIFY_RUN_USER=<repo-fetch-user> ai/web/deploy/install-pm-verify.sh`.
 
 ## Deployment Approval Credentials

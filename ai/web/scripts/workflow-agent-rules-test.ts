@@ -165,8 +165,9 @@ assert(
   "the WIP rejection must state the per-project limit so agents know what to finish",
 );
 assert(
-  taskWorkflowRoute.split("ensureTaskCodeWorktree(").length - 1 >= 2,
-  "agent Action Plan approval must provision a worktree and start must revalidate it",
+  taskWorkflowRoute.includes("reserveTaskRepositoryState(task.id)") &&
+    taskWorkflowRoute.split("ensureTaskCodeWorktree(").length - 1 >= 1,
+  "agent Action Plan approval must reserve only; start must provision the worktree",
 );
 // P3: ready_for_review is rejected while open implementation sub-tasks exist.
 assert(
@@ -211,6 +212,10 @@ assert(
   autoStartLib.includes("ensureTaskCodeWorktree(task.id"),
   "auto-start must refuse In Progress without a validated linked worktree",
 );
+assert(
+  autoStartLib.includes('task.assignee.agent.role !== "coding"'),
+  "auto-start must never start a non-coding agent as the implementation assignee",
+);
 
 // Ack is a liveness ping only — no status transition anywhere.
 const ackRoute = readFileSync(join(root, "app/api/tasks/[id]/ack/route.ts"), "utf8");
@@ -252,11 +257,13 @@ for (const pagePath of [
 }
 
 assert(
-  taskPage.includes("await ensureTaskCodeWorktree(task.id, actor.id, { reconcile: true })"),
-  "human Action Plan approval must provision the task worktree before persisting approval",
+  taskPage.includes("await reserveTaskRepositoryState(task.id)") &&
+    !taskPage.includes("await ensureTaskCodeWorktree(task.id, actor.id, { reconcile: true })"),
+  "human Action Plan approval must reserve the repository contract without provisioning a worktree",
 );
 const repositoryJob = readFileSync(join(root, "scripts/pm-epic-merge-job.ts"), "utf8");
 assert(repositoryJob.includes('job.kind === "claim"'), "the unsandboxed repository runner must execute worktree claim jobs");
+assert(repositoryJob.includes('job.kind !== "finalize"'), "the repository runner must accept review-finalization jobs");
 assert(repositoryJob.includes("writeWorktreeClaimResult"), "worktree claim jobs must return a result to the approval request");
 const worktreeClaim = readFileSync(join(root, "lib/tasks/worktree-claim.ts"), "utf8");
 assert(
@@ -266,6 +273,17 @@ assert(
 assert(
   worktreeClaim.includes("marker?.isFile()") && worktreeClaim.includes('worktree", "list", "--porcelain'),
   "claim validation must require a linked .git file and exact Git registration",
+);
+assert(
+  reviewHandoff.includes('status: "In Progress"') &&
+    reviewHandoff.includes("completeTaskReviewHandoffAfterValidation") &&
+    reviewHandoff.includes("failTaskReviewValidation"),
+  "code submissions must remain In Progress until validation explicitly releases or rejects them",
+);
+assert(
+  reviewHandoff.includes("resolveActiveMonitorAgent") &&
+    !reviewHandoff.includes('username: "karen"'),
+  "repository validation must resolve the Monitor Agent by role rather than a deployment username",
 );
 
 // PH-124 item B: every workflow action with a durable outcome settles the
@@ -294,8 +312,11 @@ assert(
   taskNotifications.includes("FRONT of To Do"),
   "review_feedback wording must send the task to the front of To Do",
 );
-// P6 wording: epic children commit locally and never push.
-assert(taskNotifications.includes("NEVER push this branch to origin"), "epic-child commit hygiene must forbid origin pushes");
+// P6 wording: assignees leave Epic-child changes to PM and never push.
+assert(
+  taskNotifications.includes("NEVER commit or push this branch yourself"),
+  "Epic-child submission guidance must reserve commit/push for PM",
+);
 const branchVerifier = readFileSync(join(root, "scripts/pm-verify-branch-pushed.ts"), "utf8");
 assert(
   branchVerifier.includes("inspectOriginBranch(job.repositoryPath, job.branchName)"),

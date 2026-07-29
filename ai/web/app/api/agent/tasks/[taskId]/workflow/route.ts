@@ -21,12 +21,12 @@ import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignTaskAfterPlanApproval } from "@/lib/tasks/reviewer-assignment";
 import { refillEpicQueue } from "@/lib/epics/queue";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
-import { isProtectedBranch, parseProtectedBranches } from "@/lib/projects/protected-branches";
 import { hasAuthorizedTaskAgentOrigin } from "@/lib/agents/owner-origin";
 import {
   ensureTaskCodeWorktree,
   TaskWorktreeError,
 } from "@/lib/tasks/worktree-claim";
+import { reserveTaskRepositoryState } from "@/lib/tasks/repository-state";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -171,6 +171,7 @@ export async function POST(
       where: { slug: grantAgentSlug },
       select: {
         slug: true,
+        role: true,
         deactivatedAt: true,
         user: { select: { id: true, username: true, status: true } },
       },
@@ -213,6 +214,7 @@ export async function POST(
             parent: { select: { private: true, epic: { select: { private: true } } } },
           },
         },
+        repositoryRun: { select: { phase: true } },
         project: {
           select: {
             slug: true,
@@ -251,6 +253,9 @@ export async function POST(
 
   if (action === "start") {
     if (!isAssignee) return NextResponse.json({ error: "Only the assignee can start this task" }, { status: 403 });
+    if (agent.role !== "coding") {
+      return NextResponse.json({ error: "Only an implementation-capable agent may start repository work" }, { status: 403 });
+    }
     // P1: start is To Do → In Progress ONLY. There is no resume from Review —
     // a task not promoted to Done comes back via the reviewer's
     // review_feedback, which returns it to the FRONT of To Do.
@@ -303,9 +308,8 @@ export async function POST(
 
     let worktree;
     try {
-      // Approval normally provisions this already. Re-check at the final
-      // In-Progress boundary so a deleted/replaced directory can never turn
-      // into work in a primary checkout or an ordinary folder.
+      // In Progress is the provisioning boundary. Approval reserved the
+      // repository contract but deliberately did not create a writable tree.
       worktree = await ensureTaskCodeWorktree(task.id, agent.user.id);
     } catch (err) {
       const message = err instanceof TaskWorktreeError
@@ -356,17 +360,9 @@ export async function POST(
     if (task.approvedOn) {
       return NextResponse.json({ ok: true, taskId: task.id, approved: true, alreadyApproved: true });
     }
-    let worktree;
-    try {
-      // Action Plan approval is the provisioning boundary: code work is not
-      // approved until its exact linked worktree exists and validates.
-      worktree = await ensureTaskCodeWorktree(task.id, agent.user.id, { reconcile: true });
-    } catch (err) {
-      const message = err instanceof TaskWorktreeError
-        ? err.message
-        : "Task worktree could not be created or validated.";
-      return NextResponse.json({ error: message }, { status: 409 });
-    }
+    // Approval reserves the repository contract only. The writable worktree
+    // is created at the In Progress boundary immediately before dispatch.
+    const reservation = await reserveTaskRepositoryState(task.id);
     const approvedAt = new Date();
     const moveToTodo = task.status === "Backlog";
     await db.$transaction([
@@ -454,12 +450,14 @@ export async function POST(
       approvedAt,
       approvedById: agent.user.id,
     });
+    let startedAfterApproval = false;
     if (task.assigneeId) {
       const autoStart = await startApprovedTodoTaskIfIdle({
         taskId: task.id,
         actor,
         via: "agent-action-plan-approval",
       });
+      startedAfterApproval = autoStart.started;
       await sendTaskWorkflowNotification({
         taskId: task.id,
         targetUserId: task.assigneeId,
@@ -532,9 +530,10 @@ export async function POST(
       ok: true,
       taskId: task.id,
       approved: true,
-      status: moveToTodo ? "To Do" : task.status,
-      worktreePath: worktree.required ? worktree.worktreePath : null,
-      branchName: worktree.required ? worktree.branchName : null,
+      status: startedAfterApproval ? "In Progress" : moveToTodo ? "To Do" : task.status,
+      repositoryPhase: startedAfterApproval ? "active" : reservation?.phase ?? null,
+      worktreePath: null,
+      branchName: reservation?.branchName ?? null,
     });
   }
 
@@ -581,8 +580,11 @@ export async function POST(
 
   if (action === "ready_for_review" || action === "submit_review") {
     if (!isAssignee) return NextResponse.json({ error: "Only the assignee can send this task to Review" }, { status: 403 });
-    if (task.status !== "In Progress" && task.status !== "Review") {
-      return NextResponse.json({ error: "Task must be In Progress or already in Review before ready_for_review" }, { status: 409 });
+    if (agent.role !== "coding") {
+      return NextResponse.json({ error: "Only an implementation-capable assignee may submit repository work" }, { status: 403 });
+    }
+    if (task.status !== "In Progress") {
+      return NextResponse.json({ error: "Task must be In Progress before ready_for_review" }, { status: 409 });
     }
     if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be In Progress before task work advances" }, { status: 409 });
 
@@ -614,24 +616,6 @@ export async function POST(
       ? payload.repoTouched
       : codeTouching;
 
-    if (repoTouched && isProtectedBranch(task.project.agentChangeBlockedBranches, branchName)) {
-      return NextResponse.json({
-        error: `Agents cannot submit code-changing work from protected branch ${branchName}. Move the work to an allowed task branch, commit it there, then call ready_for_review again.`,
-        branchName,
-        protectedBranches: parseProtectedBranches(task.project.agentChangeBlockedBranches),
-      }, { status: 409 });
-    }
-
-    if (task.status !== "Review") {
-      await moveTaskStatus({
-        taskId: task.id,
-        projectId: task.projectId,
-        actorUserId: agent.user.id,
-        from: task.status,
-        to: "Review",
-        action,
-      });
-    }
     await recordPmChannelRunWorkflowAction({
       taskId: task.id,
       agentSlug: agent.slug,
@@ -665,10 +649,8 @@ export async function POST(
       reviewCommentId = created.id;
     }
 
-    // Shared Review-entry side effects (verify enqueue with epicChild fields,
-    // verify-gated reviewer wake vs immediate non-code wake, epic queue
-    // refill preferring the freed worker). Human board drags run the SAME
-    // handoff — see lib/tasks/review-handoff.ts.
+    // Code work remains In Progress while the role-resolved Monitor Agent
+    // validates it. The handoff itself moves only validated work to Review.
     const handoff = await runTaskReviewHandoff({
       taskId: task.id,
       actor,
@@ -682,12 +664,28 @@ export async function POST(
     }
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
-    return NextResponse.json({ ok: true, taskId: task.id, status: "Review", verifyJobId: handoff.verifyJobId, repoTouched: handoff.repoTouched, commentId: reviewCommentId });
+    return NextResponse.json({
+      ok: true,
+      taskId: task.id,
+      status: handoff.status,
+      repositoryPhase: handoff.repositoryPhase,
+      verifyJobId: handoff.verifyJobId,
+      repoTouched: handoff.repoTouched,
+      commentId: reviewCommentId,
+      operationalError: handoff.repositoryPhase === "operational_error"
+        ? handoff.error ?? "Repository validation could not start."
+        : null,
+    });
   }
 
   if (action === "review_feedback") {
     if (!isReviewer) return NextResponse.json({ error: "Only the resolved reviewer can leave workflow feedback" }, { status: 403 });
     if (task.status !== "Review") return NextResponse.json({ error: "Task must be in Review for review feedback" }, { status: 409 });
+    if (task.repositoryRun?.phase === "finalizing") {
+      return NextResponse.json({
+        error: "Repository finalization is already running; review feedback can no longer reopen this submission.",
+      }, { status: 409 });
+    }
     if (!comment || comment.length > 8000) {
       return NextResponse.json({ error: "comment is required and must be <= 8000 chars" }, { status: 400 });
     }
@@ -813,7 +811,8 @@ export async function POST(
     return NextResponse.json({
       ok: true,
       taskId: task.id,
-      status: "Done",
+      status: completion.status,
+      repositoryPhase: completion.finalizing ? "finalizing" : "completed",
       nextTask: completion.nextTask,
       nextTasks: completion.nextTasks,
     });

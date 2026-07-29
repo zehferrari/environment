@@ -486,12 +486,11 @@ Latency / PM queue/status names:
    ownership.
 6. `To Do` is actionable only after the Action Plan is approved. When a
    task assigned to you reaches `To Do`, check `approved_on`. If it is
-   empty, post the Action Plan and wait. Approval provisions and validates
-   the task's linked Git worktree when the project has a repository. If
-   approval returns a worktree error, do not create a directory yourself:
-   report the blocker and wait. If `approved_on` is set, move the task to
-   `In Progress` through the PM workflow endpoint; `start` revalidates the
-   worktree and returns its exact `worktreePath`.
+   empty, post the Action Plan and wait. Approval reserves the branch contract
+   but does not create a worktree. If `approved_on` is set, move the task to
+   `In Progress` through the PM workflow endpoint; `start` provisions or
+   revalidates the worktree and returns its exact `worktreePath`. If start
+   returns a worktree error, do not create a directory yourself.
 7. PM no longer auto-starts unapproved assigned work. Older wake/ack
    clients are blocked from moving `To Do` to `In Progress` until
    `approved_on` is set. Do not use hidden routes or direct database
@@ -530,28 +529,25 @@ Latency / PM queue/status names:
     [`guides/BITBUCKET.md`](./guides/BITBUCKET.md) and [`guides/CODE_REPOS.md`](./guides/CODE_REPOS.md).
     If no explicit branch is stored, use the resolved human-key fallback from
     PM context; do not invent a branch from a system/database ID. Use only the
-    validated `worktreePath` returned by approval/start. Never use `mkdir`,
+    validated `worktreePath` returned by `start`. Never use `mkdir`,
     `cp`, or `rsync` to manufacture a task folder under `*.worktrees/`.
 13. Run relevant tests/builds, or state plainly what could not be tested.
-14. When code is ready: a **standalone** task branch (no Epic) is pushed
-    to origin before `ready_for_review`. An **Epic-child task branch is
-    local-only — never push it to origin** (origin pushes trigger
-    unwanted Bitbucket deployment pipelines); commit locally and let
-    PM's auto-merge fold it into the epic integration branch, the only
-    ref that reaches origin. In both cases do **not** create or update a
-    pull request. PR creation and landing are human-only.
+14. When Mission Control code is ready, leave the complete changes in the
+    provisioned worktree and call `ready_for_review`. Do not commit or push:
+    PM creates the submission commit and publishes standalone branches.
+    Epic-child branches remain local and PM merges them into the Epic branch
+    after review; only the Epic branch reaches origin. Do not create or update
+    a pull request. PR creation and landing are human-only.
 15. On completion, tick any remaining implementation subtasks
     (`ready_for_review` is rejected while open ones exist), then move
-    the task to `Review` through the PM workflow endpoint and include
-    one concise note with branch, commit, tests, and residual risk when
-    applicable. Sign formal completion notes.
-16. When you are waiting for reviewer/manager/reporter feedback or
-    response, move the task to `Review` through the PM workflow endpoint
-    with one concise blocker/question note. If you are the resolved
-    reviewer, review the completed work, move it to `Done` when satisfied
-    without posting an approval-only comment, or record concrete
-    feedback/blockers with `review_feedback` — that returns the task to
-    the **front** of To Do for the assignee.
+    request validation through the PM workflow endpoint and include
+    one concise note with branch, tests, and residual risk when applicable.
+    PM reports the commit it creates. Sign formal completion notes.
+16. Questions and blockers can be discussed through comments at any status,
+    but `Review` is not a waiting room. If you are the resolved reviewer,
+    review only completed work, accept it with `review_done` when satisfied,
+    or record concrete feedback/blockers with `review_feedback` — that
+    returns the task to the **front** of To Do for the assignee.
 17. When you flip the matching `~/tasks/current.md` entry to a terminal
     status, move it to `~/tasks/log.md` in the same edit. See
     [Maintaining `tasks/current.md`](#maintaining-taskscurrentmd).
@@ -668,27 +664,26 @@ The durable workflow contract for the local PM workflow.
    project and no effective-branch clash), breaks it into implementation
    subtasks, then does the work — alone or with parallel subagents —
    ticking each subtask `Done` the moment it completes.
-5. When implementation is complete, or when the assignee is waiting for
-   reviewer/manager/reporter feedback or response, the assignee moves the
-   task to `Review` through the PM workflow endpoint with one concise note
-   explaining the result, blocker, or question. `ready_for_review` is
-   rejected while open implementation subtasks remain. For code-touching
-   tasks this immediately wakes the monitor agent to verify the
-   repository before any reviewer is woken.
+5. When implementation is complete, the assignee calls `ready_for_review`
+   with one concise note. Open implementation subtasks reject submission.
+   Code tasks remain `In Progress` with repository phase `validating` while
+   the role-resolved Monitor Agent commits and verifies the branch. A valid
+   or advisory-warning result moves it to `Review`; a concrete error comments
+   and returns it to the front of `To Do` without waking the reviewer.
 6. `review_feedback` returns the task to the **front** of To Do and
    wakes the assignee. The assignee addresses the feedback by starting
    the task again from `To Do` — `start` never applies to a task in
    `Review`.
-7. The resolved reviewer reviews the task **only after monitor validation
-   (`pm.repo.verify.ok`) has passed** for code-touching tasks. If
-   satisfied, the reviewer moves it to `Done`; otherwise they record
+7. The resolved reviewer works the task only in `Review`, after monitor
+   validation has produced `pm.repo.verify.ok` or
+   `pm.repo.verify.warning`. A warning is advisory and the reviewer decides.
+   If satisfied, the reviewer calls `review_done`; repository-backed work
+   remains in Review while PM finalizes it, then moves to Done. Otherwise they record
    concrete feedback with `review_feedback`, returning the task to the
    front of To Do.
-8. After `review_done`, PM assigns the next unassigned top-level `To Do`
-   task in the same Epic to the completed task's assignee. The same
-   preference applies as soon as a task moves to `Review` (agent action
-   or human board drag): the freed worker is preferred for the Epic's
-   next unblocked `To Do` task.
+8. After a task passes validation and moves to `Review`, the freed worker is
+   preferred for the Epic's next approved task, which PM starts immediately
+   when eligible. A validation failure does not advance the queue.
 9. Assignees must always answer unresolved review feedback before taking
    a new `To Do` task. If no feedback is waiting, they should start the
    next assigned and approved `To Do` task while waiting for review on
@@ -733,37 +728,29 @@ the exact silent token and no other text.
 - Assigned `To Do` work asks the assignee to post an Action Plan if
   `approved_on` is empty. Only approved `To Do` work can move to
   `In Progress`.
-- Moving work to `Review` — by workflow action **or by a human dragging
-  the card on the board** — runs the same handoff: repo verify enqueue
-  for code-touching tasks, a verify-gated reviewer wake, and an
-  epic-queue refill that prefers the freed worker.
-- For code-touching tasks the monitor agent is woken first. The monitor
-  rejects dirty worktrees and verifies the branch/prefix/git author and
-  committer against the project git identity or global git identity
-  fallback. For **standalone** task branches it verifies the pushed
-  remote branch, auto-pushing clean local commits when it can. For
-  **epic-child** task branches it verifies the **local** branch ref
-  against the epic integration branch — epic-child branches are never
-  pushed. It rebuilds the live PM worktree if that branch is serving the
-  website, and only then wakes the resolved reviewer. Non-code Review
-  work can wake the reviewer directly.
-- Waiting for reviewer/manager/reporter feedback is a `Review` state, not
-  a stale `In Progress` state. The assignee should include one concise
-  blocker/question/comment in the `ready_for_review` workflow call.
+- A `ready_for_review` action or human Review request runs the same handoff.
+  Code work remains `In Progress` until the Monitor Agent validates it; only a
+  valid result moves it to Review, wakes the reviewer, and refills the queue.
+- For code-touching tasks PM creates the submission commit, then the Monitor
+  Agent verifies branch ancestry, prefix, identity, cleanliness, and the
+  local-only Epic-child rule. A commit-description mismatch is advisory:
+  comment and continue to Review. A concrete repository error comments and
+  returns the task to `To Do`; an infrastructure error retries and leaves
+  status unchanged. Neither failure wakes the reviewer.
+- Questions and blockers are comment interactions at the current status.
+  `ready_for_review` is reserved for completed implementation; Review work
+  belongs to the resolved reviewer/manager role.
 - `review_feedback` returns the task to the **front** of To Do and wakes
   the assignee; the assignee restarts it from `To Do` with `start`.
   There is no Review-resume.
-- `review_done` moves the task to `Done` and triggers the next-task Epic
-  handoff when one exists.
-- When an epic-child task reaches `Done`, PM automatically merges the
-  task's local branch into the epic integration branch (an external
-  runner does the git work) and eagerly pushes the epic branch — the
-  epic branch is the only ref that reaches origin. If the task branch
-  cannot be found locally or the merge fails, the task bounces back to
-  `Review` with a comment and the epic queue steps back; fix it by
-  committing your changes locally on the named branch, never by pushing
-  it. The review verifier queries origin directly and rejects hand-off if
-  an Epic-child task ref was published despite the pre-push guard. When
+- `review_done` accepts the review but repository-backed tasks stay in
+  `Review` while PM finalizes publication/merge and local cleanup. Only a
+  successful finalization moves the task to `Done`.
+- For an accepted Epic child, PM merges the local task branch into the Epic
+  integration branch and eagerly pushes only the Epic branch. It verifies
+  publication and removes the child worktree/local branch before Done. A
+  concrete finalization error comments and returns the task to `To Do`
+  without waking the reviewer again. When
   the Epic itself reaches `Done`, PM waits for every child merge,
   guarantees that the Epic branch is pushed, and then cleans merged local
   branches/worktrees. A leaked remote child ref is removed only after its

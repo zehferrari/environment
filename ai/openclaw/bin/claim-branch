@@ -10,8 +10,9 @@
 #                based on freshly fetched origin/<e> when the Epic branch
 #                exists on origin (else the Epic branch is created locally
 #                from origin/main|master) and is NEVER pushed — the PM
-#                epic-merge runner merges it into the Epic branch on Done
-#                and only the Epic branch reaches origin.
+#                finalization runner merges it into the Epic branch after
+#                reviewer acceptance; only the Epic branch reaches origin,
+#                and cleanup completes before the task becomes Done.
 #   --review     attaches a *detached HEAD* worktree at origin/<branch>
 #                (falling back to the local refs/heads/<branch> for
 #                Epic-child branches that never reach origin) so a

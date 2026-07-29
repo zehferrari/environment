@@ -43,8 +43,10 @@ FAIL: Epic-child task branch '$branch' is local-only and cannot be pushed.
 Epic integration branch:
   $epic_branch
 
-Commit locally and use the PM ready_for_review workflow. When the task reaches
-Done, PM merges '$branch' into '$epic_branch' and pushes only the Epic branch.
+Leave the completed changes locally and use the PM ready_for_review workflow.
+After validation and reviewer acceptance, PM merges '$branch' into
+'$epic_branch', pushes only the Epic branch, removes the child worktree, and
+then marks the task Done.
 EOF
   exit 1
 done

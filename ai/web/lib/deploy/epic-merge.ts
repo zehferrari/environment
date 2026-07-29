@@ -13,6 +13,15 @@ import {
   publishEpicBranch,
   removeMergedOriginChildBranch,
 } from "@/lib/deploy/epic-merge-git";
+import {
+  failTaskReviewValidation,
+  recordTaskReviewOperationalError,
+} from "@/lib/tasks/review-handoff";
+import {
+  resolveActiveMonitorAgent,
+  updateTaskRepositoryState,
+} from "@/lib/tasks/repository-state";
+import { isOperationalRepositoryFailure } from "@/lib/tasks/repository-validation";
 
 // Auto-merge a Done Epic-child task's branch into the Epic integration branch.
 //
@@ -56,22 +65,37 @@ export type EpicMergeJob =
       epicBranch: string;
       branches: string[];
       enqueuedAt: string;
+    }
+  | {
+      kind: "finalize";
+      jobId: string;
+      taskId: string;
+      projectId: string;
+      requestedByUserId: string;
+      requestedByUsername: string;
+      attempt?: number;
+      enqueuedAt: string;
     };
 
 // One deterministic spool filename per subject so a 60s poll tick can never
 // stack duplicate jobs while the runner is busy. `.running`/`.failed` suffixes
 // are runner claim states (see deploy/pm-epic-merge-runner).
 function jobFileName(job: EpicMergeJob) {
-  return job.kind === "merge" ? `merge-${job.taskId}.json` : `cleanup-${job.epicId}.json`;
+  if (job.kind === "merge") return `merge-${job.taskId}.json`;
+  if (job.kind === "finalize") return `finalize-${job.taskId}.json`;
+  return `cleanup-${job.epicId}.json`;
 }
 
-async function enqueueEpicMergeJob(job: EpicMergeJob): Promise<string | null> {
+async function enqueueEpicMergeJob(
+  job: EpicMergeJob,
+  options: { allowWhileRunning?: boolean } = {},
+): Promise<string | null> {
   await mkdir(EPIC_MERGE_DIR, { recursive: true, mode: 0o770 });
   const name = jobFileName(job);
   const target = path.join(EPIC_MERGE_DIR, name);
   if (
     existsSync(target) ||
-    existsSync(`${target}.running`) ||
+    (!options.allowWhileRunning && existsSync(`${target}.running`)) ||
     existsSync(`${target}.failed`)
   ) {
     return null; // already queued / in flight / awaiting operator retry
@@ -81,6 +105,27 @@ async function enqueueEpicMergeJob(job: EpicMergeJob): Promise<string | null> {
   await writeFile(tmp, JSON.stringify(job, null, 2), { mode: 0o660 });
   await rename(tmp, target);
   return target;
+}
+
+export async function enqueueTaskReviewFinalization(args: {
+  taskId: string;
+  projectId: string;
+  requestedByUserId: string;
+  requestedByUsername: string;
+}) {
+  const job: Extract<EpicMergeJob, { kind: "finalize" }> = {
+    kind: "finalize",
+    jobId: `finalize-${args.taskId}`,
+    taskId: args.taskId,
+    projectId: args.projectId,
+    requestedByUserId: args.requestedByUserId,
+    requestedByUsername: args.requestedByUsername,
+    enqueuedAt: new Date().toISOString(),
+  };
+  const target = path.join(EPIC_MERGE_DIR, jobFileName(job));
+  const blockedByFailedJob = existsSync(`${target}.failed`);
+  const spooledPath = await enqueueEpicMergeJob(job);
+  return { enqueued: Boolean(spooledPath), blockedByFailedJob, jobId: job.jobId };
 }
 
 // The production branch the Epic integration branch is cut from when it does
@@ -105,12 +150,8 @@ async function productionBranchFor(projectId: string): Promise<string> {
 }
 
 async function monitorAgentUser(): Promise<{ id: string; username: string } | null> {
-  const monitor = await db.agent.findFirst({
-    where: { role: "monitor", deactivatedAt: null, user: { is: { status: "active" } } },
-    orderBy: { createdAt: "asc" },
-    select: { user: { select: { id: true, username: true } } },
-  });
-  return monitor?.user ?? null;
+  const monitor = await resolveActiveMonitorAgent();
+  return monitor.ok ? monitor.user : null;
 }
 
 // The agent user that authors the merge-failure comment / bounce: the Epic's
@@ -604,6 +645,262 @@ async function removeLocalBranch(job: Extract<EpicMergeJob, { kind: "cleanup" }>
   }
 }
 
+async function removeFinalizedTaskWorktree(
+  repositoryPath: string,
+  branch: string,
+  protectedBranches: string[],
+) {
+  try {
+    await exec(
+      "python3",
+      [
+        worktreeRemoveScript(),
+        "--branch",
+        repositoryPath,
+        `${repositoryPath}.worktrees`,
+        branch,
+        JSON.stringify(protectedBranches),
+      ],
+      { timeout: 60_000, maxBuffer: 1024 * 1024 },
+    );
+    return { ok: true as const };
+  } catch (err) {
+    const anyErr = err as { stderr?: string; stdout?: string; message?: string };
+    const error = String(anyErr.stderr || anyErr.stdout || anyErr.message || err)
+      .trim()
+      .slice(0, 800);
+    return { ok: false as const, error };
+  }
+}
+
+async function executeFinalizeJob(
+  job: Extract<EpicMergeJob, { kind: "finalize" }>,
+) {
+  const task = await db.task.findUnique({
+    where: { id: job.taskId },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      projectId: true,
+      workItemKey: true,
+      branchName: true,
+      project: {
+        select: {
+          repositoryPath: true,
+          defaultGitUserName: true,
+          defaultGitUserEmail: true,
+        },
+      },
+      epic: {
+        select: {
+          id: true,
+          workItemKey: true,
+          branchName: true,
+          commitPrefix: true,
+        },
+      },
+      repositoryRun: {
+        select: {
+          baseSha: true,
+          candidateSha: true,
+          repoTouched: true,
+          worktreePath: true,
+          validationOutcome: true,
+        },
+      },
+      activity: {
+        where: { kind: "pm.epic.merge.ok" },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        select: { payload: true },
+      },
+    },
+  });
+  if (!task || task.status !== "Review") {
+    return { taskId: job.taskId, outcome: "skipped" as const, note: "task is no longer in Review" };
+  }
+  const repositoryPath = task.project.repositoryPath;
+  const taskBranch = effectiveTaskBranchName(task);
+  const repoTouched = task.repositoryRun?.repoTouched === true;
+  const candidateSha = repoTouched
+    ? task.repositoryRun?.candidateSha
+    : task.repositoryRun?.baseSha;
+  const monitor = await monitorAgentUser();
+  if (!monitor) {
+    await recordTaskReviewOperationalError({
+      taskId: task.id,
+      error: "No active Monitor Agent is available to finalize the reviewed repository branch.",
+    });
+    return { taskId: task.id, outcome: "operational-error" as const };
+  }
+  const actor = { id: monitor.id, username: monitor.username, kind: "agent" as const };
+
+  const fail = async (reason: string, operational = false) => {
+    if (operational) {
+      await recordTaskReviewOperationalError({ taskId: task.id, actor, error: reason });
+      const attempt = job.attempt ?? 0;
+      if (attempt < 2) {
+        await enqueueEpicMergeJob({
+          ...job,
+          attempt: attempt + 1,
+          enqueuedAt: new Date().toISOString(),
+        }, { allowWhileRunning: true });
+        return {
+          taskId: task.id,
+          outcome: "operational-retry" as const,
+          reason,
+          attempt: attempt + 1,
+        };
+      }
+      await db.comment.create({
+        data: {
+          taskId: task.id,
+          userId: actor.id,
+          body: `⚙️ Repository finalization could not complete after three attempts. The task remains in Review.\n\n${reason}`,
+        },
+      });
+      return { taskId: task.id, outcome: "operational-error" as const, reason, attempt };
+    }
+    await db.comment.create({
+      data: {
+        taskId: task.id,
+        userId: actor.id,
+        body: `🚫 Repository finalization failed. The task was returned to To Do and the reviewer was not triggered again.\n\n${reason}`,
+      },
+    });
+    await failTaskReviewValidation({ taskId: task.id, actor, error: reason, candidateSha });
+    return { taskId: task.id, outcome: "action-required" as const, reason };
+  };
+
+  if (!repositoryPath || !taskBranch || !candidateSha) {
+    return fail("The validated repository path, task branch, or candidate SHA is missing.");
+  }
+  const finalizedRepositoryPath = repositoryPath;
+  const finalizedTaskBranch = taskBranch;
+  const validatedCandidateSha = candidateSha;
+
+  if (!repoTouched) {
+    const worktreePath = task.repositoryRun?.worktreePath;
+    if (!worktreePath) {
+      return fail("The no-change submission has no registered task worktree to clean up.");
+    }
+    try {
+      const [dirty, head] = await Promise.all([
+        runGit(worktreePath, ["status", "--porcelain"]),
+        runGit(worktreePath, ["rev-parse", "HEAD"]),
+      ]);
+      if (dirty) {
+        return fail("The task declared no repository changes, but its worktree is dirty.");
+      }
+      if (head !== validatedCandidateSha) {
+        return fail(
+          `The task declared no repository changes, but worktree HEAD ${head || "is missing"} does not match its start SHA ${validatedCandidateSha}.`,
+        );
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return fail(detail, isOperationalRepositoryFailure(detail));
+    }
+    const noChangeEpicBranch = task.epic ? effectiveEpicBranchName(task.epic) : null;
+    const cleanup = await removeFinalizedTaskWorktree(finalizedRepositoryPath, finalizedTaskBranch, noChangeEpicBranch
+      ? [noChangeEpicBranch]
+      : []);
+    if (!cleanup.ok) return fail(cleanup.error, true);
+  } else if (task.epic) {
+    const epicBranch = effectiveEpicBranchName(task.epic);
+    if (!epicBranch) return fail("The Epic integration branch cannot be resolved.");
+    const candidateAlreadyMerged = task.activity.some((activity) => {
+      try {
+        return typeof activity.payload === "string" &&
+          JSON.parse(activity.payload).candidateSha === validatedCandidateSha;
+      } catch {
+        return false;
+      }
+    });
+    if (!candidateAlreadyMerged) {
+      const result = await mergeTaskBranchIntoEpic({
+        repoPath: finalizedRepositoryPath,
+        epicBranch,
+        taskBranch: finalizedTaskBranch,
+        baseBranch: await productionBranchFor(task.projectId),
+        gitUserName: task.project.defaultGitUserName?.trim() || "PM Monitor",
+        gitUserEmail: task.project.defaultGitUserEmail?.trim() || "pm-monitor@localhost",
+        message: `Merge ${task.workItemKey ?? taskBranch} into Epic branch ${epicBranch}`,
+      });
+      if (!result.ok) {
+        return fail(result.reason, isOperationalRepositoryFailure(result.reason));
+      }
+      await db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId: task.id,
+          userId: actor.id,
+          kind: "pm.epic.merge.ok",
+          payload: JSON.stringify({
+            taskId: task.id,
+            epicId: task.epic.id,
+            epicBranch,
+            taskBranch: finalizedTaskBranch,
+            kind: result.kind,
+            candidateSha: validatedCandidateSha,
+          }),
+        },
+      });
+    }
+    await runGitOk(finalizedRepositoryPath, [
+      "fetch",
+      "--quiet",
+      "origin",
+      `+refs/heads/${epicBranch}:refs/remotes/origin/${epicBranch}`,
+    ], { timeout: 60_000 });
+    const contained = await runGitOk(finalizedRepositoryPath, [
+      "merge-base",
+      "--is-ancestor",
+      validatedCandidateSha,
+      `refs/remotes/origin/${epicBranch}`,
+    ]);
+    if (!contained) {
+      return fail(`Validated commit ${validatedCandidateSha} is not contained in the published Epic branch ${epicBranch}.`);
+    }
+    const cleanup = await removeFinalizedTaskWorktree(finalizedRepositoryPath, finalizedTaskBranch, [epicBranch]);
+    if (!cleanup.ok) return fail(cleanup.error, true);
+  } else {
+    const remote = await inspectOriginBranch(finalizedRepositoryPath, finalizedTaskBranch);
+    if (!remote.ok) return fail(remote.reason, isOperationalRepositoryFailure(remote.reason));
+    if (!remote.sha || remote.sha !== validatedCandidateSha) {
+      return fail(
+        `origin/${finalizedTaskBranch} is ${remote.sha ?? "missing"}; expected validated commit ${validatedCandidateSha}.`,
+      );
+    }
+    const cleanup = await removeFinalizedTaskWorktree(finalizedRepositoryPath, finalizedTaskBranch, []);
+    if (!cleanup.ok) return fail(cleanup.error, true);
+  }
+
+  await updateTaskRepositoryState(task.id, {
+    phase: "completed",
+    candidateSha: validatedCandidateSha,
+    reviewedSha: validatedCandidateSha,
+    validationOutcome:
+      task.repositoryRun?.validationOutcome === "valid_with_warning"
+        ? "valid_with_warning"
+        : "valid",
+    lastError: null,
+  });
+  const { completeReviewedTaskAndAssignNext } = await import("@/lib/tasks/review-automation");
+  const completion = await completeReviewedTaskAndAssignNext({
+    taskId: task.id,
+    actor,
+    via: "repository-finalization",
+    repositoryFinalized: true,
+  });
+  publishBoardTouch(task.projectId);
+  return {
+    taskId: task.id,
+    outcome: completion.completed ? "done" as const : "completion-failed" as const,
+  };
+}
+
 function renderCleanupBody(job: Extract<EpicMergeJob, { kind: "cleanup" }>, items: CleanupItem[]) {
   const removed = items.filter((item) => item.outcome === "removed");
   const absent = items.filter((item) => item.outcome === "absent");
@@ -789,5 +1086,6 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
 
 export async function runEpicMergeSpoolJob(job: EpicMergeJob) {
   if (job.kind === "merge") return executeMergeJob(job);
+  if (job.kind === "finalize") return executeFinalizeJob(job);
   return executeCleanupJob(job);
 }

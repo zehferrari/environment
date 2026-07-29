@@ -166,6 +166,16 @@ export function getCachedTaskDetailShell(taskId: string) {
           },
         },
         blockedBy: { select: { id: true, workItemKey: true, title: true, status: true } },
+        repositoryRun: {
+          select: {
+            phase: true,
+            validationOutcome: true,
+            candidateSha: true,
+            reviewedSha: true,
+            lastError: true,
+            updatedAt: true,
+          },
+        },
       },
     }),
     ["task-detail-shell", taskId],
@@ -283,7 +293,15 @@ export function getCachedLatestRepoVerifyActivity(taskId: string) {
   return db.activityLog.findMany({
     where: {
       taskId,
-      kind: { in: ["pm.repo.verify.ok", "pm.repo.verify.fail", "pm.repo.verify.enqueue"] },
+      kind: {
+        in: [
+          "pm.repo.verify.ok",
+          "pm.repo.verify.warning",
+          "pm.repo.verify.fail",
+          "pm.repo.verify.operational_error",
+          "pm.repo.verify.enqueue",
+        ],
+      },
     },
     select: { kind: true, payload: true, createdAt: true },
   }).then(selectLatestRepoVerifyActivity);

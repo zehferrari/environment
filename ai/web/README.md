@@ -335,12 +335,15 @@ task-comment implementation plan/opinion, but does not authorize work.
 the task to `In Progress` and start immediately without posting a
 visible acknowledgement unless there is new task information.
 `Review` is reserved for completed implementation review; the resolved
-reviewer moves satisfied work to `Done` without approval-only comments,
+reviewer accepts satisfied work without approval-only comments. Repository
+tasks remain in Review during PM-owned publication/merge and cleanup, then
+move to Done,
 or returns it with concise feedback via `review_feedback`, which sends
 the task (feedback attached) to the FRONT of the To Do queue — agents
 never resume a task from `Review` in place. A human drag into `Review`
-triggers the same side effects as an agent `ready_for_review` (verify
-enqueue, reviewer wake, epic-queue refill preferring the freed worker).
+requests the same validation as agent `ready_for_review`; code tasks remain
+In Progress until a valid or advisory result wakes the reviewer and refills
+the Epic queue.
 Server-side enforcement lives in `lib/workflow.ts`:
 `checkStatusTransition`, `checkAssignment`, `checkHierarchy`,
 `checkActingManager`, plus the token-scoped
@@ -413,12 +416,14 @@ count), assigned
 sequentially. Status is Backlog / To Do / In Progress / Done —
 deployment lives on the separate `deploymentStatus` lane;
 child tasks are agent-actionable only while the Epic is To Do / In
-Progress. Child-task branches are LOCAL-ONLY: on task Done, PM's merge
-runner merges the local task branch into the epic integration branch
-and pushes only the epic branch to origin (child branches never reach
-origin — origin pushes trigger unwanted deployments); when the Epic
-reaches Done, merged local child branches and their worktrees are
-cleaned up.
+Progress. Child-task branches are LOCAL-ONLY: after repository validation
+and reviewer acceptance, PM keeps the task in Review while its finalization
+runner merges the validated local task branch into the Epic integration
+branch, pushes only the Epic branch to origin, and removes the child
+worktree/local branch. Only then does PM mark the task Done. Child branches
+never reach origin because their pushes trigger unwanted deployments. When
+the Epic reaches Done, a recovery cleanup verifies that the Epic branch is
+published and removes any remaining merged child artifacts.
 The detail view also shows status, description, attachments, the
 Development section (deployment status + PRs), and a tasks panel grouped
 by each task's own kanban status. Tasks linked into an Epic still drive

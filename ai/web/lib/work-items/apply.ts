@@ -614,8 +614,7 @@ export async function commitProposal(
           }
           if (typeof op.status === "string" && op.status !== task.status) {
             // Proposals must not be a side door around the workflow engine:
-            // a proposed jump to In Progress is downgraded to To Do when the
-            // Proposals never bypass the shared start boundary. Even an
+            // proposals never bypass the shared start boundary. Even an
             // approved, unblocked proposal targeting In Progress lands in To
             // Do first so action=start can validate/provision the exact linked
             // worktree before any implementation becomes active.
