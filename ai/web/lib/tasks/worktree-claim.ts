@@ -255,7 +255,7 @@ export async function runWorktreeClaimJob(
 
     const repositoryRoot = await resolvePrimaryRepository(job.repositoryPath);
     const repoName = path.basename(repositoryRoot);
-    const args = [repoName, job.branchName];
+    const args = [repoName, job.branchName, "--pm"];
     if (job.epicBranch && job.epicBranch !== job.branchName) {
       args.push("--epic", job.epicBranch);
     }

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Block publication of branches registered by claim-branch --epic.
+# Block agent publication of PM-managed branches and all Epic-child branches.
 #
 # This is a guardrail, not a Bitbucket permission boundary: a caller with
 # repository write credentials can bypass local hooks with --no-verify. PM's
@@ -19,6 +19,11 @@ epic_for_branch() {
   git config --get "branch.${branch}.pmEpicBranch" 2>/dev/null || true
 }
 
+pm_managed_branch() {
+  local branch="$1"
+  git config --bool --get "branch.${branch}.pmManaged" 2>/dev/null || true
+}
+
 while read -r local_ref local_sha remote_ref remote_sha; do
   # Deleting a leaked remote child ref is allowed.
   [ "$local_sha" != "$ZERO_SHA" ] || continue
@@ -35,9 +40,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "$branch" ] || continue
 
   epic_branch=$(epic_for_branch "$branch")
-  [ -n "$epic_branch" ] || continue
-
-  cat >&2 <<EOF
+  if [ -n "$epic_branch" ]; then
+    cat >&2 <<EOF
 FAIL: Epic-child task branch '$branch' is local-only and cannot be pushed.
 
 Epic integration branch:
@@ -48,7 +52,19 @@ After validation and reviewer acceptance, PM merges '$branch' into
 '$epic_branch', pushes only the Epic branch, removes the child worktree, and
 then marks the task Done.
 EOF
-  exit 1
+    exit 1
+  fi
+
+  if [ "$(pm_managed_branch "$branch")" = true ]; then
+    cat >&2 <<EOF
+FAIL: PM-managed task branch '$branch' cannot be pushed by an agent.
+
+Leave the completed changes in the attached task worktree and use the
+Mission Control ready_for_review workflow. PM creates the submission commit,
+validates it, and publishes a standalone branch only after that gate passes.
+EOF
+    exit 1
+  fi
 done
 
 exit 0

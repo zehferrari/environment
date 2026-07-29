@@ -144,40 +144,32 @@ The implementer flow is:
 > the local ref against the Epic integration branch. After reviewer acceptance,
 > PM folds the validated branch into the Epic branch, pushes that branch,
 > removes the child worktree/local branch, and only then marks the task Done.
-> The Epic branch is the only ref that reaches origin. Reviewers attach a never-pushed
-> epic-child branch with `claim-branch <repo> <branch> --review`, which falls
-> back to the local ref when the branch isn't on origin.
+> The Epic branch is the only ref that reaches origin. Reviewers reuse the
+> existing attached child worktree after PM moves the task to Review.
 
-## Review flow — sequential or concurrent
+## Review flow — one attached worktree
 
-A different agent reviews the changes. Pick one:
+A different agent reviews the changes after the assignee has stopped working.
 
 **Sequential** (manual/Jira-only flow):
 1. Implementer pushes, reports the branch ready, and releases the worktree.
-2. Reviewer runs `claim-branch <repo> <branch>` — same command. The
+2. Reviewer runs `claim-branch <repo> <branch>` — the same command. The
    helper fetches origin first and lands the reviewer on the latest
-   pushed tip. For a local-only epic-child branch use
-   `claim-branch <repo> <branch> --review` instead — it falls back to
-   the local ref when the branch isn't on origin.
+   pushed tip.
 3. Reviewer reads code, runs tests, reports findings in Jira/email, then
    `claim-branch --release <repo> <branch>`.
 
-**Concurrent / Mission Control review:**
+**Mission Control review:**
 
-Git allows only one worktree per branch ref, so the reviewer attaches
-a *detached HEAD* worktree at `origin/<branch>` instead — same code,
-no shared branch ref:
-
-1. Reviewer runs `claim-branch <repo> <branch> --review` — creates
-   `/srv/Code/<repo>.worktrees/<branch>__review/` with detached HEAD
-   at the latest pushed commit (for a local-only epic-child branch that
-   isn't on origin, the helper falls back to the local
-   `refs/heads/<branch>` tip).
-2. They read / grep / run tests there. Reviewers do not edit the
+1. PM keeps the attached task worktree after validation and moves the task
+   to Review only after the assignee's turn has ended.
+2. `claim-branch <repo> <branch> --review` validates and returns that same
+   attached task worktree. It never creates a detached `__review` folder.
+3. The reviewer reads / greps / runs tests there. Reviewers do not edit the
    implementation branch; requested fixes return to the assignee through
    `review_feedback`.
-3. Detached HEAD does not accept commits without checking out a branch first.
-4. When done, `claim-branch --release <repo> <branch> --review`.
+4. PM removes the attached worktree and local task branch only after the
+   reviewer accepts and task finalization succeeds.
 
 ## Pull Requests — Humans Only
 
@@ -228,15 +220,17 @@ claim-branch <repo> <branch>
 # branch (local-only; never pushed)
 claim-branch <repo> <branch> --epic <epic-branch>
 
-# attach a detached-HEAD review worktree (concurrent with implementer)
+# validate/reuse the existing attached task worktree for Review
 claim-branch <repo> <branch> --review
 
 # list every worktree currently attached to the repo
 claim-branch --list <repo>
 
 # tear down a worktree after zeh lands the PR / review is done
-claim-branch --release <repo> <branch>            # implementer worktree
-claim-branch --release <repo> <branch> --review   # reviewer worktree
+claim-branch --release <repo> <branch>
+
+# audit every /srv/Code/*.worktrees child and normalize safe metadata
+audit-code-worktrees --fix
 ```
 
 The script lives at `/usr/local/bin/claim-branch`. It writes the
@@ -252,9 +246,8 @@ tip; it does not recreate or rebase that branch.
 In `--epic` mode the base is instead the freshly fetched
 `origin/<epic-branch>` when it exists; otherwise the helper creates the epic
 branch locally from origin main/master first. Epic mode never pushes — the
-task branch stays local. In `--review` mode the helper attaches
-`origin/<branch>` when it exists and falls back to a detached worktree at the
-local `refs/heads/<branch>` for never-pushed epic-child branches.
+task branch stays local. In `--review` mode the helper validates and returns
+the existing attached worktree; detached reviewer worktrees are forbidden.
 
 A repeated `claim-branch <repo> <branch>` is a no-op — it just prints
 the existing worktree's path after revalidating that it is registered, belongs
@@ -262,6 +255,12 @@ to the expected common Git repository, and is checked out on the exact branch.
 If the deterministic path already exists as an ordinary directory, the helper
 preserves it and fails; it never treats the folder as a worktree or overwrites
 its contents.
+
+The directory name must equal the attached branch name with `/` converted to
+`_`. Run `audit-code-worktrees` for a read-only fleet audit or
+`audit-code-worktrees --fix` to normalize safe identity metadata. Detached,
+misnamed, copied, dirty-orphan, or wrong-repository directories are reported
+and left untouched.
 
 ## What does NOT belong under `/srv/Code/`
 

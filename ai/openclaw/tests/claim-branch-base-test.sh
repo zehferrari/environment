@@ -158,19 +158,43 @@ git -C "$CODE_ROOT/proj" rev-parse --verify --quiet refs/heads/not-a-worktree >/
   exit 1
 }
 
-# 6. Reviewer fallback: a local-only Epic-child branch (never on origin) can
-#    still be claimed for review, detached at the local refs/heads tip.
+# 6. Review access reuses the existing attached worktree. Status gates make
+#    assignee/reviewer access sequential, so no detached __review tree exists.
 printf 'local work\n' > "$wt/local-work.txt"
 git -C "$wt" add local-work.txt
 git -C "$wt" -c user.name="PM Test" -c user.email="pm-test@example.invalid" commit --quiet -m "ph-1 local work"
 rwt=$(cmd_claim_review proj ph-1-task)
-[ -d "$rwt" ] || { printf 'review fallback must create a worktree\n' >&2; exit 1; }
-[ "$(git -C "$rwt" rev-parse HEAD)" = "$(git -C "$CODE_ROOT/proj" rev-parse refs/heads/ph-1-task)" ] || {
-  printf 'review fallback must attach at the local branch tip\n' >&2
+[ "$rwt" = "$wt" ] || {
+  printf 'review access must return the existing attached task worktree\n' >&2
   exit 1
 }
-[ "$(git -C "$rwt" rev-parse --abbrev-ref HEAD)" = "HEAD" ] || {
-  printf 'review fallback worktree must be detached\n' >&2
+[ "$(git -C "$rwt" symbolic-ref --quiet --short HEAD)" = "ph-1-task" ] || {
+  printf 'review access must remain attached to the task branch\n' >&2
+  exit 1
+}
+[ ! -e "$CODE_ROOT/proj.worktrees/ph-1-task__review" ] || {
+  printf 'review access must not create a detached __review directory\n' >&2
+  exit 1
+}
+
+# 7. A PM-owned standalone claim stays local until the PM submission runner
+#    pushes it. Interactive pushes are blocked by the shared hook.
+pm_wt=$(cmd_claim proj pm-standalone "" true)
+[ -d "$pm_wt" ] || { printf 'PM claim must create a worktree\n' >&2; exit 1; }
+[ -z "$(git -C "$CODE_ROOT/proj" ls-remote --heads origin pm-standalone)" ] || {
+  printf 'PM claim must not publish a new standalone branch\n' >&2
+  exit 1
+}
+[ "$(git -C "$CODE_ROOT/proj" config --bool --get branch.pm-standalone.pmManaged)" = true ] || {
+  printf 'PM claim must mark the branch as PM-managed\n' >&2
+  exit 1
+}
+if git -C "$pm_wt" push origin pm-standalone >/dev/null 2>&1; then
+  printf 'pre-push must reject agent publication of a PM-managed branch\n' >&2
+  exit 1
+fi
+git -C "$pm_wt" push --no-verify origin pm-standalone >/dev/null 2>&1 || {
+  printf 'trusted PM publication boundary must be able to bypass the local guard\n' >&2
   exit 1
 }
 

@@ -13,21 +13,21 @@
 #                finalization runner merges it into the Epic branch after
 #                reviewer acceptance; only the Epic branch reaches origin,
 #                and cleanup completes before the task becomes Done.
-#   --review     attaches a *detached HEAD* worktree at origin/<branch>
-#                (falling back to the local refs/heads/<branch> for
-#                Epic-child branches that never reach origin) so a
-#                different agent can read/run-tests on the same
-#                branch concurrently with the implementer (git only
-#                allows one worktree per branch ref; review mode
-#                sidesteps that with --detach).
-#   (default)    a normal branch worktree (the implementer's tree).
+#   --pm         PM-owned claim. A new standalone task branch remains local
+#                until the PM submission/validation runner commits and pushes
+#                it for Review.
+#   --review     validates and returns the existing attached task worktree.
+#                Review is status-sequential, so a second detached worktree is
+#                neither necessary nor permitted.
+#   (default)    a normal branch worktree (manual/Jira flow).
 #
 # Usage:
 #   claim-branch <repo> <branch>                 # attach or create from origin/main|master
 #   claim-branch <repo> <branch> --epic <epicBranch>  # Epic-child worktree (local-only, no push)
-#   claim-branch <repo> <branch> --review        # reviewer worktree (detached HEAD)
+#   claim-branch <repo> <branch> --pm            # PM task worktree (local until submission)
+#   claim-branch <repo> <branch> --review        # validate/reuse the attached task worktree
 #   claim-branch --release <repo> <branch>       # tear down implementer worktree
-#   claim-branch --release <repo> <branch> --review  # tear down reviewer worktree
+#   claim-branch --release <repo> <branch> --review  # remove a legacy detached reviewer tree
 #   claim-branch --list <repo>                   # show worktrees for repo
 #
 # There is deliberately no --from override. Allowing callers to choose a
@@ -42,7 +42,10 @@
 # Filesystem layout:
 #   /srv/Code/<repo>                              primary worktree (default branch)
 #   /srv/Code/<repo>.worktrees/<branch>           implementer worktree (on branch)
-#   /srv/Code/<repo>.worktrees/<branch>__review   reviewer worktree (detached HEAD)
+#
+# Every directory immediately under <repo>.worktrees must be a registered
+# attached worktree whose directory name is the branch name with "/" replaced
+# by "_". Reviewers reuse that same worktree while the task is in Review.
 
 set -euo pipefail
 
@@ -57,7 +60,8 @@ usage() {
 
 slugify() { printf '%s' "$1" | tr '/' '_'; }
 
-# Path of the implementer or reviewer worktree for a given (repo, branch).
+# Path of the attached task worktree, or of a legacy reviewer worktree when
+# explicitly requested for cleanup.
 worktree_path() {
   local repo="$1" branch="$2" review="$3"
   local slug; slug=$(slugify "$branch")
@@ -158,6 +162,15 @@ mark_epic_child_branch() {
   git -C "$repo_root" config --local "branch.${branch}.pmEpicBranch" "$epic_branch"
 }
 
+mark_pm_managed_branch() {
+  local repo_root="$1" branch="$2" pm_owned="$3"
+  [ "$pm_owned" = true ] || return 0
+
+  # Shared-repository metadata consumed by /srv/Code/git-hooks/pre-push.
+  # Only the PM submission runner may publish a PM-owned standalone task ref.
+  git -C "$repo_root" config --local "branch.${branch}.pmManaged" true
+}
+
 resolve_base_branch() {
   local repo_root="$1"
   local main_error="" master_error=""
@@ -188,7 +201,7 @@ fetch_remote_branch() {
 }
 
 cmd_claim() {
-  local repo="$1" branch="$2" epic_branch="${3:-}"
+  local repo="$1" branch="$2" epic_branch="${3:-}" pm_owned="${4:-false}"
   local repo_root="$CODE_ROOT/$repo"
   [ -d "$repo_root/.git" ] || die "no repo at $repo_root"
   git check-ref-format --branch "$branch" >/dev/null 2>&1 || die "invalid branch name: $branch"
@@ -201,6 +214,7 @@ cmd_claim() {
   if worktree_is_registered "$repo_root" "$wt"; then
     validate_implementer_worktree "$repo_root" "$wt" "$branch"
     mark_epic_child_branch "$repo_root" "$branch" "$epic_branch"
+    mark_pm_managed_branch "$repo_root" "$branch" "$pm_owned"
     write_expected_identity "$repo_root" "$branch" false
     printf '%s\n' "$wt"
     return 0
@@ -281,6 +295,7 @@ cmd_claim() {
     fi
 
     mark_epic_child_branch "$repo_root" "$branch" "$epic_branch"
+    mark_pm_managed_branch "$repo_root" "$branch" "$pm_owned"
     write_expected_identity "$repo_root" "$branch" false
     validate_implementer_worktree "$repo_root" "$wt" "$branch"
     printf '%s\n' "$wt"
@@ -295,14 +310,19 @@ cmd_claim() {
   # remote-tracking cache yet.
   fetch_remote_branch "$repo_root" "$branch" 2>/dev/null || true
 
-  if git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null; then
+  if git -C "$repo_root" rev-parse --verify --quiet "refs/heads/${branch}" >/dev/null; then
+    git -C "$repo_root" worktree add "$wt" "$branch" >&2
+  elif git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null; then
     git -C "$repo_root" worktree add -B "$branch" "$wt" "origin/${branch}" >&2
   else
     printf 'Branch %s not found on origin. Creating it from origin/%s...\n' "$branch" "$base_branch" >&2
-    git -C "$repo_root" worktree add -b "$branch" "$wt" "origin/$base_branch" >&2
-    git -C "$wt" push -u origin "$branch" >&2
+    git -C "$repo_root" worktree add --no-track -b "$branch" "$wt" "origin/$base_branch" >&2
+    if [ "$pm_owned" != true ]; then
+      git -C "$wt" push -u origin "$branch" >&2
+    fi
   fi
 
+  mark_pm_managed_branch "$repo_root" "$branch" "$pm_owned"
   write_expected_identity "$repo_root" "$branch" false
   validate_implementer_worktree "$repo_root" "$wt" "$branch"
 
@@ -314,36 +334,11 @@ cmd_claim_review() {
   local repo_root="$CODE_ROOT/$repo"
   [ -d "$repo_root/.git" ] || die "no repo at $repo_root"
 
-  local wt; wt=$(worktree_path "$repo" "$branch" true)
-
-  if worktree_is_registered "$repo_root" "$wt"; then
-    printf '%s\n' "$wt"
-    return 0
-  fi
-
-  git -C "$repo_root" worktree prune
-  if [ -e "$wt" ]; then
-    die "$wt already exists but is not a registered Git worktree; preserve or relocate it before claiming review worktree"
-  fi
-  fetch_remote_branch "$repo_root" "$branch" 2>/dev/null || true
-
-  # --detach attaches with no branch ref, so the implementer's worktree on the
-  # same branch is undisturbed. Origin is preferred; Epic-child branches are
-  # local-only (never pushed), so fall back to the local refs/heads tip.
-  local review_ref
-  if git -C "$repo_root" rev-parse --verify --quiet "refs/remotes/origin/${branch}" >/dev/null; then
-    review_ref="origin/${branch}"
-  elif git -C "$repo_root" rev-parse --verify --quiet "refs/heads/${branch}" >/dev/null; then
-    printf 'Branch %s not on origin — attaching reviewer worktree at local refs/heads/%s.\n' "$branch" "$branch" >&2
-    review_ref="refs/heads/${branch}"
-  else
-    die "branch '${branch}' not found on origin or locally — nothing to review yet"
-  fi
-
-  mkdir -p "$CODE_ROOT/${repo}.worktrees"
-  git -C "$repo_root" worktree add --detach "$wt" "$review_ref" >&2
-
-  write_expected_identity "$repo_root" "$branch" true
+  local wt; wt=$(worktree_path "$repo" "$branch" false)
+  worktree_is_registered "$repo_root" "$wt" || \
+    die "attached task worktree not found at $wt; PM must provision it when the task enters In Progress"
+  validate_implementer_worktree "$repo_root" "$wt" "$branch"
+  write_expected_identity "$repo_root" "$branch" false
 
   printf '%s\n' "$wt"
 }
@@ -385,10 +380,12 @@ case "${1:-}" in
     [ -n "$repo" ] && [ -n "$branch" ] || usage
     shift 2
     review=false
+    pm_owned=false
     epic_branch=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --review) review=true; shift ;;
+        --pm) pm_owned=true; shift ;;
         --epic)
           [ $# -ge 2 ] || die "--epic requires the Epic integration branch name"
           epic_branch="$2"; shift 2 ;;
@@ -397,10 +394,11 @@ case "${1:-}" in
       esac
     done
     if [ "$review" = true ]; then
-      [ -z "$epic_branch" ] || die "--epic applies to implementer claims; review mode already falls back to local Epic-child branches"
+      [ -z "$epic_branch" ] || die "--epic applies to task claims, not review access"
+      [ "$pm_owned" = false ] || die "--pm applies to task claims, not review access"
       cmd_claim_review "$repo" "$branch"
     else
-      cmd_claim "$repo" "$branch" "$epic_branch"
+      cmd_claim "$repo" "$branch" "$epic_branch" "$pm_owned"
     fi
     ;;
 esac

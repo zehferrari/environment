@@ -9,9 +9,9 @@ which one the live PM site serves, including from the browser.
 
 The worktree workflow itself is the existing `claim-branch` model — see
 [`ai/openclaw/guides/CODE_REPOS.md`](../../openclaw/guides/CODE_REPOS.md): every ticket gets
-its own worktree under `/srv/Code/<repo>.worktrees/<branch>/`, **one implementer
-per branch**, reviewers on detached-HEAD worktrees, enforced by the `/srv/Code`
-pre-commit hook. Two agents must never both *write* the same branch worktree —
+its own worktree under `/srv/Code/<repo>.worktrees/<branch>/`, **one active
+writer per branch**, with reviewers reusing that attached worktree only after
+the task enters Review. Two agents must never both *write* the same branch worktree —
 that produces entangled diffs and broken builds.
 
 For Mission Control code tasks, Action Plan approval reserves the branch
@@ -33,9 +33,9 @@ attached at its existing remote tip; it is not rebased by the helper.
 Epic integration branch exists on origin, otherwise the Epic branch is first
 created locally from `origin/main|master`. Epic-child branches are
 **local-only** — `claim-branch` never pushes them (no `push -u`, `--no-track`)
-— see § Local-only Epic-child branches below. Reviewer claims
-(`--review`) attach detached at `origin/<branch>` and fall back to the local
-`refs/heads/<branch>` tip for these never-pushed branches.
+— see § Local-only Epic-child branches below. Reviewer claims (`--review`)
+validate and return the same attached task worktree; no detached review
+directory is created.
 
 At review time, the monitor verifies a standalone task branch by fetching the
 project's effective deployment PR target branch and rejecting the task branch

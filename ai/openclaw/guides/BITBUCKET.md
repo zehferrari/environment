@@ -148,13 +148,12 @@ Sequential review:
 3. Reviewer reads code, runs tests, reports findings in the source
    channel, then runs `claim-branch --release <repo> <branch>`.
 
-Concurrent review while the implementer is still iterating:
+Mission Control review:
 
 1. Reviewer runs `claim-branch <repo> <branch> --review`.
-2. The helper creates a detached-HEAD review worktree at
-   `/srv/Code/<repo>.worktrees/<branch>__review/` using the latest pushed
-   commit — or, for a local-only epic-child branch that isn't on origin,
-   the local `refs/heads/<branch>` tip.
+2. The helper validates and returns the existing attached task worktree.
+   It never creates a detached `__review` folder. Mission Control status
+   gates prevent the assignee and reviewer from working concurrently.
 3. If the reviewer wants to propose fixups, they create a sibling branch
    from the current integration branch, for example:
 
@@ -162,10 +161,8 @@ Concurrent review while the implementer is still iterating:
 claim-branch <repo> <branch>-review-fixes
 ```
 
-4. When done, release with
-   `claim-branch --release <repo> <branch> --review`.
-
-Detached HEAD itself is for review, not direct commits.
+4. Review feedback returns the task to the assignee. PM removes the task
+   worktree only after accepted finalization reaches Done.
 
 ---
 
@@ -213,7 +210,7 @@ claim-branch <repo> <branch>
 # branch (local-only; never pushed)
 claim-branch <repo> <branch> --epic <epic-branch>
 
-# attach a detached-HEAD review worktree
+# validate/reuse the attached task worktree
 claim-branch <repo> <branch> --review
 
 # list every worktree currently attached to the repo
@@ -221,7 +218,6 @@ claim-branch --list <repo>
 
 # tear down a worktree after zeh lands the PR / review is done
 claim-branch --release <repo> <branch>
-claim-branch --release <repo> <branch> --review
 ```
 
 The script lives at `/usr/local/bin/claim-branch`. It writes worktrees

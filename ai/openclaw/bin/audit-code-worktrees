@@ -1,0 +1,139 @@
+#!/bin/bash
+# Audit every immediate child of /srv/Code/*.worktrees.
+#
+# A valid task worktree:
+#   - is a registered linked Git worktree (a .git file, never a copied repo);
+#   - belongs to the sibling immutable primary checkout;
+#   - is attached to a local branch;
+#   - uses <branch-with-slashes-as-underscores> as its directory name;
+#   - has the shared Git identity and expected-identity guard metadata.
+#
+# --fix normalizes safe Git metadata. Structural problems are reported and
+# left untouched so dirty or mis-associated work is never lost automatically.
+
+set -euo pipefail
+
+CODE_ROOT=/srv/Code
+FIX=false
+
+usage() {
+  printf 'usage: audit-code-worktrees [--fix] [--root <code-root>]\n' >&2
+  exit 2
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --fix) FIX=true; shift ;;
+    --root)
+      [ $# -ge 2 ] || usage
+      CODE_ROOT=$2
+      shift 2
+      ;;
+    -h|--help) usage ;;
+    *) usage ;;
+  esac
+done
+
+CODE_ROOT=$(readlink -f "$CODE_ROOT") || {
+  printf 'ERROR code root does not resolve: %s\n' "$CODE_ROOT" >&2
+  exit 2
+}
+
+git_name=${PM_GIT_NAME:-}
+git_email=${PM_GIT_EMAIL:-}
+if [ -z "$git_name" ] || [ -z "$git_email" ]; then
+  agents_json=/etc/openclaw/agents.json
+  if [ -r "$agents_json" ] && command -v jq >/dev/null 2>&1; then
+    git_name=$(jq -r '.gitName // empty' "$agents_json")
+    git_email=$(jq -r '.gitEmail // empty' "$agents_json")
+  fi
+fi
+
+checked=0
+fixed=0
+errors=0
+
+report_error() {
+  printf 'ERROR %s\n' "$*" >&2
+  errors=$((errors + 1))
+}
+
+mapfile -d '' containers < <(
+  find "$CODE_ROOT" -mindepth 1 -maxdepth 1 -type d -name '*.worktrees' -print0 |
+    sort -z
+)
+
+for container in "${containers[@]}"; do
+  repo=${container%.worktrees}
+  if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    report_error "$container has no valid sibling repository at $repo"
+    continue
+  fi
+
+  repo_common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+  repo_common=$(readlink -f "$repo_common")
+  if [ "$FIX" = true ]; then
+    git -C "$repo" config extensions.worktreeConfig true
+  fi
+
+  mapfile -d '' entries < <(
+    find "$container" -mindepth 1 -maxdepth 1 ! -name '.claude' -print0 |
+      sort -z
+  )
+  for worktree in "${entries[@]}"; do
+    checked=$((checked + 1))
+    if [ ! -d "$worktree" ]; then
+      report_error "$worktree is not a directory"
+      continue
+    fi
+    if [ ! -f "$worktree/.git" ]; then
+      report_error "$worktree is an ordinary directory, not a linked Git worktree"
+      continue
+    fi
+
+    branch=$(git -C "$worktree" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    if [ -z "$branch" ]; then
+      report_error "$worktree is detached; task worktrees must have an attached branch"
+      continue
+    fi
+
+    expected_path="$container/${branch//\//_}"
+    if [ "$worktree" != "$expected_path" ]; then
+      report_error "$worktree is branch $branch; expected path $expected_path"
+      continue
+    fi
+
+    worktree_common=$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+    worktree_common=$(readlink -f "$worktree_common" 2>/dev/null || true)
+    if [ "$worktree_common" != "$repo_common" ]; then
+      report_error "$worktree belongs to ${worktree_common:-unknown}, expected $repo_common"
+      continue
+    fi
+
+    if ! git -C "$repo" worktree list --porcelain |
+      sed -n 's/^worktree //p' |
+      grep -Fqx "$worktree"; then
+      report_error "$worktree is not registered in $repo"
+      continue
+    fi
+
+    if [ "$FIX" = true ] && [ -n "$git_name" ] && [ -n "$git_email" ]; then
+      before_name=$(git -C "$worktree" config --worktree --get user.name 2>/dev/null || true)
+      before_email=$(git -C "$worktree" config --worktree --get user.email 2>/dev/null || true)
+      git -C "$worktree" config --worktree user.name "$git_name"
+      git -C "$worktree" config --worktree user.email "$git_email"
+
+      git_dir=$(git -C "$worktree" rev-parse --path-format=absolute --git-dir)
+      printf '{"name":"%s","email":"%s"}\n' "$git_name" "$git_email" > "$git_dir/expected-identity"
+      chmod 0664 "$git_dir/expected-identity" 2>/dev/null || true
+      if [ "$before_name" != "$git_name" ] || [ "$before_email" != "$git_email" ]; then
+        fixed=$((fixed + 1))
+      fi
+    fi
+
+    printf 'OK %s [%s]\n' "$worktree" "$branch"
+  done
+done
+
+printf 'SUMMARY checked=%d fixed=%d errors=%d\n' "$checked" "$fixed" "$errors"
+[ "$errors" -eq 0 ]
