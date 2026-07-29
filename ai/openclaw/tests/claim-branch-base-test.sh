@@ -75,6 +75,8 @@ git -C "$CODE_ROOT/proj" config user.email "pm-test@example.invalid"
 #    branch is based on it and NEITHER branch is pushed.
 wt=$(cmd_claim proj ph-1-task epic-a)
 [ -d "$wt" ] || { printf 'epic-mode claim must create a worktree\n' >&2; exit 1; }
+[ -f "$wt/.git" ] || { printf 'claimed task directory must be a linked worktree (.git file)\n' >&2; exit 1; }
+validate_implementer_worktree "$CODE_ROOT/proj" "$wt" ph-1-task
 [ "$(git -C "$CODE_ROOT/proj" config --get branch.ph-1-task.pmEpicBranch)" = "epic-a" ] || {
   printf 'epic mode must register shared local-only branch metadata\n' >&2
   exit 1
@@ -139,7 +141,24 @@ fi
   exit 1
 }
 
-# 5. Reviewer fallback: a local-only Epic-child branch (never on origin) can
+# 5. An ordinary pre-existing directory can never be mistaken for a claimed
+#    task worktree. Preserve it and fail with no branch/ref mutation.
+mkdir -p "$CODE_ROOT/proj.worktrees/not-a-worktree"
+printf 'preserve me\n' > "$CODE_ROOT/proj.worktrees/not-a-worktree/untracked.txt"
+if ( cmd_claim proj not-a-worktree epic-a ) >/dev/null 2>&1; then
+  printf 'claim must reject an ordinary directory at the deterministic worktree path\n' >&2
+  exit 1
+fi
+[ "$(cat "$CODE_ROOT/proj.worktrees/not-a-worktree/untracked.txt")" = "preserve me" ] || {
+  printf 'claim rejection must preserve the ordinary directory contents\n' >&2
+  exit 1
+}
+git -C "$CODE_ROOT/proj" rev-parse --verify --quiet refs/heads/not-a-worktree >/dev/null && {
+  printf 'rejected ordinary directory must not create a branch\n' >&2
+  exit 1
+}
+
+# 6. Reviewer fallback: a local-only Epic-child branch (never on origin) can
 #    still be claimed for review, detached at the local refs/heads tip.
 printf 'local work\n' > "$wt/local-work.txt"
 git -C "$wt" add local-work.txt

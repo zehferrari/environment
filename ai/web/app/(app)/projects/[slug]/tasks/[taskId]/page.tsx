@@ -52,6 +52,7 @@ import { syncEpicOnHumanTaskStatus } from "@/lib/epics/sync-on-human-task-move";
 import { startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { getTaskGitChanges, getTaskGitFileDiff } from "@/lib/tasks/git-changes";
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
+import { ensureTaskCodeWorktree } from "@/lib/tasks/worktree-claim";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import {
   getCachedLatestRepoVerifyActivity,
@@ -281,6 +282,12 @@ async function updateTask(formData: FormData) {
     }
     if (actor.kind !== "human" && newStatus === "In Progress" && !task.approvedOn) {
       throw new Error("Action Plan must be approved before this task can move to In Progress.");
+    }
+    if (newStatus === "In Progress") {
+      if (newBranch !== task.branchName || newEpicId !== task.epicId) {
+        throw new Error("Save the task branch/Epic change before moving it to In Progress so PM can provision the correct worktree.");
+      }
+      await ensureTaskCodeWorktree(task.id, actor.id);
     }
     if (task.status === "Review" && newStatus === "Done" && canTriggerAgents) {
       completeReviewAfterSave = true;
@@ -700,6 +707,11 @@ async function approveTaskActionPlan(formData: FormData) {
   }
   if (task.approvedOn) return;
 
+  // Approval is not persisted until the code task's exact linked worktree is
+  // present. This keeps the primary checkout immutable and gives every agent
+  // the same ready-to-use branch directory.
+  await ensureTaskCodeWorktree(task.id, actor.id, { reconcile: true });
+
   const approvedAt = new Date();
   const statusUpdate =
     task.status === "Backlog"
@@ -774,6 +786,8 @@ async function approveTaskActionPlan(formData: FormData) {
             `The Action Plan for "${task.title}" was approved.`,
             autoStart.reason === "busy"
               ? "You already have another In Progress task in this project, so this task remains in To Do until you are idle."
+              : autoStart.reason === "worktree_unavailable"
+                ? `PM left the task in To Do because its linked worktree is unavailable: ${autoStart.worktreeError}`
               : "You may now call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
             "Keep visible replies concise; use a comment only if a blocker or material plan change appears.",
           ].join("\n"),

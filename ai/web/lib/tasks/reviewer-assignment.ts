@@ -275,6 +275,8 @@ export async function assignTaskAfterPlanApproval(args: {
             `The Action Plan for "${task.title}" was approved and reviewer @${args.actor.username ?? "unknown"} assigned it to you.`,
             autoStart.reason === "busy"
               ? "You already have another In Progress task in this project, so this task remains in To Do until you are idle."
+              : autoStart.reason === "worktree_unavailable"
+                ? `PM left the task in To Do because its linked worktree is unavailable: ${autoStart.worktreeError}`
               : "Call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
             "Do not post a visible acknowledgement unless a blocker or material plan change appears.",
           ].join("\n"),

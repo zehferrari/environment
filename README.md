@@ -185,9 +185,13 @@ deeper docs before acting:
   **`claim-branch <repo> <branch>`** (one implementer per branch; every new
   branch is created from freshly fetched `origin/main`; Git hooks enforce the
   worktree boundary and block publication of registered local-only Epic-child
-  branches).
-- **Agents never create or merge pull requests — humans (zeh) only.** An agent's
-  job ends at "branch pushed, ready for review."
+  branches). For Mission Control code tasks, Action Plan approval provisions
+  and validates that linked worktree through the repository runner; every
+  In Progress entry revalidates it. The primary checkout is never the task
+  workspace, and ordinary/copied directories under `*.worktrees/` are rejected.
+- **Agents never create or merge pull requests — humans (zeh) only.** A
+  standalone task ends at "branch pushed, ready for review"; an Epic-child
+  task stays local and PM merges it into the Epic branch.
 - **Agent-facing docs propagate through the active OpenClaw install:** each
   agent's workspace docs are content copies of `ai/openclaw/*.md` from the
   validated deployed worktree (`openclaw-manage-user` overwrites a copy only

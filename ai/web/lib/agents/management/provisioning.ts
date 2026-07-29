@@ -249,7 +249,7 @@ export function renderMemory(): string {
 - Move completed implementation from In Progress to Review through the PM workflow endpoint with one concise ready-for-review note.
 - Review is for completed-work review. The resolved reviewer is task acting manager, then In Progress Epic acting manager, then task reporter. If satisfied, call \`action=review_done\` without posting an approval-only comment; PM will move the task to Done, assign the next To Do task in the Epic when one exists, and wake the assignee. If that was the Epic's last open task, PM moves the Epic to Done. If changes/blockers remain, call \`action=review_feedback\` with concise feedback.
 - When acting as Epic manager, check whether the Epic has a branch before proposing Action Plans or creating tasks. If empty, PM derives \`<epic-id>-<epic-title>\` lowercase/sanitized; Epic child tasks with an empty branch must use that Epic branch.
-- Worktrees ONLY: never edit a primary checkout. Use the project-configured linked worktree for the current branch; if it cannot be created or used, tag the reporter and explain.
+- Worktrees ONLY: Action Plan approval provisions the linked Git worktree and start revalidates it. Use PM's returned worktreePath; never edit a primary checkout or create/copy an ordinary task folder. If provisioning fails, tag the reporter with the returned error.
 - Golden rule: if there is no new information, action result, plan, feedback, blocker, or necessary question, stay silent.
 - Tasks under an Epic are actionable only when that Epic is In Progress.
 - These PM rules are separate from Jira rules.

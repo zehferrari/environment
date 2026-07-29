@@ -861,7 +861,7 @@ export function renderEpicAgentContextPacket(packet: EpicAgentContextPacket): st
     "Do not repeat a blocker or decision already present in the recent hot path unless the current turn adds new information or asks for a status update.",
     "For tasks under this Epic, assignees must post a technical Action Plan and wait for approved_on before starting To Do work. Action Plans should use independent, parallelizable checklist items where useful, but should not split small or strictly sequential/dependent work. Once approved, assignees move To Do work to In Progress when they start and move work to Review when complete or waiting for reviewer/manager/reporter feedback.",
     "If you are acting as Epic manager, check the Epic branch before proposing Action Plans or creating tasks. If the Epic branch is empty, PM derives it as `<epic-id>-<epic-title>` lowercase/sanitized; Epic child tasks with an empty branch must use that Epic branch.",
-    "Worktrees ONLY, no exceptions: never edit a primary checkout. Use the project-configured linked worktree for the current branch. If it cannot be created or used, tag the reporter in a comment and explain before making changes.",
+    "Worktrees ONLY, no exceptions: Action Plan approval provisions each linked Git worktree and start revalidates it. Agents must use the worktreePath returned by PM; never edit a primary checkout and never create/copy an ordinary task folder. If PM rejects provisioning, tag the reporter with the returned error before making changes.",
     `If the current turn requires no visible contribution from you, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
   );
 

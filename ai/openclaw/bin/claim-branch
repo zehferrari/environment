@@ -67,6 +67,46 @@ worktree_path() {
   fi
 }
 
+worktree_is_registered() {
+  local repo_root="$1" expected="$2" line=""
+  while IFS= read -r line; do
+    if [ "${line#worktree }" != "$line" ] && [ "${line#worktree }" = "$expected" ]; then
+      return 0
+    fi
+  done < <(git -C "$repo_root" worktree list --porcelain)
+  return 1
+}
+
+validate_implementer_worktree() {
+  local repo_root="$1" wt="$2" branch="$3"
+  [ -f "$wt/.git" ] || die "$wt is not a linked Git worktree (.git file missing)"
+
+  local actual_branch
+  actual_branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null) || \
+    die "$wt is detached; expected branch $branch"
+  [ "$actual_branch" = "$branch" ] || \
+    die "$wt is on branch $actual_branch; expected $branch"
+
+  local repo_common_raw wt_common_raw repo_common wt_common
+  repo_common_raw=$(git -C "$repo_root" rev-parse --git-common-dir)
+  wt_common_raw=$(git -C "$wt" rev-parse --git-common-dir)
+  case "$repo_common_raw" in
+    /*) repo_common=$(readlink -f "$repo_common_raw") ;;
+    *) repo_common=$(readlink -f "$repo_root/$repo_common_raw") ;;
+  esac
+  case "$wt_common_raw" in
+    /*) wt_common=$(readlink -f "$wt_common_raw") ;;
+    *) wt_common=$(readlink -f "$wt/$wt_common_raw") ;;
+  esac
+  [ -n "$repo_common" ] || die "could not resolve common Git directory for $repo_root"
+  [ -n "$wt_common" ] || die "could not resolve common Git directory for $wt"
+  [ "$wt_common" = "$repo_common" ] || \
+    die "$wt belongs to a different Git repository"
+
+  worktree_is_registered "$repo_root" "$wt" || \
+    die "$wt is not registered in $repo_root"
+}
+
 cmd_list() {
   local repo="$1"
   local repo_root="$CODE_ROOT/$repo"
@@ -96,7 +136,7 @@ write_expected_identity() {
   fi
   local wt_gitdir="$repo_root/.git/worktrees/$wt_slug"
   local agents_json="/etc/openclaw/agents.json"
-  if [ -f "$agents_json" ] && hash jq 2>/dev/null && [ -d "$wt_gitdir" ]; then
+  if [ -r "$agents_json" ] && hash jq 2>/dev/null && [ -d "$wt_gitdir" ]; then
     local def_name; def_name=$(jq -r '.gitName // empty' "$agents_json")
     local def_email; def_email=$(jq -r '.gitEmail // empty' "$agents_json")
     if [ -n "$def_name" ] && [ -n "$def_email" ]; then
@@ -157,13 +197,18 @@ cmd_claim() {
 
   local wt; wt=$(worktree_path "$repo" "$branch" false)
 
-  if git -C "$repo_root" worktree list --porcelain | grep -qE "^worktree ${wt}\$"; then
+  if worktree_is_registered "$repo_root" "$wt"; then
+    validate_implementer_worktree "$repo_root" "$wt" "$branch"
     mark_epic_child_branch "$repo_root" "$branch" "$epic_branch"
+    write_expected_identity "$repo_root" "$branch" false
     printf '%s\n' "$wt"
     return 0
   fi
 
   git -C "$repo_root" worktree prune
+  if [ -e "$wt" ]; then
+    die "$wt already exists but is not a registered Git worktree; preserve or relocate it before claiming $branch"
+  fi
   mkdir -p "$CODE_ROOT/${repo}.worktrees"
 
   if [ -n "$epic_branch" ]; then
@@ -236,6 +281,7 @@ cmd_claim() {
 
     mark_epic_child_branch "$repo_root" "$branch" "$epic_branch"
     write_expected_identity "$repo_root" "$branch" false
+    validate_implementer_worktree "$repo_root" "$wt" "$branch"
     printf '%s\n' "$wt"
     return 0
   fi
@@ -257,6 +303,7 @@ cmd_claim() {
   fi
 
   write_expected_identity "$repo_root" "$branch" false
+  validate_implementer_worktree "$repo_root" "$wt" "$branch"
 
   printf '%s\n' "$wt"
 }
@@ -268,12 +315,15 @@ cmd_claim_review() {
 
   local wt; wt=$(worktree_path "$repo" "$branch" true)
 
-  if git -C "$repo_root" worktree list --porcelain | grep -qE "^worktree ${wt}\$"; then
+  if worktree_is_registered "$repo_root" "$wt"; then
     printf '%s\n' "$wt"
     return 0
   fi
 
   git -C "$repo_root" worktree prune
+  if [ -e "$wt" ]; then
+    die "$wt already exists but is not a registered Git worktree; preserve or relocate it before claiming review worktree"
+  fi
   fetch_remote_branch "$repo_root" "$branch" 2>/dev/null || true
 
   # --detach attaches with no branch ref, so the implementer's worktree on the

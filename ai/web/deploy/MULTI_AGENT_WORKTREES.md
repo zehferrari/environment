@@ -14,6 +14,14 @@ per branch**, reviewers on detached-HEAD worktrees, enforced by the `/srv/Code`
 pre-commit hook. Two agents must never both *write* the same branch worktree —
 that produces entangled diffs and broken builds.
 
+For Mission Control code tasks, **Action Plan approval is the worktree
+provisioning boundary**. PM spools a repository-owner `kind:"claim"` job,
+persists approval only after the returned directory is a registered linked
+worktree on the exact effective branch, and returns `worktreePath`. Every route
+into In Progress revalidates it. A plain/copy directory under `*.worktrees/`
+is a hard blocker and is never overwritten; agents must not use
+`mkdir`/`cp`/`rsync` as a substitute for `git worktree add`.
+
 New **standalone** task branches are created only from freshly fetched
 `origin/main`, or `origin/master` when main is absent. The host helper rejects
 `--from` and local branch refs, so a stale primary checkout cannot silently

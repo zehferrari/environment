@@ -4,6 +4,7 @@ import { publishBoardTouch } from "@/lib/pm/board-events";
 import { epicAllowsAgentAction } from "@/lib/tasks/workflow-actors";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
 
 type Actor = {
   id: string;
@@ -105,10 +106,12 @@ export type TaskAutoStartResult =
         | "not_agent_assignee"
         | "blocked"
         | "epic_not_ready"
+        | "worktree_unavailable"
         | "busy"
         | "changed";
       activeTask?: { id: string; title: string } | null;
       task?: { id: string; title: string; projectSlug: string; assigneeId: string | null } | null;
+      worktreeError?: string;
     };
 
 export async function startApprovedTodoTaskIfIdle(args: {
@@ -173,6 +176,19 @@ export async function startApprovedTodoTaskIfIdle(args: {
   }
   if (!epicAllowsAgentAction(task)) {
     return { started: false, reason: "epic_not_ready", task: taskRef };
+  }
+
+  try {
+    await ensureTaskCodeWorktree(task.id, args.actor.id);
+  } catch (err) {
+    return {
+      started: false,
+      reason: "worktree_unavailable",
+      task: taskRef,
+      worktreeError: err instanceof TaskWorktreeError
+        ? err.message
+        : "Task worktree could not be created or validated.",
+    };
   }
 
   const result = await db.$transaction(async (tx) => {

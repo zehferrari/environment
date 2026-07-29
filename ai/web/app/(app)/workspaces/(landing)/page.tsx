@@ -13,6 +13,7 @@ import { refillEpicQueue } from "@/lib/epics/queue";
 import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
+import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
 import { createWorkspace, restoreWorkspace } from "@/lib/workspaces/service";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 import { uploadAttachment } from "@/lib/attachments/actions";
@@ -181,6 +182,19 @@ async function moveTask(taskId: string, status: string, _scopeSlug: string): Pro
       code: "EXPLICIT_USER_ACTION_REQUIRED",
       message: "Action Plan must be approved before this task can move to In Progress.",
     };
+  }
+  if (status === "In Progress") {
+    try {
+      await ensureTaskCodeWorktree(current.id, actor.id);
+    } catch (err) {
+      return {
+        ok: false,
+        code: "EXPLICIT_USER_ACTION_REQUIRED",
+        message: err instanceof TaskWorktreeError
+          ? err.message
+          : "Task worktree could not be created or validated.",
+      };
+    }
   }
 
   if (current.status === "Review" && status === "Done" && (actor.isOwner || actor.kind === "agent")) {

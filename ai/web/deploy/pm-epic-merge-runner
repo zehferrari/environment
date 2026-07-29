@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pm-epic-merge-runner — Epic branch merge/cleanup runner.
+"""pm-epic-merge-runner — repository worktree/Epic integration runner.
 
 Runs as the configured repo-push OS user as a systemd service (clone of the
 pm-verify-runner pattern — pm.service's sandbox blocks git worktree/fetch/push,
@@ -13,6 +13,8 @@ deployment-watcher poll (lib/deploy/epic-merge.ts):
   * kind "cleanup" — after an Epic reaches Done, publish the Epic branch,
     remove merged local child branches/worktrees, and remove leaked remote
     child refs only after their tips are verified in the pushed Epic branch.
+  * kind "claim"   — create and validate the linked task worktree when an
+    Action Plan is approved, then return the result to pm.service.
 
 For each job it finds the active PM web worktree by reading pm.service's
 WorkingDirectory and runs the TS executor (scripts/pm-epic-merge-job.ts)
@@ -106,7 +108,7 @@ def process_one(jobfile, app_dir):
             timeout=300,
         )
     except subprocess.TimeoutExpired:
-        print(f"[{now()}] epic-merge job timeout on {running}", flush=True)
+        print(f"[{now()}] repository job timeout on {running}", flush=True)
         try:
             os.rename(running, jobfile + ".failed")
         except OSError:
@@ -115,7 +117,7 @@ def process_one(jobfile, app_dir):
     if proc.stdout:
         print(proc.stdout, flush=True)
     if proc.returncode != 0:
-        print(f"[{now()}] epic-merge job exited {proc.returncode}: {proc.stderr}", flush=True)
+        print(f"[{now()}] repository job exited {proc.returncode}: {proc.stderr}", flush=True)
         # Move to .failed so we don't spin on the same job. Operator can
         # rename back to .json to retry.
         try:

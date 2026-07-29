@@ -162,17 +162,15 @@ function workflowPrompt(args: {
       "COMMIT HYGIENE (this task touches the repository):",
       `- Repository: ${args.repositoryPath}`,
       `- Branch: ${args.branchName}`,
-      "- Worktrees ONLY, no exceptions: never edit a primary checkout. Use the project-configured linked worktree for the current branch.",
-      "- If the required worktree cannot be created or used for any reason, tag the reporter in a task comment and explain the blocker before making changes.",
+      "- Action Plan approval provisions and validates the exact linked Git worktree. Use the `worktreePath` returned by approve_plan/start; verify `git rev-parse --show-toplevel` and `git branch --show-current` before editing.",
+      "- Worktrees ONLY, no exceptions: never edit a primary checkout, never create the branch directory with mkdir/cp/rsync, and never substitute an ordinary folder for a Git worktree.",
+      "- If PM cannot create or validate the required worktree, the approval/start action is rejected and the task stays non-active; tag the reporter in a task comment with the returned error before making changes.",
       identityConfigured
-        ? `- Required Git identity: ${args.expectedGitUserName} <${args.expectedGitUserEmail}>. Set it in the task worktree before editing or committing:`
+        ? `- Required Git identity: ${args.expectedGitUserName} <${args.expectedGitUserEmail}>. PM configures it in the task worktree; verify it before committing:`
         : "- Required Git identity is not configured on the project/system settings. Ask an admin to configure defaultGitUserName/defaultGitUserEmail before committing.",
       ...(identityConfigured
         ? [
-            `  git -C ${shellQuote(args.repositoryPath!)} config extensions.worktreeConfig true`,
-            `  git -C ${shellQuote(args.repositoryPath!)} config --worktree user.name ${shellQuote(args.expectedGitUserName!)}`,
-            `  git -C ${shellQuote(args.repositoryPath!)} config --worktree user.email ${shellQuote(args.expectedGitUserEmail!)}`,
-            `  test "$(git -C ${shellQuote(args.repositoryPath!)} config --get user.name)" = ${shellQuote(args.expectedGitUserName!)} && test "$(git -C ${shellQuote(args.repositoryPath!)} config --get user.email)" = ${shellQuote(args.expectedGitUserEmail!)}`,
+            `  test "$(git config --get user.name)" = ${shellQuote(args.expectedGitUserName!)} && test "$(git config --get user.email)" = ${shellQuote(args.expectedGitUserEmail!)}`,
             "- Do not commit if the identity check fails. PM verifier rejects branches whose matching commit author or committer differs from the required identity.",
           ]
         : []),

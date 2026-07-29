@@ -1,5 +1,5 @@
 [Unit]
-Description=PM Epic-branch merge/cleanup runner (local-only task branch integration)
+Description=PM repository worktree/Epic integration runner
 After=network-online.target pm.service
 Wants=network-online.target
 
@@ -8,7 +8,7 @@ Type=simple
 # Runs as the repo-push user so `git fetch`/`git push` of the Epic integration
 # branch use that account's SSH credentials. PM_MONITOR_USER controls which PM
 # user authors merge/cleanup comments. Deliberately NOT sandboxed: it needs
-# git worktree add + ref writes across /srv/Code, which pm.service's
+# task worktree creation plus git ref writes across /srv/Code, which pm.service's
 # ProtectSystem=strict sandbox forbids (same split as pm-verify-runner).
 # Decoupled from pm.service: a worktree switch must not kill a merge in flight.
 User=__PM_MERGE_RUN_USER__

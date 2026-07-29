@@ -48,7 +48,9 @@ behaviour (`guides/ROLES.md`), task workflow (`WORKFLOW.md`).
 
 The versioned `bin/claim-branch` helper is installed by `install.sh` as
 `/usr/local/bin/claim-branch`; it is the only supported way for agents to
-create or attach shared repository worktrees.
+create or attach shared repository worktrees. Mission Control invokes it
+through the repository runner when an Action Plan is approved and revalidates
+the registered worktree before a task enters In Progress.
 
 ## How agents see this repo
 

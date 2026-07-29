@@ -23,6 +23,10 @@ import { refillEpicQueue } from "@/lib/epics/queue";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
 import { isProtectedBranch, parseProtectedBranches } from "@/lib/projects/protected-branches";
 import { hasAuthorizedTaskAgentOrigin } from "@/lib/agents/owner-origin";
+import {
+  ensureTaskCodeWorktree,
+  TaskWorktreeError,
+} from "@/lib/tasks/worktree-claim";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -297,6 +301,19 @@ export async function POST(
       }, { status: 409 });
     }
 
+    let worktree;
+    try {
+      // Approval normally provisions this already. Re-check at the final
+      // In-Progress boundary so a deleted/replaced directory can never turn
+      // into work in a primary checkout or an ordinary folder.
+      worktree = await ensureTaskCodeWorktree(task.id, agent.user.id);
+    } catch (err) {
+      const message = err instanceof TaskWorktreeError
+        ? err.message
+        : "Task worktree could not be created or validated.";
+      return NextResponse.json({ error: message }, { status: 409 });
+    }
+
     await moveTaskStatus({
       taskId: task.id,
       projectId: task.projectId,
@@ -319,7 +336,13 @@ export async function POST(
     });
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
-    return NextResponse.json({ ok: true, taskId: task.id, status: "In Progress" });
+    return NextResponse.json({
+      ok: true,
+      taskId: task.id,
+      status: "In Progress",
+      worktreePath: worktree.required ? worktree.worktreePath : null,
+      branchName: worktree.required ? worktree.branchName : null,
+    });
   }
 
   if (action === "approve_plan") {
@@ -332,6 +355,17 @@ export async function POST(
     }
     if (task.approvedOn) {
       return NextResponse.json({ ok: true, taskId: task.id, approved: true, alreadyApproved: true });
+    }
+    let worktree;
+    try {
+      // Action Plan approval is the provisioning boundary: code work is not
+      // approved until its exact linked worktree exists and validates.
+      worktree = await ensureTaskCodeWorktree(task.id, agent.user.id, { reconcile: true });
+    } catch (err) {
+      const message = err instanceof TaskWorktreeError
+        ? err.message
+        : "Task worktree could not be created or validated.";
+      return NextResponse.json({ error: message }, { status: 409 });
     }
     const approvedAt = new Date();
     const moveToTodo = task.status === "Backlog";
@@ -441,6 +475,8 @@ export async function POST(
               `The Action Plan for "${task.title}" was approved by @${agent.user.username}.`,
               autoStart.reason === "busy"
                 ? "You already have another In Progress task in this project, so this task remains in To Do until you are idle."
+                : autoStart.reason === "worktree_unavailable"
+                  ? `PM left the task in To Do because its linked worktree is unavailable: ${autoStart.worktreeError}`
                 : "You may now call the workflow endpoint with action=start, move the task to In Progress, and implement the approved plan.",
               "Do not post a visible acknowledgement unless a blocker or material plan change appears.",
             ].join("\n"),
@@ -492,7 +528,14 @@ export async function POST(
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
     revalidatePath(`/projects/${task.project.slug}`);
-    return NextResponse.json({ ok: true, taskId: task.id, approved: true, status: moveToTodo ? "To Do" : task.status });
+    return NextResponse.json({
+      ok: true,
+      taskId: task.id,
+      approved: true,
+      status: moveToTodo ? "To Do" : task.status,
+      worktreePath: worktree.required ? worktree.worktreePath : null,
+      branchName: worktree.required ? worktree.branchName : null,
+    });
   }
 
   if (action === "assign_after_plan_approval") {

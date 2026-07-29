@@ -1,4 +1,4 @@
-// pm-epic-merge-job — runner-side Epic merge/cleanup executor.
+// pm-epic-merge-job — runner-side repository job executor.
 //
 // Consumes ONE spool job dropped by pm.service (lib/deploy/epic-merge.ts):
 //   kind "merge"   — merge a Done Epic-child task's LOCAL branch into the Epic
@@ -7,6 +7,8 @@
 //   kind "cleanup" — after an Epic reaches Done, publish the Epic branch,
 //                    remove merged local child branches/worktrees, and remove
 //                    leaked remote child refs only after ancestry verification.
+//   kind "claim"   — provision and validate a task's linked worktree when its
+//                    Action Plan is approved (and re-check it before start).
 //
 // Runs inside the active PM worktree via the unsandboxed
 // pm-epic-merge-runner.service (pm-verify-runner pattern) so git worktree/
@@ -17,6 +19,11 @@
 import { existsSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import { db } from "@/lib/db";
 import { EPIC_MERGE_DIR, runEpicMergeSpoolJob, type EpicMergeJob } from "@/lib/deploy/epic-merge";
+import {
+  runWorktreeClaimJob,
+  writeWorktreeClaimResult,
+  type WorktreeClaimJob,
+} from "@/lib/tasks/worktree-claim";
 
 async function main() {
   const jobFile = process.argv[2];
@@ -26,9 +33,19 @@ async function main() {
     throw new Error(`Refusing to read job file outside ${EPIC_MERGE_DIR}`);
   }
 
-  const job = JSON.parse(readFileSync(jobFile, "utf8")) as EpicMergeJob;
-  if (job.kind !== "merge" && job.kind !== "cleanup") {
-    throw new Error(`Unknown epic-merge job kind: ${(job as { kind?: string }).kind}`);
+  const job = JSON.parse(readFileSync(jobFile, "utf8")) as
+    | EpicMergeJob
+    | WorktreeClaimJob;
+  if (job.kind !== "merge" && job.kind !== "cleanup" && job.kind !== "claim") {
+    throw new Error(`Unknown repository job kind: ${(job as { kind?: string }).kind}`);
+  }
+
+  if (job.kind === "claim") {
+    const result = await runWorktreeClaimJob(job);
+    await writeWorktreeClaimResult(job, result);
+    console.log(JSON.stringify({ jobId: job.jobId, kind: job.kind, ...result }, null, 2));
+    unlinkSync(jobFile);
+    return;
   }
 
   const result = await runEpicMergeSpoolJob(job);

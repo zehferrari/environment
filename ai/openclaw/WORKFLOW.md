@@ -486,8 +486,12 @@ Latency / PM queue/status names:
    ownership.
 6. `To Do` is actionable only after the Action Plan is approved. When a
    task assigned to you reaches `To Do`, check `approved_on`. If it is
-   empty, post the Action Plan and wait. If it is set, move the task to
-   `In Progress` through the PM workflow endpoint and start work.
+   empty, post the Action Plan and wait. Approval provisions and validates
+   the task's linked Git worktree when the project has a repository. If
+   approval returns a worktree error, do not create a directory yourself:
+   report the blocker and wait. If `approved_on` is set, move the task to
+   `In Progress` through the PM workflow endpoint; `start` revalidates the
+   worktree and returns its exact `worktreePath`.
 7. PM no longer auto-starts unapproved assigned work. Older wake/ack
    clients are blocked from moving `To Do` to `In Progress` until
    `approved_on` is set. Do not use hidden routes or direct database
@@ -516,16 +520,18 @@ Latency / PM queue/status names:
     - `Project.repositoryPath` tells you the repo path when configured.
     - `Project.defaultGitUserName` / `defaultGitUserEmail` describe the
       default project git identity.
-    - Branch resolution is: the Task's explicit `branchName`, then its
-      Epic's effective branch (explicit branch or lowercased Epic
-      `workItemKey`), then the lowercased Task `workItemKey`.
+    - Branch resolution is: the Task's explicit `branchName`, then the
+      lowercased Task `workItemKey`; only a keyless legacy Task falls back to
+      its Epic's effective branch.
     - Commit-prefix resolution is: the Task's explicit `commitPrefix`, then
       its Epic's explicit `commitPrefix`, then the Task `workItemKey`.
       Database record IDs are never branch names or commit prefixes.
 12. For repos under `/srv/Code/` or backed by Bitbucket, follow
     [`guides/BITBUCKET.md`](./guides/BITBUCKET.md) and [`guides/CODE_REPOS.md`](./guides/CODE_REPOS.md).
     If no explicit branch is stored, use the resolved human-key fallback from
-    PM context; do not invent a branch from a system/database ID.
+    PM context; do not invent a branch from a system/database ID. Use only the
+    validated `worktreePath` returned by approval/start. Never use `mkdir`,
+    `cp`, or `rsync` to manufacture a task folder under `*.worktrees/`.
 13. Run relevant tests/builds, or state plainly what could not be tested.
 14. When code is ready: a **standalone** task branch (no Epic) is pushed
     to origin before `ready_for_review`. An **Epic-child task branch is

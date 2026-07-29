@@ -101,6 +101,10 @@ assert(!proposalApply.includes("inheritedBranchName"), "proposal-created Tasks m
 assert(!proposalApply.includes("inheritedCommitPrefix"), "proposal-created Tasks must not copy an Epic prefix");
 assert(proposalApply.includes("branchName: null"), "proposal-created Tasks must retain a null branch override");
 assert(proposalApply.includes("commitPrefix: null"), "proposal-created Tasks must retain a null prefix override");
+assert(
+  proposalApply.includes("worktree_validation_required"),
+  "proposal-applied In Progress requests must stop in To Do for the shared worktree/start gate",
+);
 
 const epicActions = readFileSync(join(root, "lib/epics/actions.ts"), "utf8");
 assert(!epicActions.includes("effectiveEpicBranchName(epic)"), "UI-created Epic Tasks must not persist a generated Epic branch");
@@ -124,6 +128,8 @@ assert(reviewAutomation.includes("remainingOpenTasks === 0"), "the Epic Done rol
 const taskNotifications = readFileSync(join(root, "lib/agents/workflow/notifications/task.ts"), "utf8");
 assert(taskNotifications.includes("never edit a primary checkout"), "worktree guidance must prohibit primary-checkout edits");
 assert(taskNotifications.includes("tag the reporter"), "worktree failure guidance must tell agents to tag the reporter");
+assert(taskNotifications.includes("never create the branch directory with mkdir/cp/rsync"), "worktree guidance must prohibit ordinary copied task folders");
+assert(taskNotifications.includes("worktreePath"), "workflow guidance must direct agents to PM's validated worktree path");
 assert(taskNotifications.includes("do not demand splitting for small or strictly sequential/dependent work"), "reviewer split-feedback rule must preserve small/sequential exception");
 
 // --- 2026-07 workflow overhaul (P1-P6) ---
@@ -157,6 +163,10 @@ assert(
 assert(
   taskWorkflowRoute.includes("1 In Progress task per agent per project"),
   "the WIP rejection must state the per-project limit so agents know what to finish",
+);
+assert(
+  taskWorkflowRoute.split("ensureTaskCodeWorktree(").length - 1 >= 2,
+  "agent Action Plan approval must provision a worktree and start must revalidate it",
 );
 // P3: ready_for_review is rejected while open implementation sub-tasks exist.
 assert(
@@ -197,6 +207,10 @@ assert(
   autoStartLib.includes("findInProgressStartConflict(tx"),
   "auto-start must consume the shared gate inside its transaction",
 );
+assert(
+  autoStartLib.includes("ensureTaskCodeWorktree(task.id"),
+  "auto-start must refuse In Progress without a validated linked worktree",
+);
 
 // Ack is a liveness ping only — no status transition anywhere.
 const ackRoute = readFileSync(join(root, "app/api/tasks/[id]/ack/route.ts"), "utf8");
@@ -231,7 +245,28 @@ for (const pagePath of [
     pageSource.includes("syncEpicOnHumanTaskStatus"),
     `${pagePath} must keep a parent Epic actionable after a human child-task move`,
   );
+  assert(
+    pageSource.includes("ensureTaskCodeWorktree"),
+    `${pagePath} must provision/validate the linked worktree before a human In Progress move`,
+  );
 }
+
+assert(
+  taskPage.includes("await ensureTaskCodeWorktree(task.id, actor.id, { reconcile: true })"),
+  "human Action Plan approval must provision the task worktree before persisting approval",
+);
+const repositoryJob = readFileSync(join(root, "scripts/pm-epic-merge-job.ts"), "utf8");
+assert(repositoryJob.includes('job.kind === "claim"'), "the unsandboxed repository runner must execute worktree claim jobs");
+assert(repositoryJob.includes("writeWorktreeClaimResult"), "worktree claim jobs must return a result to the approval request");
+const worktreeClaim = readFileSync(join(root, "lib/tasks/worktree-claim.ts"), "utf8");
+assert(
+  worktreeClaim.includes("safe.directory=${safeRepo}"),
+  "the repository runner must scope Git trust to the exact primary/worktree path for cross-agent worktrees",
+);
+assert(
+  worktreeClaim.includes("marker?.isFile()") && worktreeClaim.includes('worktree", "list", "--porcelain'),
+  "claim validation must require a linked .git file and exact Git registration",
+);
 
 // PH-124 item B: every workflow action with a durable outcome settles the
 // PM-channel run. 7 original actions + the 5 that used to leave the run

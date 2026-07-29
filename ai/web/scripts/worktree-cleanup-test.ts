@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -89,6 +89,7 @@ function main() {
     git(repo, ["config", "user.email", "test@example.invalid"]);
     commit(repo, "base.txt", "base\n", "base");
     git(repo, ["branch", "-M", "main"]);
+    commit(repo, ".gitignore", ".openclaw/\n", "ignore agent runtime metadata");
     git(repo, ["push", "-u", "origin", "main"]);
     mkdirSync(worktreesRoot);
     writeFileSync(path.join(root, "worktree-operation.lock"), "");
@@ -127,6 +128,30 @@ function main() {
     assert.equal(removedGeneratedVersion.ok, true, removedGeneratedVersion.output);
     assert.equal(existsSync(generatedVersion), false, "worktree with only a generated version stamp should be removable");
     assert.equal(hasLocalBranch(repo, "feature/generated-version"), false, "generated-version local branch should be removed");
+
+    createBranch(repo, "feature/inaccessible-runtime", true);
+    const inaccessibleRuntime = addWorktree(
+      repo,
+      worktreesRoot,
+      "feature/inaccessible-runtime",
+      "inaccessible-runtime",
+    );
+    const privateRuntime = path.join(inaccessibleRuntime, ".openclaw");
+    mkdirSync(privateRuntime);
+    writeFileSync(path.join(privateRuntime, "session.json"), "{}\n");
+    chmodSync(privateRuntime, 0o000);
+    expectRejected(repo, worktreesRoot, "inaccessible-runtime", "permission denied while preflighting");
+    assert.equal(
+      existsSync(path.join(inaccessibleRuntime, ".git")),
+      true,
+      "an inaccessible ignored runtime directory must be rejected before Git metadata is removed",
+    );
+    assert.equal(
+      hasLocalBranch(repo, "feature/inaccessible-runtime"),
+      true,
+      "preflight rejection must preserve the local branch",
+    );
+    chmodSync(privateRuntime, 0o700);
 
     createBranch(repo, "feature/unmerged", false);
     git(repo, ["push", "origin", "feature/unmerged"]);
@@ -194,12 +219,17 @@ function main() {
     assert.equal(existsSync(live), true, "an unsafe lock path must not start removal");
 
     const helperSource = readFileSync(helper, "utf8");
-    assert.match(helperSource, /\["worktree", "remove", selected_path\]/);
+    assert.match(helperSource, /def assert_tree_removable\(worktree_path\):/);
+    assert.match(helperSource, /os\.walk\([\s\S]*?onerror=inspection_error/);
+    assert.match(helperSource, /assert_tree_removable\(worktree_path\)[\s\S]*?\["worktree", "remove", worktree_path\]/);
+    assert.match(helperSource, /Git partially removed worktree metadata/);
+    assert.match(helperSource, /remove_registered_worktree\(repo_real, selected_path\)/);
+    assert.match(helperSource, /remove_registered_worktree\(repo_real, holder_path\)/);
     assert.match(helperSource, /\["branch", "-D", "--", branch\]/);
     assert.match(helperSource, /public\/version\.json/);
     assert.match(helperSource, /O_NOFOLLOW/);
     assert.match(helperSource, /safe\.directory=/);
-    assert.doesNotMatch(helperSource, /--force|push/);
+    assert.doesNotMatch(helperSource, /--force|\["push"/);
 
     // Every monitor-owned Git path must use an exact, invocation-scoped
     // safe.directory override. Persistent or wildcard trust would weaken the

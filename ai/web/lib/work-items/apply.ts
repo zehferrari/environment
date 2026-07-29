@@ -615,26 +615,29 @@ export async function commitProposal(
           if (typeof op.status === "string" && op.status !== task.status) {
             // Proposals must not be a side door around the workflow engine:
             // a proposed jump to In Progress is downgraded to To Do when the
-            // task's blocker is uncleared or its Action Plan is unapproved —
-            // the same gates the workflow `start` action enforces. The
-            // assignee wake below then drives the normal plan/start flow.
+            // Proposals never bypass the shared start boundary. Even an
+            // approved, unblocked proposal targeting In Progress lands in To
+            // Do first so action=start can validate/provision the exact linked
+            // worktree before any implementation becomes active.
             let targetStatus = op.status;
             if (targetStatus === "In Progress") {
               const blockerUncleared = Boolean(task.blockedById && task.blockedBy && task.blockedBy.status !== "Done");
               const planUnapproved = !task.approvedOn;
-              if (blockerUncleared || planUnapproved) {
-                targetStatus = "To Do";
-                logs.push({
-                  kind: "task.move.downgraded",
-                  payload: {
-                    proposalId: proposal.id,
-                    requested: "In Progress",
-                    applied: "To Do",
-                    reason: blockerUncleared ? "blocker_not_done" : "plan_not_approved",
-                    blockedBy: task.blockedBy?.workItemKey ?? null,
-                  },
-                });
-              }
+              targetStatus = "To Do";
+              logs.push({
+                kind: "task.move.downgraded",
+                payload: {
+                  proposalId: proposal.id,
+                  requested: "In Progress",
+                  applied: "To Do",
+                  reason: blockerUncleared
+                    ? "blocker_not_done"
+                    : planUnapproved
+                      ? "plan_not_approved"
+                      : "worktree_validation_required",
+                  blockedBy: task.blockedBy?.workItemKey ?? null,
+                },
+              });
             }
             if (targetStatus !== task.status) {
               const rankAgg = await tx.task.aggregate({
@@ -680,11 +683,16 @@ export async function commitProposal(
                   taskId: id,
                   targetUserId: finalAssigneeId,
                   reason: "todo_start_required",
-                  body: taskWorkflowBody({
-                    title: task.title,
-                    actorUsername,
-                    reason: "todo_start_required",
-                  }),
+                  body: task.approvedOn
+                    ? [
+                        `Task "${task.title}" is now in To Do and assigned to you by @${actorUsername ?? "the workflow manager"}.`,
+                        "Its Action Plan is approved. Call action=start so PM validates/provisions the linked worktree before moving it to In Progress.",
+                      ].join("\n")
+                    : taskWorkflowBody({
+                        title: task.title,
+                        actorUsername,
+                        reason: "todo_start_required",
+                      }),
                 });
               } else if (finalStatus === "In Progress") {
                 // Previously the ONLY status transition that dispatched no

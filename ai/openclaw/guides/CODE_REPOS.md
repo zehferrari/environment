@@ -65,9 +65,9 @@ the same DB + env, so only the served code changes. Full design:
 
 Every Jira ticket that touches a shared repo **must** designate a target
 Bitbucket branch in the ticket description. Mission Control resolves its
-branch from a Task override, the Epic's explicit branch or human work-item key,
-or finally the lowercased Task work-item key. A database record ID is never a
-valid fallback.
+branch from a Task override, otherwise the lowercased Task work-item key; only
+a keyless legacy Task falls back to the Epic's effective branch. A database
+record ID is never a valid fallback.
 
 The primary worktree at `/srv/Code/<repo>/` is **not** for ticket
 work. It tracks the integration branch (master / main / etc.) and
@@ -79,7 +79,13 @@ The implementer flow is:
 
 1. Read the Jira or Mission Control ticket and note the designated/resolved
    branch (for example `feature/HOMELAB-12-foo` or `homelab-12`).
-2. `claim-branch <repo> <branch>` — fetches `origin/main` when present,
+2. For Mission Control tasks, Action Plan approval runs `claim-branch`
+   centrally and returns the validated `worktreePath`; `start` validates it
+   again before In Progress. Use that path. Never create or populate a
+   `*.worktrees/<branch>` directory with `mkdir`, `cp`, `rsync`, an archive, or
+   a partial checkout. If provisioning fails, approval/start is rejected and
+   the task stays non-active.
+3. Manual/Jira-only claims use `claim-branch <repo> <branch>` — it fetches `origin/main` when present,
    otherwise `origin/master`, checks if the branch exists on origin, and
    creates a worktree on it. If it does not exist, it creates and pushes the
    branch from that freshly fetched integration ref. New branches must never
@@ -90,8 +96,11 @@ The implementer flow is:
    (`origin/<epic-branch>` when it exists, else the epic branch is
    created locally from origin main/master) and is **not** pushed —
    epic-child branches stay local.
-3. `cd "$(claim-branch <repo> <branch>)"` and work there.
-4. Make sure the git user name and email match the project settings.
+4. Enter the PM-returned path (or, for a manual/Jira-only claim,
+   `cd "$(claim-branch <repo> <branch>)"`) and verify both:
+   `git rev-parse --show-toplevel` and `git branch --show-current`.
+5. Make sure the git user name and email match the project settings. PM
+   configures both in Mission Control task worktrees at approval time.
    - If the project settings define a custom git identity, you MUST configure them locally in the worktree:
      ```bash
      git config extensions.worktreeConfig true
@@ -103,8 +112,8 @@ The implementer flow is:
      echo '{"name": "Project.defaultGitUserName", "email": "Project.defaultGitUserEmail"}' > "$(git rev-parse --git-dir)/expected-identity"
      ```
    - If no project-specific identity is configured, it defaults to the host identity `Zeh Ferrari <e@zeh.me>`.
-5. Make your changes; `git add` + `git commit` as normal.
-6. **Standalone task branch: push to origin** — `git push` works as-is
+6. Make your changes; `git add` + `git commit` as normal.
+7. **Standalone task branch: push to origin** — `git push` works as-is
    on a freshly claimed branch (the worktree was created with upstream
    tracking). For a brand-new branch, the helper has already done
    the initial `git push -u origin <branch>` for you. Auth resolves
@@ -112,9 +121,9 @@ The implementer flow is:
    **Epic-child task branch: do not push.** Commit locally only; PM's
    auto-merge folds the branch into the epic integration branch when the
    task reaches Done, and only the epic branch is pushed.
-7. Stop. Do **not** create a pull request. Report the branch, commit, tests,
+8. Stop. Do **not** create a pull request. Report the branch, commit, tests,
    and residual risk in the source channel so zeh can create the PR.
-8. After zeh confirms the PR has landed, `claim-branch --release <repo>
+9. After zeh confirms the PR has landed, `claim-branch --release <repo>
    <branch>` to tear down the worktree. The remote branch is cleaned up on
    Bitbucket separately by whoever lands the PR.
 
@@ -252,8 +261,11 @@ task branch stays local. In `--review` mode the helper attaches
 local `refs/heads/<branch>` for never-pushed epic-child branches.
 
 A repeated `claim-branch <repo> <branch>` is a no-op — it just prints
-the existing worktree's path. So agents can run it freely to find
-where their tree is.
+the existing worktree's path after revalidating that it is registered, belongs
+to the expected common Git repository, and is checked out on the exact branch.
+If the deterministic path already exists as an ordinary directory, the helper
+preserves it and fails; it never treats the folder as a worktree or overwrites
+its contents.
 
 ## What does NOT belong under `/srv/Code/`
 

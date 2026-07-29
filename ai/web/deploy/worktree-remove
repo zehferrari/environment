@@ -109,6 +109,55 @@ def clean_or_discard_generated_changes(worktree_path):
     git(worktree_path, ["restore", "--", "public/version.json"])
 
 
+def assert_tree_removable(worktree_path):
+    """Refuse before Git mutates metadata when a runtime-owned directory
+    cannot be traversed or emptied by this runner.
+
+    `git worktree remove` is not atomic: it can delete the `.git` marker and
+    tracked files before encountering an inaccessible ignored directory. That
+    leaves an ordinary-looking residual folder which is no longer a worktree.
+    """
+    def inspection_error(exc):
+        location = getattr(exc, "filename", None) or worktree_path
+        raise RemovalError(
+            f"permission denied while preflighting worktree removal: {location}"
+        ) from exc
+
+    for current, directories, files in os.walk(
+        worktree_path,
+        topdown=True,
+        followlinks=False,
+        onerror=inspection_error,
+    ):
+        if not os.access(current, os.R_OK | os.X_OK):
+            raise RemovalError(
+                f"permission denied while preflighting worktree removal: {current}"
+            )
+        if (directories or files) and not os.access(current, os.W_OK | os.X_OK):
+            raise RemovalError(
+                f"permission denied while preflighting worktree removal: {current}"
+            )
+
+
+def remove_registered_worktree(repo, worktree_path):
+    assert_tree_removable(worktree_path)
+    try:
+        git(repo, ["worktree", "remove", worktree_path])
+    except RemovalError as exc:
+        marker = os.path.join(worktree_path, ".git")
+        if os.path.lexists(worktree_path) and not os.path.isfile(marker):
+            raise RemovalError(
+                f"Git partially removed worktree metadata at {worktree_path}; "
+                f"preserved the residual directory and local branch for recovery: {exc}"
+            ) from exc
+        raise
+    if os.path.lexists(worktree_path):
+        raise RemovalError(
+            f"Git reported success but the worktree path remains at {worktree_path}; "
+            "preserved the local branch for recovery"
+        )
+
+
 def acquire_operation_lock(lock_path):
     if not os.path.isabs(lock_path) or os.path.islink(lock_path):
         raise RemovalError("invalid worktree operation lock")
@@ -199,7 +248,7 @@ def remove_local_worktree(repo, worktrees_root, target, driver, served_reference
 
         if os.path.realpath(selected_path) != selected_path:
             raise RemovalError("worktree path changed while removal was pending")
-        git(repo_real, ["worktree", "remove", selected_path])
+        remove_registered_worktree(repo_real, selected_path)
         if branch:
             try:
                 # Removal is explicitly requested by the admin. Delete the
@@ -258,7 +307,7 @@ def remove_local_branch(repo, worktrees_root, branch, protected_branches):
             git(repo_real, ["worktree", "prune"])
             continue
         clean_or_discard_generated_changes(holder_path)
-        git(repo_real, ["worktree", "remove", holder_path])
+        remove_registered_worktree(repo_real, holder_path)
         removed_worktree = holder_path
 
     if branch_exists:
