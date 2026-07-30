@@ -1,0 +1,241 @@
+server {
+    server_name dev-kb.patricia.com.au;
+
+    include /etc/nginx/sites-available/modules/443/patricia.com.au;
+
+    access_log /var/log/nginx/dev-kb.access zehlog;
+    error_log /var/log/nginx/dev-kb.error;
+
+    charset utf-8;
+
+    autoindex on;
+    rewrite_log on;
+    log_not_found off;
+
+
+    location / {
+        # Correct scheme and backend address
+    	proxy_pass http://localhost:5601;
+
+    	# Essential headers for Kibana proxying
+    	proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Increase timeout (optional, but often helpful)
+        proxy_read_timeout 90;
+
+        # Prevent Nginx from rewriting redirects from Kibana
+        proxy_redirect off;
+
+    	# Headers for WebSocket support (often needed by Kibana)
+    	proxy_http_version 1.1;
+    	proxy_set_header Upgrade $http_upgrade;
+    	proxy_set_header Connection "upgrade";
+    }
+}
+
+server {
+    server_name dev-es.patricia.com.au;
+
+    include /etc/nginx/sites-available/modules/443/patricia.com.au;
+    include /etc/nginx/sites-available/modules/restrictionsRules;
+
+    access_log /var/log/nginx/dev-es.access zehlog;
+    error_log /var/log/nginx/dev-es.error info;
+
+    charset utf-8;
+
+    autoindex on;
+    rewrite_log on;
+    log_not_found off;
+
+    location / {
+        # --- CORS Headers ---
+        # Handle OPTIONS preflight requests
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Allow-Origin' '*' always;
+            # Allow specific headers needed by the frontend request
+            add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type' always;
+            # Allow specific methods
+            add_header 'Access-Control-Allow-Methods' 'POST, OPTIONS' always;
+            # Allow credentials (even though origin is *, browser might still require it for Authorization)
+            # add_header 'Access-Control-Allow-Credentials' 'true' always; # Usually not needed with '*' origin, but uncomment if issues arise
+            add_header 'Access-Control-Max-Age' 1728000; # Cache preflight response for 20 days
+            add_header 'Content-Type' 'text/plain charset=UTF-8';
+            add_header 'Content-Length' 0;
+            return 204; # Return 'No Content' for OPTIONS
+        }
+
+        # Add CORS headers for actual requests (e.g., POST)
+        # Use 'always' to ensure headers are added even on errors if needed
+        add_header 'Access-Control-Allow-Origin' '*' always;
+        add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type' always;
+        add_header 'Access-Control-Allow-Methods' 'POST, OPTIONS' always;
+        # add_header 'Access-Control-Allow-Credentials' 'true' always; # Match OPTIONS if uncommented there
+
+        access_by_lua_block {
+            ngx.log(ngx.INFO, "--- ENTERING LUA BLOCK ---")
+
+            -- Load libraries
+            local jwt = require "resty.jwt"
+            local cjson = require "cjson.safe" -- Use safe decoder
+
+            -- Get required variables from Nginx config
+            local es_auth_value = ngx.var.es_auth_header
+            local jwt_secret_or_public_key = ngx.var.jwt_verification_key
+
+            -- Check if required Nginx variables are set
+            if not es_auth_value or es_auth_value == "" or not jwt_secret_or_public_key or jwt_secret_or_public_key == "" then
+                ngx.log(ngx.ERR, "Missing required environment variables (es_auth_header or jwt_verification_key)")
+                return ngx.exit(ngx.HTTP_INTERNAL_SERVER_ERROR)
+            end
+
+            -- Get Authorization header
+            local auth_header = ngx.req.get_headers()["Authorization"]
+
+            -- 1. Allow Basic Authentication through directly (e.g., for internal tools)
+            if auth_header and string.match(auth_header, "^Basic%s+(.+)") then
+                ngx.log(ngx.INFO, "Basic Authentication detected. Allowing request to proceed.")
+                return -- Nginx passes the existing Basic Auth header
+            end
+
+            -- 2. Check for Bearer Token (JWT)
+            if not auth_header or not string.match(auth_header, "^Bearer%s+(.+)") then
+                ngx.log(ngx.ERR, "Missing or invalid Authorization header (neither Basic nor Bearer)")
+                ngx.header["WWW-Authenticate"] = "Basic realm=\"Restricted\", Bearer realm=\"Restricted\""
+                return ngx.exit(ngx.HTTP_UNAUTHORIZED) -- 401
+            end
+
+            local token = string.match(auth_header, "^Bearer%s+(.+)")
+
+            -- 3. Verify the JWT signature (adjust validator if needed)
+            -- local jwt_claims_validator = function(claims) return true end -- Example simple validator
+            local jwt_obj, err = jwt:verify(jwt_secret_or_public_key, token) -- Removed simple validator for now
+
+            if not jwt_obj then
+                ngx.log(ngx.ERR, "JWT signature validation failed: ", err)
+                return ngx.exit(ngx.HTTP_UNAUTHORIZED) -- 401
+            end
+
+            -- 4. Extract claims (adjust claim names if different in your JWT)
+            local claims = jwt_obj.payload
+            local userId = claims.sub
+            local companyId = claims.cid
+            local userRole = claims.role
+            local isSuperAdmin = claims.isSuperAdmin
+            local flagId = claims.flag
+
+            if not flagId then
+                 ngx.log(ngx.ERR, "JWT missing required (flagId) claim.")
+                 return ngx.exit(ngx.HTTP_FORBIDDEN) -- 403 Forbidden (valid token, missing data)
+            end
+
+            if not userId then
+                 ngx.log(ngx.ERR, "JWT missing required 'sub' (userId) claim.")
+                 return ngx.exit(ngx.HTTP_FORBIDDEN) -- 403 Forbidden (valid token, missing data)
+            end
+
+            ngx.log(ngx.INFO, "JWT validated for user: ", userId, ", role: ", userRole or "nil", ", companyId: ", companyId or "nil", ", isSuperAdmin: ", tostring(isSuperAdmin), ", flag: ", flagId or "nil")
+
+            -- 5. Read lastSyncTimestamp from the original request body
+            ngx.req.read_body()
+            local body_data = ngx.req.get_body_data()
+            local request_body_json, json_err = cjson.decode(body_data)
+
+            if not request_body_json or json_err then
+                ngx.log(ngx.ERR, "Failed to decode request body JSON: ", json_err or "nil")
+                return ngx.exit(ngx.HTTP_BAD_REQUEST) -- 400 Bad Request
+            end
+
+            local lastSyncNumeric = request_body_json.lastSyncTimestamp
+            if type(lastSyncNumeric) ~= "number" then
+                 ngx.log(ngx.ERR, "Invalid or missing 'lastSyncTimestamp' in request body.")
+                 return ngx.exit(ngx.HTTP_BAD_REQUEST) -- 400 Bad Request
+            end
+
+	        -- 6. Build Elasticsearch query filter clauses
+            local filter_clauses = {
+                -- Always filter by timestamp
+                { range = { updated_at = { gt = lastSyncNumeric } } },
+                { term = { flag = flagId } }
+            }
+
+            -- Add user/company scoping unless user is a super admin
+            if not isSuperAdmin then
+                -- Check if companyId is present, is a string, and is not empty, and if the user is a Manager or Administrator
+                if userRole ~= "User" and companyId ~= nil and type(companyId) == "string" and companyId ~= "" then
+                    -- Apply company_id filter
+                    table.insert(filter_clauses, { term = { company_id = companyId } }) -- Ensure 'company_id' matches your ES field name
+                    ngx.log(ngx.INFO, "Applying company_id filter for company: ", companyId) -- Log company filter
+                else
+                    -- companyId is nil, not a string, or empty, so filter by user_id instead
+                    -- We already checked userId is not nil/empty earlier
+                    table.insert(filter_clauses, { term = { user_id = userId } }) -- Ensure 'user_id' matches your ES field name
+                    ngx.log(ngx.INFO, "Applying user_id filter for user: ", userId) -- Log user filter
+                end
+            else
+                ngx.log(ngx.INFO, "SuperAdmin detected, skipping user/company filters.")
+            end
+
+            -- 7. Construct the full Elasticsearch query
+            local es_query = {
+                size = 10000, -- Or implement pagination based on request params if needed
+                sort = {
+                    { updated_at = { order = "desc" } }
+                },
+                query = {
+                    bool = {
+                        filter = filter_clauses
+                    }
+                }
+            }
+
+            -- 8. Encode the query to JSON
+            local es_query_json, encode_err = cjson.encode(es_query)
+	   				ngx.log(ngx.INFO, "Generated ES Query JSON: ", es_query_json)
+            if not es_query_json or encode_err then
+                 ngx.log(ngx.ERR, "Failed to encode Elasticsearch query JSON: ", encode_err or "nil")
+                 return ngx.exit(ngx.HTTP_INTERNAL_SERVER_ERROR)
+            end
+
+            -- 9. Modify the request before proxying
+            ngx.req.set_body_data(es_query_json) -- Replace request body with the generated ES query
+            ngx.req.set_header("Content-Type", "application/json")
+            ngx.req.set_header("Authorization", es_auth_value) -- Add Basic Auth for ES backend
+
+            ngx.log(ngx.INFO, "Proxying request to ES with generated query for user: ", userId)
+            -- Allow request to proceed to the proxy_pass directive
+            return
+        }
+
+        # --- Proxy to Elasticsearch ---
+        proxy_pass https://localhost:9200; # Assuming ES runs locally on 9200
+        proxy_ssl_verify off; # If using self-signed certs on ES
+        proxy_ssl_server_name on;
+
+        # Essential headers for proxying
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 90;
+        proxy_redirect off;
+
+        # Headers for WebSocket support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+
+server {
+    server_name dev-es.patricia.com.au dev-kb.patricia.com.au;
+
+    listen [::]:80;
+    listen 80;
+
+    return 301 https://$host$request_uri;
+}
+

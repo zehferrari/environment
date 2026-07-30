@@ -1,0 +1,16 @@
+    location ~ \.(html|htm|rtf|rtx|svg|svgz|txt|xsd|xsl|xml)$ {
+        expires 3600s;
+        add_header Cache-Control "max-age=3600, public, must-revalidate, proxy-revalidate";
+    }
+
+    location ~ \.(gif|gz|gzip|ico|jpg|jpeg|jpe|swf|png|woff|woff2|otf|eot|svg|ttf|css|js|json)$ {
+        add_header Access-Control-Allow-Origin '*';
+        add_header Access-Control-Allow-Headers 'Authorization,Content-Type,Accept,Origin,User-Agent,DNT,Cache-Control,X-Mx-ReqToken,Keep-Alive,X-Requested-With,If-Modified-Since';
+
+        expires 31536000s;
+        add_header Cache-Control "max-age=31536000, public, must-revalidate, proxy-revalidate";
+    }
+
+    location ~ \.json$ {
+		add_header Cache-Control no-cache;
+    }

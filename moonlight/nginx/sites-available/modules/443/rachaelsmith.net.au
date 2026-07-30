@@ -1,0 +1,17 @@
+    listen [::]:443 ssl; # managed by Certbot
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/rachaelsmith.net.au/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/rachaelsmith.net.au/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+    charset utf-8;
+    index index.php index.html index.htm;
+
+    autoindex on;
+    rewrite_log on;
+    log_not_found off;
+
+    real_ip_header $http_x_forwarded_for;
+    include /etc/nginx/sites-available/loadModules;
+

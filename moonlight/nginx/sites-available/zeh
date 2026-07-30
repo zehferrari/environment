@@ -1,0 +1,199 @@
+server {
+    server_name router.zeh.me;
+
+    # rewrite cookies if router sets domain/path weirdly
+    proxy_cookie_domain 10.0.0.1 router.zeh.me;
+
+    # ssl config...
+    include /etc/nginx/sites-available/modules/443/zeh.me;
+
+    location = /index.html { add_header Cache-Control "no-cache, must-revalidate"; }
+    location / {
+        proxy_pass http://10.0.0.1;
+        proxy_http_version 1.1;
+
+        # critical
+        proxy_set_header Host 10.0.0.1;
+        proxy_set_header Origin http://10.0.0.1;
+        proxy_set_header Referer http://10.0.0.1/webpages/login.html;
+
+        # keep client info optional
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # some router UIs need this
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+}
+
+server {
+    server_name nas.zeh.me;
+
+    # rewrite cookies if router sets domain/path weirdly
+    proxy_cookie_domain 10.0.0.111 nas.zeh.me;
+
+    # ssl config...
+    include /etc/nginx/sites-available/modules/443/zeh.me;
+
+    location = /index.html { add_header Cache-Control "no-cache, must-revalidate"; }
+    location / {
+        proxy_pass http://10.0.0.111;
+        proxy_http_version 1.1;
+
+        # critical
+        proxy_set_header Host 10.0.0.111;
+        proxy_set_header Origin http://10.0.0.111;
+        proxy_set_header Referer http://10.0.0.111/login;
+
+        # keep client info optional
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # some router UIs need this
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+}
+
+server {
+    server_name lola.zeh.me;
+    error_log /var/log/nginx/lola.error;
+    root /home/zeh/www/lola/public;
+    index index.html;
+
+    include /etc/nginx/sites-available/modules/443/zeh.me;
+    include /etc/nginx/sites-available/modules/restrictionsRules;
+
+    # ── Protected PHP entry points ───────────────────────────────
+    # These files live OUTSIDE the web root (in /home/zeh/www/lola) and run
+    # only via the explicit routes below. We include fastcgi.conf (not
+    # snippets/fastcgi-php.conf) to skip its in-docroot try_files guard, then
+    # point SCRIPT_FILENAME at the real file on disk.
+
+    # Homepage AI proxy — called by the chat bubble & mini-app features.
+    location = /api.php {
+        include fastcgi.conf;
+        fastcgi_param SCRIPT_FILENAME /home/zeh/www/lola/api.php;
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+    }
+
+    # Admin — AI code editor.
+    location = /editor {
+        include fastcgi.conf;
+        fastcgi_param SCRIPT_FILENAME /home/zeh/www/lola/editor.php;
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+    }
+
+    # Admin — AI chat editor.
+    location = /chat {
+        include fastcgi.conf;
+        fastcgi_param SCRIPT_FILENAME /home/zeh/www/lola/chat.php;
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+    }
+
+    # Never serve or execute any other PHP from the web root.
+    location ~ \.php$ {
+        return 404;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+
+    location = /index.html { add_header Cache-Control "no-cache, must-revalidate"; }
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+
+server {
+    server_name home.zeh.me moonlight.zeh.me;
+    error_log /var/log/nginx/home.error;
+    include /etc/nginx/sites-available/modules/443/zeh.me;
+    include /etc/nginx/sites-available/modules/restrictionsRules;
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+    fastcgi_send_timeout 300s;
+    fastcgi_read_timeout 300s;
+    location = /index.html { add_header Cache-Control "no-cache, must-revalidate"; }
+    location / {
+        proxy_pass http://10.0.0.41:8123;
+        proxy_set_header Host $host;
+        proxy_redirect http:// https://;
+        proxy_http_version 1.1;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_buffering off;
+    }
+}
+
+server {
+    server_name zeh.me;
+    error_log /var/log/nginx/zeh.error;
+    root /home/zeh/www/zeh;
+    index index.php index.html;
+
+    include /etc/nginx/sites-available/modules/443/zeh.me;
+
+    location ^~ /stockmarket/api/ {
+        proxy_pass http://127.0.0.1:8888/;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    include /etc/nginx/sites-available/modules/restrictionsRules;
+
+    location = / {
+        return 301 https://www.linkedin.com/in/zehferrari/;
+    }
+
+    location /stockmarket/ {
+        try_files $uri $uri/ =404;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+    }
+
+    location /summary.html {
+        auth_basic "Restricted";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+        try_files $uri $uri/ =404;
+    }
+
+    location = /users.html {
+        auth_basic "Restricted";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+        try_files $uri =404;
+    }
+
+    location = /users.json {
+        auth_basic "Restricted";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+        try_files $uri =404;
+    }
+
+    location = /index.html { add_header Cache-Control "no-cache, must-revalidate"; }
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+
+server {
+    server_name *.zeh.me zeh.me;
+    listen [::]:80;
+    listen 80;
+    include /etc/nginx/sites-available/modules/restrictionsRules;
+    return 301 https://$host$request_uri;
+}

@@ -1,0 +1,49 @@
+server {
+    server_name dev.patricia.com.au;
+    root /var/www/html/patricia;
+
+    listen [::]:80;
+    listen 80;
+
+    include /etc/nginx/sites-available/modules/commonBlock;
+}
+
+server {
+    server_name v2.patricia.com.au;
+    root /var/www/html/v2/public;
+
+    listen [::]:80;
+    listen 80;
+
+    include /etc/nginx/sites-available/modules/commonBlock;
+}
+
+server {
+    server_name wordpress.zeh.me;
+    root /var/www/html/cms/wordpress;
+
+    listen [::]:80;
+    listen 80;
+
+    include /etc/nginx/sites-available/modules/commonBlock;
+}
+
+server {
+    server_name drupal.zeh.me;
+    root /var/www/html/cms/drupal;
+
+    listen [::]:80;
+    listen 80;
+
+    include /etc/nginx/sites-available/modules/commonBlock;
+}
+
+server {
+    server_name joomla.zeh.me;
+    root /var/www/html/cms/joomla;
+
+    listen [::]:80;
+    listen 80;
+
+    include /etc/nginx/sites-available/modules/commonBlock;
+}

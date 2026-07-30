@@ -1,0 +1,11 @@
+
+    ### M/Monitor: Nginx status ------------------------------------
+    location /nginx_status {
+        stub_status on;
+        access_log   off;
+        allow 103.100.225.166/32;
+        allow 45.248.77.140/32;
+	allow 49.197.69.29/32;
+        deny all;
+    }
+

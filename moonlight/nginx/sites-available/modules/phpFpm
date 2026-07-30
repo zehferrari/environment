@@ -1,0 +1,19 @@
+    location ~ \.php$ {
+		try_files $uri = 404;
+
+		fastcgi_param HTTPS on;
+        fastcgi_index  index.php;
+        fastcgi_buffer_size 128k;
+        fastcgi_buffers 16 256k;
+        fastcgi_intercept_errors on;
+
+        include fastcgi_params;
+
+        fastcgi_param REMOTE_ADDR $http_x_forwarded_for;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+
+        if (-f $request_filename) {
+            fastcgi_pass   php-fpm;
+        }
+    }
+

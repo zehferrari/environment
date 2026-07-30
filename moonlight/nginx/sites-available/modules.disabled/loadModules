@@ -1,0 +1,23 @@
+## EXTERNAL SOURCES REDIRECTIONS
+#include /etc/nginx/sites-available/modules/currencyRate;
+
+## FORCE SSL
+include /etc/nginx/sites-available/modules/forceSSL;
+
+## MONITORING
+#include /etc/nginx/sites-available/modules/elasticSearch;
+#include /etc/nginx/sites-available/modules/nginxStatus;
+
+## RULES
+include /etc/nginx/sites-available/modules/sitemapRules;
+include /etc/nginx/sites-available/modules/404Rules;
+include /etc/nginx/sites-available/modules/301Rules;
+include /etc/nginx/sites-available/modules/restrictionsRules;
+include /etc/nginx/sites-available/modules/cacheRules;
+
+## IMAGEPROCESSING
+include /etc/nginx/sites-available/modules/imageProcess;
+
+## ROUTER
+include /etc/nginx/sites-available/modules/locationRouter;
+

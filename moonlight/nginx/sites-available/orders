@@ -1,0 +1,29 @@
+server {
+    server_name orders.patricia.com.au;
+
+    include /etc/nginx/sites-available/modules/443/patricia.com.au;
+
+    access_log /var/log/nginx/orders.access zehlog;
+    error_log /var/log/nginx/orders.error;
+
+    charset utf-8;
+
+    root /home/zeh/www/v23/orders/public;
+    index index.html index.htm index.php;
+
+    autoindex on;
+    rewrite_log on;
+    log_not_found off;
+
+    real_ip_header $http_x_forwarded_for;
+    include /etc/nginx/sites-available/loadModulesRestrict;
+}
+
+server {
+    server_name orders.patricia.com.au;
+
+    listen [::]:80;
+    listen 80;
+
+    return 301 https://$host$request_uri;
+}

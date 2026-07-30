@@ -1,0 +1,17 @@
+## Maintenance / Error Page
+include /etc/nginx/sites-available/modules/maintenancePage;
+
+## FORCE SSL
+#include /etc/nginx/sites-available/modules/forceSSL;
+
+## IMAGEPROCESSING
+include /etc/nginx/sites-available/modules/imageProcess;
+
+## RULES
+include /etc/nginx/sites-available/modules/301Rules;
+include /etc/nginx/sites-available/modules/restrictionsRules;
+include /etc/nginx/sites-available/modules/cacheRules;
+
+## ROUTER
+include /etc/nginx/sites-available/modules/locationRouter7;
+

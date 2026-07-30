@@ -1,0 +1,30 @@
+include /etc/nginx/sites-available/redirections.conf;
+
+server {
+    server_name patricia.zeh;
+
+    include /etc/nginx/sites-available/modules/443/default;
+
+    add_header X-Frame-Options "SAMEORIGIN";
+    charset utf-8;
+
+    root /home/zeh/www/patricia;
+    index index.php index.html index.htm;
+
+    autoindex on;
+    rewrite_log on;
+    log_not_found off;
+
+    real_ip_header $http_x_forwarded_for;
+  
+    ## maintenance page 
+    # rewrite ^(.*)$ /maintenance.html break;
+
+    location ~* ^/libraries/src/Patricia/Config/Setup/.*.json$ {
+        deny all;
+        access_log off;
+    }
+
+    include /etc/nginx/sites-available/modules/404Rules/patricia;
+    include /etc/nginx/sites-available/loadModules7;
+}

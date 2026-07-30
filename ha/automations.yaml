@@ -1116,6 +1116,7 @@
         target:
           entity_id: switch.light_garden
         action: switch.turn_on
+        enabled: false
       - type: turn_on
         device_id: 2434b7a05799c78549a5ab690ef1e907
         entity_id: f07f07672bbdb031687dd78f3ec3864f
@@ -1129,6 +1130,7 @@
         device_id: 073b4da551694d0799bf0e9d41697052
         entity_id: f9129454b4fba37becc79933b6923d11
         domain: switch
+        enabled: false
       - type: turn_off
         device_id: 2434b7a05799c78549a5ab690ef1e907
         entity_id: f07f07672bbdb031687dd78f3ec3864f
@@ -1835,10 +1837,6 @@
         data: {}
         target:
           entity_id: fan.fan_light_front_bedroom
-      - type: turn_off
-        device_id: 321eba43c5eccd04ebf19e5405182031
-        entity_id: d9f1d00ce7ace69b447a7d766b7de12c
-        domain: light
       - delay:
           hours: 0
           minutes: 0
