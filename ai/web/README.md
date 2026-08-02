@@ -399,7 +399,7 @@ pnpm test:p0-kernel
 pnpm test:workflow-agent-rules
 pnpm test:repository-workflow
 pnpm test:worktree-cleanup
-pnpm test:pm-channel-lifecycle
+pnpm test:pm-channel-transport
 pnpm test:pm-channel-secret-leak
 pnpm test:user-access-control
 ```

@@ -577,7 +577,8 @@ The assignee can submit only when:
 
 - it is the current assignee and an implementation-capable coding agent;
 - Task status is `In Progress`;
-- the parent Epic remains `In Progress` for an Epic child;
+- the parent Epic remains actionable (`To Do` or `In Progress`) for an Epic
+  child; the normal start path has already promoted it to `In Progress`;
 - no implementation sub-task is open.
 
 `repoTouched` is resolved as follows:
@@ -957,6 +958,9 @@ stronger guarantees:
 - An approved plan may produce zero checklist rows, and an empty implementation
   checklist passes `ready_for_review`.
 - Open review sub-tasks do not hard-block `review_done`.
+- The native `ready_for_review` endpoint blocks open implementation rows, but
+  an authoritative human Review move currently calls the handoff without that
+  same checklist check.
 - The verifier checks Git integrity and metadata but does not run the general
   project test suite.
 - Native agent checklist actions cannot delete/reorder/convert stale rows even
@@ -968,7 +972,9 @@ stronger guarantees:
   assignee not to commit/push. The runner behavior is authoritative: PM creates
   the submission commit and publishes only what policy permits.
 - A human can make authoritative board moves outside the ideal sequential
-  agent path. Managed Review → Done invokes finalization, but an arbitrary
+  agent path. Human entry into In Progress can bypass approval, blocker, WIP,
+  Epic-state, and branch-collision gates (while still provisioning the
+  worktree). Managed Review → Done invokes finalization, but an arbitrary
   direct move to Done from another column can bypass repository cleanup.
 - A successful database transition and a successful agent wake are separate
   outcomes; dispatch failure does not roll the state back.
