@@ -23,7 +23,7 @@ import {
   recentComments,
   recentDiscussion,
 } from "@/lib/agents/context/api/recent";
-import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
+import { isActionableEpicStatus, resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
 import { resolveGitIdentity } from "@/lib/settings/system";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
@@ -623,11 +623,11 @@ export async function sendTaskCommentNotifications(args: {
   const mentionedAgentUsers = mentionedUsers.filter((user) => user.kind === "agent");
   const addReviewOwner = () => {
     addTargetAgent(targetAgents, task.actingManager, "reviewer", excluded);
-    const hasInProgressEpicManager = task.epic?.status === "In Progress" && task.epic.actingManager;
-    if (task.epic?.status === "In Progress") {
-      addTargetAgent(targetAgents, task.epic.actingManager, "epic-manager", excluded);
-    }
-    if (!task.actingManager && !hasInProgressEpicManager) {
+    const actionableEpicManager = isActionableEpicStatus(task.epic?.status)
+      ? task.epic?.actingManager
+      : null;
+    addTargetAgent(targetAgents, actionableEpicManager, "epic-manager", excluded);
+    if (!task.actingManager && !actionableEpicManager) {
       addTargetAgent(targetAgents, task.reporter, "reporter", excluded);
     }
   };

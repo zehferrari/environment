@@ -17,6 +17,7 @@ import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation
 import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
+import { moveTaskStatus } from "@/lib/tasks/move-status";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
@@ -598,9 +599,28 @@ export default async function ProjectBoardPage({
             project: null,
           };
         })}
-        moveTaskAction={moveTask}
+        moveTaskAction={moveTaskStatus}
         reorderTasksAction={reorderBoardTasks}
         deleteTaskAction={binTask}
+        canManageTaskRoles={viewer.isOwner}
+        roleOptions={viewer.isOwner ? principals.map((principal) => ({
+          value: principal.id,
+          label: principal.name,
+          actor: {
+            id: principal.id,
+            username: principal.username,
+            kind: principal.kind,
+            name: principal.name,
+            avatarUpdatedAt: principal.avatarUpdatedAt,
+            agent: principal.kind === "agent"
+              ? {
+                  slug: principal.agentSlug ?? principal.username,
+                  name: principal.name,
+                  avatar: principal.agentAvatar,
+                }
+              : null,
+          },
+        })) : []}
       />
 
       {/* The shared board (+) speed-dial is the visible FAB; AddTaskFab stays

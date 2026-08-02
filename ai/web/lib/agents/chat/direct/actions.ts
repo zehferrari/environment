@@ -40,6 +40,7 @@ import {
 } from "@/lib/agents/chat/direct/files";
 import {
   boundDirectChatProjectContexts,
+  directlyRequestsWorkItemManagement,
   normalizeDirectChatProjectIds,
 } from "@/lib/agents/chat/direct/projects";
 
@@ -404,16 +405,6 @@ async function inferProjectIdsFromPmWorkItemLinks(body: string) {
   });
   const idBySlug = new Map(projects.map((project) => [project.slug, project.id]));
   return slugs.map((slug) => idBySlug.get(slug)).filter((id): id is string => Boolean(id));
-}
-
-function directlyRequestsWorkItemManagement(body: string) {
-  const text = body.toLowerCase();
-  const workItemNoun = "(?:work[- ]?item|task|sub[- ]?task|epic|action plan|proposal|board|backlog)";
-  const managementVerb = "(?:create|add|make|open|update|edit|change|reorganize|re-organize|move|assign|comment|archive|delete|split|break down|breakdown|propose|submit)";
-  return (
-    new RegExp(`\\b${managementVerb}\\b.{0,80}\\b${workItemNoun}\\b`).test(text) ||
-    new RegExp(`\\b${workItemNoun}\\b.{0,80}\\b${managementVerb}\\b`).test(text)
-  );
 }
 
 function buildDirectLiveContextBlock(args: {

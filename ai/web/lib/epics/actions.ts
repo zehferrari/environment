@@ -29,6 +29,7 @@ import { enqueueEpicDoneCleanup } from "@/lib/deploy/epic-merge";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignOpenEpicTasks } from "@/lib/epics/assignment";
 import { resetEpicActionPlanForDeployReview, triggerDeployReview } from "@/lib/epics/deploy-review";
+import { canApplySubmittedEpicStatus } from "@/lib/epics/status-concurrency";
 import {
   accessibleEpicWhere,
   accessibleTaskWhere,
@@ -426,6 +427,9 @@ export async function updateEpic(formData: FormData) {
   const descriptionRaw = String(formData.get("description") ?? "");
   const newDescription = descriptionRaw.trim() === "" ? null : descriptionRaw;
   const status = String(formData.get("status") ?? "");
+  const submittedStatusRevision = formData.has("statusRevision")
+    ? String(formData.get("statusRevision") ?? "")
+    : null;
   const hasAssigneeField = formData.has("assigneeId") || formData.has("workerPoolSubmitted");
   const workerIds = getWorkerIds(formData);
   const hasActingManagerField = formData.has("actingManagerId");
@@ -497,7 +501,15 @@ export async function updateEpic(formData: FormData) {
 
   // Status
   const statusChangedAt = new Date();
-  const statusChanged = status !== "" && status !== epic.status;
+  // The Epic editor is a long-lived, uncontrolled form. A plan approval or
+  // another tab can change status while the form remains open, so never let
+  // an unrelated Save replay its stale status value over the newer workflow
+  // state. Other edited fields still save normally.
+  const statusSubmissionIsCurrent = canApplySubmittedEpicStatus({
+    submittedRevision: submittedStatusRevision,
+    currentStatusChangedAt: epic.statusChangedAt,
+  });
+  const statusChanged = statusSubmissionIsCurrent && status !== "" && status !== epic.status;
   // To Do and In Progress are both "activated" states: the epic is approved and
   // its child tasks should be To Do (approved to execute) and queued to workers.
   const epicActivated = status === "To Do" || status === "In Progress";

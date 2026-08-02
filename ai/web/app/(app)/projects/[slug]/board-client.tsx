@@ -27,7 +27,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { MoveTaskResult } from "./page";
+import type { MoveTaskResult } from "@/lib/tasks/move-status";
 import {
   actorDisplayName,
   MessageAvatar,
@@ -36,7 +36,10 @@ import {
 import { useAgentPresenceMap } from "@/components/agent-presence-provider";
 import { formatGridDate } from "@/lib/date-format";
 import { bulkBinTasks } from "@/lib/bin/actions";
+import { bulkUpdateTaskRole, type BulkTaskRoleField } from "@/lib/tasks/bulk-roles";
 import ConfirmPopup from "@/components/confirm-popup";
+import TaskBulkEditControls, { type BulkTaskEditField } from "@/components/task-bulk-edit-controls";
+import type { AvatarComboboxOption } from "@/components/avatar-combobox";
 import { canShowDeploymentForTask, deploymentStatusIcon } from "@/lib/deploy/deployment-status";
 import { boardAvailableHeight, boardChromeSlotId, boardStickyTop } from "@/lib/board-chrome";
 
@@ -189,6 +192,8 @@ type BoardProps = {
   ) => Promise<MoveTaskResult>;
   reorderTasksAction: (orderedIds: string[]) => Promise<void>;
   deleteTaskAction: (formData: FormData) => Promise<void>;
+  roleOptions?: AvatarComboboxOption[];
+  canManageTaskRoles?: boolean;
 };
 
 // Per Stage 0 sign-off (HOMELAB-44 description): the Backlog column has a
@@ -218,7 +223,7 @@ const boardCollisionDetection: CollisionDetection = (args) => {
   return pointer.length > 0 ? pointer : rectIntersection(args);
 };
 
-export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction }: BoardProps) {
+export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, columns, tasks, moveTaskAction, reorderTasksAction, deleteTaskAction, roleOptions = [], canManageTaskRoles = false }: BoardProps) {
   // Card colour context drives which identity cues a card shows:
   //   home  (aggregate landing) → workspace left border + project background
   //   workspace board           → project background only (no border)
@@ -237,7 +242,6 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
   const [activeId, setActiveId] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkTarget, setBulkTarget] = useState("To Do");
   const [isPending, startTransition] = useTransition();
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Task | null>(null);
@@ -549,7 +553,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
     });
   }
 
-  function bulkMoveSelected() {
+  function bulkMoveSelected(bulkTarget: string) {
     const movingTasks = items.filter((task) => selectedIds.has(task.id) && task.status !== bulkTarget);
     if (movingTasks.length === 0) return;
 
@@ -594,6 +598,26 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         restoreUnmoved();
         setSelectedIds(new Set(movingTasks.filter((item) => !succeededIds.has(item.id)).map((item) => item.id)));
         setMoveError(error instanceof Error ? error.message : "Selected tasks could not be moved.");
+      }
+    });
+  }
+
+  function applyBulkEdit(field: BulkTaskEditField, value: string | null) {
+    if (field === "status") {
+      if (value) bulkMoveSelected(value);
+      return;
+    }
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setMoveError(null);
+    startTransition(async () => {
+      try {
+        await bulkUpdateTaskRole(ids, projectSlug, field as BulkTaskRoleField, value);
+        setSelectedIds(new Set());
+        router.refresh();
+      } catch (error) {
+        setMoveError(error instanceof Error ? error.message : "Selected tasks could not be updated.");
+        router.refresh();
       }
     });
   }
@@ -766,8 +790,8 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
   }, [columns, items]);
   const filtersActive = Boolean(normalizedQuery || attentionOnly || !doneVisible);
 
-  // Backlog is no longer a board column: the four workflow columns render
-  // as the board grid, and Backlog renders below as its own card grid
+  // Backlog is no longer a board column: it renders immediately before the
+  // four workflow columns as its own task grid
   // (HOMELAB-41). Drag-and-drop still works across both because the move
   // logic keys off task status / droppable id, not layout.
   const workflowColumns = useMemo(
@@ -835,7 +859,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
   const mobileLanes = focusActive
     ? visibleColumnLanes
     : backlogVisible
-      ? [...columnLanes, mobileBacklogLane]
+      ? [mobileBacklogLane, ...columnLanes]
       : columnLanes;
 
   // Keep the desktop board surface inside the currently visible viewport. Its
@@ -1086,28 +1110,13 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
             ) : null}
           </span>
           <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-2 text-caption font-semibold uppercase tracking-wider text-text-muted">
-              <span>Move to</span>
-              <select
-                value={bulkTarget}
-                onChange={(event) => setBulkTarget(event.currentTarget.value)}
-                className="rounded-lg border border-line bg-bg px-2 py-1.5 text-caption text-text outline-none focus:border-accent"
-              >
-                {columns.map((column) => (
-                  <option key={column.id} value={column.id}>
-                    {column.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button
-              type="button"
-              onClick={bulkMoveSelected}
+            <TaskBulkEditControls
+              statusOptions={columns.map((column) => ({ value: column.id, label: column.label }))}
+              roleOptions={roleOptions}
+              canManageRoles={canManageTaskRoles}
               disabled={isPending}
-              className="rounded-lg bg-accent px-control-x py-control-y text-caption font-semibold text-bg transition hover:opacity-90 disabled:cursor-wait disabled:opacity-50"
-            >
-              Move selected
-            </button>
+              onApply={applyBulkEdit}
+            />
             <button
               type="button"
               onClick={bulkDeleteSelected}
@@ -1166,6 +1175,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         </section>
       ) : null}
 
+      <div className="contents md:flex md:flex-col">
       {isMobileBoard ? (
         <div className="space-y-3 md:hidden">
           <div className="rounded-card border border-line bg-panel-soft px-3 py-2 text-caption text-text-muted">
@@ -1322,9 +1332,9 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
         </div>
       )}
 
-      {/* Backlog after board on non-ultra-wide desktop */}
+      {/* Backlog is ordered before the board on non-ultra-wide desktop. */}
       {backlogVisible && !isMobileBoard && !focusActive ? (
-        <section className="mt-6 hidden md:block 4xl:hidden">
+        <section className="mb-5 hidden md:order-first md:block 4xl:hidden">
           <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
             <div>
               <h2 className="flex items-center gap-2 text-subheading font-semibold text-text">
@@ -1390,6 +1400,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
           </BacklogDroppable>
         </section>
       ) : null}
+      </div>
 
       <DragOverlay>
         {active ? (

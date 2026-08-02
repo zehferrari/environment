@@ -5,6 +5,13 @@ import { useState, useEffect, useTransition } from "react";
 import SortableTaskList from "@/components/sortable-task-list";
 import { bulkBinTasks } from "@/lib/bin/actions";
 import ConfirmPopup from "@/components/confirm-popup";
+import TaskBulkEditControls, { type BulkTaskEditField } from "@/components/task-bulk-edit-controls";
+import type { AvatarComboboxOption } from "@/components/avatar-combobox";
+import { bulkUpdateTaskRole, type BulkTaskRoleField } from "@/lib/tasks/bulk-roles";
+import { moveTaskStatus } from "@/lib/tasks/move-status";
+
+const TASK_STATUS_OPTIONS = ["Backlog", "To Do", "In Progress", "Review", "Done"]
+  .map((value) => ({ value, label: value }));
 
 export default function EpicTasksClient({
   initialTasks,
@@ -12,12 +19,14 @@ export default function EpicTasksClient({
   reorderEpicTasks,
   epicId,
   showTaskRoles = false,
+  roleOptions = [],
 }: {
   initialTasks: any[];
   projectSlug: string;
   reorderEpicTasks: (orderedIds: string[]) => Promise<void>;
   epicId: string;
   showTaskRoles?: boolean;
+  roleOptions?: AvatarComboboxOption[];
 }) {
   const router = useRouter();
   const [tasks, setTasks] = useState(initialTasks);
@@ -144,6 +153,38 @@ export default function EpicTasksClient({
     setConfirmDeleteOpen(true);
   }
 
+  function applyBulkEdit(field: BulkTaskEditField, value: string | null) {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setError(null);
+
+    startTransition(async () => {
+      try {
+        if (field === "status") {
+          if (!value) return;
+          const succeededIds = new Set<string>();
+          for (const id of ids) {
+            const result = await moveTaskStatus(id, value, projectSlug);
+            if (!result.ok) {
+              setSelectedIds(new Set(ids.filter((taskId) => !succeededIds.has(taskId))));
+              setError(result.message);
+              router.refresh();
+              return;
+            }
+            succeededIds.add(id);
+          }
+        } else {
+          await bulkUpdateTaskRole(ids, projectSlug, field as BulkTaskRoleField, value);
+        }
+        setSelectedIds(new Set());
+        router.refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Selected tasks could not be updated.");
+        router.refresh();
+      }
+    });
+  }
+
   function performBulkDelete() {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) {
@@ -179,15 +220,23 @@ export default function EpicTasksClient({
       )}
 
       {selectedCount > 0 && (
-        <div className="flex items-center justify-between gap-3 rounded-panel border border-accent/30 bg-accent/[0.08] px-4 py-3 text-body shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-panel border border-accent/30 bg-accent/[0.08] px-4 py-3 text-body shadow-sm">
           <span className="font-semibold text-text">
             {selectedCount} selected
           </span>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <TaskBulkEditControls
+              statusOptions={TASK_STATUS_OPTIONS}
+              roleOptions={roleOptions}
+              canManageRoles={showTaskRoles}
+              disabled={isPending}
+              onApply={applyBulkEdit}
+            />
             <button
               type="button"
               onClick={bulkDeleteSelected}
-              className="rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-semibold text-crit transition hover:bg-crit hover:text-on-crit"
+              disabled={isPending}
+              className="rounded-lg border border-crit bg-transparent px-control-x py-control-y text-caption font-semibold text-crit transition hover:bg-crit hover:text-on-crit disabled:cursor-wait disabled:opacity-50"
             >
               Delete selected
             </button>

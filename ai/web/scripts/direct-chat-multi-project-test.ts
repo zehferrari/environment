@@ -10,6 +10,7 @@ import { createWorkItemGrantToken } from "../lib/agents/workflow/token/work-item
 import { runRouteHandler } from "./lib/next-route-harness";
 import {
   boundDirectChatProjectContexts,
+  directlyRequestsWorkItemManagement,
   MAX_DIRECT_CHAT_PROJECT_CONTEXT_CHARS,
   MAX_DIRECT_CHAT_PROJECTS,
   normalizeDirectChatProjectIds,
@@ -42,6 +43,24 @@ async function main() {
   assert.ok(
     boundedContexts.every((context, index) => context.startsWith(`project-${index}:`)),
     "budgeting retains the identity header for every selected project",
+  );
+  assert.equal(
+    directlyRequestsWorkItemManagement([
+      "Based on the Task https://agents.vixi.au/projects/environment/tasks/ENV-112",
+      "I need you to create two tasks to further investigate these issues.",
+    ].join("\n\n")),
+    true,
+    "a multiline request to create plural tasks receives work-item authorization",
+  );
+  assert.equal(
+    directlyRequestsWorkItemManagement("Please reorganize the epics and update their action plans."),
+    true,
+    "plural Epic and Action Plan mutations receive work-item authorization",
+  );
+  assert.equal(
+    directlyRequestsWorkItemManagement("Summarize the open tasks and explain the current backlog."),
+    false,
+    "read-only project questions do not receive work-item authorization",
   );
 
   process.env.AUTH_SECRET = "direct-chat-multi-project-test-secret";

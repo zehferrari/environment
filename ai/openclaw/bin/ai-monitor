@@ -36,6 +36,10 @@ CONFIG_PATH = "/etc/ai-monitor/config.json"
 STATE_PATH = "/var/lib/ai-monitor/state.json"
 RUN_LOCK_PATH = "/var/lib/ai-monitor/run.lock"
 RUNUSER_BIN = "/usr/sbin/runuser"
+MIB = 1024 ** 2
+GIB = 1024 ** 3
+DEFAULT_GATEWAY_WARN_BYTES = 8 * GIB
+DEFAULT_GATEWAY_CRITICAL_BYTES = 10 * GIB
 
 
 def acquire_run_lock():
@@ -303,18 +307,38 @@ def probe_gateway_memory(cfg, registry):
     MemoryCurrent is preferred because it includes gateway child processes.
     Direct cgroup and main-process RSS reads keep the probe useful on older
     systemd releases, while identifying the less-complete fallback source.
+    Unless explicitly overridden, alert thresholds follow the unit's
+    MemoryHigh and MemoryMax policy. The 8/10 GiB host policy is the fallback
+    when systemd does not expose those limits.
     """
     check = cfg.get("gateway_memory_check", {}) or {}
     enabled = check.get("enabled", True)
     unit = check.get("unit", "openclaw-gateway.service")
-    warn_bytes = int(check.get("warn_mib", 3072)) * 1024 * 1024
-    critical_bytes = int(check.get("critical_mib", 3840)) * 1024 * 1024
-    critical_bytes = max(critical_bytes, warn_bytes)
+    warn_override = check.get("warn_mib")
+    critical_override = check.get("critical_mib")
+    warn_override_bytes = (
+        int(warn_override) * MIB if warn_override is not None else None
+    )
+    critical_override_bytes = (
+        int(critical_override) * MIB
+        if critical_override is not None else None
+    )
+    default_warn_bytes = (
+        warn_override_bytes
+        if warn_override_bytes is not None
+        else DEFAULT_GATEWAY_WARN_BYTES
+    )
+    default_critical_bytes = (
+        critical_override_bytes
+        if critical_override_bytes is not None
+        else DEFAULT_GATEWAY_CRITICAL_BYTES
+    )
+    default_critical_bytes = max(default_critical_bytes, default_warn_bytes)
     result = {
         "enabled": bool(enabled),
         "unit": unit,
-        "warn_bytes": warn_bytes,
-        "critical_bytes": critical_bytes,
+        "warn_bytes": default_warn_bytes,
+        "critical_bytes": default_critical_bytes,
         "agents": {},
     }
     if not enabled:
@@ -337,6 +361,8 @@ def probe_gateway_memory(cfg, registry):
             "--property=ActiveState",
             "--property=MemoryCurrent",
             "--property=MemoryPeak",
+            "--property=MemoryHigh",
+            "--property=MemoryMax",
             "--property=ControlGroup",
             "--property=MainPID",
         ]
@@ -351,6 +377,26 @@ def probe_gateway_memory(cfg, registry):
             current = _read_process_rss(properties.get("MainPID"))
             source = "main-pid-rss"
         peak = _parse_byte_count(properties.get("MemoryPeak"))
+        memory_high = _parse_byte_count(properties.get("MemoryHigh"))
+        memory_max = _parse_byte_count(properties.get("MemoryMax"))
+
+        critical_bytes = (
+            critical_override_bytes
+            if critical_override_bytes is not None
+            else memory_max or DEFAULT_GATEWAY_CRITICAL_BYTES
+        )
+        if warn_override_bytes is not None:
+            warn_bytes = warn_override_bytes
+        elif memory_high is not None:
+            warn_bytes = memory_high
+        elif memory_max is not None:
+            warn_bytes = min(
+                DEFAULT_GATEWAY_WARN_BYTES,
+                memory_max * 4 // 5,
+            )
+        else:
+            warn_bytes = DEFAULT_GATEWAY_WARN_BYTES
+        critical_bytes = max(critical_bytes, warn_bytes)
 
         state = "unavailable"
         if current is not None:
@@ -363,6 +409,10 @@ def probe_gateway_memory(cfg, registry):
             "current_bytes": current,
             "peak_bytes": peak,
             "source": source if current is not None else None,
+            "memory_high_bytes": memory_high,
+            "memory_max_bytes": memory_max,
+            "warn_bytes": warn_bytes,
+            "critical_bytes": critical_bytes,
             "state": state,
             "rc": rc,
             "error": (err or "").strip()[:160],
@@ -1725,13 +1775,47 @@ def _pm_workflow_notification_status(body):
 
 def _pm_closed_epic_human_target(row):
     if (
-        row["epicStatus"] in (None, "To Do", "In Progress")
+        row["epicStatus"] not in ("Backlog", "Done")
         or row["status"] not in ("To Do", "In Progress", "Review")
     ):
         return None
     if row["reporterKind"] == "human" and row["reporterUsername"]:
         return row["reporterUsername"]
     return row["ownerUsername"]
+
+
+def _pm_closed_epic_items(rows):
+    """Collapse active child-task drift into one human issue per closed Epic."""
+    closed_epics = {}
+    for row in rows:
+        human_owner = _pm_closed_epic_human_target(row)
+        if not human_owner or not row["epicId"]:
+            continue
+        key = (row["epicId"], human_owner)
+        item = closed_epics.setdefault(key, {
+            "kind": "pm-epic-not-open",
+            "severity": "warn",
+            "agent": human_owner,
+            "scope": "epic",
+            "epic_id": row["epicId"],
+            "task_id": f"epic:{row['epicId']}",
+            "task_title": (row["epicTitle"] or "")[:140],
+            "project": row["projectSlug"],
+            "status": row["epicStatus"],
+            "epic_status": row["epicStatus"],
+            "age_s": _pm_age_s(row["epicStatusChangedAt"]) or 0,
+            "child_count": 0,
+            "child_statuses": set(),
+            "required_action": "This Epic is non-actionable. Reopen it only if work should resume; otherwise align or archive its active child tasks. This human-owned alert will not repeat until the Epic state changes.",
+        })
+        item["child_count"] += 1
+        item["child_statuses"].add(row["status"])
+
+    items = []
+    for item in closed_epics.values():
+        item["child_statuses"] = sorted(item["child_statuses"])
+        items.append(item)
+    return items
 
 
 def _pm_actor_slug(row, agent_key, username_key):
@@ -1744,13 +1828,13 @@ def _pm_current_workflow_slugs(row):
         slug = _pm_actor_slug(row, "assigneeAgentSlug", "assigneeUsername")
         return {slug} if slug else set()
     if status == "Review":
-        # Mirrors the webapp's resolveReviewOwnerId: the epic manager only
-        # backstops the review while the epic itself is In Progress.
+        # Mirrors the webapp's resolveReviewOwnerId: the epic manager
+        # backstops review throughout the actionable Epic lifecycle.
         slug = (
             _pm_actor_slug(row, "reviewerAgentSlug", "reviewerUsername")
             or (
                 _pm_actor_slug(row, "epicManagerAgentSlug", "epicManagerUsername")
-                if row["epicStatus"] == "In Progress"
+                if row["epicStatus"] in ("To Do", "In Progress")
                 else None
             )
             or row["reporterUsername"]
@@ -1790,7 +1874,6 @@ def probe_pm_workflow(cfg, registry):
         out["errors"].append(f"PM database not found: {db_path}")
         return out
 
-    warn_backlog_s = int(pc.get("backlog_plan_warn_minutes", 2)) * 60
     warn_todo_s = int(pc.get("todo_start_warn_minutes", 2)) * 60
     warn_progress_s = int(pc.get("in_progress_stale_minutes", 5)) * 60
     warn_review_s = int(pc.get("review_wait_warn_minutes", 10)) * 60
@@ -1837,7 +1920,10 @@ def probe_pm_workflow(cfg, registry):
               rep.kind AS reporterKind,
               er.username AS epicManagerUsername,
               era.slug AS epicManagerAgentSlug,
+              e.id AS epicId,
+              e.title AS epicTitle,
               e.status AS epicStatus,
+              e.statusChangedAt AS epicStatusChangedAt,
               e.actingManagerId AS epicManagerId,
               (
                 SELECT owner.username
@@ -1861,7 +1947,7 @@ def probe_pm_workflow(cfg, registry):
             WHERE t.deletedAt IS NULL
               AND p.deletedAt IS NULL
               AND t.parentTaskId IS NULL
-              AND t.status IN ('Backlog', 'To Do', 'In Progress', 'Review')
+              AND t.status IN ('To Do', 'In Progress', 'Review')
             ORDER BY t.updatedAt DESC
             LIMIT 500
             """
@@ -1923,7 +2009,7 @@ def probe_pm_workflow(cfg, registry):
               AND t.deletedAt IS NULL
               AND p.deletedAt IS NULL
               AND t.parentTaskId IS NULL
-              AND t.status != 'Done'
+              AND t.status NOT IN ('Backlog', 'Done')
               AND (r.status IS NULL OR r.status IN ('queued', 'accepted', 'streaming', 'retryable', 'failed'))
               AND (COALESCE(r.status, '') != 'failed' OR m.createdAt >= ?)
               AND NOT EXISTS (
@@ -1982,11 +2068,21 @@ def probe_pm_workflow(cfg, registry):
             or "monitor-agent"
         )
 
+        # A closed Epic with several still-active children is one human-owned
+        # inconsistency, not N independent task incidents. Aggregate it by
+        # Epic so Telegram can never fan out once per child task. Historical
+        # invalid statuses (for example the retired Epic "Review" state) are
+        # intentionally ignored below rather than treated as actionable work.
+        for item in _pm_closed_epic_items(rows):
+            if len(out["items"]) >= max_items:
+                break
+            out["items"].append(item)
+
         seen_orphan_rows = set()
         for row in orphan_rows:
             if len(out["items"]) >= max_items:
                 break
-            if row["status"] == "Done":
+            if row["status"] in ("Backlog", "Done"):
                 continue
             run_status = row["runStatus"] or "missing"
             dedupe_key = (row["id"], row["messageAgentSlug"], row["status"], run_status)
@@ -2068,18 +2164,18 @@ def probe_pm_workflow(cfg, registry):
             changed_age = _pm_age_s(row["statusChangedAt"]) or _pm_age_s(row["updatedAt"]) or 0
             assignee_slug = row["assigneeAgentSlug"] or row["assigneeUsername"]
             # Reviewer fallback mirrors the webapp's resolveReviewOwnerId:
-            # epic manager only while the epic is In Progress, else reporter.
+            # epic manager throughout To Do/In Progress, else reporter.
             reviewer_id = row["actingManagerId"] or (
-                row["epicManagerId"] if row["epicStatus"] == "In Progress" else None
+                row["epicManagerId"] if row["epicStatus"] in ("To Do", "In Progress") else None
             ) or row["reporterId"]
             reviewer_slug = (
                 row["reviewerAgentSlug"]
-                or (row["epicManagerAgentSlug"] if row["epicStatus"] == "In Progress" else None)
+                or (row["epicManagerAgentSlug"] if row["epicStatus"] in ("To Do", "In Progress") else None)
                 or row["reporterUsername"]
             )
             reviewer_username = (
                 row["reviewerUsername"]
-                or (row["epicManagerUsername"] if row["epicStatus"] == "In Progress" else None)
+                or (row["epicManagerUsername"] if row["epicStatus"] in ("To Do", "In Progress") else None)
                 or row["reporterUsername"]
             )
 
@@ -2088,41 +2184,14 @@ def probe_pm_workflow(cfg, registry):
             # To Do/In Progress; Backlog/Done epics gate their tasks.
             human_owner = _pm_closed_epic_human_target(row)
             if human_owner:
-                # Epic status is human-owned. Never wake/restart an agent for
-                # a correction its workflow endpoint forbids. Route this to
-                # the human reporter (or host owner) so the human-target
-                # safety path sends one Telegram and skips the agent ladder.
-                add(
-                    row,
-                    "pm-epic-not-open",
-                    human_owner,
-                    changed_age,
-                    "A human must reopen the parent Epic before agent work continues, or return the child task to Backlog/Done. Agents are forbidden from changing Epic status; do not wake or restart them for this state.",
-                    extra={"assignee": assignee_slug},
-                )
+                # Already represented once by the Epic-level aggregate above.
                 continue
 
-            if status == "Backlog" and row["assigneeId"] and assignee_slug:
-                assigned_s = _pm_latest_assignment_s(
-                    conn,
-                    row["id"],
-                    row["assigneeUsername"],
-                    row["createdAt"],
-                )
-                age_s = max(0, int(time.time()) - assigned_s) if assigned_s else changed_age
-                if age_s >= warn_backlog_s and not _pm_has_action_plan_since(
-                    conn,
-                    row["id"],
-                    row["assigneeId"],
-                    assigned_s,
-                ):
-                    add(
-                        row,
-                        "pm-backlog-plan-missing",
-                        assignee_slug,
-                        age_s,
-                        "Post a concise technical Action Plan message. Do not change status or start work while the task is in Backlog.",
-                    )
+            # Non-actionable/legacy Epic states are deliberate human-owned
+            # gates, not reasons to wake every child-task actor. Backlog/Done
+            # inconsistencies were aggregated above; a legacy Epic Review
+            # state is ignored entirely.
+            if row["epicStatus"] not in (None, "To Do", "In Progress"):
                 continue
 
             if status == "To Do" and row["assigneeId"] and assignee_slug:
@@ -2501,7 +2570,9 @@ def deterministic_issues(probes):
             "suggested_action": "observe",
         })
     gateway_memory = probes.get("gateway_memory", {})
-    warn_bytes = gateway_memory.get("warn_bytes", 3 * 1024 ** 3)
+    warn_bytes = gateway_memory.get(
+        "warn_bytes", DEFAULT_GATEWAY_WARN_BYTES
+    )
     critical_bytes = gateway_memory.get("critical_bytes", warn_bytes)
     for user, state in gateway_memory.get("agents", {}).items():
         current = state.get("current_bytes")
@@ -2509,7 +2580,9 @@ def deterministic_issues(probes):
         if memory_state in ("warn", "critical") and current is not None:
             current_gib = current / 1024 ** 3
             threshold = (
-                critical_bytes if memory_state == "critical" else warn_bytes
+                state.get("critical_bytes", critical_bytes)
+                if memory_state == "critical"
+                else state.get("warn_bytes", warn_bytes)
             )
             out.append({
                 "unit": f"{user}/openclaw-gateway.service",
@@ -2746,18 +2819,33 @@ def deterministic_issues(probes):
             "suggested_action": "investigate",
         })
     for item in pmw.get("items", []) or []:
+        # Backlog is explicitly non-actionable. Defense in depth: even if a
+        # future probe accidentally emits an item, it cannot become an alert.
+        if item.get("status") == "Backlog":
+            continue
         age_min = (item.get("age_s") or 0) // 60
         unit = f"pm:{item['agent']}/{item['task_id']}"
-        out.append({
-            "unit": unit,
-            "kind": item.get("kind", "pm-workflow"),
-            "severity": item.get("severity", "warn"),
-            "reason": (
+        if item.get("scope") == "epic":
+            child_statuses = ", ".join(item.get("child_statuses") or []) or "unknown"
+            reason = (
+                f"{item.get('project','?')} Epic {item.get('epic_id','?')} "
+                f"({item.get('task_title','')}) is {item.get('epic_status','?')} "
+                f"for {age_min} min with {item.get('child_count', 0)} active child "
+                f"task(s) ({child_statuses}). Required action: "
+                f"{item.get('required_action','follow PM workflow')}"
+            )
+        else:
+            reason = (
                 f"{item.get('project','?')} task {item['task_id']} "
                 f"({item.get('task_title','')}) is {item.get('status','?')} "
                 f"for {age_min} min; Epic={item.get('epic_status') or 'none'}. "
                 f"Required action: {item.get('required_action','follow PM workflow')}"
-            ),
+            )
+        out.append({
+            "unit": unit,
+            "kind": item.get("kind", "pm-workflow"),
+            "severity": item.get("severity", "warn"),
+            "reason": reason,
             "suggested_action": "investigate",
         })
     for err in pmw.get("errors", []) or []:
@@ -2923,7 +3011,6 @@ def event_key(issue):
 
 
 PM_WORKFLOW_RETRY_KINDS = {
-    "pm-backlog-plan-missing",
     "pm-action-plan-missing",
     "pm-action-plan-awaiting-approval",
     "pm-todo-not-started",
@@ -2934,12 +3021,21 @@ PM_WORKFLOW_RETRY_KINDS = {
     "pm-channel-no-start",
     "pm-channel-stalled",
     "pm-channel-failed",
-    "pm-epic-not-open",
 }
 
 
 def _is_pm_workflow_retry_kind(kind):
     return kind in PM_WORKFLOW_RETRY_KINDS
+
+
+def _is_pm_backlog_issue(issue):
+    """Recognize current and legacy PM alerts sourced from Backlog tasks."""
+    if not (issue.get("unit", "") or "").startswith("pm:"):
+        return False
+    if issue.get("task_status") == "Backlog":
+        return True
+    reason = issue.get("reason", "") or ""
+    return re.search(r"\bis Backlog for \d+ min;", reason) is not None
 
 
 def _pm_issue_target_user(issue):
@@ -4032,6 +4128,8 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
     ))
 
     for issue in issues:
+        if _is_pm_backlog_issue(issue):
+            continue
         key = event_key(issue)
         seen_keys.add(key)
         sev = issue.get("severity", "info")
@@ -4065,7 +4163,11 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
         # Reset is handled by the missed_runs eviction path below.
         ev["consecutive_seen"] = int(ev.get("consecutive_seen", 0)) + 1
 
-        if ev.get("alert_sent") and _is_pm_workflow_retry_kind(kind):
+        if (
+            ev.get("alert_sent")
+            and _is_pm_workflow_retry_kind(kind)
+            and not ev.get("human_notification_final")
+        ):
             # Old monitor state treated a Telegram/nudge as final. For PM
             # workflow drift, the task itself must resolve the issue.
             if now >= ev.get("next_attempt_after", 0):
@@ -4166,7 +4268,6 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
             "agent-idle-with-queue",
             "email-awaiting-action",
             "user-manager-bus-broken",
-            "pm-backlog-plan-missing",
             "pm-action-plan-missing",
             "pm-action-plan-awaiting-approval",
             "pm-todo-not-started",
@@ -4198,7 +4299,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
             # Human-target safety: pm-* drift whose resolved target is not an
             # active agent (e.g. a human reporter or epic manager) must never
             # enter the wake/restart/nudge ladder. Send one Telegram for the
-            # human and park the event on the post-tier-3 cooldown.
+            # human, then suppress it until the underlying PM state changes.
             human_target_issues = []
             routed_issues = []
             for i in auto_issues:
@@ -4208,12 +4309,6 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                 else:
                     routed_issues.append(i)
             if human_target_issues:
-                pm_retry_cooldown_s = int(
-                    (cfg.get("pm_workflow") or {}).get(
-                        "retry_after_tier3_seconds",
-                        max(1800, confirmation_window_s),
-                    )
-                )
                 tg_parts = ["👤 PM workflow: human action required (agent ladder skipped)"]
                 for i in human_target_issues:
                     tg_parts.append(
@@ -4235,7 +4330,9 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                     })
                     if r.get("ok"):
                         ev["attempts"] = 0
-                        ev["next_attempt_after"] = now + max(300, pm_retry_cooldown_s)
+                        ev["alert_sent"] = True
+                        ev["human_notification_final"] = True
+                        ev["next_attempt_after"] = 0
                         ev["last_human_notify"] = now
                 actions.append({
                     "type": "pm_human_target_notified",
@@ -4528,7 +4625,6 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                         "task-stalled-no-agent": ("wake-agent", "restart-and-wake"),
                         "agent-idle-with-queue": ("wake-agent", "restart-and-wake"),
                         "email-awaiting-action": ("wake-agent", "restart-and-wake"),
-                        "pm-backlog-plan-missing": ("wake-agent", "restart-and-wake"),
                         "pm-action-plan-missing": ("wake-agent", "restart-and-wake"),
                         "pm-action-plan-awaiting-approval": ("wake-agent", "restart-and-wake"),
                         "pm-todo-not-started": ("wake-agent", "restart-and-wake"),
@@ -4561,7 +4657,6 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                                 "task-stalled-no-agent",
                                 "agent-idle-with-queue",
                                 "email-awaiting-action",
-                                "pm-backlog-plan-missing",
                                 "pm-action-plan-missing",
                                 "pm-action-plan-awaiting-approval",
                                 "pm-todo-not-started",
@@ -4744,6 +4839,11 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
     silent_evict_keys = []
     for key, ev in state["events"].items():
         if key in seen_keys:
+            continue
+        if _is_pm_backlog_issue(ev.get("issue", {})):
+            # Policy changed from reminding on Backlog to total suppression.
+            # Remove old state silently so it cannot emit a resolved Telegram.
+            silent_evict_keys.append(key)
             continue
         ev["missed_runs"] = ev.get("missed_runs", 0) + 1
         if ev["missed_runs"] >= threshold:

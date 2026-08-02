@@ -462,7 +462,7 @@ in Action Plan with a technical implementation plan and does not change
 status. The Action Plan is authored by the ASSIGNEE only — reviewers,
 managers, and reporters never write it on the assignee's behalf.
 Approval falls to the resolved reviewer: the task's reviewer, else the
-epic's acting manager while the Epic is In Progress, else the reporter.
+epic's acting manager while the Epic is To Do or In Progress, else the reporter.
 `To Do` is executable only after the Action Plan has
 `approved_on` and `approved_by`; until then the assignee waits for the
 reviewer or reporter. Reviewers/reporters reply in Action Plan with

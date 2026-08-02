@@ -31,10 +31,9 @@
     }
   },
   "gateway_memory_check": {
+    "_doc": "By default thresholds follow each gateway unit's MemoryHigh and MemoryMax settings (currently 8/10 GiB on thinkpad). Add warn_mib or critical_mib only to override that policy.",
     "enabled": true,
-    "unit": "openclaw-gateway.service",
-    "warn_mib": 3072,
-    "critical_mib": 3840
+    "unit": "openclaw-gateway.service"
   },
   "previous_shutdown_check": {
     "enabled": true,
@@ -142,7 +141,6 @@
     "auto_action_kinds_bypass_monitor": [
       "agent-idle-with-queue",
       "email-awaiting-action",
-      "pm-backlog-plan-missing",
       "pm-action-plan-missing",
       "pm-action-plan-awaiting-approval",
       "pm-todo-not-started",
@@ -164,7 +162,6 @@
   },
   "pm_workflow": {
     "enabled": true,
-    "backlog_plan_warn_minutes": 2,
     "todo_start_warn_minutes": 2,
     "in_progress_stale_minutes": 5,
     "review_wait_warn_minutes": 10,

@@ -286,6 +286,135 @@ class PmRecoveryTest(unittest.TestCase):
         })
         self.assertIsNone(target)
 
+    def test_legacy_epic_review_needs_no_child_task_alert(self):
+        target = self.monitor._pm_closed_epic_human_target({
+            "epicStatus": "Review",
+            "status": "Review",
+            "reporterKind": "human",
+            "reporterUsername": "zeh",
+            "ownerUsername": "zeh",
+        })
+        self.assertIsNone(target)
+
+    def test_closed_epic_children_collapse_to_one_issue(self):
+        base = {
+            "epicId": "epic-1",
+            "epicTitle": "One Epic",
+            "epicStatus": "Done",
+            "epicStatusChangedAt": 1000,
+            "reporterKind": "human",
+            "reporterUsername": "zeh",
+            "ownerUsername": "zeh",
+            "projectSlug": "environment",
+        }
+        items = self.monitor._pm_closed_epic_items([
+            {**base, "id": "task-1", "status": "Review"},
+            {**base, "id": "task-2", "status": "In Progress"},
+        ])
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["task_id"], "epic:epic-1")
+        self.assertEqual(items[0]["child_count"], 2)
+        self.assertEqual(items[0]["child_statuses"], ["In Progress", "Review"])
+
+    def test_todo_epic_manager_is_current_review_owner(self):
+        slugs = self.monitor._pm_current_workflow_slugs({
+            "status": "Review",
+            "reviewerAgentSlug": None,
+            "reviewerUsername": None,
+            "epicManagerAgentSlug": "barekbaal",
+            "epicManagerUsername": "barekbaal",
+            "epicStatus": "To Do",
+            "reporterUsername": "zeh",
+        })
+        self.assertEqual(slugs, {"barekbaal"})
+
+    def test_human_pm_alert_is_sent_only_once_until_state_changes(self):
+        issue = {
+            "unit": "pm:zeh/epic:epic-1",
+            "kind": "pm-epic-not-open",
+            "severity": "warn",
+            "reason": "human action required",
+            "suggested_action": "investigate",
+        }
+        verdict = {"issues": [issue]}
+        state = {"events": {}}
+        cfg = {
+            "notify": {"dedupe": {"resolved_after_runs": 3}},
+            "monitor_triage": {
+                "enabled": True,
+                "escalation_ladder": {
+                    "confirmation_window_s": 1,
+                    "max_attempts": 3,
+                },
+            },
+            "pm_workflow": {"retry_after_tier3_seconds": 1},
+        }
+        with (
+            mock.patch.object(self.monitor, "send_telegram", return_value={"ok": True}) as send,
+            mock.patch.object(self.monitor.time, "time", side_effect=[1000, 1000, 2000, 2000]),
+        ):
+            self.monitor.dedupe_and_act(cfg, verdict, state, registry=registry())
+            self.monitor.dedupe_and_act(cfg, verdict, state, registry=registry())
+        self.assertEqual(send.call_count, 1)
+        event = state["events"][self.monitor.event_key(issue)]
+        self.assertTrue(event["alert_sent"])
+        self.assertTrue(event["human_notification_final"])
+
+    def test_backlog_probe_item_cannot_become_an_alert(self):
+        issues = self.monitor.deterministic_issues({
+            "pm_workflow": {
+                "items": [{
+                    "kind": "pm-action-plan-awaiting-approval",
+                    "agent": "zeh",
+                    "task_id": "task-backlog",
+                    "task_title": "Deferred task",
+                    "project": "project",
+                    "status": "Backlog",
+                    "epic_status": None,
+                    "age_s": 600,
+                    "required_action": "review",
+                }],
+                "errors": [],
+            },
+            "integrity_check": {"exit_code": 0},
+            "registry": {"ok": True, "agents_seen": 1},
+            "ollama_probe": {"ok": True},
+        })
+        self.assertFalse(any(i.get("unit") == "pm:zeh/task-backlog" for i in issues))
+
+    def test_legacy_backlog_event_is_silently_evicted(self):
+        issue = {
+            "unit": "pm:zeh/task-backlog",
+            "kind": "pm-action-plan-awaiting-approval",
+            "severity": "warn",
+            "reason": "project task task-backlog (Deferred task) is Backlog for 10 min; Epic=none.",
+            "suggested_action": "investigate",
+        }
+        key = self.monitor.event_key(issue)
+        state = {
+            "events": {
+                key: {
+                    "alert_sent": True,
+                    "issue": issue,
+                    "missed_runs": 0,
+                }
+            }
+        }
+        cfg = {
+            "notify": {"dedupe": {"resolved_after_runs": 3}},
+            "monitor_triage": {"enabled": True},
+        }
+        with mock.patch.object(self.monitor, "send_telegram") as send:
+            actions = self.monitor.dedupe_and_act(
+                cfg,
+                {"issues": []},
+                state,
+                registry=registry(),
+            )
+        self.assertEqual(actions, [])
+        self.assertNotIn(key, state["events"])
+        send.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

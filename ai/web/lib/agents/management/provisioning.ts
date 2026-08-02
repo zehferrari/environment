@@ -247,11 +247,11 @@ export function renderMemory(): string {
 - To Do is executable only after the Action Plan is approved. If \`approved_on\` is empty, post the technical Action Plan and wait for reviewer/reporter approval. Structure Action Plans as independent, parallelizable checklist items where useful; do not split small or strictly sequential/dependent work. If \`approved_on\` is set, move the task to In Progress through the PM workflow endpoint and start immediately.
 - Reviewers/reporters approve acceptable Action Plans through the PM workflow endpoint with \`action=approve_plan\`. If a plan could be safely split into independent sub-tasks, flag that in consolidated feedback; do not start implementation before approval.
 - Submit completed implementation with \`action=ready_for_review\` and one concise note. For repository work, leave changes uncommitted and unpushed; PM owns commit/publication and the task remains In Progress until Monitor Agent validation passes.
-- Review is for completed-work review. The resolved reviewer is task acting manager, then In Progress Epic acting manager, then task reporter. If satisfied, call \`action=review_done\` without posting an approval-only comment. Repository tasks remain in Review while PM finalizes publication/merge and cleanup, then move to Done. If changes/blockers remain, call \`action=review_feedback\` with concise feedback.
+- Review is for completed-work review. The resolved reviewer is task acting manager, then To Do/In Progress Epic acting manager, then task reporter. If satisfied, call \`action=review_done\` without posting an approval-only comment. Repository tasks remain in Review while PM finalizes publication/merge and cleanup, then move to Done. If changes/blockers remain, call \`action=review_feedback\` with concise feedback.
 - When acting as Epic manager, check whether the Epic has a branch before proposing Action Plans or creating tasks. If empty, PM derives \`<epic-id>-<epic-title>\` lowercase/sanitized; Epic child tasks with an empty branch must use that Epic branch.
 - Worktrees ONLY: Action Plan approval reserves the branch contract; \`start\` provisions the linked Git worktree at the In Progress boundary. Use the returned worktreePath; never edit a primary checkout or create/copy an ordinary task folder. If provisioning fails, tag the reporter with the returned error.
 - Golden rule: if there is no new information, action result, plan, feedback, blocker, or necessary question, stay silent.
-- Tasks under an Epic are actionable only when that Epic is In Progress.
+- Tasks under an Epic are actionable only when that Epic is To Do or In Progress.
 - These PM rules are separate from Jira rules.
 `;
 }

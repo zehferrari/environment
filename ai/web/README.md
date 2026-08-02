@@ -1,1070 +1,482 @@
-# ai/web — PM workspace
+# Mission Control PM web application
 
-Single-host Next.js project manager for the OpenClaw agent fleet. Current
-state includes the HOMELAB-46 dispatch seam, the
-HOMELAB-52 agent control surface mounted on `/agents`, the HOMELAB-47
-work item editor (Epic CRUD, attachments, principal pool, redesigned task
-detail), and HOMELAB-48 on top of it (soft-delete + 7-day bin, taller
-description editors, per-task/epic agent chat sidebar with one-shot
-description-write grants). Since then: per-project tabs (Board · Epics ·
-Library · Settings · Bin), project settings (repo path, git identity,
-picker defaults, Done-card TTL), project soft-delete with its own 30-day
-bin, direct per-agent chat with archive/continuation threads, and the
-move of all chat/comment turns onto the native OpenClaw `pm` channel.
-Most recently, agents can **propose work items** from a project-attached
-direct chat — a grant-gated change-set of epics/tasks/sub-tasks the human
-reviews and applies (propose → approve).
+Mission Control is the single-host project-management and agent-control plane
+for the OpenClaw fleet. It combines a human-facing workspace, Kanban boards,
+task and Epic workflows, durable agent conversations, repository lifecycle
+automation, deployment tracking, and fleet administration in one Next.js
+application.
 
-Served by one host-wide `pm.service` standalone Next process at the configured
-Mission Control host — see [deploy/README.md](./deploy/README.md). The legacy
-static `agents.html` page was superseded by the live `/agents` deck.
+This document describes the codebase and runtime architecture. For the
+end-to-end PM process—assignment, Action Plans, worktrees, validation, review,
+sub-tasks, Done finalization, and Epic roll-up—see [PM.md](./PM.md).
 
-> **Naming.** The web UI is branded **Mission Control**. *PM* remains the
-> internal codename everywhere else: the `pm.service` /
-> `pm-consumer.service` units, the `pm-web` package, the `PM_*` env
-> vars, and the OpenClaw `pm` channel — so the rename is display-only.
+## Architectural principles
 
-## Stack
+- **PM is the canonical work-state store.** Task, Epic, role, discussion,
+  checklist, repository-run, and deployment state belongs in the PM database.
+  OpenClaw session memory helps an agent reason but is not authoritative.
+- **Human UI and agent APIs are separate trust surfaces.** Humans use
+  Auth.js browser sessions. Agents use scoped loopback APIs, short-lived
+  grants, and PM-channel workflow tokens; they do not drive the browser UI.
+- **Board status is not repository or deployment status.** A Task can remain
+  `In Progress` while Git validation runs and remain `Review` while repository
+  finalization runs. Deployment uses its own lane.
+- **Privileged operations happen outside the web process.** The sandboxed web
+  service writes durable jobs. Dedicated host runners own Git fetch/push,
+  worktree mutation, builds, service restarts, and other host-level actions.
+- **Repository work is isolated.** The immutable primary checkout under
+  `/srv/Code/<repo>` is never the task workspace. Code Tasks use registered
+  worktrees under `/srv/Code/<repo>.worktrees/`.
+- **External effects follow accepted state changes.** Workflow rules and
+  persistence run before notifications. Delivery failures are observable but
+  do not silently undo an already accepted database mutation.
 
-Next.js 15 App Router · React 19 · Tailwind v4 · Prisma 6 / SQLite ·
-NextAuth v5 (Credentials + argon2id) · `@dnd-kit` for the board ·
-TypeScript strict, ESM-only.
+## System context
 
-## Local dev
+```mermaid
+flowchart LR
+    Human[Human browser] --> Nginx[nginx / TLS]
+    Nginx --> Web[pm.service<br/>Next.js standalone]
+
+    Web <--> DB[(SQLite via Prisma)]
+    Web <--> Data[Attachments, images,<br/>host configuration]
+    Web --> Jobs[(PmChannelJob / stream ledger)]
+    Jobs --> Consumer[pm-consumer.service]
+    Consumer --> Gateway[OpenClaw agent gateway]
+    Gateway -->|stream + final callbacks| Web
+
+    Web --> VerifySpool[/branch-verify spool/]
+    VerifySpool --> Verify[pm-verify-runner]
+    Verify --> Git[(Git repositories)]
+
+    Web --> RepoSpool[/repository-job spool/]
+    RepoSpool --> RepoRunner[pm-epic-merge-runner]
+    RepoRunner --> Git
+
+    Web --> SwitchSpool[/live-switch spool/]
+    SwitchSpool --> Switch[pm-switch-runner]
+    Switch --> Services[build, migrate,<br/>restart services]
+```
+
+The production host normally runs one web instance and one consumer. The web
+instance also starts the durable PM-channel worker and periodic maintenance
+loops from `instrumentation.node.ts`. Git and deployment runners are separate
+systemd services with deliberately different filesystem and network
+permissions.
+
+## Technology
+
+| Layer | Implementation |
+| --- | --- |
+| Web framework | Next.js 15 App Router, React 19, Server Components, Server Actions |
+| Language | TypeScript in strict mode, ESM, Node.js 20 or newer |
+| Styling | Tailwind CSS 4 plus application CSS |
+| Persistence | Prisma 6 with SQLite, WAL mode and a busy timeout |
+| Authentication | Auth.js / NextAuth v5 credentials flow, Argon2id password hashes |
+| Interaction | `@dnd-kit` for board/list ordering, Monaco for code/library editing |
+| Markdown | `marked` with application-side safe-link handling |
+| Validation | Zod plus domain-specific server validation |
+| Agent transport | Native OpenClaw `pm` channel, SSE replay, durable queue, legacy PM-event wake bridge |
+| Host runtime | standalone Next.js output behind nginx and systemd |
+
+The package is private, uses pnpm 10.33.0, and declares Node `>=20`. Production
+hosts may run a newer supported Node release.
+
+## Source tree
+
+| Path | Responsibility |
+| --- | --- |
+| `app/` | App Router pages, layouts, intercepted modal routes, API handlers, and some page-local Server Actions |
+| `components/` | Reusable board, editor, chat, activity, task-list, checklist, command-deck, and live-preview UI |
+| `lib/auth/` | Auth.js configuration, viewer resolution, project/item access, ownership, password, and permission rules |
+| `lib/agents/` | Fleet sync and lifecycle, agent operations, context serialization, chat, PM-channel jobs, workflow tokens, and notifications |
+| `lib/tasks/` | Task state, Action Plan extraction, queue/start gates, sub-tasks, worktree claims, validation handoff, review, and completion |
+| `lib/epics/` | Epic CRUD, planning, worker pools, queue assignment, status promotion/roll-up, and deploy review |
+| `lib/deploy/` | Branch verification jobs, Git base checks, repository finalization, deployment providers/watchers, and live-worktree state |
+| `lib/work-items/` | Stable keys, branch and commit-prefix resolution, proposal validation/application |
+| `lib/workspaces/` / `lib/projects/` | Workspace hierarchy, project settings, board aggregation, and repository exposure |
+| `lib/attachments/` | Content-addressed attachment storage, authorization, extraction, and bounded agent context |
+| `lib/pm-dispatch/` / `lib/pm-consumer/` | Legacy/non-chat event envelope, transport boundary, dedupe, and OpenClaw wake delivery |
+| `lib/pm/` | Board event publication and PM-level helpers |
+| `lib/archive/` / `lib/bin/` | Done-card archival and soft-delete retention |
+| `prisma/schema.prisma` | Canonical relational schema |
+| `prisma/migrations/` | Production migration history |
+| `scripts/` | Runners, maintenance tools, migration helpers, smoke checks, and contract tests |
+| `openclaw-pm-channel/` | External OpenClaw channel plugin installed into each gateway |
+| `deploy/` | systemd templates, nginx config, worktree switchers, repository runners, installers, and host runbooks |
+| `docs/` | Detailed agent read-API and interaction contracts |
+
+Domain code should live in `lib/` and be shared by UI actions and API routes.
+Avoid implementing a second workflow rule directly in a page or route when an
+authoritative domain helper already exists.
+
+## Browser surfaces
+
+The App Router uses route groups and intercepted routes, so a task or agent can
+open as a modal from a board and as a full page from a direct URL.
+
+| Surface | Primary routes | Purpose |
+| --- | --- | --- |
+| Workspaces | `/`, `/workspaces/[slug]`, `/workspaces/[slug]/settings` | Unified multi-project boards, workspace defaults, colors, logos, project membership, and agent pools |
+| Projects | `/projects`, `/projects/archive`, `/projects/bin` | Project catalogue and lifecycle |
+| Project workspace | `/projects/[slug]` | Kanban board and task entry point |
+| Project reporting | `summary`, `activity`, `tasks`, `epics` | Status roll-ups, audit feed, list views, Epic navigation |
+| Project knowledge | `library`, `code`, `changes` | Project README/library, repository browser, and change views |
+| Project administration | `settings`, `bin` | Repository/deployment/default settings, live preview, and deleted items |
+| Work items | `tasks/[taskId]`, `epics/[epicId]` | Canonical editors, Action Plan, comments, attachments, activity, workflow, and deployment panels |
+| Agent deck | `/agents`, `/agents/[agent]`, `/agents/[agent]/chat` | Fleet state, profile/configuration, services, models, credentials, and direct chat |
+| System | `/system/activity`, `/system/settings`, `/system/users` | Cross-project audit, inherited settings, and human account lifecycle |
+| Authentication | `/login`, `/accept-invite`, `/set-password` | Credentials and invitation flows |
+
+## API families
+
+The application has no single public REST API. Endpoints are grouped by actor
+and trust boundary:
+
+| Family | Examples | Authentication |
+| --- | --- | --- |
+| Browser/session APIs | workspace CRUD, board streams, push subscriptions, maintenance, agent administration | Auth.js session plus owner/member checks |
+| Agent context reads | `/api/agents/context/{task,epic,project}/[id]` | Direct-loopback request plus short-lived context grant; legacy bearer only when configured |
+| Agent workflow | `/api/agent/tasks/[id]/workflow`, Epic workflow, workflow-turn request | Target-bound PM workflow token or scoped channel bearer |
+| Agent proposals | `/api/agent/projects/[id]/proposals` | One-shot project/message/agent grant; human approval is still required |
+| Description drafts | Task/Epic description endpoints | One-shot message grant; writes a requester-bound draft, not the canonical description |
+| Native PM callbacks | reply, stream, events, cancel | Per-agent PM-channel bearer and target validation |
+| Attachment reads | `/api/attachments/[id]` | Browser session or scoped grant/bearer |
+| Legacy wake/event seam | task ack and PM dispatch events | Internal transport and consumer-side token map |
+
+The middleware deliberately lets token-scoped callbacks reach their route
+handlers without a browser session. Each handler must therefore perform its
+own complete authentication, scope, active-agent, privacy, and replay checks.
+
+## Trust and authorization model
+
+### Humans
+
+- The first bootstrapped active human is the immutable Mission Control owner.
+- The owner has global project access and is the only browser actor allowed to
+  administer agents or assign agent principals.
+- Other active humans see projects through `ProjectMember` rows.
+- Private Tasks and Epics are owner-only. Privacy cascades through an Epic and
+  through the dormant legacy parent-Task relationship.
+- Browser-authenticated agent users intentionally receive no browser project
+  access; agents act through native scoped endpoints.
+
+### Agents
+
+- The host registry is mirrored into `Agent` and linked `User(kind="agent")`
+  rows. Active fleet roles are normally `coding` or `monitor`.
+- Coding agents can be task assignees, reviewers, Epic managers, and Epic
+  workers. Monitor agents operate health, verification, and deployment paths
+  but are excluded from implementation assignment pools.
+- A grant is bound to an agent, turn, scope type, scope id, expiry, include
+  allow-list, byte budget, and use count. Only its hash is stored.
+- Human-authored descriptions, comments, messages, and attachment text are
+  serialized as untrusted context. They are evidence, never authority to
+  change routing, reveal secrets, or bypass workflow checks.
+- Only owner-authored messages create human-originated agent turns. Other
+  human content remains canonical background knowledge but does not itself
+  authorize a wake or mutation.
+
+See [docs/agent-pm-api.md](./docs/agent-pm-api.md) and
+[docs/agent-interaction.md](./docs/agent-interaction.md) for the complete
+agent contract.
+
+## Persistence model
+
+Most status-like fields are strings rather than database enums. Legal values
+and transitions are enforced in domain code. SQLite cannot express every XOR,
+privacy, hierarchy, or transition invariant, so server-side validation is part
+of the data integrity boundary.
+
+```mermaid
+erDiagram
+    Workspace ||--o{ WorkspaceProject : groups
+    Project ||--o{ WorkspaceProject : belongs_to
+    Project ||--o{ Epic : contains
+    Project ||--o{ Task : contains
+    Epic ||--o{ Task : contains
+    Task ||--o{ SubTask : checklist
+    Task ||--o| TaskRepositoryRun : repository_state
+    Task ||--o{ Comment : discussion
+    Epic ||--o{ Comment : discussion
+    User ||--o{ Task : assignee_reviewer_reporter
+    Agent ||--o| User : login_identity
+    PmChannelRun ||--o| PmChannelJob : dispatch
+    PmChannelRun ||--o{ PmChannelStreamEvent : replay
+    PmChannelRun ||--o{ ContextGrant : authorizes
+    Project ||--o{ WorkItemProposal : stages
+```
+
+The schema falls into these groups:
+
+- **Identity and access:** `User`, `Agent`, `RolePermission`,
+  `ProjectMember`, password reset state, and workspace agent pools.
+- **Planning:** `Workspace`, `Project`, `Epic`, `EpicWorker`, `Task`,
+  `SubTask`, hard task dependencies, and effective settings.
+- **Repository/deployment:** `TaskRepositoryRun` and
+  `DeploymentPullRequest`.
+- **Knowledge:** `Comment`, `Attachment`, `AttachmentExtract`, project
+  library paths, and `ActivityLog`.
+- **Agent interaction:** task/Epic discussion rows, direct chat and archives,
+  session bindings, PM-channel runs/jobs/stream events, and context grants.
+- **Human-approved AI mutations:** `WorkItemProposal` and
+  `DescriptionDraft`.
+- **User experience:** read cursors and web-push subscriptions.
+
+### Effective settings
+
+Settings resolve in this order:
+
+```text
+Project value → primary/first Workspace value → SystemSettings value → code fallback
+```
+
+This hierarchy applies to Git identity, Done-card TTL, deployment provider and
+branches, deployment mode/hooks, integration metadata, and the deploy-review
+prompt. Secrets do not belong in the JSON integration-default fields.
+
+### Storage outside SQLite
+
+- Attachment bytes are content-addressed below the configured project data
+  root; the database stores metadata and extraction cache rows.
+- Agent registry and credential files live under host-managed paths such as
+  `/etc/openclaw` and `/srv/agents`.
+- PM-channel, branch-verification, repository, and live-switch jobs use
+  host-owned runtime directories under `/var/lib/pm`.
+- Worktree builds may use one SQLite database per served branch. The database
+  URL is supplied by the deployment boundary, not inferred from Git.
+
+## Native PM-channel lifecycle
+
+```mermaid
+sequenceDiagram
+    participant H as Human / workflow engine
+    participant W as PM web
+    participant D as Durable PM queue
+    participant C as PM consumer
+    participant G as OpenClaw gateway
+    participant A as Agent
+
+    H->>W: message, comment, assignment, or workflow event
+    W->>W: authorize, persist canonical state
+    W->>D: create PmChannelRun + PmChannelJob
+    D->>C: transport envelope
+    C->>G: POST /pm-channel/ingest
+    G->>A: execute bound PM session turn
+    A-->>G: partial and final output / workflow action
+    G-->>W: stream and reply callbacks
+    W->>W: append replay events and persist final outcome
+    W-->>H: SSE replay / refreshed canonical state
+```
+
+Important properties:
+
+- `AgentSessionBinding` gives each direct/task/Epic conversation a stable
+  `pm:...` session key.
+- `PmChannelRun` is durable delivery state; `PmChannelStreamEvent` is the
+  append-only browser replay ledger. The in-memory stream store is only
+  fan-out.
+- A terminal stream marker is not success. The run completes only after a
+  durable final reply, accepted workflow action, or the exact
+  `PM_SILENT_NO_CONTRIBUTION` outcome.
+- Replies stay in their origin channel. Task chat replies do not also become
+  comments, and comment replies do not also become chat bubbles.
+- The legacy `PmEvent`/`PmEventDelivery` seam remains for non-chat automation
+  such as assignment/ack wakes. New conversations should use the native
+  channel.
+
+## Task, repository, and deployment state
+
+The full lifecycle is documented in [PM.md](./PM.md). At code level, keep these
+lanes distinct:
+
+| Lane | Representative states | Owner |
+| --- | --- | --- |
+| Task board | Backlog, To Do, In Progress, Review, Done | Task workflow domain |
+| Repository run | reserved, provisioning, active, validating, review_ready, finalizing, completed, action_required, operational_error | PM repository services and runners |
+| PM-channel run | queued, accepted, streaming, complete, failed, canceled | PM-channel queue, consumer, gateway callbacks |
+| Deployment | Not Required and project-defined deployment states | Deployment monitor/reviewer flow |
+| Epic | Backlog, To Do, In Progress, Review, Done | Epic workflow and child-task roll-up |
+
+A repository-backed Task does not become `Done` at reviewer acceptance. It
+stays `Review`/`finalizing` until the trusted repository runner verifies or
+publishes the accepted candidate and removes the local task worktree.
+
+## Startup and background work
+
+`instrumentation.ts` loads `instrumentation.node.ts` only in the Node runtime.
+The boot hook:
+
+1. bootstraps the first owner when all bootstrap variables are present;
+2. mirrors the host agent registry into the database;
+3. starts local PM-channel stream transports;
+4. starts the in-process durable PM-channel worker when async dispatch is
+   enabled;
+5. starts deployment, production-merge, and legacy Epic-child merge polling;
+6. runs initial archival/bin maintenance;
+7. schedules periodic agent sync and retention work.
+
+Long-running intervals are guarded against duplicate startup within one Node
+process. Production is designed around one web instance; do not scale it
+horizontally without first providing distributed leadership for these jobs.
+
+## Repository runners
+
+The web service cannot safely mutate `/srv/Code`. It submits atomic spool files
+for dedicated services:
+
+| Runner | Main responsibility |
+| --- | --- |
+| `pm-verify-runner` | Create the PM-owned submission commit, fetch/push as policy allows, verify base/prefix/identity/cleanliness, and release valid work to Review |
+| `pm-epic-merge-runner` | Claim task worktrees, finalize standalone tasks, merge Epic-child candidates, publish Epic branches, and clean local task branches/worktrees |
+| `pm-switch-runner` | Build, migrate, and flip the live PM worktree |
+| `worktree-switch-runner@<key>` | Generic registered-project live-preview operations |
+
+Jobs are written by atomic rename. Runner input paths and repository roots are
+validated again outside the web sandbox. See [deploy/README.md](./deploy/README.md)
+and [deploy/MULTI_AGENT_WORKTREES.md](./deploy/MULTI_AGENT_WORKTREES.md).
+
+## Configuration
+
+Use [.env.example](./.env.example) for local development and
+[deploy/pm.env.example](./deploy/pm.env.example) for the broader host runtime
+contract. Major groups are:
+
+| Group | Examples |
+| --- | --- |
+| Database/auth | `DATABASE_URL`, `AUTH_SECRET`, `AUTH_TRUST_HOST`, public app URL |
+| Initial owner | `PM_BOOTSTRAP_OWNER_USERNAME`, email, password |
+| Fleet registry | `AGENT_INDEX_PATH`, credentials directory, sync interval |
+| Native channel | token file/shared fallback, ingress path, internal app URL, timeout, queue/transport settings |
+| Context security | grant requirement, expiry/use/budget controls, attachment extraction budget |
+| PM consumer | socket/drop directories, HTTP fallback, per-agent hook token map |
+| Repository workflow | claim/verify/merge spool paths, runner tools, timeouts, switch command |
+| Retention | Done auto-archive and Task/Epic/project/chat bin TTLs and polling intervals |
+| Deployment | provider metadata, Bitbucket credential sources, switch registry, per-project preview contracts |
+| Optional services | web push VAPID data and profile-image generation |
+
+Do not commit production secrets. System and workspace integration defaults
+are non-secret configuration only.
+
+One SQLite detail matters in development: Prisma resolves a relative `file:`
+URL from the schema directory. The example `DATABASE_URL="file:./pm.db"`
+therefore creates `prisma/pm.db`.
+
+## Local development
+
+From `ai/web`:
 
 ```bash
-pnpm install
 cp .env.example .env
-# edit DATABASE_URL / AUTH_SECRET as needed
-pnpm prisma migrate dev   # applies committed migrations, regenerates client
+pnpm install --frozen-lockfile
+pnpm db:push
 pnpm dev
 ```
 
-The Next.js app boots → `instrumentation.node.ts` runs the initial owner
-bootstrap and the first agent sync against `$AGENT_INDEX_PATH` (default
-`/etc/openclaw/agents.json`). For a fresh database, set all of
-`PM_BOOTSTRAP_OWNER_USERNAME`, `PM_BOOTSTRAP_OWNER_EMAIL`, and
-`PM_BOOTSTRAP_OWNER_PASSWORD` before starting the app. The bootstrap never
-changes an installation that already has a Mission Control owner. On a dev box
-where the agent index is absent, the boot sync logs an error and continues.
-
-Other useful scripts:
+For a database with migration history rather than a disposable development
+database, use `pnpm db:migrate`. Seed and registry reconciliation are
+available as explicit commands:
 
 ```bash
-pnpm typecheck                                  # tsc --noEmit
-pnpm lint                                       # next lint
-pnpm sync:agents                                # one-shot agent sync
-pnpm tsx scripts/seed.ts                        # idempotent dev seed
-pnpm tsx scripts/pm-dispatch-receiver.ts all    # dispatch seam smoke
-pnpm tsx scripts/pm-dispatch-integration.ts     # Slice 3 end-to-end smoke
-pnpm tsx scripts/pm-consumer-replay-test.ts     # Slice 4 dedupe acceptance
-pnpm tsx scripts/smoke-model-save.ts            # HOMELAB-52 model-save check
+pnpm seed
+pnpm sync:agents
 ```
 
-## Routes
+Baseline code checks:
 
-| Route | Purpose |
+```bash
+pnpm lint
+pnpm typecheck
+pnpm build
+```
+
+The package contains focused executable contract tests rather than one
+monolithic test command. Choose tests by the area changed. High-value workflow
+checks include:
+
+```bash
+pnpm test:p0-kernel
+pnpm test:workflow-agent-rules
+pnpm test:repository-workflow
+pnpm test:worktree-cleanup
+pnpm test:pm-channel-lifecycle
+pnpm test:pm-channel-secret-leak
+pnpm test:user-access-control
+```
+
+Consult `package.json` for the full current list. Many tests create temporary
+SQLite databases; do not point them at the live database.
+
+## Production build and deployment
+
+Next.js uses `output: "standalone"`. `pnpm build` generates Prisma client code,
+builds Next.js, and copies static/public assets into the standalone tree.
+
+Production on the thinkpad is nginx → one host-wide `pm.service` bound to
+loopback, plus `pm-consumer.service` and the repository/switch runners.
+`pm-switch <worktree>` is the deployment boundary:
+
+1. resolve and validate the registered worktree;
+2. stop a currently served target before destructive build output changes;
+3. prepare generated directories for the builder;
+4. fork/select the branch database and apply migrations;
+5. build the standalone output;
+6. update service drop-ins;
+7. restart web and consumer together;
+8. verify the login page and a hashed asset.
+
+Never run a live `next build` without its immediate service restart: the build
+replaces `.next/standalone` while the old process is still serving hashed
+assets. Never deploy through the stable primary checkout. Detailed installation
+and recovery procedures are intentionally kept in
+[deploy/README.md](./deploy/README.md).
+
+## Observability and recovery evidence
+
+When diagnosing a workflow, inspect all four evidence layers:
+
+1. **Canonical item state:** Task/Epic fields and `TaskRepositoryRun`.
+2. **Audit:** `ActivityLog.kind` and parsed payload, including actor,
+   target agent, branch, candidate, and transition source.
+3. **Delivery:** `PmChannelRun`, `PmChannelJob`,
+   `PmChannelStreamEvent`, and `PmEventDelivery`.
+4. **Host execution:** systemd journals plus runner spool/state files under
+   `/var/lib/pm`.
+
+A board column alone cannot prove that a wake was delivered, a branch was
+validated, a worktree was removed, or a deployment occurred.
+
+## Change guidelines
+
+- Put authorization and domain invariants on the server; client controls are
+  convenience, not enforcement.
+- Reuse the authoritative task-status, review-handoff, completion, queue, and
+  repository helpers from every mutation surface.
+- Keep database writes and their audit rows in one transaction where possible.
+- Treat notification delivery as durable work with an explicit outcome.
+- Preserve soft-delete filtering in every agent context query.
+- Revalidate affected task shells, project/workspace views, and publish a board
+  touch after mutations.
+- Add a focused executable contract test for every workflow edge or security
+  invariant.
+- Apply schema changes with a committed Prisma migration and run
+  `prisma migrate deploy` separately from application build assumptions.
+- Do not create pull requests or merge external PRs from PM agent flows; that
+  boundary belongs to the human operator.
+
+## Documentation map
+
+| Document | Audience and authority |
 | --- | --- |
-| `app/login`, `app/rotate-password` | authentication and optional signed-in password-change routes. |
-| `app/(app)/projects` | projects list + inline create. |
-| `app/(app)/projects/bin` | project-level soft-delete bin — restores whole projects within the 30-day TTL. |
-| `app/(app)/projects/[slug]` | kanban board (four workflow columns + a separate Backlog table, drag-and-drop, Backlog show/hide toggle); per-project tab bar (`project-tabs.tsx` in `layout.tsx`: Summary · Board · Epics · Tasks · Library · Code · Changes · Settings · Activity · Bin — Summary/Code/Changes only with a configured repo, Activity only when there is no Summary, Bin only when non-empty). Done cards older than `doneTtlDays` drop off the board. Task cards show the current workflow actor + `updated` time; Done cards show the reporter. |
-| `app/(app)/projects/[slug]/tasks` | flat task list across all statuses; shows the deployment indicator for standalone tasks. |
-| `app/(app)/projects/[slug]/tasks/[taskId]` | task editor — two-column. Main: inline title, description editor, sub-tasks (progress checklist), attachments, comments, Development section (deployment PRs) for standalone tasks. Sidebar: status, assignee, reviewer, epic picker, deployment status, dates. |
-| `app/(app)/projects/[slug]/epics` | epic list with status filter (Backlog / To Do / In Progress / Done) + inline create (title + description + Acting Manager picker, then redirects into detail for attachments). |
-| `app/(app)/projects/[slug]/epics/[epicId]` | epic detail — acting manager + deploy reviewer, worker pool, status, deployment status + Development section (deployment PRs), attachments, tasks grouped by their own status, chat sidebar, Delete. |
-| `app/(app)/projects/[slug]/summary` | repo README render for repo-configured projects (hosts the activity agenda). |
-| `app/(app)/projects/[slug]/code` (+ `/code/raw`) | repo file browser / raw file serving. |
-| `app/(app)/projects/[slug]/changes` | repo branch/commit activity. |
-| `app/(app)/projects/[slug]/activity` | project activity stream (own tab only when there is no Summary). |
-| `app/(app)/projects/[slug]/library` | project library — every attachment under the project (task- + epic-anchored) in one list; excludes files whose parent is in the bin. |
-| `app/(app)/projects/[slug]/settings` | owner-only project settings — repository path, default git identity, default assignee/reviewer for pickers, Done-card TTL, and project delete; plus a recent-activity agenda. On git/worktree-exposed projects this also includes the **Worktree live preview** switcher (build a worktree + flip which one `pm.service` serves; currently shared-service-scoped — see TODO). |
-| `app/(app)/projects/[slug]/bin` | soft-delete bin — lists deleted Epics + Tasks with per-row Restore and "Restore + N children" actions. |
-| `app/(app)/agents` | owner-only agents grid; merges PM DB rows with Atlas live snapshot and provides `Add Agent` + per-card `Edit`/`Delete` lifecycle controls (`agent-management-controls.tsx`). |
-| `app/(app)/agents/[agent]` | per-agent deck, four tabs (`?tab=`): **Profile & controls** (Atlas controls, profile editor, audit), **Images** (profile/avatar image staging + theme), **Operations** (models, tickets, current task, lifecycle, listeners), **Activity** (recent activity-log stream). |
-| `app/(app)/agents/[agent]/chat` | direct per-agent chat opened from the global sidebar CHAT section. |
-| `app/(app)/system/activity` | system-wide ActivityLog stream. |
-| `app/(app)/system/settings` | system-wide setting defaults. |
-| `app/(app)/system/users` | owner-only human-user invitations, profiles, project visibility grants, and one-time password reset links. Workspace visibility is derived from granted projects. |
-| `app/(app)/workspaces` | unified landing board across every accessible workspace + project (task cards labelled `workspace / project`); archived list under `?archived=1`; the sidebar groups projects by workspace. |
-| `app/(app)/workspaces/[slug]` | cross-project workspace board. |
-| `app/(app)/workspaces/[slug]/settings` | workspace-level defaults (git identity, deployment, Done-card TTL) inherited by member projects — the layer between project settings and system settings. |
-| `app/api/system/worktree-switch/status` | admin-only poll of the runner-maintained worktree-switch state (served worktree, inventory, current job). Drives the per-project **Worktree live preview** panel. |
-| `app/api/auth/[...nextauth]` | NextAuth route. |
-| `app/api/debug/sync` | owner-only manual trigger for the agent sync. |
-| `app/api/tasks/[id]/ack` | agent ack endpoint — liveness ping only, no status transition (work starts via the workflow `start` action). |
-| `app/api/agent/tasks/[taskId]/{workflow,request-workflow-turn}` | token-scoped role-aware workflow actions (contract: [docs/agent-interaction.md](./docs/agent-interaction.md)); `request-workflow-turn` lets the task's current assignee request a fresh workflow turn with its PM-channel bearer (task in To Do/In Progress/Review, rate-limited 1 per task per 5 min, logged as `task.workflow.turn_requested`). |
-| `app/api/tasks/[id]/description` | agent description write-back. One-shot grant validated against the `allowDescriptionEdit` chat message. |
-| `app/api/epics/[id]/description` | agent description write-back for Epics. Same one-shot model. |
-| `app/api/agent/projects/[projectId]/proposals` | agent work-item proposal submission — grant-gated change-set (epics/tasks/sub-tasks + updates/comments), dry-run-validated and stored pending for human apply. Idempotent on `planId`. |
-| `app/api/attachments/[id]` | streamed attachment download (auth-gated). |
-| `app/api/agents/[agentId]/profile/...` | per-agent profile read/write (HOMELAB-52). |
-| `app/api/agents/[agentId]/images/{profile,avatar}` | authenticated agent profile-image read/write. Upload/remove is allowed only when the agent registry entry has `profileImages.theme="Manually Uploaded"`. |
-| `app/api/agents/[agentId]/images/preview` | stages generated agent profile images without writing final files. Profile generation is requested first; Avatar generation is a separate user-triggered request that uses the delivered Profile as the identity source. |
-| `app/api/agents/[agentId]/images/staged/[stageId]` | authenticated status/read endpoint for staged generated profile images. |
-| `app/api/agents/[agentId]/images/theme` | saves profile-image settings and promotes staged generated images to `/srv/agents/Pictures/<Agent>/` only when the user presses Save. |
-| `app/api/agents/[agentId]/models` | model settings read/write. |
-| `app/api/agents/[agentId]/services/{toggle,restart}` | Atlas service controls. |
-| `app/api/agents/[agentId]/registry/toggle` | activate/deactivate registry entry. |
-| `app/api/agents/{add,edit,remove}` | owner-only agent lifecycle. Validate + allocate UID/ports + render config, then provision through the root `openclaw-manage-user` helper (sudo); reconcile the PM DB (`syncAgents`) and write an `agent.registry.{add,edit,remove}` audit row. See [Agent lifecycle](#agent-lifecycle-create--edit--remove). |
-| `app/api/agents/models` | admin-only live model-list refresh for the agent form. Per `?provider=` it queries Ollama (`/api/tags` + curated popular), OpenRouter (`/api/v1/models`, `?filter=free\|popular`), Anthropic (if keyed), or returns Codex/seed lists; always falls back to the provider's seed list. |
-| `app/api/agents/[agentId]/integrations/credentials` | per-agent credential surface. |
-| `app/api/agents/context/{task,epic,project}/[id]` | loopback-only live PM read API for agents; scoped `?grant=` URLs are preferred, with bearer fallback only while enabled. |
-| `app/api/openclaw/pm-channel/stream` | token-scoped native PM channel live partial-reply callback from OpenClaw. |
-| `app/api/openclaw/pm-channel/reply` | token-scoped native PM channel durable final-reply callback from OpenClaw. |
-| `app/api/openclaw/pm-channel/events` | auth-gated same-origin SSE stream consumed by the browser while a reply is running. |
-| `app/api/agents/[agentId]/chat/reply` | legacy token-scoped direct chat reply endpoint; native PM channel is the normal path. |
-| `app/api/tasks/[id]/chat/reply` | legacy token-scoped task chat/comment reply endpoint; replies route back to the origin channel (chat vs comment). Native PM channel is the normal path. |
-| `app/agents/avatars/[name]` | avatar proxy. |
-
-Agent-facing callbacks are deliberately not browser-session routes.
-`middleware.ts` lets token-scoped callbacks reach their route handlers:
-native PM channel reply/stream callbacks use per-agent Bearer tokens,
-live context reads use scoped context grants, legacy chat replies and
-description writes use one-shot HMAC tokens, and project proposals use a
-one-shot work-item grant token. Browser-only surfaces, including the SSE
-`/api/openclaw/pm-channel/events` route, still require a signed-in PM
-user.
-
-## Library layout
-
-| Path | Purpose |
-| --- | --- |
-| `lib/auth.ts`, `lib/auth-handlers.ts` | NextAuth credentials + JWT callbacks. |
-| `lib/auth/password.ts` | argon2id hashing helpers. |
-| `lib/auth/rate-limit.ts` | in-process login rate limit (per-IP + per-username). |
-| `lib/agents/management/sync.ts` | the canonical agent sync — boot + periodic interval. |
-| `lib/agents/management/index-loader.ts` | `/etc/openclaw/agents.json` reader (`AGENT_INDEX_PATH` overrideable). |
-| `lib/agents/management/provisioning.ts` | unprivileged half of agent provisioning — renders per-agent file content (`SOUL`/`IDENTITY`/`openclaw.json`…), allocates UID + a verified gateway/browser-sidecar port pair, builds the registry entry. `openclaw.json` is rendered from the providers + models selected in the form. |
-| `lib/agents/management/providers.ts` | model-provider catalog (Codex, Claude CLI/`anthropic`, Ollama, OpenRouter) — the single source for each provider's openclaw.json connection block, auth profile, refresh strategy, and seed models. Shared by the form, the model-refresh route, and the renderer. |
-| `lib/agents/management/manage-user.ts` | provisioning hand-off. pm.service is `NoNewPrivileges` and can't sudo, so this spools a request into `/var/lib/pm/agent-provision/` and polls for the result; `openclaw-agent-runner` (monitor's system identity) runs the privileged `openclaw-manage-user` step. Synchronous from the route's view. |
-| `lib/agents/auth/credentials.ts` | per-agent host-private credential seeding. |
-| `lib/agents/management/profile.ts` | shared agent profile read/write + ACL. |
-| `lib/agents/management/profile-images.ts` | profile/avatar image metadata, upload conversion, delete, and ACL enforcement for `/srv/agents/Pictures/<Agent>/`. |
-| `lib/agents/management/profile-image-generation.ts` | sends non-manual image-generation requests to the configured Confy/ComfyUI service (`PM_PROFILE_IMAGE_CONFY_URL`). Profiles use FLUX.1-dev FP8; Avatars use the Profile as a PuLID-FLUX identity reference. Default saved generations use 20 steps (`PM_PROFILE_IMAGE_STEPS`); staged previews use 18 steps (`PM_PROFILE_IMAGE_PREVIEW_STEPS`). |
-| `lib/agents/management/profile-image-themes.ts` | Add Agent character-theme combobox options; first option is `Manually Uploaded`. |
-| `lib/agents/management/model-settings.ts` | shared model-config store (HOMELAB-52). |
-| `lib/agents/ops/restart.ts` | systemd restart fan-out via Atlas gateway. |
-| `lib/agents/auth/bootstrap-owner.ts` | opt-in bootstrap for the initial Mission Control owner on a fresh database. |
-| `lib/workflow.ts` | HOMELAB-44 rule library (transition / assignment / hierarchy / acting-manager). |
-| `lib/principals.ts` | assignable-principal resolver — active humans + agents with `Agent.role='coding'`. Used by every Task/Epic picker. |
-| `lib/agents/chat/targets.ts` | broader chat-only resolver — all active agents regardless of role (includes monitors). |
-| `lib/agents/chat/actions.ts` | `sendAgentChatMessage` — persists the message, fires dispatch for task-scoped chats. |
-| `lib/agents/context/` | PM-owned context packet builders for agent turns, including task/Epic snapshots, related activity, and cached attachment text extraction. |
-| `lib/agents/context/grants.ts` | short-lived scoped grant URLs for loopback live-context reads; stores token hashes only. |
-| `lib/agents/auth/session-bindings.ts` | PM-owned conversation-to-OpenClaw session bindings for task/comment and direct chats. |
-| `lib/agents/pm-channel/stream.ts` | native PM channel stream reducer and SSE framing for live + replayed partial replies. |
-| `lib/agents/pm-channel/stream-log.ts` | durable append-only stream event log used to replay browser SSE after reconnect. |
-| `lib/agents/pm-channel/runs.ts` | durable native PM channel run state (`queued`/`accepted`/`streaming`/`retryable`/`complete`/`failed`) used when the browser reconnects. |
-| `lib/agents/pm-channel/jobs.ts` | durable PM-channel dispatch queue, retry worker, and queue health rollups. |
-| `lib/agents/chat/direct/actions.ts` | direct agent chat actions for sidebar-launched conversations (send, archive, restart-from-archive). |
-| `lib/agents/pm-channel/openclaw.ts` | native `pm` channel client — posts turns to `/pm-channel/ingest`, resolves per-agent Bearer tokens, types the reply-target envelope. |
-| `lib/agents/management/effective-config.ts` | merges `/etc/openclaw/agent-defaults.json` (core → byRole → byIntegration → per-agent) into the effective capability/service view shown on the agent deck. |
-| `lib/bin/actions.ts` | soft-delete + restore server actions for Task and Epic with cascade. |
-| `lib/bin/purge.ts` | hourly hard-delete job for Task/Epic rows past the 7-day TTL; reclaims orphaned attachment blobs. |
-| `lib/bin/purge-projects.ts` | hourly hard-delete job for Project rows past the 30-day TTL (`PM_PROJECT_BIN_TTL_DAYS`). |
-| `lib/projects/actions.ts` | project settings write + soft-delete / restore server actions (`setProjectSettings`, `deleteProject`, `restoreProject`). |
-| `lib/tasks/reorder.ts` | persists drag reorder of the board's `Task.rank` column. |
-| `lib/epics/actions.ts` | Epic CRUD server actions (create/rename/assign/acting-manager/status). |
-| `lib/work-items/proposal.ts` | agent work-item proposal change-set validator (create/update epics·tasks·sub-tasks·comments; `tmp:` temp-refs; validates project scope, active principals, hierarchy, and task-status transitions under human-triggered grant semantics). |
-| `lib/work-items/apply.ts` | transactional commit core for an approved proposal (auth-free; topo-orders temp-refs, mirrors createTask/createEpic, attributes mutations to the agent). |
-| `lib/work-items/actions.ts` | human apply/reject server actions wrapping the commit core (auth + revalidate). |
-| `lib/agents/workflow/token/work-item.ts` | one-shot HMAC grant token for the proposal endpoint (mirrors `task-chat-token.ts`). |
-| `lib/agents/context/project.ts` | project-environment context packet (repo path, git identity, defaults, existing epics/open tasks) + the planning prompt handed to the agent. |
-| `lib/attachments/storage.ts` | filesystem write/read/delete under `/srv/Data/projects/<id>/attachments/<sha256>` (dev fallback `./.data/attachments`). |
-| `lib/attachments/actions.ts` | upload/delete server actions; enforces XOR(taskId, epicId) target. |
-| `components/agent-chat.tsx` | shared chat sidebar mounted on Task + Epic editors. |
-| `components/chat-input.tsx` | direct-chat composer — message + Samba file uploads + project picker; human project-scoped messages automatically carry a one-shot proposal grant. |
-| `app/(app)/agents/[agent]/chat/proposal-review.tsx` | review card for pending agent work-item proposals — per-op validation badges + Apply/Reject. |
-| `components/streaming-agent-reply.tsx` | client SSE subscriber that renders the live reply bubble while OpenClaw is still generating. |
-| `components/sortable-task-list.tsx` | `@dnd-kit` drag-reorder list used for grouped task views, backed by `lib/tasks/reorder.ts`. |
-| `components/task-checklist.tsx` | task **sub-tasks** progress checklist (ENV-60): add/tick/remove/drag-reorder lightweight items; optimistic, server-authoritative. |
-| `lib/tasks/subtasks.ts` | `SubTask` checklist core (create/complete/delete/reorder + `stripStepNumber`); shared by the task editor server actions and the agent workflow endpoint (`add_subtask` / `complete_subtask`). |
-| `components/activity-agenda.tsx` | compact recent-activity feed rendered on the project settings page. |
-| `components/worktree-switcher.tsx` | live-preview switcher (shown in a git/worktree-exposed project's Settings via `lib/projects/worktree.ts::isWorktreeExposedRepo`): lists worktrees, polls switch state, requests a build+flip, and lets the admin queue local-only cleanup for a non-live worktree. |
-| `lib/deploy/worktrees.ts` · `lib/deploy/actions.ts` | read the runner's switch `state.json` / write a switch `request.json`. The web app stays unprivileged; the build + restart happen in `pm-switch-runner` (as the monitor). See [deploy/MULTI_AGENT_WORKTREES.md](./deploy/MULTI_AGENT_WORKTREES.md). |
-| `lib/activity.ts` | ActivityLog write helpers. |
-| `lib/markdown.tsx` | server-side markdown renderer with safe-href allowlist + @mention resolver. |
-| `lib/pm-events/` | shared `PmEvent` envelope (schema v1). |
-| `lib/pm-dispatch/` | emitter side of the HOMELAB-46 dispatch seam — see [its README](./lib/pm-dispatch/README.md). |
-| `lib/pm-consumer/` | consumer / dispatcher (OpenClaw-side service) — see [its README](./lib/pm-consumer/README.md). |
-| `openclaw-pm-channel/` | external OpenClaw channel plugin that receives PM chat/comment turns, streams partial replies, and posts final replies back through the native channel lifecycle. |
-| `lib/db.ts` | Prisma singleton. |
-| `instrumentation.node.ts` | boot hook (Node runtime only); runs seed + first sync, then schedules the periodic agent sync and the two hourly purge jobs (Task/Epic bin + project bin). |
-| `middleware.ts` | auth gate + forwarded-host handling. Excludes SSE routes to prevent Edge proxy response buffering. |
-| `prisma/schema.prisma` | full schema (Stage 1 + Stage 2 + HOMELAB-46 delivery log). |
-| `prisma/migrations/` | committed migration history; applied via `prisma migrate deploy`. |
-| `deploy/` | systemd unit, nginx vhost, env file template. |
-
-## Agent fleet
-
-PM is the human-facing control plane for an OpenClaw agent fleet that
-runs on the same host. The fleet uses an **exclusive two-role model**
-(`/etc/openclaw/agent-defaults.json`: *every agent has exactly one role —
-`coding` or `monitor`, never both*). Roles get different model tunings,
-sudoers, Telegram bots, and operational guardrails; PM keys several of
-its own behaviours off `Agent.role`.
-
-```mermaid
-graph TD
-    User([Mission Control owner]) --> PM[Mission Control]
-
-    PM -->|principal pool — coding only<br/>lib/principals.ts| Coders
-    PM -->|chat targets — any active agent<br/>lib/agents/chat/targets.ts| Coders
-    PM -->|chat targets| Monitor
-
-    subgraph Coders["Coders · role=coding · can_modify_code"]
-        A[Coding agent A]
-        B[Coding agent B]
-    end
-
-    subgraph Mon["Monitor · role=monitor · never edits code"]
-        Monitor[Monitoring agent<br/>wake · restart · triage · alert]
-    end
-
-    PM -. native pm channel · /pm-channel/ingest .-> Coders
-    PM -. generic wake · /hooks/wake .-> Coders
-    Incidents[monitoring incidents] --> Monitor
-    Monitor -->|wakes / restarts| Coders
-    Monitor -->|alerts| Notifications
-```
-
-**Coders (`role = coding`).** Coding agents have the capability
-`can_modify_code`; they work tickets, edit code, and push branches,
-and never participate in monitoring. In PM they are the only agents in
-the **assignable principal pool** (`lib/principals.ts`) — eligible as
-Task assignee / reviewer and Epic assignee / acting-manager — and they
-receive chat/comment turns over the native `pm` channel plus generic
-`/hooks/wake` automation.
-
-**Monitor (`role = monitor`).** Monitoring agents have capabilities such as
-`can_wake_agents`, `can_restart_agents`, `can_triage_incidents`, and
-alerting; they may run inbound integration webhook receivers and triage
-monitoring incidents, waking or restarting coders as needed. A monitor never
-modifies code, so it is
-**excluded from the principal pool** — but she is reachable through the
-broader chat-target resolver (`lib/agents/chat/targets.ts`), and her
-`openclaw-control wake-agent` bridge is the degraded fallback PM uses
-when a coder's gateway hooks are unavailable.
-
-### Agent lifecycle (create / edit / remove)
-
-The Mission Control owner provisions the fleet from the **Agents** page — `Add Agent`,
-per-card `Edit`, and `Delete` (`agent-management-controls.tsx`). These post to
-`/api/agents/{add,edit,remove}`, which are **route-centric**: the web app
-(running as the monitor user) validates input, allocates the next free UID
-(≥ 1001) and gateway/sidecar ports, and renders the agent's file content in
-`lib/agents/management/provisioning.ts` — but performs no privileged I/O itself (pm.service
-is `NoNewPrivileges` and cannot sudo). `lib/agents/management/manage-user.ts` spools the job
-into `/var/lib/pm/agent-provision/` and polls for a result; **`openclaw-agent-runner`**
-(the monitor's system identity, `NoNewPrivileges=no`) runs the single privileged
-boundary `/usr/local/sbin/openclaw-manage-user`: the system user, Samba/sudoers,
-per-agent files, doc symlinks (to the active PM worktree root supplied in the
-payload), gateway + PM-channel install, and the registry write. The helper
-validates the configured worktree root; do not stage lifecycle changes by
-editing a primary checkout directly. The
-route then reconciles the PM DB with `syncAgents()` and writes an
-`agent.registry.{add,edit,remove}` audit row.
-
-- **Guards.** Reserved system accounts and active monitor identities cannot be
-  created, edited, or removed — enforced in both the
-  route and the helper. A failed create is rolled back (helper `delete`).
-- **Ports.** Port allocation is not registry-only. `allocatePorts()` treats an
-  OpenClaw gateway as a port pair (`gatewayPort` and the browser/control
-  listener at `gatewayPort + 2`) and proves both ports are bindable on
-  `127.0.0.1` and `::1` before returning them. Add/edit returns
-  `port_allocation_failed` rather than provisioning an agent onto a busy port.
-- **Edit.** Re-renders files + registry; a role change reallocates listeners and
-  reinstalls the gateway without destroying the agent's home directory.
-- **Models.** The form ticks one or more providers (`lib/agents/management/providers.ts`),
-  refreshes each provider's live model list (`/api/agents/models`), marks which
-  models the agent may use, picks a default, and orders fallbacks by drag. Only
-  the chosen providers/models are written into the agent's `openclaw.json`.
-- **Profile images.** Add Agent includes a character-theme combobox stored in
-  the registry entry as `profileImages.theme`. `Manually Uploaded` enables
-  upload/remove controls on the agent profile page for
-  `/srv/agents/Pictures/<Username>/{profile,avatar}.png`. Any other theme uses
-  the Confy/ComfyUI service to stage a 256px Profile. Once that Profile is
-  delivered, the user can manually request a PuLID-FLUX Avatar derived from the
-  Profile reference. If the user saves without creating a generated Avatar,
-  `avatar.png` is symlinked to `profile.png`. Staged generated images are
-  promoted to `/srv/agents/Pictures/<Username>/` only after the user presses
-  Save. The helper creates the picture directory with `code-agents` group-write
-  permissions; `pm.service` needs `/srv/agents/Pictures` in `ReadWritePaths`.
-- **Telegram.** When enabled, the bot token is captured and the helper writes it
-  to `~/.config/openclaw/telegram-token` + `TELEGRAM_BOT_TOKEN`; DM pairing then
-  authorises the operator's account.
-- **Server email.** The `maildir` integration provisions `~/Maildir` + a mail
-  listener for local server mail (host needs an MTA — see [`../THINKPAD.md`](../THINKPAD.md)).
-- **Gateway verification.** The PM-channel installer restarts the affected
-  `openclaw-gateway.service` and waits for systemd to report `active`; a gateway
-  restart failure is surfaced as provisioning failure instead of a silent broken
-  agent.
-- **Registry ownership.** `openclaw-manage-user` is the sole writer of the
-  canonical host registry (`/etc/openclaw/agents.json`, historically also
-  exposed at `/srv/agents/index.json`) for lifecycle changes; `agent-dashboard`
-  only watches the file and re-broadcasts it over SSE. Helper + privilege model:
-  [`../THINKPAD.md`](../THINKPAD.md) § Agent lifecycle management and
-  [`../openclaw/bin/openclaw-manage-user`](../openclaw/bin/openclaw-manage-user).
-
-## Capability map
-
-**Auth & identity.** Password-only (Credentials provider + argon2id). No
-Google SSO in v1 — deferred to v1.1+. The first human is stored explicitly as
-the Mission Control owner (`User.isOwner`) and has global access. The owner can
-invite additional humans, grant exact project visibility, and issue one-time
-password reset links that revoke older password sessions; workspace visibility
-follows those project grants. Agent
-users continue to mirror `codeOwner`-matched registry entries. Login rate limit
-is in-process sliding-fixed-window: 10/5min per IP + 5/5min per username.
-Passwords are active immediately; no account is forced through a rotation
-flow. Behind nginx the middleware uses the configured public Auth.js URL for
-the secure-cookie protocol and `x-forwarded-host` for the redirect host.
-
-**Projects + board (Stage 2 / HOMELAB-44; board layout reworked in
-HOMELAB-48).** Five verbatim task statuses — Backlog · To Do · In
-Progress · Review · Done. The board renders the four workflow statuses
-(To Do · In Progress · Review · Done) as drag-and-drop columns
-(`@dnd-kit`); Backlog is a separate full-width table below the board
-with a per-project localStorage show/hide toggle (hidden by default).
-Dragging a backlog row onto a column moves the task into that status.
-Backlog is a planning/opinion state: assigning or reassigning an agent
-there sends the agent a task-context PM-channel turn and requires a
-task-comment implementation plan/opinion, but does not authorize work.
-`To Do` is the approval-to-execute state: the assigned agent must move
-the task to `In Progress` and start immediately without posting a
-visible acknowledgement unless there is new task information.
-`Review` is reserved for completed implementation review; the resolved
-reviewer accepts satisfied work without approval-only comments. Repository
-tasks remain in Review during PM-owned publication/merge and cleanup, then
-move to Done,
-or returns it with concise feedback via `review_feedback`, which sends
-the task (feedback attached) to the FRONT of the To Do queue — agents
-never resume a task from `Review` in place. A human drag into `Review`
-requests the same validation as agent `ready_for_review`; code tasks remain
-In Progress until a valid or advisory result wakes the reviewer and refills
-the Epic queue.
-Server-side enforcement lives in `lib/workflow.ts`:
-`checkStatusTransition`, `checkAssignment`, `checkHierarchy`,
-`checkActingManager`, plus the token-scoped
-`POST /api/agent/tasks/[taskId]/workflow` endpoint for role-aware agent
-actions (`start` — To Do → In Progress only, gated on ≤1 In Progress
-task per agent per project plus a branch-clash check; `ready_for_review`
-— rejected while implementation sub-tasks remain open;
-`review_feedback`, `review_done`, `triage_to_todo`, `approve_plan`,
-`assign_after_plan_approval`, `add_subtask`, `complete_subtask`;
-`submit_review` is a deprecated alias for
-`ready_for_review`). Client rolls back optimistic moves on rejection. Done
-cards older than the project's `doneTtlDays` (default 5) are filtered
-out of the board server-side so the column doesn't grow without bound.
-
-**Project tabs, settings & library.** Every project is wrapped in a
-shared layout (`app/(app)/projects/[slug]/layout.tsx`) carrying a tab
-bar — Summary · Board · Epics · Tasks · Library · Code · Changes ·
-Settings · Activity · Bin (`project-tabs.tsx`; Summary/Code/Changes are
-repo-conditional, Activity appears only without a Summary, Bin only when
-non-empty).
-The **Settings** tab (`lib/projects/actions.ts::setProjectSettings`)
-stores the repository path, default git user name/email used for agent
-commits, default assignee + reviewer that seed Task pickers, deployment
-settings, protected agent branches that reject code-changing
-`ready_for_review`, and the `doneTtlDays` board cutoff; it also hosts project delete and a recent
-`ActivityLog` agenda (`components/activity-agenda.tsx`). The **Library**
-tab lists every `Attachment` under the project (task- and epic-anchored
-alike, since `Attachment.projectId` is a direct FK), skipping files
-whose parent is in the bin. Projects are created inline from the
-projects list (`createProject`).
-
-**Tasks (HOMELAB-44 + HOMELAB-47; sub-tasks reworked in ENV-60/61).**
-Sub-tasks are a **lightweight progress checklist** (`SubTask` model: text +
-`completedAt` + optional `minutesSpent`), not child Tasks — they have no
-assignee, reviewer, status, key, or board presence. A task's board card shows a
-**segmented progress bar** (one node per sub-task, filling on an orange→green
-gradient as completion rises; To Do reads as an empty bar), and the per-step
-minutes sum into a cost roll-up shown on the task. Agent guidance pushes
-decomposing a Plan of Action into **independent, parallelizable** steps so the
-assignee can dispatch parallel sub-agents across multiple fronts, and requires
-ticking each off (with minutes) the moment it lands — `ready_for_review` is
-refused while implementation sub-tasks remain open; when a task comes back
-from Review (`review_feedback` returns it to the front of To Do), the
-assignee adds a sub-task per feedback item so the bar stays honest. (The legacy
-self-referential `Task.parentTaskId` hierarchy is removed/dormant.) A task may
-also declare one **`blockedBy`** dependency (ENV-62) — another task that must
-reach Done first; writes are cycle-guarded (`lib/tasks/blocking.ts`), the board
-card shows a bottom-right lock + the blocker's key while it's still open, and the
-agent workflow `start` action refuses a task whose blocker isn't Done. The editor is two-column: main pane has inline title,
-markdown description, the sub-tasks checklist (add/tick/remove/drag-reorder),
-attachments, and comments (`@mention` resolved
-through `lib/markdown.tsx`); sidebar has status, assignee, **Reviewer**
-(UI label only — the schema column stays `actingManagerId` and the
-audit kind stays `task.acting_manager` so the activity feed is
-unchanged), epic picker (with "No epic"), and a
-created/updated dates panel. Tasks may live without an Epic; an Epic
-and its tasks can be assigned to different principals and the task
-keeps its own kanban status independent of the Epic's
-Backlog / To Do / In Progress / Done status. All mutations
-write `ActivityLog`.
-
-**Epics (HOMELAB-47; principals reworked since).** `/projects/<slug>/epics`
-is a status-filtered list with inline create; `/projects/<slug>/epics/<id>`
-is the detail view. Epics have **no assignee**: they carry an **Acting
-manager** (workflow owner), a **Deploy reviewer** (for the
-deployment-review pass), and a **worker pool** (`EpicWorker`) of
-coding agents the acting manager assigns child tasks from — one active
-task per worker per project (To Do / In Progress; Review does not
-count), assigned
-sequentially. Status is Backlog / To Do / In Progress / Done —
-deployment lives on the separate `deploymentStatus` lane;
-child tasks are agent-actionable only while the Epic is To Do / In
-Progress. Child-task branches are LOCAL-ONLY: after repository validation
-and reviewer acceptance, PM keeps the task in Review while its finalization
-runner merges the validated local task branch into the Epic integration
-branch, pushes only the Epic branch to origin, and removes the child
-worktree/local branch. Only then does PM mark the task Done. Child branches
-never reach origin because their pushes trigger unwanted deployments. When
-the Epic reaches Done, a recovery cleanup verifies that the Epic branch is
-published and removes any remaining merged child artifacts.
-The detail view also shows status, description, attachments, the
-Development section (deployment status + PRs), and a tasks panel grouped
-by each task's own kanban status. Tasks linked into an Epic still drive
-their workflow from the project board.
-
-**Deployment.** Standalone Tasks (no epic, no parent) and Epics carry a
-`deploymentStatus` (default `Not Required`) plus a **Development**
-section listing `DeploymentPullRequest` rows; epic-child tasks deploy
-through their Epic, so deployment fields are shown/written only at the
-Epic level for them. The lane runs Not Required / Ready to Deploy /
-Deployment Approved / Successfully Deployed / Deployment Error;
-setting an Epic's deployment status to **Ready to Deploy** kicks off the
-deploy review (`Project.deployReviewPrompt` → deploy reviewer). A human
-approval emits `deployment.approved`; the monitor verifies pushed
-branches (for an Epic that is its integration branch — child branches
-stay local), opens the Bitbucket PR(s) (or records
-`local_changes_pending_approval`), and `instrumentation.node.ts` polls
-them — merge runs the project's on-merge script and each row ends in
-`deployed` / `deployment_error` / `declined` / `pipeline_failed` with the
-captured exit code + log excerpt, rolled up into the scope's
-`deploymentStatus` (`lib/deploy/monitor.ts`).
-
-**Attachments (HOMELAB-47).** Files attached to a Task XOR an Epic;
-metadata in the `Attachment` table, bytes on disk under
-`/srv/Data/projects/<id>/attachments/<sha256>` (dev fallback
-`./.data/attachments/<id>/<sha256>`). Content-addressed: re-uploading
-the same bytes reuses the existing blob. Size cap is 25 MiB by default,
-tunable via `PM_ATTACHMENT_MAX_BYTES`. Downloads go through
-`GET /api/attachments/[id]` with the original filename via
-`Content-Disposition`.
-
-**Principal pool.** `lib/principals.ts` is the single resolver every
-picker calls — active human Users plus Users whose linked `Agent.role`
-is `coding` and not deactivated. Non-coding agents and remote-host
-agents that aren't seeded as PM users are intentionally excluded.
-
-**Soft delete + bin (HOMELAB-48).** `deleteTask` / `deleteEpic` stamp
-`deletedAt` + `deletedById` and cascade to non-deleted children (Epic
-→ tasks). A task's `SubTask` checklist rows are plain children that ride
-along with the task (and hard-delete via FK cascade when the task is
-purged). Every active-view query
-filters `deletedAt: null`. `/projects/<slug>/bin` lists everything in
-the bin with per-row Restore plus an optional "Restore + N children"
-button that restores rows that share the parent's exact `deletedAt`
-timestamp (so only children deleted by THIS cascade come back; rows
-deleted independently before/after stay in the bin). The hourly
-`purgeBin` job in `instrumentation.node.ts` hard-deletes rows past the
-TTL (`PM_BIN_TTL_DAYS`, default 7); orphaned attachment blobs are
-swept via `lib/attachments/storage.ts`. Whole **projects** soft-delete
-on the same model into a separate, longer-lived bin: `deleteProject`
-stamps `Project.deletedAt`, `/projects/bin` restores them, and a second
-hourly job (`purgeProjectBin`, `PM_PROJECT_BIN_TTL_DAYS`, default 30)
-hard-purges the aged ones.
-
-**Agent chat (HOMELAB-48).** Task and Epic editors mount a chat
-sidebar (`components/agent-chat.tsx`). The agent picker uses
-`lib/agents/chat/targets.ts` — broader than the principal pool so
-monitors are reachable. Messages persist as `AgentChatMessage` rows
-keyed by (taskId|epicId, agentSlug); message bodies render as full
-markdown (`lib/markdown.tsx::renderFullMarkdown`). Human-authored task
-and Epic chat messages automatically carry a one-shot description write
-capability. The capability is a token-scoped endpoint in the native
-channel prompt, and agents are instructed to call it only when the
-current human message directly asks to update, rewrite, reformat, or
-replace the description.
-Per-message Delete
-hard-removes the row (chats don't go through the bin); an audit row
-records who/when. Task-scoped chats are sent directly to the native
-OpenClaw `pm` channel on the target agent's loopback gateway
-(`/pm-channel/ingest`); Epic-scoped chats use the same native channel
-with an `epic-chat` reply target. Agent replies return only to the
-origin channel: messages started in task chat stay in task chat,
-messages started in Epic chat stay in Epic chat, and messages mirrored
-from task comments are posted back as task comments.
-Task chat, Epic chat, and task-comment turns still use the PM context
-builders in `lib/agents/context/`: the current turn is kept explicit,
-recent Discussion/comments are included in the prompt, and scoped
-context grant URLs let the agent fetch full live task/Epic/project state
-when needed. Every task + agent conversation gets an
-`AgentSessionBinding`; its
-`openclawSessionKey` is the base for PM channel routing. Direct chats
-use the stable key for continuity; task, Epic, and task-comment turns
-derive a per-message key so stale or oversized OpenClaw transcripts do
-not carry into the next PM request. PM also writes a `PmChannelRun` row
-for each local handoff so the browser can reconnect to
-accepted/streaming/failed state without a polling refresh loop.
-Visible replies are only for useful contributions: plans, action
-results, feedback, blockers, or necessary questions. If an agent has no
-new information to add, it replies with the `PM_SILENT_NO_CONTRIBUTION`
-sentinel; `/api/openclaw/pm-channel/reply` records a silent completion
-activity row and creates no chat/comment bubble. A bare stream `done`
-without a saved reply, workflow action, or silent completion is recorded
-as failed so the chat UI does not wait indefinitely.
-
-**Direct agent chat.** `/agents/<slug>/chat` opens a sidebar-launched
-conversation with one agent. Sending a direct message persists it,
-then schedules native `direct` dispatch work so the browser can show the
-human message immediately while context building and gateway handoff run
-off the submit path. The normal transport is the PM-channel bus
-(`PM_CHANNEL_BUS_SOCKET`, `PM_CHANNEL_BUS_DROP_DIR`, or
-`PM_CHANNEL_BUS_HTTP_URL`); direct HTTP remains available only as the
-explicit `PM_OPENCLAW_CHANNEL_HTTP_FALLBACK=1` fallback.
-OpenClaw records the session, streams partial reply chunks back to
-`POST /api/openclaw/pm-channel/stream` for the live browser projection,
-and delivers the durable final reply back to
-`POST /api/openclaw/pm-channel/reply` with the shared PM channel token.
-The browser listens to `/api/openclaw/pm-channel/events` for live stream
-frames and reconciles active direct-chat rows through
-`GET /api/agents/<slug>/chat/messages`; that lightweight reconcile path
-replaces full-page polling after missed or late final stream events. To
-ensure responsive streaming, `/api/openclaw/pm-channel/events` is
-excluded from middleware proxy buffering.
-
-The UI supports several key enhancements:
-- **Send Box & Keyboard Shortcuts**: Fixed at the bottom of the layout. Pressing `Enter` sends the message immediately; `Shift+Enter` inserts a newline.
-- **Collapsible Sidebar**: The archive sidebar can be toggled using an icon button at the top-right of the chat header (persisted in `localStorage`).
-- **Interactive Calendar & Lineage**: The sidebar includes a monthly calendar displaying highlight indicators on dates with active chats, syncing on hover. Clicking on a highlighted date filters the list to show only conversations from that day. Archive cards in the sidebar are designed to be extremely compact, displaying dates in a modern format (e.g., `Today · 15:30` or `25 May · 15:30`), along with paperclip attachment indicators, cumulative message counts, and total memory sizes in KB. Relationships are no longer displayed on the cards; instead, viewing an archive with parents displays a **Chat Initial Context** button at the top of the chat which dynamically prepends the parent conversation history each time it is clicked, showing **Chat Start...** once the oldest ancestor is reached. Parent archives with active continuation children cannot be deleted.
-- **Smart Scroll**: When sending or receiving messages, the chat auto-scrolls. If a message is taller than the viewport, the top of the message is aligned with the top of the chat area.
-- **Samba Attachments**: Supports file uploads inside the compose box. Selected files are uploaded and saved to the agent's Samba drive under `/srv/samba/shared/[agent]/chats/[chatId]/`. Supported text-like attachments have their content extracted and appended as context when the current message uploads files or asks for attachment/file context; set `PM_DIRECT_CHAT_ALWAYS_INCLUDE_FILES_CONTEXT=1` to restore unconditional file-context inclusion. Deleting an archive automatically purges its uploads folder.
-
-OpenClaw exposes the selected thinking budget and run metadata inside a collapsible `<details>` panel, not private chain-of-thought text. To keep reply latency down, the PM channel context includes a bounded recent transcript and bounded parent-archive excerpt (`PM_DIRECT_CHAT_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`, `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT`). Native PM-channel dispatch is durable via queued jobs, persisted stream events, and bus delivery/retry state rather than a warm-agent pool; direct-chat browser reconciliation uses a `(createdAt, id)` incremental cursor so same-timestamp messages are not skipped. Slow accepted-to-first-stream runs emit `pm.channel.latency_warning` activity rows when they exceed `PM_OPENCLAW_FIRST_STREAM_WARNING_MS` (default `15000`). Because PM and OpenClaw run on the same host, channel callbacks default to `http://127.0.0.1:3000`; set `PM_AGENT_CALLBACK_URL` or `PM_INTERNAL_APP_URL` to override that.
-
-**Agent work-item proposals.** A direct chat (`/agents/<slug>/chat`) can
-be attached to a project, and Task/Epic Action Plan messages plus
-human-authored task comments are already project-scoped. Every
-human-authored project-scoped turn in those surfaces becomes a
-planning-capable turn by default: PM hands the agent the project
-environment (repo path, git identity, picker defaults, existing epics/open
-tasks and their descriptions via `lib/agents/context/project.ts`) plus a
-single-use HMAC grant + the propose endpoint. Direct project chats also
-receive short-lived context-read grant URLs, and PM detects same-project
-Task/Epic links in the human message so agents can fetch those item
-contexts over loopback instead of opening the public browser URL. In
-Task/Epic Action Plan and task-comment turns, that single-use stamp is tracked per addressed
-agent, so an `All Coders` message or multi-agent task comment can let
-each coder submit one proposal. Agent-authored comments and PM workflow
-notifications do not grant work-item management. The prompt tells the
-agent to submit a proposal only when the current human message directly
-asks for project work-item changes. The agent POSTs a typed change-set to
-`POST /api/agent/projects/<id>/proposals` — it never writes the board
-directly. That route is token-scoped and intentionally bypasses browser
-session middleware; the route handler validates the grant, token, active
-agent, project binding, and single-use stamp. PM dry-run-validates every
-op under human-triggered grant semantics (active principals, project
-scope, hierarchy, known statuses, and valid task-status transitions; new
-tasks and new epics land in Backlog) and stores a pending
-`WorkItemProposal`. The human reviews it in the chat
-(`proposal-review.tsx`) and clicks Apply — the whole change-set commits in
-one transaction (`lib/work-items/apply.ts`), attributed to the agent in
-`ActivityLog`, with the approval recorded by `WorkItemProposal.appliedById`
-+ a `workitem.proposal.apply` row — or Reject. `@unique(planId)` makes a
-re-submitted proposal idempotent. Full contract:
-[docs/agent-interaction.md](./docs/agent-interaction.md).
-
-**Agents dashboard.** `/agents` merges the PM `Agent` table with the
-Atlas live snapshot at `http://127.0.0.1:3013/agents/snapshot` (busy /
-idle / model / current ticket / host services). KPI strip shows agents
-online, open tickets, open PM tasks, host services, and open sensor
-alerts. The hub renders Mission Control actions from `ActivityLog`
-(`agent.service.*`, `agent.registry.*`, `agent.integration.*`,
-model/profile/restart rows) plus live signals/sensors from the Atlas
-monitor snapshot. `/agents/[slug]` mounts the Atlas controls deck (service
-toggle/restart, registry toggle), the model settings editor, and the
-profile editor. Profile + model writes go through
-`lib/agents/management/profile.ts` / `lib/agents/management/model-settings.ts`, are
-audit-logged on `ActivityLog` with `targetAgent` + `targetFile`, and
-trigger a restart via `lib/agents/ops/restart.ts` so live agents pick up
-changes.
-
-**PM → agent dispatch seam (HOMELAB-46).** Workflow rules run first; a
-post-persist `notifyDispatch(event)` then emits a typed `PmEvent` envelope
-(schema v1) over a configurable driver:
-
-| Driver | Selected via | Notes |
-| --- | --- | --- |
-| `unix-socket` (default) | `PM_DISPATCH_DRIVER=unix-socket` + `PM_DISPATCH_SOCKET` | NDJSON over AF_UNIX, primary per HOMELAB-45. |
-| `file-drop` | `PM_DISPATCH_DRIVER=file-drop` + `PM_DISPATCH_DROP_DIR=/var/lib/pm/drop` | one JSON file per envelope, atomic rename. |
-| `http-localhost` | constructed directly via `createHttpLocalhostDriver({ url })` — **not** env-selectable | loopback + Bearer; tests / explicit callers only. |
-
-`notifyDispatch` is the only call-site entry point and never throws —
-transport/config/disabled paths all resolve to a `DispatchResult` so a
-failed send never affects the rule outcome. With no driver env set, it
-short-circuits as `{ ok: false, skipped: "disabled" }`. Consumer side
-(`lib/pm-consumer/`) runs as a separate `tsx` process on the OpenClaw
-host: dedupes by `${kind}:${task.id}:${event.id}` against the
-`PmEventDelivery.dedupeKey` unique index, resolves the target agent's
-gateway port, and wakes the local gateway with
-`POST http://127.0.0.1:<port>/hooks/wake` plus that agent's Bearer
-token for non-chat automation. Direct chat, Discussion, Epic chat, and
-task-comment turns bypass this consumer path and enter OpenClaw through the native `pm` channel at
-`POST http://127.0.0.1:<port>/pm-channel/ingest`. OpenClaw gateway
-configs must still set `hooks.allowRequestSessionKey=true` and
-`hooks.allowedSessionKeyPrefixes=["hook:", "pm:"]` for generic PM wakes.
-OpenClaw requires `hook:` when no hook default session key is configured;
-PM-owned sessions use the `pm:` prefix. On this single-host install,
-every agent gateway should be bound to loopback, so `/hooks/wake` and
-`/pm-channel/ingest` are only reachable from this computer.
-The monitor agent's
-`openclaw-control wake-agent` bridge at `/usr/local/sbin/pm-monitor-wake-agent`
-is a degraded fallback for hosts that have not enabled gateway hooks or
-for temporary gateway hook failures; the fallback passes the same
-`--session-key <pm:...>` through `openclaw system event`.
-The monitor agent's PM workflow drift fallback uses `/usr/local/sbin/pm-workflow-nudge`
-instead. That helper re-enters the native `pm` channel so the target agent
-gets the full Mission Control context packet, workflow endpoint capability,
-and task-comment reply target instead of a generic heartbeat reminder.
-Truncating `PmEventDelivery` is safe — audit rows live independently on
-`ActivityLog`.
-
-## Agent runtime contract
-
-Direct PM chat, task chat, task-comment, and Epic chat turns now use the
-native OpenClaw `pm` channel, not the legacy prompt-visible callback
-contract.
-The full agent-facing guide lives in
-[docs/agent-interaction.md](./docs/agent-interaction.md).
-
-Only the Mission Control owner's messages/comments may initiate an agent turn;
-other users' rows are retained as silent task knowledge. When the owner sends a
-direct chat message, task chat message, Epic chat message, or task comment that
-targets an agent, PM:
-
-1. Persists the PM-side row (`DirectAgentChatMessage`, `AgentChatMessage`,
-   or `Comment` plus mirrored `AgentChatMessage` for comment origins).
-2. Resolves an `AgentSessionBinding`, derives the channel session key
-   for that surface, records a durable local run/job, and sends or queues
-   the turn for the target agent gateway:
-3. Builds bounded channel guidance for the current turn off the direct
-   chat submit path. Task/Epic chat prompts include the recent hot path
-   plus scoped live-context grant URLs; smaller workflow/comment paths may
-   still include compact inline context.
-
-```json
-{
-  "version": 1,
-  "kind": "direct | task-chat | task-comment | epic-chat",
-  "agentSlug": "<agent-slug>",
-  "sessionKey": "pm:...",
-  "text": "<latest user message>",
-  "contextText": "<compact PM context packet or null>",
-  "systemPrompt": "<channel guidance>",
-  "actor": { "id": "usr_...", "username": "<owner-username>", "kind": "human" },
-  "replyTarget": { "kind": "direct | task-chat | task-comment | epic-chat", "...": "origin metadata" },
-  "callbackUrl": "http://127.0.0.1:3000/api/openclaw/pm-channel/reply",
-  "streamUrl": "http://127.0.0.1:3000/api/openclaw/pm-channel/stream"
-}
-```
-
-The target gateway verifies the per-agent PM channel Bearer, runs the
-OpenClaw channel turn kernel, records the turn in the supplied `pm:`
-session, streams partial visible text to `/api/openclaw/pm-channel/stream`,
-and posts the durable final answer to `/api/openclaw/pm-channel/reply`.
-PM writes the final answer only to the origin channel: direct chat stays
-direct, task chat stays task chat, Epic chat stays Epic chat, and
-task-comment replies become task comments. PM records the turn in
-`PmChannelRun` before contacting the gateway and updates it from stream
-and reply callbacks. Stream events are appended with monotonically
-increasing sequence numbers, so browser SSE clients can reconnect with
-`Last-Event-ID` and replay missed frames. For Task/Epic Discussion
-work-item grants, `PmChannelRun.workItemGrantUsedAt` is the per-agent
-consumption stamp.
-
-`/hooks/wake` remains installed for generic PM events such as assignment
-and ack-ready automation. It is no longer the normal chat/comment path.
-The same-host monitor bridge remains only as a degraded fallback for old
-hosts or temporary gateway hook failures.
-
-`openclaw/install.sh` is the host install path for the PM/OpenClaw
-integration. With a PM checkout present it must:
-
-- Ensure `PM_DISPATCH_SOCKET` (or `PM_DISPATCH_DROP_DIR=/var/lib/pm/drop`)
-  on the PM host matches the consumer side for non-chat PM events.
-- Install and enable the one host-wide `pm.service` and `pm-consumer.service`
-  as system services with runtime `User=` / `Group=` set to the configured
-  configured PM app user/group. These are **not**
-  per-agent user units; stale
-  `/home/<agent>/.config/systemd/user/pm*.service` files should be
-  removed so a coding agent cannot accidentally own the PM port or
-  consumer.
-- Ensure the PM app user can traverse/read the checkout and standalone
-  bundle and can write `prisma/`, `.data/`, `/var/lib/pm/drop`, and
-  `/etc/openclaw/pm-agent-credentials`.
-- Ensure production attachment storage exists and is writable by the PM
-  app user: `/srv/Data/projects` for task/Epic attachments and
-  `/srv/samba/shared` (plus child agent share directories) for direct-chat
-  Samba uploads. The service sandbox must include both paths.
-- Provision service-private `pnpm` home/config/cache directories for
-  `pm-consumer.service` under `/var/lib/pm` and point `HOME`,
-  `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `PNPM_HOME`, and
-  `NPM_CONFIG_USERCONFIG` there. This keeps `ProtectHome=true` without
-  noisy `/home/<pm-user>/.npmrc` warnings.
-- Enable the external hook surface in every enabled agent gateway config
-  under `/srv/agents/openclaw/<slug>/openclaw.json`:
-  `gateway.bind="loopback"`, loopback trusted-proxy config,
-  `hooks.enabled=true`, `hooks.path="/hooks"`, and a per-agent
-  `hooks.token`. Also set `hooks.allowRequestSessionKey=true` and
-  `hooks.allowedSessionKeyPrefixes=["hook:", "pm:"]` so PM can route
-  direct chats and per-message PM turns through OpenClaw while preserving
-  OpenClaw's required hook-session prefix. Preserve existing
-  `hooks.internal` config. Each runtime
-  `/home/<slug>/.openclaw/openclaw.json` should be a symlink to the
-  `/srv/agents/openclaw/<slug>/openclaw.json` file; otherwise PM model
-  edits and gateway reads can diverge.
-- Mirror those same Bearer tokens into `PM_CONSUMER_HOOK_TOKEN_FILE`
-  (default `/etc/openclaw/pm-consumer-tokens.json`) as a JSON object
-  keyed by agent slug. The file should be readable by the PM consumer
-  service group only (`0640`) and should not be committed or logged.
-- Stage the native PM channel plugin at
-  `/usr/local/share/openclaw/plugins/pm-channel`, link it into each
-  agent's OpenClaw config, generate per-agent PM channel Bearer tokens
-  in `/etc/openclaw/pm-channel-tokens.json`, and set the plugin's final
-  reply callback URL to
-  `http://127.0.0.1:3000/api/openclaw/pm-channel/reply`.
-- Apply the OpenClaw session-fence runtime patch via
-  `/usr/local/sbin/openclaw-patch-session-fence`. This keeps primary
-  model timeout markers from masking the provider timeout as a local
-  session takeover, which allows configured model fallbacks to run.
-- Leave the streaming callback as PM-owned per-turn data. PM derives
-  both `callbackUrl` and `streamUrl` from `PM_AGENT_CALLBACK_URL` or
-  `PM_INTERNAL_APP_URL`, defaulting to `http://127.0.0.1:3000`.
-- Restart each `openclaw-gateway.service` after changing hook config.
-  Expected local checks are: `GET /health` returns 200,
-  `GET /hooks` returns 405, unauthenticated `POST /hooks/wake` returns
-  401, and `HEAD /pm-channel/ingest` returns 405.
-- Ensure nginx dashboard upstreams use `127.0.0.1:<gateway_port>` and
-  block prefixed hook/channel paths such as `/<agent>/hooks` and
-  `/<agent>/pm-channel`; gateway ports should not listen on the LAN.
-- Keep the monitor bridge installed for hook outages or older hosts:
-  `/usr/local/sbin/pm-monitor-wake-agent` should call
-  `sudo -n -u <monitor-user> sudo -n /usr/local/sbin/openclaw-control wake-agent ...`,
-  and sudoers should allow the PM consumer user to execute that helper
-  without a password.
-
-This repo's `deploy/pm.env.example` carries the PM-host side, and
-`deploy/pm-consumer.service` carries the file-drop consumer side. The
-OpenClaw installer should create `/var/lib/pm/drop` and install/start
-the consumer service when the PM checkout is present.
-
-## Schema highlights
-
-`prisma/schema.prisma` is the source of truth. Key tables:
-
-- `User` / `RolePermission` / `PasswordResetToken` — auth and identity.
-  `User.kind` is `"human" | "agent"`; `User.isOwner` marks the Mission
-  Control owner; agent users link to `Agent` via `agentId`. Password tokens
-  serve both invitation activation and one-time owner-issued resets.
-- `Agent` — system-managed mirror of `/etc/openclaw/agents.json`. Carries
-  slug, role, `codeOwner`, `gatewayPort`, last-seen `rawJson`, and a
-  `deactivatedAt` tombstone.
-- `Project` / `ProjectMember` / `Epic` / `Task` / `Comment` / `SubTask` —
-  board data. `Epic.private` and `Task.private` default off and restrict human
-  browser/API visibility to the Mission Control owner. Trusted agent-runtime
-  access remains available so owner-assigned private work can execute. `SubTask`
-  (ENV-60/61) is a task's lightweight progress checklist
-  (`taskId` + `text` + `completedAt` + `minutesSpent` + `rank`); it replaced the
-  old self-referential `Task.parentTaskId` sub-task hierarchy (column kept
-  dormant). `minutesSpent` is optional self-reported effort, summed per task for
-  a rough cost view. `Task.blockedById` (ENV-62) is an optional self-FK to a
-  blocking task (cycle-guarded on write; `onDelete: SetNull`).
-  Status uses verbatim
-  labels (no Jira aliases); `Project.readmePath` points at
-  `/srv/Data/projects/<id>/README.md` on the host filesystem. `Project`
-  also carries settings columns (`repositoryPath`,
-  `defaultGitUserName`/`Email`, `defaultAssigneeId`, `defaultReviewerId`,
-  `doneTtlDays`, the deployment settings block, `deployReviewPrompt`,
-  `onlyReportersCanApprovePullRequests`, `agentChangeBlockedBranches`)
-  and its own soft-delete pair (`deletedAt` + `deletedById`, 30-day bin)
-  plus an `archivedAt` tombstone. `Epic` has **no assignee**: it carries
-  `actingManagerId`, `deployReviewerId`, `reporterId`, a `workers`
-  pool (`EpicWorker`), approval stamps, and `deploymentStatus` —
-  independent of any task's principals or status.
-- `Workspace` / `WorkspaceProject` — workspace grouping above projects,
-  with workspace-level git/deployment/doneTtl defaults that member
-  projects inherit.
-- `EpicWorker` / `ProjectManagerAssignableAgent` — the Epic's coding-agent
-  worker pool and the per-project allow-list restricting which agents an
-  acting manager may assign.
-- `DeploymentPullRequest` — one row per deployment PR
-  (provider/branch/status plus `deploymentExitCode`/`Stdout`/`Stderr`/
-  `ReportedAt` captured from the on-merge script).
-- `DescriptionDraft` — heartbeat-leased description drafts so an agent
-  write-back and a human editor don't clobber each other.
-- `SystemSettings` / `WebPushSubscription` — system-wide defaults and
-  browser push subscriptions.
-- `Attachment` (HOMELAB-47) — file metadata for task/epic uploads.
-  XOR(taskId, epicId) is enforced server-side. Content-addressed via
-  `sha256`, indexed for de-duped GC.
-- `AttachmentExtract` — cached text extraction for agent context,
-  keyed by `(sha256, extractorVersion)` so duplicate uploads reuse the
-  same bounded text excerpt.
-- `AgentSessionBinding` — PM-owned mapping from `(scopeType, scopeId,
-  agentSlug)` to an OpenClaw session key. Direct chat uses this stable
-  key for continuity; task/comment/Epic channel turns derive a
-  per-message key from it so each request starts with a clean channel
-  transcript while PM supplies the current turn guidance and live-context
-  grant URLs.
-- `Task.deletedAt` / `Epic.deletedAt` + `deletedById` (HOMELAB-48) —
-  soft-delete columns. `deletedAt != null` means in the bin; the value
-  is also the cascade-batch anchor and the 7-day purge anchor.
-- `AgentChatMessage` (HOMELAB-48) — chat thread per (taskId|epicId,
-  agentSlug). Carries `allowDescriptionEdit` and `editGrantUsedAt` for
-  the one-shot agent description write-back grant, plus
-  `allowWorkItemManagement` for human-triggered Discussion proposal
-  grants. Per-addressed-agent proposal grant consumption is tracked on
-  `PmChannelRun`. `originChannel` / `originCommentId` keep replies in
-  the user's original channel. The task Comments tab renders live
-  task-comment bubbles from `PmChannelRun` state only while the turn is
-  still active and relevant to the task's current workflow owner/status;
-  failed, completed, or orphaned workflow notifications are settled
-  instead of showing an endless live reply bubble.
-- `DirectAgentChatMessage` / `DirectAgentChatArchive` — sidebar direct
-  chat. Active messages carry `archiveId` (null while live) and
-  `baseArchiveId` (the frozen archive a continuation builds on). An
-  archive freezes a transcript with a `summary`, period, `messageCount`,
-  and an optional `parentArchiveId` linking continuation chains; archives
-  soft-delete via their own `deletedAt`. Gains `projectId` (attached
-  project), `allowWorkItemManagement` (per-message work-item grant), and
-  `workItemGrantUsedAt` (single-use stamp).
-- `WorkItemProposal` — agent work-item proposals (propose → approve). One
-  row per submitted change-set: `operations` (JSON), `validation`
-  (dry-run snapshot), `status` (`pending|applied|rejected`), `agentSlug` +
-  `proposedByUserId`, `appliedById` / `rejectedById`, and
-  `@unique(planId)` for idempotency.
-- `ActivityLog` — audit trail. `targetAgent` + `targetFile` keep
-  agent-control-surface rows independent of project/task lifecycles.
-- `PmEventDelivery` (HOMELAB-46 Slice 4) — consumer-side delivery log.
-  `@unique(dedupeKey)` drives the replay-test idempotency property.
-
-Migrations under `prisma/migrations/`:
-
-- `20260521081126_init` — Stage 1 baseline.
-- `20260521115507_homelab44_stage2_schema` — sub-tasks, project README
-  path, verbatim status labels.
-- `20260521194341_homelab44_acting_manager` — `Task.actingManagerId`.
-- `20260521233000_homelab52_profile_audit` — `ActivityLog.targetAgent` /
-  `targetFile` indexes for the profile-editor audit trail.
-- `20260522080000_homelab46_pm_event_delivery` — `PmEventDelivery`.
-- `20260522112410_homelab47_epics_attachments` — Epic assignee +
-  acting-manager, `Attachment` table.
-- `20260522121913_homelab48_bin_and_chat` — `Task.deletedAt` /
-  `Epic.deletedAt` (+ `deletedById`), `AgentChatMessage` table.
-- `20260523094600_direct_agent_chat` — `DirectAgentChatMessage` table.
-- `20260523095234_homelab_project_settings_and_task_extras` — `Project`
-  settings columns, soft-delete + `archivedAt`, `Task` extras.
-- `20260523111000_direct_agent_chat_archives` — `DirectAgentChatArchive`
-  + message `archiveId`.
-- `20260523123000_direct_agent_chat_child_archives` — `baseArchiveId` /
-  `parentArchiveId` for continuation chains.
-- `20260524103000_agent_chat_origin_channel` —
-  `AgentChatMessage.originChannel` / `originCommentId` so agent replies
-  return only to the channel where the user started the exchange.
-- `20260524124500_attachment_extracts` — `AttachmentExtract` cache for
-  PM-owned agent context packets.
-- `20260524133000_agent_session_bindings` — `AgentSessionBinding`
-  table for PM-owned OpenClaw session routing.
-- `20260525081816_agent_work_item_proposals` — `WorkItemProposal` table +
-  `DirectAgentChatMessage.projectId` / `allowWorkItemManagement` /
-  `workItemGrantUsedAt` for project-attached agent planning.
-- `20260526172000_discussion_work_item_grants` — Task/Epic Action Plan
-  messages and human-authored task-comment wakes can carry
-  human-triggered work-item proposal grants.
-- `20260526173500_pm_channel_run_work_item_grants` —
-  `PmChannelRun.workItemGrantUsedAt` tracks Discussion proposal grant
-  consumption per addressed agent.
-- `20260530180000_asdrubal_p0_kernel` — durable PM-channel jobs,
-  replayable stream events, scoped context grants, and per-run stream
-  sequence tracking.
-
-The list above stops at the 2026-05-30 kernel migration; roughly thirty
-newer migrations followed (workspaces `20260617092000_workspace_model_api`,
-the epic status rework `20260617213200_epic_status_in_progress_ready`,
-`20260617215500_epic_deploy_reviewer`, deployment PRs, description
-drafts, web push, protected agent branches, …). The directory listing in
-`prisma/migrations/` plus each migration's SQL is the authoritative
-record — this README no longer tracks them one-by-one.
-
-## Environment
-
-See `.env.example` for the full list. Highlights:
-
-- `DATABASE_URL` — `file:./pm.db` for dev; Prisma resolves it relative
-  to `prisma/schema.prisma`, landing the file at `prisma/pm.db`. Production
-  must use an absolute path outside the worktree, e.g.
-  `file:///srv/Data/pm/pm.db`; use `deploy/move-sqlite-db.sh` for the
-  controlled backup + `VACUUM INTO` relocation. Live worktree previews
-  override this with `/srv/Data/pm/wt-<branch>.db` through the active
-  systemd drop-in.
-- `AUTH_SECRET` — `openssl rand -base64 32`.
-- `AUTH_TRUST_HOST=true` — required behind nginx.
-- `APP_URL` — public URL, used for cookies + reset links.
-- `AGENT_INDEX_PATH` — host descriptor (default `/etc/openclaw/agents.json`).
-- `AGENT_CREDENTIALS_DIR` — per-agent seed-credential dir (mode 0600).
-- `AGENT_SYNC_INTERVAL_MIN` — periodic sync cadence (minutes).
-- `PM_DISPATCH_DRIVER`, `PM_DISPATCH_SOCKET`, `PM_DISPATCH_DROP_DIR` —
-  dispatch seam selection / endpoints (`lib/pm-dispatch/README.md`).
-- `PM_CONSUMER_SOCKET`, `PM_CONSUMER_DROP_DIR`,
-  `PM_CONSUMER_HTTP_PORT`, `PM_CONSUMER_HTTP_TOKEN`,
-  `PM_CONSUMER_HOOK_TOKEN_*` / `PM_CONSUMER_HOOK_TOKEN_FILE` —
-  consumer side (`lib/pm-consumer/README.md`).
-- `PM_ATTACHMENT_ROOT` — override the on-disk root for attachments.
-  Defaults to `/srv/Data/projects` in production and
-  `<cwd>/.data/attachments` otherwise.
-- `PM_ATTACHMENT_MAX_BYTES` — per-file size cap, default 25 MiB.
-- `PM_AGENT_CONTEXT_ATTACHMENT_TEXT_MAX_BYTES` — max bytes read from a
-  text-like attachment for inline agent context, default 96 KiB.
-- `PM_BIN_TTL_DAYS` — Task/Epic soft-delete retention, default 7.
-- `PM_PROJECT_BIN_TTL_DAYS` — project soft-delete retention, default 30.
-- `PM_BIN_PURGE_INTERVAL_MIN` — purge job cadence, default 60 (drives
-  both the Task/Epic and project purge jobs).
-- `PM_OPENCLAW_CHANNEL_TOKEN` / `PM_OPENCLAW_CHANNEL_TOKEN_FILE` — shared
-  fallback + per-agent JSON map of native `pm` channel Bearer tokens
-  (the file wins per slug).
-- `PM_OPENCLAW_CHANNEL_INGRESS_PATH` — gateway ingest path, default
-  `/pm-channel/ingest`.
-- `PM_OPENCLAW_CHANNEL_TIMEOUT_MS` — ingest post timeout, default 5000.
-- `PM_CHANNEL_BUS_SOCKET`, `PM_CHANNEL_BUS_DROP_DIR`,
-  `PM_CHANNEL_BUS_HTTP_URL` — bus-first native PM-channel dispatch.
-  Production/file-drop previews set `PM_CHANNEL_BUS_DROP_DIR` to the same
-  directory as `PM_CONSUMER_DROP_DIR` (default `/var/lib/pm/drop`) so
-  `pm-consumer` can deliver `openclaw.pm_channel_turn` envelopes to each
-  agent's `/pm-channel/ingest` endpoint. At least one bus setting is
-  required when async native PM-channel dispatch is enabled.
-- `PM_INTERNAL_APP_URL` / `PM_AGENT_CALLBACK_URL` — loopback base PM
-  hands to OpenClaw for the reply + stream callbacks, default
-  `http://127.0.0.1:3000`. PM records send→accepted→first-token→final
-  spans in `PmChannelRun` timestamps and surfaces them on the Agents and
-  System Activity views alongside SQLite page/freelist/journal/locking
-  health.
-- `PM_ASYNC_DISPATCH`, `PM_ASYNC_DISPATCH_INLINE_NUDGE`,
-  `PM_CHANNEL_JOB_MAX_ATTEMPTS`, `PM_CHANNEL_WORKER_POLL_MS` — enable
-  and tune the durable native PM-channel queue/worker. Async dispatch
-  relies on the in-process poll loop or an external `pm-channel-worker`
-  process to retry jobs after backoff.
-- `PM_CONTEXT_GRANTS_REQUIRED`, `PM_CONTEXT_GRANT_TTL_MS`,
-  `PM_CONTEXT_GRANT_MAX_USES`, `PM_CONTEXT_GRANT_MAX_BYTES` — control
-  scoped live-context grant enforcement and limits.
-- `PM_DIRECT_CHAT_CONTEXT_MESSAGES`,
-  `PM_DIRECT_CHAT_ARCHIVE_CONTEXT_MESSAGES`,
-  `PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT` — bounds on the direct-chat
-  context packet (recent transcript + archive excerpt + chain depth).
-- `PM_DIRECT_CHAT_ALWAYS_INCLUDE_FILES_CONTEXT=1` — opt back into
-  unconditional direct-chat attachment/file context. By default PM only
-  reads text-like attachment files into the prompt when the current turn
-  uploaded files or asks for file/attachment context.
-- `PM_OPENCLAW_FIRST_STREAM_WARNING_MS` — accepted-to-first-stream
-  latency warning threshold, default `15000`; slow runs create
-  `pm.channel.latency_warning` activity rows with run/message metadata.
-
-## Deployment
-
-Manual bootstrap on the configured Mission Control host; the full playbook lives in
-[deploy/README.md](./deploy/README.md). After Stage 1:
-
-- Schema changes — generate with `pnpm prisma migrate dev --name <change>`
-  locally, commit the new migration dir, roll forward on the host with
-  `pnpm prisma migrate deploy`. Never `db push` against the production DB.
-- The PM webapp and the `pm-consumer` process restart independently —
-  Slice 4 does not require rebuilding Next when only the consumer changes.
-
-## Background / spikes
-
-- `docs/spikes/HOMELAB-45-transports/` — transport selection memo and
-  bench harness that picked AF_UNIX as primary with the file-drop
-  fallback used here.
-- `docs/agent-interaction.md` — agent-facing PM interaction contract,
-  including task chat/comment callbacks and future write actions.
-
-## Known follow-ups
-
-- Email send for `password_reset_tokens` (schema exists; sender deferred
-  to v1.1 polish).
-- Permission enforcement on top of the `RolePermission` stub.
-- A PM-visible task key separate from `task.id` (HOMELAB-46 commentId
-  12265 — current dispatch envelopes assert `task.key === task.id`,
-  which the Slice 3 integration smoke pins).
-- OpenClaw-side AF_UNIX listener for `PM_DISPATCH_SOCKET` remains an
-  optional transport optimization. Live agent wake on the single-host
-  install depends on the file-drop/socket consumer plus each agent's
-  local `/hooks/wake` endpoint.
-
-## Review notes (2026-05-22)
-
-Snapshot read of the codebase from a passing reviewer. Opinions, not
-directives — keep, push back on, or delete as fits. Items the HOMELAB-47
-slice already addressed (poor task editor layout, agents missing from
-pickers, no attachments, tasks coupled to epic state, missing dates) are
-deliberately not repeated below.
-
-**What's working well**
-
-- Seam discipline at the dispatch boundary. `notifyDispatch` returns a
-  `DispatchResult` instead of throwing, rule enforcement strictly
-  precedes dispatch, and `http-localhost` is deliberately not
-  env-selectable so it can't be misconfigured into production. These
-  are decisions that don't show up in first-draft code.
-- Migration hygiene. Committed migrations, `db push` explicitly banned
-  in prod, the deploy README walks the steps.
-- `PmEventDelivery` design — `UNIQUE(dedupeKey)` for idempotency,
-  audit rows living separately on `ActivityLog` so the delivery log can
-  be truncated without losing history.
-- Schema comments explain *why* (the `codeOwner` constraint, the
-  `readmePath` decision, "no parallel SubTask"), not just *what*.
-- Obvious-but-wrong abstractions resisted: verbatim status labels
-  (no Jira aliases), self-referential `Task` instead of a separate
-  `SubTask`, `lib/workflow.ts` separated from persistence.
-- The HOMELAB-45 spike kept around with a memo + bench, defending a
-  current architectural choice.
-
-**Things worth pushing on**
-
-- The single-host assumption is load-bearing in many places at once:
-  in-process rate limit, `setInterval`-driven periodic sync,
-  file-drop directory, credential dir, host-local Atlas snapshot fetch.
-  Going multi-host is a refactor, not a switch flip — surface area is
-  larger than it looks.
-- `/agents` does an uncached `fetch` to `127.0.0.1:3013/agents/snapshot`
-  with no timeout and silently swallows errors. If Atlas hangs, the
-  dashboard hangs. A short timeout + "snapshot unavailable" banner
-  costs ~10 lines and removes a class of incident.
-- `task.key === task.id` pinned by integration assertion is a
-  known-wrong invariant kept honest by tests. Every additional consumer
-  that relies on the conflation widens the eventual migration.
-- Three dispatch drivers + a disabled state for a single-host system is
-  a lot of optionality. Defensible (primary + fallback + test driver),
-  but worth watching whether file-drop ever actually gets used in anger
-  or quietly bit-rots.
-- Tests are smoke scripts under `scripts/`, not a test runner. Fine for
-  a solo skeleton, but the most consequence-laden file in the repo
-  (`lib/workflow.ts`) runs on faith between manual smokes.
-- `User.mustRotatePassword` is retained only for backwards-compatible database
-  reads; it defaults to `false` and is not enforced.
-- `Task.rank` is a plain `Int` with a "simple Int for v1" comment. The
-  rebalance day will come; the comment is honest about it.
-- `ActivityLog` is accumulating denormalized audit fields (`targetAgent`,
-  `targetFile`) plus its own index set. Works today, but the indexing
-  surface keeps growing — at some point this is two tables, not one.
-
-**Net read**
-
-Well-architected for what it is: a deliberately single-host,
-single-developer system with sharp seams against the things that *do*
-leave the box (dispatch boundary, migration story, audit trail). Risk
-is concentrated in the single-host assumptions and the absence of a
-real test runner, not in the design.
+| [PM.md](./PM.md) | Detailed current PM workflow and lifecycle reference |
+| [docs/agent-pm-api.md](./docs/agent-pm-api.md) | Agent live-context read API |
+| [docs/agent-interaction.md](./docs/agent-interaction.md) | PM-channel replies, grants, proposals, drafts, and workflow actions |
+| [deploy/README.md](./deploy/README.md) | Host installation, services, switchers, verifier, and recovery |
+| [deploy/MULTI_AGENT_WORKTREES.md](./deploy/MULTI_AGENT_WORKTREES.md) | Worktree and live-preview design |
+| [lib/pm-dispatch/README.md](./lib/pm-dispatch/README.md) | Legacy/non-chat PM event emitter |
+| [lib/pm-consumer/README.md](./lib/pm-consumer/README.md) | Event consumer, delivery dedupe, and gateway wake behavior |
+| [../openclaw/WORKFLOW.md](../openclaw/WORKFLOW.md) | Fleet-wide operating rules copied into agent workspaces |
+| [../openclaw/guides/MISSION_CONTROL.md](../openclaw/guides/MISSION_CONTROL.md) | Concise agent-facing UI map |
+
+When documentation and code disagree, verify the current implementation before
+acting, then reconcile the authoritative workflow documents in the same change.

@@ -23,8 +23,11 @@ the entry-point overview.
   `openclaw-gmail-listener`, `openclaw-webhook-receiver`,
   `openclaw-mail-listener`). Per-agent `services` in `agents.json` adds extras.
 - **Per-agent gateway memory** from systemd's `MemoryCurrent` cgroup
-  accounting. `gateway_memory_check` defaults to a warning at 3072 MiB and a
-  critical issue at 3840 MiB, before the observed V8 out-of-memory range.
+  accounting. Unless `/etc/ai-monitor/config.json` explicitly overrides
+  `warn_mib` / `critical_mib`, `gateway_memory_check` follows each unit's
+  `MemoryHigh` and `MemoryMax` settings. Under thinkpad's current policy that
+  means a warning at 8 GiB and a critical issue at 10 GiB; 8/10 GiB are also
+  the fallback values if systemd does not expose the unit limits.
   `memory.current` and main-process RSS are bounded fallbacks when systemd
   cannot return the property. An active gateway with no usable accounting
   raises `gateway-memory-unavailable` instead of silently leaving a blind
@@ -122,16 +125,19 @@ the entry-point overview.
   state before each wake so CLI system events cannot wedge the next turn.
 - **Mission Control / PM workflow drift**. `probe_pm_workflow` opens the PM
   SQLite database read-only and checks Mission Control rules without
-  mutating rows. It alerts/wakes for missing Backlog implementation
-  plans, `To Do` tasks not moved to `In Progress`, stale `In Progress`
+  mutating rows. Backlog tasks are a hard suppression boundary: the monitor
+  emits no workflow, channel, orphan-bubble, human, or resolved alert for
+  them. It alerts/wakes for `To Do` tasks missing an Action Plan or awaiting
+  approval, `To Do` tasks not moved to `In Progress`, stale `In Progress`
   tasks, `Review` tasks waiting on the resolved reviewer, review feedback
   waiting on the assignee, and tasks blocked by a non-actionable Epic
-  (status `Backlog` or `Done` — `pm-epic-not-open`, targeted at the
-  Epic's acting manager). It also reports stale active workflow live-bubble turns whose
+  (status `Backlog` or `Done` — `pm-epic-not-open`). Closed-Epic drift is
+  collapsed to one incident per Epic and targeted at the human reporter or
+  owner; historical retired Epic statuses are ignored instead of fanning out
+  child-task alerts. It also reports stale active workflow live-bubble turns whose
   original PM notification no longer matches the task's current
   owner/status. Defaults are intentionally short because Mission Control is
-  the source of truth and the first wake already happened: Backlog plan
-  missing after 2 min, `To Do` not started after 2 min, `In Progress` stale
+  the source of truth and the first wake already happened: `To Do` not started after 2 min, `In Progress` stale
   after 5 min, and Review waiting after 10 min. `In Progress` means active
   implementation; waiting for reviewer/manager/reporter feedback belongs in
   `Review` with one concise assignee note. For `In Progress` tasks, the
@@ -144,9 +150,9 @@ the entry-point overview.
   recovery attempt. Telegram is sent only on the next tick if the same issue
   is still present after T3's confirmation window. Wake reminders include
   task id, project, status, Epic status, and the required next PM action.
-  PM workflow drift — including `pm-epic-not-open` — is retryable after
-  Telegram via `pm_workflow.retry_after_tier3_seconds` instead of being
-  permanently suppressed while the task remains stale. A PM-channel nudge
+  Agent-targeted PM workflow drift is retryable after Telegram via
+  `pm_workflow.retry_after_tier3_seconds` instead of being permanently
+  suppressed while the task remains stale. A PM-channel nudge
   run counts as confirmed only when the run is alive — status `streaming`
   or `complete`, or freshly `accepted`; a `failed` run never counts as
   recovery. The stalled-turn scan also covers runs that ended badly: a
@@ -157,10 +163,10 @@ the entry-point overview.
   the same terminal row; failures older than
   `pm_workflow.failed_run_max_age_hours` (default 48) never alert, and
   `retryable` runs (mid retry-backoff) are suppressed until twice the
-  channel-stall warn threshold. When a resolved
-  nudge target is a human rather than an active agent, the recovery
-  ladder and service restarts are skipped — the human gets a single
-  Telegram/board notification instead.
+  channel-stall warn threshold. When a resolved nudge target is a human
+  rather than an active agent, the recovery ladder and service restarts are
+  skipped — the human gets a single Telegram/board notification, deduplicated
+  until the underlying PM state changes.
 
 ## Registry-driven
 

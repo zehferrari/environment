@@ -29,6 +29,7 @@ import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { MAX_SUBTASK_TEXT } from "@/lib/tasks/subtasks";
 import { validateBlockedBy } from "@/lib/tasks/blocking";
+import { isActionableEpicStatus } from "@/lib/tasks/workflow-actors";
 
 type RawOp = Record<string, unknown>;
 
@@ -662,7 +663,7 @@ export async function commitProposal(
             const assignmentChanged = asg !== undefined && asg !== task.assigneeId;
             const statusChanged = finalStatus !== task.status;
             const reviewerId = finalActingManagerId
-              ?? (task.epic?.status === "In Progress" ? task.epic.actingManagerId : null)
+              ?? (isActionableEpicStatus(task.epic?.status) ? task.epic?.actingManagerId : null)
               ?? task.reporterId;
 
             if (finalAssigneeId && (assignmentChanged || statusChanged)) {

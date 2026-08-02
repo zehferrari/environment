@@ -53,26 +53,36 @@ class GatewayMemoryProbeTest(unittest.TestCase):
     def setUp(self):
         self.monitor = load_monitor_module()
 
-    def probe(self, current_bytes):
+    def probe(
+        self,
+        current_bytes,
+        memory_high=8 * GIB,
+        memory_max=10 * GIB,
+        config=None,
+    ):
         output = (
             "ActiveState=active\n"
             f"MemoryCurrent={current_bytes}\n"
             f"MemoryPeak={current_bytes + 1024}\n"
+            f"MemoryHigh={memory_high}\n"
+            f"MemoryMax={memory_max}\n"
             "ControlGroup=/user.slice/test\n"
             "MainPID=42\n"
         )
         with mock.patch.object(
             self.monitor, "run_cmd", return_value=(0, output, "")
         ) as run:
-            result = self.monitor.probe_gateway_memory({}, registry())
+            result = self.monitor.probe_gateway_memory(config or {}, registry())
         self.assertEqual(run.call_count, 1)
         return result
 
-    def test_three_gib_is_an_early_warning(self):
-        result = self.probe(3 * GIB)
+    def test_thresholds_follow_gateway_memory_policy(self):
+        result = self.probe(8 * GIB)
         state = result["agents"]["karen"]
         self.assertEqual(state["state"], "warn")
         self.assertEqual(state["source"], "systemd")
+        self.assertEqual(state["warn_bytes"], 8 * GIB)
+        self.assertEqual(state["critical_bytes"], 10 * GIB)
 
         issues = self.monitor.deterministic_issues({
             "gateway_memory": result,
@@ -82,10 +92,10 @@ class GatewayMemoryProbeTest(unittest.TestCase):
         })
         issue = next(i for i in issues if i["kind"] == "gateway-memory-high")
         self.assertEqual(issue["severity"], "warn")
-        self.assertIn("3.00 GiB", issue["reason"])
+        self.assertIn("8.00 GiB", issue["reason"])
 
-    def test_critical_threshold_precedes_observed_v8_oom_range(self):
-        result = self.probe(4 * GIB)
+    def test_ten_gib_is_critical_for_current_host_policy(self):
+        result = self.probe(10 * GIB)
         self.assertEqual(result["agents"]["karen"]["state"], "critical")
 
         issues = self.monitor.deterministic_issues({
@@ -96,12 +106,45 @@ class GatewayMemoryProbeTest(unittest.TestCase):
         })
         issue = next(i for i in issues if i["kind"] == "gateway-memory-high")
         self.assertEqual(issue["severity"], "crit")
+        self.assertIn("10.00 GiB", issue["reason"])
+
+    def test_memory_below_high_water_mark_is_ok(self):
+        result = self.probe(7 * GIB)
+        self.assertEqual(result["agents"]["karen"]["state"], "ok")
+
+    def test_thresholds_adapt_to_a_different_gateway_policy(self):
+        result = self.probe(
+            6 * GIB,
+            memory_high=5 * GIB,
+            memory_max=6 * GIB,
+        )
+        state = result["agents"]["karen"]
+        self.assertEqual(state["state"], "critical")
+        self.assertEqual(state["warn_bytes"], 5 * GIB)
+        self.assertEqual(state["critical_bytes"], 6 * GIB)
+
+    def test_explicit_config_overrides_gateway_policy(self):
+        result = self.probe(
+            4 * GIB,
+            config={
+                "gateway_memory_check": {
+                    "warn_mib": 3072,
+                    "critical_mib": 4096,
+                }
+            },
+        )
+        state = result["agents"]["karen"]
+        self.assertEqual(state["state"], "critical")
+        self.assertEqual(state["warn_bytes"], 3 * GIB)
+        self.assertEqual(state["critical_bytes"], 4 * GIB)
 
     def test_active_gateway_without_accounting_is_reported(self):
         output = (
             "ActiveState=active\n"
             "MemoryCurrent=[not set]\n"
             "MemoryPeak=[not set]\n"
+            "MemoryHigh=8589934592\n"
+            "MemoryMax=10737418240\n"
             "ControlGroup=\n"
             "MainPID=0\n"
         )

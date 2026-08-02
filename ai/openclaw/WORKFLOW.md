@@ -241,8 +241,9 @@ approver chain, in order:
 1. **Task reviewer** — the first approver. If the task has a reviewer set,
    they review and approve the plan.
 2. **Epic acting manager** — if the reviewer is empty, the acting manager
-   of the task's parent Epic approves while that Epic is In Progress.
-3. **Task reporter** — if there is no reviewer and no In Progress parent
+   of the task's parent Epic approves while that Epic is To Do or In Progress.
+   This includes the first child plan approved before implementation starts.
+3. **Task reporter** — if there is no reviewer and no actionable parent
    Epic acting manager, the reporter approves.
 
 If a task has a reviewer but **no assignee**, the reviewer picks the
@@ -383,8 +384,8 @@ match a known username exactly, including case. When an owner-authored task
 comment mentions an active agent, PM mirrors that comment into the agent's PM
 channel turn so the agent can answer back in the original task-comment thread.
 It can also target the assigned active agent, the task reviewer, the acting
-manager of an In Progress parent Epic, and explicit mentions, with duplicates
-removed. If no reviewer or In Progress parent Epic manager exists, the task
+manager of a To Do or In Progress parent Epic, and explicit mentions, with duplicates
+removed. If no reviewer or actionable parent Epic manager exists, the task
 reporter is the review fallback. Non-owner mentions are never an action grant.
 
 Task and Epic descriptions support full markdown preview, but they do
@@ -589,7 +590,7 @@ per 5 minutes.
   actionable (`To Do`/`In Progress`), assigns nobody, and the Action
   Plan approval gate still applies before the task can be started.
 - Review owner resolution is: task Reviewer / acting manager, then the
-  acting manager of an In Progress parent Epic, then the task reporter.
+  acting manager of a To Do or In Progress parent Epic, then the task reporter.
 - Tasks under an Epic are actionable only while that Epic status is
   `To Do` or `In Progress`.
 - If a PM event says "assigned to me" but the actor is yourself, treat it
@@ -777,13 +778,14 @@ action. It must read the same PM SQLite database as the active worktree.
 On each host that database is the active PM worktree `DATABASE_URL`, for
 example `file:/srv/Data/pm/wt-<branch>.db`.
 
-The PM workflow probe detects: assigned `Backlog` tasks missing a
-plan/opinion comment; assigned `To Do` tasks not moved to `In Progress`;
-stale `In Progress` tasks; `Review` tasks waiting on the reviewer; review
+The PM workflow probe never alerts for a Task whose status is `Backlog`.
+This suppresses planning reminders, PM-channel drift, and later resolution
+messages for Backlog tasks. It detects assigned `To Do` tasks missing a plan,
+awaiting plan approval, or not moved to `In Progress`; stale `In Progress` tasks; `Review` tasks waiting on the reviewer; review
 feedback waiting on the assignee; reviewer/manager/reporter responses
 waiting on the assignee while the task is in `Review`; tasks under a
-non-actionable Epic (`Backlog`/`Done`), flagged to the Epic's acting
-manager (`pm-epic-not-open`); active PM-channel turns that never started
+non-actionable Epic (`Backlog`/`Done`), collapsed to one human-owned
+incident per Epic (`pm-epic-not-open`); active PM-channel turns that never started
 or stopped producing output.
 
 For `In Progress`, the stale timer uses the assignee's latest task comment
@@ -804,14 +806,14 @@ T4 = Telegram only if the issue is still present after T3's confirmation window
 
 `monitor_triage.escalation_ladder.max_attempts` controls the recovery
 attempt count, and `pm_workflow.retry_after_tier3_seconds` controls when
-PM workflow drift starts a new recovery cycle after a Telegram. A nudge or
+agent-targeted PM workflow drift starts a new recovery cycle after a Telegram. A nudge or
 Telegram does not resolve a PM workflow issue; only the PM probe no longer
 emitting that issue resolves it. A PM-channel nudge run counts as
 confirmed only when the run is alive — status `streaming`/`complete`, or
-freshly `accepted` — a `failed` run never confirms recovery. When a
-resolved nudge target is a human rather than an active agent, the
-recovery ladder and service restarts are skipped; the human gets a
-single notification instead.
+freshly `accepted` — a `failed` run never confirms recovery. When a resolved
+nudge target is a human rather than an active agent, the recovery ladder and
+service restarts are skipped; the human gets one notification, deduplicated
+until the underlying PM state changes.
 
 Live monitor ticks must be single-instance locked. `--dry-run` and
 `--probe-only` must not write monitor state, otherwise debugging can
@@ -823,7 +825,7 @@ accidentally suppress recovery or duplicate nudges.
 - Copy the repo template `ai/openclaw/config/ai-monitor.config.json.example`
   to `/etc/ai-monitor/config.json` and fill host-specific values.
 - Ensure `monitor_triage.auto_action_kinds_bypass_monitor` includes PM
-  workflow kinds: `pm-backlog-plan-missing`, `pm-todo-not-started`,
+  workflow kinds: `pm-action-plan-missing`, `pm-action-plan-awaiting-approval`, `pm-todo-not-started`,
   `pm-in-progress-stale`, `pm-review-feedback-awaiting-assignee`,
   `pm-review-awaiting-reviewer`, `pm-epic-not-open`,
   `pm-channel-no-start`, and `pm-channel-stalled`.

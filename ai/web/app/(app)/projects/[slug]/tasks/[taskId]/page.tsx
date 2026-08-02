@@ -44,6 +44,7 @@ import { validateBlockedBy } from "@/lib/tasks/blocking";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import {
   canApproveActionPlanForActor,
+  isActionableEpicStatus,
   resolveReviewOwnerId,
 } from "@/lib/tasks/workflow-actors";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
@@ -1171,7 +1172,7 @@ function workflowOwnerSlugs(task: WorkflowBubbleTask) {
   if (task.status === "Review") {
     add(
       workflowActorSlug(task.actingManager)
-        ?? (task.epic?.status === "In Progress" ? workflowActorSlug(task.epic?.actingManager) : null)
+        ?? (isActionableEpicStatus(task.epic?.status) ? workflowActorSlug(task.epic?.actingManager) : null)
         ?? workflowActorSlug(task.reporter),
     );
   }

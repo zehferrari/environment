@@ -119,6 +119,9 @@ hook_token_for_agent() {
 
 # 1. bin scripts
 log "[1/7] bin scripts"
+# ai-monitor is executed by a root system service. Keep a root-owned deployed
+# copy instead of symlinking into the group-writable worktree; install.sh is
+# the explicit promotion boundary for repository changes.
 do_install 755 "$REPO_ROOT/bin/ai-monitor"                /usr/local/bin/ai-monitor
 do_install 755 "$REPO_ROOT/bin/openclaw-registry-check"   /usr/local/bin/openclaw-registry-check
 do_install 755 "$REPO_ROOT/bin/openclaw-integrity-check"  /usr/local/bin/openclaw-integrity-check

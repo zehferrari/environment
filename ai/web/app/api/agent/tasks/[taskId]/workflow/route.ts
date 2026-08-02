@@ -819,9 +819,9 @@ export async function POST(
   }
 
   if (action === "triage_to_todo") {
-    if (!isReviewer) return NextResponse.json({ error: "Only the reviewer, In Progress Epic manager, or reporter fallback can move Backlog to To Do" }, { status: 403 });
+    if (!isReviewer) return NextResponse.json({ error: "Only the reviewer, actionable Epic manager, or reporter fallback can move Backlog to To Do" }, { status: 403 });
     if (task.status !== "Backlog") return NextResponse.json({ error: "Task must be in Backlog before triage to To Do" }, { status: 409 });
-    if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be In Progress before task work becomes actionable" }, { status: 409 });
+    if (!epicAllowsAgentAction(task)) return NextResponse.json({ error: "Epic must be To Do or In Progress before task work becomes actionable" }, { status: 409 });
 
     await moveTaskStatus({
       taskId: task.id,

@@ -43,6 +43,7 @@ import EpicTasksAiPrompt from "./epic-tasks-ai-prompt";
 import EpicTasksClient from "./epic-tasks-client";
 import { sendAgentChatMessage } from "@/lib/agents/chat/actions";
 import { buildEpicActionPlanApprovalUpdate } from "@/lib/epics/action-plan-approval";
+import { epicStatusRevision } from "@/lib/epics/status-concurrency";
 import { promoteEpicBacklogTasks } from "@/lib/epics/assignment";
 import { refillEpicQueue } from "@/lib/epics/queue";
 import { effectiveCommitPrefix, effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
@@ -1100,6 +1101,12 @@ export default async function EpicDetailPage({
           <form id="epicMain" action={updateEpic} />
           <input form="epicMain" type="hidden" name="epicId" value={epic.id} />
           <input form="epicMain" type="hidden" name="projectSlug" value={slug} />
+          <input
+            form="epicMain"
+            type="hidden"
+            name="statusRevision"
+            value={epicStatusRevision(epic.statusChangedAt)}
+          />
 
           {/* Tabbed content */}
           <TabsProvider defaultTab={selectedTab}>
@@ -1135,6 +1142,7 @@ export default async function EpicDetailPage({
                           Status
                         </span>
                         <select
+                          key={`${epic.status}:${epicStatusRevision(epic.statusChangedAt)}`}
                           form="epicMain"
                           name="status"
                           defaultValue={epic.status}
@@ -1464,6 +1472,7 @@ export default async function EpicDetailPage({
               reorderEpicTasks={reorderEpicTasks}
               epicId={epic.id}
               showTaskRoles={viewer.isOwner}
+              roleOptions={viewer.isOwner ? principalOptions : []}
             />
           )}
 

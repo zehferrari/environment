@@ -1,6 +1,26 @@
 export const MAX_DIRECT_CHAT_PROJECTS = 8;
 export const MAX_DIRECT_CHAT_PROJECT_CONTEXT_CHARS = 320_000;
 
+/**
+ * Keep project context read-only unless the human explicitly asks to mutate
+ * PM work items. Normalize whitespace so ordinary multiline requests behave
+ * like one sentence, and accept the plural nouns people naturally use when
+ * asking for more than one task, Epic, or proposal.
+ */
+export function directlyRequestsWorkItemManagement(body: string) {
+  const text = body.toLowerCase().replace(/\s+/g, " ");
+  const workItemNoun = "(?:work[- ]?items?|tasks?|sub[- ]?tasks?|epics?|action plans?|proposals?|boards?|backlogs?)";
+  const managementVerb = "(?:create|add|make|update|edit|change|reorganize|re-organize|move|assign|comment|archive|delete|split|break down|breakdown|propose|submit)";
+  const openWorkItem = new RegExp(
+    `\\bopen\\b\\s+(?:(?:a|an|another|new|one|two|three|four|five|six|seven|eight|nine|ten|some|\\d+)\\s+)\\b${workItemNoun}\\b`,
+  );
+  return (
+    new RegExp(`\\b${managementVerb}\\b.{0,80}\\b${workItemNoun}\\b`).test(text) ||
+    new RegExp(`\\b${workItemNoun}\\b.{0,80}\\b${managementVerb}\\b`).test(text) ||
+    openWorkItem.test(text)
+  );
+}
+
 export function normalizeDirectChatProjectIds(values: unknown[]) {
   const projectIds = Array.from(new Set(
     values.map((value) => String(value).trim()).filter(Boolean),

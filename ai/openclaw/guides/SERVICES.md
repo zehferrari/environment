@@ -5,7 +5,7 @@ Use `/etc/openclaw/agents.json` for the machine-readable monitoring roster.
 ## System Timers
 
 - `openclaw-integrity.timer`: runs `/usr/local/bin/openclaw-integrity-check` every 2 minutes.
-- `ai-monitor.timer`: runs `/usr/local/bin/ai-monitor` two minutes after the previous tick completes. Checks service health, per-agent gateway cgroup memory (warn 3 GiB / critical 3.75 GiB by default), affirmative evidence of an unsafe prior shutdown, Jira stalls/queues, pending mentions, and Gmail-derived `~/tasks/current.md` items still marked `Status: QUEUED`. Completion-based scheduling prevents a slow bounded monitor-agent handoff from causing overlapping or immediately repeated runs.
+- `ai-monitor.timer`: runs `/usr/local/bin/ai-monitor` two minutes after the previous tick completes. Checks service health, per-agent gateway cgroup memory (thresholds follow each unit's `MemoryHigh` / `MemoryMax`; 8 GiB warning / 10 GiB critical under thinkpad's current policy), affirmative evidence of an unsafe prior shutdown, Jira stalls/queues, pending mentions, and Gmail-derived `~/tasks/current.md` items still marked `Status: QUEUED`. Completion-based scheduling prevents a slow bounded monitor-agent handoff from causing overlapping or immediately repeated runs.
 - `openclaw-backup.timer`: runs `/usr/local/bin/openclaw-backup` daily at 04:20 with up to 20 minutes randomized delay for small critical OpenClaw state.
 - `zypper-dup.timer`: runs weekly Tumbleweed updates.
 
