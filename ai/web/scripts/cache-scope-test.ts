@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import {
+  TASK_SHELL_CACHE_REVALIDATE_SECONDS,
   tagsForTaskReplyScope,
   revalidateTaskReplyScope,
   revalidateTaskAttachments,
   revalidateTaskShell,
+  revalidateTaskShellIfAvailable,
   selectLatestRepoVerifyActivity,
   sortByCreatedAtAsc,
   taskCacheTag,
@@ -16,6 +18,12 @@ import {
 
 const taskId = "task-123";
 const epicId = "epic-123";
+
+assert.equal(
+  TASK_SHELL_CACHE_REVALIDATE_SECONDS,
+  15,
+  "task shell cache must converge after out-of-process runner mutations",
+);
 
 const chatTags = tagsForTaskReplyScope(taskId, "chat");
 assert.deepEqual(chatTags, [
@@ -58,6 +66,21 @@ assert.deepEqual(
   shellRevalidated,
   [taskCacheTag.shell(taskId), taskCacheTag.activity(taskId)],
   "task shell mutations revalidate shell + activity",
+);
+
+assert.equal(
+  revalidateTaskShellIfAvailable(taskId, () => {
+    throw new Error(`Invariant: static generation store missing in revalidateTag ${taskCacheTag.shell(taskId)}`);
+  }),
+  false,
+  "standalone runners ignore only Next's missing cache-context invariant",
+);
+assert.throws(
+  () => revalidateTaskShellIfAvailable(taskId, () => {
+    throw new Error("cache backend unavailable");
+  }),
+  /cache backend unavailable/,
+  "unexpected cache invalidation errors still surface",
 );
 for (const off of [
   taskCacheTag.chat(taskId),

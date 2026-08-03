@@ -10,6 +10,7 @@ import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notification
 import {
   inspectOriginBranch,
   mergeTaskBranchIntoEpic,
+  publishTaskCheckpointToEpic,
   publishEpicBranch,
   removeMergedOriginChildBranch,
 } from "@/lib/deploy/epic-merge-git";
@@ -22,6 +23,13 @@ import {
   updateTaskRepositoryState,
 } from "@/lib/tasks/repository-state";
 import { isOperationalRepositoryFailure } from "@/lib/tasks/repository-validation";
+import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
+import { resolveEffectiveProjectSettings } from "@/lib/settings/effective";
+import { isProtectedBranch } from "@/lib/projects/protected-branches";
+import {
+  activityPayloadUsesCheckpointAuthorization,
+  validateCheckpointAuthorizationText,
+} from "@/lib/deploy/checkpoint-authorization";
 
 // Auto-merge a Done Epic-child task's branch into the Epic integration branch.
 //
@@ -75,6 +83,17 @@ export type EpicMergeJob =
       requestedByUsername: string;
       attempt?: number;
       enqueuedAt: string;
+    }
+  | {
+      kind: "checkpoint";
+      jobId: string;
+      taskId: string;
+      projectId: string;
+      requestedByUserId: string;
+      requestedByUsername: string;
+      authorizationCommentId: string;
+      note: string;
+      enqueuedAt: string;
     };
 
 // One deterministic spool filename per subject so a 60s poll tick can never
@@ -83,6 +102,7 @@ export type EpicMergeJob =
 function jobFileName(job: EpicMergeJob) {
   if (job.kind === "merge") return `merge-${job.taskId}.json`;
   if (job.kind === "finalize") return `finalize-${job.taskId}.json`;
+  if (job.kind === "checkpoint") return `checkpoint-${job.taskId}.json`;
   return `cleanup-${job.epicId}.json`;
 }
 
@@ -120,6 +140,31 @@ export async function enqueueTaskReviewFinalization(args: {
     projectId: args.projectId,
     requestedByUserId: args.requestedByUserId,
     requestedByUsername: args.requestedByUsername,
+    enqueuedAt: new Date().toISOString(),
+  };
+  const target = path.join(EPIC_MERGE_DIR, jobFileName(job));
+  const blockedByFailedJob = existsSync(`${target}.failed`);
+  const spooledPath = await enqueueEpicMergeJob(job);
+  return { enqueued: Boolean(spooledPath), blockedByFailedJob, jobId: job.jobId };
+}
+
+export async function enqueueTaskCheckpoint(args: {
+  taskId: string;
+  projectId: string;
+  requestedByUserId: string;
+  requestedByUsername: string;
+  authorizationCommentId: string;
+  note: string;
+}) {
+  const job: Extract<EpicMergeJob, { kind: "checkpoint" }> = {
+    kind: "checkpoint",
+    jobId: `checkpoint-${args.taskId}`,
+    taskId: args.taskId,
+    projectId: args.projectId,
+    requestedByUserId: args.requestedByUserId,
+    requestedByUsername: args.requestedByUsername,
+    authorizationCommentId: args.authorizationCommentId,
+    note: args.note,
     enqueuedAt: new Date().toISOString(),
   };
   const target = path.join(EPIC_MERGE_DIR, jobFileName(job));
@@ -347,6 +392,10 @@ export async function pollEpicTaskMerges(): Promise<{ checked: number; enqueued:
       deletedAt: null,
       archivedAt: null,
       project: { repositoryPath: { not: null } },
+      // Legacy Done children have no repository run and their already-merged
+      // refs may have been cleaned long ago. No-change submissions likewise
+      // have no branch content to integrate.
+      repositoryRun: { is: { repoTouched: true } },
       activity: { none: { kind: "pm.epic.merge.ok" } },
     },
     orderBy: { statusChangedAt: "asc" },
@@ -415,6 +464,7 @@ export async function enqueueEpicDoneCleanup(epicId: string): Promise<{ enqueued
           status: true,
           workItemKey: true,
           branchName: true,
+          repositoryRun: { select: { repoTouched: true } },
           activity: {
             where: { kind: "pm.epic.merge.ok" },
             take: 1,
@@ -441,7 +491,11 @@ export async function enqueueEpicDoneCleanup(epicId: string): Promise<{ enqueued
   // the global poll remains restricted to unarchived live work and therefore
   // can never reconsider historical auto-archived Done tasks.
   for (const task of epic.tasks) {
-    if (task.status !== "Done" || task.activity.length > 0) continue;
+    if (
+      task.status !== "Done" ||
+      task.repositoryRun?.repoTouched !== true ||
+      task.activity.length > 0
+    ) continue;
     await enqueueEpicMergeJob({
       kind: "merge",
       jobId: `merge-${task.id}`,
@@ -501,6 +555,8 @@ async function executeMergeJob(job: Extract<EpicMergeJob, { kind: "merge" }>) {
       deletedAt: null,
       ...(job.includeArchived ? {} : { archivedAt: null }),
       project: { repositoryPath: { not: null } },
+      // Re-check the same compatibility guard after the runner claims a job.
+      repositoryRun: { is: { repoTouched: true } },
       activity: { none: { kind: "pm.epic.merge.ok" } },
     },
     select: MERGE_CANDIDATE_SELECT,
@@ -671,6 +727,266 @@ async function removeFinalizedTaskWorktree(
       .slice(0, 800);
     return { ok: false as const, error };
   }
+}
+
+async function executeCheckpointJob(
+  job: Extract<EpicMergeJob, { kind: "checkpoint" }>,
+) {
+  const task = await db.task.findUnique({
+    where: { id: job.taskId },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      projectId: true,
+      workItemKey: true,
+      branchName: true,
+      commitPrefix: true,
+      assigneeId: true,
+      approvedOn: true,
+      project: {
+        select: {
+          repositoryPath: true,
+          defaultGitUserName: true,
+          defaultGitUserEmail: true,
+          deploymentProductionBranch: true,
+          deploymentPrTargetBranch: true,
+          agentChangeBlockedBranches: true,
+        },
+      },
+      epic: {
+        select: {
+          id: true,
+          status: true,
+          workItemKey: true,
+          branchName: true,
+          commitPrefix: true,
+        },
+      },
+      repositoryRun: {
+        select: {
+          phase: true,
+          repositoryPath: true,
+          branchName: true,
+          worktreePath: true,
+          epicBranch: true,
+        },
+      },
+    },
+  });
+  if (!task || task.status !== "In Progress") {
+    return { taskId: job.taskId, outcome: "skipped" as const, note: "task is no longer In Progress" };
+  }
+
+  const monitor = await resolveActiveMonitorAgent();
+  const actor = monitor.ok
+    ? { id: monitor.user.id, username: monitor.user.username, kind: "agent" as const }
+    : null;
+  const fail = async (reason: string) => {
+    await updateTaskRepositoryState(task.id, {
+      phase: "active",
+      lastError: reason,
+    });
+    await db.$transaction([
+      db.task.update({ where: { id: task.id }, data: { alertReporter: true } }),
+      ...(actor
+        ? [db.comment.create({
+            data: {
+              taskId: task.id,
+              userId: actor.id,
+              body: [
+                "🚫 PM could not publish the authorized mid-task checkpoint. The task remains In Progress and its worktree was preserved.",
+                "",
+                reason,
+              ].join("\n"),
+            },
+          })]
+        : []),
+      db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId: task.id,
+          userId: actor?.id ?? null,
+          kind: "pm.repo.checkpoint.fail",
+          payload: JSON.stringify({
+            jobId: job.jobId,
+            authorizationCommentId: job.authorizationCommentId,
+            requestedByUserId: job.requestedByUserId,
+            reason,
+          }),
+        },
+      }),
+    ]);
+    if (actor && task.assigneeId) {
+      await sendTaskWorkflowNotification({
+        taskId: task.id,
+        targetUserId: task.assigneeId,
+        actor,
+        reason: "checkpoint_failed",
+        body: [
+          `PM could not publish the authorized checkpoint for "${task.title}".`,
+          reason,
+          "The task remains In Progress and the worktree is preserved. Correct the reported repository problem, then obtain a fresh explicit owner authorization before requesting another checkpoint publication.",
+        ].join("\n"),
+      }).catch((err) => console.error("[pm] checkpoint failure notify failed:", task.id, err));
+    }
+    publishBoardTouch(task.projectId);
+    return { taskId: task.id, outcome: "failed" as const, reason };
+  };
+
+  if (!actor) {
+    return fail(monitor.ok ? "No active Monitor Agent is available." : monitor.error);
+  }
+  if (!task.approvedOn) return fail("The Task Action Plan is no longer approved.");
+  if (task.assigneeId !== job.requestedByUserId) {
+    return fail("The agent that requested this checkpoint is no longer the task assignee.");
+  }
+  if (!task.epic || task.epic.status !== "In Progress") {
+    return fail("A publish checkpoint is available only for a task under an In Progress Epic.");
+  }
+
+  const authorization = await db.comment.findUnique({
+    where: { id: job.authorizationCommentId },
+    select: {
+      taskId: true,
+      body: true,
+      createdAt: true,
+      deletedAt: true,
+      user: { select: { id: true, kind: true, status: true, isOwner: true } },
+    },
+  });
+  if (
+    !authorization ||
+    authorization.taskId !== task.id ||
+    authorization.deletedAt ||
+    authorization.createdAt < task.approvedOn ||
+    authorization.user.kind !== "human" ||
+    authorization.user.status !== "active" ||
+    !authorization.user.isOwner
+  ) {
+    return fail("The checkpoint authorization comment is missing, deleted, predates plan approval, or was not written by the active Mission Control owner.");
+  }
+
+  const repositoryPath = task.repositoryRun?.repositoryPath ?? task.project.repositoryPath;
+  const worktreePath = task.repositoryRun?.worktreePath;
+  const taskBranch = task.repositoryRun?.branchName ?? effectiveTaskBranchName(task);
+  const epicBranch = task.repositoryRun?.epicBranch ?? effectiveEpicBranchName(task.epic);
+  if (!repositoryPath || !worktreePath || !taskBranch || !epicBranch) {
+    return fail("The active repository path, worktree, task branch, or Epic branch is missing.");
+  }
+  const explicitAuthorization = validateCheckpointAuthorizationText({
+    body: authorization.body,
+    taskKey: task.workItemKey,
+    taskBranch,
+    epicBranch,
+  });
+  if (!explicitAuthorization.ok) {
+    return fail(`The cited owner comment is not an explicit checkpoint capability: ${explicitAuthorization.reason}`);
+  }
+  const priorSuccessfulUses = await db.activityLog.findMany({
+    where: { taskId: task.id, kind: "pm.repo.checkpoint.ok" },
+    select: { payload: true },
+  });
+  if (priorSuccessfulUses.some((entry) =>
+    activityPayloadUsesCheckpointAuthorization(entry.payload, job.authorizationCommentId)
+  )) {
+    return fail("That owner checkpoint authorization was already consumed by an earlier successful publication. Obtain a new explicit owner authorization.");
+  }
+  if (isProtectedBranch(task.project.agentChangeBlockedBranches, epicBranch)) {
+    return fail(`The Epic integration branch ${epicBranch} is protected from agent-originated repository changes.`);
+  }
+
+  const settings = await resolveEffectiveProjectSettings({
+    id: task.projectId,
+    defaultGitUserName: task.project.defaultGitUserName,
+    defaultGitUserEmail: task.project.defaultGitUserEmail,
+    deploymentProductionBranch: task.project.deploymentProductionBranch,
+    deploymentPrTargetBranch: task.project.deploymentPrTargetBranch,
+  });
+  const gitUserName = settings.gitIdentity.name.value;
+  const gitUserEmail = settings.gitIdentity.email.value;
+  if (!gitUserName || !gitUserEmail) {
+    return fail("The effective project Git identity is incomplete; PM cannot create the checkpoint commit.");
+  }
+  const prefix = effectiveTaskCommitPrefix(task);
+  const checkpoint = await publishTaskCheckpointToEpic({
+    repoPath: repositoryPath,
+    worktreePath,
+    epicBranch,
+    taskBranch,
+    baseBranch: settings.deployment.productionBranch.value,
+    gitUserName,
+    gitUserEmail,
+    commitSubject: `${prefix ? `${prefix} ` : ""}${task.title}`,
+    mergeMessage: `Checkpoint ${task.workItemKey ?? taskBranch} into Epic branch ${epicBranch}`,
+  });
+  if (!checkpoint.ok) return fail(checkpoint.reason);
+
+  await updateTaskRepositoryState(task.id, {
+    phase: "active",
+    // The published Epic tip is the new implementation baseline. This lets a
+    // later no-change handoff prove that all earlier changes were checkpointed,
+    // while a later code-changing handoff verifies only work since checkpoint.
+    baseSha: checkpoint.epicSha,
+    candidateSha: null,
+    reviewedSha: null,
+    validationOutcome: null,
+    repoTouched: null,
+    lastError: null,
+  });
+  const body = [
+    `✅ PM published the authorized mid-task checkpoint to Epic branch \`${epicBranch}\`.`,
+    "",
+    `- Task checkpoint: \`${checkpoint.checkpointSha.slice(0, 10)}\``,
+    `- Published Epic tip / new task base: \`${checkpoint.epicSha.slice(0, 10)}\``,
+    `- Owner authorization comment: \`${job.authorizationCommentId}\``,
+    "- The task remains In Progress; its local-only task branch and worktree remain active.",
+    "",
+    job.note,
+  ].join("\n");
+  await db.$transaction([
+    db.comment.create({ data: { taskId: task.id, userId: actor.id, body } }),
+    db.activityLog.create({
+      data: {
+        projectId: task.projectId,
+        taskId: task.id,
+        userId: actor.id,
+        kind: "pm.repo.checkpoint.ok",
+        payload: JSON.stringify({
+          jobId: job.jobId,
+          authorizationCommentId: job.authorizationCommentId,
+          authorizationUserId: authorization.user.id,
+          requestedByUserId: job.requestedByUserId,
+          taskBranch,
+          epicBranch,
+          checkpointSha: checkpoint.checkpointSha,
+          epicSha: checkpoint.epicSha,
+          createdCommit: checkpoint.createdCommit,
+          kind: checkpoint.kind,
+        }),
+      },
+    }),
+  ]);
+  if (task.assigneeId) {
+    await sendTaskWorkflowNotification({
+      taskId: task.id,
+      targetUserId: task.assigneeId,
+      actor,
+      reason: "checkpoint_published",
+      body: [
+        `PM published the authorized checkpoint for "${task.title}" to origin/${epicBranch} at ${checkpoint.epicSha}.`,
+        "The task remains In Progress. Publication must now flow through the project's configured deployment automation. Do not SSH to a target host, run Git there, or substitute another OS identity as a manual fallback. Verify the automation's outcome for this exact Epic SHA; if it fails, report the actual pipeline/deployment failure and fix agent-actionable code, or flag the missing deployment integration when human intervention is genuinely required. After successful deployment, complete the live-verification checklist and use ready_for_review normally.",
+      ].join("\n"),
+    }).catch((err) => console.error("[pm] checkpoint success notify failed:", task.id, err));
+  }
+  publishBoardTouch(task.projectId);
+  return {
+    taskId: task.id,
+    outcome: checkpoint.kind,
+    checkpointSha: checkpoint.checkpointSha,
+    epicSha: checkpoint.epicSha,
+    epicBranch,
+  };
 }
 
 async function executeFinalizeJob(
@@ -956,6 +1272,7 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
       parentTaskId: null,
       deletedAt: null,
       status: "Done",
+      repositoryRun: { is: { repoTouched: true } },
       activity: { none: { kind: "pm.epic.merge.ok" } },
     },
   });
@@ -1087,5 +1404,6 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
 export async function runEpicMergeSpoolJob(job: EpicMergeJob) {
   if (job.kind === "merge") return executeMergeJob(job);
   if (job.kind === "finalize") return executeFinalizeJob(job);
+  if (job.kind === "checkpoint") return executeCheckpointJob(job);
   return executeCleanupJob(job);
 }

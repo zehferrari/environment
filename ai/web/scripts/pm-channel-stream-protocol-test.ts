@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { db } from "@/lib/db";
 import { applyPmChannelStreamCallback } from "@/lib/agents/pm-channel/stream-callback";
-import { PM_SILENT_REPLY_TOKEN } from "@/lib/agents/ops/pm-silence";
+import {
+  isPmTerminalFailureText,
+  isTransientPmProgressText,
+  PM_SILENT_REPLY_TOKEN,
+} from "@/lib/agents/ops/pm-silence";
 import {
   applyPmChannelStreamInput,
   emptyPmChannelStreamState,
@@ -24,6 +28,16 @@ function apply(input: Omit<PmChannelStreamInput, "target">) {
 }
 
 assert.equal(state.lifecycleStatus, null, "fresh streams have no guessed lifecycle status");
+assert.equal(
+  isTransientPmProgressText("🧹 Compacting context (14 messages) so I can continue without losing history…"),
+  true,
+  "OpenClaw compaction progress must not become a durable PM reply",
+);
+assert.equal(
+  isPmTerminalFailureText("⚠️ Auto-compaction could not recover this turn. Please try again."),
+  true,
+  "OpenClaw compaction failure finals must be classified as failures",
+);
 
 apply({ event: "status:thinking" });
 assert.equal(state.lifecycleStatus, "thinking", "status:thinking sets an explicit thinking lifecycle status");
@@ -161,7 +175,78 @@ async function assertCallbackProtocolBoundary() {
   assert.equal(finalState?.toolName, "memory_search", "callback-persisted events replay tool names");
   assert.equal(finalState?.text, "hello", "callback-persisted token events replay as streamed text");
 
-  await db.pmChannelRun.deleteMany({ where: { targetKey } });
+  const failureOriginal = await db.directAgentChatMessage.create({
+    data: { agentSlug, senderUserId: owner.id, body: "terminal compaction failure test" },
+    select: { id: true },
+  });
+  const failureTarget = { kind: "direct" as const, agentSlug, messageId: failureOriginal.id };
+  const failureKey = pmChannelRunTargetKey(failureTarget);
+  await db.pmChannelRun.create({
+    data: {
+      targetKey: failureKey,
+      kind: "direct",
+      agentSlug,
+      messageId: failureOriginal.id,
+      status: "accepted",
+      acceptedAt: new Date(),
+      lastEventAt: new Date(),
+    },
+  });
+  const failureText = "⚠️ Auto-compaction could not recover this turn. I kept this conversation mapped to the current session.";
+  result = await applyPmChannelStreamCallback({
+    payload: { target: failureTarget, event: "final", text: failureText },
+    rateLimit: false,
+    transportMode: "http",
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.status, "error", "terminal recovery text must publish an error state, not a successful final");
+  let failedRun = await db.pmChannelRun.findUniqueOrThrow({ where: { targetKey: failureKey } });
+  assert.equal(failedRun.status, "failed", "terminal recovery text must fail a conversation run without a durable reply");
+  await applyPmChannelStreamCallback({
+    payload: { target: failureTarget, event: "done" },
+    rateLimit: false,
+    transportMode: "http",
+  });
+  failedRun = await db.pmChannelRun.findUniqueOrThrow({ where: { targetKey: failureKey } });
+  assert.equal(failedRun.status, "failed", "a trailing done must not reopen or retry an already-settled failure");
+  const failureEvents = await db.pmChannelStreamEvent.findMany({
+    where: { runId: failedRun.id },
+    orderBy: { seq: "asc" },
+    select: { kind: true },
+  });
+  assert.deepEqual(failureEvents.map((row) => row.kind), ["error"], "terminal final must persist as an error and ignore the trailing done");
+
+  const transientOriginal = await db.directAgentChatMessage.create({
+    data: { agentSlug, senderUserId: owner.id, body: "transient compaction progress test" },
+    select: { id: true },
+  });
+  const transientTarget = { kind: "direct" as const, agentSlug, messageId: transientOriginal.id };
+  const transientKey = pmChannelRunTargetKey(transientTarget);
+  await db.pmChannelRun.create({
+    data: {
+      targetKey: transientKey,
+      kind: "direct",
+      agentSlug,
+      messageId: transientOriginal.id,
+      status: "accepted",
+      acceptedAt: new Date(),
+      lastEventAt: new Date(),
+    },
+  });
+  result = await applyPmChannelStreamCallback({
+    payload: {
+      target: transientTarget,
+      event: "final",
+      text: "🧹 Compacting context (14 messages) so I can continue without losing history…",
+    },
+    rateLimit: false,
+    transportMode: "http",
+  });
+  assert.equal(result.body.transient, true);
+  const transientRun = await db.pmChannelRun.findUniqueOrThrow({ where: { targetKey: transientKey } });
+  assert.equal(transientRun.status, "accepted", "transient compaction progress must not settle the PM run");
+
+  await db.pmChannelRun.deleteMany({ where: { targetKey: { in: [targetKey, failureKey, transientKey] } } });
   await db.directAgentChatMessage.deleteMany({ where: { agentSlug } });
   await db.user.delete({ where: { id: agentUser.id } });
   await db.user.delete({ where: { id: owner.id } });

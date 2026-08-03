@@ -15,8 +15,8 @@
 //
 // Epic children (job.epicChild — P6 local-only branches, NEVER pushed):
 //   the verified ref is LOCAL refs/heads/<branch>; the base gate runs against
-//   the Epic integration branch (local refs/heads/<epicBranch>, falling back
-//   to origin/<epicBranch>) instead of the deployment target; there is no
+//   origin's current Epic integration branch (with the local ref only as a
+//   missing-origin fallback) instead of the deployment target; there is no
 //   auto-push and no local-vs-origin sync check. Commit-prefix, identity,
 //   dirty-worktree, live-rebuild, and wake gating are unchanged.
 //
@@ -209,6 +209,69 @@ async function readLog(repo: string, baseRef: string, branchRef: string): Promis
   } catch (err) {
     return { commits: [], error: trimError(err, 400) };
   }
+}
+
+type CheckpointReviewBaseline = {
+  candidateSha: string;
+  checkpoint: GitCommit;
+};
+
+async function recordedCheckpointReviewBaseline(args: {
+  job: BranchVerifyJob;
+  state: LocalState;
+  baseValidation: BranchBaseValidation;
+}): Promise<CheckpointReviewBaseline | null> {
+  const { job, state, baseValidation } = args;
+  const baseSha = job.baseSha?.trim() || null;
+  if (
+    !job.epicChild ||
+    !baseSha ||
+    state.localSha !== baseSha ||
+    baseValidation.originBaseSha !== baseSha ||
+    baseValidation.branchSha !== baseSha
+  ) {
+    return null;
+  }
+
+  const activities = await db.activityLog.findMany({
+    where: { taskId: job.taskId, kind: "pm.repo.checkpoint.ok" },
+    orderBy: { createdAt: "desc" },
+    select: { payload: true },
+  });
+  for (const activity of activities) {
+    try {
+      const payload = JSON.parse(activity.payload ?? "{}") as {
+        taskBranch?: unknown;
+        epicBranch?: unknown;
+        checkpointSha?: unknown;
+        epicSha?: unknown;
+      };
+      if (
+        payload.taskBranch !== job.branchName ||
+        payload.epicBranch !== job.epicBranch ||
+        payload.epicSha !== baseSha ||
+        typeof payload.checkpointSha !== "string"
+      ) {
+        continue;
+      }
+      try {
+        await git(job.repositoryPath, ["merge-base", "--is-ancestor", payload.checkpointSha, baseSha], { timeout: 10_000 });
+      } catch {
+        continue;
+      }
+      const raw = await gitOrNull(
+        job.repositoryPath,
+        ["show", "-s", "--format=%H|%an|%ae|%cn|%ce|%aI|%s", payload.checkpointSha],
+        { timeout: 10_000 },
+      );
+      const checkpoint = raw ? parseLog(raw)[0] ?? null : null;
+      if (!checkpoint) continue;
+      return { candidateSha: baseSha, checkpoint };
+    } catch {
+      // Ignore malformed historical activity and continue searching.
+    }
+  }
+  return null;
 }
 
 function authorLabel(commit: GitCommit) {
@@ -418,13 +481,23 @@ function renderOkBody(args: {
   baseValidation: BranchBaseValidation;
   state: LocalState;
   rebuild: RebuildResult;
+  candidateSha: string;
+  checkpointBaseline: boolean;
 }): string {
-  const lines = [
-    `${args.branchRefLabel} verified by the monitor agent.`,
-    "",
-    `- HEAD: \`${args.head.sha.slice(0, 10)}\` - ${args.head.subject}`,
-    `  - ${authorLabel(args.head)} @ ${args.head.date}`,
-  ];
+  const lines = [`${args.branchRefLabel} verified by the monitor agent.`, ""];
+  if (args.checkpointBaseline) {
+    lines.push(
+      `- Candidate: \`${args.candidateSha.slice(0, 10)}\` is the task's recorded, already-published Epic checkpoint baseline.`,
+      `- Checkpoint commit: \`${args.head.sha.slice(0, 10)}\` - ${args.head.subject}`,
+      `  - ${authorLabel(args.head)} @ ${args.head.date}`,
+      "- No repository changes were added after that checkpoint; finalization will use the no-change cleanup path.",
+    );
+  } else {
+    lines.push(
+      `- HEAD: \`${args.head.sha.slice(0, 10)}\` - ${args.head.subject}`,
+      `  - ${authorLabel(args.head)} @ ${args.head.date}`,
+    );
+  }
   if (args.commitPrefix) {
     if (args.match.sha !== args.head.sha) {
       lines.push(
@@ -440,7 +513,9 @@ function renderOkBody(args: {
   if (args.epicMode) {
     lines.push(
       `- Base verified: Epic branch \`${args.baseValidation.baseBranch}\` \`${args.baseValidation.originBaseSha?.slice(0, 10)}\` is an ancestor of \`refs/heads/${args.branchName}\`.`,
-      `- Epic-child branch: local-only by design — never pushed. After reviewer acceptance PM merges it into \`${args.baseValidation.baseBranch}\`, removes the child worktree/local branch, and only then marks the task Done.`,
+      args.checkpointBaseline
+        ? `- Epic-child branch: local-only by design — never pushed. This candidate is already present on \`${args.baseValidation.baseBranch}\`; after reviewer acceptance PM removes the child worktree/local branch and only then marks the task Done.`
+        : `- Epic-child branch: local-only by design — never pushed. After reviewer acceptance PM merges it into \`${args.baseValidation.baseBranch}\`, removes the child worktree/local branch, and only then marks the task Done.`,
     );
   } else {
     lines.push(
@@ -732,8 +807,9 @@ async function main() {
   let logError: string | null;
   let state: LocalState;
   if (epicMode) {
-    // Local-only verification: the base is the Epic integration branch (local
-    // ref first, origin fallback) and the verified ref is refs/heads/<branch>.
+    // Local-only verification: the base is origin's current Epic integration
+    // branch (local fallback only when origin has no Epic ref yet) and the
+    // verified ref is refs/heads/<branch>.
     // No auto-push, no local-vs-origin sync gate.
     const epicBase = await resolveEpicVerificationBase(job.repositoryPath, job.epicBranch);
     state = await localState(job, true);
@@ -759,9 +835,15 @@ async function main() {
     ({ commits, error: logError } = await readLog(job.repositoryPath, `origin/${fetched.baseBranch}`, `origin/${job.branchName}`));
     baseValidation = await validateOriginBase(job.repositoryPath, job.branchName, fetched.baseBranch);
   }
-  const head = commits[0] ?? null;
+  const checkpointBaseline = epicMode && commits.length === 0 && !logError
+    ? await recordedCheckpointReviewBaseline({ job, state, baseValidation })
+    : null;
+  const head = commits[0] ?? checkpointBaseline?.checkpoint ?? null;
   const match = job.commitPrefix
-    ? commits.find((c) => subjectHasCommitPrefix(c.subject, job.commitPrefix!)) ?? null
+    ? commits.find((c) => subjectHasCommitPrefix(c.subject, job.commitPrefix!)) ??
+      (checkpointBaseline && subjectHasCommitPrefix(checkpointBaseline.checkpoint.subject, job.commitPrefix)
+        ? checkpointBaseline.checkpoint
+        : null)
     : head;
   const requiredIdentity = expectedIdentity(job);
   const mismatch = identityMismatch(match, requiredIdentity);
@@ -785,6 +867,7 @@ async function main() {
     head !== null &&
     match !== null &&
     !mismatch;
+  const candidateSha = checkpointBaseline?.candidateSha ?? head?.sha ?? null;
 
   const rebuild = repoVerifiedOk
     ? await rebuildLiveWorktreeIfNeeded(job, state)
@@ -798,7 +881,7 @@ async function main() {
     : "pm.repo.verify.fail";
 
   const baseBody = reviewReady
-    ? renderOkBody({ branchName: job.branchName, branchRefLabel, epicMode, head: head!, match: match!, commitPrefix: job.commitPrefix, expectedIdentity: requiredIdentity, baseValidation, state, rebuild: rebuild! })
+    ? renderOkBody({ branchName: job.branchName, branchRefLabel, epicMode, head: head!, match: match!, commitPrefix: job.commitPrefix, expectedIdentity: requiredIdentity, baseValidation, state, rebuild: rebuild!, candidateSha: candidateSha!, checkpointBaseline: Boolean(checkpointBaseline) })
     : renderFailBody({ branchName: job.branchName, branchRefLabel, epicMode, head, match, commitPrefix: job.commitPrefix, fetchError, logError, identityMismatch: mismatch, baseValidation, state, rebuild });
   const body = semanticWarning
     ? `${baseBody}\n\n⚠️ Advisory validation warning\n\n${semanticWarning}`
@@ -846,6 +929,13 @@ async function main() {
           epicBranch: job.epicBranch ?? null,
           commitPrefix: job.commitPrefix,
           headSha: head?.sha ?? null,
+          candidateSha,
+          checkpointBaseline: checkpointBaseline
+            ? {
+                epicSha: checkpointBaseline.candidateSha,
+                checkpointSha: checkpointBaseline.checkpoint.sha,
+              }
+            : null,
           matchSha: match?.sha ?? null,
           expectedGitUserName: job.expectedGitUserName,
           expectedGitUserEmail: job.expectedGitUserEmail,
@@ -872,7 +962,7 @@ async function main() {
   ]);
   await updateTaskRepositoryState(job.taskId, {
     phase: reviewReady ? "review_ready" : "action_required",
-    candidateSha: head?.sha ?? null,
+    candidateSha,
     validationOutcome,
     lastError: reviewReady ? null : body,
   });
@@ -880,16 +970,17 @@ async function main() {
     await completeTaskReviewHandoffAfterValidation({
       taskId: job.taskId,
       actor,
-      candidateSha: head?.sha ?? null,
+      candidateSha,
       validationOutcome: successfulOutcome,
       validationSummary: semanticWarning ?? baseBody,
+      repoTouched: !checkpointBaseline,
     });
   } else {
     await failTaskReviewValidation({
       taskId: job.taskId,
       actor,
       error: body,
-      candidateSha: head?.sha ?? null,
+      candidateSha,
     });
   }
 

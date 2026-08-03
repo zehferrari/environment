@@ -44,6 +44,7 @@ function reasonForKind(kind: string | undefined): TaskWorkflowNotificationReason
     case "pm-todo-not-started":
       return "todo_start_required";
     case "pm-in-progress-stale":
+    case "pm-blocker-response-awaiting-assignee":
       return "monitor_recovery";
     case "pm-review-awaiting-reviewer":
     // Targets the REVIEWER: informal feedback was never formalized via
@@ -66,7 +67,10 @@ function defaultRequiredAction(status: string, kind: string | undefined): string
     return "The Action Plan is approved. Move the task to In Progress through the workflow endpoint, then start work immediately. Do not post an acknowledgement unless you have new task information to add.";
   }
   if (kind === "pm-in-progress-stale") {
-    return "Continue implementation now, or move the task to Review through the workflow endpoint with one concise note if work is complete or waiting for reviewer/manager/reporter feedback.";
+    return "Continue implementation now. If completed, use ready_for_review with one concise note. Never move incomplete work to Review as a waiting room. Task execution remains with the visible assignee; independent work for another agent must be a separate explicitly assigned PM task. Use flag_blocker only for a human/external dependency. If an Epic-child task's open checks require a remotely deployable commit, use publish_checkpoint only with a fresh explicit active-owner authorization comment id; PM will publish only the Epic branch and keep the task In Progress.";
+  }
+  if (kind === "pm-blocker-response-awaiting-assignee") {
+    return "A decision owner responded after your active blocker. Re-evaluate it now: if the dependency is resolved, call action=clear_blocker with the evidence and resume; otherwise leave the alert set and post only material new blocker evidence.";
   }
   if (kind === "pm-review-awaiting-reviewer") {
     return "Review the completed work using the full task context. If satisfied, move the task to Done without posting an approval-only comment. If changes or blockers remain, call action=review_feedback with concise feedback so the task returns to the front of To Do for the assignee.";

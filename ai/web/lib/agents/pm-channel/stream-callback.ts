@@ -18,7 +18,11 @@ import {
 import { markPmChannelJobCompleteForTarget } from "@/lib/agents/pm-channel/jobs";
 import { appendPmChannelStreamEventForTarget } from "@/lib/agents/pm-channel/stream-log";
 import { checkPmChannelCallbackRateLimit } from "@/lib/agents/pm-channel/rate-limit";
-import { isSilentPmReplyText } from "@/lib/agents/ops/pm-silence";
+import {
+  isPmTerminalFailureText,
+  isSilentPmReplyText,
+  isTransientPmProgressText,
+} from "@/lib/agents/ops/pm-silence";
 import { isAuthorizedPmChannelCallbackTarget } from "@/lib/agents/pm-channel/target-authorization";
 
 export type PmChannelStreamTransportMode = "http" | "inproc" | "uds";
@@ -150,6 +154,16 @@ export async function applyPmChannelStreamCallback(args: {
     return { status: 403, body: { error: "Stream target is not authorized" } };
   }
 
+  if (event === "done") {
+    const settled = await db.pmChannelRun.findUnique({
+      where: { targetKey: pmChannelRunTargetKey(target) },
+      select: { status: true },
+    });
+    if (settled?.status === "retryable" || settled?.status === "failed") {
+      return { status: 200, body: { ok: true, ignored: true, status: settled.status } };
+    }
+  }
+
   if (args.rateLimit !== false) {
     const rateLimit = checkPmChannelCallbackRateLimit({
       kind: "stream",
@@ -183,6 +197,22 @@ export async function applyPmChannelStreamCallback(args: {
 
   const text = stringField(args.payload.text, 40_000);
   const delta = stringField(args.payload.delta, 8_000);
+  if (
+    (event === "partial" || event === "token" || event === "final") &&
+    (isTransientPmProgressText(text) || isTransientPmProgressText(delta))
+  ) {
+    return { status: 200, body: { ok: true, transient: true } };
+  }
+  if (event === "final" && isPmTerminalFailureText(text)) {
+    const error = text || "OpenClaw terminal context recovery failure";
+    const eventInput = { target, event: "error" as const, error };
+    const persisted = await appendPmChannelStreamEventForTarget(eventInput);
+    const state = publishPmChannelStreamEvent({ ...eventInput, seq: persisted.seq });
+    await recordPmChannelRunEvent({ target, event: "error", error });
+    await recordStreamTransport(target, transportMode);
+    await recordStreamError(target, error);
+    return { status: 200, body: { ok: true, key: state.key, status: state.status } };
+  }
   if (
     (event === "partial" || event === "token" || event === "final") &&
     (isSilentPmReplyText(text) || isSilentPmReplyText(delta))

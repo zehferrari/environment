@@ -7,6 +7,8 @@
 //   kind "cleanup" — after an Epic reaches Done, publish the Epic branch,
 //                    remove merged local child branches/worktrees, and remove
 //                    leaked remote child refs only after ancestry verification.
+//   kind "checkpoint" — create a PM-owned mid-task commit, merge/push only the
+//                    Epic branch, and keep the task/worktree In Progress.
 //   kind "claim"   — provision and validate a task's linked worktree at the
 //                    In Progress boundary.
 //
@@ -36,7 +38,7 @@ async function main() {
   const job = JSON.parse(readFileSync(jobFile, "utf8")) as
     | EpicMergeJob
     | WorktreeClaimJob;
-  if (job.kind !== "merge" && job.kind !== "cleanup" && job.kind !== "finalize" && job.kind !== "claim") {
+  if (job.kind !== "merge" && job.kind !== "cleanup" && job.kind !== "finalize" && job.kind !== "checkpoint" && job.kind !== "claim") {
     throw new Error(`Unknown repository job kind: ${(job as { kind?: string }).kind}`);
   }
 

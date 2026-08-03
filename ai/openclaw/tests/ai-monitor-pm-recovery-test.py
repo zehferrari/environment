@@ -60,6 +60,46 @@ class PmRecoveryTest(unittest.TestCase):
     def setUp(self):
         self.monitor = load_monitor_module()
 
+    def test_only_formal_blockers_skip_stale_assignee_recovery(self):
+        source = SCRIPT.read_text()
+        blocker_guard = 'blocker["kind"] != "task.blocker.cleared"'
+        stale_add = '"pm-in-progress-stale"'
+        self.assertIn(blocker_guard, source)
+        self.assertIn("pm-blocker-response-awaiting-assignee", source)
+        self.assertIn("_pm_latest_blocker_activity", source)
+        self.assertNotIn('if row["alertReporter"]:', source)
+        self.assertLess(
+            source.index(blocker_guard),
+            source.index(stale_add, source.index(blocker_guard)),
+        )
+
+    def test_monitor_never_creates_shadow_agent_ownership(self):
+        source = SCRIPT.read_text()
+        self.assertNotIn("_pm_latest_agent_dependency_activity", source)
+        self.assertNotIn("pm-agent-dependency-stale", source)
+        self.assertNotIn("delegate_dependency", source)
+        self.assertNotIn(
+            "move the task to Review with one concise note if it is complete or waiting",
+            source,
+        )
+
+    def test_accepted_pm_turn_gets_execution_grace_before_recovery(self):
+        source = SCRIPT.read_text()
+        self.assertIn('channel_accepted_warn_minutes", 30', source)
+        accepted_guard = 'run_status == "accepted"'
+        stalled_kind = '"pm-channel-stalled"'
+        self.assertIn(accepted_guard, source)
+        self.assertLess(
+            source.index(accepted_guard),
+            source.index(stalled_kind, source.index(accepted_guard)),
+        )
+
+    def test_monitor_recovery_never_stacks_behind_a_live_turn(self):
+        source = SCRIPT.read_text()
+        self.assertIn("_pm_has_live_channel_run", source)
+        self.assertIn("status IN ('queued', 'accepted', 'streaming', 'retryable')", source)
+        self.assertIn('not kind.startswith("pm-channel-")', source)
+
     def comment_conn(self):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row

@@ -485,6 +485,48 @@ submission commit and permitted publication belong to PM's trusted runner.
 If implementation no longer matches the approved plan materially, the assignee
 should expose the change or blocker rather than silently broaden scope.
 
+### Deployment-dependent Epic checkpoints
+
+Some Epic-child Tasks cannot finish their live-verification checklist until
+the current repository changes exist on a remotely deployable branch. The
+normal rules would deadlock such work: the child branch must stay local,
+`ready_for_review` rejects the still-open verification rows, and deployment may
+accept only a commit reachable from origin.
+
+For that narrow case the assignee may call `publish_checkpoint` while the Task
+remains `In Progress`. The action requires:
+
+- an approved Action Plan and active repository worktree;
+- a dedicated local-only Epic-child Task branch;
+- an `authorizationCommentId` naming a live Task comment written by the active
+  Mission Control owner after the current plan approval and explicitly
+  authorizing the checkpoint/deployment, naming the Task key/branch and target
+  Epic branch. Each authorization comment is consumed by exactly one enqueue;
+  another publication requires a fresh owner comment; and
+- a concise `comment` explaining why intermediate publication is required.
+
+PM then creates the checkpoint commit with the effective Git identity and
+commit prefix, merges it into the Epic integration branch, pushes only that
+Epic branch, verifies containment, fast-forwards the active Task branch to the
+published Epic tip, and records that tip as the new repository `baseSha`. The
+Task and worktree remain `In Progress`; open checklist rows are unchanged. The
+configured project automation deploys the exact returned Epic SHA; the
+assignee must not SSH to the target, run Git there, or substitute a different
+OS identity as a manual fallback. The assignee verifies the automation's real
+outcome, fixes agent-actionable pipeline/code failures from that evidence, then
+completes live verification and uses the ordinary `ready_for_review` path. If
+no repository changes were added after the checkpoint, the verifier recognizes
+the recorded published baseline and uses the no-change cleanup path. If
+the deployment integration itself is unavailable and needs human intervention,
+the assignee uses `flag_blocker`. A later no-change submission is safe because
+its baseline is the published checkpoint; later code changes are validated
+relative to that checkpoint.
+
+This is not a general progress-publishing action and never permits the child
+branch itself to reach origin. Failure preserves the worktree, flags the
+reporter, records `pm.repo.checkpoint.fail`, and leaves the Task In Progress for
+correction/retry.
+
 ## Sub-tasks during implementation and review
 
 ### What a SubTask is
@@ -558,8 +600,19 @@ Actors do not directly add work to another actor's checklist:
   reason. PM posts a comment and wakes the assignee.
 - Assignee under an Epic → acting manager: `request_task` with a title and
   reason. PM asks the manager to use the Epic workflow.
+- Task execution remains with the visible assignee. Independent work for a
+  different agent must be represented by a separate explicitly assigned PM
+  Task; comments and workflow activities never create shadow ownership.
 - Assignee → owner/reviewer/reporter: `flag_extra_work_blocker` with a reason.
   PM sets `alertReporter` and wakes the decision owners.
+- Assignee → owner/reviewer/reporter: `flag_blocker` with evidence and the
+  required intervention for an infrastructure, credential, access,
+  external-service, or human-decision blocker. PM keeps the Task In Progress,
+  sets `alertReporter`, wakes the decision owners, and suppresses the ordinary
+  stale-assignee nudge while the alert is active.
+- Assignee after resolution: `clear_blocker` with the unblocking evidence.
+  PM clears the formal blocker and normal In Progress monitoring resumes,
+  while preserving any newer independent repository/admin alert.
 
 When review feedback returns a Task to `To Do`, the assignee is instructed to
 add one new implementation sub-task per concrete finding before restarting.

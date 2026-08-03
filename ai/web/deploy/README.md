@@ -215,8 +215,9 @@ For an **Epic child** the job carries `epicChild: true` + the effective
 [`MULTI_AGENT_WORKTREES.md`](./MULTI_AGENT_WORKTREES.md) § Local-only
 Epic-child branches): it verifies LOCAL `refs/heads/<branchName>` — Epic-child
 branches are never pushed and there is no auto-push — and the base gate runs
-against the Epic integration branch (local ref first, `origin/<epicBranch>`
-fallback) instead of the deployment target. Commit-prefix,
+against the freshly fetched `origin/<epicBranch>` ref (local fallback only
+when origin has no Epic ref yet), matching the finalizer's merge base instead
+of trusting a possibly stale checked-out local Epic ref. Commit-prefix,
 identity, and live-rebuild checks are unchanged.
 
 ## Repository runner (worktree claims + local-only Epic integration)
@@ -244,6 +245,10 @@ worktree, which:
   branch or merges an Epic child's LOCAL branch into the Epic integration
   branch, pushes only the Epic branch, verifies the candidate SHA, removes the
   task worktree/local branch, and only then moves the task to Done;
+- **checkpoint**: for an explicitly owner-authorized In Progress Epic child,
+  creates the PM-owned intermediate commit, merges/pushes only the Epic branch,
+  fast-forwards the active child branch to that published tip, and keeps the
+  Task/worktree In Progress for deployment-dependent live verification;
 - **merge**: legacy recovery for already-Done Epic children; merges the task's LOCAL branch (`refs/heads/<taskBranch>`,
   legacy `origin/<taskBranch>` fallback) into the Epic integration branch in a
   throwaway detached worktree, pushes ONLY the Epic branch (eagerly after each

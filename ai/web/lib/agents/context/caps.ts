@@ -65,41 +65,41 @@ export function directChatArchiveChainLimit() {
   return intEnv("PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT", DIRECT_CHAT_CONTEXT_DEFAULTS.archiveChainLimit, 1, 6);
 }
 
-// Targets 1M tokens (~4MB packet ceiling). Realistic busy tasks land in
-// 500KB–2MB at these caps. Row counts almost never bind; per-body clip
-// is the working constraint.
+// Coding turns need substantial tool-loop headroom inside the active model's
+// 272k-token window. Deep history remains available through scoped live-fetch
+// grants; the inline packet is a bounded working set, not a second archive.
 export const CODE_CAPS: ContextCaps = {
-  maxComments: 1000,
-  maxLiveChats: 1000,
-  maxActivity: 500,
-  maxArchivedChats: 1000,
-  maxTimelineBody: 24000,
-  maxActivityBody: 8000,
-  taskDescriptionMax: 60000,
-  epicDescriptionMax: 60000,
-  projectDescriptionMax: 30000,
-  attachmentInlineBudget: 200000,
-  attachmentPerExcerpt: 40000,
-  maxRenderedTimelineChars: 700000,
-  recentTimelineVerbatimItems: 24,
-};
-
-// Targets 256k tokens (~1MB packet ceiling). Half the row counts and
-// half the per-body clip vs CODE_CAPS.
-export const MONITOR_CAPS: ContextCaps = {
   maxComments: 500,
   maxLiveChats: 500,
-  maxActivity: 200,
+  maxActivity: 300,
   maxArchivedChats: 500,
-  maxTimelineBody: 12000,
-  maxActivityBody: 4000,
-  taskDescriptionMax: 30000,
-  epicDescriptionMax: 30000,
-  projectDescriptionMax: 15000,
-  attachmentInlineBudget: 100000,
-  attachmentPerExcerpt: 20000,
-  maxRenderedTimelineChars: 320000,
-  recentTimelineVerbatimItems: 16,
+  maxTimelineBody: 8000,
+  maxActivityBody: 2400,
+  taskDescriptionMax: 24000,
+  epicDescriptionMax: 24000,
+  projectDescriptionMax: 12000,
+  attachmentInlineBudget: 60000,
+  attachmentPerExcerpt: 16000,
+  maxRenderedTimelineChars: 150000,
+  recentTimelineVerbatimItems: 14,
+};
+
+// Monitor turns are smaller again because they triage and route rather than
+// carrying an implementation tool loop.
+export const MONITOR_CAPS: ContextCaps = {
+  maxComments: 300,
+  maxLiveChats: 300,
+  maxActivity: 150,
+  maxArchivedChats: 300,
+  maxTimelineBody: 6000,
+  maxActivityBody: 1600,
+  taskDescriptionMax: 16000,
+  epicDescriptionMax: 16000,
+  projectDescriptionMax: 8000,
+  attachmentInlineBudget: 40000,
+  attachmentPerExcerpt: 12000,
+  maxRenderedTimelineChars: 100000,
+  recentTimelineVerbatimItems: 10,
 };
 
 export function capsForRole(role: string | null | undefined): ContextCaps {

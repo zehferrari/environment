@@ -29,6 +29,7 @@ type DispatchJobPayload = Omit<SendPmChannelTurnRequest, "fetchImpl">;
 
 const MAX_ATTEMPTS = Number.parseInt(process.env.PM_CHANNEL_JOB_MAX_ATTEMPTS ?? "3", 10);
 const CLAIM_TIMEOUT_MS = Number.parseInt(process.env.PM_CHANNEL_JOB_CLAIM_TIMEOUT_MS ?? "120000", 10);
+const ACCEPTED_TIMEOUT_MS = Number.parseInt(process.env.PM_CHANNEL_JOB_ACCEPTED_TIMEOUT_MS ?? "1800000", 10);
 const RECOVERY_MAX_AGE_MS = Number.parseInt(process.env.PM_CHANNEL_JOB_RECOVERY_MAX_AGE_MS ?? "21600000", 10);
 
 function flagDisabled(value: string | undefined) {
@@ -175,6 +176,12 @@ function claimTimeoutMs() {
   return Number.isFinite(CLAIM_TIMEOUT_MS) && CLAIM_TIMEOUT_MS > 0
     ? CLAIM_TIMEOUT_MS
     : 120_000;
+}
+
+function acceptedTimeoutMs() {
+  return Number.isFinite(ACCEPTED_TIMEOUT_MS) && ACCEPTED_TIMEOUT_MS > 0
+    ? ACCEPTED_TIMEOUT_MS
+    : 1_800_000;
 }
 
 function recoveryMaxAgeMs() {
@@ -355,15 +362,21 @@ export async function claimNextPmChannelJob(workerId: string) {
 }
 
 export async function requeueStaleClaimedPmChannelJobs(now = new Date()) {
-  const staleBefore = new Date(now.getTime() - claimTimeoutMs());
+  const staleClaimedBefore = new Date(now.getTime() - claimTimeoutMs());
+  // Dispatch claims should be short, but an accepted gateway turn is already
+  // executing and may legitimately spend many minutes in tools before its
+  // first PM-visible callback. Reusing the two-minute claim lease for both
+  // states caused duplicate dispatches, terminal false failures, and monitor
+  // restarts that killed active work.
+  const staleAcceptedBefore = new Date(now.getTime() - acceptedTimeoutMs());
   const recentAfter = new Date(now.getTime() - recoveryMaxAgeMs());
   const stale = await db.pmChannelJob.findMany({
     where: {
       OR: [
-        { status: "claimed", claimedAt: { gt: recentAfter, lt: staleBefore } },
+        { status: "claimed", claimedAt: { gt: recentAfter, lt: staleClaimedBefore } },
         {
           status: "accepted",
-          acceptedAt: { gt: recentAfter, lt: staleBefore },
+          acceptedAt: { gt: recentAfter, lt: staleAcceptedBefore },
           run: {
             streamingAt: null,
             completedAt: null,

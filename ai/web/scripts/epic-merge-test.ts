@@ -7,6 +7,7 @@ import {
   inspectOriginBranch,
   mergeTaskBranchIntoEpic,
   publishEpicBranch,
+  publishTaskCheckpointToEpic,
   removeMergedOriginChildBranch,
 } from "../lib/deploy/epic-merge-git";
 
@@ -195,6 +196,63 @@ async function main() {
     });
     assert.equal(preservedRemote.outcome, "failed", "unmerged remote child must be preserved");
     assert.equal((await inspectOriginBranch(cloneDir, "feat-unsafe")).sha?.length, 40);
+
+    // 12. An owner-authorized mid-task checkpoint commits the dirty local-only
+    // child, publishes only the Epic branch, and advances the still-active
+    // child worktree to the published Epic tip so later work has a clean base.
+    const checkpointWt = join(root, "checkpoint-wt");
+    git(cloneDir, "branch", "feat-checkpoint", "main");
+    git(cloneDir, "worktree", "add", checkpointWt, "feat-checkpoint");
+    writeFileSync(join(checkpointWt, "checkpoint.txt"), "first\n");
+    let checkpoint = await publishTaskCheckpointToEpic({
+      repoPath: cloneDir,
+      worktreePath: checkpointWt,
+      epicBranch: "epic-checkpoint",
+      taskBranch: "feat-checkpoint",
+      baseBranch: "main",
+      gitUserName: "Checkpoint Bot",
+      gitUserEmail: "checkpoint@example.com",
+      commitSubject: "CHK-1 deployable checkpoint",
+      mergeMessage: "Checkpoint CHK-1 into epic-checkpoint",
+    });
+    assert(checkpoint.ok && checkpoint.kind === "published", "dirty checkpoint must publish the Epic branch");
+    assert(checkpoint.ok && checkpoint.createdCommit, "dirty checkpoint must create a PM-owned commit");
+    git(cloneDir, "fetch", "--quiet", "origin");
+    assert.equal(
+      git(checkpointWt, "rev-parse", "HEAD"),
+      git(cloneDir, "rev-parse", "origin/epic-checkpoint"),
+      "active child branch must advance to the published Epic tip",
+    );
+    assert.equal(git(checkpointWt, "status", "--porcelain"), "", "checkpoint worktree must be clean");
+    assert.equal(
+      git(cloneDir, "ls-remote", "--heads", "origin", "feat-checkpoint"),
+      "",
+      "checkpoint must never publish the child branch",
+    );
+    assert.match(
+      git(cloneDir, "log", "--format=%s", "origin/epic-checkpoint"),
+      /CHK-1 deployable checkpoint/,
+      "published Epic history must contain the prefixed PM checkpoint commit",
+    );
+
+    writeFileSync(join(checkpointWt, "checkpoint.txt"), "second\n");
+    checkpoint = await publishTaskCheckpointToEpic({
+      repoPath: cloneDir,
+      worktreePath: checkpointWt,
+      epicBranch: "epic-checkpoint",
+      taskBranch: "feat-checkpoint",
+      baseBranch: "main",
+      gitUserName: "Checkpoint Bot",
+      gitUserEmail: "checkpoint@example.com",
+      commitSubject: "CHK-1 second deployable checkpoint",
+      mergeMessage: "Checkpoint CHK-1 into epic-checkpoint",
+    });
+    assert(checkpoint.ok && checkpoint.kind === "published", "a later checkpoint must publish from the refreshed child base");
+    assert.equal(
+      git(checkpointWt, "rev-parse", "HEAD"),
+      checkpoint.ok ? checkpoint.epicSha : "",
+      "later checkpoint must leave the child at its new repository baseline",
+    );
 
     console.log("epic-merge-test passed");
   } finally {

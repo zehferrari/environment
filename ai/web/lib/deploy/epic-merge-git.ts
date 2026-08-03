@@ -264,6 +264,16 @@ export type EpicMergeResult =
   | { ok: true; kind: "noop"; note: string }
   | { ok: false; reason: string };
 
+export type EpicCheckpointResult =
+  | {
+      ok: true;
+      kind: "published" | "already";
+      checkpointSha: string;
+      epicSha: string;
+      createdCommit: boolean;
+    }
+  | { ok: false; reason: string };
+
 // Merge a Done task's branch into the Epic integration branch (creating the
 // Epic branch from origin/<baseBranch> when it does not exist yet) and push
 // only the Epic branch back. Task branches are LOCAL-ONLY under the P6 model:
@@ -394,5 +404,170 @@ export async function mergeTaskBranchIntoEpic(args: {
   } finally {
     await gitOk(repoPath, ["worktree", "remove", "--force", wt]);
     await rm(wt, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// Publish an explicitly authorized mid-task checkpoint without weakening the
+// local-only Epic-child rule. PM owns the commit, merges only the Epic branch
+// to origin, then fast-forwards the still-active task branch to the published
+// Epic tip so subsequent work starts from the new integration base.
+//
+// This exists for implementation that must be deployed before its remaining
+// live-verification checklist can be completed. It deliberately does not move
+// the task to Review or remove its worktree.
+export async function publishTaskCheckpointToEpic(args: {
+  repoPath: string;
+  worktreePath: string;
+  epicBranch: string;
+  taskBranch: string;
+  baseBranch: string;
+  gitUserName: string;
+  gitUserEmail: string;
+  commitSubject: string;
+  mergeMessage: string;
+}): Promise<EpicCheckpointResult> {
+  const {
+    repoPath,
+    worktreePath,
+    epicBranch,
+    taskBranch,
+    baseBranch,
+  } = args;
+
+  if (!(await validBranchName(repoPath, taskBranch))) {
+    return { ok: false, reason: `Invalid task branch name: ${taskBranch}` };
+  }
+  if (!(await validBranchName(repoPath, epicBranch))) {
+    return { ok: false, reason: `Invalid Epic branch name: ${epicBranch}` };
+  }
+  if (taskBranch === epicBranch) {
+    return {
+      ok: false,
+      reason: "A publish checkpoint requires a dedicated Epic-child task branch; the task and Epic branches are the same.",
+    };
+  }
+  if (!args.gitUserName.trim() || !args.gitUserEmail.trim()) {
+    return {
+      ok: false,
+      reason: "The effective project Git identity is incomplete; PM cannot create the checkpoint commit.",
+    };
+  }
+
+  try {
+    const [topLevel, currentBranch] = await Promise.all([
+      git(worktreePath, ["rev-parse", "--show-toplevel"]),
+      git(worktreePath, ["branch", "--show-current"]),
+    ]);
+    if (join(topLevel) !== join(worktreePath)) {
+      return {
+        ok: false,
+        reason: `The repository checkpoint worktree resolved to ${topLevel}, not ${worktreePath}.`,
+      };
+    }
+    if (currentBranch !== taskBranch) {
+      return {
+        ok: false,
+        reason: `The repository checkpoint worktree is on ${currentBranch || "a detached HEAD"}, not ${taskBranch}.`,
+      };
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Could not validate the repository checkpoint worktree: ${String(err instanceof Error ? err.message : err).trim().slice(0, 500)}`,
+    };
+  }
+
+  const remoteTaskBranch = await inspectOriginBranch(repoPath, taskBranch);
+  if (!remoteTaskBranch.ok) return remoteTaskBranch;
+  if (remoteTaskBranch.sha) {
+    return {
+      ok: false,
+      reason: `Epic-child branch origin/${taskBranch} already exists at ${remoteTaskBranch.sha.slice(0, 10)}; checkpoint publication must use only the Epic branch.`,
+    };
+  }
+
+  let createdCommit = false;
+  try {
+    const dirty = await git(worktreePath, ["status", "--porcelain"]);
+    if (dirty) {
+      await git(worktreePath, ["add", "--all"]);
+      const hasStagedChanges = !(await gitOk(worktreePath, ["diff", "--cached", "--quiet"]));
+      if (hasStagedChanges) {
+        await git(
+          worktreePath,
+          ["commit", "-m", args.commitSubject.slice(0, 240)],
+          {
+            GIT_AUTHOR_NAME: args.gitUserName,
+            GIT_AUTHOR_EMAIL: args.gitUserEmail,
+            GIT_COMMITTER_NAME: args.gitUserName,
+            GIT_COMMITTER_EMAIL: args.gitUserEmail,
+          },
+        );
+        createdCommit = true;
+      }
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `PM could not create the checkpoint commit: ${String(err instanceof Error ? err.message : err).trim().slice(0, 700)}`,
+    };
+  }
+
+  let checkpointSha: string;
+  try {
+    checkpointSha = await git(worktreePath, ["rev-parse", "HEAD"]);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `PM could not resolve the checkpoint commit: ${String(err instanceof Error ? err.message : err).trim().slice(0, 500)}`,
+    };
+  }
+
+  const merged = await mergeTaskBranchIntoEpic({
+    repoPath,
+    epicBranch,
+    taskBranch,
+    baseBranch,
+    gitUserName: args.gitUserName,
+    gitUserEmail: args.gitUserEmail,
+    message: args.mergeMessage,
+  });
+  if (!merged.ok) return merged;
+
+  try {
+    await git(repoPath, [
+      "fetch",
+      "--quiet",
+      "origin",
+      `+refs/heads/${epicBranch}:refs/remotes/origin/${epicBranch}`,
+    ]);
+    const epicRef = `refs/remotes/origin/${epicBranch}`;
+    if (!(await isAncestor(repoPath, checkpointSha, epicRef))) {
+      return {
+        ok: false,
+        reason: `Checkpoint ${checkpointSha} is not contained in the published Epic branch ${epicBranch}.`,
+      };
+    }
+    const dirtyAfterPublish = await git(worktreePath, ["status", "--porcelain"]);
+    if (dirtyAfterPublish) {
+      return {
+        ok: false,
+        reason: "The task worktree became dirty after checkpoint publication; PM left it in place and refused to advance its base.",
+      };
+    }
+    await git(worktreePath, ["merge", "--ff-only", epicRef]);
+    const epicSha = await git(worktreePath, ["rev-parse", "HEAD"]);
+    return {
+      ok: true,
+      kind: merged.kind === "already" ? "already" : "published",
+      checkpointSha,
+      epicSha,
+      createdCommit,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `The Epic checkpoint was published, but PM could not advance the active task branch to the new Epic tip: ${String(err instanceof Error ? err.message : err).trim().slice(0, 700)}`,
+    };
   }
 }

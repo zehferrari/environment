@@ -27,6 +27,12 @@ export const taskCacheTag = {
 export type TaskReplyCacheScope = "chat" | "comment";
 export type RevalidateTagFn = (tag: string) => void;
 
+// Repository/checkpoint runners execute outside Next's request context, so
+// their successful database writes cannot actively invalidate this cache.
+// Keep tags for immediate in-process refreshes, but also bound external-runner
+// staleness so a normal page refresh converges without a service restart.
+export const TASK_SHELL_CACHE_REVALIDATE_SECONDS = 15;
+
 export function tagsForTaskReplyScope(taskId: string, scope: TaskReplyCacheScope) {
   if (scope === "chat") {
     return [
@@ -55,6 +61,27 @@ export function revalidateTaskReplyScope(
 export function revalidateTaskShell(taskId: string, revalidate: RevalidateTagFn = revalidateTag) {
   revalidate(taskCacheTag.shell(taskId));
   revalidate(taskCacheTag.activity(taskId));
+}
+
+// Repository verification/finalization also calls task workflow helpers from
+// standalone `tsx` runners. Next's cache invalidator has no static-generation
+// async context there and throws after the database transition has already
+// committed. Treat only that missing-context invariant as a cache no-op; real
+// cache failures still surface. The board/data refresh remains best-effort for
+// out-of-process mutations, but it must never turn handled review feedback
+// into a failed repository spool job.
+export function revalidateTaskShellIfAvailable(
+  taskId: string,
+  revalidate: RevalidateTagFn = revalidateTag,
+) {
+  try {
+    revalidateTaskShell(taskId, revalidate);
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/static generation store missing/i.test(message)) return false;
+    throw error;
+  }
 }
 
 export function revalidateTaskAttachments(taskId: string, revalidate: RevalidateTagFn = revalidateTag) {
@@ -179,7 +206,10 @@ export function getCachedTaskDetailShell(taskId: string) {
       },
     }),
     ["task-detail-shell", taskId],
-    { tags: [taskCacheTag.shell(taskId)] },
+    {
+      tags: [taskCacheTag.shell(taskId)],
+      revalidate: TASK_SHELL_CACHE_REVALIDATE_SECONDS,
+    },
   )();
 }
 

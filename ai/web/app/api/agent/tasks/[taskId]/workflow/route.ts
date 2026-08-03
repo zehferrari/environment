@@ -16,7 +16,7 @@ import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtask
 import { findInProgressStartConflict, startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
 import { createSubTaskItem, normalizeSubTaskKind, setSubTaskCompletion } from "@/lib/tasks/subtasks";
-import { effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignTaskAfterPlanApproval } from "@/lib/tasks/reviewer-assignment";
 import { refillEpicQueue } from "@/lib/epics/queue";
@@ -27,12 +27,19 @@ import {
   TaskWorktreeError,
 } from "@/lib/tasks/worktree-claim";
 import { reserveTaskRepositoryState } from "@/lib/tasks/repository-state";
+import { enqueueTaskCheckpoint } from "@/lib/deploy/epic-merge";
+import {
+  activityPayloadUsesCheckpointAuthorization,
+  validateCheckpointAuthorizationText,
+} from "@/lib/deploy/checkpoint-authorization";
+import { isProtectedBranch } from "@/lib/projects/protected-branches";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const ACTIONS = [
   "start",
+  "publish_checkpoint",
   "ready_for_review",
   "submit_review",
   "review_feedback",
@@ -44,6 +51,8 @@ const ACTIONS = [
   "complete_subtask",
   "request_subtask",
   "request_task",
+  "flag_blocker",
+  "clear_blocker",
   "flag_extra_work_blocker",
 ] as const;
 
@@ -110,6 +119,7 @@ export async function POST(
     completed?: unknown;
     minutesSpent?: unknown;
     assignee?: unknown;
+    authorizationCommentId?: unknown;
   };
   try {
     payload = (await req.json()) as typeof payload;
@@ -214,7 +224,7 @@ export async function POST(
             parent: { select: { private: true, epic: { select: { private: true } } } },
           },
         },
-        repositoryRun: { select: { phase: true } },
+        repositoryRun: { select: { phase: true, worktreePath: true } },
         project: {
           select: {
             slug: true,
@@ -228,7 +238,7 @@ export async function POST(
             agentChangeBlockedBranches: true,
           },
         },
-        epic: { select: { status: true, actingManagerId: true, branchName: true, commitPrefix: true, workItemKey: true } },
+        epic: { select: { id: true, status: true, actingManagerId: true, branchName: true, commitPrefix: true, workItemKey: true } },
       },
     }),
   ]);
@@ -575,6 +585,162 @@ export async function POST(
       assignedTo: result.assignee,
       movedToTodo: result.movedToTodo,
       planRequested: result.planRequested,
+    });
+  }
+
+  if (action === "publish_checkpoint") {
+    if (!isAssignee) {
+      return NextResponse.json({ error: "Only the current assignee can request a repository checkpoint" }, { status: 403 });
+    }
+    if (agent.role !== "coding") {
+      return NextResponse.json({ error: "Only an implementation-capable assignee may publish a repository checkpoint" }, { status: 403 });
+    }
+    if (task.status !== "In Progress" || !task.approvedOn) {
+      return NextResponse.json({ error: "A checkpoint requires an approved In Progress task" }, { status: 409 });
+    }
+    if (!task.epic || task.epic.status !== "In Progress") {
+      return NextResponse.json({ error: "A checkpoint is available only for a task under an In Progress Epic" }, { status: 409 });
+    }
+    if (task.repositoryRun?.phase !== "active" || !task.repositoryRun.worktreePath) {
+      return NextResponse.json({
+        error: `The task repository must be active before checkpoint publication (current phase: ${task.repositoryRun?.phase ?? "missing"}).`,
+      }, { status: 409 });
+    }
+    if (!comment) {
+      return NextResponse.json({
+        error: "comment is required and must explain why an intermediate published checkpoint is needed",
+      }, { status: 400 });
+    }
+
+    const authorizationCommentId = typeof payload.authorizationCommentId === "string"
+      ? payload.authorizationCommentId.trim()
+      : "";
+    if (!authorizationCommentId) {
+      return NextResponse.json({
+        error: "authorizationCommentId is required; cite the active owner's explicit checkpoint/deployment authorization comment",
+      }, { status: 400 });
+    }
+    const authorization = await db.comment.findUnique({
+      where: { id: authorizationCommentId },
+      select: {
+        taskId: true,
+        body: true,
+        createdAt: true,
+        deletedAt: true,
+        user: { select: { id: true, kind: true, status: true, isOwner: true } },
+      },
+    });
+    if (
+      !authorization ||
+      authorization.taskId !== task.id ||
+      authorization.deletedAt ||
+      authorization.createdAt < task.approvedOn ||
+      authorization.user.kind !== "human" ||
+      authorization.user.status !== "active" ||
+      !authorization.user.isOwner
+    ) {
+      return NextResponse.json({
+        error: "Checkpoint authorization must be a live comment on this task, written by the active Mission Control owner after the current Action Plan approval",
+      }, { status: 403 });
+    }
+
+    const taskBranch = effectiveTaskBranchName(task);
+    const epicBranch = effectiveEpicBranchName(task.epic);
+    if (!task.project.repositoryPath || !taskBranch || !epicBranch || taskBranch === epicBranch) {
+      return NextResponse.json({
+        error: "publish_checkpoint requires a repository-backed Epic child with its own local-only task branch",
+      }, { status: 409 });
+    }
+    if (isProtectedBranch(task.project.agentChangeBlockedBranches, epicBranch)) {
+      return NextResponse.json({
+        error: `The Epic integration branch ${epicBranch} is protected from agent-originated repository changes`,
+      }, { status: 409 });
+    }
+
+    const explicitAuthorization = validateCheckpointAuthorizationText({
+      body: authorization.body,
+      taskKey: task.workItemKey,
+      taskBranch,
+      epicBranch,
+    });
+    if (!explicitAuthorization.ok) {
+      return NextResponse.json({
+        error: `The cited owner comment is not an explicit checkpoint capability: ${explicitAuthorization.reason}`,
+      }, { status: 403 });
+    }
+    const priorAuthorizationUses = await db.activityLog.findMany({
+      where: {
+        taskId: task.id,
+        kind: { in: ["pm.repo.checkpoint.enqueue", "pm.repo.checkpoint.ok"] },
+      },
+      select: { payload: true },
+    });
+    if (priorAuthorizationUses.some((entry) =>
+      activityPayloadUsesCheckpointAuthorization(entry.payload, authorizationCommentId)
+    )) {
+      return NextResponse.json({
+        error: "That owner checkpoint authorization has already been consumed. Obtain a new explicit owner authorization for another publication.",
+      }, { status: 409 });
+    }
+
+    let checkpoint;
+    try {
+      checkpoint = await enqueueTaskCheckpoint({
+        taskId: task.id,
+        projectId: task.projectId,
+        requestedByUserId: agent.user.id,
+        requestedByUsername: agent.user.username,
+        authorizationCommentId,
+        note: comment,
+      });
+    } catch (err) {
+      return NextResponse.json({
+        error: `PM could not enqueue the repository checkpoint: ${err instanceof Error ? err.message : String(err)}`,
+      }, { status: 503 });
+    }
+    if (checkpoint.blockedByFailedJob) {
+      return NextResponse.json({
+        error: "A previous checkpoint runner job is marked failed and needs operator retry/cleanup before another can be queued",
+        jobId: checkpoint.jobId,
+      }, { status: 409 });
+    }
+
+    if (checkpoint.enqueued) {
+      await db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId: task.id,
+          userId: agent.user.id,
+          kind: "pm.repo.checkpoint.enqueue",
+          targetAgent: agent.slug,
+          payload: JSON.stringify({
+            jobId: checkpoint.jobId,
+            taskBranch,
+            epicBranch,
+            authorizationCommentId,
+          }),
+        },
+      });
+    }
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
+    revalidateTaskShell(task.id);
+    revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    publishBoardTouch(task.projectId);
+    return NextResponse.json({
+      ok: true,
+      taskId: task.id,
+      status: "In Progress",
+      repositoryPhase: task.repositoryRun.phase,
+      checkpointJobId: checkpoint.jobId,
+      queued: checkpoint.enqueued,
+      alreadyQueued: !checkpoint.enqueued,
+      taskBranch,
+      epicBranch,
     });
   }
 
@@ -1006,6 +1172,197 @@ export async function POST(
     return created.id;
   }
 
+  if (action === "flag_blocker") {
+    // Durable escalation for infrastructure, credentials, access, external
+    // services, or human decisions that the active assignee cannot resolve.
+    // The task stays In Progress: Review remains reserved for completed work.
+    if (!isAssignee) {
+      return NextResponse.json({ error: "Only the assignee can flag an active blocker" }, { status: 403 });
+    }
+    if (task.status !== "In Progress") {
+      return NextResponse.json({ error: "A general blocker can be flagged only while the task is In Progress" }, { status: 409 });
+    }
+    if (!comment) {
+      return NextResponse.json({ error: "comment (the blocker and required intervention) is required" }, { status: 400 });
+    }
+    const latestBlocker = await db.activityLog.findFirst({
+      where: {
+        taskId: task.id,
+        kind: { in: ["task.blocker", "task.extra_work.blocker", "task.blocker.cleared"] },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { kind: true },
+    });
+    if (latestBlocker && latestBlocker.kind !== "task.blocker.cleared") {
+      await recordPmChannelRunWorkflowAction({
+        taskId: task.id,
+        agentSlug: agent.slug,
+        messageId,
+        action,
+      });
+      return NextResponse.json({ ok: true, taskId: task.id, flagged: "blocker", alreadyFlagged: true });
+    }
+
+    const [created] = await db.$transaction([
+      db.comment.create({
+        data: {
+          taskId: task.id,
+          userId: agent.user.id,
+          body: [
+            `**Blocker raised** by @${agent.user.username} (assignee):`,
+            "",
+            comment,
+            "",
+            "The task remains In Progress, but active implementation is paused pending external or owner intervention.",
+          ].join("\n"),
+        },
+        select: { id: true },
+      }),
+      db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId: task.id,
+          userId: agent.user.id,
+          kind: "task.blocker",
+          targetAgent: agent.slug,
+          payload: JSON.stringify({ action }),
+        },
+      }),
+      db.task.update({ where: { id: task.id }, data: { alertReporter: true } }),
+    ]);
+    const targets = new Set<string>();
+    if (reviewerId) targets.add(reviewerId);
+    if (task.reporterId) targets.add(task.reporterId);
+    for (const targetUserId of targets) {
+      await sendTaskWorkflowNotification({
+        taskId: task.id,
+        targetUserId,
+        actor,
+        reason: "blocker",
+        body: [
+          `Assignee @${agent.user.username} raised a blocker on "${task.title}":`,
+          comment,
+          "Resolve or decide the external dependency, then reply with the unblocking evidence so the assignee can clear the blocker and resume.",
+        ].join("\n"),
+      }).catch((error) =>
+        console.error("[pm] blocker notification failed:", task.id, targetUserId, error),
+      );
+    }
+    revalidateTaskReplyScope(task.id, "comment");
+    revalidateTaskReplyScope(task.id, "chat");
+    revalidateTaskShell(task.id);
+    revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    revalidatePath(`/projects/${task.project.slug}`);
+    publishBoardTouch(task.projectId);
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
+    return NextResponse.json({ ok: true, taskId: task.id, flagged: "blocker", commentId: created.id });
+  }
+
+  if (action === "clear_blocker") {
+    if (!isAssignee) {
+      return NextResponse.json({ error: "Only the assignee can clear an active blocker" }, { status: 403 });
+    }
+    if (task.status !== "In Progress") {
+      return NextResponse.json({ error: "A blocker can be cleared only while the task is In Progress" }, { status: 409 });
+    }
+    if (!comment) {
+      return NextResponse.json({ error: "comment (the unblocking evidence) is required" }, { status: 400 });
+    }
+    const latestBlocker = await db.activityLog.findFirst({
+      where: {
+        taskId: task.id,
+        kind: { in: ["task.blocker", "task.extra_work.blocker", "task.blocker.cleared"] },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { kind: true, createdAt: true },
+    });
+    if (!latestBlocker || latestBlocker.kind === "task.blocker.cleared") {
+      await recordPmChannelRunWorkflowAction({
+        taskId: task.id,
+        agentSlug: agent.slug,
+        messageId,
+        action,
+      });
+      return NextResponse.json({ ok: true, taskId: task.id, cleared: "blocker", alreadyCleared: true });
+    }
+
+    const newerIndependentAlerts = await db.activityLog.findMany({
+      where: {
+        taskId: task.id,
+        createdAt: { gt: latestBlocker.createdAt },
+        kind: { in: ["pm.repo.verify.operational_error", "pm.repo.checkpoint.fail", "task.alert_reporter"] },
+      },
+      select: { kind: true, payload: true },
+    });
+    const hasNewerIndependentAlert = newerIndependentAlerts.some((entry) => {
+      if (entry.kind !== "task.alert_reporter") return true;
+      try {
+        const value = (JSON.parse(entry.payload ?? "{}") as { to?: unknown }).to;
+        return value === true || value === 1 || value === "1" || value === "true";
+      } catch {
+        return false;
+      }
+    });
+    const preserveIndependentAlert =
+      task.repositoryRun?.phase === "operational_error" || hasNewerIndependentAlert;
+    const [created] = await db.$transaction([
+      db.comment.create({
+        data: {
+          taskId: task.id,
+          userId: agent.user.id,
+          body: [
+            `**Blocker cleared** by @${agent.user.username} (assignee):`,
+            "",
+            comment,
+            "",
+            preserveIndependentAlert
+              ? "Active implementation may resume, but a separate operational alert remains active."
+              : "Active implementation has resumed.",
+          ].join("\n"),
+        },
+        select: { id: true },
+      }),
+      db.activityLog.create({
+        data: {
+          projectId: task.projectId,
+          taskId: task.id,
+          userId: agent.user.id,
+          kind: "task.blocker.cleared",
+          targetAgent: agent.slug,
+          payload: JSON.stringify({ action, preserveIndependentAlert }),
+        },
+      }),
+      db.task.update({
+        where: { id: task.id },
+        data: { alertReporter: preserveIndependentAlert },
+      }),
+    ]);
+    revalidateTaskReplyScope(task.id, "comment");
+    revalidateTaskReplyScope(task.id, "chat");
+    revalidateTaskShell(task.id);
+    revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    revalidatePath(`/projects/${task.project.slug}`);
+    publishBoardTouch(task.projectId);
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
+    return NextResponse.json({
+      ok: true,
+      taskId: task.id,
+      cleared: "blocker",
+      commentId: created.id,
+      independentAlertActive: preserveIndependentAlert,
+    });
+  }
+
   if (action === "request_subtask") {
     // Reviewer/acting-manager -> assignee: request an implementation sub-task.
     if (!isReviewer) {
@@ -1038,6 +1395,7 @@ export async function POST(
         "Add it with action=add_subtask (subtaskKind=implementation) if you agree, or call action=flag_extra_work_blocker with a reason if it should block or needs an owner decision.",
       ].join("\n"),
     });
+    revalidateTaskReplyScope(task.id, "comment");
     revalidateTaskReplyScope(task.id, "chat");
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
@@ -1089,6 +1447,7 @@ export async function POST(
         "If you agree, create it through the Epic manager workflow (action=create_tasks) so it enters the ordered queue. Otherwise reply with why it is deferred.",
       ].join("\n"),
     });
+    revalidateTaskReplyScope(task.id, "comment");
     revalidateTaskReplyScope(task.id, "chat");
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
@@ -1137,6 +1496,7 @@ export async function POST(
         ].join("\n"),
       });
     }
+    revalidateTaskReplyScope(task.id, "comment");
     revalidateTaskReplyScope(task.id, "chat");
     revalidateTaskShell(task.id);
     revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);

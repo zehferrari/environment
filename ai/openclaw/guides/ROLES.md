@@ -96,7 +96,10 @@ When acting as implementer:
   `review_feedback` returns the task to the **front** of To Do.
   Leave Mission Control task changes in the PM-provisioned worktree and call
   `ready_for_review`; PM commits and publishes standalone branches. Epic-child
-  task branches stay local and only the Epic branch is published.
+  task branches stay local and only the Epic branch is published. If remaining
+  live checks require an intermediate deployable commit, use the PM
+  `publish_checkpoint` action only with an explicit active-owner authorization
+  comment id; PM publishes the Epic branch and keeps the task In Progress.
 
 When to escalate to another agent/reviewer — treat as **getting another
 perspective**, not as your model failing:

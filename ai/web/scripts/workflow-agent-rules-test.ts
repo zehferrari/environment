@@ -178,6 +178,43 @@ assert(
   taskWorkflowRoute.includes("ready_for_review rejected"),
   "the sub-task gate rejection must list the open items and how to clear them",
 );
+assert(
+  taskWorkflowRoute.includes('action === "publish_checkpoint"') &&
+    taskWorkflowRoute.includes("authorizationCommentId") &&
+    taskWorkflowRoute.includes("authorization.createdAt < task.approvedOn") &&
+    taskWorkflowRoute.includes("validateCheckpointAuthorizationText") &&
+    taskWorkflowRoute.includes("priorAuthorizationUses") &&
+    taskWorkflowRoute.includes("enqueueTaskCheckpoint"),
+  "deployment-dependent Epic checkpoints must require a fresh explicit single-use owner authorization and use the trusted repository runner",
+);
+assert(
+  taskWorkflowRoute.indexOf('action === "publish_checkpoint"') < taskWorkflowRoute.indexOf("openImplementationSubtasks"),
+  "publish_checkpoint must remain available before the completed-checklist review gate",
+);
+assert(
+  taskNotifications.includes("never SSH to the target") &&
+    taskNotifications.includes("substitute another OS identity as a manual fallback"),
+  "checkpoint guidance must keep target-host Git/deployment inside configured project automation",
+);
+assert(
+  taskWorkflowRoute.includes('action === "flag_blocker"') &&
+    taskWorkflowRoute.includes('task.status !== "In Progress"') &&
+    taskWorkflowRoute.includes("data: { alertReporter: true }"),
+  "active external blockers must have a durable assignee escalation action",
+);
+assert(
+  taskWorkflowRoute.includes('action === "clear_blocker"') &&
+    taskWorkflowRoute.includes("preserveIndependentAlert") &&
+    taskWorkflowRoute.includes("alreadyCleared"),
+  "resolved external blockers must clear only formal blocker state and preserve independent alerts",
+);
+assert(
+  !taskWorkflowRoute.includes("delegate_dependency") &&
+    !taskWorkflowRoute.includes("resolve_dependency") &&
+    !taskNotifications.includes("delegate_dependency") &&
+    !taskNotifications.includes("resolve_dependency"),
+  "task execution ownership must never move through hidden agent dependency state",
+);
 // PH-124 close-the-loop: ticking the last open implementation sub-task tells
 // the agent to call ready_for_review with the same reusable token AND
 // dispatches a belt-and-braces fresh workflow turn.
@@ -287,12 +324,13 @@ assert(
 );
 
 // PH-124 item B: every workflow action with a durable outcome settles the
-// PM-channel run. 7 original actions + the 5 that used to leave the run
-// dangling (add_subtask, complete_subtask, request_subtask, request_task,
-// flag_extra_work_blocker) = 12 call sites.
+// PM-channel run. The formal external-blocker lifecycle adds flag_blocker and
+// clear_blocker to the previous durable outcomes; each idempotent
+// already-settled response has its own call site. Task ownership never gains a
+// second hidden dependency lifecycle.
 assert(
-  taskWorkflowRoute.split("recordPmChannelRunWorkflowAction(").length - 1 === 12,
-  "all 12 durable-outcome workflow actions must settle the PM-channel run",
+  taskWorkflowRoute.split("recordPmChannelRunWorkflowAction(").length - 1 === 17,
+  "all durable-outcome and idempotent workflow paths must settle the PM-channel run",
 );
 
 // request-workflow-turn: PM-bearer-authenticated self-service turn re-arm.
@@ -643,6 +681,52 @@ async function pmRunSettlementSlice() {
       `request_task must succeed (got ${requestedTask.status}: ${JSON.stringify(requestedTask.body)})`,
     );
     await assertSettled("wf-assignee", requestTaskGrant, "request_task");
+
+    // flag_blocker / clear_blocker (assignee): durable external blocker
+    // escalation must pause stale monitoring, then explicitly resume it.
+    const activeBlockerGrant = await grantFor("wf-assignee");
+    const activeFlagged = await call("wf-assignee", activeBlockerGrant, {
+      action: "flag_blocker",
+      comment: "deployment host rejects its Bitbucket public key; restore repository access",
+    });
+    assert(activeFlagged.status === 200, `flag_blocker must succeed (got ${activeFlagged.status}: ${JSON.stringify(activeFlagged.body)})`);
+    await assertSettled("wf-assignee", activeBlockerGrant, "flag_blocker");
+    assert((await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "flag_blocker must set alertReporter");
+
+    const clearBlockerGrant = await grantFor("wf-assignee");
+    const cleared = await call("wf-assignee", clearBlockerGrant, {
+      action: "clear_blocker",
+      comment: "dedicated deploy key now authenticates and git fetch succeeds",
+    });
+    assert(cleared.status === 200, `clear_blocker must succeed (got ${cleared.status}: ${JSON.stringify(cleared.body)})`);
+    await assertSettled("wf-assignee", clearBlockerGrant, "clear_blocker");
+    assert(!(await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "clear_blocker must clear alertReporter");
+
+    const preservedBlockerGrant = await grantFor("wf-assignee");
+    const preservedFlagged = await call("wf-assignee", preservedBlockerGrant, {
+      action: "flag_blocker",
+      comment: "external decision remains pending while a separate repository alert is raised",
+    });
+    assert(preservedFlagged.status === 200, `second flag_blocker must succeed (got ${preservedFlagged.status}: ${JSON.stringify(preservedFlagged.body)})`);
+    await assertSettled("wf-assignee", preservedBlockerGrant, "flag_blocker");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await db.activityLog.create({
+      data: {
+        projectId: project.id,
+        taskId: task.id,
+        kind: "task.alert_reporter",
+        payload: JSON.stringify({ to: true, via: "test-independent-alert" }),
+      },
+    });
+    const preservedClearGrant = await grantFor("wf-assignee");
+    const preservedClear = await call("wf-assignee", preservedClearGrant, {
+      action: "clear_blocker",
+      comment: "external decision arrived; repository alert still needs operator attention",
+    });
+    assert(preservedClear.status === 200, `clear_blocker with independent alert must succeed (got ${preservedClear.status}: ${JSON.stringify(preservedClear.body)})`);
+    await assertSettled("wf-assignee", preservedClearGrant, "clear_blocker");
+    assert((await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "clear_blocker must preserve a newer independent true alert");
+    await db.task.update({ where: { id: task.id }, data: { alertReporter: false } });
 
     // flag_extra_work_blocker (assignee)
     const blockerGrant = await grantFor("wf-assignee");

@@ -45,8 +45,9 @@ from a stale local checkout; update or recreate the branch from the base named
 in the verifier result before retrying review. Legacy jobs without a
 snapshotted base use remote HEAD, then `main`/`master`. Epic children are
 instead verified on their LOCAL ref against the Epic integration branch
-(local `refs/heads/<epicBranch>` first, `origin/<epicBranch>` fallback), which
-removes the recurring "does not contain origin/master" churn for Epic work.
+(freshly fetched `origin/<epicBranch>` first, local fallback only when origin
+has no Epic ref yet), which matches the finalizer and prevents a stale local
+Epic checkout from releasing an already-conflicting child to review.
 
 ## 1b. Local-only Epic-child branches + the epic-merge runner
 
@@ -72,6 +73,11 @@ task branches never reach origin** (policy P6). The lifecycle:
    directly and fails reviewer hand-off with a visible monitor comment if the
    task ref exists remotely (covering `--no-verify` and pre-policy branches).
    It never auto-pushes an Epic child.
+   When live verification first requires a remote commit, the separate
+   owner-authorized `publish_checkpoint` action creates an intermediate PM
+   commit, merges/pushes only the Epic branch, and fast-forwards the still
+   active child branch to that published tip. The Task remains In Progress and
+   must still complete its checklist and pass the normal review gate.
 4. **Review acceptance → merge**: `review_done` leaves the task in Review and
    drops a finalization job into `/var/lib/pm/epic-merge/`
    (env `PM_EPIC_MERGE_DIR`). The unsandboxed
@@ -82,12 +88,16 @@ task branches never reach origin** (policy P6). The lifecycle:
    consumes the LOCAL child ref (`origin/<taskBranch>` remains as a legacy
    fallback), runs in a throwaway detached worktree, pushes **only the Epic
    integration branch** (eagerly after every merge), and fast-forwards the
-   local Epic ref so the next sibling claim/verify sees current state. A task
+   local Epic ref best-effort for later claims and offline fallback. A task
    branch found neither locally nor on origin returns the task to the front of
    To Do with a Monitor Agent comment; the reviewer is not woken again.
    Conflicts behave the same way. The assignee resolves locally and the merge
    retries only after the task is resubmitted and accepted again. The child
    worktree/local branch is removed before Done.
+   The compatibility poll considers only tasks with a code-touching repository
+   run; legacy Done children without repository state and explicit no-change
+   submissions are never reopened merely because their old child ref is
+   already absent.
 5. **Epic Done → publish + cleanup**: when an Epic reaches Done (auto-rollup
    or human status change), PM enqueues a `kind:"cleanup"` finalization job in
    the same spool even when no child refs need removal. The runner waits for

@@ -25,6 +25,10 @@ const FIRST_ACTIVITY_TIMEOUT_MS = Number.parseInt(
   process.env.PM_OPENCLAW_FIRST_ACTIVITY_TIMEOUT_MS ?? "300000",
   10,
 );
+const ACCEPTED_ACTIVITY_TIMEOUT_MS = Number.parseInt(
+  process.env.PM_CHANNEL_JOB_ACCEPTED_TIMEOUT_MS ?? "1800000",
+  10,
+);
 const STREAM_INACTIVE_TIMEOUT_MS = Number.parseInt(
   process.env.PM_OPENCLAW_STREAM_INACTIVE_TIMEOUT_MS ?? "180000",
   10,
@@ -664,12 +668,22 @@ export async function getPmChannelRunSnapshot(target: PmChannelReplyTarget) {
   if ((run.status === "complete" || run.status === "canceled") && run.completedAt) return run;
 
   if (
-    (run.status === "queued" || run.status === "accepted") &&
+    run.status === "queued" &&
     now - lastEventAt > timeoutMs(FIRST_ACTIVITY_TIMEOUT_MS, 150_000)
   ) {
     return failRun(
       target,
       "Agent did not start streaming after the local handoff.",
+    );
+  }
+
+  if (
+    run.status === "accepted" &&
+    now - lastEventAt > timeoutMs(ACCEPTED_ACTIVITY_TIMEOUT_MS, 1_800_000)
+  ) {
+    return failRun(
+      target,
+      "Agent did not start streaming before the accepted execution lease expired.",
     );
   }
 

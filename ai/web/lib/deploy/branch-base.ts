@@ -137,10 +137,10 @@ export async function fetchVerificationBranch(
 
 // Epic-child local-only mode (P6): the task branch lives ONLY in
 // refs/heads/<branch>; its review base is the Epic integration branch, not
-// origin/master. Prefer the local Epic ref (kept fresh by the epic-merge
-// runner's fast-forward) and fall back to origin/<epicBranch>; refresh the
-// origin ref best-effort first so a stale remote-tracking ref cannot pass a
-// branch that no longer contains the current Epic tip.
+// origin/master. Refresh and prefer origin/<epicBranch>, exactly like the
+// finalizer. A local Epic branch can remain stale while checked out in another
+// worktree, so it is only an offline/first-child fallback when origin has no
+// Epic ref yet.
 export type EpicVerificationBase = {
   epicBranch: string;
   baseRef: string | null;
@@ -164,7 +164,7 @@ export async function resolveEpicVerificationBase(
     ["fetch", "--quiet", "origin", `+refs/heads/${validEpicBranch}:refs/remotes/origin/${validEpicBranch}`],
     { timeout: 60_000 },
   );
-  for (const baseRef of [`refs/heads/${validEpicBranch}`, `refs/remotes/origin/${validEpicBranch}`]) {
+  for (const baseRef of [`refs/remotes/origin/${validEpicBranch}`, `refs/heads/${validEpicBranch}`]) {
     const sha = await gitOrNull(repo, ["rev-parse", "--verify", `${baseRef}^{commit}`], { timeout: 10_000 });
     if (sha) return { epicBranch: validEpicBranch, baseRef, error: null };
   }

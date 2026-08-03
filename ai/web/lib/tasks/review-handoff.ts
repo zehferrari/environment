@@ -16,7 +16,7 @@ import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { isProtectedBranch } from "@/lib/projects/protected-branches";
 import { resolveReviewOwnerId } from "@/lib/tasks/workflow-actors";
-import { revalidateTaskShell } from "@/lib/tasks/cache";
+import { revalidateTaskShellIfAvailable } from "@/lib/tasks/cache";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import {
   resolveActiveMonitorAgent,
@@ -194,11 +194,11 @@ async function moveToReviewAndDispatch(args: {
       contextLine: `"${task.title}" passed repository validation and moved to Review.`,
     });
     for (const assigned of refill.assignments) {
-      revalidateTaskShell(assigned.task.id);
+      revalidateTaskShellIfAvailable(assigned.task.id);
       refillAssignments.push({ taskId: assigned.task.id });
     }
   }
-  revalidateTaskShell(task.id);
+  revalidateTaskShellIfAvailable(task.id);
   publishBoardTouch(task.projectId);
   return { status: "Review" as const, refillAssignments };
 }
@@ -209,11 +209,12 @@ export async function completeTaskReviewHandoffAfterValidation(args: {
   candidateSha: string | null;
   validationOutcome: Extract<RepositoryValidationOutcome, "valid" | "valid_with_warning">;
   validationSummary?: string | null;
+  repoTouched?: boolean;
 }) {
   return moveToReviewAndDispatch({
     ...args,
     via: "monitor-repository-validation",
-    repoTouched: true,
+    repoTouched: args.repoTouched ?? true,
   });
 }
 
@@ -278,9 +279,11 @@ export async function failTaskReviewValidation(args: {
         args.error,
         "Correct the reported problem, start the task again, and resubmit it. The reviewer was not notified.",
       ].join("\n"),
-    });
+    }).catch((error) =>
+      console.error("[pm] repository validation feedback notification failed:", task.id, error),
+    );
   }
-  revalidateTaskShell(task.id);
+  revalidateTaskShellIfAvailable(task.id);
   publishBoardTouch(task.projectId);
   return { status: "To Do" as const };
 }

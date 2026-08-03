@@ -138,9 +138,15 @@ the entry-point overview.
   original PM notification no longer matches the task's current
   owner/status. Defaults are intentionally short because Mission Control is
   the source of truth and the first wake already happened: `To Do` not started after 2 min, `In Progress` stale
-  after 5 min, and Review waiting after 10 min. `In Progress` means active
-  implementation; waiting for reviewer/manager/reporter feedback belongs in
-  `Review` with one concise assignee note. For `In Progress` tasks, the
+  after 5 min, and Review waiting after 10 min. `In Progress` remains the
+  state for incomplete implementation, including a formal infrastructure,
+  credential, external-service, or human-decision blocker; `Review` is only
+  for completed work awaiting review. A formal blocker suppresses ordinary
+  stale-assignee recovery until the assignee records that it is cleared. A
+  generic `alertReporter` value alone does not suppress recovery because
+  repository and administrative alerts use that flag too. Task execution
+  stays with the visible assignee; independent cross-agent work requires a
+  separate explicitly assigned PM task. For `In Progress` tasks, the
   stale timer is reset by the assignee's latest task comment after the
   task entered `In Progress`, so real progress suppresses repeat nudges while
   silence still escalates. PM workflow kinds bypass monitor-agent judgment and
@@ -163,10 +169,18 @@ the entry-point overview.
   the same terminal row; failures older than
   `pm_workflow.failed_run_max_age_hours` (default 48) never alert, and
   `retryable` runs (mid retry-backoff) are suppressed until twice the
-  channel-stall warn threshold. When a resolved nudge target is a human
+  channel-stall warn threshold. Before issuing a non-channel recovery, the
+  monitor also suppresses duplicate work while any queued, accepted,
+  streaming, or retryable PM-channel run exists for the same task and agent.
+  When a resolved nudge target is a human
   rather than an active agent, the recovery ladder and service restarts are
   skipped — the human gets a single Telegram/board notification, deduplicated
   until the underlying PM state changes.
+  An `accepted` turn gets a separate execution grace
+  (`pm_workflow.channel_accepted_warn_minutes`, default 30) before stalled-turn
+  recovery. The ordinary two-minute no-start threshold applies to dispatch,
+  not a live tool-heavy agent execution; restarting inside that grace can kill
+  the very browser/tool work the workflow is waiting for.
 
 ## Registry-driven
 

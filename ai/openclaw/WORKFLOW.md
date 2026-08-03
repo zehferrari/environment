@@ -497,10 +497,16 @@ Latency / PM queue/status names:
    `approved_on` is set. Do not use hidden routes or direct database
    edits to force status.
 8. If blocked before starting, do not start unless explicitly instructed.
-   If a blocker appears after starting and you need reviewer, manager, or
-   reporter input, move the task to `Review` through the PM workflow
-   endpoint with one concise note. Wait until the blocker is actually
-   done/landed, not merely approved.
+   Task execution always belongs to the visible assignee. If another agent
+   must perform independent work, create and explicitly assign a separate PM
+   Task so ownership and dependencies remain visible. If a blocker requires infrastructure,
+   credential, external-service, reviewer, manager, or reporter intervention,
+   keep the incomplete task `In Progress` and call `flag_blocker` once with
+   the evidence and required intervention. PM sets `alert_reporter`, notifies
+   the decision owners, and suppresses ordinary stale-work nudges. Do not
+   repeat the blocker. After the dependency is actually resolved/landed, call
+   `clear_blocker` with the unblocking evidence and resume. `Review` is only
+   for completed implementation.
 9. **Action Plan.** The Action Plan message is mandatory for every new
    assignment before implementation. The approver chain is defined in
    [Action Plan approval](#action-plan-approval). When a Task Action Plan
@@ -539,6 +545,25 @@ Latency / PM queue/status names:
     Epic-child branches remain local and PM merges them into the Epic branch
     after review; only the Epic branch reaches origin. Do not create or update
     a pull request. PR creation and landing are human-only.
+    If an Epic-child task's remaining live-verification steps require a
+    remotely deployable commit, use `publish_checkpoint` instead of committing,
+    pushing, or submitting incomplete work. This requires an explicit task
+    fresh comment from the active owner after the current plan approval that
+    names the Task key/branch and target Epic branch; cite that exact
+    `authorizationCommentId` and give a concise reason. The authorization is
+    single-use. PM creates the
+    checkpoint commit, merges and pushes only the Epic branch, advances the
+    local task branch to that published tip, and keeps the task `In Progress`.
+    The configured project automation owns deployment of the exact returned
+    Epic SHA. Never SSH to the target, run Git there, or substitute another OS
+    identity as a manual fallback. Verify the automation's real outcome; fix
+    agent-actionable pipeline/code failures from that evidence, or call
+    `flag_blocker` when the integration genuinely needs human intervention.
+    After successful deployment, complete the remaining checklist and use
+    `ready_for_review` normally; PM recognizes an unchanged published
+    checkpoint baseline and finalizes it through the no-change cleanup path.
+    Never checkpoint ordinary progress or act
+    without the explicit owner authorization.
 15. On completion, tick any remaining implementation subtasks
     (`ready_for_review` is rejected while open ones exist), then move
     request validation through the PM workflow endpoint and include
@@ -581,7 +606,8 @@ per 5 minutes.
 - Role-aware PM workflow actions are allowed only through the native
   workflow endpoint supplied in a PM-channel turn. Assignees may
   `start` (To Do → In Progress only), `add_subtask`/`complete_subtask`,
-  and `ready_for_review`; the resolved reviewer may `approve_plan`,
+  `publish_checkpoint` (authorized Epic-child deployment checkpoints only),
+  `flag_blocker`/`clear_blocker`, and `ready_for_review`; the resolved reviewer may `approve_plan`,
   `assign_after_plan_approval` (optionally naming the assignee for an
   unassigned task), `request_subtask`, `review_feedback`, `review_done`,
   or `triage_to_todo`.
@@ -671,6 +697,10 @@ The durable workflow contract for the local PM workflow.
    the role-resolved Monitor Agent commits and verifies the branch. A valid
    or advisory-warning result moves it to `Review`; a concrete error comments
    and returns it to the front of `To Do` without waking the reviewer.
+   When live verification itself requires deploying the current Epic-child
+   changes, the assignee instead uses an owner-authorized `publish_checkpoint`;
+   PM publishes only the Epic branch and keeps the task `In Progress` until
+   those checks and the normal review handoff are complete.
 6. `review_feedback` returns the task to the **front** of To Do and
    wakes the assignee. The assignee addresses the feedback by starting
    the task again from `To Do` — `start` never applies to a task in
@@ -741,6 +771,14 @@ the exact silent token and no other text.
 - Questions and blockers are comment interactions at the current status.
   `ready_for_review` is reserved for completed implementation; Review work
   belongs to the resolved reviewer/manager role.
+- `publish_checkpoint` is the narrow exception for an `In Progress`
+  Epic-child whose remaining checks require a remotely reachable commit. It
+  requires the exact id of a fresh, single-use active-owner authorization
+  comment written after current plan approval and naming the Task source plus
+  target Epic branch. PM owns the checkpoint commit, publishes only
+  the Epic branch, resets the task's repository base to the published tip,
+  and leaves the task/worktree active. It never bypasses the eventual
+  checklist and `ready_for_review` gates.
 - `review_feedback` returns the task to the **front** of To Do and wakes
   the assignee; the assignee restarts it from `To Do` with `start`.
   There is no Review-resume.
@@ -788,12 +826,18 @@ non-actionable Epic (`Backlog`/`Done`), collapsed to one human-owned
 incident per Epic (`pm-epic-not-open`); active PM-channel turns that never started
 or stopped producing output.
 
-For `In Progress`, the stale timer uses the assignee's latest task comment
-after the task entered `In Progress`. A real progress comment resets the
-timer; silence after that still escalates. If the assignee is no longer
-actively implementing because they need reviewer/manager/reporter input,
-they must move the task to `Review` with one concise note instead of
-leaving it in `In Progress`.
+For `In Progress`, the stale timer normally uses the assignee's latest task
+comment after the task entered `In Progress`. A real progress comment resets
+the timer; silence after that still escalates. Only an active formal blocker
+(`task.blocker` / `task.extra_work.blocker` without a later
+`task.blocker.cleared`) suppresses the assignee timer. The generic
+`alert_reporter` flag also represents repository and administrative alerts and
+does not transfer or pause execution ownership. When a decision owner
+comments after the formal blocker, the monitor emits one
+`pm-blocker-response-awaiting-assignee` recovery turn; the assignee re-evaluates
+the response, calls `clear_blocker` with evidence when resolved, and resumes.
+Incomplete blocked work stays `In Progress`; it never moves to Review as a
+waiting room.
 
 PM workflow drift is deterministic and bypasses monitor-agent judgment:
 
@@ -811,6 +855,9 @@ Telegram does not resolve a PM workflow issue; only the PM probe no longer
 emitting that issue resolves it. A PM-channel nudge run counts as
 confirmed only when the run is alive — status `streaming`/`complete`, or
 freshly `accepted` — a `failed` run never confirms recovery. When a resolved
+nudge is `accepted`, allow the dedicated accepted-turn execution grace
+(default 30 minutes) before declaring it stalled; the two-minute dispatch
+lease is not an agent/tool execution timeout. When a resolved
 nudge target is a human rather than an active agent, the recovery ladder and
 service restarts are skipped; the human gets one notification, deduplicated
 until the underlying PM state changes.

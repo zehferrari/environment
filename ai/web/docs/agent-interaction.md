@@ -406,7 +406,7 @@ token for:
 POST /api/agent/tasks/<taskId>/workflow
 ```
 
-Allowed actions are `start`, `ready_for_review`, `review_feedback`,
+Allowed actions are `start`, `publish_checkpoint`, `ready_for_review`, `review_feedback`,
 `review_done`, `triage_to_todo`, `approve_plan`,
 `assign_after_plan_approval`, `add_subtask`, and `complete_subtask`
 (`submit_review` is accepted as a deprecated alias for
@@ -419,6 +419,22 @@ Allowed actions are `start`, `ready_for_review`, `review_feedback`,
   Progress including auto-start) or when the task's effective branch
   clashes with another agent's active work; the rejection names exactly
   what to finish first.
+- `publish_checkpoint` — assignee-only, Epic-child only, and the Task stays In
+  Progress. Use it only when open live-verification work requires a remotely
+  deployable commit. The request must include a concise `comment` plus
+  `authorizationCommentId`, the exact id of a fresh active-owner Task comment
+  that explicitly authorized this checkpoint/deployment after the current
+  Action Plan approval and names the Task key/branch plus target Epic branch.
+  The authorization is consumed once. PM creates the commit, merges/pushes only the Epic branch,
+  advances the local Task branch/base to the published tip, and returns the
+  deployable Epic SHA. The configured project automation owns deployment:
+  never SSH to the target, run Git there, or substitute another OS identity as
+  a manual fallback. Verify the automation's actual outcome and fix its real
+  agent-actionable failure evidence; use `flag_blocker` only if the deployment
+  integration genuinely needs human intervention. Never publish the child
+  branch or use this for ordinary progress. If no changes follow the
+  checkpoint, normal `ready_for_review` recognizes the recorded published
+  baseline and uses no-change finalization.
 - `ready_for_review` — starts PM-owned commit/validation while the task
   remains In Progress. Rejected with 409 while any implementation sub-task
   is still open. A valid or advisory-warning result moves the task to Review;
@@ -513,10 +529,23 @@ must not add another actor's implementation sub-tasks directly. Instead:
   Epic asks the epic acting manager to create a NEW task. `subtaskText` is the
   proposed task title; `comment` (the reason) is required. PM wakes the acting
   manager, who creates it via the Epic `create_tasks` workflow or defers it.
+- Task execution belongs to the visible ASSIGNEE. If another agent must do
+  independent work, create a separate explicitly assigned PM Task and
+  represent the dependency on the board; comments never create shadow
+  ownership.
 - `flag_extra_work_blocker` (`{comment}`) — the ASSIGNEE flags a requested
   extra sub-task/task as blocking the current scope: PM raises it to the owner
   (`alert_reporter`) and wakes the reviewer + reporter for a decision. Use this
   instead of silently absorbing unbounded scope.
+- `flag_blocker` (`{comment}`) — the ASSIGNEE durably escalates an active
+  infrastructure, credential, access, external-service, or human-decision
+  blocker. The Task stays In Progress, PM sets `alert_reporter`, wakes the
+  reviewer/reporter, and the stale-work monitor stops re-waking the assignee.
+  Call it once; do not repeat the blocker comment.
+- `clear_blocker` (`{comment}`) — after the dependency is actually resolved,
+  the ASSIGNEE records the unblocking evidence and clears the formal blocker.
+  Normal In Progress monitoring resumes; a newer independent repository or
+  administrative alert remains visible if one exists.
 When a task returns from Review (`review_feedback` places it at the front of
 To Do), add a sub-task per feedback item
 before starting so the bar reflects the remaining work. The task context also

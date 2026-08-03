@@ -38,6 +38,7 @@ async function main() {
   process.env.PM_ASYNC_DISPATCH = "1";
   process.env.PM_ASYNC_DISPATCH_INLINE_NUDGE = "0";
   process.env.PM_CHANNEL_BUS_DROP_DIR = dropDir;
+  process.env.PM_CHANNEL_JOB_ACCEPTED_TIMEOUT_MS = "1800000";
   delete process.env.PM_CHANNEL_JOB_MAX_ATTEMPTS;
   delete process.env.PM_CHANNEL_JOB_RETRY_BASE_MS;
   delete process.env.PM_OPENCLAW_CHANNEL_HTTP_FALLBACK;
@@ -46,12 +47,14 @@ async function main() {
 
   const { db } = await import("@/lib/db");
   const {
+    getPmChannelRunSnapshot,
     recordPmChannelRunEvent,
     recordPmChannelRunWorkflowAction,
   } = await import("@/lib/agents/pm-channel/runs");
   const {
     enqueueOpenClawPmChannelTurn,
     retryOrFailPmChannelJobForTurnFailure,
+    requeueStaleClaimedPmChannelJobs,
     runPmChannelWorkerOnce,
   } = await import("@/lib/agents/pm-channel/jobs");
   const { applyPmChannelStreamCallback } = await import("@/lib/agents/pm-channel/stream-callback");
@@ -125,9 +128,67 @@ async function main() {
         failedAt: true,
         completionAnomaly: true,
         completionAnomalyAt: true,
-        jobs: { select: { status: true, attemptCount: true, availableAt: true, lastError: true, payload: true } },
+        jobs: { select: { id: true, status: true, attemptCount: true, availableAt: true, lastError: true, payload: true } },
       },
     });
+
+    // ---- Lease split: accepted work gets an execution lease, not the
+    // two-minute dispatch-claim lease. A tool-heavy live turn must not be
+    // duplicated or failed while it is still legitimately running. ----
+    const leaseMessage = "lifecycle-accepted-lease";
+    await grantMessage(leaseMessage);
+    await enqueue({
+      target: commentTarget(leaseMessage),
+      text: `PM workflow notification for @${agentSlug}:\n\nRun a tool-heavy verification.`,
+      turnClass: "notification",
+    });
+    const leaseKey = `task-comment:${agentSlug}:${task.id}:${leaseMessage}`;
+    const leaseSeed = await runRow(leaseKey);
+    const leaseJobId = leaseSeed.jobs[0]!.id;
+    const leaseNow = new Date();
+    await db.$transaction([
+      db.pmChannelJob.update({
+        where: { id: leaseJobId },
+        data: {
+          status: "accepted",
+          attemptCount: 1,
+          acceptedAt: new Date(leaseNow.getTime() - 5 * 60_000),
+        },
+      }),
+      db.pmChannelRun.update({
+        where: { id: leaseSeed.id },
+        data: {
+          status: "accepted",
+          acceptedAt: new Date(leaseNow.getTime() - 5 * 60_000),
+          lastEventAt: new Date(leaseNow.getTime() - 5 * 60_000),
+        },
+      }),
+    ]);
+    await requeueStaleClaimedPmChannelJobs(leaseNow);
+    assert.equal(
+      (await runRow(leaseKey)).jobs[0]!.status,
+      "accepted",
+      "a five-minute accepted live turn must survive the two-minute claim lease",
+    );
+    assert.equal(
+      (await getPmChannelRunSnapshot(commentTarget(leaseMessage)))?.status,
+      "accepted",
+      "the run snapshot must use the same accepted execution lease as the job worker",
+    );
+    await db.pmChannelJob.update({
+      where: { id: leaseJobId },
+      data: { acceptedAt: new Date(leaseNow.getTime() - 31 * 60_000) },
+    });
+    await requeueStaleClaimedPmChannelJobs(leaseNow);
+    assert.equal(
+      (await runRow(leaseKey)).jobs[0]!.status,
+      "retryable",
+      "an accepted turn beyond the dedicated execution lease must recover",
+    );
+    await db.$transaction([
+      db.pmChannelJob.update({ where: { id: leaseJobId }, data: { status: "canceled" } }),
+      db.pmChannelRun.update({ where: { id: leaseSeed.id }, data: { status: "canceled" } }),
+    ]);
     const durableReply = (messageId: string) => db.activityLog.create({
       data: {
         kind: "task.chat.reply",

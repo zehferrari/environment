@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   fetchVerificationBranch,
+  resolveEpicVerificationBase,
+  validateEpicBase,
   validateOriginBase,
 } from "../lib/deploy/branch-base";
 
@@ -77,6 +79,41 @@ try {
   const stale = await validateOriginBase(verifier, "feature/v23-3", refreshed.baseBranch);
   assert.equal(stale.ok, false, "feature branches missing the current base tip must fail review");
   assert.match(stale.error ?? "", /does not contain the current origin\/master/);
+
+  git(seed, ["checkout", "master"]);
+  git(seed, ["checkout", "-b", "epic-v23"]);
+  writeFileSync(join(seed, "epic.txt"), "epic base\n");
+  git(seed, ["add", "epic.txt"]);
+  git(seed, ["commit", "-m", "create epic"]);
+  git(seed, ["push", "-u", "origin", "epic-v23"]);
+
+  git(verifier, ["fetch", "origin", "+refs/heads/epic-v23:refs/remotes/origin/epic-v23"]);
+  git(verifier, ["branch", "epic-v23", "origin/epic-v23"]);
+  git(verifier, ["checkout", "-b", "v23-epic-child", "epic-v23"]);
+  writeFileSync(join(verifier, "child.txt"), "child\n");
+  git(verifier, ["add", "child.txt"]);
+  git(verifier, ["commit", "-m", "V23-5 child"]);
+
+  writeFileSync(join(seed, "epic.txt"), "epic advanced\n");
+  git(seed, ["add", "epic.txt"]);
+  git(seed, ["commit", "-m", "advance epic"]);
+  git(seed, ["push", "origin", "epic-v23"]);
+
+  const staleLocalEpicSha = git(verifier, ["rev-parse", "refs/heads/epic-v23"]);
+  const epicBase = await resolveEpicVerificationBase(verifier, "epic-v23");
+  assert.equal(
+    epicBase.baseRef,
+    "refs/remotes/origin/epic-v23",
+    "Epic verification must prefer the finalizer's current origin base",
+  );
+  assert.notEqual(
+    git(verifier, ["rev-parse", epicBase.baseRef!]),
+    staleLocalEpicSha,
+    "the test must retain a stale local Epic ref",
+  );
+  const staleEpicChild = await validateEpicBase(verifier, "v23-epic-child", epicBase);
+  assert.equal(staleEpicChild.ok, false, "a child missing the current origin Epic tip must fail review");
+  assert.match(staleEpicChild.error ?? "", /does not contain the current Epic branch epic-v23/);
 
   console.log("branch-base-verification-test passed");
 } finally {

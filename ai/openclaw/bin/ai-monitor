@@ -1709,6 +1709,43 @@ def _pm_latest_comment_by(conn, task_id, user_id, since_s):
     return None
 
 
+def _pm_latest_blocker_activity(conn, task_id):
+    try:
+        return conn.execute(
+            """
+            SELECT kind, createdAt
+            FROM ActivityLog
+            WHERE taskId = ?
+              AND kind IN ('task.blocker', 'task.extra_work.blocker', 'task.blocker.cleared')
+            ORDER BY createdAt DESC
+            LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+    except Exception:
+        return None
+
+
+def _pm_has_live_channel_run(conn, task_id, agent_slug):
+    if not task_id or not agent_slug:
+        return False
+    try:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM PmChannelRun
+            WHERE taskId = ?
+              AND agentSlug = ?
+              AND status IN ('queued', 'accepted', 'streaming', 'retryable')
+            LIMIT 1
+            """,
+            (task_id, agent_slug),
+        ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
 def _pm_mentions_username(body, username):
     if not username:
         return False
@@ -1878,6 +1915,12 @@ def probe_pm_workflow(cfg, registry):
     warn_progress_s = int(pc.get("in_progress_stale_minutes", 5)) * 60
     warn_review_s = int(pc.get("review_wait_warn_minutes", 10)) * 60
     warn_channel_s = int(pc.get("channel_no_start_warn_minutes", 2)) * 60
+    # A gateway acknowledgement means the agent turn is executing, not that
+    # it failed to start. Native CLI turns can legitimately spend many
+    # minutes in tools before producing a PM-visible token; treating the
+    # ordinary two-minute dispatch lease as an execution timeout caused the
+    # monitor to restart agents in the middle of real work.
+    warn_accepted_channel_s = int(pc.get("channel_accepted_warn_minutes", 30)) * 60
     failed_run_max_age_hours = int(pc.get("failed_run_max_age_hours", 48))
     max_items = int(pc.get("max_items", 50))
 
@@ -2047,6 +2090,16 @@ def probe_pm_workflow(cfg, registry):
         def add(row, kind, target_agent, age_s, required_action, severity="warn", extra=None):
             if not target_agent:
                 return
+            # Never stack a monitor recovery behind a PM-channel turn that is
+            # already queued or executing for the same task/agent. Channel
+            # health items themselves remain eligible so their recovery ladder
+            # can settle a genuinely expired run.
+            if (
+                not kind.startswith("pm-channel-")
+                and kind != "pm-orphan-live-bubble"
+                and _pm_has_live_channel_run(conn, row["id"], target_agent)
+            ):
+                return
             out["items"].append({
                 "kind": kind,
                 "severity": severity,
@@ -2124,6 +2177,9 @@ def probe_pm_workflow(cfg, registry):
                     # Mid-ladder webapp retry with a scheduled backoff — give
                     # the retry ladder room before flagging a stall.
                     if age_s < warn_channel_s * 2:
+                        continue
+                elif run_status == "accepted":
+                    if age_s < warn_accepted_channel_s:
                         continue
                 elif age_s < warn_channel_s:
                     continue
@@ -2240,13 +2296,58 @@ def probe_pm_workflow(cfg, registry):
                 continue
 
             if status == "In Progress" and row["assigneeId"] and assignee_slug:
+                # A durable blocker escalation is deliberately human/external
+                # owned. The workflow action already notified the decision
+                # owners; repeatedly waking the assignee cannot make progress
+                # and only creates a stale-nudge loop. Once a decision owner
+                # responds after the formal blocker activity, wake the assignee
+                # exactly for that response; clear_blocker then resumes normal
+                # stale-work probes.
+                # Only a currently-active formal blocker suppresses assignee
+                # recovery. alertReporter is also used for repository/admin
+                # alerts and must never silently transfer or pause task
+                # execution ownership.
+                blocker = _pm_latest_blocker_activity(conn, row["id"])
+                blocker_s = _parse_pm_ts(blocker["createdAt"]) if blocker else None
+                if blocker and blocker["kind"] != "task.blocker.cleared":
+                    response = _pm_latest_comment_not_by(
+                        conn,
+                        row["id"],
+                        row["assigneeId"],
+                        blocker_s,
+                        row["assigneeUsername"],
+                        reviewer_username,
+                    )
+                    if response:
+                        response_ts = _parse_pm_ts(response["createdAt"])
+                        response_age = _pm_age_s(response["createdAt"]) or 0
+                        if (
+                            response_ts
+                            and response_age >= warn_channel_s
+                            and not _pm_has_comment_since(
+                                conn,
+                                row["id"],
+                                row["assigneeId"],
+                                response_ts,
+                            )
+                        ):
+                            add(
+                                row,
+                                "pm-blocker-response-awaiting-assignee",
+                                assignee_slug,
+                                response_age,
+                                "A decision owner responded after your active blocker. Re-evaluate it now: if resolved, call action=clear_blocker with the evidence and resume; otherwise keep the alert and post only material new blocker evidence.",
+                                extra={"reviewer": reviewer_slug, "comment_preview": (response["body"] or "")[:180]},
+                            )
+                    continue
                 status_s = _parse_pm_ts(row["statusChangedAt"]) or _parse_pm_ts(row["updatedAt"]) or _parse_pm_ts(row["createdAt"])
                 latest_assignee_comment = _pm_latest_comment_by(conn, row["id"], row["assigneeId"], status_s)
-                latest_progress_s = (
+                latest_assignee_progress_s = (
                     _parse_pm_ts(latest_assignee_comment["createdAt"])
                     if latest_assignee_comment
                     else status_s
                 )
+                latest_progress_s = latest_assignee_progress_s
                 progress_age = (
                     max(0, int(time.time()) - latest_progress_s)
                     if latest_progress_s is not None
@@ -2258,7 +2359,7 @@ def probe_pm_workflow(cfg, registry):
                         "pm-in-progress-stale",
                         assignee_slug,
                         progress_age,
-                        "Continue work, or move the task to Review with one concise note if it is complete or waiting for reviewer/manager/reporter feedback.",
+                        "Continue implementation now. If complete, call action=ready_for_review with one concise note. Never move incomplete work to Review as a waiting room. If another agent must perform separate work, create and explicitly assign a separate PM task; use flag_blocker only for a human/external dependency.",
                     )
                 continue
 
@@ -3015,6 +3116,7 @@ PM_WORKFLOW_RETRY_KINDS = {
     "pm-action-plan-awaiting-approval",
     "pm-todo-not-started",
     "pm-in-progress-stale",
+    "pm-blocker-response-awaiting-assignee",
     "pm-review-feedback-awaiting-assignee",
     "pm-review-response-awaiting-assignee",
     "pm-review-awaiting-reviewer",
@@ -4272,6 +4374,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
             "pm-action-plan-awaiting-approval",
             "pm-todo-not-started",
             "pm-in-progress-stale",
+            "pm-blocker-response-awaiting-assignee",
             "pm-review-feedback-awaiting-assignee",
             "pm-review-response-awaiting-assignee",
             "pm-review-awaiting-reviewer",
@@ -4629,6 +4732,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                         "pm-action-plan-awaiting-approval": ("wake-agent", "restart-and-wake"),
                         "pm-todo-not-started": ("wake-agent", "restart-and-wake"),
                         "pm-in-progress-stale": ("wake-agent", "restart-and-wake"),
+                        "pm-blocker-response-awaiting-assignee": ("wake-agent", "restart-and-wake"),
                         "pm-review-feedback-awaiting-assignee": ("wake-agent", "restart-and-wake"),
                         "pm-review-response-awaiting-assignee": ("wake-agent", "restart-and-wake"),
                         "pm-review-awaiting-reviewer": ("wake-agent", "restart-and-wake"),
@@ -4661,6 +4765,7 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                                 "pm-action-plan-awaiting-approval",
                                 "pm-todo-not-started",
                                 "pm-in-progress-stale",
+                                "pm-blocker-response-awaiting-assignee",
                                 "pm-review-feedback-awaiting-assignee",
                                 "pm-review-response-awaiting-assignee",
                                 "pm-review-awaiting-reviewer",

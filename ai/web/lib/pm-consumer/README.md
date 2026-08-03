@@ -99,6 +99,14 @@ activity rows. Direct-chat browser reconciliation happens through
 `GET /api/agents/<slug>/chat/messages`; the consumer only owns envelope
 delivery to OpenClaw.
 
+Queue recovery deliberately uses two leases. `claimed` is only the short
+dispatch lease (`PM_CHANNEL_JOB_CLAIM_TIMEOUT_MS`, default 2 minutes).
+`accepted` means OpenClaw is executing or has queued the turn and uses
+`PM_CHANNEL_JOB_ACCEPTED_TIMEOUT_MS` (default 30 minutes). Never reuse the
+dispatch lease as an agent execution timeout: tool-heavy PM turns may produce
+no PM-visible stream event for several minutes, and replaying/restarting them
+mid-run destroys real work.
+
 ## HOMELAB-46 acceptance
 
 - Typed envelope validation: `parsePmEvent` rejects anything not on

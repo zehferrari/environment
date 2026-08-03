@@ -20,9 +20,10 @@ function item(n: number, body = `body ${n}`): TimelineItemForBudget {
   const text = rendered.lines.join("\n");
   assert.equal(rendered.summarizedItems, 5);
   assert.match(text, /OLDER TIMELINE SUMMARY/);
-  assert.match(text, /\[2026-06-16T00:00:00.000Z\] activity task.update @agent \(agent\) \(item-0\):/);
+  assert.match(text, /oldest summarized rows omitted here/);
   assert.match(text, /RECENT TIMELINE VERBATIM/);
   assert.match(text, /\[2026-06-16T00:07:00.000Z\] comment @human \(item-7\):/);
+  assert(text.length <= caps.maxRenderedTimelineChars + 250, "timeline rendering must remain close to its aggregate hard budget");
 }
 
 {
@@ -32,6 +33,9 @@ function item(n: number, body = `body ${n}`): TimelineItemForBudget {
   assert.equal(rendered.truncatedBodies, 1);
   assert.match(rendered.lines.join("\n"), /\[truncated: 40 more chars\]/);
 }
+
+assert(CODE_CAPS.maxRenderedTimelineChars <= 150_000, "coding packets must preserve tool-loop context headroom");
+assert(MONITOR_CAPS.maxRenderedTimelineChars <= 100_000, "monitor packets must remain smaller than coding packets");
 
 {
   const original = process.env.PM_DIRECT_CHAT_CONTEXT_MESSAGES;

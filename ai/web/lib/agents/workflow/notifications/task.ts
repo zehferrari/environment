@@ -54,6 +54,8 @@ export type TaskWorkflowNotificationReason =
   | "backlog_plan_requested"
   | "todo_start_required"
   | "ready_for_review_available"
+  | "checkpoint_published"
+  | "checkpoint_failed"
   | "monitor_recovery"
   | "review_requested"
   | "review_feedback"
@@ -63,6 +65,7 @@ export type TaskWorkflowNotificationReason =
   | "reviewer_assignment_requested"
   | "subtask_requested"
   | "task_requested"
+  | "blocker"
   | "extra_work_blocker"
   | "policy_update";
 
@@ -141,8 +144,9 @@ function workflowPrompt(args: {
     {
       messageId: args.messageId,
       token,
-      action: "<start | approve_plan | ready_for_review | review_feedback | review_done | triage_to_todo | assign_after_plan_approval | add_subtask | complete_subtask>",
-      comment: "<optional on ready_for_review; required for review_feedback; use on ready_for_review when waiting for reviewer/manager/reporter feedback>",
+      action: "<start | publish_checkpoint | approve_plan | ready_for_review | review_feedback | review_done | triage_to_todo | assign_after_plan_approval | add_subtask | complete_subtask | request_subtask | request_task | flag_blocker | clear_blocker | flag_extra_work_blocker>",
+      comment: "<required for review_feedback, blocker/dependency actions, and scope requests; optional on ready_for_review>",
+      authorizationCommentId: "<required only on publish_checkpoint: id of a fresh single-use owner comment explicitly naming the checkpoint Task and target Epic branch>",
       repoTouched: "<true | false, only on ready_for_review; default true when branchName is set>",
       subtaskText: "<required on add_subtask: one concise, independently-actionable progress step>",
       subtaskId: "<required on complete_subtask: the (id: …) from the SUB-TASKS list in context>",
@@ -179,6 +183,7 @@ function workflowPrompt(args: {
         ? [
             `- EPIC-CHILD BRANCH RULE: NEVER commit or push this branch yourself. Origin pushes trigger unwanted deployments. PM creates the local submission commit, and after reviewer acceptance merges it into the Epic integration branch${args.epicBranch ? ` (${args.epicBranch})` : ""}; only the Epic branch is pushed.`,
             `- Leave all completed changes in ${args.branchName} and call action=ready_for_review with repoTouched=true. The task remains In Progress while the role-resolved Monitor Agent validates the local branch.`,
+            "- DEPLOYMENT-DEPENDENT CHECKPOINT EXCEPTION: if open implementation checks require a remotely reachable Epic-branch commit before they can be completed, first obtain a fresh explicit owner comment authorizing that intermediate publication/deployment and naming this Task key/branch plus the target Epic branch. Then call action=publish_checkpoint with that single-use comment id as authorizationCommentId and a concise reason in comment. PM creates the checkpoint commit, merges/pushes ONLY the Epic branch, advances your local task branch to the published tip, and keeps the task In Progress. The configured project automation owns deployment after publication: never SSH to the target, run Git there, or substitute another OS identity as a manual fallback. Never use this for ordinary progress or without explicit owner authorization.",
           ]
         : [
             `- NEVER commit or push this Mission Control branch yourself. Leave all completed changes in ${args.branchName} and call action=ready_for_review with repoTouched=true.`,
@@ -221,12 +226,14 @@ function workflowPrompt(args: {
     "- If you are the assignee and the task is in To Do with approved_on set, call the workflow endpoint with action=start, then begin work immediately. start works ONLY from To Do — there is no start/resume from Review.",
     "- If a reviewer leaves review_feedback, PM returns the task to the FRONT of To Do. Address the feedback by starting the task from To Do (action=start) — never expect to resume it in place from Review.",
     "- In Progress means active implementation. When implementation is complete, call the workflow endpoint with action=ready_for_review.",
+    "- If an Epic-child task cannot complete its remaining checklist until the current work is deployed, do not misuse ready_for_review and do not commit/push manually. With a fresh explicit active-owner authorization comment naming this Task and target Epic branch, use publish_checkpoint and cite that exact single-use comment id. After PM publishes the Epic branch, wait for and verify the configured project deployment automation for that exact SHA. Never SSH to the target, run Git there, or substitute another OS identity as a manual fallback. Fix an agent-actionable pipeline failure from its real evidence; use flag_blocker only when the deployment integration or external dependency genuinely needs human intervention. Then continue verification and finish through ready_for_review normally; PM recognizes an unchanged published checkpoint baseline.",
     "- Tick each implementation sub-task Done (action=complete_subtask) the MOMENT it completes — not in batches later. ready_for_review is REJECTED while open implementation sub-tasks exist; complete or remove stale items first.",
     "- If you complete work and no workflow turn is live (your token-bearing turn already ended), POST /api/agent/tasks/<taskId>/request-workflow-turn with your PM bearer token to receive a fresh workflow turn. It is rate-limited to once per task per 5 minutes and only works for the task's current assignee.",
     "- After Action Plan approval, do not keep discussing straightforward implementation. Start it, complete it, then use one concise ready_for_review note when the work is ready.",
     "- Sub-tasks are a lightweight progress checklist (text + done + minutes), NOT child tasks. Break the work into INDEPENDENT, PARALLELIZABLE steps and dispatch parallel sub-agents to tackle the independent ones at once whenever the work allows — don't serialize work that could run on multiple fronts. Keep the checklist current so the board shows how close the task is to done: action=add_subtask {subtaskText} to add a step, action=complete_subtask {subtaskId, completed, minutesSpent} as each lands (include the minutes it took for the task cost roll-up). Ids are in the SUB-TASKS list in your context. Do not create child Tasks for steps inside one task.",
     "- Questions and blockers may be discussed in comments at any status, but ready_for_review is only for completed implementation. Do not use Review as a waiting room.",
-    "- If a task is blocked in a way agents cannot resolve and human/reporter intervention is required, set `alert_reporter` to true/1 via a task update proposal so the task is visually highlighted for the reporter.",
+    "- Task execution belongs to the visible assignee. Never transfer work through comments or hidden workflow state. If another agent must perform independent work, create and explicitly assign a separate PM task with the dependency represented on the board.",
+    "- If active implementation is blocked by infrastructure, credentials, access, an external service, or a human decision you cannot resolve, call action=flag_blocker once with one concise comment naming the failure, evidence, and required intervention. PM keeps the task In Progress, sets alert_reporter, notifies the decision owners, and suppresses ordinary stale-work nudges. Do not repeat the blocker comment. After the dependency is actually resolved, call action=clear_blocker with the unblocking evidence and resume work.",
     "- Review means completed work is waiting for reviewer judgment. If you are allowed by project policy to accept it and are satisfied, call action=review_done; do not write an approval-only comment. Repository tasks remain in Review while PM publishes/merges, verifies, and removes the local worktree; only successful finalization moves them to Done. If changes or blockers remain, call action=review_feedback with a clear comment — PM returns the task to the FRONT of To Do for the assignee.",
     args.onlyReportersCanSetTasksDone
       ? "- Project policy: only the reporter can set Tasks to Done. Reviewers should leave concise review feedback or agreement, then wait for the reporter to complete it."

@@ -22,7 +22,10 @@ import {
   sendTaskCommentNotifications,
   sendTaskWorkflowNotification,
 } from "@/lib/agents/workflow/notifications/task";
-import { isSilentPmReplyText } from "@/lib/agents/ops/pm-silence";
+import {
+  isSilentPmReplyText,
+  isTransientPmProgressText,
+} from "@/lib/agents/ops/pm-silence";
 import { notifyHumanOfAgentReply } from "@/lib/push/notify-reply";
 import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache";
 import { revalidateEpicReplyScope } from "@/lib/epics/cache";
@@ -521,6 +524,13 @@ export async function POST(req: NextRequest) {
         headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
       },
     );
+  }
+
+  // OpenClaw emits this while it is still working. Persisting it as the
+  // agent's durable reply used to complete the PM job before the subsequent
+  // tool loop (or compaction recovery) had actually finished.
+  if (isTransientPmProgressText(body)) {
+    return NextResponse.json({ ok: true, transient: true });
   }
 
   if (await pmChannelTargetHasDurableReply(target)) {

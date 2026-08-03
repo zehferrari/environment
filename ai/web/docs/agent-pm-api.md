@@ -119,6 +119,9 @@ PM context packets use role-based caps from `lib/agents/context/caps.ts`.
 Recent hot-path rows are kept verbatim where possible, older timeline rows
 may be replaced by an attributed `OLDER TIMELINE SUMMARY`, and long bodies
 must include explicit `[truncated: ...]` or `[partial context: ...]` notes.
+The inline timeline has a hard aggregate budget sized to preserve headroom
+for coding-agent tool loops inside the active model window; use the scoped
+loopback grant URLs when an older body omitted from the summary is material.
 Direct chats may include a bounded base-archive chain when a conversation
 continues from an archived room; task/epic context JSON includes live and
 archived discussion in oldest-first order with deleted rows filtered.
@@ -709,7 +712,25 @@ Two operational notes surfaced during this pass:
 
 ### Reporter alert flag
 
-Task update proposals may include `alert_reporter` (or `alertReporter`) as `true`/`1` when a task is blocked in a way agents cannot resolve and a human/reporter must intervene. The PM UI highlights those task rows/cards with a low-opacity red background until the flag is cleared. Do not use it for ordinary reviewer feedback, routine review waits, or agent-actionable blockers.
+For an assigned `In Progress` Task, use the native workflow action
+`flag_blocker` with one concise evidence-bearing comment when an
+infrastructure, credential, access, external-service, or human-decision
+dependency cannot be resolved by the assignee. PM sets `alert_reporter`,
+notifies the decision owners, highlights the Task, and suppresses ordinary
+stale-assignee nudges. After the dependency is actually resolved, the assignee
+uses `clear_blocker` with the unblocking evidence; this clears the formal
+blocker while preserving a newer independent repository or administrative
+alert, if one exists. Task update proposals may
+still include `alert_reporter` (or `alertReporter`) for administrative repair.
+Do not use the flag for ordinary reviewer feedback, routine review waits, or
+agent-actionable blockers.
+
+### Cross-agent work
+
+Task execution remains with the visible assignee. Never transfer work through
+comments or hidden workflow activity. Independent work for another agent must
+be created as a separate explicitly assigned PM Task, with any dependency
+represented on the board. Human/external blockers still use `flag_blocker`.
 
 ### Hard task dependencies
 

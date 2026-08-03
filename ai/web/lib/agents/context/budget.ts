@@ -36,9 +36,13 @@ function summaryExcerpt(value: string, max: number) {
   return `${compact.slice(0, max).trimEnd()}…`;
 }
 
-function renderTimelineItem(item: TimelineItemForBudget, caps: ContextCaps) {
+function renderTimelineItem(
+  item: TimelineItemForBudget,
+  caps: ContextCaps,
+  maxBodyChars = bodyCap(item, caps),
+) {
   const kind = item.kind ? ` ${item.kind}` : "";
-  const clipped = clipWithMeta(item.body, bodyCap(item, caps));
+  const clipped = clipWithMeta(item.body, Math.min(bodyCap(item, caps), maxBodyChars));
   return {
     lines: [
       `[${item.createdAt}] ${item.type}${kind} ${item.actor} (${item.id}):`,
@@ -49,22 +53,35 @@ function renderTimelineItem(item: TimelineItemForBudget, caps: ContextCaps) {
   };
 }
 
-function renderTimelineSummary(items: TimelineItemForBudget[]) {
+function renderTimelineSummary(items: TimelineItemForBudget[], maxChars: number) {
   if (items.length === 0) return [];
 
-  const lines = [
+  const header = [
     "OLDER TIMELINE SUMMARY (oldest to newest):",
-    `[summarized: ${items.length} older items replaced with attributed timestamped excerpts to keep the context packet within budget]`,
+    `[summarized: ${items.length} older items; newest attributed excerpts are shown within the inline budget and every row remains listed in the timeline manifest]`,
   ];
   const counts = { comment: 0, chat: 0, activity: 0 };
   for (const item of items) counts[item.type] += 1;
-  lines.push(`Included in summary: ${counts.comment} comments, ${counts.chat} discussion messages, ${counts.activity} activity rows.`);
+  header.push(`Summary covers: ${counts.comment} comments, ${counts.chat} discussion messages, ${counts.activity} activity rows.`);
 
-  for (const item of items) {
+  const selected: string[] = [];
+  let selectedChars = 0;
+  const fixedChars = header.join("\n").length + 160;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
     const kind = item.kind ? ` ${item.kind}` : "";
     const excerpt = summaryExcerpt(item.body, item.type === "activity" ? 240 : 360);
-    lines.push(`- [${item.createdAt}] ${item.type}${kind} ${item.actor} (${item.id}): ${excerpt || "(empty)"}`);
+    const line = `- [${item.createdAt}] ${item.type}${kind} ${item.actor} (${item.id}): ${excerpt || "(empty)"}`;
+    if (fixedChars + selectedChars + line.length > maxChars) break;
+    selected.unshift(line);
+    selectedChars += line.length + 1;
   }
+  const omitted = items.length - selected.length;
+  const lines = [...header];
+  if (omitted > 0) {
+    lines.push(`[${omitted} oldest summarized rows omitted here; use the manifest ids or scoped live context when their bodies are needed]`);
+  }
+  lines.push(...selected);
   lines.push("");
   return lines;
 }
@@ -82,15 +99,21 @@ export function renderBudgetedTimeline(
   const older = recentCount > 0 ? timeline.slice(0, -recentCount) : timeline;
   const lines: string[] = [];
   let truncatedBodies = 0;
+  const timelineBudget = Math.max(500, caps.maxRenderedTimelineChars);
+  // Keep even the verbatim recent set bounded if an environment raises the
+  // per-body cap without raising the aggregate packet budget.
+  const recentBodyBudget = recent.length > 0
+    ? Math.max(40, Math.floor((timelineBudget - recent.length * 180) / recent.length))
+    : timelineBudget;
 
-  const renderedRecent = recent.map((item) => renderTimelineItem(item, caps));
+  const renderedRecent = recent.map((item) => renderTimelineItem(item, caps, recentBodyBudget));
   const recentChars = renderedRecent.reduce((sum, rendered) => sum + rendered.lines.join("\n").length, 0);
 
   if (older.length > 0) {
     const fullOlder = older.map((item) => renderTimelineItem(item, caps));
     const fullOlderChars = fullOlder.reduce((sum, rendered) => sum + rendered.lines.join("\n").length, 0);
-    if (fullOlderChars + recentChars > caps.maxRenderedTimelineChars) {
-      lines.push(...renderTimelineSummary(older));
+    if (fullOlderChars + recentChars > timelineBudget) {
+      lines.push(...renderTimelineSummary(older, Math.max(240, timelineBudget - recentChars - 80)));
     } else {
       for (const rendered of fullOlder) {
         if (rendered.truncated) truncatedBodies += 1;

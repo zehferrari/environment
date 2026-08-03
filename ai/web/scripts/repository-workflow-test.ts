@@ -5,6 +5,10 @@ import {
   isOperationalRepositoryFailure,
   semanticCommitDescriptionWarning,
 } from "@/lib/tasks/repository-validation";
+import {
+  activityPayloadUsesCheckpointAuthorization,
+  validateCheckpointAuthorizationText,
+} from "@/lib/deploy/checkpoint-authorization";
 
 assert.equal(
   semanticCommitDescriptionWarning({
@@ -44,6 +48,55 @@ assert.equal(
   "repository-policy failures must not be classified as infrastructure",
 );
 
+assert.deepEqual(
+  validateCheckpointAuthorizationText({
+    body: "I authorize PM to create and publish a checkpoint from PH-115 to lambda-replacement for deployment.",
+    taskKey: "PH-115",
+    taskBranch: "ph-115",
+    epicBranch: "lambda-replacement",
+  }),
+  { ok: true },
+  "checkpoint authorization must explicitly bind the operation, task, and target Epic branch",
+);
+assert.equal(
+  validateCheckpointAuthorizationText({
+    body: "Looks good; continue testing.",
+    taskKey: "PH-115",
+    taskBranch: "ph-115",
+    epicBranch: "lambda-replacement",
+  }).ok,
+  false,
+  "an unrelated owner comment must never become a checkpoint publication capability",
+);
+assert.equal(
+  validateCheckpointAuthorizationText({
+    body: "I do not authorize PM to publish a checkpoint from PH-115 to lambda-replacement.",
+    taskKey: "PH-115",
+    taskBranch: "ph-115",
+    epicBranch: "lambda-replacement",
+  }).ok,
+  false,
+  "an explicitly negated owner statement must never become a checkpoint publication capability",
+);
+assert.equal(
+  validateCheckpointAuthorizationText({
+    body: "We need authorization before PM can publish a checkpoint from PH-115 to lambda-replacement.",
+    taskKey: "PH-115",
+    taskBranch: "ph-115",
+    epicBranch: "lambda-replacement",
+  }).ok,
+  false,
+  "discussion about needing authorization must never become a checkpoint publication capability",
+);
+assert.equal(
+  activityPayloadUsesCheckpointAuthorization(
+    JSON.stringify({ authorizationCommentId: "comment-1" }),
+    "comment-1",
+  ),
+  true,
+  "checkpoint authorization consumption must be detectable from durable activity",
+);
+
 const root = process.cwd();
 const handoff = readFileSync(join(root, "lib/tasks/review-handoff.ts"), "utf8");
 const verifier = readFileSync(join(root, "scripts/pm-verify-branch-pushed.ts"), "utf8");
@@ -75,8 +128,27 @@ assert(
   "no-change repository tasks must still finalize and clean up their worktree before Done",
 );
 assert(
+  repositoryRunner.split('repositoryRun: { is: { repoTouched: true } }').length - 1 >= 3 &&
+    repositoryRunner.includes('task.repositoryRun?.repoTouched !== true'),
+  "Epic merge enqueue, execution, and cleanup defer must exclude legacy/no-change Done tasks",
+);
+assert(
   repositoryRunner.includes("allowWhileRunning: true"),
   "an operational finalization failure must enqueue its bounded retry while the current job is running",
+);
+assert(
+  repositoryRunner.includes('kind: "checkpoint"') &&
+    repositoryRunner.includes("publishTaskCheckpointToEpic") &&
+    repositoryRunner.includes("baseSha: checkpoint.epicSha") &&
+    repositoryRunner.includes('phase: "active"'),
+  "owner-authorized Epic checkpoints must publish through the runner, reset the active base, and keep the task In Progress",
+);
+assert(
+  verifier.includes("recordedCheckpointReviewBaseline") &&
+    verifier.includes("job.baseSha") &&
+    verifier.includes("subjectHasCommitPrefix(checkpointBaseline.checkpoint.subject") &&
+    verifier.includes("repoTouched: !checkpointBaseline"),
+  "an already-published checkpoint baseline must satisfy prefix review and use the no-change cleanup path",
 );
 assert(
   workflowRoute.includes('task.repositoryRun?.phase === "finalizing"'),
