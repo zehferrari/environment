@@ -717,10 +717,13 @@ For an assigned `In Progress` Task, use the native workflow action
 infrastructure, credential, access, external-service, or human-decision
 dependency cannot be resolved by the assignee. PM sets `alert_reporter`,
 notifies the decision owners, highlights the Task, and suppresses ordinary
-stale-assignee nudges. After the dependency is actually resolved, the assignee
-uses `clear_blocker` with the unblocking evidence; this clears the formal
-blocker while preserving a newer independent repository or administrative
-alert, if one exists. Task update proposals may
+stale-assignee nudges. Before treating a login failure as a blocker, retry the
+literal account identifier and endpoint from the latest trusted context. A
+decision-owner response to the formal blocker immediately dispatches a
+`blocker_response` turn to the assignee's stable task session. After the
+dependency is actually resolved, the assignee uses `clear_blocker` with the
+unblocking evidence; this clears the formal blocker while preserving a newer
+independent repository or administrative alert, if one exists. Task update proposals may
 still include `alert_reporter` (or `alertReporter`) for administrative repair.
 Do not use the flag for ordinary reviewer feedback, routine review waits, or
 agent-actionable blockers.

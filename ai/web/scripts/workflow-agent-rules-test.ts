@@ -126,11 +126,38 @@ assert(reviewAutomation.includes('status: "Done"'), "last Epic task completion m
 assert(reviewAutomation.includes("remainingOpenTasks === 0"), "the Epic Done rollup must only happen on the last open Epic task");
 
 const taskNotifications = readFileSync(join(root, "lib/agents/workflow/notifications/task.ts"), "utf8");
+const pmChannelReplyRoute = readFileSync(join(root, "app/api/openclaw/pm-channel/reply/route.ts"), "utf8");
 assert(taskNotifications.includes("never edit a primary checkout"), "worktree guidance must prohibit primary-checkout edits");
 assert(taskNotifications.includes("tag the reporter"), "worktree failure guidance must tell agents to tag the reporter");
 assert(taskNotifications.includes("never create the branch directory with mkdir/cp/rsync"), "worktree guidance must prohibit ordinary copied task folders");
 assert(taskNotifications.includes("worktreePath"), "workflow guidance must direct agents to PM's validated worktree path");
 assert(taskNotifications.includes("do not demand splitting for small or strictly sequential/dependent work"), "reviewer split-feedback rule must preserve small/sequential exception");
+assert(
+  taskNotifications.includes("usesStableTaskExecutionSession") &&
+    taskNotifications.includes("sessionBinding.openclawSessionKey") &&
+    taskNotifications.includes("buildTaskNativeIncrementalChannelPrompt"),
+  "In Progress monitor recovery must continue in the stable task execution session",
+);
+assert(
+  taskNotifications.includes("A failed tool command is not a terminal outcome") &&
+    taskNotifications.includes("reconnaissance-only turn"),
+  "monitor recovery must require concrete continued execution instead of a shallow silent turn",
+);
+assert(
+  taskNotifications.includes('args.reason === "blocker_response"') &&
+    taskNotifications.includes("guessed shorthand username is not blocker evidence"),
+  "blocker responses must reuse execution recovery and credential blockers must verify literal account details",
+);
+assert(
+  pmChannelReplyRoute.includes('originWorkflowReason === "blocker"') &&
+    pmChannelReplyRoute.includes('reason: "blocker_response"') &&
+    pmChannelReplyRoute.includes("targetUserId: blockedTask.assigneeId"),
+  "a decision-owner blocker response must immediately wake the visible assignee",
+);
+assert(
+  taskNotifications.includes("remove_subtask"),
+  "agent workflow guidance must expose obsolete/duplicate checklist cleanup",
+);
 
 // --- 2026-07 workflow overhaul (P1-P6) ---
 
@@ -145,6 +172,10 @@ assert(
 );
 
 const taskWorkflowRoute = readFileSync(join(root, "app/api/agent/tasks/[taskId]/workflow/route.ts"), "utf8");
+assert(
+  taskWorkflowRoute.includes('"remove_subtask"'),
+  "the task workflow route must support obsolete/duplicate checklist cleanup",
+);
 // start = To Do → In Progress only; the Review-resume branch is deleted.
 assert(taskWorkflowRoute.includes('task.status !== "To Do"'), "workflow start must be allowed from To Do only");
 assert(
@@ -329,7 +360,7 @@ assert(
 // already-settled response has its own call site. Task ownership never gains a
 // second hidden dependency lifecycle.
 assert(
-  taskWorkflowRoute.split("recordPmChannelRunWorkflowAction(").length - 1 === 17,
+  taskWorkflowRoute.split("recordPmChannelRunWorkflowAction(").length - 1 === 18,
   "all durable-outcome and idempotent workflow paths must settle the PM-channel run",
 );
 
@@ -655,6 +686,27 @@ async function pmRunSettlementSlice() {
     });
     assert(completed.status === 200, `complete_subtask must succeed (got ${completed.status}: ${JSON.stringify(completed.body)})`);
     await assertSettled("wf-assignee", completeGrant, "complete_subtask");
+
+    // remove_subtask (assignee) — obsolete/duplicate checklist cleanup must
+    // be possible through the same agent workflow capability.
+    const addObsoleteGrant = await grantFor("wf-assignee");
+    const obsolete = await call("wf-assignee", addObsoleteGrant, {
+      action: "add_subtask",
+      subtaskText: "obsolete duplicate step",
+    });
+    assert(obsolete.status === 200, `obsolete add_subtask must succeed (got ${obsolete.status}: ${JSON.stringify(obsolete.body)})`);
+    await assertSettled("wf-assignee", addObsoleteGrant, "add_subtask obsolete item");
+    const removeGrant = await grantFor("wf-assignee");
+    const removed = await call("wf-assignee", removeGrant, {
+      action: "remove_subtask",
+      subtaskId: obsolete.body.subtaskId,
+    });
+    assert(removed.status === 200, `remove_subtask must succeed (got ${removed.status}: ${JSON.stringify(removed.body)})`);
+    await assertSettled("wf-assignee", removeGrant, "remove_subtask");
+    assert(
+      await db.subTask.findUnique({ where: { id: String(obsolete.body.subtaskId) } }) === null,
+      "remove_subtask must delete the selected stale checklist item",
+    );
 
     // request_subtask (resolved reviewer)
     const requestSubtaskGrant = await grantFor("wf-reviewer");

@@ -3526,10 +3526,15 @@ def _merge_recovery_results(*parts):
 
 
 def restart_and_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
-    """Tier-2 escalation for bypass-monitor kinds: instead of `wake-agent`,
-    run `openclaw-control restart-and-wake <user> <reminder>`. Same shape
-    as auto_wake_stalled_agents — same grouping by user, same idle re-probe
-    after the action. Used when tier-1 wake-agent didn't recover the agent."""
+    """Tier-2 escalation for bypass-monitor kinds.
+
+    Semantic PM drift (for example, an In Progress task with no recent
+    progress) gets another native PM execution turn. It is not evidence that
+    the gateway is unhealthy, so restarting services here would destroy the
+    very browser/session state needed to finish the task. Service restarts are
+    reserved for explicit PM-channel no-start/stalled/failed evidence. Other
+    legacy queue kinds retain the existing restart-and-wake behavior.
+    """
     by_user = {}
     for issue in no_agent_issues:
         kind = issue.get("kind")
@@ -3600,15 +3605,19 @@ def restart_and_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
             }
             continue
         if _bucket_only_pm(b):
-            restart_cmd = [
-                "sudo", "-n", "/usr/local/sbin/openclaw-control",
-                "restart-services", user, "ai-monitor PM workflow retry",
-            ]
-            restart_rc, _, restart_err = run_cmd(restart_cmd, timeout=120)
-            gateway_ready = _wait_for_gateway_ready(user, registry, cfg)
+            restart_rc = None
+            restart_err = ""
+            gateway_ready = None
+            if _bucket_needs_pm_restart(b):
+                restart_cmd = [
+                    "sudo", "-n", "/usr/local/sbin/openclaw-control",
+                    "restart-services", user, "ai-monitor PM channel recovery",
+                ]
+                restart_rc, _, restart_err = run_cmd(restart_cmd, timeout=120)
+                gateway_ready = _wait_for_gateway_ready(user, registry, cfg)
             nudge_results = (
                 _run_pm_workflow_nudges(user, b, cfg)
-                if gateway_ready.get("ready")
+                if gateway_ready is None or gateway_ready.get("ready")
                 else _skipped_pm_nudge_results(
                     b,
                     gateway_ready.get("error") or "gateway readiness check failed",
@@ -3629,7 +3638,10 @@ def restart_and_wake_stalled_agents(no_agent_issues, cfg=None, registry=None):
                 "recovered": bool(recovered),
                 "email_results": {},
                 "all_email_resolved": None,
-                "action": "restart-services-and-pm-channel-nudge",
+                "action": (
+                    "restart-services-and-pm-channel-nudge"
+                    if restart_rc is not None else "pm-channel-nudge"
+                ),
                 "restart_rc": restart_rc,
                 "restart_err": restart_err.strip()[:200],
                 "gateway_ready": gateway_ready,
@@ -4449,8 +4461,9 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
 
             # Tier framework for bypass-monitor kinds:
             #   T1 = wake-agent / native PM-channel nudge
-            #   T2 = restart-and-wake / restart services + PM-channel nudge
-            #   T3 = final recovery attempt
+            #   T2 = repeat semantic PM nudge; restart only on concrete
+            #        service/channel-failure evidence
+            #   T3 = final recovery attempt under the same boundary
             #   T4 = Telegram only if the issue is still present after T3
             # The ev["attempts"] counter on each event tracks how many
             # tiers have already fired. Recovery from a tier resets the
@@ -4520,12 +4533,15 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                     k = event_key(i)
                     ev = state["events"].get(k, {})
                     ev["attempts"] = 2
+                    semantic_pm_only = i.get("kind", "").startswith("pm-") and i.get("kind") not in (
+                        "pm-channel-no-start", "pm-channel-stalled", "pm-channel-failed"
+                    )
                     ev.setdefault("attempt_history", []).append({
                         "ts": now,
                         "tier": 2,
                         "kind": i.get("kind"),
                         "route": "bypass-monitor",
-                        "action": "restart-and-wake",
+                        "action": "repeat-pm-channel-nudge" if semantic_pm_only else "restart-and-wake",
                         "wake_results": rw_results,
                     })
                     ev["next_attempt_after"] = now + confirmation_window_s
@@ -4728,15 +4744,15 @@ def dedupe_and_act(cfg, verdict, state, registry=None, dry_run=False):
                         "task-stalled-no-agent": ("wake-agent", "restart-and-wake"),
                         "agent-idle-with-queue": ("wake-agent", "restart-and-wake"),
                         "email-awaiting-action": ("wake-agent", "restart-and-wake"),
-                        "pm-action-plan-missing": ("wake-agent", "restart-and-wake"),
-                        "pm-action-plan-awaiting-approval": ("wake-agent", "restart-and-wake"),
-                        "pm-todo-not-started": ("wake-agent", "restart-and-wake"),
-                        "pm-in-progress-stale": ("wake-agent", "restart-and-wake"),
-                        "pm-blocker-response-awaiting-assignee": ("wake-agent", "restart-and-wake"),
-                        "pm-review-feedback-awaiting-assignee": ("wake-agent", "restart-and-wake"),
-                        "pm-review-response-awaiting-assignee": ("wake-agent", "restart-and-wake"),
-                        "pm-review-awaiting-reviewer": ("wake-agent", "restart-and-wake"),
-                        "pm-epic-not-open": ("wake-agent", "restart-and-wake"),
+                        "pm-action-plan-missing": ("wake-agent", "pm-channel-nudge"),
+                        "pm-action-plan-awaiting-approval": ("wake-agent", "pm-channel-nudge"),
+                        "pm-todo-not-started": ("wake-agent", "pm-channel-nudge"),
+                        "pm-in-progress-stale": ("wake-agent", "pm-channel-nudge"),
+                        "pm-blocker-response-awaiting-assignee": ("wake-agent", "pm-channel-nudge"),
+                        "pm-review-feedback-awaiting-assignee": ("wake-agent", "pm-channel-nudge"),
+                        "pm-review-response-awaiting-assignee": ("wake-agent", "pm-channel-nudge"),
+                        "pm-review-awaiting-reviewer": ("wake-agent", "pm-channel-nudge"),
+                        "pm-epic-not-open": ("wake-agent", "pm-channel-nudge"),
                         "pm-channel-no-start": ("pm-channel-nudge", "restart-services"),
                         "pm-channel-stalled": ("pm-channel-nudge", "restart-services"),
                         "pm-channel-failed": ("pm-channel-nudge", "restart-services"),

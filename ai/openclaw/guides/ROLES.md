@@ -146,8 +146,9 @@ You **do**:
   Epics (`Backlog`/`Done`).
   These PM workflow kinds normally bypass your judgment path; ai-monitor
   sends native PM-channel workflow nudges with the full task context,
-  restarts the target coding agent on tier 2, and pages only after the
-  deterministic ladder is exhausted.
+  repeats semantic nudges without destroying a healthy task/browser session,
+  and pages only after the deterministic ladder is exhausted. Restarts are
+  reserved for concrete PM-channel delivery/runtime failures.
 
 You **do not** (unless zeh expands the role):
 

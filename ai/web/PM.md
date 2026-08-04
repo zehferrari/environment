@@ -609,7 +609,12 @@ Actors do not directly add work to another actor's checklist:
   required intervention for an infrastructure, credential, access,
   external-service, or human-decision blocker. PM keeps the Task In Progress,
   sets `alertReporter`, wakes the decision owners, and suppresses the ordinary
-  stale-assignee nudge while the alert is active.
+  stale-assignee nudge while the alert is active. Credential/login evidence
+  must retry the literal account identifier and endpoint from trusted task
+  context rather than a guessed shorthand.
+- Decision-owner response to a formal blocker → PM immediately wakes the
+  assignee with a stable-session `blocker_response` execution continuation;
+  it does not wait for the fallback semantic monitor.
 - Assignee after resolution: `clear_blocker` with the unblocking evidence.
   PM clears the formal blocker and normal In Progress monitoring resumes,
   while preserving any newer independent repository/admin alert.

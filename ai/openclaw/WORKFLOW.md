@@ -334,7 +334,9 @@ Two distinct decomposition levels, each with its own creator and gate:
 - The assignee must tick each subtask `Done` (`complete_subtask`) **the
   moment it completes** — never in a batch at the end.
   `ready_for_review` is **rejected while open implementation subtasks
-  exist**; complete them, or delete/convert stale ones, first. When you
+  exist**; complete them, or use `remove_subtask` only for a genuinely
+  obsolete/duplicate item, first. Never remove unfinished scope to make the
+  progress bar pass. When you
   tick the last open implementation subtask, call `ready_for_review` in
   the same turn — the workflow token is reusable and the
   `complete_subtask` response tells you when you are clear.
@@ -504,9 +506,13 @@ Latency / PM queue/status names:
    keep the incomplete task `In Progress` and call `flag_blocker` once with
    the evidence and required intervention. PM sets `alert_reporter`, notifies
    the decision owners, and suppresses ordinary stale-work nudges. Do not
-   repeat the blocker. After the dependency is actually resolved/landed, call
-   `clear_blocker` with the unblocking evidence and resume. `Review` is only
-   for completed implementation.
+   repeat the blocker. Before flagging a credential/login blocker, re-read and
+   retry the exact account identifier and endpoint from trusted task context;
+   a guessed shorthand username is not blocker evidence. A decision-owner
+   response to the formal blocker automatically wakes the assignee in the
+   stable execution session. After the dependency is actually resolved/landed,
+   call `clear_blocker` with the unblocking evidence and resume. `Review` is
+   only for completed implementation.
 9. **Action Plan.** The Action Plan message is mandatory for every new
    assignment before implementation. The approver chain is defined in
    [Action Plan approval](#action-plan-approval). When a Task Action Plan
@@ -605,7 +611,8 @@ per 5 minutes.
   not blocked.
 - Role-aware PM workflow actions are allowed only through the native
   workflow endpoint supplied in a PM-channel turn. Assignees may
-  `start` (To Do → In Progress only), `add_subtask`/`complete_subtask`,
+  `start` (To Do → In Progress only),
+  `add_subtask`/`complete_subtask`/`remove_subtask`,
   `publish_checkpoint` (authorized Epic-child deployment checkpoints only),
   `flag_blocker`/`clear_blocker`, and `ready_for_review`; the resolved reviewer may `approve_plan`,
   `assign_after_plan_approval` (optionally naming the assignee for an
@@ -843,10 +850,19 @@ PM workflow drift is deterministic and bypasses monitor-agent judgment:
 
 ```text
 T1 = native PM-channel nudge / wake
-T2 = restart services and nudge again
-T3 = final restart/nudge recovery attempt
+T2 = repeat the native PM-channel nudge; restart only with concrete channel/service failure evidence
+T3 = final recovery attempt under the same boundary
 T4 = Telegram only if the issue is still present after T3's confirmation window
 ```
+
+An `In Progress` stale-work nudge resumes the assignee's stable task execution
+session. Each turn still carries a self-sufficient bounded PM context packet,
+but task memory and tool trajectory may continue across recovery turns. The
+turn is execution, not a status check: a failed tool command or reconnaissance
+alone is not a terminal outcome. The assignee keeps working until
+`ready_for_review` succeeds or `flag_blocker` records a precise external/human
+dependency. Semantic drift never justifies restarting a healthy gateway or
+browser; that would discard the state needed to finish the task.
 
 `monitor_triage.escalation_ladder.max_attempts` controls the recovery
 attempt count, and `pm_workflow.retry_after_tier3_seconds` controls when

@@ -408,7 +408,8 @@ POST /api/agent/tasks/<taskId>/workflow
 
 Allowed actions are `start`, `publish_checkpoint`, `ready_for_review`, `review_feedback`,
 `review_done`, `triage_to_todo`, `approve_plan`,
-`assign_after_plan_approval`, `add_subtask`, and `complete_subtask`
+`assign_after_plan_approval`, `add_subtask`, `complete_subtask`, and
+`remove_subtask`
 (`submit_review` is accepted as a deprecated alias for
 `ready_for_review`). Core transition semantics:
 
@@ -498,14 +499,16 @@ After plan approval, breaking the task into implementation sub-tasks is
 MANDATORY, and each sub-task must be ticked Done (`complete_subtask`) the
 moment it completes — not batched at the end. `ready_for_review` is
 rejected with 409 while any implementation sub-task is open: complete
-them, or delete/convert stale ones, then retry. Ticking the LAST open
+them, or call `remove_subtask` only for a genuinely obsolete/duplicate row,
+then retry. Never remove unfinished scope merely to clear the gate. Ticking the LAST open
 implementation sub-task returns an explicit instruction to call
 `ready_for_review` in the same breath with the same messageId + token
 (workflow tokens are reusable within their turn) — follow it; never end
 the turn with the work silently finished. POST
 `action=add_subtask` (`{subtaskText, subtaskKind?}`) to add a step and
 `action=complete_subtask` (`{subtaskId, completed, minutesSpent}`) as each
-lands — `minutesSpent` is the optional self-reported minutes that step took,
+lands. Use `action=remove_subtask` (`{subtaskId}`) only to delete an obsolete
+or duplicate item — `minutesSpent` is the optional self-reported minutes that step took,
 which the Task sums into a cost roll-up. Ids appear in the SUB-TASKS block of
 the task context. Do not create child Tasks for steps inside a single Task.
 
@@ -546,6 +549,14 @@ must not add another actor's implementation sub-tasks directly. Instead:
   the ASSIGNEE records the unblocking evidence and clears the formal blocker.
   Normal In Progress monitoring resumes; a newer independent repository or
   administrative alert remains visible if one exists.
+
+Before raising a credential/login blocker, the assignee must retry the exact
+account identifier and endpoint from the latest trusted task context; guessed
+shorthand identifiers are not failure evidence. A visible response from the
+decision owner to the formal blocker is dispatched immediately back to the
+assignee as a `blocker_response` continuation. It reuses the task's stable
+execution session so the assignee can clear the blocker and resume without
+waiting for the semantic monitor.
 When a task returns from Review (`review_feedback` places it at the front of
 To Do), add a sub-task per feedback item
 before starting so the bar reflects the remaining work. The task context also

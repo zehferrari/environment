@@ -138,6 +138,27 @@ async function resolveTaskReplyOrigin(args: {
   return { channel: "chat" as const, originCommentId: null };
 }
 
+async function taskWorkflowReasonForMessage(taskId: string, messageId: string) {
+  const row = await db.activityLog.findFirst({
+    where: {
+      taskId,
+      kind: "task.workflow.notify",
+      payload: { contains: `\"messageId\":\"${messageId}\"` },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { payload: true },
+  });
+  if (!row?.payload) return null;
+  try {
+    const payload = JSON.parse(row.payload) as { messageId?: unknown; reason?: unknown };
+    return payload.messageId === messageId && typeof payload.reason === "string"
+      ? payload.reason
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 async function persistTaskReply(
   target: Extract<PmChannelReplyTarget, { kind: "task-chat" | "task-comment" }>,
   body: string,
@@ -177,6 +198,9 @@ async function persistTaskReply(
     originChannel: original.originChannel,
     originCommentId: original.originCommentId,
   });
+  const originWorkflowReason = origin.channel === "comment"
+    ? await taskWorkflowReasonForMessage(target.taskId, target.messageId)
+    : null;
   const persistedBody = origin.channel === "chat"
     ? normalizeDiscussionReplySections(body)
     : body;
@@ -310,6 +334,30 @@ async function persistTaskReply(
       },
       excludeAgentSlugs: [target.agentSlug],
     });
+
+    // A decision-owner response to a formal blocker is a trusted workflow
+    // continuation, not an ordinary peer-authored mention. Close the loop
+    // immediately by waking the visible assignee in the stable execution
+    // session; otherwise the corrective comment is stored but the paused
+    // assignee does not see it until a later monitor sweep.
+    if (originWorkflowReason === "blocker") {
+      const blockedTask = await db.task.findUnique({
+        where: { id: target.taskId },
+        select: { assigneeId: true },
+      });
+      if (blockedTask?.assigneeId && blockedTask.assigneeId !== agentUser.id) {
+        await sendTaskWorkflowNotification({
+          taskId: target.taskId,
+          targetUserId: blockedTask.assigneeId,
+          actor: { id: agentUser.id, kind: "agent", username: target.agentSlug },
+          reason: "blocker_response",
+          body: [
+            `Decision owner @${target.agentSlug} responded to your active blocker in task comment ${reply.id}.`,
+            "Read that response now. If it resolves the dependency, call action=clear_blocker with the evidence and resume implementation immediately; otherwise keep the blocker active and add only material new evidence.",
+          ].join("\n"),
+        });
+      }
+    }
   }
 
   revalidateTaskReplyScope(target.taskId, reply.channel);

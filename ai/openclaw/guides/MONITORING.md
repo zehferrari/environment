@@ -151,9 +151,12 @@ the entry-point overview.
   task entered `In Progress`, so real progress suppresses repeat nudges while
   silence still escalates. PM workflow kinds bypass monitor-agent judgment and
   use the deterministic ladder directly: T1 sends a native PM-channel workflow
-  nudge with the full PM task context packet, T2 restarts agent services and
-  sends the PM-channel nudge again, and T3 performs a final restart/nudge
-  recovery attempt. Telegram is sent only on the next tick if the same issue
+  nudge with the full PM task context packet, T2 repeats the nudge, and T3
+  performs a final recovery attempt. Semantic workflow drift never restarts a
+  healthy gateway/browser; restart is reserved for concrete
+  `pm-channel-no-start`, `pm-channel-stalled`, or `pm-channel-failed` evidence.
+  `In Progress` recovery uses the stable task execution session so tool and
+  browser state survive repeated nudges. Telegram is sent only on the next tick if the same issue
   is still present after T3's confirmation window. Wake reminders include
   task id, project, status, Epic status, and the required next PM action.
   Agent-targeted PM workflow drift is retryable after Telegram via
@@ -310,9 +313,11 @@ Configured under `monitor_triage.escalation_ladder` in
 - **Bypass-monitor kinds** (default `agent-idle-with-queue`,
   `email-awaiting-action`, and all `pm-*` workflow-action kinds):
   T1 = `wake-agent` for generic queues/email or native PM-channel nudge for
-  PM workflow drift, T2 = `restart-and-wake` / restart-services plus PM-channel
-  nudge, T3 = final recovery attempt, T4 = Telegram with attempt history only
-  if the issue remains after T3. ai-monitor runs the actions itself; the
+  PM workflow drift. For semantic PM drift, T2 repeats the native nudge and T3
+  is the final nudge; only explicit PM-channel delivery/runtime failures may
+  restart services. Generic queue/email kinds retain their existing heavier
+  recovery. T4 = Telegram with attempt history only if the issue remains after
+  T3. ai-monitor runs the actions itself; the
   monitor agent is not in this judgment loop.
 - **Monitor-agent-bound kinds** (everything else): incident payload includes
   an `escalation_context` block (`{attempt, max_attempts, is_final,

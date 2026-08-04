@@ -196,6 +196,49 @@ class PmRecoveryTest(unittest.TestCase):
         self.assertEqual(calls, ["ready", "nudge"])
         self.assertTrue(result["asdrubal"]["recovered"])
 
+    def test_semantic_pm_recovery_never_restarts_agent_services(self):
+        issue = {
+            "unit": "pm:asdrubal/task-1",
+            "kind": "pm-in-progress-stale",
+            "reason": "Required action: continue implementation now",
+        }
+        calls = []
+
+        def run_cmd(*_args, **_kwargs):
+            calls.append("run_cmd")
+            return 0, "", ""
+
+        def nudge(*_args):
+            calls.append("nudge")
+            return [{
+                "task_id": "task-1",
+                "kind": "pm-in-progress-stale",
+                "parsed": {"messageId": "message-1"},
+                "err": "",
+            }]
+
+        with (
+            mock.patch.object(self.monitor, "run_cmd", side_effect=run_cmd),
+            mock.patch.object(
+                self.monitor, "_run_pm_workflow_nudges", side_effect=nudge
+            ),
+            mock.patch.object(
+                self.monitor, "_confirm_pm_nudge_results", return_value=True
+            ),
+            mock.patch.object(
+                self.monitor, "probe_session_idle_for_user",
+                return_value=(0, {}),
+            ),
+            mock.patch.object(self.monitor.time, "sleep"),
+        ):
+            result = self.monitor.restart_and_wake_stalled_agents(
+                [issue], {}, registry()
+            )
+        self.assertEqual(calls, ["nudge"])
+        self.assertEqual(result["asdrubal"]["action"], "pm-channel-nudge")
+        self.assertIsNone(result["asdrubal"]["restart_rc"])
+        self.assertTrue(result["asdrubal"]["recovered"])
+
     def test_failed_pm_event_key_is_stable_and_retryable(self):
         issues = self.monitor.deterministic_issues({
             "pm_workflow": {

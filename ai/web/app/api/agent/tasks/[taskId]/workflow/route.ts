@@ -15,7 +15,7 @@ import { revalidateTaskReplyScope, revalidateTaskShell } from "@/lib/tasks/cache
 import { createActionPlanSubtasksForTask } from "@/lib/tasks/action-plan-subtasks";
 import { findInProgressStartConflict, startApprovedTodoTaskIfIdle } from "@/lib/tasks/auto-start";
 import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
-import { createSubTaskItem, normalizeSubTaskKind, setSubTaskCompletion } from "@/lib/tasks/subtasks";
+import { createSubTaskItem, deleteSubTaskItem, normalizeSubTaskKind, setSubTaskCompletion } from "@/lib/tasks/subtasks";
 import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { publishBoardTouch } from "@/lib/pm/board-events";
 import { assignTaskAfterPlanApproval } from "@/lib/tasks/reviewer-assignment";
@@ -49,6 +49,7 @@ const ACTIONS = [
   "assign_after_plan_approval",
   "add_subtask",
   "complete_subtask",
+  "remove_subtask",
   "request_subtask",
   "request_task",
   "flag_blocker",
@@ -1142,6 +1143,38 @@ export async function POST(
           }
         : {}),
     });
+  }
+
+  if (action === "remove_subtask") {
+    const subtaskId = typeof payload.subtaskId === "string" ? payload.subtaskId : "";
+    if (!subtaskId) return NextResponse.json({ error: "subtaskId is required" }, { status: 400 });
+    const subtaskRow = await db.subTask.findFirst({
+      where: { id: subtaskId, taskId: task.id },
+      select: { kind: true },
+    });
+    if (!subtaskRow) return NextResponse.json({ error: "Sub-task not found on this task" }, { status: 404 });
+    if (subtaskRow.kind === "review") {
+      if (!isReviewer) return NextResponse.json({ error: "Only the resolved reviewer can remove review sub-tasks" }, { status: 403 });
+    } else if (!isAssignee) {
+      return NextResponse.json({ error: "Only the assignee can remove implementation sub-tasks" }, { status: 403 });
+    }
+    const removed = await deleteSubTaskItem({
+      subTaskId: subtaskId,
+      actorUserId: agent.user.id,
+      expectTaskId: task.id,
+    });
+    if (!removed) return NextResponse.json({ error: "Sub-task not found on this task" }, { status: 404 });
+    revalidateTaskShell(task.id);
+    revalidatePath(`/projects/${task.project.slug}/tasks/${task.id}`);
+    revalidatePath(`/projects/${task.project.slug}`);
+    publishBoardTouch(task.projectId);
+    await recordPmChannelRunWorkflowAction({
+      taskId: task.id,
+      agentSlug: agent.slug,
+      messageId,
+      action,
+    });
+    return NextResponse.json({ ok: true, taskId: task.id, subtaskId, removed: true });
   }
 
   // Scope-negotiation flow (all in comments): a reviewer/manager asks the
