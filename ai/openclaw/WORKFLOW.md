@@ -509,8 +509,13 @@ Latency / PM queue/status names:
    keep the incomplete task `In Progress` and call `flag_blocker` once with
    the evidence and required intervention. PM sets `alert_reporter`, notifies
    the decision owners, and suppresses ordinary stale-work nudges. Do not
-   repeat the blocker. Before flagging a credential/login blocker, re-read and
-   retry the exact account identifier and endpoint from trusted task context;
+   repeat the blocker. If reporter permission is the only missing dependency,
+   include `permissionKind=reporter_approval` and an exact `permissionScope`;
+   use `permissionKind=publish_checkpoint` for the validated Epic checkpoint
+   path. PM links the board control to the exact blocker comment and renders a
+   scoped reporter grant action there. Never classify mixed, uncertain, or
+   agent-actionable work as permission-only. Before flagging a credential/login
+   blocker, re-read and retry the exact account identifier and endpoint from trusted task context;
    a guessed shorthand username is not blocker evidence. A decision-owner
    response to the formal blocker automatically wakes the assignee in the
    stable execution session. After the dependency is actually resolved/landed,
@@ -556,8 +561,10 @@ Latency / PM queue/status names:
     a pull request. PR creation and landing are human-only.
     If an Epic-child task's remaining live-verification steps require a
     remotely deployable commit, use `publish_checkpoint` instead of committing,
-    pushing, or submitting incomplete work. This requires an explicit task
-    fresh comment from the active owner after the current plan approval that
+    pushing, or submitting incomplete work. When that authorization is the
+    sole missing dependency, call `flag_blocker` with
+    `permissionKind=publish_checkpoint`; PM presents the validated grant on the
+    exact blocker comment. The resulting fresh active-owner authorization
     names the Task key/branch and target Epic branch; cite that exact
     `authorizationCommentId` and give a concise reason. The authorization is
     single-use. PM creates the
@@ -781,6 +788,12 @@ the exact silent token and no other text.
 - Questions and blockers are comment interactions at the current status.
   `ready_for_review` is reserved for completed implementation; Review work
   belongs to the resolved reviewer/manager role.
+- Formal blockers store their exact comment identity. The board alert is an
+  action that opens the Comments tab and focuses that comment. A blocker whose
+  only dependency is structured reporter permission exposes a scoped grant
+  action on the comment; granting wakes the existing assignee and remains
+  single-use/idempotent. The assignee still clears the blocker only after
+  verifying the authorized operation.
 - `publish_checkpoint` is the narrow exception for an `In Progress`
   Epic-child whose remaining checks require a remotely reachable commit. It
   requires the exact id of a fresh, single-use active-owner authorization

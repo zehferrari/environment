@@ -235,8 +235,17 @@ assert(
 assert(
   taskWorkflowRoute.includes('action === "flag_blocker"') &&
     taskWorkflowRoute.includes('task.status !== "In Progress"') &&
-    taskWorkflowRoute.includes("data: { alertReporter: true }"),
+    taskWorkflowRoute.includes("data: { alertReporter: true }") &&
+    taskWorkflowRoute.includes("permissionKind") &&
+    taskWorkflowRoute.includes("permissionScope") &&
+    taskWorkflowRoute.includes("commentId: row.id, permissionRequest"),
   "active external blockers must have a durable assignee escalation action",
+);
+assert(
+  taskNotifications.includes("permissionKind=reporter_approval") &&
+    taskNotifications.includes("permissionKind=publish_checkpoint") &&
+    taskNotifications.includes("Never mark a mixed/uncertain blocker as permission-only"),
+  "agents must receive the narrow structured permission-only blocker contract",
 );
 assert(
   taskWorkflowRoute.includes('action === "clear_blocker"') &&
@@ -745,10 +754,23 @@ async function pmRunSettlementSlice() {
     const activeFlagged = await call("wf-assignee", activeBlockerGrant, {
       action: "flag_blocker",
       comment: "deployment host rejects its Bitbucket public key; restore repository access",
+      permissionKind: "reporter_approval",
+      permissionScope: "Allow the assignee to retry the named deployment-host repository check after the reporter updates access.",
     });
     assert(activeFlagged.status === 200, `flag_blocker must succeed (got ${activeFlagged.status}: ${JSON.stringify(activeFlagged.body)})`);
     await assertSettled("wf-assignee", activeBlockerGrant, "flag_blocker");
     assert((await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "flag_blocker must set alertReporter");
+    const formalBlocker = await db.activityLog.findFirstOrThrow({
+      where: { taskId: task.id, kind: "task.blocker" },
+      orderBy: { createdAt: "desc" },
+      select: { payload: true },
+    });
+    const formalPayload = JSON.parse(formalBlocker.payload ?? "{}") as Record<string, unknown>;
+    assert(typeof formalPayload.commentId === "string", "flag_blocker must bind its lifecycle to the exact comment id");
+    assert(
+      (formalPayload.permissionRequest as { kind?: unknown } | undefined)?.kind === "reporter_approval",
+      "flag_blocker must persist a validated permission-only request",
+    );
 
     const clearBlockerGrant = await grantFor("wf-assignee");
     const cleared = await call("wf-assignee", clearBlockerGrant, {

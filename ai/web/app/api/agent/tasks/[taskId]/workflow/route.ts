@@ -33,6 +33,10 @@ import {
   validateCheckpointAuthorizationText,
 } from "@/lib/deploy/checkpoint-authorization";
 import { isProtectedBranch } from "@/lib/projects/protected-branches";
+import {
+  isBlockerPermissionKind,
+  type BlockerPermissionRequest,
+} from "@/lib/tasks/formal-blocker";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -121,6 +125,8 @@ export async function POST(
     minutesSpent?: unknown;
     assignee?: unknown;
     authorizationCommentId?: unknown;
+    permissionKind?: unknown;
+    permissionScope?: unknown;
   };
   try {
     payload = (await req.json()) as typeof payload;
@@ -1184,6 +1190,7 @@ export async function POST(
   // never mutates the other actor's work directly — they post a described
   // request and PM wakes the owner of that work to accept or push back.
   const requesterUserId = agent.user.id;
+  const requesterUsername = agent.user.username;
   const requesterSlug = agent.slug;
   const requestTaskId = task.id;
   const requestProjectId = task.projectId;
@@ -1218,6 +1225,66 @@ export async function POST(
     if (!comment) {
       return NextResponse.json({ error: "comment (the blocker and required intervention) is required" }, { status: 400 });
     }
+    const requestedPermissionKind = payload.permissionKind == null
+      ? null
+      : isBlockerPermissionKind(payload.permissionKind)
+        ? payload.permissionKind
+        : undefined;
+    if (requestedPermissionKind === undefined) {
+      return NextResponse.json({
+        error: "permissionKind must be reporter_approval or publish_checkpoint when this is a permission-only blocker",
+      }, { status: 400 });
+    }
+    const permissionScope = typeof payload.permissionScope === "string"
+      ? payload.permissionScope.trim()
+      : "";
+    if (permissionScope.length > 500) {
+      return NextResponse.json({ error: "permissionScope must be <= 500 chars" }, { status: 400 });
+    }
+    if (requestedPermissionKind && !task.reporterId) {
+      return NextResponse.json({ error: "A permission-only blocker requires a task reporter" }, { status: 409 });
+    }
+
+    let permissionRequest: BlockerPermissionRequest | null = null;
+    if (requestedPermissionKind === "reporter_approval") {
+      if (!permissionScope) {
+        return NextResponse.json({
+          error: "permissionScope is required for reporter_approval and must name the exact action the reporter is being asked to authorize",
+        }, { status: 400 });
+      }
+      permissionRequest = { kind: requestedPermissionKind, scope: permissionScope };
+    } else if (requestedPermissionKind === "publish_checkpoint") {
+      const taskBranch = effectiveTaskBranchName(task);
+      const epicBranch = task.epic ? effectiveEpicBranchName(task.epic) : null;
+      if (
+        agent.role !== "coding" ||
+        !task.approvedOn ||
+        !task.epic ||
+        task.epic.status !== "In Progress" ||
+        task.repositoryRun?.phase !== "active" ||
+        !task.repositoryRun.worktreePath ||
+        !task.project.repositoryPath ||
+        !taskBranch ||
+        !epicBranch ||
+        taskBranch === epicBranch
+      ) {
+        return NextResponse.json({
+          error: "publish_checkpoint permission can be requested only for an approved, active repository-backed Epic child with its own task branch",
+        }, { status: 409 });
+      }
+      if (isProtectedBranch(task.project.agentChangeBlockedBranches, epicBranch)) {
+        return NextResponse.json({
+          error: `The Epic integration branch ${epicBranch} is protected from agent-originated repository changes`,
+        }, { status: 409 });
+      }
+      permissionRequest = {
+        kind: requestedPermissionKind,
+        scope: permissionScope || `Publish the current ${task.workItemKey ?? taskBranch} checkpoint to ${epicBranch} for deployment-dependent verification.`,
+        taskKey: task.workItemKey,
+        taskBranch,
+        epicBranch,
+      };
+    }
     const latestBlocker = await db.activityLog.findFirst({
       where: {
         taskId: task.id,
@@ -1236,33 +1303,38 @@ export async function POST(
       return NextResponse.json({ ok: true, taskId: task.id, flagged: "blocker", alreadyFlagged: true });
     }
 
-    const [created] = await db.$transaction([
-      db.comment.create({
+    const created = await db.$transaction(async (tx) => {
+      const row = await tx.comment.create({
         data: {
           taskId: task.id,
-          userId: agent.user.id,
+          userId: requesterUserId,
           body: [
-            `**Blocker raised** by @${agent.user.username} (assignee):`,
+            `**Blocker raised** by @${requesterUsername} (assignee):`,
             "",
             comment,
+            ...(permissionRequest ? [
+              "",
+              `**Reporter permission requested:** ${permissionRequest.scope}`,
+            ] : []),
             "",
             "The task remains In Progress, but active implementation is paused pending external or owner intervention.",
           ].join("\n"),
         },
         select: { id: true },
-      }),
-      db.activityLog.create({
+      });
+      await tx.activityLog.create({
         data: {
           projectId: task.projectId,
           taskId: task.id,
-          userId: agent.user.id,
+          userId: requesterUserId,
           kind: "task.blocker",
           targetAgent: agent.slug,
-          payload: JSON.stringify({ action }),
+          payload: JSON.stringify({ action, commentId: row.id, permissionRequest }),
         },
-      }),
-      db.task.update({ where: { id: task.id }, data: { alertReporter: true } }),
-    ]);
+      });
+      await tx.task.update({ where: { id: task.id }, data: { alertReporter: true } });
+      return row;
+    });
     const targets = new Set<string>();
     if (reviewerId) targets.add(reviewerId);
     if (task.reporterId) targets.add(task.reporterId);
@@ -1275,7 +1347,9 @@ export async function POST(
         body: [
           `Assignee @${agent.user.username} raised a blocker on "${task.title}":`,
           comment,
-          "Resolve or decide the external dependency, then reply with the unblocking evidence so the assignee can clear the blocker and resume.",
+          permissionRequest
+            ? `This is marked as permission-only. The task reporter can grant the narrowly scoped permission (${permissionRequest.scope}) from the blocker comment in Mission Control.`
+            : "Resolve or decide the external dependency, then reply with the unblocking evidence so the assignee can clear the blocker and resume.",
         ].join("\n"),
       }).catch((error) =>
         console.error("[pm] blocker notification failed:", task.id, targetUserId, error),

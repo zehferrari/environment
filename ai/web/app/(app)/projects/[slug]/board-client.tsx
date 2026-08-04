@@ -71,6 +71,7 @@ type Task = {
   subtaskMinutes: number;
   blockedByKey: string | null;
   hasActiveBlocker: boolean;
+  activeBlockerCommentId: string | null;
   activeWorking: boolean;
   project: { slug: string; name: string; workspace?: { slug: string; name: string } | null } | null;
   workspaceColor?: string | null;
@@ -114,22 +115,29 @@ function LockGlyph() {
   );
 }
 
-function ActiveBlockerIcon({ task }: { task: Task }) {
+function ActiveBlockerButton({ task, projectSlug }: { task: Task; projectSlug: string }) {
+  const router = useRouter();
   if (!task.hasActiveBlocker) return null;
+  const href = blockerHref(task, projectSlug);
   return (
-    <span
+    <button
+      type="button"
       data-active-task-blocker
-      role="img"
-      aria-label="Task has an active blocker"
-      title="Active blocker — open the task comments for details"
-      className="inline-grid h-7 w-7 shrink-0 place-items-center rounded-full border border-crit/30 bg-crit/10 text-crit shadow-[var(--shadow-xs)]"
+      aria-label={`Open the active blocker comment for ${task.title}`}
+      title="Open and focus the active blocker comment"
+      onClick={(event) => {
+        event.stopPropagation();
+        router.push(href);
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+      className="inline-grid h-8 w-8 shrink-0 place-items-center rounded-full border border-crit/30 bg-crit/10 text-crit shadow-[var(--shadow-xs)] transition hover:border-crit/60 hover:bg-crit/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crit/60"
     >
       <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M10.3 3.7 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z" />
         <path d="M12 9v4" />
         <path d="M12 17h.01" />
       </svg>
-    </span>
+    </button>
   );
 }
 
@@ -2232,7 +2240,7 @@ function BoardCardBody({
             data-board-card-blocker-slot
             className="col-start-1 row-start-5 flex items-center justify-center pt-2"
           >
-            <ActiveBlockerIcon task={task} />
+            <ActiveBlockerButton task={task} projectSlug={projectSlug} />
           </div>
         ) : null}
 
@@ -2376,15 +2384,19 @@ function WorkflowFocusCard({
   const avatarPulse = boardAvatarPulse(task, actor, presence);
 
   return (
-    <button
-      type="button"
-      onClick={() => router.push(taskHref(task, projectSlug))}
+    <div
       style={{ "--board-status": boardStatusColor(task.status), ...taskCardStyle(task, cardScope) } as React.CSSProperties}
-      className={`${taskCardClass(task, false, true, cardScope)} min-w-0 text-left`}
+      className={`${taskCardClass(task, false, true, cardScope)} relative min-w-0 text-left`}
       title={waitingOnHumanReview(task) ? HUMAN_REVIEW_LABEL : undefined}
     >
+      <button
+        type="button"
+        onClick={() => router.push(taskHref(task, projectSlug))}
+        className="absolute inset-0 z-[5] rounded-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+        aria-label={`Open ${task.workItemKey ?? "task"}: ${task.title}`}
+      />
       <HumanReviewSrLabel task={task} />
-      <div className="relative z-10 flex items-start justify-between gap-2">
+      <div className="pointer-events-none relative z-10 flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           {task.status === "Done" ? (
             <BoardReporterMarker task={task} />
@@ -2402,7 +2414,6 @@ function WorkflowFocusCard({
               >
                 {task.status}
               </span>
-              <ActiveBlockerIcon task={task} />
               {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
               <span className="truncate font-mono uppercase tracking-wider">
                 {task.workItemKey ?? "—"}
@@ -2426,7 +2437,12 @@ function WorkflowFocusCard({
           </div>
         </div>
       </div>
-    </button>
+      {task.hasActiveBlocker ? (
+        <div className="absolute bottom-2 left-2 z-20">
+          <ActiveBlockerButton task={task} projectSlug={projectSlug} />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -2525,7 +2541,7 @@ function BacklogRow({
         </Link>
         <SubtaskProgress task={task} />
         <BlockedBadge task={task} />
-        <ActiveBlockerIcon task={task} />
+        <ActiveBlockerButton task={task} projectSlug={projectSlug} />
       </div>
       <span className="truncate text-caption text-text-muted">
         {task.epicTitle ?? "—"}
@@ -2554,6 +2570,13 @@ function BacklogRow({
 
 function taskHref(task: Task, fallbackProjectSlug: string) {
   return `/projects/${taskProjectSlug(task, fallbackProjectSlug)}/tasks/${task.id}`;
+}
+
+function blockerHref(task: Task, fallbackProjectSlug: string) {
+  const base = `${taskHref(task, fallbackProjectSlug)}?tab=comments`;
+  return task.activeBlockerCommentId
+    ? `${base}&comment=${encodeURIComponent(task.activeBlockerCommentId)}`
+    : base;
 }
 
 function taskProjectSlug(task: Task, fallbackProjectSlug: string) {

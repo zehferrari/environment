@@ -2,6 +2,7 @@ export const PM_SILENT_REPLY_TOKEN = "PM_SILENT_NO_CONTRIBUTION";
 
 const TRANSIENT_PROGRESS = [
   /^🧹\s*Compacting context \(\d+ messages?\) so I can continue without losing history…?$/i,
+  /^✅\s*Context compacted \([\d,]+\s*(?:→|->)\s*[\d,]+\s+tokens?\)\.?\s*Continuing from where I left off\.?$/i,
 ];
 
 const TERMINAL_FAILURE = [

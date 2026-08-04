@@ -22,6 +22,7 @@ import {
 import { notifyDispatch } from "@/lib/pm-dispatch";
 import { isEffectivelyPublicTask } from "@/lib/pm-events/visibility";
 import {
+  sendTaskCommentNotifications,
   sendTaskWorkflowNotification,
 } from "@/lib/agents/workflow/notifications/task";
 import {
@@ -32,7 +33,12 @@ import { attachmentMaxBytes } from "@/lib/attachments/storage";
 import { deleteTask } from "@/lib/bin/actions";
 import { archiveTask, unarchiveTask } from "@/lib/archive/actions";
 import { approveAndMergeDeploymentPullRequest, approveDeploymentLocalChanges } from "@/lib/deploy/actions";
-import { effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { effectiveEpicBranchName, effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { validateCheckpointAuthorizationText } from "@/lib/deploy/checkpoint-authorization";
+import {
+  activeFormalBlockersByTask,
+  blockerPermissionGrantForComment,
+} from "@/lib/tasks/formal-blocker";
 import {
   createSubTaskItem,
   setSubTaskCompletion,
@@ -74,6 +80,7 @@ import {
 import TaskChecklist from "@/components/task-checklist";
 import AttachmentList from "@/components/attachment-list";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
+import FocusTaskComment from "@/components/focus-task-comment";
 import TaskCommentStreams from "@/components/task-comment-streams";
 import ChatRoom from "@/components/chat-room";
 import ActivityTimeline, { type ActivityTimelineRow } from "@/components/activity-timeline";
@@ -935,6 +942,180 @@ async function restoreComment(formData: FormData) {
   revalidateTaskReplyScope(taskId, "comment");
 }
 
+// A formal blocker may explicitly declare that the only missing dependency is
+// a narrowly scoped reporter permission. This action validates that durable
+// request, records an auditable grant comment, and wakes the visible assignee.
+// It does not clear the blocker: the assignee must still perform/verify the
+// authorized operation and call clear_blocker with evidence.
+async function grantBlockerPermission(formData: FormData) {
+  "use server";
+  const actor = await requireActor();
+  const taskId = String(formData.get("taskId") ?? "");
+  const slug = String(formData.get("projectSlug") ?? "");
+  const blockerCommentId = String(formData.get("blockerCommentId") ?? "");
+  if (!taskId || !slug || !blockerCommentId || actor.kind !== "human") return;
+  await requireTaskAccess(actor, taskId);
+
+  const task = await db.task.findUnique({
+    where: { id: taskId },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      projectId: true,
+      reporterId: true,
+      assigneeId: true,
+      approvedOn: true,
+      workItemKey: true,
+      branchName: true,
+      commitPrefix: true,
+      deletedAt: true,
+      assignee: { select: { username: true } },
+      project: { select: { slug: true, repositoryPath: true } },
+      epic: {
+        select: {
+          status: true,
+          branchName: true,
+          commitPrefix: true,
+          workItemKey: true,
+        },
+      },
+    },
+  });
+  if (!task || task.deletedAt || task.project.slug !== slug) return;
+  await requireProjectAccess(actor, { id: task.projectId });
+  if (actor.id !== task.reporterId) throw new Error("Only the task reporter can grant this permission.");
+  if (!task.assigneeId || !task.assignee) throw new Error("The task has no assignee to receive this permission.");
+
+  const lifecycleRows = await db.activityLog.findMany({
+    where: {
+      taskId: task.id,
+      kind: { in: [
+        "task.blocker",
+        "task.extra_work.blocker",
+        "task.blocker.cleared",
+        "task.blocker.permission.granted",
+      ] },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { taskId: true, kind: true, payload: true },
+  });
+  const activeBlocker = activeFormalBlockersByTask(lifecycleRows).get(task.id);
+  if (!activeBlocker || activeBlocker.commentId !== blockerCommentId || !activeBlocker.permissionRequest) {
+    throw new Error("That comment is no longer the active permission-only blocker.");
+  }
+  if (blockerPermissionGrantForComment(lifecycleRows, blockerCommentId)) return;
+
+  const blockerComment = await db.comment.findFirst({
+    where: { id: blockerCommentId, taskId: task.id, deletedAt: null },
+    select: { id: true },
+  });
+  if (!blockerComment) throw new Error("The blocker comment is no longer available.");
+
+  const request = activeBlocker.permissionRequest;
+  let body: string;
+  if (request.kind === "publish_checkpoint") {
+    if (!actor.isOwner) {
+      throw new Error("Checkpoint publication still requires the active Mission Control owner.");
+    }
+    const taskBranch = effectiveTaskBranchName(task);
+    const epicBranch = task.epic ? effectiveEpicBranchName(task.epic) : null;
+    if (
+      task.status !== "In Progress" ||
+      !task.approvedOn ||
+      !task.project.repositoryPath ||
+      !task.epic ||
+      task.epic.status !== "In Progress" ||
+      !taskBranch ||
+      !epicBranch ||
+      request.taskBranch !== taskBranch ||
+      request.epicBranch !== epicBranch
+    ) {
+      throw new Error("The checkpoint permission request no longer matches the task's active repository state.");
+    }
+    body = [
+      `@${task.assignee.username} I hereby authorize PM to publish and deploy the current checkpoint for ${task.workItemKey ?? taskBranch} / ${taskBranch} to the Epic branch ${epicBranch}.`,
+      `This authorization is limited to the permission requested in blocker comment ${blockerCommentId}: ${request.scope}`,
+      "Use this comment as authorizationCommentId, proceed with the checkpoint, and clear the blocker after the dependency is verified.",
+    ].join("\n\n");
+    const validation = validateCheckpointAuthorizationText({
+      body,
+      taskKey: task.workItemKey,
+      taskBranch,
+      epicBranch,
+    });
+    if (!validation.ok) throw new Error(validation.reason);
+  } else {
+    body = [
+      `@${task.assignee.username} As the reporter for ${task.workItemKey ?? task.title}, I hereby authorize this exact requested action: ${request.scope}`,
+      `This grant is limited to the active blocker comment ${blockerCommentId} and does not authorize unrelated changes. Proceed, verify the result, then clear the blocker with evidence.`,
+    ].join("\n\n");
+  }
+
+  let authorization: { id: string };
+  try {
+    authorization = await db.$transaction(async (tx) => {
+      const created = await tx.comment.create({
+        data: { taskId: task.id, userId: actor.id, body },
+        select: { id: true },
+      });
+      // The deterministic activity id makes simultaneous double-clicks roll
+      // back their extra comment with the unique collision. Sequential clicks
+      // already return above after observing the durable grant.
+      await tx.activityLog.create({
+        data: {
+          id: `blocker-permission-${blockerCommentId}`,
+          projectId: task.projectId,
+          taskId: task.id,
+          userId: actor.id,
+          kind: "task.blocker.permission.granted",
+          payload: JSON.stringify({
+            blockerCommentId,
+            permissionKind: request.kind,
+            permissionScope: request.scope,
+            authorizationCommentId: created.id,
+          }),
+        },
+      });
+      return created;
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return;
+    throw error;
+  }
+
+  // Owner comments use the ordinary directed-comment path. A non-owner task
+  // reporter's generic approval is delivered as a PM-validated workflow
+  // capability, so it can wake the assignee without weakening the global rule
+  // that arbitrary member comments are informational only.
+  if (actor.isOwner) {
+    await sendTaskCommentNotifications({
+      taskId: task.id,
+      commentId: authorization.id,
+      body,
+      actor: { id: actor.id, kind: actor.kind, username: actor.username },
+    });
+  } else {
+    await sendTaskWorkflowNotification({
+      taskId: task.id,
+      targetUserId: task.assigneeId,
+      actor,
+      reason: "blocker_response",
+      body: [
+        `PM validated the task reporter's narrowly scoped permission grant in comment ${authorization.id}.`,
+        body,
+      ].join("\n\n"),
+    });
+  }
+
+  revalidateTaskReplyScope(task.id, "comment");
+  revalidateTaskReplyScope(task.id, "chat");
+  revalidateTaskShell(task.id);
+  revalidatePath(`/projects/${slug}/tasks/${task.id}`);
+  revalidatePath(`/projects/${slug}`);
+  publishBoardTouch(task.projectId);
+}
+
 // Checklist (lightweight sub-task) management. A checklist item is text + a
 // completion timestamp — not a child Task. The same actor model as comments
 // applies: humans always; the assigned agent may add/tick/remove items so the
@@ -1290,10 +1471,10 @@ export default async function TaskDetailPage({
   contained = false,
 }: {
   params: Promise<{ slug: string; taskId: string }>;
-  searchParams: Promise<{ chat?: string; chatArchive?: string; chatRoom?: string; tab?: string; commit?: string; file?: string }>;
+  searchParams: Promise<{ chat?: string; chatArchive?: string; chatRoom?: string; tab?: string; comment?: string; commit?: string; file?: string }>;
   contained?: boolean;
 }) {
-  const [{ slug, taskId }, { chatArchive = "", chatRoom = "", tab = "", commit = "", file = "" }] = await Promise.all([
+  const [{ slug, taskId }, { chatArchive = "", chatRoom = "", tab = "", comment: focusedCommentParam = "", commit = "", file = "" }] = await Promise.all([
     params,
     searchParams,
   ]);
@@ -1365,6 +1546,13 @@ export default async function TaskDetailPage({
   ]);
   const projectEpics = cachedProjectEpics.filter((epic) => viewer.isOwner || !epic.private);
   const visibleActivity = visibleActivityRows(allActivity, actorVisibility);
+  const activeFormalBlocker = activeFormalBlockersByTask(
+    allActivity.map((row) => ({ taskId: task.id, kind: row.kind, payload: row.payload, createdAt: row.createdAt })),
+    task.comments.map((comment) => ({ id: comment.id, taskId: task.id, createdAt: comment.createdAt })),
+  ).get(task.id) ?? null;
+  const activeBlockerPermissionGrant = activeFormalBlocker?.commentId
+    ? blockerPermissionGrantForComment(allActivity, activeFormalBlocker.commentId)
+    : null;
 
   // Candidate blockers for the "Blocked by" picker: other live tasks in this
   // project. Cycles are rejected server-side on save (lib/tasks/blocking.ts).
@@ -1408,6 +1596,9 @@ export default async function TaskDetailPage({
           (targetedCommentIds.has(comment.id) || agentUsernames.some((username) => mentionedUsername(comment.body, username)))
         );
       });
+  const focusedCommentId = visibleTaskComments.some((comment) => comment.id === focusedCommentParam)
+    ? focusedCommentParam
+    : null;
   const settledMessageIds = activityMessageIds(recentReplyActivity);
   const recentCommentMessages = recentTaskChatMessages.filter((message) => (
     message.originChannel === "comment"
@@ -2320,6 +2511,7 @@ export default async function TaskDetailPage({
                     Comments
                   </h2>
                   <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+          {focusedCommentId ? <FocusTaskComment commentId={focusedCommentId} /> : null}
           {visibleTaskComments.length === 0 ? (
             <p className="text-caption text-text-muted">
               No comments yet.
@@ -2340,7 +2532,12 @@ export default async function TaskDetailPage({
                   // the ↺ button (only shown when canDeleteComments).
                   // Agent context never sees deleted bodies.
                   return (
-                    <li key={c.id}>
+                    <li
+                      key={c.id}
+                      id={`task-comment-${c.id}`}
+                      tabIndex={-1}
+                      className={focusedCommentId === c.id ? "scroll-mt-6 rounded-card ring-2 ring-crit/60" : "scroll-mt-6"}
+                    >
                       <DeletedMessageDivider
                         deletedAt={c.deletedAt}
                         deletedBy={c.deletedBy}
@@ -2363,7 +2560,9 @@ export default async function TaskDetailPage({
                 return (
                   <li
                     key={c.id}
-                    className="flex items-start gap-3 text-body"
+                    id={`task-comment-${c.id}`}
+                    tabIndex={-1}
+                    className={`scroll-mt-6 flex items-start gap-3 rounded-card text-body outline-none transition-shadow ${focusedCommentId === c.id ? "ring-2 ring-crit/60 ring-offset-2 ring-offset-panel" : ""}`}
                   >
                     <MessageAvatar actor={commentAuthor} size="sm" />
                     <div className={`min-w-0 flex-1 rounded-card border border-line px-3 py-2 ${authorRole?.accentClass ?? ""} ${mentionedCurrentUser ? "bg-yellow-400/[0.12]" : "bg-panel-soft"}`}>
@@ -2402,6 +2601,42 @@ export default async function TaskDetailPage({
                           interactive={viewer.isOwner && isPmOptionsTargetedAtCurrentUser({ currentUserId: viewer.id })}
                         />
                       ) : null}
+                      {activeFormalBlocker?.commentId === c.id && activeFormalBlocker.permissionRequest ? (
+                        <div
+                          data-blocker-permission-action
+                          className="mt-3 border-t border-crit/20 pt-3"
+                        >
+                          <p className="text-caption font-semibold text-crit">Reporter permission required</p>
+                          <p className="mt-1 text-caption text-text-muted">
+                            {activeFormalBlocker.permissionRequest.scope}
+                          </p>
+                          {activeBlockerPermissionGrant ? (
+                            <p className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-ok/30 bg-ok/10 px-3 py-2 text-caption font-semibold text-ok">
+                              Permission granted — the assignee has been notified.
+                            </p>
+                          ) : viewer.id === task.reporterId && (
+                            activeFormalBlocker.permissionRequest.kind !== "publish_checkpoint" || viewer.isOwner
+                          ) ? (
+                            <form action={grantBlockerPermission} className="mt-2">
+                              <input type="hidden" name="taskId" value={task.id} />
+                              <input type="hidden" name="projectSlug" value={slug} />
+                              <input type="hidden" name="blockerCommentId" value={c.id} />
+                              <button
+                                type="submit"
+                                className="rounded-lg bg-crit px-control-x py-control-y text-caption font-semibold text-on-crit shadow-[var(--shadow-xs)] transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-crit/60"
+                              >
+                                Grant requested permission
+                              </button>
+                            </form>
+                          ) : (
+                            <p className="mt-2 text-caption text-text-muted">
+                              {activeFormalBlocker.permissionRequest.kind === "publish_checkpoint"
+                                ? "The task reporter must also be the active Mission Control owner to grant checkpoint publication."
+                                : "Waiting for the task reporter to grant this permission."}
+                            </p>
+                          )}
+                        </div>
+                      ) : null}
                     </div>
                   </li>
                 );
@@ -2416,7 +2651,7 @@ export default async function TaskDetailPage({
               agentSlug: message.agentSlug,
             }))}
           />
-          {visibleTaskComments.length > 0 || (viewer.isOwner && pendingCommentMessages.length > 0) ? (
+          {!focusedCommentId && (visibleTaskComments.length > 0 || (viewer.isOwner && pendingCommentMessages.length > 0)) ? (
             <AutoScrollToLatest
               whenTab="Comments"
               watchKey={[

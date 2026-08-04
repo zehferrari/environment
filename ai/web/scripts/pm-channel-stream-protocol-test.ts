@@ -34,6 +34,11 @@ assert.equal(
   "OpenClaw compaction progress must not become a durable PM reply",
 );
 assert.equal(
+  isTransientPmProgressText("✅ Context compacted (106,630 → 4,481 tokens). Continuing from where I left off."),
+  true,
+  "OpenClaw compaction-complete progress must not settle a PM run before execution resumes",
+);
+assert.equal(
   isPmTerminalFailureText("⚠️ Auto-compaction could not recover this turn. Please try again."),
   true,
   "OpenClaw compaction failure finals must be classified as failures",

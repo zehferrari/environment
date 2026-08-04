@@ -543,11 +543,16 @@ must not add another actor's implementation sub-tasks directly. Instead:
   extra sub-task/task as blocking the current scope: PM raises it to the owner
   (`alert_reporter`) and wakes the reviewer + reporter for a decision. Use this
   instead of silently absorbing unbounded scope.
-- `flag_blocker` (`{comment}`) — the ASSIGNEE durably escalates an active
+- `flag_blocker` (`{comment, permissionKind?, permissionScope?}`) — the ASSIGNEE durably escalates an active
   infrastructure, credential, access, external-service, or human-decision
   blocker. The Task stays In Progress, PM sets `alert_reporter`, wakes the
   reviewer/reporter, and the stale-work monitor stops re-waking the assignee.
-  Call it once; do not repeat the blocker comment.
+  Call it once; do not repeat the blocker comment. When reporter permission is
+  the **only** missing dependency, set `permissionKind=reporter_approval` and
+  name the exact authorized action in `permissionScope`; use
+  `permissionKind=publish_checkpoint` for the validated Epic checkpoint case.
+  PM then puts a scoped grant action on that exact blocker comment. Do not mark
+  mixed, uncertain, or still agent-actionable work as permission-only.
 - `clear_blocker` (`{comment}`) — after the dependency is actually resolved,
   the ASSIGNEE records the unblocking evidence and clears the formal blocker.
   Normal In Progress monitoring resumes; a newer independent repository or
@@ -559,7 +564,9 @@ shorthand identifiers are not failure evidence. A visible response from the
 decision owner to the formal blocker is dispatched immediately back to the
 assignee as a `blocker_response` continuation. It reuses the task's stable
 execution session so the assignee can clear the blocker and resume without
-waiting for the semantic monitor.
+waiting for the semantic monitor. A structured permission grant follows the
+same path, is audited and idempotent, and does not clear the blocker until the
+assignee verifies the result and calls `clear_blocker`.
 When a task returns from Review (`review_feedback` places it at the front of
 To Do), add a sub-task per feedback item
 before starting so the bar reflects the remaining work. The task context also

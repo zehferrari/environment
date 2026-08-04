@@ -719,8 +719,15 @@ dependency cannot be resolved by the assignee. PM sets `alert_reporter`,
 notifies the decision owners, highlights the Task, and suppresses ordinary
 stale-assignee nudges. Before treating a login failure as a blocker, retry the
 literal account identifier and endpoint from the latest trusted context. A
-decision-owner response to the formal blocker immediately dispatches a
-`blocker_response` turn to the assignee's stable task session. After the
+permission-only blocker may also send `permissionKind=reporter_approval` plus
+an exact `permissionScope`, or `permissionKind=publish_checkpoint` for the
+existing validated checkpoint capability. PM stores the blocker comment id
+with that lifecycle so the board control opens and focuses the precise comment;
+the reporter can grant the scoped permission there, which records an auditable
+authorization comment and wakes the visible assignee. Use these fields only
+when permission is the sole dependency. A decision-owner response to the
+formal blocker immediately dispatches a `blocker_response` turn to the
+assignee's stable task session. After the
 dependency is actually resolved, the assignee uses `clear_blocker` with the
 unblocking evidence; this clears the formal blocker while preserving a newer
 independent repository or administrative alert, if one exists. Task update proposals may

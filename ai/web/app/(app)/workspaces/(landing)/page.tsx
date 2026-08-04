@@ -14,7 +14,7 @@ import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
-import { activeFormalBlockerTaskIds } from "@/lib/tasks/formal-blocker";
+import { activeFormalBlockersByTask } from "@/lib/tasks/formal-blocker";
 import { createWorkspace, restoreWorkspace } from "@/lib/workspaces/service";
 import { workspaceLogoPublicUrl } from "@/lib/workspaces/storage";
 import { uploadAttachment } from "@/lib/attachments/actions";
@@ -427,12 +427,12 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
   const blockerIds = tasks
     .map((task) => task.blockedById)
     .filter((id): id is string => Boolean(id));
-  const [taskActivityRows, busyAgentSlugs, actorVisibility, visibleBlockers] = await Promise.all([
+  const [taskActivityRows, busyAgentSlugs, actorVisibility, visibleBlockers, legacyBlockerComments] = await Promise.all([
     taskIds.length > 0
       ? db.activityLog.findMany({
           where: { taskId: { in: taskIds } },
           orderBy: { createdAt: "desc" },
-          select: { taskId: true, kind: true, user: { select: actorSelect } },
+          select: { taskId: true, kind: true, payload: true, createdAt: true, user: { select: actorSelect } },
         })
       : Promise.resolve([]),
     viewer.isOwner ? readBusyAgentSlugs() : Promise.resolve(new Set<string>()),
@@ -443,9 +443,19 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
           select: { id: true, workItemKey: true, status: true },
         })
       : Promise.resolve([]),
+    taskIds.length > 0
+      ? db.comment.findMany({
+          where: {
+            taskId: { in: taskIds },
+            deletedAt: null,
+            body: { startsWith: "**Blocker raised**" },
+          },
+          select: { id: true, taskId: true, createdAt: true },
+        })
+      : Promise.resolve([]),
   ]);
   const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows, actorVisibility);
-  const activeFormalBlockers = activeFormalBlockerTaskIds(taskActivityRows);
+  const activeFormalBlockers = activeFormalBlockersByTask(taskActivityRows, legacyBlockerComments);
   const visibleBlockerById = new Map(visibleBlockers.map((task) => [task.id, task]));
 
   async function reorderLandingTasks(orderedIds: string[]): Promise<void> {
@@ -514,6 +524,7 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
               subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
               blockedByKey: blocker && blocker.status !== "Done" ? blocker.workItemKey ?? null : null,
               hasActiveBlocker: activeFormalBlockers.has(t.id),
+              activeBlockerCommentId: activeFormalBlockers.get(t.id)?.commentId ?? null,
               activeWorking:
                 (t.status === "In Progress" && Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||
                 (t.status === "Review" && Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug))),
