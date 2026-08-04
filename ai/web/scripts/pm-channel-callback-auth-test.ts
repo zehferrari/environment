@@ -81,6 +81,7 @@ async function routeBoundaryTests() {
   await cleanupDirectAgent(ROUTE_AGENT);
   const seeded = await seedDirectAgentMessage(ROUTE_AGENT);
   const secondMessageId = await addDirectMessage(ROUTE_AGENT, seeded.ownerUserId);
+  const failureMessageId = await addDirectMessage(ROUTE_AGENT, seeded.ownerUserId, "terminal failure turn");
   const target = { kind: "direct", agentSlug: ROUTE_AGENT, messageId: seeded.messageId };
 
   try {
@@ -114,6 +115,38 @@ async function routeBoundaryTests() {
       (perAgent.json as { ok?: boolean }).ok,
       true,
       "per-agent-bearer route call must persist a reply",
+    );
+
+    // A terminal OpenClaw auto-compaction final is transport failure, not an
+    // agent-authored reply. It must fail/retry the run without adding a visible
+    // message that would make the parallel stream error look successful.
+    const failureTarget = { kind: "direct", agentSlug: ROUTE_AGENT, messageId: failureMessageId };
+    const terminal = await callPmChannelReply({
+      target: failureTarget,
+      body: "⚠️ Auto-compaction could not recover this turn. Please try again.",
+      bearer: SHARED,
+    });
+    assert.equal(terminal.status, 200, "terminal compaction callback must be handled");
+    assert.equal(
+      (terminal.json as { terminalFailure?: boolean }).terminalFailure,
+      true,
+      "terminal compaction callback must be classified before reply persistence",
+    );
+    const failureKey = pmChannelRunTargetKey({
+      kind: "direct",
+      agentSlug: ROUTE_AGENT,
+      messageId: failureMessageId,
+    });
+    const failedRun = await db.pmChannelRun.findUniqueOrThrow({ where: { targetKey: failureKey } });
+    assert.equal(failedRun.status, "failed", "conversation-class terminal callback must fail the run");
+    assert.equal(
+      await pmChannelTargetHasDurableReply({
+        kind: "direct",
+        agentSlug: ROUTE_AGENT,
+        messageId: failureMessageId,
+      }),
+      false,
+      "terminal compaction text must not become a durable visible reply",
     );
   } finally {
     await cleanupDirectAgent(ROUTE_AGENT);

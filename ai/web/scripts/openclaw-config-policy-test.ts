@@ -21,6 +21,7 @@ const config = JSON.parse(rendered) as {
     defaultProfile?: string;
   };
   diagnostics?: { memoryPressureSnapshot?: boolean };
+  agents?: { defaults?: { compaction?: { mode?: string; reserveTokensFloor?: number } } };
   gateway?: { port?: number };
   meta?: { lastTouchedVersion?: string };
 };
@@ -50,6 +51,11 @@ assert.equal(
   config.gateway?.port,
   19001,
   "provisioned agents must connect their CLI/browser tools to their own gateway",
+);
+assert.deepEqual(
+  config.agents?.defaults?.compaction,
+  { mode: "safeguard", reserveTokensFloor: 50_000 },
+  "long-lived PM sessions must reserve enough context for auto-compaction recovery",
 );
 
 const codexConfig = JSON.parse(renderOpenClawJson({

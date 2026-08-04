@@ -395,7 +395,11 @@ export async function recordPmChannelRunEvent(args: {
           where: { targetKey },
           select: { status: true },
         });
-        if (existing?.status === "canceled") return;
+        if (
+          existing?.status === "canceled" ||
+          existing?.status === "retryable" ||
+          existing?.status === "failed"
+        ) return;
         const hadDurableReply = await pmChannelTargetHasDurableReply(args.target);
         if (existing?.status === "complete" || hadDurableReply) {
           // Legitimate settle. A plain done stays anomaly-free; a done that
@@ -490,7 +494,15 @@ export async function recordPmChannelRunEvent(args: {
           where: { targetKey },
           select: { status: true },
         });
-        if (existing?.status === "canceled") return;
+        // The legacy reply callback and typed stream callback can report the
+        // same terminal failure concurrently. Once either has driven the run
+        // into retry/failure, the other event is idempotent and must not run
+        // the retry ladder again or convert the outcome into an anomaly.
+        if (
+          existing?.status === "canceled" ||
+          existing?.status === "retryable" ||
+          existing?.status === "failed"
+        ) return;
         const hadDurableReply = await pmChannelTargetHasDurableReply(args.target);
         if (existing?.status === "complete" || hadDurableReply) {
           // The run already settled (workflow action or durable reply). Keep

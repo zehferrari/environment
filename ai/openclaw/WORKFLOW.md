@@ -521,6 +521,13 @@ Latency / PM queue/status names:
    stable execution session. After the dependency is actually resolved/landed,
    call `clear_blocker` with the unblocking evidence and resume. `Review` is
    only for completed implementation.
+   An assignee progress/status reply does not terminate an actionable recovery:
+   if the Task remains `In Progress`, has no formal blocker, and its repository
+   run is still active, PM settles that turn and promptly queues another turn
+   in the same stable session. This continuation is bounded (eight turns per
+   twenty minutes) to prevent pathological reply loops. Agents must still work
+   through to `ready_for_review` or one precise `flag_blocker`; do not rely on
+   progress comments as pause points.
 9. **Action Plan.** The Action Plan message is mandatory for every new
    assignment before implementation. The approver chain is defined in
    [Action Plan approval](#action-plan-approval). When a Task Action Plan

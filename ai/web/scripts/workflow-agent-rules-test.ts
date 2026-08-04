@@ -127,6 +127,7 @@ assert(reviewAutomation.includes("remainingOpenTasks === 0"), "the Epic Done rol
 
 const taskNotifications = readFileSync(join(root, "lib/agents/workflow/notifications/task.ts"), "utf8");
 const pmChannelReplyRoute = readFileSync(join(root, "app/api/openclaw/pm-channel/reply/route.ts"), "utf8");
+const openClawInstaller = readFileSync(join(root, "../openclaw/install.sh"), "utf8");
 assert(taskNotifications.includes("never edit a primary checkout"), "worktree guidance must prohibit primary-checkout edits");
 assert(taskNotifications.includes("tag the reporter"), "worktree failure guidance must tell agents to tag the reporter");
 assert(taskNotifications.includes("never create the branch directory with mkdir/cp/rsync"), "worktree guidance must prohibit ordinary copied task folders");
@@ -158,6 +159,25 @@ assert(
     pmChannelReplyRoute.includes('reason: "blocker_response"') &&
     pmChannelReplyRoute.includes("targetUserId: blockedTask.assigneeId"),
   "a decision-owner blocker response must immediately wake the visible assignee",
+);
+assert(
+  pmChannelReplyRoute.includes("continueActionableTaskAfterReply") &&
+    pmChannelReplyRoute.includes("task.workflow.auto_continue") &&
+    pmChannelReplyRoute.includes("AUTO_CONTINUATION_LIMIT") &&
+    pmChannelReplyRoute.indexOf("markPmChannelJobCompleteForTarget(target)") <
+      pmChannelReplyRoute.lastIndexOf("continueActionableTaskAfterReply(executionContinuation)") &&
+    taskNotifications.includes("workflowReason,"),
+  "an actionable assignee progress reply must settle its old run, then continue promptly in the stable session with a bounded loop",
+);
+assert(
+  pmChannelReplyRoute.includes("isPmTerminalFailureText") &&
+    pmChannelReplyRoute.indexOf("if (isPmTerminalFailureText(body))") <
+      pmChannelReplyRoute.indexOf("if (await pmChannelTargetHasDurableReply(target))"),
+  "terminal OpenClaw failures must be classified before the durable-reply gate",
+);
+assert(
+  openClawInstaller.includes("reserveTokensFloor: 50000"),
+  "live agent reconciliation must reserve enough context for compaction recovery",
 );
 assert(
   taskNotifications.includes("remove_subtask"),

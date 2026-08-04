@@ -735,6 +735,17 @@ still include `alert_reporter` (or `alertReporter`) for administrative repair.
 Do not use the flag for ordinary reviewer feedback, routine review waits, or
 agent-actionable blockers.
 
+### Execution continuation after progress replies
+
+A durable progress comment is visible evidence, not a terminal workflow
+outcome. After an assignee recovery/comment turn settles, PM immediately queues
+another `monitor_recovery` turn in the same stable Task session when the Task is
+still `In Progress`, unblocked, and its repository run is still active. PM does
+not continue tasks already validating/finalizing or tasks with a formal/admin
+alert, and it will not create a competing turn. The automatic chain is bounded
+to eight continuations per twenty minutes; the normal monitor remains the
+fallback after that safety limit.
+
 ### Cross-agent work
 
 Task execution remains with the visible assignee. Never transfer work through

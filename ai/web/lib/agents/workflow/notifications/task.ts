@@ -986,6 +986,7 @@ export async function sendTaskCommentNotifications(args: {
           messageId: msg.id,
           agentSlug: msg.agentSlug,
           reason: msg.reason,
+          workflowReason,
           driver: delivery.driver,
           status: delivery.status ?? null,
           error: delivery.error ?? null,

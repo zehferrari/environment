@@ -704,6 +704,10 @@ else
                         noSandbox: false,
                         defaultProfile: "openclaw"
                     })
+                    | .agents.defaults.compaction = ((.agents.defaults.compaction // {}) + {
+                        mode: "safeguard",
+                        reserveTokensFloor: 50000
+                    })
                 ' "$cfg" > "$tmp_cfg"; then
                     warn "  $user: $cfg is not valid JSON; leaving gateway/hooks/browser policy unchanged"
                     rm -f "$tmp_cfg"

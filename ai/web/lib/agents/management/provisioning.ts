@@ -352,7 +352,13 @@ export function renderOpenClawJson(args: {
         models: aliases,
         reasoningDefault: args.reasoning,
         workspace: `/home/${args.user}/workspace`,
-        compaction: { mode: "safeguard" },
+        compaction: {
+          mode: "safeguard",
+          // PM execution sessions are intentionally long-lived. Keep enough
+          // headroom for OpenClaw's recovery pass so a productive task turn
+          // cannot end in an unrecoverable auto-compaction terminal.
+          reserveTokensFloor: 50_000,
+        },
         typingIntervalSeconds: 2,
         typingMode: "message",
       },

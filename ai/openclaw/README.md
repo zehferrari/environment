@@ -129,6 +129,10 @@ It also reconciles every enabled agent to the host-managed Chromium policy:
 retained, and the `openclaw` default profile. Install the host `chromium`
 package before running the reconcile. The executable is shared; each agent's
 profile remains private under `~/.openclaw/browser/openclaw/user-data`.
+The same reconcile enforces safeguard compaction with
+`agents.defaults.compaction.reserveTokensFloor=50000`. Mission Control task
+sessions are long-lived; this reserve lets OpenClaw recover the turn instead
+of emitting a terminal auto-compaction failure after productive work.
 For PM-driven agent add/edit, the web route passes the active PM worktree as
 the helper payload `repoRoot`; the helper validates that it is under
 `/srv/Code/environment.worktrees/<name>` before using it for doc symlinks,
