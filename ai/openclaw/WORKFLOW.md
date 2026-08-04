@@ -385,6 +385,9 @@ Owner-authored task comments support actionable `@mentions`. A mention must
 match a known username exactly, including case. When an owner-authored task
 comment mentions an active agent, PM mirrors that comment into the agent's PM
 channel turn so the agent can answer back in the original task-comment thread.
+For the current assignee of an `In Progress` task, the comment continues the
+same stable task execution session instead of creating an isolated per-comment
+turn.
 It can also target the assigned active agent, the task reviewer, the acting
 manager of a To Do or In Progress parent Epic, and explicit mentions, with duplicates
 removed. If no reviewer or actionable parent Epic manager exists, the task

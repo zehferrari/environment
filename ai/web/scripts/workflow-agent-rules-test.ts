@@ -139,6 +139,11 @@ assert(
   "In Progress monitor recovery must continue in the stable task execution session",
 );
 assert(
+  taskNotifications.split("usesStableTaskExecutionSession({").length - 1 === 2 &&
+    taskNotifications.split("lastDispatchedMessageId: msg.id").length - 1 === 2,
+  "both workflow recovery turns and owner task comments must reuse and advance the stable execution binding",
+);
+assert(
   taskNotifications.includes("A failed tool command is not a terminal outcome") &&
     taskNotifications.includes("reconnaissance-only turn"),
   "monitor recovery must require concrete continued execution instead of a shallow silent turn",

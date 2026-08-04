@@ -870,17 +870,22 @@ export async function sendTaskCommentNotifications(args: {
         })
       : "";
     const kind = "task-comment" as const;
-    const dispatchArgs = {
-      gatewayPort: target?.gatewayPort ?? null,
-      agentSlug: msg.agentSlug,
-      sessionKey: buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
-      kind,
-      text: args.body,
-      contextText: nullPmContextText(),
-      systemPrompt: buildUnifiedPmTurnSystemPrompt({
-        kind,
-        trustedPrompt: [
-          buildTaskNativeChannelPrompt(task.title, msg.agentSlug, directedDescriptor, {
+    const stableExecutionSession = usesStableTaskExecutionSession({
+      reason: workflowReason,
+      status: task.status,
+      targetUserId: target?.userId ?? "",
+      assigneeId: task.assigneeId,
+    });
+    const previousExecutionMessageId = stableExecutionSession
+      ? sessionBinding.lastDispatchedMessageId
+      : null;
+    const nativeTaskPrompt = previousExecutionMessageId
+      ? buildTaskNativeIncrementalChannelPrompt(
+          task.title,
+          msg.agentSlug,
+          previousExecutionMessageId,
+          directedDescriptor,
+          {
             baseUrl: fetchBaseUrl,
             projectId: task.projectId,
             taskId: task.id,
@@ -891,7 +896,33 @@ export async function sendTaskCommentNotifications(args: {
               epic: grantUrls.epic,
               project: grantUrls.project,
             },
-          }),
+          },
+        )
+      : buildTaskNativeChannelPrompt(task.title, msg.agentSlug, directedDescriptor, {
+          baseUrl: fetchBaseUrl,
+          projectId: task.projectId,
+          taskId: task.id,
+          epicId: task.epic?.id ?? null,
+          inlineRecentBlock,
+          grantUrls: {
+            task: grantUrls.task!,
+            epic: grantUrls.epic,
+            project: grantUrls.project,
+          },
+        });
+    const dispatchArgs = {
+      gatewayPort: target?.gatewayPort ?? null,
+      agentSlug: msg.agentSlug,
+      sessionKey: stableExecutionSession
+        ? sessionBinding.openclawSessionKey
+        : buildPmTurnSessionKey(sessionBinding.openclawSessionKey, msg.id),
+      kind,
+      text: args.body,
+      contextText: nullPmContextText(),
+      systemPrompt: buildUnifiedPmTurnSystemPrompt({
+        kind,
+        trustedPrompt: [
+          nativeTaskPrompt,
           workflowPrompt({
             taskTitle: task.title,
             taskId: task.id,
@@ -932,6 +963,15 @@ export async function sendTaskCommentNotifications(args: {
       recentDisc.filter((m) => m.id !== args.commentId).length + recentCmts.filter((m) => m.id !== args.commentId).length,
     );
     const delivery = await sendOrQueueOpenClawPmChannelTurn(dispatchArgs);
+    if (delivery.ok && stableExecutionSession) {
+      await db.agentSessionBinding.update({
+        where: { id: sessionBinding.id },
+        data: {
+          lastDispatchedMessageId: msg.id,
+          lastDispatchedAt: new Date(),
+        },
+      });
+    }
     await db.activityLog.create({
       data: {
         projectId: task.projectId,

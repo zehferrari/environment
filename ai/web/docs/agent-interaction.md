@@ -104,7 +104,10 @@ of the channel session and communication lifecycle.
 Owner-authored task comments addressed to an agent, assigned to an agent, or
 mentioning an agent use the same native channel directly. They do not enqueue a
 legacy `task.commented` / `task.mentioned` wake through `pm-consumer`. Comments
-from every other human remain stored as silent knowledge only.
+from every other human remain stored as silent knowledge only. When the target
+is the current assignee of an `In Progress` task, owner comments reuse the
+stable task execution session; repeated comments no longer create disconnected
+per-comment task sessions.
 
 Replies must stay in the origin channel:
 
