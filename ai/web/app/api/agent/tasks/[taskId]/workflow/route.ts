@@ -1361,7 +1361,10 @@ export async function POST(
       return row;
     });
     const targets = new Set<string>();
-    if (reviewerId) targets.add(reviewerId);
+    // A permission-only round has exactly one human decision owner: the task
+    // reporter. Waking an Epic manager/reviewer coding agent here invited
+    // duplicate investigation on work visibly assigned to someone else.
+    if (!permissionRequest && reviewerId) targets.add(reviewerId);
     if (task.reporterId) targets.add(task.reporterId);
     for (const targetUserId of targets) {
       await sendTaskWorkflowNotification({

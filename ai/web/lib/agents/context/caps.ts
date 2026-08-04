@@ -1,10 +1,9 @@
 // Context-packet caps, driven by the recipient agent's role.
 //
-// Coding agents (role=="coding", capability
-// can_modify_code=true) receive the FULL packet — sized for 1M-token
-// model windows (Claude Opus 4.7, OpenAI gpt-5.5). They need every
-// comment, every discussion bubble, full descriptions and attachment
-// content because they're proposing work-item changes and writing code.
+// Coding agents receive a bounded inline working set. Deep history remains
+// available through scoped loopback grants. This is deliberately independent
+// of model/provider marketing windows: the prompt must leave room for tools,
+// reasoning, and provider fallbacks instead of assuming the largest model.
 //
 // Monitor agents (role=="monitor") receive a smaller packet
 // sized for 256k tokens. Monitors triage/route — they don't need the
@@ -12,9 +11,7 @@
 // The smaller packet also fits comfortably in a monitoring model's context
 // budget without overflow.
 //
-// Both profiles only set ROW COUNTS and PER-ITEM CLIP CEILINGS. Real
-// content is far shorter than these clips, so realistic packet sizes
-// land at a tiny fraction of these worst-case envelopes.
+// The final aggregate inline ceiling is enforced by pm-channel/context.ts.
 
 import { db } from "@/lib/db";
 
@@ -65,40 +62,39 @@ export function directChatArchiveChainLimit() {
   return intEnv("PM_DIRECT_CHAT_ARCHIVE_CHAIN_LIMIT", DIRECT_CHAT_CONTEXT_DEFAULTS.archiveChainLimit, 1, 6);
 }
 
-// Coding turns need substantial tool-loop headroom inside the active model's
-// 272k-token window. Deep history remains available through scoped live-fetch
-// grants; the inline packet is a bounded working set, not a second archive.
+// These query/render caps prevent expensive construction of a second archive;
+// the aggregate PM-channel context cap is the final provider-neutral guardrail.
 export const CODE_CAPS: ContextCaps = {
-  maxComments: 500,
-  maxLiveChats: 500,
-  maxActivity: 300,
-  maxArchivedChats: 500,
-  maxTimelineBody: 8000,
-  maxActivityBody: 2400,
-  taskDescriptionMax: 24000,
-  epicDescriptionMax: 24000,
-  projectDescriptionMax: 12000,
-  attachmentInlineBudget: 60000,
-  attachmentPerExcerpt: 16000,
-  maxRenderedTimelineChars: 150000,
-  recentTimelineVerbatimItems: 14,
+  maxComments: 120,
+  maxLiveChats: 80,
+  maxActivity: 100,
+  maxArchivedChats: 80,
+  maxTimelineBody: 4000,
+  maxActivityBody: 1200,
+  taskDescriptionMax: 12000,
+  epicDescriptionMax: 12000,
+  projectDescriptionMax: 6000,
+  attachmentInlineBudget: 12000,
+  attachmentPerExcerpt: 6000,
+  maxRenderedTimelineChars: 50000,
+  recentTimelineVerbatimItems: 12,
 };
 
 // Monitor turns are smaller again because they triage and route rather than
 // carrying an implementation tool loop.
 export const MONITOR_CAPS: ContextCaps = {
-  maxComments: 300,
-  maxLiveChats: 300,
-  maxActivity: 150,
-  maxArchivedChats: 300,
-  maxTimelineBody: 6000,
-  maxActivityBody: 1600,
-  taskDescriptionMax: 16000,
-  epicDescriptionMax: 16000,
-  projectDescriptionMax: 8000,
-  attachmentInlineBudget: 40000,
-  attachmentPerExcerpt: 12000,
-  maxRenderedTimelineChars: 100000,
+  maxComments: 60,
+  maxLiveChats: 40,
+  maxActivity: 60,
+  maxArchivedChats: 40,
+  maxTimelineBody: 3000,
+  maxActivityBody: 900,
+  taskDescriptionMax: 8000,
+  epicDescriptionMax: 8000,
+  projectDescriptionMax: 4000,
+  attachmentInlineBudget: 8000,
+  attachmentPerExcerpt: 4000,
+  maxRenderedTimelineChars: 30000,
   recentTimelineVerbatimItems: 10,
 };
 

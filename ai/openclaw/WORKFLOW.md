@@ -515,7 +515,9 @@ Latency / PM queue/status names:
    include `permissionKind=reporter_approval` and an exact `permissionScope`;
    use `permissionKind=publish_checkpoint` for the validated Epic checkpoint
    path. PM links the board control to the exact blocker comment and renders a
-   scoped reporter grant action there. Never classify mixed, uncertain, or
+   scoped reporter grant action there. Permission-only rounds notify that
+   reporter, not a reviewer/Epic-manager coding agent; advisory work must not
+   blur the visible assignee boundary. Never classify mixed, uncertain, or
    agent-actionable work as permission-only. Before flagging a credential/login
    blocker, re-read and retry the exact account identifier and endpoint from trusted task context;
    a guessed shorthand username is not blocker evidence. A decision-owner
@@ -531,7 +533,10 @@ Latency / PM queue/status names:
    in the current task session. Task sessions are disposable execution
    episodes: PM rotates them preventively after a configurable completed-turn
    budget and immediately after an unrecoverable context/compaction failure.
-   Durable PM/task/repository state—not chat history—is task memory. This continuation is bounded (eight turns per
+   Every episode receives a bounded inline working set and scoped fetch grants
+   for deeper PM history, so provider window size does not turn the full task
+   archive into permanent prompt ballast. Durable PM/task/repository state—not
+   chat history—is task memory. This continuation is bounded (eight turns per
    twenty minutes) to prevent pathological reply loops. Agents must still work
    through to `ready_for_review` or one precise `flag_blocker`; do not rely on
    progress comments as pause points.

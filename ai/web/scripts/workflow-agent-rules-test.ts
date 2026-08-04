@@ -271,6 +271,10 @@ assert(
   "agents must receive the narrow structured permission-only blocker contract",
 );
 assert(
+  taskWorkflowRoute.includes("if (!permissionRequest && reviewerId) targets.add(reviewerId)"),
+  "permission-only blockers must not recruit a reviewer/Epic-manager coding agent into the assignee's task",
+);
+assert(
   taskWorkflowRoute.includes('action === "clear_blocker"') &&
     taskWorkflowRoute.includes("preserveIndependentAlert") &&
     taskWorkflowRoute.includes("alreadyCleared"),

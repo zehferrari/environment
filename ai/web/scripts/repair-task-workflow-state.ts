@@ -28,6 +28,9 @@ function checkpointPayload(payload: string | null) {
 async function main() {
   const taskId = argument("--task-id");
   if (!taskId) throw new Error("Usage: repair-task-workflow-state --task-id <id> [--rotate-session] [--resume]");
+  if (flag("--resume") && !process.env.AUTH_SECRET?.trim()) {
+    throw new Error("AUTH_SECRET is required with --resume; run this repair with the live pm.service environment before any state is changed");
+  }
 
   const task = await db.task.findUnique({
     where: { id: taskId },

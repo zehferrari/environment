@@ -116,6 +116,12 @@ preventively after `PM_TASK_SESSION_MAX_COMPLETED_TURNS` completed turns
 every retry receives a self-contained PM context packet and reconstructs work
 from canonical task/repository state.
 
+The packet is a working set, not the archive. Its aggregate inline context is
+capped by `PM_CHANNEL_PRIMARY_CONTEXT_MAX_CHARS` (default 48000), and duplicated
+recent-message bodies are capped by `PM_CHANNEL_RECENT_BODY_MAX_CHARS` (default
+2000 each). Scoped loopback grants retain access to deeper PM history. Operators
+can lower these provider-neutral ceilings for smaller local-model windows.
+
 ## HOMELAB-46 acceptance
 
 - Typed envelope validation: `parsePmEvent` rejects anything not on

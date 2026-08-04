@@ -595,7 +595,11 @@ immediately when OpenClaw reports an unrecoverable context/compaction failure.
 The retry job and binding move to the fresh key together and the incremental
 baseline resets. This is provider-neutral: current PM state and the worktree
 are durable memory, while OpenAI/Anthropic/Ollama session context is a
-disposable cache. Accepted-to-first-stream latency beyond
+disposable cache. Each turn also caps its aggregate inline working set with
+`PM_CHANNEL_PRIMARY_CONTEXT_MAX_CHARS` (default 48000 characters) and each
+duplicated recent body with `PM_CHANNEL_RECENT_BODY_MAX_CHARS` (default 2000);
+deeper history remains available through scoped loopback grants. Lower these
+ceilings for local models with smaller windows. Accepted-to-first-stream latency beyond
 `PM_OPENCLAW_FIRST_STREAM_WARNING_MS` writes a
 `pm.channel.latency_warning` audit row.
 OpenClaw requires `hook:` in the allowed session-key prefixes when no

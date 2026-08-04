@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { CODE_CAPS, MONITOR_CAPS, directChatContextMessages } from "../lib/agents/context/caps";
 import { renderBudgetedTimeline, type TimelineItemForBudget } from "../lib/agents/context/budget";
+import { buildUnifiedPmTurnSystemPrompt } from "../lib/agents/pm-channel/context";
 
 function item(n: number, body = `body ${n}`): TimelineItemForBudget {
   return {
@@ -34,8 +35,22 @@ function item(n: number, body = `body ${n}`): TimelineItemForBudget {
   assert.match(rendered.lines.join("\n"), /\[truncated: 40 more chars\]/);
 }
 
-assert(CODE_CAPS.maxRenderedTimelineChars <= 150_000, "coding packets must preserve tool-loop context headroom");
-assert(MONITOR_CAPS.maxRenderedTimelineChars <= 100_000, "monitor packets must remain smaller than coding packets");
+assert(CODE_CAPS.maxRenderedTimelineChars <= 50_000, "coding packets must preserve tool-loop context headroom");
+assert(MONITOR_CAPS.maxRenderedTimelineChars <= 30_000, "monitor packets must remain smaller than coding packets");
+
+{
+  const prompt = buildUnifiedPmTurnSystemPrompt({
+    kind: "task-comment",
+    trustedPrompt: "trusted workflow capability",
+    primaryContext: `CURRENT TURN first\n${"x".repeat(20_000)}`,
+    primaryBlocks: [{ title: "OLDER MATERIAL", body: "y".repeat(10_000) }],
+    maxPrimaryContextChars: 4_000,
+  });
+  assert(prompt.length < 6_000, "aggregate inline PM context must obey the per-turn working-set budget");
+  assert.match(prompt, /CURRENT TURN first/);
+  assert.match(prompt, /inline PM context budget reached|truncated:/);
+  assert.match(prompt, /scoped loopback context grant/);
+}
 
 {
   const original = process.env.PM_DIRECT_CHAT_CONTEXT_MESSAGES;

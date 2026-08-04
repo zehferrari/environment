@@ -276,6 +276,13 @@ Important properties:
   configured completed-turn budget and reactively after unrecoverable
   context/compaction failure. PM/task/repository state is durable memory;
   provider session context is disposable.
+- PM-channel turns carry a provider-neutral bounded inline working set:
+  `PM_CHANNEL_PRIMARY_CONTEXT_MAX_CHARS` defaults to `48000` aggregate
+  characters and `PM_CHANNEL_RECENT_BODY_MAX_CHARS` defaults to `2000` per
+  duplicated hot-path message. Deeper history remains reachable through the
+  scoped loopback grants embedded in the turn. These limits leave tool and
+  response headroom across OpenAI, Anthropic, OpenRouter, and local Ollama
+  models rather than sizing every prompt for the largest available window.
 - `PmChannelRun` is durable delivery state; `PmChannelStreamEvent` is the
   append-only browser replay ledger. The in-memory stream store is only
   fan-out.

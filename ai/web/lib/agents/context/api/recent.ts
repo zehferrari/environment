@@ -12,6 +12,16 @@ import { db } from "@/lib/db";
 
 const DEFAULT_RECENT_DISCUSSION = 5;
 const DEFAULT_RECENT_COMMENTS = 8;
+const DEFAULT_RECENT_BODY_CHARS = 2_000;
+
+function recentBody(value: string) {
+  const configured = Number.parseInt(process.env.PM_CHANNEL_RECENT_BODY_MAX_CHARS ?? "", 10);
+  const max = Number.isFinite(configured) && configured > 0
+    ? Math.min(20_000, Math.max(500, Math.floor(configured)))
+    : DEFAULT_RECENT_BODY_CHARS;
+  if (value.length <= max) return value;
+  return `${value.slice(0, max).trimEnd()}\n[truncated: ${value.length - max} more chars; use the scoped context grant for the full message]`;
+}
 
 export interface RecentMessage {
   id: string;
@@ -106,7 +116,7 @@ export function formatRecentBlock(args: {
         : "(unknown sender)";
       const target = m.targetLabel ? ` → ${m.targetLabel}` : "";
       lines.push(`[${m.createdAt.toISOString()}] ${who}${target}`);
-      lines.push(m.body);
+      lines.push(recentBody(m.body));
       lines.push("");
     }
   }
@@ -120,7 +130,7 @@ export function formatRecentBlock(args: {
         ? `@${c.sender.username}${c.sender.isOwner ? " (Mission Control owner)" : c.sender.kind === "agent" ? " (agent)" : ""}`
         : "(unknown author)";
       lines.push(`[${c.createdAt.toISOString()}] ${who}`);
-      lines.push(c.body);
+      lines.push(recentBody(c.body));
       lines.push("");
     }
   }
