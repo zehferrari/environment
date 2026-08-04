@@ -126,6 +126,13 @@ Installed on 2026-05-06 for host `thinkpad` (`10.0.0.105`).
   allocator rejects ports already reserved in the registry and actively probes
   both `127.0.0.1` and `::1` before the helper writes the registry. If no pair
   is available, add/edit returns `port_allocation_failed`.
+- **Managed browser runtime.** All enabled agents use the system Chromium at
+  `/usr/bin/chromium`, headless by default with the Chromium sandbox retained.
+  Agent creation/edit renders that policy into `openclaw.json`; `install.sh`
+  also reconciles existing agents. Each Linux user owns an independent
+  `~/.openclaw/browser/openclaw/user-data` profile. A browser/control sidecar is
+  not itself a browser binary and another agent's Playwright cache/profile must
+  never be reused.
 - **Gateway verification.** The PM-channel installer restarts
   `openclaw-gateway.service` after lifecycle changes and waits for systemd to
   report `active`; a failed restart fails the provisioning request instead of
@@ -145,6 +152,8 @@ path/identity constants below if your host doesn't use the `thinkpad` layout.
 - `jq` (helper parses the JSON payload + registry with it)
 - `nodejs` — the helper resolves it via `command -v node`; also runs the PM
   webapp and the PM-channel installer
+- `chromium` — system-maintained browser at `/usr/bin/chromium`; required for
+  every agent's local managed browser session
 - the `openclaw` CLI at `/usr/local/bin/openclaw` (gateway install)
 - `useradd`/`groupadd`/`userdel`, `passwd`, `loginctl`, `visudo`
 - Samba + the password-sync hooks (see the root [`README.md`](../README.md) §
@@ -317,7 +326,7 @@ requires every service below to be installed and enabled.
 
 To bring up the monitor on a fresh host:
 
-1. **Packages**: `jq`, `nodejs`, `openclaw` CLI, `useradd`/`groupadd`,
+1. **Packages**: `jq`, `nodejs`, `chromium`, `openclaw` CLI, `useradd`/`groupadd`,
    Samba + password-sync hooks, `sqlite3` (for PM).
 2. **Groups**: shared `code-agents` group; monitor user must be a member.
 3. **Registry**: create `/etc/openclaw/agents.json` from `index.example.json`,
@@ -346,7 +355,9 @@ To bring up the monitor on a fresh host:
 11. **Webhook receivers**: enabled by `install.sh` step 7 reconcile based on
     the monitor agent's registry role.
 12. **Verify**: `openclaw-registry-check --runtime`, `openclaw-integrity-check`,
-    `ai-monitor --probe-only`, `openclaw-boot-readiness`.
+    `ai-monitor --probe-only`, `openclaw-boot-readiness`, then run
+    `sudo -u <agent> env HOME=/home/<agent> openclaw browser doctor --deep` for
+    each enabled registry agent.
 
 ## Gmail and Google Watchers
 

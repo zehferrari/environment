@@ -124,6 +124,11 @@ every enabled agent gateway to loopback, enables its external
 OpenClaw `pm` channel plugin for every enabled registry agent, and mirrors token maps into
 `/etc/openclaw/pm-consumer-tokens.json` and
 `/etc/openclaw/pm-channel-tokens.json`.
+It also reconciles every enabled agent to the host-managed Chromium policy:
+`browser.enabled=true`, `/usr/bin/chromium`, headless operation, sandbox
+retained, and the `openclaw` default profile. Install the host `chromium`
+package before running the reconcile. The executable is shared; each agent's
+profile remains private under `~/.openclaw/browser/openclaw/user-data`.
 For PM-driven agent add/edit, the web route passes the active PM worktree as
 the helper payload `repoRoot`; the helper validates that it is under
 `/srv/Code/environment.worktrees/<name>` before using it for doc symlinks,

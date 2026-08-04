@@ -119,6 +119,15 @@ yoga510: `/home/rachael/Code/environment/ai/openclaw/skills/`). Identity resolve
 prefs) go in `TOOLS.md`. Platform-formatting nuances (Discord/WhatsApp)
 are in `WORKFLOW.md` → *Reply Formatting*.
 
+**Browser.** On thinkpad, use the OpenClaw browser tool's local managed
+`openclaw` profile (`target=host` where the tool asks for a target). The shared
+executable is `/usr/bin/chromium`; your cookies/session live privately under
+`~/.openclaw/browser/openclaw/user-data`. Do not use another agent's
+Playwright cache, profile, CDP port, or home directory. A missing connected
+browser node is not a blocker for local web verification: first run
+`openclaw browser doctor --deep` and use the host-managed browser. Raise a
+blocker only if that doctor check fails after the gateway is healthy.
+
 ## Make it yours
 
 Personal conventions go in your private `MEMORY.md` and `HEARTBEAT.md`.

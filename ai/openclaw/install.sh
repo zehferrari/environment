@@ -60,6 +60,7 @@ PM_OPENCLAW_CHANNEL_TOKEN_FILE="${PM_OPENCLAW_CHANNEL_TOKEN_FILE:-/etc/openclaw/
 PM_OPENCLAW_CHANNEL_TOKEN_GROUP="${PM_OPENCLAW_CHANNEL_TOKEN_GROUP:-$PM_APP_GROUP}"
 OPENCLAW_SESSION_FENCE_PATCH="${OPENCLAW_SESSION_FENCE_PATCH:-1}"
 OPENCLAW_SESSION_FENCE_PATCH_FILE="${OPENCLAW_SESSION_FENCE_PATCH_FILE:-/usr/local/lib/node_modules/openclaw/dist/selection-hR-AeOeU.js}"
+OPENCLAW_BROWSER_EXECUTABLE_PATH="${OPENCLAW_BROWSER_EXECUTABLE_PATH:-/usr/bin/chromium}"
 # Final durable reply callback configured into the OpenClaw pm channel plugin.
 # The live partial-reply stream callback is sent by PM per turn as
 # /api/openclaw/pm-channel/stream, derived from PM_AGENT_CALLBACK_URL or
@@ -78,6 +79,10 @@ warn(){ printf '%s!%s %s\n' "${C_WARN}" "${C_RST}" "$*"; }
 if [ "$EUID" -ne 0 ] && [ "$DRY" -eq 0 ]; then
     warn "must run as root (use --dry-run to preview)"
     exit 1
+fi
+
+if [ "$DRY" -eq 0 ] && [ ! -x "$OPENCLAW_BROWSER_EXECUTABLE_PATH" ]; then
+    warn "managed browser executable is missing at $OPENCLAW_BROWSER_EXECUTABLE_PATH; install the host chromium package before validating agent browser sessions"
 fi
 
 do_install() {
@@ -673,8 +678,9 @@ else
 
                 token=$(hook_token_for_agent "$user" "$cfg")
                 tmp_cfg=$(mktemp)
-                if ! jq --arg token "$token" '
+                if ! jq --arg token "$token" --arg browser_executable "$OPENCLAW_BROWSER_EXECUTABLE_PATH" --argjson gateway_port "$port" '
                     .gateway = ((.gateway // {}) + {
+                        port: $gateway_port,
                         bind: "loopback",
                         trustedProxies: ["127.0.0.1", "::1"]
                     })
@@ -691,8 +697,15 @@ else
                         allowRequestSessionKey: true
                     })
                     | .hooks.allowedSessionKeyPrefixes = (((.hooks.allowedSessionKeyPrefixes // []) + ["hook:", "pm:"]) | unique)
+                    | .browser = ((.browser // {}) + {
+                        enabled: true,
+                        executablePath: $browser_executable,
+                        headless: true,
+                        noSandbox: false,
+                        defaultProfile: "openclaw"
+                    })
                 ' "$cfg" > "$tmp_cfg"; then
-                    warn "  $user: $cfg is not valid JSON; leaving gateway bind/hooks unchanged"
+                    warn "  $user: $cfg is not valid JSON; leaving gateway/hooks/browser policy unchanged"
                     rm -f "$tmp_cfg"
                     continue
                 fi
@@ -703,7 +716,7 @@ else
                 changed=0
                 if ! cmp -s "$tmp_cfg" "$cfg"; then
                     if install -o "$user" -g "$cfg_group" -m "$cfg_mode" "$tmp_cfg" "$cfg"; then
-                        ok "  $user: bound gateway to loopback and enabled /hooks/wake hook:/pm: session keys in $cfg"
+                        ok "  $user: reconciled loopback gateway, PM hooks, and isolated managed-browser policy in $cfg"
                         changed=1
                     else
                         warn "  $user: failed to write $cfg; leaving token map unchanged for this agent"
@@ -713,7 +726,7 @@ else
                 else
                     chown "$user:$cfg_group" "$cfg" 2>/dev/null || true
                     chmod "$cfg_mode" "$cfg" 2>/dev/null || true
-                    log "  $user: gateway already loopback-bound with /hooks/wake hook:/pm: session keys enabled"
+                    log "  $user: gateway, PM hooks, and isolated managed-browser policy already reconciled"
                 fi
                 rm -f "$tmp_cfg"
 

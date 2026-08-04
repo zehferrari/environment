@@ -269,6 +269,7 @@ export function renderOpenClawJson(args: {
   primary: string;
   fallbacks: string[];
   selectedModels: SelectedModel[];
+  gatewayPort?: number;
   openRouterApiKey?: string | null;
   now?: string;
 }): string {
@@ -321,7 +322,20 @@ export function renderOpenClawJson(args: {
     wizard: { lastRunAt: now, lastRunVersion: "2026.7.1-2", lastRunCommand: "configure", lastRunMode: "local" },
     auth: { profiles },
     models: { mode: "merge", providers },
-    gateway: { mode: "local" },
+    browser: {
+      // The host package supplies one maintained executable; OpenClaw keeps
+      // the managed profile and all cookies/session state under this agent's
+      // own home directory. Never reuse another Linux user's browser cache.
+      enabled: true,
+      executablePath: "/usr/bin/chromium",
+      headless: true,
+      noSandbox: false,
+      defaultProfile: "openclaw",
+    },
+    gateway: {
+      mode: "local",
+      ...(args.gatewayPort ? { port: args.gatewayPort } : {}),
+    },
     diagnostics: {
       // Preserve a payload-free stability bundle before a gateway reaches its
       // V8 heap limit. The host has enough storage for the bounded snapshot,
@@ -356,6 +370,7 @@ export function renderAgentFiles(args: {
   primary: string;
   fallbacks: string[];
   selectedModels: SelectedModel[];
+  gatewayPort?: number;
   openRouterApiKey?: string | null;
 }): RenderedAgentFiles {
   return {
@@ -371,6 +386,7 @@ export function renderAgentFiles(args: {
       primary: args.primary,
       fallbacks: args.fallbacks,
       selectedModels: args.selectedModels,
+      gatewayPort: args.gatewayPort,
       openRouterApiKey: args.openRouterApiKey,
     }),
   };

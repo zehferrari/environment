@@ -11,6 +11,7 @@ from pathlib import Path
 
 REGISTRY = Path("/etc/openclaw/agents.json")
 AI_MONITOR_CONFIG = Path("/etc/ai-monitor/config.json")
+BROWSER_EXECUTABLE = Path(os.environ.get("OPENCLAW_BROWSER_EXECUTABLE_PATH", "/usr/bin/chromium"))
 
 
 class Reporter:
@@ -179,6 +180,12 @@ def main():
         reporter.failure("registry agents must be a non-empty list")
         return reporter.summary()
 
+    if args.runtime:
+        if BROWSER_EXECUTABLE.is_file() and os.access(BROWSER_EXECUTABLE, os.X_OK):
+            reporter.pass_(f"managed browser executable is available ({BROWSER_EXECUTABLE})")
+        else:
+            reporter.failure(f"managed browser executable missing or not executable ({BROWSER_EXECUTABLE})")
+
     seen_users = set()
     seen_uids = set()
     seen_ports = {}
@@ -239,6 +246,36 @@ def main():
                 reporter.failure(f"{prefix} non-coding agent may transition Jira")
         else:
             reporter.warning(f"{prefix} capabilities missing; remediation authority is prose-only")
+
+        if agent.get("enabled", True):
+            agent_files_root = Path(registry.get("agentFilesRoot") or "/srv/agents/openclaw")
+            openclaw_config_path = agent_files_root / user / "openclaw.json"
+            openclaw_config = load_json(openclaw_config_path, reporter)
+            if openclaw_config:
+                browser = openclaw_config.get("browser") or {}
+                if browser.get("enabled") is True:
+                    reporter.pass_(f"{prefix} managed browser is enabled")
+                else:
+                    reporter.failure(f"{prefix} managed browser is not enabled")
+                if browser.get("executablePath") == str(BROWSER_EXECUTABLE):
+                    reporter.pass_(f"{prefix} managed browser executable is pinned")
+                else:
+                    reporter.failure(
+                        f"{prefix} browser executable mismatch "
+                        f"({browser.get('executablePath')!r}, expected {str(BROWSER_EXECUTABLE)!r})"
+                    )
+                if browser.get("headless") is True:
+                    reporter.pass_(f"{prefix} managed browser defaults to headless")
+                else:
+                    reporter.failure(f"{prefix} managed browser is not headless by default")
+                if browser.get("noSandbox") is False:
+                    reporter.pass_(f"{prefix} Chromium sandbox remains enabled")
+                else:
+                    reporter.failure(f"{prefix} browser.noSandbox must be false")
+                if browser.get("defaultProfile") == "openclaw":
+                    reporter.pass_(f"{prefix} default browser profile is openclaw")
+                else:
+                    reporter.failure(f"{prefix} default browser profile must be openclaw")
 
         telegram = agent.get("telegram") or {}
         if telegram.get("enabled") and str(telegram.get("bot", "")).startswith("@"):

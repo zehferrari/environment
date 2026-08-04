@@ -198,6 +198,7 @@ export async function POST(request: Request) {
     primary: data.model_config.default_model,
     fallbacks: data.model_config.fallback_models,
     selectedModels: data.model_config.selected_models,
+    gatewayPort,
     openRouterApiKey: settings.openRouterApiKey,
   });
 

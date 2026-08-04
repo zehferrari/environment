@@ -8,11 +8,20 @@ const rendered = renderOpenClawJson({
   primary: "ollama/qwen2.5:3b-instruct",
   fallbacks: [],
   selectedModels: [],
+  gatewayPort: 19001,
   now: "2026-07-27T00:00:00.000Z",
 });
 
 const config = JSON.parse(rendered) as {
+  browser?: {
+    enabled?: boolean;
+    executablePath?: string;
+    headless?: boolean;
+    noSandbox?: boolean;
+    defaultProfile?: string;
+  };
   diagnostics?: { memoryPressureSnapshot?: boolean };
+  gateway?: { port?: number };
   meta?: { lastTouchedVersion?: string };
 };
 
@@ -25,6 +34,22 @@ assert.equal(
   config.meta?.lastTouchedVersion,
   "2026.7.1-2",
   "new and updated agents must record the deployed OpenClaw schema version",
+);
+assert.deepEqual(
+  config.browser,
+  {
+    enabled: true,
+    executablePath: "/usr/bin/chromium",
+    headless: true,
+    noSandbox: false,
+    defaultProfile: "openclaw",
+  },
+  "every provisioned agent must receive the isolated host-managed Chromium policy",
+);
+assert.equal(
+  config.gateway?.port,
+  19001,
+  "provisioned agents must connect their CLI/browser tools to their own gateway",
 );
 
 const codexConfig = JSON.parse(renderOpenClawJson({

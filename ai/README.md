@@ -169,6 +169,7 @@ If a kernel update lands, reboot is needed at your discretion (no auto-reboot).
 | PHP | 8.5.5 | `php-fpm.service` | NOTE: requested 8.4 but Tumbleweed ships 8.5 — accepted. To get 8.4 instead, OBS repo `devel:languages:php`. |
 | Node.js | 24.14.1 | n/a | from `nodejs24` package |
 | npm | 11.11.0 | n/a | from `npm24` |
+| Chromium | 151.0.7922.71 | per-agent, gateway-managed | System package at `/usr/bin/chromium`; one isolated managed profile per OpenClaw Linux user. |
 
 ### MariaDB root credentials
 
@@ -485,6 +486,24 @@ agent gateways keep the existing monitored topology through the managed
 `25-browser-control.conf` drop-in
 (`OPENCLAW_EAGER_BROWSER_CONTROL_SERVER=1`), with the loopback sidecar at
 `gateway port + 2`. Monitor gateways do not advertise this optional listener.
+
+The browser sidecar is only the control plane; it does not supply a browser
+binary. The host installs the Tumbleweed `chromium` package and pins every
+enabled agent's `browser.executablePath` to `/usr/bin/chromium`, with
+`browser.enabled=true`, `headless=true`, `noSandbox=false`, and the managed
+`openclaw` profile. OpenClaw stores that profile under the running user's own
+`~/.openclaw/browser/openclaw/user-data`; agents share the maintained binary,
+never cookies, locks, cache, or login state. Coding agents use the eager
+sidecar; the monitor agent uses the same local managed browser through its
+gateway's lazy in-process control runtime.
+
+Validate one agent without borrowing another user's cache or starting a
+separate CDP daemon:
+
+```bash
+sudo -u <agent> env HOME=/home/<agent> openclaw browser doctor --deep
+sudo -u <agent> env HOME=/home/<agent> openclaw browser status --json
+```
 
 The exact port numbers per registered user live in `agents.json` (`listeners[].host:port`); `openclaw-registry-check --runtime` validates that the listed ports are actually bound.
 

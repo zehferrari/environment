@@ -198,6 +198,14 @@ are derived:
   via `agent-defaults.json` `byIntegration[k]` (e.g. `gmail: true` adds
   `openclaw-gmail-listener.service` and `can_send_email: true`).
 - `listeners` — expected TCP listeners (host-specific; not derivable).
+
+`openclaw-registry-check --runtime` also verifies the host-managed Chromium
+executable and every enabled agent's browser policy (`enabled`, executable,
+headless mode, sandbox retained, and private `openclaw` default profile).
+Periodic monitoring deliberately does not launch or browse a page every two
+minutes; use `sudo -u <agent> env HOME=/home/<agent> openclaw browser doctor
+--deep` for an end-to-end CDP/page/snapshot probe during provisioning or
+incident recovery.
 - `services` (optional, per-agent) — extra services appended to the derived
   list. Use for project-specific extras the defaults don't know about.
 - `capabilities` (optional, per-agent) — key-by-key overrides of the

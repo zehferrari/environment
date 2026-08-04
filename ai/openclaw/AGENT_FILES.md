@@ -70,6 +70,7 @@ mail sent by another local agent.
 | Path | Purpose |
 |---|---|
 | `~/.openclaw/agents/main/sessions/*.jsonl` | Live agent session transcripts (the runtime "what the agent has said and done"). |
+| `~/.openclaw/browser/openclaw/user-data/` | Private managed-Chromium profile: cookies, cache, locks, and login state. The `/usr/bin/chromium` executable is shared, but this directory never is. |
 | `~/tasks/current.md` | Current Jira task notes. Append-only working log. |
 | `~/tasks/log.md` | Action history. |
 
