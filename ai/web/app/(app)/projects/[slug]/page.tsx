@@ -18,6 +18,7 @@ import { nextEpicTaskTitle } from "@/lib/tasks/epic-numbering";
 import { allocateWorkItemKey } from "@/lib/work-items/keys";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { moveTaskStatus } from "@/lib/tasks/move-status";
+import { activeFormalBlockerTaskIds } from "@/lib/tasks/formal-blocker";
 import Board from "./board-client";
 import AddTaskFab from "./add-task-fab";
 import { promoteEpicOnTaskInProgress } from "@/lib/epics/promote-on-start";
@@ -535,6 +536,7 @@ export default async function ProjectBoardPage({
       : Promise.resolve([]),
   ]);
   const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows, actorVisibility);
+  const activeFormalBlockers = activeFormalBlockerTaskIds(taskActivityRows);
   const visibleBlockerById = new Map(visibleBlockers.map((task) => [task.id, task]));
 
   const projectId = project.id;
@@ -591,6 +593,7 @@ export default async function ProjectBoardPage({
             subtaskReviewDone: t.checklist.filter((c) => c.kind === "review" && c.completedAt !== null).length,
             subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
             blockedByKey: blocker && blocker.status !== "Done" ? blocker.workItemKey ?? null : null,
+            hasActiveBlocker: activeFormalBlockers.has(t.id),
             activeWorking:
               (t.status === "In Progress" &&
                 Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||

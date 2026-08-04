@@ -70,6 +70,7 @@ type Task = {
   subtaskReviewDone: number;
   subtaskMinutes: number;
   blockedByKey: string | null;
+  hasActiveBlocker: boolean;
   activeWorking: boolean;
   project: { slug: string; name: string; workspace?: { slug: string; name: string } | null } | null;
   workspaceColor?: string | null;
@@ -110,6 +111,25 @@ function LockGlyph() {
       <rect x="4" y="11" width="16" height="10" rx="2" />
       <path d="M8 11V7a4 4 0 0 1 8 0v4" />
     </svg>
+  );
+}
+
+function ActiveBlockerIcon({ task }: { task: Task }) {
+  if (!task.hasActiveBlocker) return null;
+  return (
+    <span
+      data-active-task-blocker
+      role="img"
+      aria-label="Task has an active blocker"
+      title="Active blocker — open the task comments for details"
+      className="inline-grid h-7 w-7 shrink-0 place-items-center rounded-full border border-crit/30 bg-crit/10 text-crit shadow-[var(--shadow-xs)]"
+    >
+      <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M10.3 3.7 2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z" />
+        <path d="M12 9v4" />
+        <path d="M12 17h.01" />
+      </svg>
+    </span>
   );
 }
 
@@ -773,7 +793,7 @@ export default function Board({ projectSlug, chromeSlotScope, boardStreamUrl, co
     let attention = 0;
     for (const task of items) {
       byStatus[task.status] = (byStatus[task.status] ?? 0) + 1;
-      if (task.blockedByKey) blocked += 1;
+      if (task.blockedByKey || task.hasActiveBlocker) blocked += 1;
       if (taskNeedsAttention(task)) attention += 1;
     }
     const done = byStatus.Done ?? 0;
@@ -2012,7 +2032,7 @@ function ColumnDroppable({
 //   [x]      ENV-12  12h  3m  BLOCKED-BY              [::]
 //   (av)     Task title
 //   (rev)    workspace / project · epic name
-//            ▬▬▬▬▭▭ 66% · 2/3                        [bin]
+//   [!]      ▬▬▬▬▭▭ 66% · 2/3                        [bin]
 //
 // Scope line visibility is data-driven and needs no extra prop: a project
 // board serialises `project: null` (no scope line at all), a workspace board
@@ -2207,6 +2227,15 @@ function BoardCardBody({
           </div>
         ) : null}
 
+        {task.hasActiveBlocker ? (
+          <div
+            data-board-card-blocker-slot
+            className="col-start-1 row-start-5 flex items-center justify-center pt-2"
+          >
+            <ActiveBlockerIcon task={task} />
+          </div>
+        ) : null}
+
         <div className="col-start-2 row-start-5 flex min-w-0 items-center gap-2 pt-2 text-caption text-text-muted">
           <SubtaskProgress task={task} />
           <button
@@ -2373,6 +2402,7 @@ function WorkflowFocusCard({
               >
                 {task.status}
               </span>
+              <ActiveBlockerIcon task={task} />
               {canShowTaskDeploymentIndicator(task) ? <DeploymentIndicator status={task.deploymentStatus} /> : null}
               <span className="truncate font-mono uppercase tracking-wider">
                 {task.workItemKey ?? "—"}
@@ -2495,6 +2525,7 @@ function BacklogRow({
         </Link>
         <SubtaskProgress task={task} />
         <BlockedBadge task={task} />
+        <ActiveBlockerIcon task={task} />
       </div>
       <span className="truncate text-caption text-text-muted">
         {task.epicTitle ?? "—"}
@@ -2650,6 +2681,7 @@ function isPlanningAssigned(task: Task) {
 function taskNeedsAttention(task: Task) {
   return Boolean(
     task.blockedByKey ||
+    task.hasActiveBlocker ||
     task.status === "Review" ||
     isPlanningAssigned(task),
   );

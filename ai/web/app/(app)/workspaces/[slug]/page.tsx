@@ -13,6 +13,7 @@ import { runTaskReviewHandoff } from "@/lib/tasks/review-handoff";
 import { completeReviewedTaskAndAssignNext } from "@/lib/tasks/review-automation";
 import { revalidateTaskShell } from "@/lib/tasks/cache";
 import { ensureTaskCodeWorktree, TaskWorktreeError } from "@/lib/tasks/worktree-claim";
+import { activeFormalBlockerTaskIds } from "@/lib/tasks/formal-blocker";
 import { normalizeWorkspaceSlug } from "@/lib/workspaces/service";
 import Board from "../../projects/[slug]/board-client";
 import { COLUMNS, COLUMN_IDS } from "../../projects/[slug]/columns";
@@ -386,6 +387,7 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
       : Promise.resolve([]),
   ]);
   const taskActivityActors = buildTaskActivityActorMaps(taskActivityRows, actorVisibility);
+  const activeFormalBlockers = activeFormalBlockerTaskIds(taskActivityRows);
   const visibleBlockerById = new Map(visibleBlockers.map((task) => [task.id, task]));
 
   async function reorderWorkspaceTasks(orderedIds: string[]): Promise<void> {
@@ -450,6 +452,7 @@ export default async function WorkspaceBoardPage({ params }: { params: Promise<{
             subtaskReviewDone: t.checklist.filter((c) => c.kind === "review" && c.completedAt !== null).length,
             subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
             blockedByKey: blocker && blocker.status !== "Done" ? blocker.workItemKey ?? null : null,
+            hasActiveBlocker: activeFormalBlockers.has(t.id),
             activeWorking:
               (t.status === "In Progress" && Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||
               (t.status === "Review" && Boolean(t.actingManager?.agent?.slug && busyAgentSlugs.has(t.actingManager.agent.slug))),

@@ -46,6 +46,7 @@
     "test:mobile-chat-interface": "tsx scripts/mobile-chat-interface-test.ts",
     "test:breakpoint-alignment": "tsx scripts/breakpoint-alignment-test.ts",
     "test:board-layout": "node --import tsx scripts/board-layout-contract-test.ts",
+    "test:board-blocker-indicator": "node --import tsx scripts/board-blocker-indicator-test.ts",
     "test:task-bulk-edit": "node --import tsx scripts/task-bulk-edit-contract-test.ts",
     "test:attachment-target": "node --import tsx scripts/attachment-target-contract-test.ts",
     "test:direct-chat-cursor": "tsx scripts/direct-chat-cursor-test.ts",
