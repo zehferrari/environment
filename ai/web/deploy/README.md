@@ -248,7 +248,10 @@ worktree, which:
 - **checkpoint**: for an explicitly owner-authorized In Progress Epic child,
   creates the PM-owned intermediate commit, merges/pushes only the Epic branch,
   fast-forwards the active child branch to that published tip, and keeps the
-  Task/worktree In Progress for deployment-dependent live verification;
+  Task/worktree In Progress for deployment-dependent live verification. The
+  attempt consumes its authorization and closes the exact matching permission
+  blocker on success or failure; a retry/later publication requires a fresh
+  permission round;
 - **merge**: legacy recovery for already-Done Epic children; merges the task's LOCAL branch (`refs/heads/<taskBranch>`,
   legacy `origin/<taskBranch>` fallback) into the Epic integration branch in a
   throwaway detached worktree, pushes ONLY the Epic branch (eagerly after each
@@ -585,9 +588,14 @@ fail with `PM channel bus disabled`.
 Keep direct HTTP as fallback only: set
 `PM_OPENCLAW_CHANNEL_HTTP_FALLBACK=1` only when the bus is unavailable
 and localhost gateway HTTP should be used as a temporary degraded path.
-Agents stay warm via their stable per-scope OpenClaw session key
-(`pm:<scope>:agent:<slug>` in `AgentSessionBinding`), which OpenClaw reuses
-across turns. Accepted-to-first-stream latency beyond
+Agents execute through per-scope OpenClaw session episodes recorded in
+`AgentSessionBinding`. PM reuses an episode across turns, then rotates it after
+`PM_TASK_SESSION_MAX_COMPLETED_TURNS` completed Task turns (default 8), or
+immediately when OpenClaw reports an unrecoverable context/compaction failure.
+The retry job and binding move to the fresh key together and the incremental
+baseline resets. This is provider-neutral: current PM state and the worktree
+are durable memory, while OpenAI/Anthropic/Ollama session context is a
+disposable cache. Accepted-to-first-stream latency beyond
 `PM_OPENCLAW_FIRST_STREAM_WARNING_MS` writes a
 `pm.channel.latency_warning` audit row.
 OpenClaw requires `hook:` in the allowed session-key prefixes when no

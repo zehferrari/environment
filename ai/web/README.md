@@ -271,8 +271,11 @@ sequenceDiagram
 
 Important properties:
 
-- `AgentSessionBinding` gives each direct/task/Epic conversation a stable
-  `pm:...` session key.
+- `AgentSessionBinding` gives each direct/task/Epic conversation a `pm:...`
+  execution-session episode. Task episodes rotate preventively after the
+  configured completed-turn budget and reactively after unrecoverable
+  context/compaction failure. PM/task/repository state is durable memory;
+  provider session context is disposable.
 - `PmChannelRun` is durable delivery state; `PmChannelStreamEvent` is the
   append-only browser replay ledger. The in-memory stream store is only
   fan-out.

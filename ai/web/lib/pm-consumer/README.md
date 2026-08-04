@@ -107,6 +107,15 @@ dispatch lease as an agent execution timeout: tool-heavy PM turns may produce
 no PM-visible stream event for several minutes, and replaying/restarting them
 mid-run destroys real work.
 
+Context recovery is separate from execution leases. When a PM-generated turn
+ends with a recognized unrecoverable context/compaction failure, the webapp
+atomically rotates the scope's `AgentSessionBinding` key and the durable retry
+payload before re-entering the bounded job ladder. Task sessions also rotate
+preventively after `PM_TASK_SESSION_MAX_COMPLETED_TURNS` completed turns
+(default 8). This policy does not depend on provider-specific token accounting;
+every retry receives a self-contained PM context packet and reconstructs work
+from canonical task/repository state.
+
 ## HOMELAB-46 acceptance
 
 - Typed envelope validation: `parsePmEvent` rejects anything not on

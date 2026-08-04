@@ -30,6 +30,7 @@ import {
   activityPayloadUsesCheckpointAuthorization,
   validateCheckpointAuthorizationText,
 } from "@/lib/deploy/checkpoint-authorization";
+import { settleConsumedCheckpointBlocker } from "@/lib/tasks/checkpoint-blocker";
 
 // Auto-merge a Done Epic-child task's branch into the Epic integration branch.
 //
@@ -817,6 +818,16 @@ async function executeCheckpointJob(
         },
       }),
     ]);
+    const blockerSettlement = await settleConsumedCheckpointBlocker({
+      taskId: task.id,
+      projectId: task.projectId,
+      authorizationCommentId: job.authorizationCommentId,
+      requestedByUsername: job.requestedByUsername,
+      actor,
+      outcome: "checkpoint_failed",
+      evidence: reason,
+      alertAfterFailure: true,
+    });
     if (actor && task.assigneeId) {
       await sendTaskWorkflowNotification({
         taskId: task.id,
@@ -826,7 +837,9 @@ async function executeCheckpointJob(
         body: [
           `PM could not publish the authorized checkpoint for "${task.title}".`,
           reason,
-          "The task remains In Progress and the worktree is preserved. Correct the reported repository problem, then obtain a fresh explicit owner authorization before requesting another checkpoint publication.",
+          blockerSettlement.cleared
+            ? "PM closed the consumed permission round. The task remains In Progress and the worktree is preserved. Diagnose the reported repository problem, fix agent-actionable work, then raise a fresh publish_checkpoint blocker for any retry. Use a general blocker only if evidence proves a genuine human/external dependency."
+            : "The task remains In Progress and the worktree is preserved. Diagnose the reported repository problem and continue from the current formal-blocker state.",
         ].join("\n"),
       }).catch((err) => console.error("[pm] checkpoint failure notify failed:", task.id, err));
     }
@@ -887,10 +900,34 @@ async function executeCheckpointJob(
     where: { taskId: task.id, kind: "pm.repo.checkpoint.ok" },
     select: { payload: true },
   });
-  if (priorSuccessfulUses.some((entry) =>
+  const priorSuccessfulUse = priorSuccessfulUses.find((entry) =>
     activityPayloadUsesCheckpointAuthorization(entry.payload, job.authorizationCommentId)
-  )) {
-    return fail("That owner checkpoint authorization was already consumed by an earlier successful publication. Obtain a new explicit owner authorization.");
+  );
+  if (priorSuccessfulUse) {
+    let evidence = "PM had already recorded a successful publication for this authorization.";
+    try {
+      const parsed = JSON.parse(priorSuccessfulUse.payload ?? "{}") as { epicSha?: unknown };
+      if (typeof parsed.epicSha === "string") evidence += ` Published Epic SHA: \`${parsed.epicSha}\`.`;
+    } catch {
+      // The authorization match itself is sufficient for idempotent repair.
+    }
+    const settlement = await settleConsumedCheckpointBlocker({
+      taskId: task.id,
+      projectId: task.projectId,
+      authorizationCommentId: job.authorizationCommentId,
+      requestedByUsername: job.requestedByUsername,
+      actor,
+      outcome: "checkpoint_published",
+      evidence,
+    });
+    if (settlement.cleared) publishBoardTouch(task.projectId);
+    return {
+      taskId: task.id,
+      outcome: "done" as const,
+      note: settlement.cleared
+        ? "reconciled the consumed checkpoint blocker after an earlier successful publication"
+        : "checkpoint authorization was already published and its permission round was already settled",
+    };
   }
   if (isProtectedBranch(task.project.agentChangeBlockedBranches, epicBranch)) {
     return fail(`The Epic integration branch ${epicBranch} is protected from agent-originated repository changes.`);
@@ -967,6 +1004,15 @@ async function executeCheckpointJob(
       },
     }),
   ]);
+  const blockerSettlement = await settleConsumedCheckpointBlocker({
+    taskId: task.id,
+    projectId: task.projectId,
+    authorizationCommentId: job.authorizationCommentId,
+    requestedByUsername: job.requestedByUsername,
+    actor,
+    outcome: "checkpoint_published",
+    evidence: `Publication produced Epic SHA \`${checkpoint.epicSha}\`.`,
+  });
   if (task.assigneeId) {
     await sendTaskWorkflowNotification({
       taskId: task.id,
@@ -975,6 +1021,9 @@ async function executeCheckpointJob(
       reason: "checkpoint_published",
       body: [
         `PM published the authorized checkpoint for "${task.title}" to origin/${epicBranch} at ${checkpoint.epicSha}.`,
+        ...(blockerSettlement.cleared
+          ? ["PM automatically cleared the consumed publish_checkpoint permission blocker. If deployed verification exposes a new code change that requires another publication, fix it, then raise a fresh publish_checkpoint blocker so the reporter receives a new single-use grant action."]
+          : []),
         "The task remains In Progress. Publication must now flow through the project's configured deployment automation. Do not SSH to a target host, run Git there, or substitute another OS identity as a manual fallback. Verify the automation's outcome for this exact Epic SHA; if it fails, report the actual pipeline/deployment failure and fix agent-actionable code, or flag the missing deployment integration when human intervention is genuinely required. After successful deployment, complete the live-verification checklist and use ready_for_review normally.",
       ].join("\n"),
     }).catch((err) => console.error("[pm] checkpoint success notify failed:", task.id, err));

@@ -3,8 +3,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   activeFormalBlockersByTask,
+  activeFormalBlockerStatesByTask,
+  activeCheckpointBlockerUsesAuthorization,
   activeFormalBlockerTaskIds,
   blockerPermissionGrantForComment,
+  formalBlockerNeedsExternalInput,
 } from "../lib/tasks/formal-blocker";
 
 const root = process.cwd();
@@ -53,9 +56,74 @@ assert.deepEqual(
       payload: JSON.stringify({ blockerCommentId: "comment-1", authorizationCommentId: "comment-2" }),
     },
   ], "comment-1"),
-  { authorizationCommentId: "comment-2" },
+  { authorizationCommentId: "comment-2", grantedAt: null },
   "permission grants must be associated with the blocker comment id",
 );
+
+const requestedRound = activeFormalBlockerStatesByTask([
+  {
+    taskId: "round",
+    kind: "task.blocker",
+    createdAt: 1,
+    payload: JSON.stringify({
+      commentId: "round-1",
+      permissionRequest: { kind: "publish_checkpoint", scope: "Publish round one." },
+    }),
+  },
+]).get("round")!;
+assert.equal(formalBlockerNeedsExternalInput(requestedRound), true, "an ungranted permission round waits on a human");
+
+const grantedRound = activeFormalBlockerStatesByTask([
+  {
+    taskId: "round",
+    kind: "task.blocker.permission.granted",
+    createdAt: 2,
+    payload: JSON.stringify({ blockerCommentId: "round-1", authorizationCommentId: "auth-1" }),
+  },
+  {
+    taskId: "round",
+    kind: "task.blocker",
+    createdAt: 1,
+    payload: JSON.stringify({
+      commentId: "round-1",
+      permissionRequest: { kind: "publish_checkpoint", scope: "Publish round one." },
+    }),
+  },
+]).get("round")!;
+assert.equal(formalBlockerNeedsExternalInput(grantedRound), false, "a granted round is agent-actionable, not human-blocked");
+assert.equal(activeCheckpointBlockerUsesAuthorization(grantedRound, "auth-1"), true, "checkpoint settlement must match the exact grant");
+assert.equal(activeCheckpointBlockerUsesAuthorization(grantedRound, "auth-2"), false, "another authorization cannot settle the round");
+
+const freshRound = activeFormalBlockerStatesByTask([
+  {
+    taskId: "round",
+    kind: "task.blocker",
+    createdAt: 4,
+    payload: JSON.stringify({
+      commentId: "round-2",
+      permissionRequest: { kind: "publish_checkpoint", scope: "Publish round two." },
+    }),
+  },
+  { taskId: "round", kind: "task.blocker.cleared", createdAt: 3 },
+  {
+    taskId: "round",
+    kind: "task.blocker.permission.granted",
+    createdAt: 2,
+    payload: JSON.stringify({ blockerCommentId: "round-1", authorizationCommentId: "auth-1" }),
+  },
+  {
+    taskId: "round",
+    kind: "task.blocker",
+    createdAt: 1,
+    payload: JSON.stringify({
+      commentId: "round-1",
+      permissionRequest: { kind: "publish_checkpoint", scope: "Publish round one." },
+    }),
+  },
+]).get("round")!;
+assert.equal(freshRound.commentId, "round-2", "a later defect must create a distinct permission round");
+assert.equal(freshRound.permissionGrant, null, "an earlier round's consumed grant must never leak into the new button");
+assert.equal(formalBlockerNeedsExternalInput(freshRound), true, "the new round waits for its own grant");
 
 for (const [path, label] of [
   ["app/(app)/projects/[slug]/page.tsx", "project board"],
@@ -90,6 +158,25 @@ assert(
     taskPage.includes("Grant requested permission") &&
     taskPage.includes("task.blocker.permission.granted"),
   "task comments must focus deep-linked blockers and expose the audited reporter permission action",
+);
+const continuation = read("lib/agents/workflow/execution-continuation.ts");
+assert(
+  continuation.includes("activeFormalBlockerStatesByTask") &&
+    continuation.includes("formalBlockerNeedsExternalInput") &&
+    !continuation.includes("task.alertReporter"),
+  "a granted permission round and a generic admin alert must not suppress assignee execution recovery",
+);
+const semanticMonitor = read("../openclaw/bin/ai-monitor");
+assert(
+  semanticMonitor.includes("_pm_blocker_permission_grant") &&
+    semanticMonitor.includes("pm-granted-blocker-awaiting-assignee"),
+  "the fallback monitor must distinguish waiting-for-permission from granted/actionable rounds",
+);
+const checkpointWorker = read("lib/deploy/epic-merge.ts");
+assert.equal(
+  occurrences(checkpointWorker, "settleConsumedCheckpointBlocker({"),
+  3,
+  "checkpoint failure, idempotent replay, and success must all settle the exact consumed permission round",
 );
 assert(
   board.includes("task.blockedByKey || task.hasActiveBlocker") &&

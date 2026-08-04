@@ -123,7 +123,7 @@ async function routeBoundaryTests() {
     const failureTarget = { kind: "direct", agentSlug: ROUTE_AGENT, messageId: failureMessageId };
     const terminal = await callPmChannelReply({
       target: failureTarget,
-      body: "⚠️ Auto-compaction could not recover this turn. Please try again.",
+      body: "⚠️ Context is too large and auto-compaction could not recover this turn. Please try again.",
       bearer: SHARED,
     });
     assert.equal(terminal.status, 200, "terminal compaction callback must be handled");

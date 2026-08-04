@@ -34,9 +34,12 @@ import {
 } from "@/lib/deploy/checkpoint-authorization";
 import { isProtectedBranch } from "@/lib/projects/protected-branches";
 import {
+  blockerMetadataFromPayload,
+  blockerPermissionGrantForComment,
   isBlockerPermissionKind,
   type BlockerPermissionRequest,
 } from "@/lib/tasks/formal-blocker";
+import { hasNewerIndependentTaskAlert } from "@/lib/tasks/checkpoint-blocker";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -1291,7 +1294,7 @@ export async function POST(
         kind: { in: ["task.blocker", "task.extra_work.blocker", "task.blocker.cleared"] },
       },
       orderBy: { createdAt: "desc" },
-      select: { kind: true },
+      select: { kind: true, payload: true },
     });
     if (latestBlocker && latestBlocker.kind !== "task.blocker.cleared") {
       await recordPmChannelRunWorkflowAction({
@@ -1300,6 +1303,28 @@ export async function POST(
         messageId,
         action,
       });
+      if (requestedPermissionKind) {
+        const activeMetadata = blockerMetadataFromPayload(latestBlocker.payload);
+        const permissionGrant = activeMetadata.commentId
+          ? blockerPermissionGrantForComment(await db.activityLog.findMany({
+              where: { taskId: task.id, kind: "task.blocker.permission.granted" },
+              orderBy: { createdAt: "desc" },
+              select: { kind: true, payload: true },
+            }), activeMetadata.commentId)
+          : null;
+        const sameRequest =
+          activeMetadata.permissionRequest?.kind === permissionRequest?.kind &&
+          activeMetadata.permissionRequest?.scope === permissionRequest?.scope;
+        if (!sameRequest || permissionGrant) {
+          return NextResponse.json({
+            error: permissionGrant
+              ? "The active permission blocker is already granted and agent-actionable. Use the returned authorizationCommentId for that exact operation; PM closes this permission round automatically when the checkpoint attempt settles. Do not reuse it or create another request inside the same round."
+              : "A different formal blocker is already active. Clear it with evidence before creating a new permission request.",
+            activeBlockerCommentId: activeMetadata.commentId,
+            authorizationCommentId: permissionGrant?.authorizationCommentId ?? null,
+          }, { status: 409 });
+        }
+      }
       return NextResponse.json({ ok: true, taskId: task.id, flagged: "blocker", alreadyFlagged: true });
     }
 
@@ -1398,23 +1423,10 @@ export async function POST(
       return NextResponse.json({ ok: true, taskId: task.id, cleared: "blocker", alreadyCleared: true });
     }
 
-    const newerIndependentAlerts = await db.activityLog.findMany({
-      where: {
-        taskId: task.id,
-        createdAt: { gt: latestBlocker.createdAt },
-        kind: { in: ["pm.repo.verify.operational_error", "pm.repo.checkpoint.fail", "task.alert_reporter"] },
-      },
-      select: { kind: true, payload: true },
-    });
-    const hasNewerIndependentAlert = newerIndependentAlerts.some((entry) => {
-      if (entry.kind !== "task.alert_reporter") return true;
-      try {
-        const value = (JSON.parse(entry.payload ?? "{}") as { to?: unknown }).to;
-        return value === true || value === 1 || value === "1" || value === "true";
-      } catch {
-        return false;
-      }
-    });
+    const hasNewerIndependentAlert = await hasNewerIndependentTaskAlert(
+      task.id,
+      latestBlocker.createdAt,
+    );
     const preserveIndependentAlert =
       task.repositoryRun?.phase === "operational_error" || hasNewerIndependentAlert;
     const [created] = await db.$transaction([

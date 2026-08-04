@@ -945,8 +945,9 @@ async function restoreComment(formData: FormData) {
 // A formal blocker may explicitly declare that the only missing dependency is
 // a narrowly scoped reporter permission. This action validates that durable
 // request, records an auditable grant comment, and wakes the visible assignee.
-// It does not clear the blocker: the assignee must still perform/verify the
-// authorized operation and call clear_blocker with evidence.
+// Granting makes the round agent-actionable. Non-checkpoint dependencies are
+// still cleared by the assignee after verification; checkpoint success/failure
+// consumes the grant and closes its exact round automatically.
 async function grantBlockerPermission(formData: FormData) {
   "use server";
   const actor = await requireActor();
@@ -1036,7 +1037,7 @@ async function grantBlockerPermission(formData: FormData) {
     body = [
       `@${task.assignee.username} I hereby authorize PM to publish and deploy the current checkpoint for ${task.workItemKey ?? taskBranch} / ${taskBranch} to the Epic branch ${epicBranch}.`,
       `This authorization is limited to the permission requested in blocker comment ${blockerCommentId}: ${request.scope}`,
-      "Use this comment as authorizationCommentId, proceed with the checkpoint, and clear the blocker after the dependency is verified.",
+      "Use this comment as authorizationCommentId and proceed now. PM closes this permission round automatically when the checkpoint attempt succeeds or fails; any later publication requires a fresh blocker and grant.",
     ].join("\n\n");
     const validation = validateCheckpointAuthorizationText({
       body,

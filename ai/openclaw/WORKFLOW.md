@@ -386,8 +386,10 @@ match a known username exactly, including case. When an owner-authored task
 comment mentions an active agent, PM mirrors that comment into the agent's PM
 channel turn so the agent can answer back in the original task-comment thread.
 For the current assignee of an `In Progress` task, the comment continues the
-same stable task execution session instead of creating an isolated per-comment
-turn.
+current task execution episode instead of creating an isolated per-comment
+turn. PM may rotate the episode at its provider-neutral completed-turn budget
+or after unrecoverable context failure; the next turn reconstructs from
+canonical PM/repository state.
 It can also target the assigned active agent, the task reviewer, the acting
 manager of a To Do or In Progress parent Epic, and explicit mentions, with duplicates
 removed. If no reviewer or actionable parent Epic manager exists, the task
@@ -517,14 +519,19 @@ Latency / PM queue/status names:
    agent-actionable work as permission-only. Before flagging a credential/login
    blocker, re-read and retry the exact account identifier and endpoint from trusted task context;
    a guessed shorthand username is not blocker evidence. A decision-owner
-   response to the formal blocker automatically wakes the assignee in the
-   stable execution session. After the dependency is actually resolved/landed,
-   call `clear_blocker` with the unblocking evidence and resume. `Review` is
+   response to the formal blocker automatically wakes the assignee. A
+   structured permission grant makes that round agent-actionable immediately;
+   stale recovery must no longer treat it as waiting on a human. After a
+   non-checkpoint dependency is actually resolved/landed, call `clear_blocker`
+   with the unblocking evidence and resume. `Review` is
    only for completed implementation.
    An assignee visible or silent progress/status reply does not terminate an actionable recovery:
-   if the Task remains `In Progress`, has no formal blocker, and its repository
+   if the Task remains `In Progress`, has no formal blocker waiting on external input, and its repository
    run is still active, PM settles that turn and promptly queues another turn
-   in the same stable session. This continuation is bounded (eight turns per
+   in the current task session. Task sessions are disposable execution
+   episodes: PM rotates them preventively after a configurable completed-turn
+   budget and immediately after an unrecoverable context/compaction failure.
+   Durable PM/task/repository state—not chat history—is task memory. This continuation is bounded (eight turns per
    twenty minutes) to prevent pathological reply loops. Agents must still work
    through to `ready_for_review` or one precise `flag_blocker`; do not rely on
    progress comments as pause points.
@@ -576,7 +583,13 @@ Latency / PM queue/status names:
     `authorizationCommentId` and give a concise reason. The authorization is
     single-use. PM creates the
     checkpoint commit, merges and pushes only the Epic branch, advances the
-    local task branch to that published tip, and keeps the task `In Progress`.
+    local task branch to that published tip, keeps the task `In Progress`, and
+    automatically closes the consumed permission round whether publication
+    succeeds or fails. Diagnose a failed attempt and raise a fresh
+    `publish_checkpoint` blocker before retrying. If deployed
+    verification exposes another fix that requires publication, complete that
+    fix and raise a fresh `publish_checkpoint` blocker; never reuse the spent
+    authorization or leave the old blocker active.
     The configured project automation owns deployment of the exact returned
     Epic SHA. Never SSH to the target, run Git there, or substitute another OS
     identity as a manual fallback. Verify the automation's real outcome; fix
@@ -798,9 +811,11 @@ the exact silent token and no other text.
 - Formal blockers store their exact comment identity. The board alert is an
   action that opens the Comments tab and focuses that comment. A blocker whose
   only dependency is structured reporter permission exposes a scoped grant
-  action on the comment; granting wakes the existing assignee and remains
-  single-use/idempotent. The assignee still clears the blocker only after
-  verifying the authorized operation.
+  action on the comment; granting wakes the existing assignee, makes the round
+  agent-actionable, and remains single-use/idempotent. The assignee clears a
+  non-checkpoint blocker after verification. A checkpoint attempt closes the
+  exact permission round whose grant it consumed on success or failure; any
+  retry or later publication needs a fresh round.
 - `publish_checkpoint` is the narrow exception for an `In Progress`
   Epic-child whose remaining checks require a remotely reachable commit. It
   requires the exact id of a fresh, single-use active-owner authorization
@@ -878,9 +893,11 @@ T3 = final recovery attempt under the same boundary
 T4 = Telegram only if the issue is still present after T3's confirmation window
 ```
 
-An `In Progress` stale-work nudge resumes the assignee's stable task execution
-session. Each turn still carries a self-sufficient bounded PM context packet,
-but task memory and tool trajectory may continue across recovery turns. The
+An `In Progress` stale-work nudge resumes the assignee's current task execution
+episode. Each turn carries a self-sufficient bounded PM context packet. PM may
+rotate an episode at the configured completed-turn budget or after an
+unrecoverable context failure; durable PM/repository state reconstructs the
+next episode while tool trajectory may continue within an episode. The
 turn is execution, not a status check: a failed tool command or reconnaissance
 alone is not a terminal outcome. The assignee keeps working until
 `ready_for_review` succeeds or `flag_blocker` records a precise external/human

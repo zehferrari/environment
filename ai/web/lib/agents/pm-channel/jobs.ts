@@ -13,7 +13,10 @@ import {
   recordPmChannelRunQueued,
 } from "@/lib/agents/pm-channel/runs";
 import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel/stream-log";
-import { rollbackDispatchedMessageId } from "@/lib/agents/auth/session-bindings";
+import {
+  rollbackDispatchedMessageId,
+  rotateAgentSessionBinding,
+} from "@/lib/agents/auth/session-bindings";
 import { isPmTerminalFailureText } from "@/lib/agents/ops/pm-silence";
 
 // Idempotency discriminator for the turn-failure retry policy: only
@@ -608,6 +611,16 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
     isRetryablePmChannelTurnFailure(args.error);
 
   if (eligible) {
+    let retryPayload = payload;
+    if (isPmTerminalFailureText(args.error)) {
+      const rotated = await rotateAgentSessionBinding({
+        agentSlug: payload.agentSlug,
+        currentSessionKey: payload.sessionKey,
+        recoveryId: `failure-${run.id}-${job.attemptCount}`,
+        reason: "context_failure",
+      });
+      if (rotated) retryPayload = { ...payload, sessionKey: rotated.openclawSessionKey };
+    }
     await db.$transaction([
       db.pmChannelJob.updateMany({
         where: { id: job.id, status: { in: ["queued", "claimed", "accepted", "retryable"] } },
@@ -617,6 +630,7 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
           claimedBy: null,
           claimedAt: null,
           lastError: error,
+          payload: JSON.stringify(retryPayload),
         },
       }),
       db.pmChannelRun.update({
@@ -626,10 +640,11 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
           error,
           failedAt: null,
           lastEventAt: now,
+          sessionKey: retryPayload.sessionKey,
         },
       }),
     ]);
-    await appendAndPublishStatus({ payload, runStatus: "retryable", error });
+    await appendAndPublishStatus({ payload: retryPayload, runStatus: "retryable", error });
     return "retried";
   }
 

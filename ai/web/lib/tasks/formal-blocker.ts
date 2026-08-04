@@ -29,6 +29,16 @@ export type BlockerPermissionRequest = {
 export type ActiveFormalBlocker = {
   commentId: string | null;
   permissionRequest: BlockerPermissionRequest | null;
+  raisedAt: Date | string | number | null;
+};
+
+export type BlockerPermissionGrant = {
+  authorizationCommentId: string | null;
+  grantedAt: Date | string | number | null;
+};
+
+export type ActiveFormalBlockerState = ActiveFormalBlocker & {
+  permissionGrant: BlockerPermissionGrant | null;
 };
 
 const FORMAL_BLOCKER_KINDS = new Set([
@@ -62,11 +72,11 @@ export function blockerMetadataFromPayload(payload: string | null | undefined): 
     : null;
   const rawRequest = parsed?.permissionRequest;
   if (!rawRequest || typeof rawRequest !== "object") {
-    return { commentId, permissionRequest: null };
+    return { commentId, permissionRequest: null, raisedAt: null };
   }
   const request = rawRequest as Record<string, unknown>;
   if (!isBlockerPermissionKind(request.kind) || typeof request.scope !== "string" || !request.scope.trim()) {
-    return { commentId, permissionRequest: null };
+    return { commentId, permissionRequest: null, raisedAt: null };
   }
   return {
     commentId,
@@ -77,6 +87,7 @@ export function blockerMetadataFromPayload(payload: string | null | undefined): 
       taskBranch: typeof request.taskBranch === "string" ? request.taskBranch : null,
       epicBranch: typeof request.epicBranch === "string" ? request.epicBranch : null,
     },
+    raisedAt: null,
   };
 }
 
@@ -101,9 +112,13 @@ export function activeFormalBlockersByTask(
           comment.taskId === row.taskId &&
           Math.abs(timestamp(comment.createdAt) - activityTime) <= 1_000
         ));
-        active.set(row.taskId, { ...metadata, commentId: legacyComment?.id ?? null });
+        active.set(row.taskId, {
+          ...metadata,
+          commentId: legacyComment?.id ?? null,
+          raisedAt: row.createdAt ?? null,
+        });
       } else {
-        active.set(row.taskId, metadata);
+        active.set(row.taskId, { ...metadata, raisedAt: row.createdAt ?? null });
       }
     }
   }
@@ -112,7 +127,7 @@ export function activeFormalBlockersByTask(
 }
 
 export function blockerPermissionGrantForComment(
-  newestFirstRows: readonly Pick<TaskActivityKindRow, "kind" | "payload">[],
+  newestFirstRows: readonly Pick<TaskActivityKindRow, "kind" | "payload" | "createdAt">[],
   blockerCommentId: string,
 ) {
   for (const row of newestFirstRows) {
@@ -123,10 +138,49 @@ export function blockerPermissionGrantForComment(
         authorizationCommentId: typeof parsed.authorizationCommentId === "string"
           ? parsed.authorizationCommentId
           : null,
+        grantedAt: row.createdAt ?? null,
       };
     }
   }
   return null;
+}
+
+/** Resolve active blockers together with the permission round attached to them. */
+export function activeFormalBlockerStatesByTask(
+  newestFirstRows: readonly TaskActivityKindRow[],
+  legacyBlockerComments: readonly TaskBlockerCommentRow[] = [],
+) {
+  const active = activeFormalBlockersByTask(newestFirstRows, legacyBlockerComments);
+  const states = new Map<string, ActiveFormalBlockerState>();
+  for (const [taskId, blocker] of active) {
+    states.set(taskId, {
+      ...blocker,
+      permissionGrant: blocker.commentId
+        ? blockerPermissionGrantForComment(newestFirstRows, blocker.commentId)
+        : null,
+    });
+  }
+  return states;
+}
+
+/**
+ * A granted permission round is no longer waiting on a human. It remains
+ * visible until the authorized operation settles, but execution recovery must
+ * keep waking the assignee so the capability is actually used.
+ */
+export function formalBlockerNeedsExternalInput(blocker: ActiveFormalBlockerState) {
+  return !blocker.permissionRequest || !blocker.permissionGrant?.authorizationCommentId;
+}
+
+export function activeCheckpointBlockerUsesAuthorization(
+  blocker: ActiveFormalBlockerState | null | undefined,
+  authorizationCommentId: string,
+) {
+  return Boolean(
+    blocker?.commentId &&
+    blocker.permissionRequest?.kind === "publish_checkpoint" &&
+    blocker.permissionGrant?.authorizationCommentId === authorizationCommentId,
+  );
 }
 
 /**

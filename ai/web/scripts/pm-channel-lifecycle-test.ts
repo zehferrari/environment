@@ -53,13 +53,24 @@ async function main() {
   } = await import("@/lib/agents/pm-channel/runs");
   const {
     enqueueOpenClawPmChannelTurn,
+    isRetryablePmChannelTurnFailure,
     retryOrFailPmChannelJobForTurnFailure,
     requeueStaleClaimedPmChannelJobs,
     runPmChannelWorkerOnce,
   } = await import("@/lib/agents/pm-channel/jobs");
   const { applyPmChannelStreamCallback } = await import("@/lib/agents/pm-channel/stream-callback");
+  const { getOrCreateAgentSessionBinding } = await import("@/lib/agents/auth/session-bindings");
 
   const agentSlug = "lifecycle-agent";
+
+  for (const error of [
+    "maximum context length exceeded",
+    "context window is too large",
+    "prompt is too long",
+    "Context overflow: prompt too large for the model",
+  ]) {
+    assert.equal(isRetryablePmChannelTurnFailure(error), true, `provider context failure must be retryable: ${error}`);
+  }
 
   try {
     const owner = await db.user.create({
@@ -108,10 +119,11 @@ async function main() {
       text: string;
       turnClass?: "notification" | "conversation";
       gatewayPort?: number | null;
+      sessionKey?: string;
     }) => enqueueOpenClawPmChannelTurn({
       gatewayPort: args.gatewayPort ?? null,
       agentSlug,
-      sessionKey: `lifecycle:${args.target.kind}:${args.target.messageId}`,
+      sessionKey: args.sessionKey ?? `lifecycle:${args.target.kind}:${args.target.messageId}`,
       kind: args.target.kind,
       text: args.text,
       projectId: project.id,
@@ -128,6 +140,7 @@ async function main() {
         failedAt: true,
         completionAnomaly: true,
         completionAnomalyAt: true,
+        sessionKey: true,
         jobs: { select: { id: true, status: true, attemptCount: true, availableAt: true, lastError: true, payload: true } },
       },
     });
@@ -342,9 +355,10 @@ async function main() {
     // (the pre-existing gap: no-reply failures skipped the rollback). ----
     await db.pmChannelJob.updateMany({
       where: { runId: d1Seed.id },
-      data: { attemptCount: 3 },
+      data: { status: "accepted", attemptCount: 3 },
     });
-    await recordPmChannelRunEvent({ target: chatTarget(mD), event: "done" });
+    await db.pmChannelRun.update({ where: { id: d1Seed.id }, data: { status: "streaming" } });
+    await retryOrFailPmChannelJobForTurnFailure({ targetKey: d1Key, error: NO_REPLY_ERROR });
     const exhausted = await runRow(d1Key);
     assert.equal(exhausted.status, "failed", "exhausted retries fail terminally");
     assert.ok(exhausted.failedAt, "terminal failure stamps failedAt");
@@ -451,8 +465,82 @@ async function main() {
     );
     assert.equal(storedJob.status, "accepted", "successful retry dispatch marks the job accepted");
 
-    // ---- D6: canceled runs are never retried. ----
-    const mG = "lifecycle-d6";
+    // ---- D6: terminal context failure rotates the poisoned session before
+    // retrying. The newer OpenClaw wording must be classified too. ----
+    const oldSessionKey = `lifecycle:binding:${task.id}:${agentSlug}`;
+    const mH = "lifecycle-d6-context-rotation";
+    await grantMessage(mH);
+    await db.agentSessionBinding.update({
+      where: { openclawSessionKey: oldSessionKey },
+      data: { lastDispatchedMessageId: mH, lastDispatchedAt: new Date() },
+    });
+    await enqueue({
+      target: chatTarget(mH),
+      text: `PM workflow notification for @${agentSlug}:\n\nContinue the long task.`,
+      turnClass: "notification",
+      sessionKey: oldSessionKey,
+    });
+    const d6Key = `task-chat:${agentSlug}:${task.id}:${mH}`;
+    const d6Seed = await runRow(d6Key);
+    await db.pmChannelJob.updateMany({
+      where: { runId: d6Seed.id },
+      data: { status: "accepted", attemptCount: 1, acceptedAt: new Date() },
+    });
+    await db.pmChannelRun.update({ where: { id: d6Seed.id }, data: { status: "streaming" } });
+    const contextFailure = "⚠️ Context is too large and auto-compaction could not recover this turn. Try again.";
+    await recordPmChannelRunEvent({ target: chatTarget(mH), event: "error", error: contextFailure });
+    const contextRetried = await runRow(d6Key);
+    assert.equal(contextRetried.status, "retryable", "terminal context failure remains on the bounded retry ladder");
+    assert.notEqual(contextRetried.sessionKey, oldSessionKey, "the retry run must point at a fresh OpenClaw session");
+    const rotatedBinding = await db.agentSessionBinding.findFirstOrThrow({
+      where: { scopeType: "task", scopeId: task.id, agentSlug },
+      select: { openclawSessionKey: true, lastDispatchedMessageId: true },
+    });
+    assert.equal(rotatedBinding.openclawSessionKey, contextRetried.sessionKey);
+    assert.match(rotatedBinding.openclawSessionKey, /:recovery:failure-/);
+    assert.equal(rotatedBinding.lastDispatchedMessageId, null, "fresh session retries rebuild their incremental baseline");
+    const rotatedPayload = JSON.parse(contextRetried.jobs[0]!.payload) as { sessionKey?: string };
+    assert.equal(rotatedPayload.sessionKey, rotatedBinding.openclawSessionKey, "the durable retry payload must use the rotated key");
+
+    const rotationLog = await db.activityLog.findFirst({
+      where: { taskId: task.id, kind: "pm.session.rotated", targetAgent: agentSlug },
+      orderBy: { createdAt: "desc" },
+      select: { payload: true },
+    });
+    assert.ok(rotationLog, "session rotation must be auditable");
+    assert.equal((JSON.parse(rotationLog!.payload ?? "{}") as { reason?: unknown }).reason, "context_failure");
+
+    // The same mechanism rotates proactively by a provider-neutral completed
+    // turn budget, before any backend-specific overflow string is required.
+    await db.pmChannelRun.create({
+      data: {
+        targetKey: `task-comment:${agentSlug}:${task.id}:proactive-budget`,
+        kind: "task-comment",
+        agentSlug,
+        messageId: "proactive-budget",
+        projectId: project.id,
+        taskId: task.id,
+        sessionKey: rotatedBinding.openclawSessionKey,
+        status: "complete",
+      },
+    });
+    process.env.PM_TASK_SESSION_MAX_COMPLETED_TURNS = "1";
+    const proactivelyRotated = await getOrCreateAgentSessionBinding({
+      scopeType: "task",
+      scopeId: task.id,
+      agentSlug,
+    });
+    delete process.env.PM_TASK_SESSION_MAX_COMPLETED_TURNS;
+    assert.notEqual(proactivelyRotated.openclawSessionKey, rotatedBinding.openclawSessionKey);
+    const proactiveLog = await db.activityLog.findFirstOrThrow({
+      where: { taskId: task.id, kind: "pm.session.rotated", targetAgent: agentSlug },
+      orderBy: { createdAt: "desc" },
+      select: { payload: true },
+    });
+    assert.equal((JSON.parse(proactiveLog.payload ?? "{}") as { reason?: unknown }).reason, "completed_turn_budget");
+
+    // ---- D7: canceled runs are never retried. ----
+    const mG = "lifecycle-d7";
     await db.pmChannelRun.create({
       data: {
         targetKey: `task-chat:${agentSlug}:${task.id}:${mG}`,

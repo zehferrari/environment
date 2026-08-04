@@ -7,7 +7,9 @@ const TRANSIENT_PROGRESS = [
 
 const TERMINAL_FAILURE = [
   /^⚠️\s*Auto-compaction could not recover this turn\b/i,
-  /^Context overflow:\s*prompt too large for the model\b/i,
+  /^⚠️\s*Context is too large and auto-compaction could not recover this turn\b/i,
+  /^(?:⚠️\s*)?Context overflow:\s*prompt too large for the model\b/i,
+  /^(?:⚠️\s*)?(?:maximum context length|context (?:length|window) (?:is )?(?:exceeded|too large)|prompt (?:is )?too (?:large|long))\b/i,
 ];
 
 const WORKFLOW_ACK_ONLY = [

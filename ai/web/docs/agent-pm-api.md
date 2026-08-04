@@ -727,9 +727,15 @@ the reporter can grant the scoped permission there, which records an auditable
 authorization comment and wakes the visible assignee. Use these fields only
 when permission is the sole dependency. A decision-owner response to the
 formal blocker immediately dispatches a `blocker_response` turn to the
-assignee's stable task session. After the
-dependency is actually resolved, the assignee uses `clear_blocker` with the
-unblocking evidence; this clears the formal blocker while preserving a newer
+assignee's current task execution session. Once granted, a permission round is
+agent-actionable and no longer suppresses continuation or stale recovery. A
+`publish_checkpoint` attempt consumes its single-use authorization, so PM
+automatically closes the exact matching permission blocker on either success or
+failure. A failed attempt must be diagnosed before the assignee raises a fresh
+round for retry. If later deployed verification exposes another fix requiring
+publication, the assignee likewise raises a fresh `publish_checkpoint` blocker
+for a new grant. For every other blocker, after the dependency is actually resolved, the assignee uses
+`clear_blocker` with the unblocking evidence; this clears the formal blocker while preserving a newer
 independent repository or administrative alert, if one exists. Task update proposals may
 still include `alert_reporter` (or `alertReporter`) for administrative repair.
 Do not use the flag for ordinary reviewer feedback, routine review waits, or
@@ -739,10 +745,12 @@ agent-actionable blockers.
 
 A visible progress comment is evidence, and a silent response is only a transport
 acknowledgement; neither is a terminal workflow outcome. After an assignee recovery/comment turn settles, PM immediately queues
-another `monitor_recovery` turn in the same stable Task session when the Task is
-still `In Progress`, unblocked, and its repository run is still active. PM does
-not continue tasks already validating/finalizing or tasks with a formal/admin
-alert, and it will not create a competing turn. The automatic chain is bounded
+another `monitor_recovery` turn when the Task is
+still `In Progress`, has no formal blocker waiting on external input, and its
+repository run is still active. A granted permission round is actionable;
+`alert_reporter` alone is visual/admin state and never transfers execution
+ownership. PM does not continue tasks already validating/finalizing and will
+not create a competing turn. The automatic chain is bounded
 to eight continuations per twenty minutes; the normal monitor remains the
 fallback after that safety limit.
 

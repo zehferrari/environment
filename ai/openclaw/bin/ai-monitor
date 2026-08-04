@@ -1713,7 +1713,7 @@ def _pm_latest_blocker_activity(conn, task_id):
     try:
         return conn.execute(
             """
-            SELECT kind, createdAt
+            SELECT kind, payload, createdAt
             FROM ActivityLog
             WHERE taskId = ?
               AND kind IN ('task.blocker', 'task.extra_work.blocker', 'task.blocker.cleared')
@@ -1724,6 +1724,37 @@ def _pm_latest_blocker_activity(conn, task_id):
         ).fetchone()
     except Exception:
         return None
+
+
+def _pm_blocker_permission_grant(conn, task_id, blocker):
+    """Return the exact grant attached to an active permission blocker."""
+    if not blocker or blocker["kind"] == "task.blocker.cleared":
+        return None
+    try:
+        blocker_payload = json.loads(blocker["payload"] or "{}")
+        blocker_comment_id = blocker_payload.get("commentId")
+        permission = blocker_payload.get("permissionRequest")
+        if not blocker_comment_id or not isinstance(permission, dict):
+            return None
+        rows = conn.execute(
+            """
+            SELECT payload, createdAt
+            FROM ActivityLog
+            WHERE taskId = ? AND kind = 'task.blocker.permission.granted'
+            ORDER BY createdAt DESC
+            """,
+            (task_id,),
+        ).fetchall()
+        for row in rows:
+            payload = json.loads(row["payload"] or "{}")
+            if payload.get("blockerCommentId") == blocker_comment_id:
+                return {
+                    "authorizationCommentId": payload.get("authorizationCommentId"),
+                    "createdAt": row["createdAt"],
+                }
+    except Exception:
+        return None
+    return None
 
 
 def _pm_has_live_channel_run(conn, task_id, agent_slug):
@@ -2310,6 +2341,37 @@ def probe_pm_workflow(cfg, registry):
                 blocker = _pm_latest_blocker_activity(conn, row["id"])
                 blocker_s = _parse_pm_ts(blocker["createdAt"]) if blocker else None
                 if blocker and blocker["kind"] != "task.blocker.cleared":
+                    permission_grant = _pm_blocker_permission_grant(conn, row["id"], blocker)
+                    if permission_grant and permission_grant.get("authorizationCommentId"):
+                        grant_s = _parse_pm_ts(permission_grant["createdAt"])
+                        grant_age = _pm_age_s(permission_grant["createdAt"]) or 0
+                        assignee_response = _pm_latest_comment_by(
+                            conn,
+                            row["id"],
+                            row["assigneeId"],
+                            grant_s,
+                        )
+                        latest_action_s = (
+                            _parse_pm_ts(assignee_response["createdAt"])
+                            if assignee_response
+                            else grant_s
+                        )
+                        action_age = (
+                            max(0, int(time.time()) - latest_action_s)
+                            if latest_action_s is not None
+                            else grant_age
+                        )
+                        if action_age >= warn_progress_s:
+                            add(
+                                row,
+                                "pm-granted-blocker-awaiting-assignee",
+                                assignee_slug,
+                                action_age,
+                                "The active permission request is already granted and agent-actionable. Execute the exact authorized operation now using authorization comment "
+                                + str(permission_grant["authorizationCommentId"])
+                                + ". Do not wait for another human response. The checkpoint outcome closes this permission round automatically; a later publication needs a fresh blocker.",
+                            )
+                        continue
                     response = _pm_latest_comment_not_by(
                         conn,
                         row["id"],

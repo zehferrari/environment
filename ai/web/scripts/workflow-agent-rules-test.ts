@@ -795,6 +795,47 @@ async function pmRunSettlementSlice() {
       "flag_blocker must persist a validated permission-only request",
     );
 
+    const sameBlockerGrant = await grantFor("wf-assignee");
+    const sameBlocker = await call("wf-assignee", sameBlockerGrant, {
+      action: "flag_blocker",
+      comment: "same evidence should not duplicate the lifecycle",
+      permissionKind: "reporter_approval",
+      permissionScope: "Allow the assignee to retry the named deployment-host repository check after the reporter updates access.",
+    });
+    assert(sameBlocker.status === 200 && sameBlocker.body.alreadyFlagged === true, "the exact ungranted request must remain idempotent");
+    await assertSettled("wf-assignee", sameBlockerGrant, "idempotent flag_blocker");
+
+    const conflictingBlockerGrant = await grantFor("wf-assignee");
+    const conflictingBlocker = await call("wf-assignee", conflictingBlockerGrant, {
+      action: "flag_blocker",
+      comment: "a different permission must not overwrite an active round",
+      permissionKind: "reporter_approval",
+      permissionScope: "Authorize a different unrelated operation.",
+    });
+    assert(conflictingBlocker.status === 409, "a different permission request must be rejected while one round is active");
+
+    await db.activityLog.create({
+      data: {
+        projectId: project.id,
+        taskId: task.id,
+        userId: owner.id,
+        kind: "task.blocker.permission.granted",
+        payload: JSON.stringify({
+          blockerCommentId: formalPayload.commentId,
+          permissionKind: "reporter_approval",
+          authorizationCommentId: "test-authorization-comment",
+        }),
+      },
+    });
+    const spentBlockerGrant = await grantFor("wf-assignee");
+    const spentBlocker = await call("wf-assignee", spentBlockerGrant, {
+      action: "flag_blocker",
+      comment: "a granted round cannot silently absorb a new request",
+      permissionKind: "reporter_approval",
+      permissionScope: "Allow the assignee to retry the named deployment-host repository check after the reporter updates access.",
+    });
+    assert(spentBlocker.status === 409, "a granted active round must demand settlement before another request");
+
     const clearBlockerGrant = await grantFor("wf-assignee");
     const cleared = await call("wf-assignee", clearBlockerGrant, {
       action: "clear_blocker",
@@ -886,14 +927,14 @@ async function runPmRunSettlementSliceInChild() {
       ["prisma", "db", "push", "--skip-generate", "--accept-data-loss", "--schema=prisma/schema.prisma"],
       { env: childEnv, cwd: process.cwd() },
     );
-    const { stdout } = await execFileP(
+    const { stdout, stderr } = await execFileP(
       "pnpm",
       ["exec", "tsx", "scripts/workflow-agent-rules-test.ts"],
       { env: childEnv, cwd: process.cwd() },
     );
     assert(
       stdout.includes("workflow-agent-rules PM-run settlement slice passed"),
-      "the DB slice child must report success",
+      `the DB slice child must report success (stdout: ${stdout.trim() || "<empty>"}; stderr: ${stderr.trim() || "<empty>"})`,
     );
   } finally {
     await rm(sandbox, { recursive: true, force: true });

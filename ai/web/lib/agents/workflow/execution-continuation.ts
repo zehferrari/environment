@@ -1,7 +1,10 @@
 import { db } from "@/lib/db";
 import type { PmChannelReplyTarget } from "@/lib/agents/pm-channel/openclaw";
 import { sendTaskWorkflowNotification } from "@/lib/agents/workflow/notifications/task";
-import { activeFormalBlockerTaskIds } from "@/lib/tasks/formal-blocker";
+import {
+  activeFormalBlockerStatesByTask,
+  formalBlockerNeedsExternalInput,
+} from "@/lib/tasks/formal-blocker";
 
 export async function taskWorkflowReasonForMessage(taskId: string, messageId: string) {
   const row = await db.activityLog.findFirst({
@@ -41,8 +44,8 @@ const AUTO_CONTINUATION_LIMIT = 8;
 /**
  * A visible or silent progress response is not a terminal outcome for an
  * actionable assignee recovery turn. Once the old run is durably settled,
- * enqueue the next turn in the same stable task session unless the agent
- * reached Review/finalization or raised a formal blocker. The bounded chain
+ * enqueue the next turn unless the agent reached Review/finalization or raised
+ * a formal blocker that still needs external input. The bounded chain
  * prevents a pathological reply loop while removing monitor dead air.
  */
 export async function continueActionableTaskAfterReply(args: {
@@ -71,7 +74,6 @@ export async function continueActionableTaskAfterReply(args: {
         status: true,
         projectId: true,
         assigneeId: true,
-        alertReporter: true,
         deletedAt: true,
         repositoryRun: { select: { phase: true } },
       },
@@ -80,7 +82,6 @@ export async function continueActionableTaskAfterReply(args: {
       !task ||
       task.deletedAt ||
       task.status !== "In Progress" ||
-      task.alertReporter ||
       !task.assigneeId ||
       task.repositoryRun && task.repositoryRun.phase !== "active"
     ) return;
@@ -94,12 +95,20 @@ export async function continueActionableTaskAfterReply(args: {
     const lifecycleRows = await db.activityLog.findMany({
       where: {
         taskId: task.id,
-        kind: { in: ["task.blocker", "task.extra_work.blocker", "task.blocker.cleared"] },
+        kind: {
+          in: [
+            "task.blocker",
+            "task.extra_work.blocker",
+            "task.blocker.cleared",
+            "task.blocker.permission.granted",
+          ],
+        },
       },
       orderBy: { createdAt: "desc" },
-      select: { taskId: true, kind: true },
+      select: { taskId: true, kind: true, payload: true, createdAt: true },
     });
-    if (activeFormalBlockerTaskIds(lifecycleRows).has(task.id)) return;
+    const activeBlocker = activeFormalBlockerStatesByTask(lifecycleRows).get(task.id) ?? null;
+    if (activeBlocker && formalBlockerNeedsExternalInput(activeBlocker)) return;
 
     const competingRun = await db.pmChannelRun.findFirst({
       where: {
@@ -157,8 +166,11 @@ export async function continueActionableTaskAfterReply(args: {
       actor: { id: agent.user.id, kind: "agent", username: args.target.agentSlug },
       reason: "monitor_recovery",
       body: [
-        `Your preceding execution turn for "${task.title}" ended with a progress response${args.replyId ? ` in comment ${args.replyId}` : ""}, but the task is still In Progress, unblocked, and repository execution remains active.`,
-        "Continue the remaining implementation and live verification now in this same task session. Do not stop at another progress/status comment: keep working until ready_for_review succeeds or flag_blocker records one precise human/external dependency.",
+        `Your preceding execution turn for "${task.title}" ended with a progress response${args.replyId ? ` in comment ${args.replyId}` : ""}, but the task is still In Progress and repository execution remains active.`,
+        activeBlocker?.permissionGrant?.authorizationCommentId
+          ? `The active permission request is already granted and is agent-actionable now. Use authorization comment ${activeBlocker.permissionGrant.authorizationCommentId} for the exact authorized operation; do not wait for another human response or create a duplicate blocker.`
+          : "No formal blocker is waiting on external input.",
+        "Continue the remaining implementation and live verification now. Do not stop at another progress/status comment: keep working until ready_for_review succeeds or flag_blocker records one precise human/external dependency.",
       ].join("\n"),
     });
     if (!continuation) return;

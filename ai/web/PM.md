@@ -509,7 +509,13 @@ PM then creates the checkpoint commit with the effective Git identity and
 commit prefix, merges it into the Epic integration branch, pushes only that
 Epic branch, verifies containment, fast-forwards the active Task branch to the
 published Epic tip, and records that tip as the new repository `baseSha`. The
-Task and worktree remain `In Progress`; open checklist rows are unchanged. The
+Task and worktree remain `In Progress`; open checklist rows are unchanged. A
+structured grant makes the permission round agent-actionable immediately. The
+checkpoint attempt consumes that single-use grant, and PM closes the exact
+matching permission blocker on either success or failure. A failed attempt is
+diagnosed before the assignee raises a fresh permission round for retry; a
+later verification fix that needs another publication also gets its own fresh
+round and button. The
 configured project automation deploys the exact returned Epic SHA; the
 assignee must not SSH to the target, run Git there, or substitute a different
 OS identity as a manual fallback. The assignee verifies the automation's real
@@ -523,9 +529,10 @@ its baseline is the published checkpoint; later code changes are validated
 relative to that checkpoint.
 
 This is not a general progress-publishing action and never permits the child
-branch itself to reach origin. Failure preserves the worktree, flags the
-reporter, records `pm.repo.checkpoint.fail`, and leaves the Task In Progress for
-correction/retry.
+branch itself to reach origin. Failure preserves the worktree, records
+`pm.repo.checkpoint.fail`, closes the consumed permission round, and leaves the
+Task In Progress for diagnosis. The alert stays visible, but it does not
+silently transfer execution ownership away from the assignee.
 
 ## Sub-tasks during implementation and review
 
@@ -609,11 +616,14 @@ Actors do not directly add work to another actor's checklist:
   required intervention for an infrastructure, credential, access,
   external-service, or human-decision blocker. PM keeps the Task In Progress,
   sets `alertReporter`, wakes the decision owners, and suppresses the ordinary
-  stale-assignee nudge while the alert is active. Credential/login evidence
+  stale-assignee nudge only while external input is missing. A structured
+  permission grant makes the round agent-actionable immediately; the broader
+  alert flag alone never transfers execution ownership. Credential/login evidence
   must retry the literal account identifier and endpoint from trusted task
   context rather than a guessed shorthand.
 - Decision-owner response to a formal blocker → PM immediately wakes the
-  assignee with a stable-session `blocker_response` execution continuation;
+  assignee with a `blocker_response` execution continuation in the current
+  task-session episode;
   it does not wait for the fallback semantic monitor.
 - Assignee after resolution: `clear_blocker` with the unblocking evidence.
   PM clears the formal blocker and normal In Progress monitoring resumes,

@@ -155,8 +155,10 @@ the entry-point overview.
   performs a final recovery attempt. Semantic workflow drift never restarts a
   healthy gateway/browser; restart is reserved for concrete
   `pm-channel-no-start`, `pm-channel-stalled`, or `pm-channel-failed` evidence.
-  `In Progress` recovery uses the stable task execution session so tool and
-  browser state survive repeated nudges. Telegram is sent only on the next tick if the same issue
+  `In Progress` recovery uses the current task execution episode. PM rotates
+  the episode after the configured completed-turn budget or unrecoverable
+  context/compaction failure and reconstructs from canonical PM/repository
+  state. Telegram is sent only on the next tick if the same issue
   is still present after T3's confirmation window. Wake reminders include
   task id, project, status, Epic status, and the required next PM action.
   Agent-targeted PM workflow drift is retryable after Telegram via

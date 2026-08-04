@@ -106,8 +106,9 @@ mentioning an agent use the same native channel directly. They do not enqueue a
 legacy `task.commented` / `task.mentioned` wake through `pm-consumer`. Comments
 from every other human remain stored as silent knowledge only. When the target
 is the current assignee of an `In Progress` task, owner comments reuse the
-stable task execution session; repeated comments no longer create disconnected
-per-comment task sessions.
+current task execution episode; repeated comments no longer create disconnected
+per-comment task sessions. PM rotates long or context-exhausted episodes and
+reconstructs the next turn from canonical PM/repository state.
 
 Replies must stay in the origin channel:
 
@@ -429,9 +430,12 @@ Allowed actions are `start`, `publish_checkpoint`, `ready_for_review`, `review_f
   `authorizationCommentId`, the exact id of a fresh active-owner Task comment
   that explicitly authorized this checkpoint/deployment after the current
   Action Plan approval and names the Task key/branch plus target Epic branch.
-  The authorization is consumed once. PM creates the commit, merges/pushes only the Epic branch,
+  The authorization is consumed once. Granting makes the permission round
+  agent-actionable immediately. PM creates the commit, merges/pushes only the Epic branch,
   advances the local Task branch/base to the published tip, and returns the
-  deployable Epic SHA. The configured project automation owns deployment:
+  deployable Epic SHA. Success or failure consumes the grant and PM closes that
+  exact permission round automatically; diagnose a failed attempt and raise a
+  fresh round before retrying. The configured project automation owns deployment:
   never SSH to the target, run Git there, or substitute another OS identity as
   a manual fallback. Verify the automation's actual outcome and fix its real
   agent-actionable failure evidence; use `flag_blocker` only if the deployment
@@ -546,12 +550,14 @@ must not add another actor's implementation sub-tasks directly. Instead:
 - `flag_blocker` (`{comment, permissionKind?, permissionScope?}`) — the ASSIGNEE durably escalates an active
   infrastructure, credential, access, external-service, or human-decision
   blocker. The Task stays In Progress, PM sets `alert_reporter`, wakes the
-  reviewer/reporter, and the stale-work monitor stops re-waking the assignee.
+  reviewer/reporter, and the stale-work monitor stops re-waking the assignee
+  only while external input is missing.
   Call it once; do not repeat the blocker comment. When reporter permission is
   the **only** missing dependency, set `permissionKind=reporter_approval` and
   name the exact authorized action in `permissionScope`; use
   `permissionKind=publish_checkpoint` for the validated Epic checkpoint case.
-  PM then puts a scoped grant action on that exact blocker comment. Do not mark
+  PM then puts a scoped grant action on that exact blocker comment. Its grant
+  immediately resumes assignee recovery. Do not mark
   mixed, uncertain, or still agent-actionable work as permission-only.
 - `clear_blocker` (`{comment}`) — after the dependency is actually resolved,
   the ASSIGNEE records the unblocking evidence and clears the formal blocker.
@@ -562,15 +568,14 @@ Before raising a credential/login blocker, the assignee must retry the exact
 account identifier and endpoint from the latest trusted task context; guessed
 shorthand identifiers are not failure evidence. A visible response from the
 decision owner to the formal blocker is dispatched immediately back to the
-assignee as a `blocker_response` continuation. It reuses the task's stable
-execution session so the assignee can clear the blocker and resume without
+assignee as a `blocker_response` continuation so the assignee can clear the blocker and resume without
 waiting for the semantic monitor. A structured permission grant follows the
-same path, is audited and idempotent, and does not clear the blocker until the
-assignee verifies the result and calls `clear_blocker`.
+same path and is audited and idempotent. Non-checkpoint blockers remain active
+until the assignee verifies the result and calls `clear_blocker`; a checkpoint
+attempt closes its consumed permission round automatically on success or failure.
 If a recovery turn instead ends with a visible progress comment or silent response while the Task
-remains actionable (`In Progress`, no blocker/alert, repository phase active),
-PM settles the old run and promptly queues the next turn in the same stable
-session. The chain is capped at eight turns per twenty minutes and never runs
+remains actionable (`In Progress`, no external-input blocker, repository phase active),
+PM settles the old run and promptly queues the next turn. The chain is capped at eight turns per twenty minutes and never runs
 alongside an existing active turn.
 When a task returns from Review (`review_feedback` places it at the front of
 To Do), add a sub-task per feedback item
