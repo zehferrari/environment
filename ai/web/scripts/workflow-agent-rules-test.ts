@@ -127,6 +127,8 @@ assert(reviewAutomation.includes("remainingOpenTasks === 0"), "the Epic Done rol
 
 const taskNotifications = readFileSync(join(root, "lib/agents/workflow/notifications/task.ts"), "utf8");
 const pmChannelReplyRoute = readFileSync(join(root, "app/api/openclaw/pm-channel/reply/route.ts"), "utf8");
+const pmChannelStreamCallback = readFileSync(join(root, "lib/agents/pm-channel/stream-callback.ts"), "utf8");
+const executionContinuation = readFileSync(join(root, "lib/agents/workflow/execution-continuation.ts"), "utf8");
 const openClawInstaller = readFileSync(join(root, "../openclaw/install.sh"), "utf8");
 assert(taskNotifications.includes("never edit a primary checkout"), "worktree guidance must prohibit primary-checkout edits");
 assert(taskNotifications.includes("tag the reporter"), "worktree failure guidance must tell agents to tag the reporter");
@@ -162,8 +164,9 @@ assert(
 );
 assert(
   pmChannelReplyRoute.includes("continueActionableTaskAfterReply") &&
-    pmChannelReplyRoute.includes("task.workflow.auto_continue") &&
-    pmChannelReplyRoute.includes("AUTO_CONTINUATION_LIMIT") &&
+    pmChannelStreamCallback.includes("continueActionableTaskAfterReply") &&
+    executionContinuation.includes("task.workflow.auto_continue") &&
+    executionContinuation.includes("AUTO_CONTINUATION_LIMIT") &&
     pmChannelReplyRoute.indexOf("markPmChannelJobCompleteForTarget(target)") <
       pmChannelReplyRoute.lastIndexOf("continueActionableTaskAfterReply(executionContinuation)") &&
     taskNotifications.includes("workflowReason,"),

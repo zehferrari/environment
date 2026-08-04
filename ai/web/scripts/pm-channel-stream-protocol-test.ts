@@ -13,6 +13,7 @@ import {
 } from "@/lib/agents/pm-channel/stream";
 import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/runs";
 import { replayPmChannelStreamFrames } from "@/lib/agents/pm-channel/stream-log";
+import { isRetryablePmChannelTurnFailure } from "@/lib/agents/pm-channel/jobs";
 
 const target = {
   kind: "direct" as const,
@@ -42,6 +43,11 @@ assert.equal(
   isPmTerminalFailureText("⚠️ Auto-compaction could not recover this turn. Please try again."),
   true,
   "OpenClaw compaction failure finals must be classified as failures",
+);
+assert.equal(
+  isRetryablePmChannelTurnFailure("⚠️ Auto-compaction could not recover this turn. Please try again."),
+  true,
+  "notification-class compaction terminals must be eligible for the shared bounded retry ladder",
 );
 
 apply({ event: "status:thinking" });

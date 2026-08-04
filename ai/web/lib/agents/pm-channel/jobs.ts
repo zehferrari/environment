@@ -14,6 +14,7 @@ import {
 } from "@/lib/agents/pm-channel/runs";
 import { publishPmChannelStreamEventDurably } from "@/lib/agents/pm-channel/stream-log";
 import { rollbackDispatchedMessageId } from "@/lib/agents/auth/session-bindings";
+import { isPmTerminalFailureText } from "@/lib/agents/ops/pm-silence";
 
 // Idempotency discriminator for the turn-failure retry policy: only
 // PM-generated notification/nudge turns are safe to auto-replay. Stamped at
@@ -160,7 +161,8 @@ function payloadTurnClass(payload: DispatchJobPayload): PmChannelTurnClass {
 export function isRetryablePmChannelTurnFailure(error: string) {
   return (
     error === "Agent finished without posting a reply." ||
-    error.startsWith("gateway aborted turn")
+    error.startsWith("gateway aborted turn") ||
+    isPmTerminalFailureText(error)
   );
 }
 

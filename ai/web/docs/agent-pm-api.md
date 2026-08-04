@@ -737,8 +737,8 @@ agent-actionable blockers.
 
 ### Execution continuation after progress replies
 
-A durable progress comment is visible evidence, not a terminal workflow
-outcome. After an assignee recovery/comment turn settles, PM immediately queues
+A visible progress comment is evidence, and a silent response is only a transport
+acknowledgement; neither is a terminal workflow outcome. After an assignee recovery/comment turn settles, PM immediately queues
 another `monitor_recovery` turn in the same stable Task session when the Task is
 still `In Progress`, unblocked, and its repository run is still active. PM does
 not continue tasks already validating/finalizing or tasks with a formal/admin

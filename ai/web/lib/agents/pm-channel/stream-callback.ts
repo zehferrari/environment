@@ -24,6 +24,7 @@ import {
   isTransientPmProgressText,
 } from "@/lib/agents/ops/pm-silence";
 import { isAuthorizedPmChannelCallbackTarget } from "@/lib/agents/pm-channel/target-authorization";
+import { continueActionableTaskAfterReply } from "@/lib/agents/workflow/execution-continuation";
 
 export type PmChannelStreamTransportMode = "http" | "inproc" | "uds";
 
@@ -241,6 +242,14 @@ export async function applyPmChannelStreamCallback(args: {
   await recordStreamTransport(target, transportMode);
   if (event === "error") {
     await recordStreamError(target, state.error ?? stringField(args.payload.error, 2_000));
+  }
+  if (event === "final" && (target.kind === "task-chat" || target.kind === "task-comment")) {
+    // Some OpenClaw turns emit PM_SILENT as a transient partial and then an
+    // empty final, so the legacy reply route never runs. Apply the same
+    // actionable-task continuation at the typed stream boundary; the helper's
+    // competing-run and bounded-chain guards make this idempotent with a
+    // parallel durable reply callback.
+    await continueActionableTaskAfterReply({ target, replyId: null });
   }
 
   return { status: 200, body: { ok: true, key: state.key, status: state.status } };

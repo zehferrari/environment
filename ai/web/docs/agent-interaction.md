@@ -567,7 +567,7 @@ execution session so the assignee can clear the blocker and resume without
 waiting for the semantic monitor. A structured permission grant follows the
 same path, is audited and idempotent, and does not clear the blocker until the
 assignee verifies the result and calls `clear_blocker`.
-If a recovery turn instead ends with a partial progress comment while the Task
+If a recovery turn instead ends with a visible progress comment or silent response while the Task
 remains actionable (`In Progress`, no blocker/alert, repository phase active),
 PM settles the old run and promptly queues the next turn in the same stable
 session. The chain is capped at eight turns per twenty minutes and never runs
