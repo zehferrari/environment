@@ -32,6 +32,7 @@ import {
   type TaskRecord,
   type WorkflowInvariantSnapshot,
 } from "@/lib/workflow-invariants";
+import { formalBlockerReportFromValue } from "@/lib/tasks/formal-blocker";
 
 /** ActivityLog kinds from which a settling workflow action can be recovered. */
 const ACTION_BEARING_ACTIVITY_KINDS = [
@@ -376,14 +377,17 @@ export async function loadWorkflowInvariantSnapshot(
         : null;
     const scope = stringField(request, "scope");
     const reporterId = reporterByTask.get(taskId) ?? null;
+    // ENV-120: a formal blocker now carries a validated structured report, so
+    // the external actor and the actionable requirement are read directly
+    // instead of being inferred from the presence of a permission request.
+    const report = formalBlockerReportFromValue(parsed?.blockerReport);
     blockers.push({
       id: row.id,
       taskId,
       kind: row.kind,
-      // A permission request implies the reporter is the external actor. A
-      // general blocker records no actor at all — Epic item 6's gap.
-      externalActor: request && reporterId ? `reporter:${reporterId}` : null,
-      requirement: scope,
+      externalActor:
+        report?.requestedActor ?? (request && reporterId ? `reporter:${reporterId}` : null),
+      requirement: report?.requestedAction ?? scope,
       clearedAt: null,
     });
   }
