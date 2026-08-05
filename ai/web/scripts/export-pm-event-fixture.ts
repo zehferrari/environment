@@ -17,11 +17,17 @@
 //
 //   * REDACTED HARD. The trail carries dispatch envelopes, system prompts and
 //     context-grant rows — exactly the places a bearer token, an auth secret or
-//     a human's email address lives. Redaction runs on BOTH axes: field names
-//     matching the secret patterns are replaced wholesale, and every remaining
-//     string is scanned for token-shaped blobs. Placeholders are fixed strings
-//     (`[redacted:token]`, `[redacted:email]`, `[redacted:blob]`) so a redacted
-//     fixture is still byte-stable.
+//     a human's email address lives. Redaction runs on THREE axes: field names
+//     matching the secret patterns are replaced wholesale, every remaining
+//     string is scanned for token-shaped blobs, and free PROSE is scanned for
+//     credentials a human typed into a comment ("reset the password to
+//     \"…\"", "cvv: …"), payment card numbers and live gateway identifiers.
+//     That third axis exists because PM's richest columns are `body`/`payload`
+//     free text, where a secret is disclosed in a sentence and no field name
+//     marks it. Placeholders are fixed strings (`[redacted:token]`,
+//     `[redacted:email]`, `[redacted:blob]`, `[redacted:credential]`,
+//     `[redacted:card]`, `[redacted:payment]`) so a redacted fixture is still
+//     byte-stable.
 //
 //   * DETERMINISTIC. Same database in, byte-identical file out: object keys are
 //     emitted in sorted order, rows are sorted by (timestamp, id), DATETIME
@@ -47,11 +53,12 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 
 const SCRIPT = "export-pm-event-fixture";
 
 /** Bumped whenever the emitted shape changes; the replay suite pins it. */
-const EXPORT_SCHEMA_VERSION = 1;
+const EXPORT_SCHEMA_VERSION = 2;
 
 /** The task the Epic actually names. Overridable, but this is the fixture. */
 const DEFAULT_TASK_ID = "cmrodriti007kovmhq8x6qqls";
@@ -77,7 +84,13 @@ export const REDACTION_PLACEHOLDERS = {
   token: "[redacted:token]",
   email: "[redacted:email]",
   blob: "[redacted:blob]",
+  credential: "[redacted:credential]",
+  card: "[redacted:card]",
+  payment: "[redacted:payment]",
 } as const;
+
+/** A value that is already a placeholder must never be re-redacted. */
+const PLACEHOLDER_PREFIX = "[redacted:";
 
 /**
  * Field names whose VALUE is a credential (or PII) regardless of what it looks
@@ -146,6 +159,107 @@ const HIGH_CONFIDENCE_SCANNERS: Array<{ kind: keyof typeof REDACTION_PLACEHOLDER
   { kind: "email", re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g },
 ];
 
+// ---------------------------------------------------------------------------
+// Free-text credential disclosure
+//
+// The name rule and the entropy scanners both assume a secret arrives in a
+// field that either announces itself (`token`) or looks random. A human typing
+// "if required, reset the password to \"<the actual password>\"" into a comment
+// defeats both: the field is `body`, and the literal is short, low-entropy and
+// perfectly ordinary-looking. PM's most valuable columns are exactly this kind
+// of prose, so the exporter scans it explicitly.
+//
+// The rules are deliberately anchored — a credential NOUN, then a short
+// connector, then the value — rather than "redact anything near the word
+// password". Over-broad prose redaction would gut the fixture's evidentiary
+// value (this history is three weeks of humans discussing a login failure, so
+// the word "password" appears 68 times in sentences that disclose nothing).
+// Measured against the committed fixture, these three rules fire on exactly
+// the four disclosures below and nothing else.
+// ---------------------------------------------------------------------------
+
+/** Nouns whose value, when stated, IS the credential. */
+const CREDENTIAL_NOUN = String.raw`pass(?:word|phrase|wd)|passcode|pwd|secret(?:[ _-]?key)?|api[ _-]?key|access[ _-]?key|credentials?|cvv|cvc`;
+
+/** `<noun> to "value"`, `<noun>: 'value'`, `<noun> is \`value\`` — quoted disclosure. */
+const CREDENTIAL_QUOTED = new RegExp(
+  String.raw`(${CREDENTIAL_NOUN})(\s*[:=]\s*|\s+(?:is|are|was|to|as|of|for|=>)\s+)(["'` +
+    "`" +
+    String.raw`])((?:(?!\3)[^\n\r]){1,128})\3`,
+  "gi",
+);
+
+/** `<noun>: value`, `<noun>=value` — bare assignment, value runs to the next delimiter. */
+const CREDENTIAL_ASSIGNED = new RegExp(
+  String.raw`(${CREDENTIAL_NOUN})(\s*[:=]\s*)([^\s"'` + "`" + String.raw`,;)\]}\\]{3,128})`,
+  "gi",
+);
+
+/**
+ * Payment card numbers. Luhn AND a real issuer prefix are both required: a
+ * bare 13-19 digit run that happens to satisfy Luhn is far more likely to be an
+ * epoch-millisecond timestamp (which always starts `1`) than a PAN, and eating
+ * timestamps would corrupt the trail this fixture exists to preserve.
+ */
+const CARD_CANDIDATE = /\b(?:\d[ -]?){12,18}\d\b/g;
+const CARD_ISSUER_PREFIX = /^(?:4|5[1-5]|2[2-7]|3[47]|6(?:011|5)|35)/;
+
+/**
+ * A card-shaped run that a LABEL announces as a card is redacted whether or not
+ * it passes Luhn. The outage trail contains mistyped card numbers quoted as
+ * evidence ("card number : 5511 2233 4455 6677889  <- typed …"); Luhn rejects
+ * those by construction, and leaving a labelled PAN in the fixture because the
+ * human fat-fingered it is not a defensible position.
+ */
+const CARD_LABELLED =
+  /((?:cc|card|pan|credit[ _-]?card)(?:\s*(?:number|no\.?|num|#))?\s*[:=]\s*)((?:\d[ -]?){11,19}\d)/gi;
+
+/**
+ * Live payment-gateway identifiers pasted into a comment as evidence. The
+ * outage trail quotes whole CBA acquirer responses inside fenced code blocks,
+ * so the merchant id and receipt number arrive as PROSE — the structural
+ * field-name rule never sees them, because the entire JSON response is one
+ * string in one `body` column. None of them is required to replay the sequence.
+ */
+const PAYMENT_IDENTIFIER =
+  /(["'`]?)(merchant[ _-]?id|acquirer[ _-]?id|receipt(?:[ _-]?(?:no|number|id))?|transaction[ _-]?(?:id|ref|reference)|payment[ _-]?(?:id|ref|reference)|invoice[ _-]?(?:no|number|id))\1(\s*[:=]\s*)(["'`]?)([A-Za-z0-9_-]{4,64})\4/gi;
+
+/**
+ * Long BARE digit runs. The trail quotes gateway receipts, order references and
+ * a merchant id as loose prose ("acquirer `CBA_S2I` / merchant `353…`",
+ * "receipt <digits>") where no adjacent key names them, so neither the
+ * field rule nor `PAYMENT_IDENTIFIER` reaches them. None is required to replay
+ * the sequence.
+ *
+ * The one class of long bare digit run this fixture legitimately needs is an
+ * epoch timestamp, so those are excluded by shape: milliseconds (13), micro-
+ * seconds (16) and nanoseconds (19) all begin with `1` for any date between
+ * 2001 and 2286. Measured against the committed fixture this rule fires on six
+ * distinct values, every one of them a payment artefact.
+ */
+const PAYMENT_NUMERIC_RUN = /(?<![\d.])\d{12,19}(?![\d.])/g;
+
+function isPlausibleEpoch(digits: string): boolean {
+  return (
+    (digits.length === 13 || digits.length === 16 || digits.length === 19) && digits.startsWith("1")
+  );
+}
+
+function isLuhnValid(digits: string): boolean {
+  let sum = 0;
+  let alternate = false;
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    let value = Number(digits[index]);
+    if (alternate) {
+      value *= 2;
+      if (value > 9) value -= 9;
+    }
+    sum += value;
+    alternate = !alternate;
+  }
+  return sum % 10 === 0;
+}
+
 /**
  * Generic high-entropy blobs. Only applied to non-allowlisted fields, because
  * these are the rules that would eat a git sha or a routing key.
@@ -164,7 +278,73 @@ interface RedactionStats {
   token: number;
   email: number;
   blob: number;
+  credential: number;
+  card: number;
+  payment: number;
   truncated: number;
+}
+
+export function newRedactionStats(): RedactionStats {
+  return { named: 0, token: 0, email: 0, blob: 0, credential: 0, card: 0, payment: 0, truncated: 0 };
+}
+
+/**
+ * Strip credentials a human disclosed in prose, plus payment card numbers.
+ *
+ * Exported so the regression suite can assert the RULE, not just the current
+ * fixture bytes: a redaction hole that is only proven closed by "the known
+ * literal is absent from the committed file" reopens the moment someone
+ * regenerates the fixture from a different task.
+ */
+export function redactFreeText(value: string, stats: RedactionStats = newRedactionStats()): string {
+  let out = value.replace(
+    CREDENTIAL_QUOTED,
+    (whole: string, noun: string, connector: string, quote: string, secret: string) => {
+      if (secret.startsWith(PLACEHOLDER_PREFIX)) return whole;
+      stats.credential += 1;
+      return `${noun}${connector}${quote}${REDACTION_PLACEHOLDERS.credential}${quote}`;
+    },
+  );
+  out = out.replace(
+    CREDENTIAL_ASSIGNED,
+    (whole: string, noun: string, connector: string, secret: string) => {
+      if (secret.startsWith(PLACEHOLDER_PREFIX)) return whole;
+      stats.credential += 1;
+      return `${noun}${connector}${REDACTION_PLACEHOLDERS.credential}`;
+    },
+  );
+  out = out.replace(
+    PAYMENT_IDENTIFIER,
+    (
+      whole: string,
+      keyQuote: string,
+      key: string,
+      connector: string,
+      valueQuote: string,
+      value: string,
+    ) => {
+      if (value.startsWith("redacted")) return whole;
+      stats.payment += 1;
+      return `${keyQuote}${key}${keyQuote}${connector}${valueQuote}${REDACTION_PLACEHOLDERS.payment}${valueQuote}`;
+    },
+  );
+  out = out.replace(CARD_LABELLED, (whole: string, label: string, digits: string) => {
+    if (digits.startsWith(PLACEHOLDER_PREFIX)) return whole;
+    stats.card += 1;
+    return `${label}${REDACTION_PLACEHOLDERS.card}`;
+  });
+  out = out.replace(CARD_CANDIDATE, (whole: string) => {
+    const digits = whole.replace(/[ -]/g, "");
+    if (digits.length < 13 || digits.length > 19) return whole;
+    if (!CARD_ISSUER_PREFIX.test(digits) || !isLuhnValid(digits)) return whole;
+    stats.card += 1;
+    return REDACTION_PLACEHOLDERS.card;
+  });
+  return out.replace(PAYMENT_NUMERIC_RUN, (whole: string) => {
+    if (isPlausibleEpoch(whole)) return whole;
+    stats.payment += 1;
+    return REDACTION_PLACEHOLDERS.payment;
+  });
 }
 
 function fieldIsSecret(field: string): boolean {
@@ -181,6 +361,10 @@ function scanString(value: string, field: string, stats: RedactionStats): string
       return REDACTION_PLACEHOLDERS[scanner.kind];
     });
   }
+  // Prose disclosures and card numbers are unconditional: they are anchored
+  // enough to be safe on an allowlisted routing key, and a `sessionKey` is not
+  // a licence to leak a password quoted inside it.
+  out = redactFreeText(out, stats);
   if (!FIELD_ALLOWLIST.has(field.toLowerCase())) {
     for (const scanner of ENTROPY_SCANNERS) {
       out = out.replace(scanner.re, () => {
@@ -583,7 +767,7 @@ async function main(): Promise<void> {
   }
 
   const dbh = new DatabaseSync(resolved, { readOnly: true });
-  const stats: RedactionStats = { named: 0, token: 0, email: 0, blob: 0, truncated: 0 };
+  const stats: RedactionStats = newRedactionStats();
 
   try {
     const taskShape = readTableShape(dbh, "Task");
@@ -739,6 +923,9 @@ async function main(): Promise<void> {
       "[redacted:token]": occurrences(REDACTION_PLACEHOLDERS.token),
       "[redacted:email]": occurrences(REDACTION_PLACEHOLDERS.email),
       "[redacted:blob]": occurrences(REDACTION_PLACEHOLDERS.blob),
+      "[redacted:credential]": occurrences(REDACTION_PLACEHOLDERS.credential),
+      "[redacted:card]": occurrences(REDACTION_PLACEHOLDERS.card),
+      "[redacted:payment]": occurrences(REDACTION_PLACEHOLDERS.payment),
       "[truncated:": occurrences("[truncated:"),
     };
 
@@ -763,6 +950,14 @@ async function main(): Promise<void> {
         redaction: {
           placeholders: [...new Set(Object.values(REDACTION_PLACEHOLDERS))].sort(),
           fieldNamePatterns: SECRET_FIELD_PATTERNS.map((re) => re.source),
+          freeTextPatterns: [
+            CREDENTIAL_QUOTED.source,
+            CREDENTIAL_ASSIGNED.source,
+            PAYMENT_IDENTIFIER.source,
+            PAYMENT_NUMERIC_RUN.source,
+            CARD_LABELLED.source,
+            CARD_CANDIDATE.source,
+          ],
           allowlistedFields: [...FIELD_ALLOWLIST].sort(),
           maxStringBySection: Object.fromEntries(
             SECTIONS.filter((spec) => spec.name in sections).map((spec) => [
@@ -779,6 +974,9 @@ async function main(): Promise<void> {
               tokenShaped: stats.token,
               emailShaped: stats.email,
               entropyBlob: stats.blob,
+              proseCredential: stats.credential,
+              paymentCard: stats.card,
+              paymentIdentifier: stats.payment,
               truncatedStrings: stats.truncated,
             },
             // What actually SURVIVES in the emitted rows. This is the number
@@ -799,7 +997,8 @@ async function main(): Promise<void> {
     console.log(
       `[${SCRIPT}] wrote ${outPath} — ${totalRows} rows across ${seedOrder.length} section(s); ` +
         `redactions: ${stats.named} by-name, ${stats.token} token-shaped, ${stats.email} email, ` +
-        `${stats.blob} entropy-blob, ${stats.truncated} truncated`,
+        `${stats.blob} entropy-blob, ${stats.credential} prose-credential, ` +
+        `${stats.card} payment-card, ${stats.payment} payment-id, ${stats.truncated} truncated`,
     );
     if (skipped.length > 0) {
       console.log(`[${SCRIPT}] skipped: ${skipped.join(", ")}`);
@@ -809,7 +1008,13 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(`[${SCRIPT}] unexpected failure:`, error);
-  process.exit(1);
-});
+// Only export when RUN. The regression suite imports `redactFreeText` from this
+// module to assert the redaction rules directly, and an import that opened a
+// database would make that impossible.
+const entrypoint = process.argv[1] ? path.resolve(process.argv[1]) : "";
+if (entrypoint === path.resolve(fileURLToPath(import.meta.url))) {
+  main().catch((error: unknown) => {
+    console.error(`[${SCRIPT}] unexpected failure:`, error);
+    process.exit(1);
+  });
+}

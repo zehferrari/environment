@@ -33,6 +33,7 @@
 
 import "./lib/next-als-polyfill";
 
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -53,7 +54,7 @@ const SUITE = "workflow-regression-fixture";
 const FIXTURE_PATH = path.join(process.cwd(), "scripts/fixtures/patricia-e6-outage-drill.json");
 
 /** Pinned: a fixture written by a different exporter shape must not silently replay. */
-const EXPECTED_EXPORT_SCHEMA_VERSION = 1;
+const EXPECTED_EXPORT_SCHEMA_VERSION = 2;
 
 const report: ScenarioReporter = createScenarioReporter(SUITE);
 
@@ -308,6 +309,93 @@ const SECRET_SHAPES: Array<{ label: string; re: RegExp }> = [
   { label: "PEM private key", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
 ];
 
+/**
+ * The literal that got through the first export (ENV-124 review), pinned as a
+ * SHA-256 digest rather than plaintext.
+ *
+ * Pinning it by value matters — this is the one string we KNOW a human
+ * disclosed in a PM comment, so a regenerated fixture that reintroduces it must
+ * fail by identity and not merely by a shape rule that could itself be
+ * weakened. Writing the plaintext into this file to prove the plaintext is
+ * absent from that one would be self-defeating, so the check hashes every token
+ * in the fixture instead. Same guarantee, no secret in the repository.
+ */
+const KNOWN_DISCLOSED_CREDENTIAL_SHA256 =
+  "cbc7e205eee75b6212f8087ea6887b765b439100f5661830aba11bdcb710ebf4";
+
+/** Token boundaries a quoted credential can sit between in prose or JSON. */
+const TOKEN_SPLIT = /[\s"'`\\,;()[\]{}<>]+/;
+
+/**
+ * Shapes that must not survive into any fixture, checked against the PARSED
+ * leaf strings rather than the raw file. A raw-byte sweep misses every one of
+ * these: in the committed JSON the disclosure reads `password to \"…\"`, and
+ * the backslash breaks any regex anchored on a quote.
+ */
+const PROSE_SECRET_SHAPES: Array<{ label: string; re: RegExp }> = [
+  {
+    label: "quoted credential disclosure",
+    re: /(?:pass(?:word|phrase|wd)|passcode|pwd|secret(?:[ _-]?key)?|api[ _-]?key|access[ _-]?key|credentials?|cvv|cvc)(?:\s*[:=]\s*|\s+(?:is|are|was|to|as|of|for|=>)\s+)(["'`])(?!\[redacted:)(?:(?!\1)[^\n\r]){1,128}\1/i,
+  },
+  {
+    label: "assigned credential",
+    re: /(?:pass(?:word|phrase|wd)|passcode|pwd|secret(?:[ _-]?key)?|api[ _-]?key|access[ _-]?key|cvv|cvc)\s*[:=]\s*(?!\[redacted:)[^\s"'`,;)\]}\\]{3,128}/i,
+  },
+  { label: "labelled card number", re: /(?:cc|card|pan|credit[ _-]?card)(?:\s*(?:number|no\.?|num|#))?\s*[:=]\s*(?:\d[ -]?){11,19}\d/i },
+  {
+    label: "gateway payment identifier",
+    re: /(?:merchant[ _-]?id|acquirer[ _-]?id|receipt(?:[ _-]?(?:no|number|id))?|transaction[ _-]?(?:id|ref|reference)|payment[ _-]?(?:id|ref|reference))["'`]?\s*[:=]\s*["'`]?(?!\[redacted:)[A-Za-z0-9_-]{4,64}/i,
+  },
+  {
+    // Six of these survived the first export: gateway receipts, order refs and
+    // a live merchant id, all quoted as bare prose. Epoch timestamps are the
+    // only long bare digit run the fixture legitimately needs.
+    label: "bare payment digit run",
+    re: /(?<![\d.])(?!1\d{12}(?![\d.])|1\d{15}(?![\d.])|1\d{18}(?![\d.]))\d{12,19}(?![\d.])/,
+  },
+];
+
+const CARD_ISSUER_PREFIX = /^(?:4|5[1-5]|2[2-7]|3[47]|6(?:011|5)|35)/;
+
+function isLuhnValid(digits: string): boolean {
+  let sum = 0;
+  let alternate = false;
+  for (let index = digits.length - 1; index >= 0; index -= 1) {
+    let value = Number(digits[index]);
+    if (alternate) {
+      value *= 2;
+      if (value > 9) value -= 9;
+    }
+    sum += value;
+    alternate = !alternate;
+  }
+  return sum % 10 === 0;
+}
+
+/** Every string leaf in the fixture, including the ones nested in embedded JSON. */
+function collectLeafStrings(value: unknown, out: string[] = []): string[] {
+  if (typeof value === "string") {
+    out.push(value);
+    const trimmed = value.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        collectLeafStrings(JSON.parse(trimmed), out);
+      } catch {
+        // Not JSON. The plain string is already recorded.
+      }
+    }
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectLeafStrings(item, out);
+    return out;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectLeafStrings(item, out);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
@@ -396,6 +484,122 @@ async function main(): Promise<void> {
         `the committed fixture contains no ${shape.label} (found ${JSON.stringify(match?.[0]?.slice(0, 24))})`,
       );
     }
+
+    // ----------------------------------------------------------------
+    // Free-text disclosure (ENV-124 review).
+    //
+    // The first export of this fixture shipped a plaintext password quoted in
+    // a task comment. Nothing above catches it: the field is `body`, the value
+    // is short and low-entropy, and in the committed JSON the quotes around it
+    // are backslash-escaped, so the raw-byte sweep cannot even see the shape.
+    // These assertions close that hole on both axes — the known literal by
+    // name, the general forms by rule, over the PARSED leaves.
+    // ----------------------------------------------------------------
+    const leaves = collectLeafStrings(fixture.sections);
+    const digested = new Set<string>();
+    for (const leaf of leaves) {
+      for (const token of leaf.split(TOKEN_SPLIT)) {
+        if (token.length >= 6 && token.length <= 64) {
+          digested.add(createHash("sha256").update(token).digest("hex"));
+        }
+      }
+    }
+    c.assert(
+      !digested.has(KNOWN_DISCLOSED_CREDENTIAL_SHA256),
+      "the credential a human disclosed in PH-116 is not present in the fixture (pinned by digest)",
+    );
+    c.assert(leaves.length > 1000, `the leaf sweep actually walked the fixture (${leaves.length} strings)`);
+    for (const shape of PROSE_SECRET_SHAPES) {
+      const offender = leaves.find((leaf) => shape.re.test(leaf));
+      const excerpt = offender?.match(shape.re)?.[0]?.slice(0, 60);
+      c.assert(
+        offender === undefined,
+        `no fixture string carries a ${shape.label} (found ${JSON.stringify(excerpt)})`,
+      );
+    }
+
+    const survivingPan = leaves
+      .flatMap((leaf) => [...leaf.matchAll(/\b(?:\d[ -]?){12,18}\d\b/g)].map((m) => m[0]))
+      .map((match) => match.replace(/[ -]/g, ""))
+      .find(
+        (digits) =>
+          digits.length >= 13 &&
+          digits.length <= 19 &&
+          CARD_ISSUER_PREFIX.test(digits) &&
+          isLuhnValid(digits),
+      );
+    c.assert(
+      survivingPan === undefined,
+      `no payment card number survives into the fixture (found ${JSON.stringify(survivingPan)})`,
+    );
+
+    // The rules themselves, not just this file's bytes. A fixture regenerated
+    // from a different task must be protected by the same guarantees, so the
+    // exporter's redactor is asserted directly.
+    const { redactFreeText, REDACTION_PLACEHOLDERS } = await import("./export-pm-event-fixture");
+    const DISCLOSURES: Array<{ label: string; input: string; mustKeep?: string }> = [
+      {
+        // The shape of the disclosure that got through review, with a synthetic
+        // value — the real one is pinned by digest above, not written here.
+        label: "the disclosure shape that got through review",
+        input: 'if required, reset the password to "Synth@1234"',
+        mustKeep: "reset the password to",
+      },
+      { label: "single-quoted password", input: "the password is 'hunter2-correct-horse'" },
+      { label: "backtick passphrase", input: "passphrase = `open sesame please`" },
+      { label: "bare assignment", input: "password: s3cr3t-value-here" },
+      { label: "api key assignment", input: "api_key=AbCdEf123456xyz" },
+      { label: "secret key disclosure", input: 'secret key: "zzz-9910-aaa"' },
+      { label: "cvv", input: "cvv: 1000" },
+      { label: "labelled Luhn-invalid card", input: "card number : 5511 2233 4455 6677889" },
+      { label: "bare Mastercard PAN", input: "charge went through on 5511223344556674 fine" },
+      { label: "bare Amex PAN", input: "amex 370099887766552 declined" },
+      { label: "quoted merchant id", input: '"merchantId":"909100292450927"' },
+      { label: "prose receipt number", input: "FAILED / receipt 900122088851" },
+    ];
+    for (const disclosure of DISCLOSURES) {
+      const cleaned = redactFreeText(disclosure.input);
+      c.assert(
+        cleaned !== disclosure.input && cleaned.includes("[redacted:"),
+        `redactFreeText strips ${disclosure.label}`,
+      );
+      const secret = disclosure.input
+        .replace(/^.*?(?:[:=]|\bis\b|\bto\b)\s*/s, "")
+        .replace(/["'`]/g, "")
+        .trim();
+      c.assert(
+        secret.length === 0 || !cleaned.includes(secret),
+        `the value itself does not survive ${disclosure.label}`,
+      );
+      if (disclosure.mustKeep) {
+        c.assertIncludes(cleaned, disclosure.mustKeep, `the sentence around ${disclosure.label} survives`);
+      }
+    }
+
+    // The other direction: the redactor must not eat the trail. Prose that
+    // merely discusses a password, and the identifiers replay depends on, are
+    // left alone — an over-broad rule would quietly gut the fixture instead of
+    // failing, which is the failure mode that is hard to notice later.
+    const PRESERVED = [
+      "the customer login page has empty username/password fields",
+      "Username and password do not match or you do not have an account yet.",
+      "agent:main:pm:task:cmrodriti007kovmhq8x6qqls:agent:asdrubal",
+      "createdAt 2026-08-04T05:33:21.000Z run 1754285601000",
+      "$s = $m->prepare(\"UPDATE {$p}users SET password=? WHERE id=$id\");",
+    ];
+    for (const preserved of PRESERVED) {
+      c.assertEqual(redactFreeText(preserved), preserved, `redactFreeText leaves intact: ${preserved.slice(0, 48)}`);
+    }
+
+    c.assert(
+      REDACTION_PLACEHOLDERS.credential === "[redacted:credential]" &&
+        REDACTION_PLACEHOLDERS.card === "[redacted:card]",
+      "the free-text placeholders are the stable strings meta declares",
+    );
+    c.assert(
+      (emitted["[redacted:credential]"] ?? 0) > 0 && (emitted["[redacted:card]"] ?? 0) > 0,
+      "the free-text redactor actually fired on this history — the hole it closes was real",
+    );
   }
 
   const outage = outageEvent(fixture);

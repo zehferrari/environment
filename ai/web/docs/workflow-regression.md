@@ -88,11 +88,45 @@ any host, after the source rows are archived.
 
 `scripts/export-pm-event-fixture.ts` regenerates it. It is read-only, it works
 from a **copy** of the database rather than the live file, it redacts tokens,
-secrets and PII by both field-name pattern and value shape, and it emits
-deterministic JSON (stable key order, stable row order, normalised timestamps)
-so re-running it produces a byte-identical file. The replay suite asserts the
-fixture's own row counts, so a truncated or corrupted fixture fails loudly
-instead of silently replaying nothing.
+secrets and PII, and it emits deterministic JSON (stable key order, stable row
+order, normalised timestamps) so re-running it produces a byte-identical file.
+The replay suite asserts the fixture's own row counts, so a truncated or
+corrupted fixture fails loudly instead of silently replaying nothing.
+
+### Redaction
+
+Three axes, because a secret can arrive three ways:
+
+1. **By field name** — `token`, `secret`, `passw`, `email`, `…Key` and friends
+   are replaced wholesale, including keys nested inside embedded JSON payloads.
+   A short allowlist (`sessionKey`, `targetKey`, `base_sha`, …) exempts routing
+   identifiers the replay genuinely needs; allowlisted fields still go through
+   every value-shape rule, so the allowlist can never become a leak channel.
+2. **By value shape** — JWTs, bearer headers, vendor-prefixed API keys, email
+   addresses, and (outside the allowlist) high-entropy blobs.
+3. **By free text** — credentials a human typed into a comment. This axis was
+   added after the first export shipped a plaintext password: PM's richest
+   columns are `body`/`payload` prose, where a secret is disclosed in a sentence
+   and no field name marks it. It covers quoted disclosures (`reset the password
+   to "…"`), bare assignments (`cvv: …`, `api_key=…`), payment card numbers
+   (Luhn **and** a real issuer prefix, or any card-labelled digit run), gateway
+   payment identifiers (`merchantId`, `receipt`, `transactionId`) and long bare
+   digit runs that are not plausible epoch timestamps.
+
+The free-text rules are deliberately anchored — a credential noun, a short
+connector, then the value — rather than "redact anything near the word
+password". This history is three weeks of humans discussing a login failure, so
+`password` appears 68 times in sentences that disclose nothing; an over-broad
+rule would quietly gut the fixture's evidentiary value instead of failing.
+
+E1 proves both directions. It sweeps the parsed leaves (not just the raw bytes —
+in the committed JSON the disclosure reads `password to \"…\"`, and the
+backslash defeats any regex anchored on a quote), asserts the redactor's rules
+directly against a table of synthetic disclosures, **and** asserts that prose
+merely discussing a password, along with the identifiers replay depends on,
+survives untouched. The one literal we know a human disclosed is pinned by
+SHA-256 digest over every fixture token — writing the plaintext into the test to
+prove the plaintext is absent from the fixture would be self-defeating.
 
 ## Findings
 
