@@ -75,7 +75,7 @@ export async function POST(req: NextRequest) {
     const canceledEvent = {
       target,
       event: "status",
-      runStatus: "canceled",
+      runStatus: "cancelled",
     } as const;
     publishPmChannelStreamEvent(canceledEvent);
     await enqueuePmChannelStreamDurability(canceledEvent);

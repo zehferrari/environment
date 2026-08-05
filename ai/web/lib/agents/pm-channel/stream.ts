@@ -41,7 +41,7 @@ export interface PmChannelStreamState {
   lifecycleStatus: PmChannelLifecycleStatus | null;
   toolStatus: PmChannelToolStatus | null;
   toolName: string | null;
-  runStatus?: "queued" | "accepted" | "streaming" | "retryable" | "complete" | "failed" | "canceled";
+  runStatus?: "queued" | "accepted" | "streaming" | "completed" | "failed" | "timed_out" | "cancelled" | "superseded";
   error: string | null;
   seq?: number;
   updatedAt: number;
@@ -192,9 +192,9 @@ export function applyPmChannelStreamInput(
     state.toolName = null;
     if (input.runStatus) {
       state.runStatus = input.runStatus;
-      state.status = input.runStatus === "failed" || input.runStatus === "retryable"
+      state.status = input.runStatus === "failed" || input.runStatus === "timed_out" || input.runStatus === "superseded"
         ? "error"
-        : input.runStatus === "complete" || input.runStatus === "canceled"
+        : input.runStatus === "completed" || input.runStatus === "cancelled"
           ? "done"
           : "streaming";
     }
@@ -215,7 +215,7 @@ export function applyPmChannelStreamInput(
       state.text = clip(input.text);
     }
     state.status = input.event === "final" ? "done" : "streaming";
-    state.runStatus = input.event === "final" ? "complete" : "streaming";
+    state.runStatus = input.event === "final" ? "completed" : "streaming";
     state.error = null;
   } else if (input.event === "reasoning") {
     if (input.replace) {
@@ -227,7 +227,7 @@ export function applyPmChannelStreamInput(
     }
   } else if (input.event === "done") {
     state.status = "done";
-    state.runStatus = "complete";
+    state.runStatus = "completed";
     state.error = null;
   } else {
     state.status = "error";
