@@ -14,6 +14,10 @@ import { clip, clipWithMeta, renderBudgetedTimeline } from "@/lib/agents/context
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
 import { parseAcceptanceCriteria } from "@/lib/tasks/action-plan-store";
+import {
+  executionStateLines,
+  renderExecutionState,
+} from "@/lib/agents/watchdog/state";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
 // from agent.role. Coding agents (can_modify_code=true) get the 1M-token
@@ -70,6 +74,9 @@ export type AgentContextPacket = {
       assignee: string;
       reviewer: string;
       blockedBy: string | null;
+      // ENV-123 — the same four lines the task page renders, so an agent reading
+      // its own context sees exactly what the operator sees on the board.
+      executionState: string[] | null;
       actionPlan: {
         id: string;
         summary: string;
@@ -444,6 +451,15 @@ export async function buildTaskAgentContextPacket(args: {
       approvedOn: true,
       createdAt: true,
       updatedAt: true,
+      executionState: {
+        select: {
+          state: true,
+          reasonDetail: true,
+          lastDurableAction: true,
+          lastDurableActionAt: true,
+          recoveryAction: true,
+        },
+      },
       project: {
         select: {
           id: true,
@@ -608,6 +624,9 @@ export async function buildTaskAgentContextPacket(args: {
             reviewer: actorLabel(task.actingManager),
             blockedBy: task.blockedBy && !task.blockedBy.private && !task.blockedBy.epic?.private && !task.blockedBy.parent?.private && !task.blockedBy.parent?.epic?.private
               ? `${task.blockedBy.workItemKey ?? "another task"} (${task.blockedBy.status})`
+              : null,
+            executionState: task.executionState
+              ? executionStateLines(renderExecutionState(task.executionState))
               : null,
             actionPlan: task.actionPlan
               ? {
@@ -881,6 +900,14 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     `Updated: ${task.updatedAt}`,
     "",
   );
+  // ENV-123 — PM's own view of whether this task is executing. An agent that
+  // just woke on a recovery turn needs this to tell "I was interrupted" from
+  // "I am duplicating a sibling that is still running".
+  if (task.executionState) {
+    lines.push("EXECUTION STATE (PM's observation, not a comment you must parse):");
+    lines.push(...task.executionState);
+    lines.push("");
+  }
   pushDescription(lines, "TASK DESCRIPTION", task.description, packet.caps.taskDescriptionMax);
 
   // ENV-119: Render structured Action Plan if it exists
@@ -1050,6 +1077,15 @@ export async function buildTaskEpisodeBrief(args: {
       branchName: true,
       commitPrefix: true,
       approvedOn: true,
+      executionState: {
+        select: {
+          state: true,
+          reasonDetail: true,
+          lastDurableAction: true,
+          lastDurableActionAt: true,
+          recoveryAction: true,
+        },
+      },
       project: { select: { id: true, slug: true, name: true } },
       epic: {
         select: {
@@ -1178,6 +1214,15 @@ export async function buildTaskEpisodeBrief(args: {
     `Branch: ${effectiveTaskBranchName(task) || "(not set)"}`,
     `Commit prefix: ${effectiveTaskCommitPrefix(task) || "(not set)"}`,
   ];
+  // ENV-123 — see the note on the packet renderer. A rolled-over episode is the
+  // case most likely to re-do finished work, so it gets the same four lines.
+  if (task.executionState) {
+    lines.push(
+      "",
+      "EXECUTION STATE (PM's observation, not a comment you must parse):",
+      ...executionStateLines(renderExecutionState(task.executionState)),
+    );
+  }
   if (task.epic) {
     lines.push(`Epic: ${task.epic.title} (${task.epic.status}, ${task.epic.id})`);
   }

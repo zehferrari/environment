@@ -59,6 +59,7 @@ import {
   EPISODE_SEAL_REASON,
   sealEpisodeRolloverBarrier,
 } from "@/lib/agents/episodes/rollover";
+import { recordWorkflowActionExecutionState } from "@/lib/agents/watchdog/transitions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -2065,13 +2066,27 @@ export async function POST(
   const current = captured.taskId
     ? await db.task.findUnique({
         where: { id: captured.taskId },
-        select: { status: true },
+        select: { status: true, projectId: true },
       })
     : null;
   const result = workflowActionResult({
     action: captured.action,
     taskState: current?.status ?? null,
   });
+  // ENV-123. Keep the operator-visible execution strip current on ordinary
+  // transitions, not just on watchdog passes. Read after the action for the
+  // same reason taskState is: this must report where the task actually landed.
+  // Awaited but fail-soft — the action has already committed and a strip write
+  // may never turn a successful transition into an error.
+  if (captured.taskId) {
+    await recordWorkflowActionExecutionState({
+      taskId: captured.taskId,
+      projectId: current?.projectId ?? null,
+      action: captured.action,
+      status: current?.status ?? null,
+      blockedExternally: body.flagged === "blocker",
+    });
+  }
   // ENV-121. Cycle accounting is only useful if the agent can SEE it: an
   // episode that rolls over silently is indistinguishable from one that did
   // not, and the agent has no reason to checkpoint before its budget runs out.
