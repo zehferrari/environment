@@ -70,6 +70,8 @@ type Task = {
   subtaskReviewDone: number;
   subtaskMinutes: number;
   blockedByKey: string | null;
+  executionState: string | null;
+  executionReason: string | null;
   hasActiveBlocker: boolean;
   activeBlockerCommentId: string | null;
   activeWorking: boolean;
@@ -102,6 +104,34 @@ function BlockedBadge({ task }: { task: Task }) {
     >
       <LockGlyph />
       {task.blockedByKey}
+    </span>
+  );
+}
+
+// Execution badge (ENV-123): the board's compact form of the task page's
+// execution strip. Only the states an operator must act on are painted —
+// "running" and "idle" are the normal case and would be pure noise on every
+// card. Hovering gives the reason sentence, so a stalled card explains itself
+// without a click.
+const EXECUTION_BADGE_TONE: Record<string, string> = {
+  stalled: "bg-crit/[0.07] text-crit",
+  blocked: "bg-warn/[0.07] text-warn",
+};
+
+function ExecutionBadge({ task }: { task: Task }) {
+  const tone = task.executionState ? EXECUTION_BADGE_TONE[task.executionState] : undefined;
+  if (!task.executionState || !tone) return null;
+  return (
+    <span
+      data-execution-badge={task.executionState}
+      className={`inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-micro font-semibold ${tone}`}
+      title={
+        task.executionReason
+          ? `Execution: ${task.executionState} — ${task.executionReason}`
+          : `Execution: ${task.executionState}`
+      }
+    >
+      {task.executionState.replaceAll("_", " ")}
     </span>
   );
 }
@@ -2146,7 +2176,9 @@ function BoardCardBody({
           >
             {relativeUpdated(task.updatedAt)}
           </time>
-          <BlockedBadge task={task} />
+          <ExecutionBadge task={task} />
+          <ExecutionBadge task={task} />
+        <BlockedBadge task={task} />
           {canShowTaskDeploymentIndicator(task) ? (
             <DeploymentIndicator status={task.deploymentStatus} />
           ) : null}
@@ -2432,6 +2464,7 @@ function WorkflowFocusCard({
               >
                 {relativeUpdated(task.updatedAt)}
               </time>
+              <ExecutionBadge task={task} />
               <BlockedBadge task={task} />
             </div>
           </div>

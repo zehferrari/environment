@@ -1,8 +1,6 @@
 # dependencies
-# No trailing slash: agents run the suites in a PM worktree by SYMLINKING
-# node_modules at the shared install, and `node_modules/` matches directories
-# only, so the symlink showed up untracked and was one `git add -A` away from
-# landing in a submission commit. The bare pattern matches both.
+# no trailing slash: PM worktrees link node_modules to the primary checkout, and
+# a symlink is not a directory, so `node_modules/` would not match it.
 node_modules
 .pnp
 .pnp.*

@@ -274,7 +274,7 @@ export async function postCommentFromFab(formData: FormData): Promise<CreateResu
 
     const comment = await db.$transaction(async (tx) => {
       const created = await tx.comment.create({
-        data: { taskId, userId: actor.id, body },
+        data: { taskId, userId: actor.id, body, commentKind: "human", isGenerated: false, ...(actor.kind === "agent" ? { authorAgentSlug: actor.username } : {}) },
         select: { id: true },
       });
       await tx.activityLog.create({
@@ -309,7 +309,7 @@ export async function postCommentFromFab(formData: FormData): Promise<CreateResu
   await requireProjectAccess(actor, { id: epic.projectId });
 
   await db.$transaction([
-    db.comment.create({ data: { epicId, userId: actor.id, body } }),
+    db.comment.create({ data: { epicId, userId: actor.id, body, commentKind: "human", isGenerated: false, ...(actor.kind === "agent" ? { authorAgentSlug: actor.username } : {}) } }),
     db.activityLog.create({
       data: { projectId: epic.projectId, userId: actor.id, kind: "epic.comment", payload: JSON.stringify({ epicId }) },
     }),

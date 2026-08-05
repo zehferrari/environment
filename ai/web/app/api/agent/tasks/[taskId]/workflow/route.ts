@@ -59,6 +59,7 @@ import {
   EPISODE_SEAL_REASON,
   sealEpisodeRolloverBarrier,
 } from "@/lib/agents/episodes/rollover";
+import { recordWorkflowActionExecutionState } from "@/lib/agents/watchdog/transitions";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -88,6 +89,17 @@ type WorkflowAction = (typeof ACTIONS)[number];
 
 function isWorkflowAction(value: unknown): value is WorkflowAction {
   return typeof value === "string" && (ACTIONS as readonly string[]).includes(value);
+}
+
+// ENV-122: Look up the active PmChannelRun for a workflow action to wire
+// runId, provider, and model provenance into comment metadata.
+async function resolveActiveRunId(messageId: string, agentSlug: string): Promise<{ id: string | null; provider: string | null; model: string | null }> {
+  const run = await db.pmChannelRun.findFirst({
+    where: { messageId, agentSlug, status: { in: ["queued", "accepted", "streaming", "completed"] } },
+    select: { id: true, provider: true, model: true },
+    orderBy: { createdAt: "desc" },
+  });
+  return { id: run?.id ?? null, provider: run?.provider ?? null, model: run?.model ?? null };
 }
 
 // ENV-118: takes a transaction client so a continuation-required action can
@@ -1029,9 +1041,10 @@ async function handleTaskWorkflowAction(
 
     let reviewCommentId: string | null = null;
     if (comment) {
+      const run = await resolveActiveRunId(messageId, agent.slug);
       const created = await db.$transaction(async (tx) => {
         const row = await tx.comment.create({
-          data: { taskId: task.id, userId: agent.user!.id, body: comment },
+          data: { taskId: task.id, userId: agent.user!.id, body: comment, authorAgentSlug: agent.slug, commentKind: "agent_reply", isGenerated: false, runId: run.id, provider: run.provider, model: run.model },
           select: { id: true },
         });
         await tx.activityLog.create({
@@ -1101,9 +1114,10 @@ async function handleTaskWorkflowAction(
       where: { projectId: task.projectId, status: "To Do", deletedAt: null },
       _min: { rank: true },
     });
+    const run = await resolveActiveRunId(messageId, agent.slug);
     const created = await db.$transaction(async (tx) => {
       const row = await tx.comment.create({
-        data: { taskId: task.id, userId: agent.user!.id, body: comment },
+        data: { taskId: task.id, userId: agent.user!.id, body: comment, authorAgentSlug: agent.slug, commentKind: "agent_reply", isGenerated: false, runId: run.id, provider: run.provider, model: run.model },
         select: { id: true },
       });
       await tx.task.update({
@@ -1441,13 +1455,16 @@ async function handleTaskWorkflowAction(
   const requesterSlug = agent.slug;
   const requestTaskId = task.id;
   const requestProjectId = task.projectId;
+  // ENV-122: Resolve the active PmChannelRun for this workflow turn to wire
+  // runId, provider, and model provenance into comment metadata.
+  const workflowRun = await resolveActiveRunId(messageId, agent.slug);
   async function postWorkflowComment(
     body: string,
     kind: string,
     payloadExtra?: Record<string, unknown>,
   ) {
     const created = await db.comment.create({
-      data: { taskId: requestTaskId, userId: requesterUserId, body },
+      data: { taskId: requestTaskId, userId: requesterUserId, body, authorAgentSlug: requesterSlug, commentKind: "workflow_action", isGenerated: false, runId: workflowRun.id, provider: workflowRun.provider, model: workflowRun.model },
       select: { id: true },
     });
     await db.activityLog.create({
@@ -1685,6 +1702,12 @@ async function handleTaskWorkflowAction(
         data: {
           taskId: task.id,
           userId: requesterUserId,
+          authorAgentSlug: requesterSlug,
+          commentKind: "blocker_notice",
+          isGenerated: false,
+          runId: workflowRun.id,
+          provider: workflowRun.provider,
+          model: workflowRun.model,
           body: [
             `**Blocker raised** by @${requesterUsername} (assignee):`,
             "",
@@ -1806,6 +1829,12 @@ async function handleTaskWorkflowAction(
           data: {
             taskId: task.id,
             userId: agentUser.id,
+            authorAgentSlug: agent.slug,
+            commentKind: "workflow_action",
+            isGenerated: false,
+            runId: workflowRun.id,
+            provider: workflowRun.provider,
+            model: workflowRun.model,
             body: [
               `**Blocker cleared** by @${agentUser.username} (assignee):`,
               "",
@@ -2037,13 +2066,27 @@ export async function POST(
   const current = captured.taskId
     ? await db.task.findUnique({
         where: { id: captured.taskId },
-        select: { status: true },
+        select: { status: true, projectId: true },
       })
     : null;
   const result = workflowActionResult({
     action: captured.action,
     taskState: current?.status ?? null,
   });
+  // ENV-123. Keep the operator-visible execution strip current on ordinary
+  // transitions, not just on watchdog passes. Read after the action for the
+  // same reason taskState is: this must report where the task actually landed.
+  // Awaited but fail-soft — the action has already committed and a strip write
+  // may never turn a successful transition into an error.
+  if (captured.taskId) {
+    await recordWorkflowActionExecutionState({
+      taskId: captured.taskId,
+      projectId: current?.projectId ?? null,
+      action: captured.action,
+      status: current?.status ?? null,
+      blockedExternally: body.flagged === "blocker",
+    });
+  }
   // ENV-121. Cycle accounting is only useful if the agent can SEE it: an
   // episode that rolls over silently is indistinguishable from one that did
   // not, and the agent has no reason to checkpoint before its budget runs out.

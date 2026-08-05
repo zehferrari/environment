@@ -742,7 +742,7 @@ export async function commitProposal(
           const body = typeof op.body === "string" ? op.body : "";
           if (!body.trim()) continue;
           const comment = await tx.comment.create({
-            data: { taskId: id, userId: agentId, body },
+            data: { taskId: id, userId: agentId, body, commentKind: "workflow_action", isGenerated: true },
             select: { id: true },
           });
           await tx.activityLog.create({

@@ -338,6 +338,8 @@ async function bounceTaskToReview(args: {
           taskId: task.id,
           userId: actor.id,
           body: `🔀 Auto-merge into the Epic branch \`${epicBranch}\` failed, so this task is back in Review.\n\n${reason}`,
+          commentKind: "workflow_action",
+          isGenerated: true,
         },
         select: { id: true },
       });
@@ -610,6 +612,8 @@ async function executeMergeJob(job: Extract<EpicMergeJob, { kind: "merge" }>) {
                 `⚠️ Epic-child policy breach detected: \`origin/${taskBranch}\` exists at \`${remoteTaskBranchSha.slice(0, 10)}\`.`,
                 `PM preserved the work by merging it into the Epic branch \`${epicBranch}\`. The leaked remote task ref will be removed only after ancestry is verified against the pushed Epic branch during Epic-Done finalization.`,
               ].join("\n\n"),
+              commentKind: "workflow_action",
+              isGenerated: true,
             },
           });
         }
@@ -800,6 +804,8 @@ async function executeCheckpointJob(
                 "",
                 reason,
               ].join("\n"),
+              commentKind: "workflow_action",
+              isGenerated: true,
             },
           })]
         : []),
@@ -982,7 +988,7 @@ async function executeCheckpointJob(
     job.note,
   ].join("\n");
   await db.$transaction([
-    db.comment.create({ data: { taskId: task.id, userId: actor.id, body } }),
+    db.comment.create({ data: { taskId: task.id, userId: actor.id, body, commentKind: "workflow_action", isGenerated: true } }),
     db.activityLog.create({
       data: {
         projectId: task.projectId,
@@ -1123,6 +1129,8 @@ async function executeFinalizeJob(
           taskId: task.id,
           userId: actor.id,
           body: `⚙️ Repository finalization could not complete after three attempts. The task remains in Review.\n\n${reason}`,
+          commentKind: "workflow_action",
+          isGenerated: true,
         },
       });
       return { taskId: task.id, outcome: "operational-error" as const, reason, attempt };
@@ -1132,6 +1140,8 @@ async function executeFinalizeJob(
         taskId: task.id,
         userId: actor.id,
         body: `🚫 Repository finalization failed. The task was returned to To Do and the reviewer was not triggered again.\n\n${reason}`,
+        commentKind: "workflow_action",
+        isGenerated: true,
       },
     });
     await failTaskReviewValidation({ taskId: task.id, actor, error: reason, candidateSha });
@@ -1352,7 +1362,7 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
         data: { status: "Review", statusChangedAt: now },
       });
       if (monitor) {
-        await tx.comment.create({ data: { epicId: job.epicId, userId: monitor.id, body } });
+        await tx.comment.create({ data: { epicId: job.epicId, userId: monitor.id, body, commentKind: "workflow_action", isGenerated: true } });
       }
       await tx.activityLog.create({
         data: {
@@ -1416,7 +1426,7 @@ async function executeCleanupJob(job: Extract<EpicMergeJob, { kind: "cleanup" }>
   const body = renderCleanupBody(job, items);
   await db.$transaction(async (tx) => {
     if (monitor) {
-      await tx.comment.create({ data: { epicId: job.epicId, userId: monitor.id, body } });
+      await tx.comment.create({ data: { epicId: job.epicId, userId: monitor.id, body, commentKind: "workflow_action", isGenerated: true } });
     }
     await tx.activityLog.create({
       data: {

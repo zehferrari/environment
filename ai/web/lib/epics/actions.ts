@@ -1099,7 +1099,7 @@ export async function createEpicComment(formData: FormData) {
   await requireProjectAccess(actor, { id: epic.projectId });
 
   await db.$transaction([
-    db.comment.create({ data: { epicId, userId: actor.id, body } }),
+    db.comment.create({ data: { epicId, userId: actor.id, body, commentKind: "human", isGenerated: false, ...(actor.kind === "agent" ? { authorAgentSlug: actor.username } : {}) } }),
     db.activityLog.create({
       data: {
         projectId: epic.projectId,

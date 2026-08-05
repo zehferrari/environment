@@ -12,6 +12,7 @@ import {
   activeFormalBlockerStatesByTask,
   formalBlockerNeedsExternalInput,
 } from "@/lib/tasks/formal-blocker";
+import { WATCHDOG_CONTINUATION_ACTION } from "@/lib/agents/watchdog/repairs";
 
 const MAX_CONTINUATION_ATTEMPTS = 3;
 const DRAIN_BATCH = 10;
@@ -132,12 +133,24 @@ async function dispatchContinuation(row: ContinuationRow): Promise<"dispatched" 
   // "your turn ended without a terminal action" there would be false and would
   // push the agent to re-audit finished work instead of continuing.
   const isEpisodeRollover = row.action === "episode_rollover";
+  // ENV-123: a watchdog recovery is neither of the other two. The agent did
+  // not end a turn on a continuation-required action and did not spend an
+  // episode budget — PM observed that nothing was running or scheduled at all.
+  // Saying "your turn recorded `watchdog_recovery`" would name an action the
+  // agent never took.
+  const isWatchdogRecovery = row.action === WATCHDOG_CONTINUATION_ACTION;
   const continuation = await sendTaskWorkflowNotification({
     taskId: task.id,
     targetUserId: task.assigneeId,
     actor: { id: agent.user.id, kind: "agent", username: row.agentSlug },
     reason: "monitor_recovery",
-    body: isEpisodeRollover
+    body: isWatchdogRecovery
+      ? [
+          `PM's workflow watchdog found "${task.title}" In Progress with no execution turn running or scheduled, so this fresh turn was queued for you.`,
+          "Nothing was lost: check the task's current status, checklist, comments and your last checkpoint before repeating any step. The task's Execution strip shows what PM observed and what it did about it.",
+          "Continue the remaining implementation and verification now. Finish through ready_for_review, or record one precise external dependency with flag_blocker. Do not stop at another progress comment.",
+        ].join("\n")
+      : isEpisodeRollover
       ? [
           `Your previous execution episode on "${task.title}" spent its bounded budget and was closed. This is the next episode, in a fresh session.`,
           "Everything the previous episode recorded is in the EXECUTION EPISODE BRIEF above: completed work, evidence, the open checklist, the next exact action and current risks. Start from the next exact action — do not re-derive work the brief already reports as done.",

@@ -79,6 +79,7 @@ import {
   revalidateTaskShell,
 } from "@/lib/tasks/cache";
 import TaskChecklist from "@/components/task-checklist";
+import { TaskExecutionStrip } from "@/components/task-execution-strip";
 import AttachmentList from "@/components/attachment-list";
 import AutoScrollToLatest from "@/components/auto-scroll-to-latest";
 import FocusTaskComment from "@/components/focus-task-comment";
@@ -2284,6 +2285,12 @@ export default async function TaskDetailPage({
                       />
                     </div>
 
+                    {/* Execution state (ENV-123) — what PM believes is actually
+                        happening on this task right now, and what the watchdog
+                        did about it. Sits above "Blocked by" because a blocked
+                        task is a subset of "not executing". */}
+                    <TaskExecutionStrip executionState={task.executionState} />
+
                     {/* Blocked by — hard dependency on another task (ENV-62). */}
                     {currentBlockerVisible ? <div className="space-y-1 rounded-card border border-line bg-panel-soft p-card">
                       <label className="block">
@@ -2568,6 +2575,16 @@ export default async function TaskDetailPage({
                           {authorRole ? (
                             <span className={`rounded-full px-2 py-0.5 text-nano font-semibold uppercase tracking-wide ${authorRole.chipClass}`}>
                               {authorRole.label}
+                            </span>
+                          ) : null}
+                          {c.isGenerated ? (
+                            <span className="rounded-full border border-line bg-bg-elev px-2 py-0.5 text-nano font-semibold uppercase tracking-wide text-text-muted">
+                              System
+                            </span>
+                          ) : null}
+                          {c.provider && c.model ? (
+                            <span className="rounded-full border border-line bg-bg-elev px-2 py-0.5 text-nano font-medium text-text-muted" title={`${c.provider}/${c.model}`}>
+                              {c.provider}/{c.model}
                             </span>
                           ) : null}
                           <MessageTimestamp value={c.createdAt} />

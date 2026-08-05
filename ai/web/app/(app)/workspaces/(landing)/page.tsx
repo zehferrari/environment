@@ -419,6 +419,9 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
             },
           },
           checklist: { select: { completedAt: true, minutesSpent: true, kind: true } },
+          // ENV-123 — drives the board's execution badge. Only the state word
+          // is needed here; the full four-line strip lives on the task page.
+          executionState: { select: { state: true, reasonDetail: true } },
         },
       })
     : [];
@@ -524,6 +527,8 @@ export default async function WorkspacesLandingPage({ searchParams }: { searchPa
               subtaskMinutes: t.checklist.reduce((sum, c) => sum + (c.minutesSpent ?? 0), 0),
               blockedByKey: blocker && blocker.status !== "Done" ? blocker.workItemKey ?? null : null,
               hasActiveBlocker: activeFormalBlockers.has(t.id),
+            executionState: t.executionState?.state ?? null,
+            executionReason: t.executionState?.reasonDetail ?? null,
               activeBlockerCommentId: activeFormalBlockers.get(t.id)?.commentId ?? null,
               activeWorking:
                 (t.status === "In Progress" && Boolean(t.assignee?.agent?.slug && busyAgentSlugs.has(t.assignee.agent.slug))) ||

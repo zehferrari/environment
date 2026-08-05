@@ -79,7 +79,7 @@ export async function submitPmOptionDecision(formData: FormData) {
     const users = await db.user.findMany({ select: { id: true, username: true, kind: true } });
     const comment = await db.$transaction(async (tx) => {
       const created = await tx.comment.create({
-        data: { taskId: source.taskId!, userId: actor.id, body: option.label },
+        data: { taskId: source.taskId!, userId: actor.id, body: option.label, commentKind: "workflow_action", isGenerated: false },
         select: { id: true },
       });
       await tx.activityLog.create({

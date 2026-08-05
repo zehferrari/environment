@@ -5,6 +5,7 @@
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import type { PmChannelReplyTarget } from "@/lib/agents/pm-channel/openclaw";
+import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/bus";
 import { normalizeDiscussionReplySections } from "@/lib/agents/chat/discussion-reply-format";
 import {
   sendTaskCommentNotifications,
@@ -130,6 +131,15 @@ export async function persistTaskReply(
       })
     : null;
 
+  // ENV-122: Look up the active PmChannelRun to wire runId, provider, and model provenance.
+  const runProvenance = await db.pmChannelRun.findUnique({
+    where: { targetKey: pmChannelRunTargetKey(target) },
+    select: { id: true, provider: true, model: true },
+  });
+  const runId = runProvenance?.id ?? null;
+  const runProvider = runProvenance?.provider ?? null;
+  const runModel = runProvenance?.model ?? null;
+
   const reply = await db.$transaction(async (tx) => {
     if (origin.channel === "comment") {
       const comment = await tx.comment.create({
@@ -137,6 +147,12 @@ export async function persistTaskReply(
           taskId: target.taskId,
           userId: agentUser.id,
           body: persistedBody,
+          authorAgentSlug: target.agentSlug,
+          commentKind: "agent_reply",
+          isGenerated: false,
+          runId,
+          provider: runProvider,
+          model: runModel,
         },
         select: { id: true },
       });

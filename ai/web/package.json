@@ -92,7 +92,18 @@
     "test:task-execution-episode": "node --import tsx scripts/task-execution-episode-test.ts",
     "test:workflow-invariants": "tsx scripts/workflow-invariants-test.ts",
     "test:workflow-invariants-db": "tsx scripts/workflow-invariants-db-test.ts",
-    "workflow-invariants-monitor": "tsx scripts/workflow-invariants-monitor.ts"
+    "workflow-invariants-monitor": "tsx scripts/workflow-invariants-monitor.ts",
+    "test:workflow-watchdog": "tsx scripts/workflow-watchdog-test.ts",
+    "test:workflow-watchdog-db": "tsx scripts/workflow-watchdog-db-test.ts",
+    "test:workflow-watchdog-visibility": "tsx scripts/workflow-watchdog-visibility-test.ts",
+    "test:workflow-regression": "tsx scripts/workflow-regression-test.ts",
+    "test:workflow-regression-lifecycle": "tsx scripts/workflow-regression-lifecycle-test.ts",
+    "test:workflow-regression-plan-steps": "tsx scripts/workflow-regression-plan-steps-test.ts",
+    "test:workflow-regression-blocker": "tsx scripts/workflow-regression-blocker-test.ts",
+    "test:workflow-regression-concurrency": "tsx scripts/workflow-regression-concurrency-test.ts",
+    "test:workflow-regression-fixture": "tsx scripts/workflow-regression-fixture-test.ts",
+    "export-pm-event-fixture": "tsx scripts/export-pm-event-fixture.ts",
+    "workflow-watchdog": "tsx scripts/workflow-watchdog.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",
