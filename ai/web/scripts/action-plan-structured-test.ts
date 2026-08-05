@@ -40,7 +40,6 @@ async function main() {
     createChecklistAndDelegatableTasksFromPlan,
     parseAcceptanceCriteria,
   } = await import("../lib/tasks/action-plan-store");
-  type ActionPlanInput = import("../lib/tasks/action-plan-store").ActionPlanInput;
   const { createActionPlanSubtasksForTask } = await import("../lib/tasks/action-plan-subtasks");
 
   async function bootstrapTestEnv() {
@@ -98,7 +97,24 @@ async function main() {
       });
     }
 
-    return { project, user };
+    // Create an Agent record so activeAgentUser("carmen") resolves in tests
+    // that invoke the real persistTaskReply production entry point.
+    let agent = await db.agent.findUnique({
+      where: { slug: "carmen" },
+      select: { id: true },
+    });
+    if (!agent) {
+      agent = await db.agent.create({
+        data: {
+          slug: "carmen",
+          name: "Carmen Perfecta",
+          role: "coding",
+          user: { connect: { id: user.id } },
+        },
+      });
+    }
+
+    return { project, user, agent };
   }
 
   async function makeTestTask(projectId: string, assigneeId: string) {
@@ -140,6 +156,7 @@ async function main() {
     await db.project.delete({ where: { id: projectId } }).catch(() => {});
     const ws = await db.workspace.findFirst({ where: { slug: TEST_SLUG }, select: { id: true } });
     if (ws) await db.workspace.delete({ where: { id: ws.id } }).catch(() => {});
+    await db.agent.deleteMany({ where: { slug: "carmen" } }).catch(() => {});
     await db.user.deleteMany({ where: { username: { startsWith: "env119-" } } }).catch(() => {});
   }
 
@@ -616,11 +633,14 @@ async function main() {
       assert.deepEqual(plan!.steps[0].acceptanceCriteria, ["c"]);
     });
 
-    // Route/service rollback: simulate the exact persistTaskReply transaction
-    // pattern (chat reply + activity log + persistActionPlan all in one
-    // db.$transaction) and force plan persistence to fail. Verify both the
-    // reply and activity log roll back — no partial write.
-    await okAsync("route rollback: reply + activity + plan all roll back when plan persistence fails", async () => {
+    // Route/service rollback: invoke the REAL persistTaskReply production
+    // entry point with an actionPlan payload whose assigneeId fails the
+    // DB-level project-principal check inside persistActionPlan. The entire
+    // db.$transaction (chat reply + activity log + plan) must roll back —
+    // no partial write.
+    await okAsync("route rollback: real persistTaskReply rolls back reply + activity + plan when plan persistence fails", async () => {
+      const { persistTaskReply } = await import("../lib/agents/pm-channel/persist-task-reply");
+
       const task9 = await makeTestTask(project.id, agentUser.id);
       taskIds.push(task9.id);
 
@@ -637,57 +657,35 @@ async function main() {
         select: { id: true },
       });
 
-      // Snapshot counts before the transaction
+      // Snapshot counts before the call
       const chatBefore = await db.agentChatMessage.count({ where: { taskId: task9.id } });
       const activityBefore = await db.activityLog.count({ where: { taskId: task9.id } });
 
-      // Pure validation passes — assigneeId is a non-empty string.
-      // The DB-level project-principal check inside persistActionPlan will
-      // throw because the assigneeId doesn't belong to any project member.
-      const validated = validateActionPlanInput({
+      // Build a reply target matching the task-chat kind expected by persistTaskReply
+      const replyTarget = {
+        kind: "task-chat" as const,
+        agentSlug: "carmen",
+        taskId: task9.id,
+        messageId: origMsg.id,
+        projectSlug: null,
+      };
+
+      // The actionPlan payload passes pure validation (assigneeId is a
+      // non-empty string) but will fail the DB-level project-principal
+      // check inside persistActionPlan, which runs inside the same
+      // db.$transaction as the chat reply. The entire transaction must
+      // roll back.
+      const actionPlanPayload = {
         summary: "Route rollback test plan",
         steps: [
           { id: "s1", title: "Step that fails", acceptanceCriteria: ["x"], kind: "sequential", assigneeId: "nonexistent-principal-id" },
         ],
-      });
-      assert.ok(!("errors" in validated));
+      };
 
-      // Simulate the exact persistTaskReply transaction: reply first, then
-      // persistActionPlan inside the same db.$transaction. The plan will
-      // fail the project-principal check, causing full rollback.
+      // persistTaskReply should throw because persistActionPlan rejects
+      // the assigneeId as not an active project principal.
       await assert.rejects(
-        db.$transaction(async (tx) => {
-          // 1. Persist chat reply (same as persistTaskReply chat branch)
-          const created = await tx.agentChatMessage.create({
-            data: {
-              project: { connect: { id: project.id } },
-              task: { connect: { id: task9.id } },
-              agentSlug: "room",
-              sender: { connect: { id: agentUser.id } },
-              body: "Reply that should roll back",
-              originChannel: "chat",
-            },
-            select: { id: true, createdAt: true },
-          });
-          // 2. Persist activity log
-          await tx.activityLog.create({
-            data: {
-              projectId: project.id,
-              taskId: task9.id,
-              userId: agentUser.id,
-              kind: "task.chat.reply",
-              targetAgent: "carmen",
-              payload: JSON.stringify({ messageId: created.id }),
-            },
-          });
-          // 3. Persist action plan — this throws because assigneeId is not
-          //    an active principal of the task's project.
-          await persistActionPlan({
-            taskId: task9.id,
-            input: validated as ActionPlanInput,
-            client: tx,
-          });
-        }),
+        persistTaskReply(replyTarget, "Reply that should roll back", actionPlanPayload),
         /not an active principal/i,
       );
 
