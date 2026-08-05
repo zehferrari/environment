@@ -13,6 +13,7 @@ import { resolveAgentCaps, type ContextCaps } from "@/lib/agents/context/caps";
 import { clip, clipWithMeta, renderBudgetedTimeline } from "@/lib/agents/context/budget";
 import { effectiveTaskCommitPrefix } from "@/lib/work-items/keys";
 import { effectiveTaskBranchName } from "@/lib/work-items/branches";
+import { parseAcceptanceCriteria } from "@/lib/tasks/action-plan-store";
 
 // Context-packet caps live in ./caps.ts and are resolved per-recipient
 // from agent.role. Coding agents (can_modify_code=true) get the 1M-token
@@ -69,6 +70,20 @@ export type AgentContextPacket = {
       assignee: string;
       reviewer: string;
       blockedBy: string | null;
+      actionPlan: {
+        id: string;
+        summary: string;
+        approvedOn: Date | null;
+        steps: Array<{
+          id: string;
+          stepId: string;
+          title: string;
+          acceptanceCriteria: string;
+          kind: string;
+          assigneeId: string | null;
+          rank: number;
+        }>;
+      } | null;
     } | null;
     epic: {
       id: string;
@@ -480,6 +495,11 @@ export async function buildTaskAgentContextPacket(args: {
         take: 50,
         select: { id: true, text: true, completedAt: true, minutesSpent: true },
       },
+      actionPlan: {
+        include: {
+          steps: { orderBy: { rank: "asc" }, select: { id: true, stepId: true, title: true, acceptanceCriteria: true, kind: true, assigneeId: true, rank: true } },
+        },
+      },
       attachments: {
         orderBy: { createdAt: "asc" },
         take: 30,
@@ -578,6 +598,22 @@ export async function buildTaskAgentContextPacket(args: {
             reviewer: actorLabel(task.actingManager),
             blockedBy: task.blockedBy && !task.blockedBy.private && !task.blockedBy.epic?.private && !task.blockedBy.parent?.private && !task.blockedBy.parent?.epic?.private
               ? `${task.blockedBy.workItemKey ?? "another task"} (${task.blockedBy.status})`
+              : null,
+            actionPlan: task.actionPlan
+              ? {
+                  id: task.actionPlan.id,
+                  summary: task.actionPlan.summary,
+                  approvedOn: task.actionPlan.approvedOn,
+                  steps: task.actionPlan.steps.map((s) => ({
+                    id: s.id,
+                    stepId: s.stepId,
+                    title: s.title,
+                    acceptanceCriteria: s.acceptanceCriteria,
+                    kind: s.kind,
+                    assigneeId: s.assigneeId,
+                    rank: s.rank,
+                  })),
+                }
               : null,
           }
         : null,
@@ -831,6 +867,21 @@ export function renderAgentContextPacket(packet: AgentContextPacket): string {
     "",
   );
   pushDescription(lines, "TASK DESCRIPTION", task.description, packet.caps.taskDescriptionMax);
+
+  // ENV-119: Render structured Action Plan if it exists
+  if (task.actionPlan) {
+    lines.push("", "ACTION PLAN (structured):");
+    lines.push(`Summary: ${task.actionPlan.summary}`);
+    for (const step of task.actionPlan.steps) {
+      const criteria = parseAcceptanceCriteria(step.acceptanceCriteria);
+      lines.push(
+        `  Step ${step.rank}: [${step.kind}] ${step.title}`,
+        `    ID: ${step.stepId}`,
+        ...(criteria.length > 0 ? ["    Acceptance criteria:", ...criteria.map((c) => `      - ${c}`)] : []),
+        ...(step.assigneeId ? [`    Assignee: ${step.assigneeId}`] : []),
+      );
+    }
+  }
 
   lines.push("", "EPIC SNAPSHOT:");
   if (epic) {
