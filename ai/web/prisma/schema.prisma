@@ -547,6 +547,15 @@ model TaskExecutionEpisode {
   // only write one final checkpoint, which sets `barrierReleasedAt`.
   exhaustedByMessageId String?   @map("exhausted_by_message_id")
   barrierReleasedAt    DateTime? @map("barrier_released_at")
+  // The successor half of the seal, kept as durable outbox state. Consuming
+  // the barrier and arming the successor's continuation happen in one
+  // transaction, so `barrier_released_at IS NOT NULL AND
+  // successor_scheduled_at IS NULL` means the seal committed but the
+  // continuation could not be armed (no run row to hang it on yet). That is a
+  // recoverable state, not a stall: the sweeper retries the scheduling half
+  // without ever touching the stored checkpoint.
+  successorScheduledAt      DateTime? @map("successor_scheduled_at")
+  successorScheduleAttempts Int       @default(0) @map("successor_schedule_attempts")
   // open | closed
   status       String   @default("open")
   // Structured checkpoint. JSON-encoded string arrays, kept as TEXT because
@@ -569,6 +578,7 @@ model TaskExecutionEpisode {
   @@index([agentSlug])
   @@index([runId])
   @@index([exhaustedByMessageId])
+  @@index([successorScheduledAt])
   @@map("task_execution_episodes")
 }
 

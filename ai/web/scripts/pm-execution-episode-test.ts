@@ -199,6 +199,8 @@ function comment(n: number, body: string): TimelineItemForBudget {
     toolCycleBudget: 60,
     exhaustedByMessageId: "m1",
     barrierReleasedAt: null,
+    successorScheduledAt: null,
+    successorScheduleAttempts: 0,
     sessionKey: "task:t1:ep3",
     messageId: "m1",
     runId: "run-1",

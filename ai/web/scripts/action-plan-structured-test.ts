@@ -21,7 +21,12 @@ const dbPath = path.join(os.tmpdir(), `env119-test-${process.pid}-${Date.now()}.
 process.env.DATABASE_URL = `file:${dbPath}`;
 
 // Push the Prisma schema to the temp database.
-execSync(`npx prisma db push --force-reset --skip-generate`, {
+// Use the PINNED prisma binary, not bare `npx`. Bare `npx` resolves a newer
+// Prisma major from the registry that no longer accepts `--skip-generate`, so
+// this suite died before its first assertion. `--force-reset` is dropped too:
+// `dbPath` is a fresh unique temp file, so it bought nothing and Prisma 6.19
+// prompts for interactive consent on it. Matches task-execution-episode-test.ts.
+execSync(`node_modules/.bin/prisma db push --accept-data-loss --schema=prisma/schema.prisma`, {
   stdio: "pipe",
   cwd: path.resolve(__dirname, ".."),
   env: { ...process.env, DATABASE_URL: `file:${dbPath}` },

@@ -29,6 +29,11 @@
 //      gating the dispatch cannot turn a rollover into a permanent stall
 //   B11 the barrier is single-use UNDER CONCURRENCY: two simultaneous
 //      checkpoint submissions, exactly one accepted, no overwrite, one turn
+//   B12 RECOVERY from a seal that consumed the barrier and scheduled nothing:
+//      the checkpoint is durable, the successor is not armed, and the sweep
+//      repairs it — B12b proves a crash between the halves recovers under
+//      concurrent sweeps with exactly one N+1 turn and no checkpoint
+//      overwrite, B12c that the retry is bounded
 //
 // Never touches the live pm.db: DATABASE_URL is repointed at a temp file
 // before any lib import, per the scripts/workflow-action-effect-test.ts
@@ -987,6 +992,327 @@ async function sectionB(): Promise<void> {
       }),
       1,
       "B11: the losing checkpoint does not schedule a second turn in the same lane",
+    );
+
+    // ------------------------------------------------------------------
+    // B12 — recovery from a seal that consumed the barrier and scheduled
+    // NOTHING (ENV-121 third review).
+    //
+    // The seal used to consume `barrierReleasedAt` in one transaction and arm
+    // the successor continuation in another. If the second half threw, the
+    // process died between them, or no run row matched the fenced message, the
+    // barrier was permanently consumed with no successor armed — and the
+    // unsealed-barrier sweeper only looks for `barrierReleasedAt IS NULL`, so
+    // it could not even see that state. The task stalled behind a durable
+    // checkpoint nobody was coming to read.
+    //
+    // The two halves are now one transaction, so the only partial state left
+    // is the deliberate one (no run to hang the continuation on). It is
+    // recorded as consumed-but-unscheduled and retried — never by rewriting
+    // the checkpoint, only by scheduling the turn that was missed.
+    // ------------------------------------------------------------------
+    const {
+      sealEpisodeRolloverBarrier,
+      sweepUnscheduledEpisodeSuccessors,
+    } = await import("@/lib/agents/episodes/rollover");
+    const {
+      findUnsealedEpisodeRolloverBarriers,
+      MAX_SUCCESSOR_SCHEDULE_ATTEMPTS,
+    } = await import("@/lib/agents/episodes/lifecycle");
+
+    const strandTask = await db.task.create({
+      data: {
+        projectId: barrierProject.id,
+        title: "Stranded successor",
+        status: "In Progress",
+        assigneeId: agentUser.id,
+        actingManagerId: owner.id,
+        reporterId: owner.id,
+        approvedOn: new Date(),
+        description: "Consume the barrier, schedule nothing, recover.",
+      },
+    });
+    const strandTurn = await sendTaskWorkflowNotification({
+      taskId: strandTask.id,
+      targetUserId: agentUser.id,
+      actor: { id: owner.id, kind: "human", username: "episode-owner" },
+      reason: "monitor_recovery",
+      body: "Continue the implementation.",
+    });
+    assert(strandTurn, "B12: the dispatcher produced the turn we are going to strand");
+    const strandMessageId = strandTurn!.messageId;
+    const strandWorkflow = async (action: string, extra: Record<string, unknown> = {}) => {
+      const req = new NextRequest(
+        `http://127.0.0.1/api/agent/tasks/${strandTask.id}/workflow`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messageId: strandMessageId,
+            token: createTaskWorkflowToken(strandMessageId, strandTask.id, AGENT_SLUG),
+            action,
+            ...extra,
+          }),
+        },
+      );
+      const res = await runRouteHandler(() =>
+        taskWorkflowPost(req, { params: Promise.resolve({ taskId: strandTask.id }) }),
+      );
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    };
+    for (let i = 1; i <= 3; i += 1) {
+      await strandWorkflow("add_subtask", { subtaskText: `strand step ${i}` });
+    }
+
+    // THE INJECTION. Hide the run so the scheduling half of the seal has
+    // nothing to attach a continuation to — the same observable outcome as
+    // "scheduleSuccessorEpisode() failed" — while the checkpoint still commits.
+    await db.pmChannelRun.updateMany({
+      where: { taskId: strandTask.id, agentSlug: AGENT_SLUG, messageId: strandMessageId },
+      data: { messageId: `${strandMessageId}-hidden`, status: "completed" },
+    });
+
+    const strandedSeal = await sealEpisodeRolloverBarrier({
+      taskId: strandTask.id,
+      agentSlug: AGENT_SLUG,
+      messageId: strandMessageId,
+      checkpoint: {
+        nextAction: "agent-authored next action",
+        evidence: ["strand evidence"],
+      },
+      reason: "agent_checkpoint",
+    });
+    assert(strandedSeal, "B12: the seal succeeds — the checkpoint half must not depend on the run");
+    assertEqual(
+      strandedSeal!.successorScheduled,
+      false,
+      "B12: with no run to attach to, the seal schedules nothing and says so",
+    );
+
+    const strandedEpisode = await db.taskExecutionEpisode.findFirstOrThrow({
+      where: { taskId: strandTask.id, episodeNo: 1 },
+      select: {
+        id: true,
+        barrierReleasedAt: true,
+        successorScheduledAt: true,
+        successorScheduleAttempts: true,
+        nextAction: true,
+        evidence: true,
+      },
+    });
+    assert(
+      strandedEpisode.barrierReleasedAt,
+      "B12: the checkpoint IS durable — this is the state the old code could not repair",
+    );
+    assertEqual(
+      strandedEpisode.successorScheduledAt,
+      null,
+      "B12: and the successor half is durably recorded as not done",
+    );
+    assertEqual(
+      strandedEpisode.successorScheduleAttempts,
+      1,
+      "B12: the failed attempt is counted",
+    );
+    assertEqual(
+      await db.pmChannelContinuation.count({
+        where: { taskId: strandTask.id, action: "episode_rollover" },
+      }),
+      0,
+      "B12: no successor turn was armed",
+    );
+
+    // The old sweeper is structurally blind to this row: it searches for
+    // barriers that were never consumed, and this one was.
+    const unsealed = await findUnsealedEpisodeRolloverBarriers({
+      olderThan: new Date(Date.now() + 60_000),
+      take: 100,
+    });
+    assert(
+      !unsealed.some((row) => row.id === strandedEpisode.id),
+      "B12: the unsealed-barrier sweeper cannot see a consumed-but-unscheduled seal",
+    );
+
+    // The run reappears (it was never really gone — the scheduling half simply
+    // could not see it) and the successor sweep repairs the stall.
+    await db.pmChannelRun.updateMany({
+      where: { taskId: strandTask.id, agentSlug: AGENT_SLUG },
+      data: { messageId: strandMessageId },
+    });
+    const repaired = await sweepUnscheduledEpisodeSuccessors({ graceMs: 0 });
+    assert(repaired.scheduled >= 1, "B12: the sweep schedules the stranded successor");
+    assertEqual(
+      await db.pmChannelContinuation.count({
+        where: { taskId: strandTask.id, action: "episode_rollover" },
+      }),
+      1,
+      "B12: exactly one N+1 continuation, not two",
+    );
+    const strandContinuation = await db.pmChannelContinuation.findFirstOrThrow({
+      where: { taskId: strandTask.id, action: "episode_rollover" },
+      select: { id: true, action: true, status: true, messageId: true },
+    });
+    assertEqual(
+      strandContinuation.action,
+      "episode_rollover",
+      "B12: repaired as an episode rollover",
+    );
+    assertEqual(
+      strandContinuation.status,
+      "queued",
+      "B12: the settled run has no settle left to promote the row, so it is queued directly",
+    );
+    assertEqual(
+      strandContinuation.messageId,
+      strandMessageId,
+      "B12: keyed to the turn whose checkpoint is durable",
+    );
+
+    const afterRepair = await db.taskExecutionEpisode.findFirstOrThrow({
+      where: { id: strandedEpisode.id },
+      select: { nextAction: true, evidence: true, successorScheduledAt: true },
+    });
+    assertEqual(
+      afterRepair.nextAction,
+      "agent-authored next action",
+      "B12: the repair NEVER rewrites the checkpoint — the agent's words survive",
+    );
+    assertEqual(
+      afterRepair.evidence,
+      strandedEpisode.evidence,
+      "B12: nor its evidence",
+    );
+    assert(afterRepair.successorScheduledAt, "B12: the outbox row is now marked scheduled");
+
+    // Idempotent: a second pass must not put a second turn in the lane.
+    await sweepUnscheduledEpisodeSuccessors({ graceMs: 0 });
+    assertEqual(
+      await db.pmChannelContinuation.count({
+        where: { taskId: strandTask.id, action: "episode_rollover" },
+      }),
+      1,
+      "B12: re-sweeping a repaired seal schedules nothing further",
+    );
+    await drainPmChannelContinuations();
+    assertEqual(
+      (
+        await db.pmChannelContinuation.findFirstOrThrow({
+          where: { id: strandContinuation.id },
+          select: { status: true },
+        })
+      ).status,
+      "dispatched",
+      "B12: and the repaired continuation really does dispatch the successor turn",
+    );
+
+    // ------------------------------------------------------------------
+    // B12b — a crash between the two halves, and CONCURRENT sweeps.
+    // ------------------------------------------------------------------
+    const crashTask = await db.task.create({
+      data: {
+        projectId: barrierProject.id,
+        title: "Crashed seal",
+        status: "In Progress",
+        assigneeId: agentUser.id,
+        actingManagerId: owner.id,
+        reporterId: owner.id,
+        approvedOn: new Date(),
+        description: "Die between checkpoint durability and successor scheduling.",
+      },
+    });
+    const crashTurn = await sendTaskWorkflowNotification({
+      taskId: crashTask.id,
+      targetUserId: agentUser.id,
+      actor: { id: owner.id, kind: "human", username: "episode-owner" },
+      reason: "monitor_recovery",
+      body: "Continue the implementation.",
+    });
+    assert(crashTurn, "B12b: the dispatcher produced the crashing turn");
+    const crashMessageId = crashTurn!.messageId;
+    for (let i = 1; i <= 3; i += 1) {
+      const req = new NextRequest(
+        `http://127.0.0.1/api/agent/tasks/${crashTask.id}/workflow`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messageId: crashMessageId,
+            token: createTaskWorkflowToken(crashMessageId, crashTask.id, AGENT_SLUG),
+            action: "add_subtask",
+            subtaskText: `crash step ${i}`,
+          }),
+        },
+      );
+      await runRouteHandler(() =>
+        taskWorkflowPost(req, { params: Promise.resolve({ taskId: crashTask.id }) }),
+      );
+    }
+    await sealEpisodeRolloverBarrier({
+      taskId: crashTask.id,
+      agentSlug: AGENT_SLUG,
+      messageId: crashMessageId,
+      checkpoint: { nextAction: "crash-turn next action" },
+      reason: "agent_checkpoint",
+    });
+    // Rewind ONLY the scheduling half: exactly what the old two-transaction
+    // seal left behind when the process died after the checkpoint committed.
+    await db.pmChannelContinuation.deleteMany({
+      where: { taskId: crashTask.id, action: "episode_rollover" },
+    });
+    const crashEpisode = await db.taskExecutionEpisode.findFirstOrThrow({
+      where: { taskId: crashTask.id, episodeNo: 1 },
+      select: { id: true },
+    });
+    await db.taskExecutionEpisode.update({
+      where: { id: crashEpisode.id },
+      data: { successorScheduledAt: null, successorScheduleAttempts: 0 },
+    });
+
+    // Two workers sweep at once. The conditional claim is what keeps that from
+    // arming two turns in one lane (WFI-001).
+    await Promise.all([
+      sweepUnscheduledEpisodeSuccessors({ graceMs: 0 }),
+      sweepUnscheduledEpisodeSuccessors({ graceMs: 0 }),
+    ]);
+    assertEqual(
+      await db.pmChannelContinuation.count({
+        where: { taskId: crashTask.id, action: "episode_rollover" },
+      }),
+      1,
+      "B12b: concurrent sweeps of a crashed seal schedule EXACTLY one N+1 continuation",
+    );
+    assertEqual(
+      (
+        await db.taskExecutionEpisode.findFirstOrThrow({
+          where: { id: crashEpisode.id },
+          select: { nextAction: true },
+        })
+      ).nextAction,
+      "crash-turn next action",
+      "B12b: recovery leaves the durable checkpoint exactly as it was",
+    );
+
+    // ------------------------------------------------------------------
+    // B12c — the retry is bounded. A row that can never be scheduled must not
+    // re-query and re-fail in every worker pass.
+    // ------------------------------------------------------------------
+    await db.pmChannelContinuation.deleteMany({
+      where: { taskId: crashTask.id, action: "episode_rollover" },
+    });
+    await db.taskExecutionEpisode.update({
+      where: { id: crashEpisode.id },
+      data: {
+        successorScheduledAt: null,
+        successorScheduleAttempts: MAX_SUCCESSOR_SCHEDULE_ATTEMPTS,
+      },
+    });
+    await sweepUnscheduledEpisodeSuccessors({ graceMs: 0 });
+    assertEqual(
+      await db.pmChannelContinuation.count({
+        where: { taskId: crashTask.id, action: "episode_rollover" },
+      }),
+      0,
+      "B12c: a seal past its retry budget is left alone (and stays queryable as a stall)",
     );
   } finally {
     await rm(sandbox, { recursive: true, force: true });

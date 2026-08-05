@@ -108,6 +108,8 @@ export interface TaskExecutionEpisodeSummary {
   toolCycleBudget: number;
   exhaustedByMessageId: string | null;
   barrierReleasedAt: Date | null;
+  successorScheduledAt: Date | null;
+  successorScheduleAttempts: number;
   sessionKey: string | null;
   messageId: string | null;
   runId: string | null;
@@ -197,6 +199,8 @@ export function summarizeEpisode(row: {
   toolCycleBudget: number;
   exhaustedByMessageId: string | null;
   barrierReleasedAt: Date | null;
+  successorScheduledAt: Date | null;
+  successorScheduleAttempts: number;
   sessionKey: string | null;
   messageId: string | null;
   runId: string | null;
@@ -222,6 +226,8 @@ export function summarizeEpisode(row: {
     toolCycleBudget: row.toolCycleBudget,
     exhaustedByMessageId: row.exhaustedByMessageId,
     barrierReleasedAt: row.barrierReleasedAt,
+    successorScheduledAt: row.successorScheduledAt,
+    successorScheduleAttempts: row.successorScheduleAttempts,
     sessionKey: row.sessionKey,
     messageId: row.messageId,
     runId: row.runId,
@@ -251,6 +257,8 @@ const EPISODE_SELECT = {
   toolCycleBudget: true,
   exhaustedByMessageId: true,
   barrierReleasedAt: true,
+  successorScheduledAt: true,
+  successorScheduleAttempts: true,
   sessionKey: true,
   messageId: true,
   runId: true,
@@ -627,6 +635,86 @@ export function serverGeneratedEpisodeCheckpoint(
       `Resume from the open checklist: episode ${episode.episodeNo} was closed by ${episode.closeReason ?? "budget exhaustion"} and its turn ended without recording a next exact action. Re-read the task status, sub-task checklist and latest comments, then continue at the first unfinished item.`,
     risks: [...episode.checkpoint.risks, provenance],
   };
+}
+
+/**
+ * How many times the sweeper will retry the scheduling half of a seal before
+ * leaving the row alone. A run that never materialises must not make every
+ * worker pass re-query and re-fail forever; the row stays queryable
+ * (`successorScheduledAt IS NULL`) so the stall is still observable.
+ */
+export const MAX_SUCCESSOR_SCHEDULE_ATTEMPTS = 5;
+
+/**
+ * Claim the right to schedule this episode's successor, exactly once.
+ *
+ * ENV-121 (third review) — the seal has two halves: consume the barrier (write
+ * the checkpoint) and arm the successor's continuation. They now run in one
+ * transaction, but the second half can still legitimately decline (no run row
+ * matches the fenced message yet), which commits a consumed-but-unscheduled
+ * row. This claim is what makes retrying that half safe: the same conditional
+ * atomic update the barrier itself uses, so a sweep racing another sweep — or
+ * racing the original seal — cannot arm two continuations in one lane.
+ *
+ * The attempt counter is bumped whether or not the claim succeeds, so a row
+ * that can never be scheduled bounds its own retries.
+ */
+export async function claimEpisodeSuccessorSchedule(
+  tx: Prisma.TransactionClient,
+  args: { episodeId: string; now?: Date },
+): Promise<boolean> {
+  const claimed = await tx.taskExecutionEpisode.updateMany({
+    where: { id: args.episodeId, successorScheduledAt: null },
+    data: {
+      successorScheduledAt: args.now ?? new Date(),
+      successorScheduleAttempts: { increment: 1 },
+    },
+  });
+  return claimed.count > 0;
+}
+
+/**
+ * Record a scheduling attempt that did not result in a successor. Keeps the
+ * row unscheduled (so the sweeper can try again) while still counting the try.
+ */
+export async function recordEpisodeSuccessorScheduleAttempt(
+  tx: Prisma.TransactionClient,
+  args: { episodeId: string },
+): Promise<void> {
+  await tx.taskExecutionEpisode.updateMany({
+    where: { id: args.episodeId, successorScheduledAt: null },
+    data: { successorScheduleAttempts: { increment: 1 } },
+  });
+}
+
+/**
+ * Seals whose checkpoint is durable but whose successor was never armed.
+ *
+ * This is the gap the third review found: `barrier_released_at` was consumed in
+ * one transaction and the continuation armed in another, so a throw, a crash or
+ * a missing run row left the task permanently stalled — invisible to the
+ * unsealed-barrier sweeper, which only looks at `barrierReleasedAt: null`.
+ *
+ * Rows returned here need the SCHEDULING half retried and nothing else. Their
+ * checkpoints are already durable and must never be rewritten.
+ */
+export async function findUnscheduledEpisodeSuccessors(args: {
+  olderThan: Date;
+  take?: number;
+}): Promise<TaskExecutionEpisodeSummary[]> {
+  const rows = await db.taskExecutionEpisode.findMany({
+    where: {
+      status: EPISODE_STATUS.closed,
+      exhaustedByMessageId: { not: null },
+      barrierReleasedAt: { not: null, lte: args.olderThan },
+      successorScheduledAt: null,
+      successorScheduleAttempts: { lt: MAX_SUCCESSOR_SCHEDULE_ATTEMPTS },
+    },
+    orderBy: { barrierReleasedAt: "asc" },
+    take: args.take ?? 20,
+    select: EPISODE_SELECT,
+  });
+  return rows.map(summarizeEpisode);
 }
 
 /**

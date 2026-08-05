@@ -537,6 +537,22 @@ ever-growing conversation.
   it would stall the task. The derived checkpoint is explicit about its
   provenance — it records that the agent did not author it, and PM's observed
   per-cycle record is what the successor reads.
+- **The seal is one transaction, and its outbox state is durable.** Consuming
+  the barrier (writing the checkpoint) and arming the successor's continuation
+  commit together, so a failure to arm rolls the checkpoint back rather than
+  leaving a consumed barrier with no successor — a state the unsealed-barrier
+  sweeper cannot see, because it searches `barrier_released_at IS NULL`.
+
+  One partial state is still legitimate: there may be no `PmChannelRun` row to
+  hang the continuation on. That is recorded explicitly —
+  `barrier_released_at IS NOT NULL AND successor_scheduled_at IS NULL` — and
+  `sweepUnscheduledEpisodeSuccessors` in the worker drain retries the
+  *scheduling half only*, never rewriting the durable checkpoint. The claim on
+  `successor_scheduled_at` is the same conditional atomic update the barrier
+  uses, so concurrent sweeps arm exactly one turn in the lane.
+  `successor_schedule_attempts` bounds the retry
+  (`MAX_SUCCESSOR_SCHEDULE_ATTEMPTS`); a row past it stops being retried but
+  stays queryable as an observable stall.
 - The successor is opened with **no `sessionKey` and no `messageId`**, and the
   dispatcher treats that emptiness as "never carried by a session": it gets a
   fresh episode-scoped session key and a full brief, never the incremental

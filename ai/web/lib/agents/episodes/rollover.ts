@@ -28,9 +28,14 @@
 // atomic update makes the seal single-use under concurrency, so the two paths
 // racing each other cannot double-arm or overwrite the agent's checkpoint.
 
+import type { Prisma } from "@prisma/client";
+
 import { db } from "@/lib/db";
 import {
+  claimEpisodeSuccessorSchedule,
+  findUnscheduledEpisodeSuccessors,
   findUnsealedEpisodeRolloverBarriers,
+  recordEpisodeSuccessorScheduleAttempt,
   releaseEpisodeRolloverBarrier,
   resolveEpisodeRolloverBarrier,
   serverGeneratedEpisodeCheckpoint,
@@ -54,6 +59,13 @@ const LIVE_RUN_STATUSES = ["queued", "accepted", "streaming", "retryable"] as co
 /** How long a raised-but-unsealed barrier may sit before the sweeper seals it. */
 const SWEEP_GRACE_MS = 5 * 60_000;
 
+/**
+ * How long a consumed-but-unscheduled seal may sit before the sweeper retries
+ * the scheduling half. Short: the checkpoint is already durable and the only
+ * thing missing is the successor's turn, so the task is stalled meanwhile.
+ */
+const SCHEDULE_RETRY_GRACE_MS = 30_000;
+
 export interface EpisodeSealOutcome {
   /** The closed episode whose barrier was consumed, with the sealed checkpoint. */
   episode: TaskExecutionEpisodeSummary;
@@ -72,28 +84,41 @@ export interface EpisodeSealOutcome {
  * ALREADY settled by the time we seal, there is no settle left to promote the
  * row, so it must be queued directly or the successor would wait forever.
  */
-async function scheduleSuccessorEpisode(args: {
-  taskId: string;
-  agentSlug: string;
-  messageId: string;
-}): Promise<boolean> {
-  const run = await db.pmChannelRun.findFirst({
+async function scheduleSuccessorEpisode(
+  tx: Prisma.TransactionClient,
+  args: {
+    episodeId: string;
+    taskId: string;
+    agentSlug: string;
+    messageId: string;
+  },
+): Promise<boolean> {
+  const run = await tx.pmChannelRun.findFirst({
     where: { taskId: args.taskId, agentSlug: args.agentSlug, messageId: args.messageId },
     orderBy: { createdAt: "desc" },
     select: { id: true, projectId: true, taskId: true, epicId: true, status: true },
   });
-  if (!run?.taskId) return false;
+  if (!run?.taskId) {
+    // Nothing to hang a continuation on yet. Leave the row unscheduled so the
+    // sweeper retries the scheduling half, and count the attempt so a run that
+    // never appears cannot spin forever.
+    await recordEpisodeSuccessorScheduleAttempt(tx, { episodeId: args.episodeId });
+    return false;
+  }
+  // Conditional atomic claim. Whoever wins arms the continuation in this same
+  // transaction; a concurrent seal or sweep matches zero rows and arms nothing,
+  // so one rollover can never put two turns in the same lane (WFI-001).
+  const claimed = await claimEpisodeSuccessorSchedule(tx, { episodeId: args.episodeId });
+  if (!claimed) return false;
   const runIsLive = (LIVE_RUN_STATUSES as readonly string[]).includes(run.status);
-  await db.$transaction((tx) =>
-    armPmChannelContinuations(tx, {
-      runs: [run],
-      agentSlug: args.agentSlug,
-      messageId: args.messageId,
-      action: EPISODE_ROLLOVER_CONTINUATION_ACTION,
-      now: new Date(),
-      status: runIsLive ? "armed" : "queued",
-    }),
-  );
+  await armPmChannelContinuations(tx, {
+    runs: [run],
+    agentSlug: args.agentSlug,
+    messageId: args.messageId,
+    action: EPISODE_ROLLOVER_CONTINUATION_ACTION,
+    now: new Date(),
+    status: runIsLive ? "armed" : "queued",
+  });
   return true;
 }
 
@@ -123,20 +148,33 @@ export async function sealEpisodeRolloverBarrier(args: {
 
   const checkpoint =
     args.checkpoint ?? serverGeneratedEpisodeCheckpoint(barrier.episode, args.reason);
-  const sealed = await db.$transaction((tx) =>
-    releaseEpisodeRolloverBarrier(tx, { episodeId: barrier.episode.id, checkpoint }),
-  );
-  // Lost the race. The winner's checkpoint stands and the winner already
-  // scheduled the successor; doing either again here would overwrite the
-  // agent's words or arm a second turn in the same lane (WFI-001).
-  if (!sealed) return null;
-
-  const successorScheduled = await scheduleSuccessorEpisode({
-    taskId: args.taskId,
-    agentSlug: args.agentSlug,
-    messageId: args.messageId,
+  // ENV-121 (third review) — BOTH HALVES IN ONE TRANSACTION. Consuming the
+  // barrier and arming the successor used to be two transactions, so a throw or
+  // a crash between them left the barrier permanently consumed with no
+  // successor armed, and the unsealed sweeper (which searches
+  // `barrierReleasedAt IS NULL`) could not see the wreckage. Now a failure to
+  // arm rolls the checkpoint back too, and the only surviving partial state is
+  // the deliberate one: no run row to attach to, recorded as
+  // consumed-but-unscheduled and retried by the sweeper below.
+  const sealed = await db.$transaction(async (tx) => {
+    const consumed = await releaseEpisodeRolloverBarrier(tx, {
+      episodeId: barrier.episode.id,
+      checkpoint,
+    });
+    // Lost the race. The winner's checkpoint stands and the winner already
+    // scheduled the successor; doing either again here would overwrite the
+    // agent's words or arm a second turn in the same lane (WFI-001).
+    if (!consumed) return null;
+    const successorScheduled = await scheduleSuccessorEpisode(tx, {
+      episodeId: consumed.id,
+      taskId: args.taskId,
+      agentSlug: args.agentSlug,
+      messageId: args.messageId,
+    });
+    return { episode: consumed, successorScheduled };
   });
-  return { episode: sealed, successorScheduled, reason: args.reason };
+  if (!sealed) return null;
+  return { ...sealed, reason: args.reason };
 }
 
 /**
@@ -154,6 +192,53 @@ export async function sealEpisodeRolloverBarrierOnTurnEnd(args: {
     console.warn("[pm-channel] failed to seal execution episode rollover barrier", err);
     return null;
   }
+}
+
+/**
+ * Retry the SCHEDULING half of a seal whose checkpoint is already durable.
+ *
+ * ENV-121 (third review). `sweepUnsealedEpisodeRolloverBarriers` below repairs
+ * barriers that were never consumed; this repairs the other partial state — the
+ * barrier was consumed, the checkpoint is durable, and no successor was armed.
+ * Before the outbox column existed that state was unreachable by any sweeper
+ * and the task simply stopped.
+ *
+ * It never writes a checkpoint. The agent's (or PM's) words are already on the
+ * row and the only thing missing is the next turn.
+ */
+export async function sweepUnscheduledEpisodeSuccessors(args: {
+  now?: Date;
+  graceMs?: number;
+  limit?: number;
+} = {}) {
+  const now = args.now ?? new Date();
+  const olderThan = new Date(now.getTime() - (args.graceMs ?? SCHEDULE_RETRY_GRACE_MS));
+  const stranded = await findUnscheduledEpisodeSuccessors({
+    olderThan,
+    take: args.limit ?? 20,
+  });
+  let scheduled = 0;
+  let stillUnscheduled = 0;
+  for (const episode of stranded) {
+    if (!episode.exhaustedByMessageId) continue;
+    const messageId = episode.exhaustedByMessageId;
+    const ok = await db
+      .$transaction((tx) =>
+        scheduleSuccessorEpisode(tx, {
+          episodeId: episode.id,
+          taskId: episode.taskId,
+          agentSlug: episode.agentSlug,
+          messageId,
+        }),
+      )
+      .catch((err) => {
+        console.warn("[pm-channel] failed to schedule stranded episode successor", err);
+        return false;
+      });
+    if (ok) scheduled += 1;
+    else stillUnscheduled += 1;
+  }
+  return { scheduled, stillUnscheduled };
 }
 
 /**

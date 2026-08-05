@@ -733,12 +733,18 @@ export async function runPmChannelWorkerDrain(
   // sweeper writes PM's derived checkpoint after a grace period and queues the
   // successor, and running it before the drain means that successor goes out in
   // this same pass rather than the next one.
+  // ENV-121 (third review): the seal's two halves are one transaction now, but
+  // it can still commit a durable checkpoint with no successor armed when there
+  // is no run row to attach the continuation to. That is the one partial state
+  // left, and `sweepUnscheduledEpisodeSuccessors` is what repairs it — without
+  // it, the task stalls behind a checkpoint nobody is coming to read.
   let episodeBarriers = { sealed: 0, scheduled: 0 };
+  let episodeSuccessors = { scheduled: 0, stillUnscheduled: 0 };
   try {
-    const { sweepUnsealedEpisodeRolloverBarriers } = await import(
-      "@/lib/agents/episodes/rollover"
-    );
+    const { sweepUnsealedEpisodeRolloverBarriers, sweepUnscheduledEpisodeSuccessors } =
+      await import("@/lib/agents/episodes/rollover");
     episodeBarriers = await sweepUnsealedEpisodeRolloverBarriers();
+    episodeSuccessors = await sweepUnscheduledEpisodeSuccessors();
   } catch (err) {
     console.warn("[pm-channel] episode rollover barrier sweep failed", err);
   }
@@ -765,7 +771,15 @@ export async function runPmChannelWorkerDrain(
     }
   }
 
-  return { claimed, accepted, retryableOrFailed, errors, continuations, episodeBarriers };
+  return {
+    claimed,
+    accepted,
+    retryableOrFailed,
+    errors,
+    continuations,
+    episodeBarriers,
+    episodeSuccessors,
+  };
 }
 
 export async function markPmChannelJobCompleteForTarget(target: unknown) {
