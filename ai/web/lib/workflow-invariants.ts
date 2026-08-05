@@ -53,15 +53,26 @@ export function isWorkflowDisposition(
 }
 
 // Run statuses that mean "the system still believes this turn is running".
+// ENV-117 moved "retryable" off the run and onto PmChannelJob.
 export const ACTIVE_RUN_STATUSES = [
   "queued",
   "accepted",
   "streaming",
-  "retryable",
 ] as const;
 
 // Run statuses that mean the episode is over, successfully or not.
-export const TERMINAL_RUN_STATUSES = ["complete", "failed", "canceled"] as const;
+// ENV-117 renamed the run vocabulary ("complete" -> "completed", "canceled"
+// -> "cancelled") and added "timed_out"/"superseded". These lists must track
+// PmChannelRunStatus in lib/agents/pm-channel/runs.ts: an invariant that
+// compares against a status string nothing writes any more is not a passing
+// invariant, it is a blind one.
+export const TERMINAL_RUN_STATUSES = [
+  "completed",
+  "failed",
+  "timed_out",
+  "cancelled",
+  "superseded",
+] as const;
 
 export function isActiveRunStatus(value: string): boolean {
   return (ACTIVE_RUN_STATUSES as readonly string[]).includes(value);
@@ -387,7 +398,7 @@ const WFI_004: WorkflowInvariant = {
   predicate: (snapshot) => {
     const violations: InvariantViolation[] = [];
     for (const run of snapshot.runs) {
-      if (run.status !== "complete") continue;
+      if (run.status !== "completed") continue;
       if (!isContinuationRequiredAction(run.settledByAction)) continue;
       const settledAt = run.completedAt ?? runLeaseAnchor(run);
       if (successorRuns(snapshot, run, settledAt).length > 0) continue;
@@ -414,7 +425,7 @@ const WFI_005: WorkflowInvariant = {
     const violations: InvariantViolation[] = [];
     for (const run of snapshot.runs) {
       if (!isTerminalRunStatus(run.status)) continue;
-      if (run.status === "canceled") continue; // cancellation is not an agent turn ending
+      if (run.status === "cancelled") continue; // cancellation is not an agent turn ending
       if (run.disposition == null) {
         violations.push({
           invariantId: "WFI-005",
@@ -449,7 +460,7 @@ const WFI_006: WorkflowInvariant = {
   predicate: (snapshot) => {
     const violations: InvariantViolation[] = [];
     for (const run of snapshot.runs) {
-      if (run.status !== "complete") continue;
+      if (run.status !== "completed") continue;
       if (!isBlank(run.finalResponseText)) continue;
       // A genuine workflow action IS a concrete outcome, so an empty visible
       // reply alongside one is legitimate (PM_SILENT_NO_CONTRIBUTION).

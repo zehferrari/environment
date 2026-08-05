@@ -5,22 +5,23 @@
 // every query here is a findMany/findFirst/count. Nothing in this module — or
 // in the monitor script that wraps it — may write, and the db test asserts that.
 //
-// Three snapshot fields have no column yet (settledByAction, finalResponseText,
-// disposition). Their derivations below are deliberately conservative, and the
-// gaps they expose are exactly what Epic items 1–4 must close:
+// ENV-118 made settledByAction and disposition real columns on PmChannelRun,
+// so two of the three derived fields are now READ rather than guessed:
 //
-//   settledByAction  — recoverable only for actions that write an ActivityLog
-//                      row carrying the action name (task.move, blocker
-//                      raise/clear, action-plan approval). add_subtask,
-//                      complete_subtask and remove_subtask settle a run with no
-//                      durable trace at all, so they read back as null and
-//                      WFI-004 cannot see them. Epic item 1 must persist the
-//                      settling action on the run.
-//   finalResponseText — reconstructed from the reply/silent ActivityLog row
-//                      that PM writes per turn, then the referenced chat
-//                      message or comment body.
-//   disposition      — never recorded anywhere. Always null, so WFI-005 is red
-//                      by construction until Epic item 3 lands.
+//   settledByAction  — read from the column, which is written only when a
+//                      workflow action was the thing that settled the run.
+//                      Rows written before the ENV-118 migration have no
+//                      disposition, and only those fall back to the original
+//                      ActivityLog derivation (task.move, blocker raise/clear,
+//                      action-plan approval) so historical violations stay
+//                      visible. add_subtask/complete_subtask/remove_subtask had
+//                      no durable trace at all under the old scheme; they are
+//                      exact now.
+//   disposition      — read from the column. Every terminal write records one.
+//   finalResponseText — still reconstructed from the reply/silent ActivityLog
+//                      row that PM writes per turn, then the referenced chat
+//                      message or comment body. Epic item 3 owns making the
+//                      response itself durable.
 
 import { db } from "@/lib/db";
 import {
@@ -171,6 +172,8 @@ export async function loadWorkflowInvariantSnapshot(
       completedAt: true,
       failedAt: true,
       lastEventAt: true,
+      disposition: true,
+      settledByAction: true,
     },
   });
 
@@ -324,10 +327,13 @@ export async function loadWorkflowInvariantSnapshot(
     completedAt: ms(run.completedAt),
     failedAt: ms(run.failedAt),
     lastEventAt: ms(run.lastEventAt),
-    settledByAction: settledActionFor(run),
+    // The column is authoritative. Only a pre-ENV-118 row (no disposition
+    // recorded by any writer) falls back to the ActivityLog derivation.
+    settledByAction: run.disposition == null
+      ? settledActionFor(run)
+      : run.settledByAction,
     finalResponseText: finalResponseFor(run.agentSlug, run.messageId),
-    // No column, no derivation: Epic item 3 must record this explicitly.
-    disposition: null,
+    disposition: run.disposition,
   }));
 
   const tasks: TaskRecord[] = taskRows.map((task) => ({

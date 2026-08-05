@@ -131,6 +131,10 @@ async function cancelJobForPolicy(args: {
         lastEventAt: now,
       },
     }),
+    db.pmChannelContinuation.updateMany({
+      where: { runId: args.job.runId, status: { in: ["armed", "queued", "dispatching"] } },
+      data: { status: "superseded", lastError: "run canceled by dispatch policy" },
+    }),
   ]);
   await appendAndPublishStatus({ payload: args.payload, runStatus: "cancelled", error: args.error });
   await rollbackDispatchedTurnBinding(args.payload);
@@ -428,6 +432,8 @@ export async function requeueStaleClaimedPmChannelJobs(now = new Date()) {
           finishedAt: exhausted ? now : null,
           finishedReason: exhausted ? "job_lease_expired" : null,
           lastEventAt: now,
+          // ENV-118 (WFI-005): only a terminal write records a disposition.
+          disposition: exhausted ? "failed" : null,
         },
       }),
     ]);
@@ -542,6 +548,7 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
         finishedAt: exhausted ? now : null,
         finishedReason: exhausted ? "dispatch_exhausted" : null,
         lastEventAt: now,
+        disposition: exhausted ? "failed" : null,
       },
     }),
   ]);
@@ -648,6 +655,7 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
           error,
           failedAt: null,
           lastEventAt: now,
+          disposition: null,
           sessionKey: retryPayload.sessionKey,
         },
       }),
@@ -675,7 +683,12 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
         finishedAt: now,
         finishedReason: "turn_failure_exhausted",
         lastEventAt: now,
+        disposition: "failed",
       },
+    }),
+    db.pmChannelContinuation.updateMany({
+      where: { runId: run.id, status: { in: ["armed", "queued", "dispatching"] } },
+      data: { status: "superseded", lastError: "turn failed terminally" },
     }),
   ]);
   await appendAndPublishStatus({ payload, runStatus: "failed", error });
@@ -710,6 +723,20 @@ export async function runPmChannelWorkerDrain(
   let retryableOrFailed = 0;
   const errors: string[] = [];
 
+  // ENV-118: drain the continuation outbox alongside the job queue. A turn
+  // that took a continuation-required action and then ended gets its next
+  // execution turn from here, so "start" can never leave a task silently
+  // parked as a successful workflow.
+  let continuations = { dispatched: 0, superseded: 0, failed: 0 };
+  try {
+    const { drainPmChannelContinuations } = await import(
+      "@/lib/agents/pm-channel/continuation-drain"
+    );
+    continuations = await drainPmChannelContinuations();
+  } catch (err) {
+    console.warn("[pm-channel] continuation drain failed", err);
+  }
+
   for (let i = 0; i < limit; i += 1) {
     const outcome = await runPmChannelWorkerOnce(workerId);
     if (!outcome.claimed) break;
@@ -722,7 +749,7 @@ export async function runPmChannelWorkerDrain(
     }
   }
 
-  return { claimed, accepted, retryableOrFailed, errors };
+  return { claimed, accepted, retryableOrFailed, errors, continuations };
 }
 
 export async function markPmChannelJobCompleteForTarget(target: unknown) {

@@ -74,8 +74,24 @@ async function main(): Promise<void> {
     await dbPush(dbUrl);
 
     const { db } = await import("@/lib/db");
-    const { recordPmChannelRunQueued, recordPmChannelRunWorkflowAction } =
-      await import("@/lib/agents/pm-channel/runs");
+    const {
+      recordPmChannelRunEvent,
+      recordPmChannelRunQueued,
+      recordPmChannelRunWorkflowAction,
+    } = await import("@/lib/agents/pm-channel/runs");
+    const { runWorkflowActionAtomically } = await import(
+      "@/lib/agents/workflow/transactional-action"
+    );
+    // ENV-118: production routes every continuation-required action through the
+    // atomic primitive; the standalone recorder now refuses them outright. The
+    // task.move above stands in for the domain mutation this scenario is not
+    // exercising, so the callback is deliberately empty.
+    const recordAction = async (args: {
+      taskId: string;
+      agentSlug: string;
+      messageId: string;
+      action: string;
+    }) => (await runWorkflowActionAtomically(args, async () => {})).result;
     const { createActionPlanSubtasksForTask, extractActionPlanSteps } =
       await import("@/lib/tasks/action-plan-subtasks");
     const { loadWorkflowInvariantSnapshot, checkWorkflowInvariants } =
@@ -188,23 +204,39 @@ async function main(): Promise<void> {
         }),
       },
     });
-    await recordPmChannelRunWorkflowAction({
+    const startResult = await recordAction({
       taskId: t1.id,
       agentSlug: AGENT_SLUG,
       messageId: t1Target.messageId,
       action: "start",
     });
+    assertEqual(startResult.actionEffect, "continue", "`start` continues the episode");
+    assertEqual(startResult.turnComplete, false, "`start` does not complete the turn");
 
-    const settledRun = await db.pmChannelRun.findFirst({
+    // ENV-118: `start` must NOT settle the run. It renews the lease, records
+    // the continuation intent, and leaves the episode open.
+    const startedRun = await db.pmChannelRun.findFirst({
       where: { taskId: t1.id },
-      select: { status: true, completedAt: true },
+      select: { id: true, status: true, completedAt: true, disposition: true, settledByAction: true },
     });
+    assert(startedRun, "the started run exists");
     assertEqual(
-      settledRun?.status,
-      "complete",
-      "production behaviour: `start` settles the run complete",
+      startedRun.status,
+      "queued",
+      "ENV-118: `start` leaves the run active instead of settling it complete",
     );
-    assert(settledRun?.completedAt != null, "the settled run carries completedAt");
+    assertEqual(startedRun.completedAt, null, "an unsettled run carries no completedAt");
+    assertEqual(startedRun.disposition, "continue", "`start` records the continue disposition");
+    assertEqual(
+      startedRun.settledByAction,
+      null,
+      "settledByAction is written only when an action actually settles the run",
+    );
+    assertEqual(
+      await db.pmChannelContinuation.count({ where: { runId: startedRun.id, status: "armed" } }),
+      1,
+      "`start` armed a continuation in the same transaction as the run write",
+    );
 
     // T2 — the stale-lease case (Epic item 2). Left accepted, never renewed.
     const t2 = await db.task.create({
@@ -242,18 +274,16 @@ async function main(): Promise<void> {
         reporterId: reporter.id,
       },
     });
-    await db.pmChannelRun.create({
-      data: {
-        targetKey: `task-comment:${AGENT_SLUG}:${t3.id}:msg-t3`,
-        kind: "task-comment",
-        agentSlug: AGENT_SLUG,
-        messageId: "msg-t3",
-        projectId: project.id,
-        taskId: t3.id,
-        status: "complete",
-        completedAt: new Date(now - 5 * MINUTE),
-        lastEventAt: new Date(now - 5 * MINUTE),
-      },
+    const t3Target = {
+      kind: "task-comment" as const,
+      agentSlug: AGENT_SLUG,
+      taskId: t3.id,
+      messageId: "msg-t3",
+    };
+    await recordPmChannelRunQueued({
+      target: t3Target,
+      kind: "task-comment",
+      projectId: project.id,
     });
     await db.activityLog.create({
       data: {
@@ -268,6 +298,10 @@ async function main(): Promise<void> {
         }),
       },
     });
+    // Production writer: the durable silent reply makes `done` a legitimate
+    // settle, so the run ends complete with the `completed` disposition and no
+    // workflow action behind it — the exact shape WFI-006 objects to.
+    await recordPmChannelRunEvent({ target: t3Target, event: "done" });
 
     // T4 — the unstructured blocker case (Epic item 6).
     const t4 = await db.task.create({
@@ -310,13 +344,13 @@ async function main(): Promise<void> {
     assert(t1Run, "adapter loaded the T1 run");
     assertEqual(
       t1Run.settledByAction,
-      "start",
-      "adapter recovered the settling action from the task.move activity row",
+      null,
+      "a continuation-required action settles nothing, so no settling action is reported",
     );
     assertEqual(
       t1Run.disposition,
-      null,
-      "no disposition is recoverable from live rows — Epic item 3's gap",
+      "continue",
+      "the adapter reads the disposition column ENV-118 added",
     );
 
     const t2Run = runByTask.get(t2.id);
@@ -336,6 +370,11 @@ async function main(): Promise<void> {
       "an explicit silent turn reads back as an empty final response",
     );
     assertEqual(t3Run.settledByAction, null, "the silent turn took no workflow action");
+    assertEqual(
+      t3Run.disposition,
+      "completed",
+      "a turn settled by its own stream events records the `completed` disposition",
+    );
 
     const t1Task = snapshot.tasks.find((task) => task.id === t1.id);
     assert(t1Task, "adapter loaded T1");

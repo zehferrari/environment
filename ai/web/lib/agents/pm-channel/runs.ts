@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import type {
   PmChannelReplyTarget,
@@ -8,6 +9,21 @@ import type {
 import type { PmChannelStreamEventKind } from "@/lib/agents/pm-channel/stream";
 import { pmChannelRunTargetKey } from "@/lib/agents/pm-channel/bus";
 import { retryOrFailPmChannelJobForTurnFailure } from "@/lib/agents/pm-channel/jobs";
+import {
+  armPmChannelContinuations,
+  queuePmChannelContinuationsForRun,
+  supersedePmChannelContinuations,
+} from "@/lib/agents/pm-channel/continuations";
+import {
+  workflowActionDisposition,
+  workflowActionEffectOrFinish,
+  workflowActionResult,
+  type WorkflowActionResult,
+} from "@/lib/agents/workflow/action-effect";
+import {
+  isContinuationRequiredAction,
+  type WorkflowDisposition,
+} from "@/lib/workflow-invariants";
 
 // Re-exported for existing importers; the definition moved to bus.ts so the
 // bus envelope id and the run identity can never drift apart.
@@ -64,6 +80,9 @@ function clippedError(error: string | null | undefined) {
   return error.length > 2_000 ? error.slice(0, 2_000) : error;
 }
 
+// ENV-118. Every terminal write records an explicit disposition (WFI-005), and
+// a run that ends while a continuation is armed ends as `continue`: the episode
+// is not over, PM owes the agent another turn.
 async function settlePmChannelJobsForTargetKey(args: {
   targetKey: string;
   status: "complete" | "failed";
@@ -85,6 +104,34 @@ async function settlePmChannelJobsForTargetKey(args: {
       lastError: args.status === "failed" ? clippedError(args.error) : null,
     },
   });
+}
+
+/**
+ * The disposition to stamp when a stream event settles a run.
+ *
+ * A run that reaches its end while a continuation is still armed did NOT
+ * finish its episode — the agent took a continuation-required action (start,
+ * add_subtask, ...) and then stopped without an episode-terminal one. That is
+ * exactly the "start makes the PM job successful while actual work has not
+ * begun" bug. The disposition becomes `continue` and the armed continuation is
+ * queued, so the drain schedules a fresh execution turn.
+ */
+async function resolveSettleDisposition(args: {
+  targetKey: string;
+  status: "complete" | "failed";
+  now: Date;
+}): Promise<WorkflowDisposition> {
+  if (args.status === "failed") return "failed";
+  const run = await db.pmChannelRun.findUnique({
+    where: { targetKey: args.targetKey },
+    select: { id: true, disposition: true },
+  });
+  if (!run) return "completed";
+  const queued = await queuePmChannelContinuationsForRun({ runId: run.id, now: args.now });
+  if (queued > 0) return "continue";
+  // A workflow action that already settled this run recorded its own
+  // disposition; a later done/error event must not overwrite it.
+  return (run.disposition as WorkflowDisposition | null) ?? "completed";
 }
 
 async function record(run: () => Promise<unknown>, label: string) {
@@ -197,6 +244,11 @@ export async function cancelPmChannelRunForTarget(args: {
       where: { runId: run.id, status: { in: ["queued", "claimed", "accepted", "retryable"] } },
       data: { status: "canceled", completedAt: now, lastError: null },
     }),
+    // A canceled episode is over by human decision: never resume it.
+    db.pmChannelContinuation.updateMany({
+      where: { runId: run.id, status: { in: ["armed", "queued", "dispatching"] } },
+      data: { status: "superseded", lastError: "run canceled" },
+    }),
     db.activityLog.create({
       data: {
         userId: args.actorUserId,
@@ -223,6 +275,7 @@ async function failRun(target: PmChannelReplyTarget, error: string) {
       finishedAt: now,
       finishedReason: clippedError(error) ?? "failed",
       lastEventAt: now,
+      disposition: "failed",
     },
     select: {
       id: true,
@@ -320,7 +373,18 @@ export async function recordPmChannelRunQueued(args: {
               finishedAt: now,
               finishedReason: "superseded_by_newer_run",
               supersededByRunId: reservedRunId,
+              // A supersede is a terminal write, so WFI-005 wants a
+              // disposition — and it is `continue`, never `completed`: the
+              // episode did not finish, a newer run took it over.
+              disposition: "continue",
             },
+          });
+          // ENV-118: retiring a run closes its continuation lane. The newer run
+          // IS the continuation, so leaving the old row armed would put two
+          // turns in the same lane once the drain picked it up (WFI-001).
+          await supersedePmChannelContinuations(tx, {
+            runIds: priorActive.map((r) => r.id),
+            reason: "a newer run took over the episode",
           });
         }
 
@@ -337,7 +401,12 @@ export async function recordPmChannelRunQueued(args: {
               finishedAt: now,
               finishedReason: "superseded_by_replacement",
               supersededByRunId: reservedRunId,
+              disposition: "continue",
             },
+          });
+          await supersedePmChannelContinuations(tx, {
+            runIds: [currentActive.id],
+            reason: "the run was replaced in its lane",
           });
         }
 
@@ -479,15 +548,37 @@ export async function recordPmChannelRunDispatch(args: {
   );
 }
 
-export async function recordPmChannelRunWorkflowAction(args: {
+/**
+ * Record a workflow action against the agent's live run(s).
+ *
+ * ENV-118: the action's EFFECT decides what happens to the run, instead of
+ * every action unconditionally settling it complete.
+ *
+ *   continue — renew the lease, leave the run active, and arm a continuation
+ *              in the same transaction. Reporting "job complete" here is the
+ *              bug: `start` would mark the turn successful before any work.
+ *   wait     — settle `complete` with disposition `waiting_external`: the
+ *              episode ended because somebody else has to act.
+ *   finish   — settle `complete` with a successful disposition.
+ *
+ * Both terminal effects record `settledByAction`, and both supersede any armed
+ * continuation, so the episode is not resumed after it legitimately ended.
+ *
+ * Returns the structured action result, or null when no live run matched (the
+ * caller still has a valid workflow outcome; only the run bookkeeping is a
+ * no-op).
+ */
+export interface PmChannelWorkflowActionArgs {
   taskId?: string | null;
   epicId?: string | null;
   agentSlug: string;
   messageId: string;
   action: string;
-}) {
-  const now = new Date();
-  const targetKeys = args.epicId
+  taskState?: string | null;
+}
+
+function workflowActionTargetKeys(args: PmChannelWorkflowActionArgs): string[] {
+  return args.epicId
     ? [pmChannelRunTargetKey({
         kind: "epic-chat",
         agentSlug: args.agentSlug,
@@ -510,46 +601,157 @@ export async function recordPmChannelRunWorkflowAction(args: {
           }),
         ]
       : [];
-  if (targetKeys.length === 0) return;
-  await record(
-    async () => {
-      const runs = await db.pmChannelRun.findMany({
-        where: { targetKey: { in: targetKeys } },
-        select: { id: true },
+}
+
+/**
+ * The run/job/outbox half of a workflow action, executed on the CALLER'S
+ * transaction client.
+ *
+ * ENV-118 review finding: arming the outbox atomically with the run write was
+ * not enough. The route committed its domain mutation (`moveTaskStatus`,
+ * `promoteEpicOnTaskInProgress`, the subtask write, …) first and only then
+ * opened a SEPARATE transaction for this bookkeeping, so a crash in between
+ * still left an In Progress task with no continuation — the exact loss window
+ * the task exists to close.
+ *
+ * Taking `tx` from the caller closes it: `runWorkflowActionAtomically` (see
+ * lib/agents/workflow/transactional-action.ts) runs the domain mutation and
+ * this function in ONE transaction, so neither can commit alone.
+ *
+ * Errors are NOT swallowed here — they must propagate so the caller's
+ * transaction rolls back. `recordPmChannelRunWorkflowAction` keeps the old
+ * best-effort semantics for callers that have no domain mutation to protect.
+ */
+export async function applyPmChannelRunWorkflowAction(
+  tx: Prisma.TransactionClient,
+  args: PmChannelWorkflowActionArgs,
+): Promise<WorkflowActionResult> {
+  const now = new Date();
+  const targetKeys = workflowActionTargetKeys(args);
+  const result = workflowActionResult({ action: args.action, taskState: args.taskState });
+  if (targetKeys.length === 0) return result;
+
+  const effect = workflowActionEffectOrFinish(args.action);
+  const disposition = workflowActionDisposition(args.action);
+
+  const runs = await tx.pmChannelRun.findMany({
+    where: { targetKey: { in: targetKeys } },
+    select: { id: true, status: true, projectId: true, taskId: true, epicId: true },
+  });
+  if (runs.length === 0) return result;
+  const runIds = runs.map((run) => run.id);
+  // A workflow action can queue its own follow-up notification (completing
+  // the last subtask raises `ready_for_review_available`), and ENV-117
+  // supersedes the older run the moment the newer one queues. So by the
+  // time we get here the run this action belongs to may already be
+  // superseded. The action still happened and must still be recorded — but
+  // the newer run IS the continuation, so arming a second one would put two
+  // turns in the same lane (WFI-001).
+  const liveRuns = runs.filter((run) => ACTIVE_STATUSES.has(run.status));
+
+  if (effect === "continue") {
+    // Record the action on every run the agent's grant covers, live or
+    // already superseded: `continue` settles nothing, so there is no
+    // terminal write to protect with a status guard, and a superseded
+    // run whose disposition stayed null would read as "turn ended, no
+    // reason given".
+    await tx.pmChannelRun.updateMany({
+      where: { id: { in: runIds } },
+      data: {
+        error: null,
+        lastEventAt: now,
+        lastAction: args.action,
+        lastActionAt: now,
+        disposition: "continue",
+      },
+    });
+    // Only a live run arms a continuation. A superseded one already has
+    // its successor queued.
+    await armPmChannelContinuations(tx, {
+      runs: liveRuns,
+      agentSlug: args.agentSlug,
+      messageId: args.messageId,
+      action: args.action,
+      now,
+    });
+    const retiredRunIds = runs
+      .filter((run) => !ACTIVE_STATUSES.has(run.status))
+      .map((run) => run.id);
+    if (retiredRunIds.length > 0) {
+      await supersedePmChannelContinuations(tx, {
+        runIds: retiredRunIds,
+        reason: "a newer run took over the episode",
       });
-      if (runs.length === 0) return;
-      const runIds = runs.map((run) => run.id);
-      await db.$transaction([
-        db.pmChannelRun.updateMany({
-          where: {
-            id: { in: runIds },
-            status: { in: ["queued", "accepted", "streaming"] },
-          },
-          data: {
-            status: "completed",
-            error: null,
-            completedAt: now,
-            failedAt: null,
-            finishedAt: now,
-            finishedReason: `workflow_action:${args.action}`,
-            lastEventAt: now,
-          },
-        }),
-        db.pmChannelJob.updateMany({
-          where: {
-            runId: { in: runIds },
-            status: { in: ["queued", "claimed", "accepted", "retryable"] },
-          },
-          data: {
-            status: "complete",
-            completedAt: now,
-            lastError: null,
-          },
-        }),
-      ]);
+    }
+    return result;
+  }
+
+  await tx.pmChannelRun.updateMany({
+    where: {
+      id: { in: runIds },
+      status: { in: ["queued", "accepted", "streaming"] },
     },
+    data: {
+      status: "completed",
+      error: null,
+      completedAt: now,
+      failedAt: null,
+      finishedAt: now,
+      finishedReason: `workflow_action:${args.action}`,
+      lastEventAt: now,
+      lastAction: args.action,
+      lastActionAt: now,
+      settledByAction: args.action,
+      disposition,
+    },
+  });
+  await tx.pmChannelJob.updateMany({
+    where: {
+      runId: { in: runIds },
+      status: { in: ["queued", "claimed", "accepted", "retryable"] },
+    },
+    data: {
+      status: "complete",
+      completedAt: now,
+      lastError: null,
+    },
+  });
+  await supersedePmChannelContinuations(tx, {
+    runIds,
+    reason: `episode ended by ${args.action}`,
+  });
+  return result;
+}
+
+/**
+ * Best-effort standalone recorder, for callers with no domain mutation of
+ * their own to protect (episode-terminal actions, already-idempotent no-ops).
+ *
+ * A route that mutates task state as part of a CONTINUATION-REQUIRED action
+ * must use `runWorkflowActionAtomically` instead: this wrapper opens its own
+ * transaction, which is precisely the split the ENV-118 review rejected.
+ *
+ * That is enforced, not documented: a continuation-required action reaching
+ * this function has to say in so many words that it wrote nothing durable of
+ * its own. The guard is what stops a future action from quietly re-opening the
+ * loss window by copying the nearest call site.
+ */
+export async function recordPmChannelRunWorkflowAction(
+  args: PmChannelWorkflowActionArgs & { withoutDomainMutation?: true },
+): Promise<WorkflowActionResult> {
+  if (isContinuationRequiredAction(args.action) && !args.withoutDomainMutation) {
+    throw new Error(
+      `recordPmChannelRunWorkflowAction cannot record the continuation-required action "${args.action}": ` +
+        "run it through runWorkflowActionAtomically so the domain mutation and the continuation outbox " +
+        "commit together, or pass withoutDomainMutation:true if this call site genuinely writes nothing.",
+    );
+  }
+  const result = workflowActionResult({ action: args.action, taskState: args.taskState });
+  await record(
+    () => db.$transaction((tx) => applyPmChannelRunWorkflowAction(tx, args)),
     `workflow action run state (${args.action})`,
   );
+  return result;
 }
 
 export async function recordPmChannelRunEvent(args: {
@@ -585,6 +787,11 @@ export async function recordPmChannelRunEvent(args: {
           const anomaly = anomalyError
             ? { completionAnomaly: anomalyError, completionAnomalyAt: now }
             : {};
+          const disposition = await resolveSettleDisposition({
+            targetKey,
+            status: "complete",
+            now,
+          });
           await db.pmChannelRun.upsert({
             where: { targetKey },
             create: {
@@ -600,6 +807,7 @@ export async function recordPmChannelRunEvent(args: {
               finishedAt: now,
               finishedReason: "done",
               lastEventAt: now,
+              disposition,
               ...anomaly,
             },
             update: {
@@ -610,6 +818,7 @@ export async function recordPmChannelRunEvent(args: {
               finishedAt: now,
               finishedReason: "done",
               lastEventAt: now,
+              disposition,
               ...anomaly,
             },
           });
@@ -648,6 +857,7 @@ export async function recordPmChannelRunEvent(args: {
             finishedAt: now,
             finishedReason: "no_reply",
             lastEventAt: now,
+            disposition: "failed",
           },
           update: {
             status: "failed",
@@ -656,6 +866,7 @@ export async function recordPmChannelRunEvent(args: {
             finishedAt: now,
             finishedReason: "no_reply",
             lastEventAt: now,
+            disposition: "failed",
           },
         });
         await settlePmChannelJobsForTargetKey({
@@ -693,6 +904,11 @@ export async function recordPmChannelRunEvent(args: {
           // the settle, but persist the late error as a completion anomaly
           // instead of discarding it (PH-124).
           const anomalyError = clippedError(args.error) ?? "late stream error on settled run";
+          const disposition = await resolveSettleDisposition({
+            targetKey,
+            status: "complete",
+            now,
+          });
           await db.pmChannelRun.upsert({
             where: { targetKey },
             create: {
@@ -708,6 +924,7 @@ export async function recordPmChannelRunEvent(args: {
               finishedAt: now,
               finishedReason: "done",
               lastEventAt: now,
+              disposition,
               completionAnomaly: anomalyError,
               completionAnomalyAt: now,
             },
@@ -719,6 +936,7 @@ export async function recordPmChannelRunEvent(args: {
               finishedAt: now,
               finishedReason: "done",
               lastEventAt: now,
+              disposition,
               completionAnomaly: anomalyError,
               completionAnomalyAt: now,
             },
@@ -753,6 +971,7 @@ export async function recordPmChannelRunEvent(args: {
             finishedAt: now,
             finishedReason: "stream_error",
             lastEventAt: now,
+            disposition: "failed",
           },
           update: {
             status: "failed",
@@ -761,6 +980,7 @@ export async function recordPmChannelRunEvent(args: {
             finishedAt: now,
             finishedReason: "stream_error",
             lastEventAt: now,
+            disposition: "failed",
           },
         });
         await settlePmChannelJobsForTargetKey({ targetKey, status: "failed", now, error });
@@ -792,6 +1012,12 @@ export async function recordPmChannelRunEvent(args: {
       const firstStreamMs = existing?.streamingAt || !existing?.acceptedAt
         ? null
         : now.getTime() - existing.acceptedAt.getTime();
+      // A `final` is a turn ending: if a continuation is armed, this settle is
+      // `continue`, not a successful completion, and the outbox row becomes
+      // drainable. A plain streaming chunk settles nothing.
+      const disposition = status === "completed"
+        ? await resolveSettleDisposition({ targetKey, status: "complete", now })
+        : undefined;
       await db.pmChannelRun.upsert({
         where: { targetKey },
         create: {
@@ -813,6 +1039,7 @@ export async function recordPmChannelRunEvent(args: {
           finishedAt: status === "completed" ? now : null,
           finishedReason: status === "completed" ? "final" : null,
           lastEventAt: now,
+          disposition,
         },
         update: {
           status,
@@ -825,6 +1052,7 @@ export async function recordPmChannelRunEvent(args: {
           finishedAt: status === "completed" ? now : undefined,
           finishedReason: status === "completed" ? "final" : undefined,
           lastEventAt: now,
+          disposition,
         },
       });
       if (status === "completed") {

@@ -395,15 +395,49 @@ assert(
   "repository validation must resolve the Monitor Agent by role rather than a deployment username",
 );
 
-// PH-124 item B: every workflow action with a durable outcome settles the
-// PM-channel run. The formal external-blocker lifecycle adds flag_blocker and
-// clear_blocker to the previous durable outcomes; each idempotent
-// already-settled response has its own call site. Task ownership never gains a
-// second hidden dependency lifecycle.
+// PH-124 item B: every workflow action with a durable outcome records against
+// the PM-channel run. ENV-118 splits HOW by effect: an episode-terminal action
+// settles through the standalone recorder, while a continuation-required one
+// must go through runWorkflowActionAtomically so its domain mutation and its
+// continuation-outbox row commit together (the ENV-118 review finding).
 assert(
-  taskWorkflowRoute.split("recordPmChannelRunWorkflowAction(").length - 1 === 18,
-  "all durable-outcome and idempotent workflow paths must settle the PM-channel run",
+  taskWorkflowRoute.split("recordPmChannelRunWorkflowAction(").length - 1 === 12,
+  "every episode-terminal and idempotent workflow path must settle the PM-channel run",
 );
+{
+  const CONTINUATION_REQUIRED_ROUTE_ACTIONS = [
+    "start",
+    "publish_checkpoint",
+    "add_subtask",
+    "complete_subtask",
+    "remove_subtask",
+    "clear_blocker",
+  ];
+  // Slice each action's handler out of the route and check it in isolation, so
+  // a new continuation-required action cannot pass by sitting next to one that
+  // does the right thing.
+  const blockStarts = [...taskWorkflowRoute.matchAll(/\n {2}if \(action === /g)].map((m) => m.index ?? 0);
+  for (const action of CONTINUATION_REQUIRED_ROUTE_ACTIONS) {
+    const start = taskWorkflowRoute.indexOf(`\n  if (action === "${action}"`);
+    assert(start >= 0, `the task workflow route still handles "${action}"`);
+    const end = blockStarts.find((index) => index > start) ?? taskWorkflowRoute.length;
+    const block = taskWorkflowRoute.slice(start, end);
+    assert(
+      block.includes("runWorkflowActionAtomically("),
+      `continuation-required action "${action}" must record through runWorkflowActionAtomically, ` +
+        "so its domain mutation cannot commit without the continuation",
+    );
+    // A standalone recorder call inside one of these blocks is only legitimate
+    // when the branch declares it wrote nothing durable.
+    const standaloneCalls = block.split("recordPmChannelRunWorkflowAction(").length - 1;
+    const declaredNoops = block.split("withoutDomainMutation: true").length - 1;
+    assert(
+      standaloneCalls === declaredNoops,
+      `every standalone recorder call inside "${action}" must declare withoutDomainMutation ` +
+        `(found ${standaloneCalls} calls, ${declaredNoops} declared)`,
+    );
+  }
+}
 
 // request-workflow-turn: PM-bearer-authenticated self-service turn re-arm.
 const requestTurnRoute = readFileSync(join(root, "app/api/agent/tasks/[taskId]/request-workflow-turn/route.ts"), "utf8");
@@ -696,16 +730,93 @@ async function pmRunSettlementSlice() {
       return { status: res.status, body: await res.json() as Record<string, unknown> };
     };
 
+    // ENV-118 split this in two. An EPISODE-TERMINAL action settles the run
+    // and its job; a CONTINUATION-REQUIRED action must not, because settling
+    // there reports a successful turn for work that has not happened yet.
     const assertSettled = async (slug: string, messageId: string, action: string) => {
       const { runStatuses, jobStatuses } = await runStates(slug, messageId);
       assert(runStatuses.length === 2, `${action}: both target-key runs must exist`);
       assert(
-        runStatuses.every((status) => status === "complete"),
-        `${action}: both PM runs must settle complete (got ${runStatuses.join(", ")})`,
+        // Run vocabulary is "completed" (ENV-117); the job vocabulary is
+        // "complete". They are deliberately different words.
+        runStatuses.every((status) => status === "completed"),
+        `${action}: both PM runs must settle completed (got ${runStatuses.join(", ")})`,
       );
       assert(
         jobStatuses.every((status) => status === "complete"),
         `${action}: both PM jobs must settle complete (got ${jobStatuses.join(", ")})`,
+      );
+      const dispositions = await db.pmChannelRun.findMany({
+        where: { messageId, agentSlug: slug },
+        select: { disposition: true, settledByAction: true },
+      });
+      assert(
+        dispositions.every((run) => run.disposition != null && run.settledByAction != null),
+        `${action}: a settling action must record its disposition and settledByAction`,
+      );
+    };
+
+    const assertContinued = async (slug: string, messageId: string, action: string) => {
+      const { runStatuses, jobStatuses } = await runStates(slug, messageId);
+      assert(runStatuses.length === 2, `${action}: both target-key runs must exist`);
+      assert(
+        runStatuses.every((status) => status !== "completed"),
+        `${action}: a continuation-required action must not settle the PM runs (got ${runStatuses.join(", ")})`,
+      );
+      assert(
+        jobStatuses.every((status) => status !== "complete"),
+        `${action}: a continuation-required action must not settle the PM jobs (got ${jobStatuses.join(", ")})`,
+      );
+      const runs = await db.pmChannelRun.findMany({
+        where: { messageId, agentSlug: slug },
+        select: { id: true, status: true, disposition: true, settledByAction: true },
+      });
+      assert(
+        runs.every((run) => run.disposition === "continue" && run.settledByAction === null),
+        `${action}: a continuation-required action records the continue disposition and settles nothing (got ${runs
+          .map((run) => `${run.status}:${run.disposition ?? "null"}/${run.settledByAction ?? "null"}`)
+          .join(", ")})`,
+      );
+      // Only a run that is still live in its lane arms a continuation. If the
+      // action's own follow-up notification already queued a newer run
+      // (ENV-117 supersedes the old one), that newer run IS the continuation
+      // and arming a second one would put two turns in the same lane.
+      const liveRunIds = runs
+        .filter((run) => run.status === "queued" || run.status === "accepted" || run.status === "streaming")
+        .map((run) => run.id);
+      assert(
+        await db.pmChannelContinuation.count({
+          where: { runId: { in: liveRunIds }, status: "armed" },
+        }) === liveRunIds.length,
+        `${action}: each live run arms a continuation in the same transaction`,
+      );
+      assert(
+        await db.pmChannelContinuation.count({
+          where: {
+            runId: { in: runs.filter((run) => !liveRunIds.includes(run.id)).map((run) => run.id) },
+            status: "armed",
+          },
+        }) === 0,
+        `${action}: a superseded run must not keep a second continuation lane armed`,
+      );
+    };
+
+    const assertActionResult = (
+      body: Record<string, unknown>,
+      action: string,
+      effect: "continue" | "wait" | "finish",
+    ) => {
+      assert(
+        body.actionEffect === effect,
+        `${action}: the response must report actionEffect=${effect} (got ${String(body.actionEffect)})`,
+      );
+      assert(
+        typeof body.checkpoint === "string" && typeof body.nextAction === "string",
+        `${action}: the response must carry a checkpoint and a nextAction`,
+      );
+      assert(
+        body.turnComplete === (effect !== "continue"),
+        `${action}: turnComplete must follow the action effect`,
       );
     };
 
@@ -716,7 +827,8 @@ async function pmRunSettlementSlice() {
       subtaskText: "settle step one",
     });
     assert(added.status === 200, `add_subtask must succeed (got ${added.status}: ${JSON.stringify(added.body)})`);
-    await assertSettled("wf-assignee", addGrant, "add_subtask");
+    assertActionResult(added.body, "add_subtask", "continue");
+    await assertContinued("wf-assignee", addGrant, "add_subtask");
 
     // complete_subtask (assignee)
     const completeGrant = await grantFor("wf-assignee");
@@ -726,7 +838,8 @@ async function pmRunSettlementSlice() {
       minutesSpent: 3,
     });
     assert(completed.status === 200, `complete_subtask must succeed (got ${completed.status}: ${JSON.stringify(completed.body)})`);
-    await assertSettled("wf-assignee", completeGrant, "complete_subtask");
+    assertActionResult(completed.body, "complete_subtask", "continue");
+    await assertContinued("wf-assignee", completeGrant, "complete_subtask");
 
     // remove_subtask (assignee) — obsolete/duplicate checklist cleanup must
     // be possible through the same agent workflow capability.
@@ -736,14 +849,15 @@ async function pmRunSettlementSlice() {
       subtaskText: "obsolete duplicate step",
     });
     assert(obsolete.status === 200, `obsolete add_subtask must succeed (got ${obsolete.status}: ${JSON.stringify(obsolete.body)})`);
-    await assertSettled("wf-assignee", addObsoleteGrant, "add_subtask obsolete item");
+    await assertContinued("wf-assignee", addObsoleteGrant, "add_subtask obsolete item");
     const removeGrant = await grantFor("wf-assignee");
     const removed = await call("wf-assignee", removeGrant, {
       action: "remove_subtask",
       subtaskId: obsolete.body.subtaskId,
     });
     assert(removed.status === 200, `remove_subtask must succeed (got ${removed.status}: ${JSON.stringify(removed.body)})`);
-    await assertSettled("wf-assignee", removeGrant, "remove_subtask");
+    assertActionResult(removed.body, "remove_subtask", "continue");
+    await assertContinued("wf-assignee", removeGrant, "remove_subtask");
     assert(
       await db.subTask.findUnique({ where: { id: String(obsolete.body.subtaskId) } }) === null,
       "remove_subtask must delete the selected stale checklist item",
@@ -760,6 +874,7 @@ async function pmRunSettlementSlice() {
       requestedSubtask.status === 200,
       `request_subtask must succeed (got ${requestedSubtask.status}: ${JSON.stringify(requestedSubtask.body)})`,
     );
+    assertActionResult(requestedSubtask.body, "request_subtask", "wait");
     await assertSettled("wf-reviewer", requestSubtaskGrant, "request_subtask");
 
     // request_task (assignee -> epic acting manager)
@@ -785,6 +900,7 @@ async function pmRunSettlementSlice() {
       permissionScope: "Allow the assignee to retry the named deployment-host repository check after the reporter updates access.",
     });
     assert(activeFlagged.status === 200, `flag_blocker must succeed (got ${activeFlagged.status}: ${JSON.stringify(activeFlagged.body)})`);
+    assertActionResult(activeFlagged.body, "flag_blocker", "wait");
     await assertSettled("wf-assignee", activeBlockerGrant, "flag_blocker");
     assert((await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "flag_blocker must set alertReporter");
     const formalBlocker = await db.activityLog.findFirstOrThrow({
@@ -846,7 +962,8 @@ async function pmRunSettlementSlice() {
       comment: "dedicated deploy key now authenticates and git fetch succeeds",
     });
     assert(cleared.status === 200, `clear_blocker must succeed (got ${cleared.status}: ${JSON.stringify(cleared.body)})`);
-    await assertSettled("wf-assignee", clearBlockerGrant, "clear_blocker");
+    assertActionResult(cleared.body, "clear_blocker", "continue");
+    await assertContinued("wf-assignee", clearBlockerGrant, "clear_blocker");
     assert(!(await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "clear_blocker must clear alertReporter");
 
     const preservedBlockerGrant = await grantFor("wf-assignee");
@@ -871,7 +988,7 @@ async function pmRunSettlementSlice() {
       comment: "external decision arrived; repository alert still needs operator attention",
     });
     assert(preservedClear.status === 200, `clear_blocker with independent alert must succeed (got ${preservedClear.status}: ${JSON.stringify(preservedClear.body)})`);
-    await assertSettled("wf-assignee", preservedClearGrant, "clear_blocker");
+    await assertContinued("wf-assignee", preservedClearGrant, "clear_blocker");
     assert((await db.task.findUniqueOrThrow({ where: { id: task.id } })).alertReporter, "clear_blocker must preserve a newer independent true alert");
     await db.task.update({ where: { id: task.id }, data: { alertReporter: false } });
 
@@ -882,6 +999,7 @@ async function pmRunSettlementSlice() {
       comment: "requested extra scope blocks the approved plan",
     });
     assert(flagged.status === 200, `flag_extra_work_blocker must succeed (got ${flagged.status}: ${JSON.stringify(flagged.body)})`);
+    assertActionResult(flagged.body, "flag_extra_work_blocker", "wait");
     await assertSettled("wf-assignee", blockerGrant, "flag_extra_work_blocker");
 
     // Role violation: a reviewer calling add_subtask (implementation kind)

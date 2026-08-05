@@ -47,17 +47,18 @@ list, so adding an action without classifying it fails the suite.
 | WFI-001 | run-lifecycle | 2 | At most one genuinely active run per (task-or-epic, agent) lane. | **passes** |
 | WFI-002 | run-lifecycle | 2 | A non-terminal run must have renewed its lease within the TTL, or have been settled terminal. | red |
 | WFI-003 | run-lifecycle | 2 | An In Progress task must not rest its "work is happening" evidence on a lease-expired, never-superseded run. | red |
-| WFI-004 | turn-disposition | 1 | A continuation-required action must not be what settles a run as a successful terminal outcome. | red |
-| WFI-005 | turn-disposition | 3 | Every terminal run must carry an explicit disposition from the closed enum. | red |
+| WFI-004 | turn-disposition | 1 | A continuation-required action must not be what settles a run as a successful terminal outcome. | **passes** (ENV-118) |
+| WFI-005 | turn-disposition | 3 | Every terminal run must carry an explicit disposition from the closed enum. | **passes** (ENV-118) |
 | WFI-006 | turn-disposition | 3 | A run may not be complete with an empty final response and no workflow action standing in for it. | red |
 | WFI-007 | blocker | 6 | Every active formal blocker must name an external actor and a concrete actionable requirement, as structured data. | red |
 | WFI-008 | action-plan | 4 | An approved plan on an assigned task must yield a durable checklist from structured steps, never scraped Markdown. | red |
 
-WFI-001 already holds. Do not add a baseline entry for it.
+WFI-001 already holds. WFI-004 and WFI-005 were closed by ENV-118. Do not add
+baseline entries for any of the three.
 
 ## The expected-fail baseline
 
-Seven of the eight invariants are **red on purpose**. They describe the Epic's
+Five of the eight invariants are still **red on purpose**. They describe the Epic's
 target state, not today's. Rather than land a broken suite or water the
 invariants down, the known-violated set is recorded in
 `lib/workflow-invariants-baseline.json` and the suite is green while observed ==
@@ -81,27 +82,55 @@ That scenario uses the production writers wherever one exists
 hand-written strawman.
 
 Neither new script is wired into an aggregate test target; run them explicitly
-until the Epic closes.
+until the Epic closes. ENV-118 adds a third, `pnpm test:workflow-action-effect`,
+covering the effect classification and the continuation outbox end to end.
+
+## Action effects and the continuation outbox (ENV-118)
+
+ENV-116's binary classification is the spec; `lib/agents/workflow/action-effect.ts`
+is the runtime, and it **derives** its table from `WORKFLOW_ACTION_CLASS` so the
+two can never disagree. It adds one distinction the runtime needs:
+
+| Effect | Actions | What happens to the run |
+| --- | --- | --- |
+| `continue` | every `continuation-required` action | lease renewed, run and job left **unsettled**, a continuation armed |
+| `wait` | `flag_blocker`, `flag_extra_work_blocker`, `request_subtask`, `request_task` | settled `complete`, disposition `waiting_external` |
+| `finish` | every other `episode-terminal` action (task and epic routes) | settled `complete`, disposition `ready_for_review` or `completed` |
+
+Both terminal effects record `settledByAction`; `continue` deliberately does not,
+because nothing was settled.
+
+`PmChannelContinuation` is the outbox. The arm write shares the transaction with
+the run/job write, so a crash between "start task" and "queue the next turn"
+cannot lose the continuation. When the turn actually ends (`final`/`done`) with a
+row still `armed`, the run settles with disposition `continue` and the row becomes
+`queued`; `drainPmChannelContinuations` (run from the PM channel worker drain)
+turns it into a fresh execution turn. An episode-terminal action, a cancel, or a
+terminal failure supersedes it instead.
+
+The reply-time heuristic in `lib/agents/workflow/execution-continuation.ts` stands
+down whenever the outbox owns the turn, so the two paths cannot both enqueue and
+break WFI-001.
 
 ## Known derivation gaps
 
-Three snapshot fields have no column yet, and the live adapter is deliberately
-conservative about them. The gaps *are* the Epic work:
+`settledByAction` and `disposition` are real columns as of ENV-118 and are read
+directly; only rows written before that migration fall back to the old
+`ActivityLog` derivation. What is still guessed:
 
-- **`settledByAction`** is recoverable only for actions that write an
-  `ActivityLog` row carrying the action name (`task.move`, blocker raise/clear,
-  action-plan approval). `add_subtask`, `complete_subtask` and `remove_subtask`
-  settle a run with no durable trace at all, so they read back as `null` and
-  WFI-004 cannot see them. **Epic item 1 must persist the settling action on the
-  run** — that also widens WFI-004's live coverage.
 - **`finalResponseText`** is reconstructed from the reply/silent `ActivityLog`
   row PM writes per turn, then the referenced chat message or comment body.
-- **`disposition`** is recorded nowhere. Always `null`, which is why WFI-005 is
-  red by construction until **Epic item 3** lands.
-- **Checklist provenance** is not stored either. The only automated producer
-  today is the Markdown scraper in `lib/tasks/action-plan-subtasks.ts`, so a
-  populated checklist is classified `markdown-prose`. **Epic item 4** should
-  record structured plan steps and their provenance.
+  **Epic item 3** owns making the response itself durable.
+- **Checklist provenance** is not stored. The only automated producer today is
+  the Markdown scraper in `lib/tasks/action-plan-subtasks.ts`, so a populated
+  checklist is classified `markdown-prose`. **Epic item 4** should record
+  structured plan steps and their provenance.
+
+WFI-006 stays red, and ENV-118 gives it a second live shape to report: a run that
+ends with disposition `continue` and no durable reply. That is genuinely
+interrupted execution — the continuation makes it *recoverable*, not *complete* —
+so the invariant is right to flag it until **Epic item 3** requires a concrete
+completion response.
 
 ## Monitor usage
 

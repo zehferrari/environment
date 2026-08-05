@@ -14,7 +14,15 @@
     "must delete its baseline entry in the SAME commit that makes the invariant",
     "pass, so 'fixed' and 'recorded as fixed' can never drift apart.",
     "",
-    "WFI-001 has no entry — it already holds. Do not add one to silence it."
+    "WFI-001 has no entry — it already holds. Do not add one to silence it.",
+    "",
+    "WFI-004 and WFI-005 were removed by ENV-118: a continuation-required action",
+    "no longer settles the run, and every terminal write records an explicit",
+    "disposition on PmChannelRun. Do not re-add them.",
+    "",
+    "WFI-006 stays red. ENV-118 makes an interrupted turn recoverable (the",
+    "continuation outbox schedules a fresh execution turn) but it does not make",
+    "an empty response a concrete completion — that is Epic item 3."
   ],
   "entries": [
     {
@@ -28,18 +36,6 @@
       "epicItem": 2,
       "codes": { "WFI-003/stale-active-run-without-successor": 1 },
       "note": "An In Progress task still reads as 'being worked' off a stale accepted run that was never superseded."
-    },
-    {
-      "invariantId": "WFI-004",
-      "epicItem": 1,
-      "codes": { "WFI-004/continuation-action-settled-episode": 1 },
-      "note": "recordPmChannelRunWorkflowAction settles the run complete for every action, including continuation-required ones such as start."
-    },
-    {
-      "invariantId": "WFI-005",
-      "epicItem": 3,
-      "codes": { "WFI-005/missing-disposition": 2 },
-      "note": "No disposition is recorded anywhere, so every terminal run is missing one."
     },
     {
       "invariantId": "WFI-006",

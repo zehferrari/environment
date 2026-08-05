@@ -762,6 +762,19 @@ model PmChannelRun {
   // either — it lands here (plus a pm.channel.completion_anomaly ActivityLog).
   completionAnomaly   String?
   completionAnomalyAt DateTime?
+  // ENV-118. `disposition` is the explicit end-of-turn outcome from the closed
+  // enum in lib/workflow-invariants.ts (continue | waiting_external |
+  // ready_for_review | completed | failed); every terminal write records one.
+  // `settledByAction` names the workflow action that settled the run, and is
+  // written ONLY when a workflow action was the thing that settled it — a run
+  // ended by a stream event leaves it null. Together they replace the
+  // ActivityLog-scraping derivations the ENV-116 adapter had to guess with.
+  disposition         String?
+  settledByAction     String?
+  // The most recent workflow action recorded against this run, whatever its
+  // effect. A continuation-required action lands here without settling.
+  lastAction          String?
+  lastActionAt        DateTime?
   acceptedAt          DateTime?
   streamingAt         DateTime?
   completedAt         DateTime?
@@ -774,6 +787,7 @@ model PmChannelRun {
   jobs                PmChannelJob[]
   streamEvents        PmChannelStreamEvent[]
   contextGrants       ContextGrant[]
+  continuations       PmChannelContinuation[]
 
   @@index([agentSlug])
   @@index([messageId])
@@ -783,6 +797,50 @@ model PmChannelRun {
   @@index([epicId])
   @@index([status])
   @@index([lastEventAt])
+}
+
+// ENV-118 continuation outbox. A continuation-required workflow action (start,
+// add_subtask, complete_subtask, remove_subtask, clear_blocker,
+// publish_checkpoint) is a step INSIDE an execution episode, not the end of
+// one. Recording the intent to continue in the SAME transaction as the run/job
+// write is what makes it crash-safe: a process death between "start task" and
+// "queue the next turn" leaves an `armed` row the drain still honours, instead
+// of a task that PM believes is finished.
+//
+// armed      — a continue action happened; the turn is still running.
+// queued     — the turn ended without an episode-terminal action; drain it.
+// dispatched — a fresh execution turn was enqueued for the agent.
+// superseded — an episode-terminal action (or cancellation) closed the episode.
+// failed     — the drain could not enqueue a turn and gave up.
+model PmChannelContinuation {
+  id                  String       @id @default(cuid())
+  runId               String
+  run                 PmChannelRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  agentSlug           String
+  projectId           String?
+  taskId              String?
+  epicId              String?
+  // The source turn's message id: the turn whose episode must continue.
+  messageId           String
+  // The continuation-required action that armed this row.
+  action              String
+  status              String       @default("armed")
+  availableAt         DateTime     @default(now())
+  attempts            Int          @default(0)
+  lastError           String?
+  // Message id of the continuation turn the drain enqueued.
+  dispatchedMessageId String?
+  dispatchedAt        DateTime?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  // Idempotency: one row per (run, source turn, action). Re-running the same
+  // action inside one episode renews the row instead of queueing a second turn.
+  @@unique([runId, messageId, action])
+  @@index([status, availableAt])
+  @@index([agentSlug])
+  @@index([taskId])
+  @@index([runId])
 }
 
 // Durable PM-channel dispatch queue. Server actions enqueue one job per
