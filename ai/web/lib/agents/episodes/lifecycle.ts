@@ -43,6 +43,23 @@ export function episodeCycleBudget() {
   return intEnv("PM_EPISODE_MAX_CYCLES", EPISODE_CYCLE_BUDGET_DEFAULT, 1, 100);
 }
 
+/**
+ * The finer-grained budget the ENV-121 review asked for.
+ *
+ * Workflow actions are the COARSE server-observable unit: a turn that browses
+ * for an hour and calls `add_subtask` twice spends two cycles, which is not a
+ * bound on anything that matters. PM does, however, see every `tool:call`
+ * stream event the agent emits (lib/agents/pm-channel/stream-callback.ts), and
+ * a tool call is the unit that actually grows a turn's context. So the tool
+ * budget is the real boundary and the workflow-action budget is the backstop
+ * for turns that stream nothing.
+ */
+export const EPISODE_TOOL_CYCLE_BUDGET_DEFAULT = 60;
+
+export function episodeToolCycleBudget() {
+  return intEnv("PM_EPISODE_MAX_TOOL_CYCLES", EPISODE_TOOL_CYCLE_BUDGET_DEFAULT, 1, 5_000);
+}
+
 export const EPISODE_STATUS = {
   open: "open",
   closed: "closed",
@@ -50,9 +67,21 @@ export const EPISODE_STATUS = {
 
 export const EPISODE_CLOSE_REASON = {
   budgetExhausted: "cycle_budget_exhausted",
+  toolBudgetExhausted: "tool_cycle_budget_exhausted",
   terminalAction: "episode_terminal_action",
   superseded: "superseded",
 } as const;
+
+/**
+ * What an exhausted PM turn is still allowed to do.
+ *
+ *   checkpoint_only — the message spent its episode. It may write exactly one
+ *                     final structured checkpoint onto the CLOSED episode and
+ *                     nothing else.
+ *   consumed        — it already wrote that checkpoint. Every further action
+ *                     from this message is rejected.
+ */
+export type EpisodeBarrierState = "checkpoint_only" | "consumed";
 
 /**
  * The structured checkpoint the task description specifies. Every field is
@@ -74,6 +103,10 @@ export interface TaskExecutionEpisodeSummary {
   status: string;
   cycleCount: number;
   cycleBudget: number;
+  toolCycleCount: number;
+  toolCycleBudget: number;
+  exhaustedByMessageId: string | null;
+  barrierReleasedAt: Date | null;
   sessionKey: string | null;
   messageId: string | null;
   runId: string | null;
@@ -158,6 +191,10 @@ export function summarizeEpisode(row: {
   status: string;
   cycleCount: number;
   cycleBudget: number;
+  toolCycleCount: number;
+  toolCycleBudget: number;
+  exhaustedByMessageId: string | null;
+  barrierReleasedAt: Date | null;
   sessionKey: string | null;
   messageId: string | null;
   runId: string | null;
@@ -178,6 +215,10 @@ export function summarizeEpisode(row: {
     status: row.status,
     cycleCount: row.cycleCount,
     cycleBudget: row.cycleBudget,
+    toolCycleCount: row.toolCycleCount,
+    toolCycleBudget: row.toolCycleBudget,
+    exhaustedByMessageId: row.exhaustedByMessageId,
+    barrierReleasedAt: row.barrierReleasedAt,
     sessionKey: row.sessionKey,
     messageId: row.messageId,
     runId: row.runId,
@@ -202,6 +243,10 @@ const EPISODE_SELECT = {
   status: true,
   cycleCount: true,
   cycleBudget: true,
+  toolCycleCount: true,
+  toolCycleBudget: true,
+  exhaustedByMessageId: true,
+  barrierReleasedAt: true,
   sessionKey: true,
   messageId: true,
   runId: true,
@@ -257,6 +302,7 @@ export async function openTaskExecutionEpisode(
     messageId?: string | null;
     runId?: string | null;
     cycleBudget?: number;
+    toolCycleBudget?: number;
   },
 ) {
   const row = await tx.taskExecutionEpisode.create({
@@ -269,6 +315,7 @@ export async function openTaskExecutionEpisode(
       messageId: args.messageId ?? null,
       runId: args.runId ?? null,
       cycleBudget: args.cycleBudget ?? episodeCycleBudget(),
+      toolCycleBudget: args.toolCycleBudget ?? episodeToolCycleBudget(),
       status: EPISODE_STATUS.open,
     },
     select: EPISODE_SELECT,
@@ -282,6 +329,13 @@ export async function closeTaskExecutionEpisode(
     episodeId: string;
     closeReason: string;
     checkpoint?: EpisodeCheckpoint | null;
+    /**
+     * The PM turn that spent this episode's budget. Recording it RAISES THE
+     * BARRIER: that message is fenced out of the successor episode and may
+     * only write one final checkpoint. Leave unset for a terminal close, where
+     * the turn ended on its own terms and there is nothing to fence.
+     */
+    exhaustedByMessageId?: string | null;
   },
 ) {
   const now = new Date();
@@ -289,6 +343,7 @@ export async function closeTaskExecutionEpisode(
     where: { id: args.episodeId },
     data: {
       ...checkpointUpdateData(args.checkpoint),
+      ...(args.exhaustedByMessageId ? { exhaustedByMessageId: args.exhaustedByMessageId } : {}),
       status: EPISODE_STATUS.closed,
       closeReason: args.closeReason,
       closedAt: now,
@@ -296,6 +351,42 @@ export async function closeTaskExecutionEpisode(
     select: EPISODE_SELECT,
   });
   return summarizeEpisode(row);
+}
+
+/**
+ * Close the exhausted episode and open its successor in ONE transaction.
+ *
+ * Shared by both budgets so the workflow-action path and the tool-call path
+ * cannot drift: either both fence the spending message or neither does.
+ */
+async function rollOverExhaustedEpisode(
+  tx: Prisma.TransactionClient,
+  args: {
+    episode: TaskExecutionEpisodeSummary;
+    taskId: string;
+    projectId?: string | null;
+    agentSlug: string;
+    closeReason: string;
+    exhaustedByMessageId?: string | null;
+  },
+) {
+  const closed = await closeTaskExecutionEpisode(tx, {
+    episodeId: args.episode.id,
+    closeReason: args.closeReason,
+    exhaustedByMessageId: args.exhaustedByMessageId ?? args.episode.messageId ?? null,
+  });
+  // The successor deliberately inherits NOTHING that identifies a session: no
+  // sessionKey, no messageId. The dispatcher reads that emptiness as "this
+  // episode has never been carried by a session" and hands it a fresh one with
+  // a full prompt rather than an incremental one (see notifications/task.ts).
+  const nextEpisode = await openTaskExecutionEpisode(tx, {
+    taskId: args.taskId,
+    projectId: args.projectId ?? null,
+    agentSlug: args.agentSlug,
+    cycleBudget: args.episode.cycleBudget,
+    toolCycleBudget: args.episode.toolCycleBudget || episodeToolCycleBudget(),
+  });
+  return { closed, nextEpisode };
 }
 
 export interface EpisodeCycleOutcome {
@@ -367,18 +458,127 @@ export async function recordTaskExecutionEpisodeCycle(
 
   // Budget spent. Close with the checkpoint we now hold and open the successor
   // in the SAME transaction, so a retry can never observe a task whose agent
-  // has no open episode.
-  const closed = await closeTaskExecutionEpisode(tx, {
-    episodeId: counted.id,
-    closeReason: EPISODE_CLOSE_REASON.budgetExhausted,
-  });
-  const nextEpisode = await openTaskExecutionEpisode(tx, {
+  // has no open episode. `exhaustedByMessageId` raises the barrier against the
+  // turn that spent it — without that, this very message would just keep
+  // calling actions and PM would count them against the successor.
+  const { closed, nextEpisode } = await rollOverExhaustedEpisode(tx, {
+    episode: counted,
     taskId: args.taskId,
     projectId: args.projectId ?? null,
     agentSlug: args.agentSlug,
-    cycleBudget: counted.cycleBudget,
+    closeReason: EPISODE_CLOSE_REASON.budgetExhausted,
+    exhaustedByMessageId: args.messageId ?? null,
   });
   return { episode: closed, rolledOver: true, nextEpisode };
+}
+
+/**
+ * Count one PM-VISIBLE TOOL CALL against the agent's open episode.
+ *
+ * Called from the stream callback, which is where PM actually observes the
+ * agent working. Unlike a workflow action this has no domain mutation to be
+ * atomic with, so it runs in its own transaction; losing one tool cycle to a
+ * crash costs a little budget accuracy and nothing else.
+ *
+ * Returns null when there is no open episode (an epic turn, a plan turn, a
+ * task nobody is executing) — those have no budget to spend.
+ */
+export async function recordTaskExecutionToolCycle(args: {
+  taskId: string;
+  projectId?: string | null;
+  agentSlug: string;
+  messageId?: string | null;
+}): Promise<EpisodeCycleOutcome | null> {
+  return db.$transaction(async (tx) => {
+    const existing = await openEpisodeRow(tx, args);
+    if (!existing) return null;
+    const episode = summarizeEpisode(existing);
+    // A legacy row written before this column existed has budget 0. Treat that
+    // as "no tool budget configured" rather than "instantly exhausted".
+    if (episode.toolCycleBudget <= 0) return null;
+
+    const updated = summarizeEpisode(
+      await tx.taskExecutionEpisode.update({
+        where: { id: episode.id },
+        data: { toolCycleCount: { increment: 1 } },
+        select: EPISODE_SELECT,
+      }),
+    );
+    if (updated.toolCycleCount < updated.toolCycleBudget) {
+      return { episode: updated, rolledOver: false, nextEpisode: null };
+    }
+
+    const { closed, nextEpisode } = await rollOverExhaustedEpisode(tx, {
+      episode: updated,
+      taskId: args.taskId,
+      projectId: args.projectId ?? null,
+      agentSlug: args.agentSlug,
+      closeReason: EPISODE_CLOSE_REASON.toolBudgetExhausted,
+      exhaustedByMessageId: args.messageId ?? updated.messageId ?? null,
+    });
+    return { episode: closed, rolledOver: true, nextEpisode };
+  });
+}
+
+export interface EpisodeRolloverBarrier {
+  /** The CLOSED episode this message exhausted. */
+  episode: TaskExecutionEpisodeSummary;
+  state: EpisodeBarrierState;
+}
+
+/**
+ * Is this PM turn fenced out of the task?
+ *
+ * A message that exhausted an episode budget is done making progress: PM has
+ * already opened its successor and will dispatch it in a fresh session. The
+ * message gets exactly one more server-accepted act — its final structured
+ * checkpoint — and after that nothing at all.
+ *
+ * This is the property the ENV-121 review found missing. Without it the
+ * "episode boundary" was advisory: the prompt asked the agent to stop, the
+ * server let it carry on, and a single stable conversation could span
+ * arbitrarily many nominal episodes.
+ */
+export async function resolveEpisodeRolloverBarrier(args: {
+  taskId: string;
+  agentSlug: string;
+  messageId: string;
+}): Promise<EpisodeRolloverBarrier | null> {
+  const row = await db.taskExecutionEpisode.findFirst({
+    where: {
+      taskId: args.taskId,
+      agentSlug: args.agentSlug,
+      exhaustedByMessageId: args.messageId,
+    },
+    orderBy: { episodeNo: "desc" },
+    select: EPISODE_SELECT,
+  });
+  if (!row) return null;
+  const episode = summarizeEpisode(row);
+  return {
+    episode,
+    state: episode.barrierReleasedAt ? "consumed" : "checkpoint_only",
+  };
+}
+
+/**
+ * Write the fenced message's final checkpoint onto the episode it exhausted —
+ * NOT onto the successor, which belongs to a session that has not run yet —
+ * and consume the barrier so the message cannot act again.
+ */
+export async function releaseEpisodeRolloverBarrier(
+  tx: Prisma.TransactionClient,
+  args: { episodeId: string; checkpoint: EpisodeCheckpoint },
+) {
+  const row = await tx.taskExecutionEpisode.update({
+    where: { id: args.episodeId },
+    data: {
+      ...checkpointUpdateData(args.checkpoint),
+      barrierReleasedAt: new Date(),
+    },
+    select: EPISODE_SELECT,
+  });
+  return summarizeEpisode(row);
 }
 
 /**
@@ -459,7 +659,7 @@ export async function hasTaskExecutionCheckpoint(args: {
 
 export function renderEpisodeCheckpoint(episode: TaskExecutionEpisodeSummary): string[] {
   const lines = [
-    `Episode ${episode.episodeNo} (${episode.status}, ${episode.cycleCount}/${episode.cycleBudget} cycles${episode.closeReason ? `, closed: ${episode.closeReason}` : ""})`,
+    `Episode ${episode.episodeNo} (${episode.status}, ${episode.cycleCount}/${episode.cycleBudget} workflow cycles, ${episode.toolCycleCount}/${episode.toolCycleBudget} tool cycles${episode.closeReason ? `, closed: ${episode.closeReason}` : ""})`,
   ];
   const section = (label: string, items: string[]) => {
     if (items.length === 0) return;

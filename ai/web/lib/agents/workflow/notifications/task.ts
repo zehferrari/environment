@@ -533,7 +533,16 @@ export async function sendTaskWorkflowNotification(args: {
   // Only a turn that RESUMES an already-open episode may use the incremental
   // prompt: a new episode runs in a session that has never seen the previous
   // turn, so claiming continuity with it would be a lie.
-  const resumesOpenEpisode = Boolean(previousEpisode && previousEpisode.status === "open");
+  //
+  // ENV-121 (review): "open" alone is not enough. A rollover opens the
+  // successor immediately, so the newest episode is open the instant the
+  // previous one is exhausted — and dispatching it as a resume pointed a
+  // brand-new session at a message it had never seen. An episode has only
+  // really been carried once a dispatch recorded the session that carried it,
+  // which is exactly what `sessionKey` means here.
+  const resumesOpenEpisode = Boolean(
+    previousEpisode && previousEpisode.status === "open" && previousEpisode.sessionKey,
+  );
   const previousExecutionMessageId =
     stableExecutionSession && (!executionEpisodeTurn || resumesOpenEpisode)
       ? sessionBinding.lastDispatchedMessageId

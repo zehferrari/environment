@@ -170,6 +170,14 @@ export interface WorkflowActionEpisodeProgress {
   cycleCount: number;
   cycleBudget: number;
   cyclesRemaining: number;
+  /**
+   * The finer PM-visible unit: `tool:call` stream events observed during this
+   * episode. Workflow actions are the coarse backstop; this is the budget a
+   * tool-heavy turn actually spends.
+   */
+  toolCycleCount: number;
+  toolCycleBudget: number;
+  toolCyclesRemaining: number;
   /** True when this action exhausted the budget and PM rolled the episode over. */
   rolledOver: boolean;
   /** The successor episode number, when a rollover happened. */

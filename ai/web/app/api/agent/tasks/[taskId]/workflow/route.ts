@@ -51,6 +51,8 @@ import { hasNewerIndependentTaskAlert } from "@/lib/tasks/checkpoint-blocker";
 import {
   EPISODE_CLOSE_REASON,
   latestTaskExecutionCheckpoint,
+  releaseEpisodeRolloverBarrier,
+  resolveEpisodeRolloverBarrier,
   taskExecutionEpisodeHistory,
   type EpisodeCheckpoint,
 } from "@/lib/agents/episodes/lifecycle";
@@ -315,6 +317,91 @@ async function handleTaskWorkflowAction(
   const isReviewer = reviewerId === agent.user.id;
   const canSetDone = doneOwnerId === agent.user.id;
   const isAssignee = task.assigneeId === agent.user.id;
+
+  // ENV-121 (review) — THE ROLLOVER BARRIER.
+  //
+  // Opening episode N+1 when a budget ran out is only half a boundary. The
+  // message that spent the budget was still live, and every action it kept
+  // making was accepted and counted against the successor — so one stable
+  // conversation could span arbitrarily many nominal episodes while the
+  // "fresh session per episode" property quietly did not hold.
+  //
+  // The fence is server-side and sits ahead of every action branch: an
+  // exhausted message may write exactly ONE final structured checkpoint, onto
+  // the episode it exhausted, and is then done. PM dispatches the successor in
+  // a fresh session briefed from that checkpoint.
+  const rolloverBarrier = await resolveEpisodeRolloverBarrier({
+    taskId: task.id,
+    agentSlug: agent.slug,
+    messageId,
+  });
+  if (rolloverBarrier) {
+    const barrierEpisode = {
+      episodeNo: rolloverBarrier.episode.episodeNo,
+      cycleCount: rolloverBarrier.episode.cycleCount,
+      cycleBudget: rolloverBarrier.episode.cycleBudget,
+      toolCycleCount: rolloverBarrier.episode.toolCycleCount,
+      toolCycleBudget: rolloverBarrier.episode.toolCycleBudget,
+      closeReason: rolloverBarrier.episode.closeReason,
+    };
+    if (action !== "checkpoint" || rolloverBarrier.state === "consumed") {
+      return NextResponse.json({
+        error: rolloverBarrier.state === "consumed"
+          ? "This execution episode is closed and its final checkpoint is already recorded. Stop this turn now — PM has already dispatched the next episode in a fresh session. Nothing you send from this turn will be applied."
+          : `This execution episode is closed (${rolloverBarrier.episode.closeReason}). The only action still accepted from this turn is action=checkpoint. Record completedWork, evidence, openChecklist, nextAction and risks, then stop — PM dispatches the next episode in a fresh session briefed from that checkpoint.`,
+        episodeBudgetExhausted: true,
+        episodeClosed: true,
+        episode: barrierEpisode,
+      }, { status: 409 });
+    }
+
+    // The one act still permitted. It is written onto the CLOSED episode, not
+    // the successor: the successor belongs to a session that has not run yet,
+    // and crediting this turn's state to it would be the same lie the barrier
+    // exists to prevent.
+    if (!isAssignee) {
+      return NextResponse.json({ error: "Only the assignee can checkpoint execution state" }, { status: 403 });
+    }
+    const finalCheckpoint = {
+      completedWork: payload.completedWork,
+      evidence: payload.evidence,
+      openChecklist: payload.openChecklist,
+      nextAction: payload.nextAction,
+      risks: payload.risks,
+    } as EpisodeCheckpoint;
+    if (
+      finalCheckpoint.completedWork === undefined &&
+      finalCheckpoint.evidence === undefined &&
+      finalCheckpoint.openChecklist === undefined &&
+      finalCheckpoint.nextAction === undefined &&
+      finalCheckpoint.risks === undefined
+    ) {
+      return NextResponse.json({
+        error: "checkpoint requires at least one of completedWork, evidence, openChecklist, nextAction, risks.",
+      }, { status: 400 });
+    }
+    const released = await db.$transaction((tx) =>
+      releaseEpisodeRolloverBarrier(tx, {
+        episodeId: rolloverBarrier.episode.id,
+        checkpoint: finalCheckpoint,
+      }),
+    );
+    return NextResponse.json({
+      ok: true,
+      taskId: task.id,
+      episodeNo: released.episodeNo,
+      cycleCount: released.cycleCount,
+      cycleBudget: released.cycleBudget,
+      checkpoint: released.checkpoint,
+      // Read by the POST decorator: this response already carries the terminal
+      // episode instruction, so it must not be re-decorated with the generic
+      // "record a checkpoint and stop" one.
+      episodeClosed: true,
+      episodeBudgetExhausted: true,
+      instruction:
+        "Final checkpoint recorded and this episode is closed. Stop this turn now — PM dispatches the next episode in a fresh session briefed from it. No further action from this turn will be accepted.",
+    });
+  }
 
   if (action === "start") {
     if (!isAssignee) return NextResponse.json({ error: "Only the assignee can start this task" }, { status: 403 });
@@ -1942,7 +2029,12 @@ export async function POST(
   // episode actually landed. A rollover leaves the successor at cycleCount 0
   // with its predecessor closed as budget-exhausted, which is exactly the
   // signal the brief's EPISODE RULES tell the agent to watch for.
-  if (captured.taskId && captured.agentSlug) {
+  //
+  // A barrier-release response (the fenced turn's final checkpoint) already
+  // carries its own terminal episode state and instruction. Re-deriving it
+  // from history here would report the untouched successor and tell an agent
+  // that just checkpointed to checkpoint again.
+  if (captured.taskId && captured.agentSlug && body.episodeClosed !== true) {
     const [newest, previous] = await taskExecutionEpisodeHistory({
       taskId: captured.taskId,
       agentSlug: captured.agentSlug,
@@ -1954,9 +2046,13 @@ export async function POST(
         cycleCount: newest.cycleCount,
         cycleBudget: newest.cycleBudget,
         cyclesRemaining: Math.max(0, newest.cycleBudget - newest.cycleCount),
+        toolCycleCount: newest.toolCycleCount,
+        toolCycleBudget: newest.toolCycleBudget,
+        toolCyclesRemaining: Math.max(0, newest.toolCycleBudget - newest.toolCycleCount),
         rolledOver:
           newest.cycleCount === 0 &&
-          previous?.closeReason === EPISODE_CLOSE_REASON.budgetExhausted,
+          (previous?.closeReason === EPISODE_CLOSE_REASON.budgetExhausted ||
+            previous?.closeReason === EPISODE_CLOSE_REASON.toolBudgetExhausted),
         nextEpisodeNo: null,
       };
     }

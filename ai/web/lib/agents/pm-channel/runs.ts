@@ -660,6 +660,9 @@ async function applyWorkflowActionEpisode(
     cycleCount: outcome.episode.cycleCount,
     cycleBudget: outcome.episode.cycleBudget,
     cyclesRemaining: Math.max(0, outcome.episode.cycleBudget - outcome.episode.cycleCount),
+    toolCycleCount: outcome.episode.toolCycleCount,
+    toolCycleBudget: outcome.episode.toolCycleBudget,
+    toolCyclesRemaining: Math.max(0, outcome.episode.toolCycleBudget - outcome.episode.toolCycleCount),
     rolledOver: outcome.rolledOver,
     nextEpisodeNo: outcome.nextEpisode?.episodeNo ?? null,
   };

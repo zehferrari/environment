@@ -534,6 +534,16 @@ model TaskExecutionEpisode {
   // exhaust (or revive) an episode that is already running.
   cycleCount   Int      @default(0) @map("cycle_count")
   cycleBudget  Int      @map("cycle_budget")
+  // Finer-grained observable budget: PM-visible `tool:call` stream events seen
+  // while this episode was open. Workflow actions are the coarse unit; tool
+  // calls are the unit that actually grows a turn's context.
+  toolCycleCount  Int   @default(0) @map("tool_cycle_count")
+  toolCycleBudget Int   @default(0) @map("tool_cycle_budget")
+  // The rollover barrier. When a budget is exhausted PM records WHICH PM turn
+  // spent it; that message is then fenced out of the successor episode and may
+  // only write one final checkpoint, which sets `barrierReleasedAt`.
+  exhaustedByMessageId String?   @map("exhausted_by_message_id")
+  barrierReleasedAt    DateTime? @map("barrier_released_at")
   // open | closed
   status       String   @default("open")
   // Structured checkpoint. JSON-encoded string arrays, kept as TEXT because
@@ -555,6 +565,7 @@ model TaskExecutionEpisode {
   @@index([taskId, status])
   @@index([agentSlug])
   @@index([runId])
+  @@index([exhaustedByMessageId])
   @@map("task_execution_episodes")
 }
 

@@ -14,6 +14,13 @@
 //   B6 the continuation brief carries the checkpoint, stays under the brief
 //      budget, and its size is FLAT in the number of comments on the task —
 //      the property that distinguishes "bounded" from "merely smaller"
+//   B7 the DISPATCHER wiring: brief for continuations, full packet on first
+//      contact, one episode per execution turn
+//   B8 the rollover BARRIER, driven through the real route: an exhausted
+//      message mutates nothing and counts nothing against its successor, and
+//      gets exactly one final checkpoint
+//   B9 the successor is dispatched in a DIFFERENT session and briefed from
+//      that checkpoint rather than told to resume a transcript it never saw
 //
 // Never touches the live pm.db: DATABASE_URL is repointed at a temp file
 // before any lib import, per the scripts/workflow-action-effect-test.ts
@@ -407,6 +414,218 @@ async function sectionB(): Promise<void> {
       await db.taskExecutionEpisode.count({ where: { taskId: freshTask.id, status: "open" } }),
       1,
       "B7: dispatching an execution turn opens exactly one episode",
+    );
+
+    // ------------------------------------------------------------------
+    // B8/B9 — the rollover BARRIER (ENV-121 review).
+    //
+    // Opening episode N+1 is not a boundary on its own. The turn that spent
+    // the budget was still live and every action it kept making was accepted
+    // and counted against the successor, so one stable conversation could span
+    // arbitrarily many nominal episodes. These cases drive the real route and
+    // prove the exhausted message cannot mutate or bank work into its
+    // successor, and that the successor is dispatched in a DIFFERENT session.
+    // ------------------------------------------------------------------
+    const { runRouteHandler } = await import("./lib/next-route-harness");
+    const { NextRequest } = await import("next/server");
+    const { POST: taskWorkflowPost } = await import(
+      "@/app/api/agent/tasks/[taskId]/workflow/route"
+    );
+    const { createTaskWorkflowToken } = await import("@/lib/agents/workflow/token/task");
+
+    const barrierProject = await db.project.create({
+      data: { slug: "episodes-barrier", name: "Episodes Barrier" },
+    });
+    const barrierTask = await db.task.create({
+      data: {
+        projectId: barrierProject.id,
+        title: "Barrier task",
+        status: "In Progress",
+        assigneeId: agentUser.id,
+        actingManagerId: owner.id,
+        reporterId: owner.id,
+        approvedOn: new Date(),
+        description: "Fence the exhausted turn.",
+      },
+    });
+
+    // The first dispatch opens episode 1 and records the session that carries
+    // it. That message id is the turn we are going to exhaust.
+    const barrierTurn = await sendTaskWorkflowNotification({
+      taskId: barrierTask.id,
+      targetUserId: agentUser.id,
+      actor: { id: owner.id, kind: "human", username: "episode-owner" },
+      reason: "monitor_recovery",
+      body: "Continue the implementation.",
+    });
+    assert(barrierTurn, "B8: the dispatcher produced the first barrier turn");
+    const exhaustedMessageId = barrierTurn!.messageId;
+    const episodeOneSessionKey = (
+      await db.taskExecutionEpisode.findFirstOrThrow({
+        where: { taskId: barrierTask.id, agentSlug: AGENT_SLUG, episodeNo: 1 },
+        select: { sessionKey: true },
+      })
+    ).sessionKey;
+    assert(episodeOneSessionKey, "B8: episode 1 records the session that carried it");
+
+    const callWorkflow = async (action: string, extra: Record<string, unknown> = {}) => {
+      const req = new NextRequest(
+        `http://127.0.0.1/api/agent/tasks/${barrierTask.id}/workflow`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messageId: exhaustedMessageId,
+            token: createTaskWorkflowToken(exhaustedMessageId, barrierTask.id, AGENT_SLUG),
+            action,
+            ...extra,
+          }),
+        },
+      );
+      const res = await runRouteHandler(() =>
+        taskWorkflowPost(req, { params: Promise.resolve({ taskId: barrierTask.id }) }),
+      );
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    };
+
+    // Spend the budget (PM_EPISODE_MAX_CYCLES = 3) from ONE message.
+    for (let i = 1; i <= 2; i += 1) {
+      const step = await callWorkflow("add_subtask", { subtaskText: `barrier step ${i}` });
+      assertEqual(step.status, 200, `B8: cycle ${i} is accepted`);
+    }
+    const exhaustingCall = await callWorkflow("add_subtask", { subtaskText: "barrier step 3" });
+    assertEqual(exhaustingCall.status, 200, "B8: the exhausting action itself still succeeds");
+    assertEqual(
+      exhaustingCall.body.episodeBudgetExhausted,
+      true,
+      "B8: the response tells the agent its episode is spent",
+    );
+    const subtasksAtBarrier = await db.subTask.count({ where: { taskId: barrierTask.id } });
+    assertEqual(subtasksAtBarrier, 3, "B8: three cycles produced three subtasks");
+    assertEqual(
+      (
+        await db.taskExecutionEpisode.findFirstOrThrow({
+          where: { taskId: barrierTask.id, episodeNo: 1 },
+          select: { exhaustedByMessageId: true },
+        })
+      ).exhaustedByMessageId,
+      exhaustedMessageId,
+      "B8: the closed episode records WHICH message spent it — that is the fence",
+    );
+
+    // THE REVIEW FINDING. The same message keeps going. Every progress action
+    // must now be rejected, mutate nothing, and count nothing.
+    const afterBarrier = await callWorkflow("add_subtask", { subtaskText: "smuggled step 4" });
+    assertEqual(afterBarrier.status, 409, "B8: a progress action from the exhausted turn is rejected");
+    assertEqual(
+      await db.subTask.count({ where: { taskId: barrierTask.id } }),
+      subtasksAtBarrier,
+      "B8: the rejected action mutated nothing",
+    );
+    const successorAfterReject = await db.taskExecutionEpisode.findFirstOrThrow({
+      where: { taskId: barrierTask.id, episodeNo: 2 },
+      select: { cycleCount: true, sessionKey: true, messageId: true },
+    });
+    assertEqual(
+      successorAfterReject.cycleCount,
+      0,
+      "B8: the exhausted message cannot count work against its successor",
+    );
+    assertEqual(
+      successorAfterReject.sessionKey,
+      null,
+      "B8: the successor is not yet bound to any session — it has not been dispatched",
+    );
+
+    // A terminal action is progress too: an exhausted turn does not get to
+    // hand the task to a reviewer. The successor episode reports that.
+    const terminalAfterBarrier = await callWorkflow("ready_for_review", { repoTouched: false });
+    assertEqual(terminalAfterBarrier.status, 409, "B8: even a terminal action is fenced");
+    assertEqual(
+      (
+        await db.task.findUniqueOrThrow({
+          where: { id: barrierTask.id },
+          select: { status: true },
+        })
+      ).status,
+      "In Progress",
+      "B8: the fenced terminal action did not move the task",
+    );
+
+    // The ONE act still permitted: the final structured checkpoint. It lands
+    // on the CLOSED episode, not the successor.
+    const finalCheckpoint = await callWorkflow("checkpoint", {
+      nextAction: "resume the migration in the next episode",
+      openChecklist: ["finish the migration"],
+    });
+    assertEqual(finalCheckpoint.status, 200, "B8: the final checkpoint is accepted");
+    assertEqual(finalCheckpoint.body.episodeNo, 1, "B8: it lands on the episode that was exhausted");
+    assertEqual(
+      finalCheckpoint.body.episodeClosed,
+      true,
+      "B8: the response says the episode is closed rather than asking for another checkpoint",
+    );
+    const closedEpisodeOne = await db.taskExecutionEpisode.findFirstOrThrow({
+      where: { taskId: barrierTask.id, episodeNo: 1 },
+      select: { nextAction: true, barrierReleasedAt: true },
+    });
+    assertEqual(
+      closedEpisodeOne.nextAction,
+      "resume the migration in the next episode",
+      "B8: the fenced turn's own words are what the successor will be briefed from",
+    );
+    assert(closedEpisodeOne.barrierReleasedAt, "B8: writing the final checkpoint consumes the barrier");
+    assertEqual(
+      (
+        await db.taskExecutionEpisode.findFirstOrThrow({
+          where: { taskId: barrierTask.id, episodeNo: 2 },
+          select: { cycleCount: true },
+        })
+      ).cycleCount,
+      0,
+      "B8: the final checkpoint spends nothing from the successor either",
+    );
+
+    // "Only the FINAL checkpoint": a second one is rejected too.
+    const secondCheckpoint = await callWorkflow("checkpoint", { nextAction: "and again" });
+    assertEqual(secondCheckpoint.status, 409, "B8: the barrier is single-use");
+
+    // B9 — the successor runs in a DIFFERENT session, briefed rather than
+    // resumed. Resuming would point a brand-new model session at a transcript
+    // it has never seen.
+    const successorTurn = await sendTaskWorkflowNotification({
+      taskId: barrierTask.id,
+      targetUserId: agentUser.id,
+      actor: { id: owner.id, kind: "human", username: "episode-owner" },
+      reason: "monitor_recovery",
+      body: "Continue the implementation.",
+    });
+    assert(successorTurn, "B9: the successor episode was dispatched");
+    const successorPayload = await dispatchedPrompt(successorTurn!.messageId);
+    const successorEpisode = await db.taskExecutionEpisode.findFirstOrThrow({
+      where: { taskId: barrierTask.id, episodeNo: 2 },
+      select: { sessionKey: true },
+    });
+    assertEqual(
+      successorPayload.sessionKey,
+      successorEpisode.sessionKey,
+      "B9: the dispatched session is the one recorded on the successor episode",
+    );
+    assert(
+      successorPayload.sessionKey && successorPayload.sessionKey !== episodeOneSessionKey,
+      `B9: the successor session key differs from the exhausted episode's (${successorPayload.sessionKey} vs ${episodeOneSessionKey})`,
+    );
+    assert(
+      !successorPayload.systemPrompt?.includes("Incremental PM follow-up"),
+      "B9: a fresh episode session is never told to continue from a baseline it has never seen",
+    );
+    assert(
+      successorPayload.systemPrompt?.includes("EXECUTION EPISODE BRIEF"),
+      "B9: the successor is briefed from the checkpoint",
+    );
+    assert(
+      successorPayload.systemPrompt?.includes("resume the migration in the next episode"),
+      "B9: the brief carries the fenced turn's final next action",
     );
   } finally {
     await rm(sandbox, { recursive: true, force: true });

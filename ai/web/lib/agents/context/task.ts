@@ -1180,7 +1180,8 @@ export async function buildTaskEpisodeBrief(args: {
     "EPISODE RULES:",
     "Work the open checklist from the checkpoint's next exact action. Do not re-derive the plan and do not redo work the checkpoint already records as complete.",
     "Tick each checklist item with action=complete_subtask the moment it lands; PM counts those as episode cycles.",
-    "When PM answers a workflow action with episodeBudgetExhausted, record your checkpoint (action=checkpoint) and stop — PM will dispatch the next episode with a fresh session.",
+    "This episode has two budgets, both counted server-side: workflow actions (cycleCount/cycleBudget) and PM-observed tool calls (toolCycleCount/toolCycleBudget). Every workflow response reports both.",
+    "When PM answers with episodeBudgetExhausted, this episode is CLOSED and enforced closed: the only action PM will still accept from this turn is action=checkpoint. Record completedWork, evidence, openChecklist, nextAction and risks, then stop. Every other action returns 409 and changes nothing — PM dispatches the next episode with a fresh session briefed from your checkpoint.",
     "Finish through ready_for_review, or record one precise external dependency with flag_blocker. Do not stop at a progress comment.",
     `If this turn requires no visible contribution, reply exactly ${PM_SILENT_REPLY_TOKEN} and nothing else.`,
   );

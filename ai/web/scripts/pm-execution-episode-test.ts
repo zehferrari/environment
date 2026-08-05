@@ -32,7 +32,9 @@ import {
   checkpointUpdateData,
   EPISODE_CLOSE_REASON,
   EPISODE_CYCLE_BUDGET_DEFAULT,
+  EPISODE_TOOL_CYCLE_BUDGET_DEFAULT,
   episodeCycleBudget,
+  episodeToolCycleBudget,
   renderEpisodeCheckpoint,
   summarizeEpisode,
   type TaskExecutionEpisodeSummary,
@@ -192,6 +194,10 @@ function comment(n: number, body: string): TimelineItemForBudget {
     status: "closed",
     cycleCount: 6,
     cycleBudget: 6,
+    toolCycleCount: 60,
+    toolCycleBudget: 60,
+    exhaustedByMessageId: "m1",
+    barrierReleasedAt: null,
     sessionKey: "task:t1:ep3",
     messageId: "m1",
     runId: "run-1",
@@ -214,7 +220,10 @@ function comment(n: number, body: string): TimelineItemForBudget {
   assert.equal(summary.checkpoint.nextAction, "extend pm-unified-context-test");
 
   const rendered = renderEpisodeCheckpoint(summary).join("\n");
-  assert.match(rendered, /Episode 3 \(closed, 6\/6 cycles, closed: cycle_budget_exhausted\)/);
+  assert.match(
+    rendered,
+    /Episode 3 \(closed, 6\/6 workflow cycles, 60\/60 tool cycles, closed: cycle_budget_exhausted\)/,
+  );
   assert.match(rendered, /Next exact action: extend pm-unified-context-test/);
   assert.match(rendered, /Completed work:/);
   assert(!rendered.includes("Evidence / artifacts:"), "an empty checkpoint section is omitted, not rendered blank");
@@ -257,6 +266,33 @@ function comment(n: number, body: string): TimelineItemForBudget {
     if (before === undefined) delete process.env.PM_EPISODE_MAX_CYCLES;
     else process.env.PM_EPISODE_MAX_CYCLES = before;
   }
+}
+
+// ------------------------------------------------------------------
+// 6. The tool-cycle budget — the finer PM-visible unit (ENV-121 review)
+// ------------------------------------------------------------------
+{
+  const before = process.env.PM_EPISODE_MAX_TOOL_CYCLES;
+  try {
+    delete process.env.PM_EPISODE_MAX_TOOL_CYCLES;
+    assert.equal(episodeToolCycleBudget(), EPISODE_TOOL_CYCLE_BUDGET_DEFAULT);
+    process.env.PM_EPISODE_MAX_TOOL_CYCLES = "12";
+    assert.equal(episodeToolCycleBudget(), 12);
+    process.env.PM_EPISODE_MAX_TOOL_CYCLES = "0";
+    assert.equal(episodeToolCycleBudget(), 1, "a zero tool budget would close every episode on its first tool call");
+    process.env.PM_EPISODE_MAX_TOOL_CYCLES = "10000000";
+    assert.equal(episodeToolCycleBudget(), 5_000, "the tool budget must stay bounded — that is the whole feature");
+  } finally {
+    if (before === undefined) delete process.env.PM_EPISODE_MAX_TOOL_CYCLES;
+    else process.env.PM_EPISODE_MAX_TOOL_CYCLES = before;
+  }
+
+  // Both exhaustion reasons must be distinguishable in the closed row: the
+  // response decorator reports `rolledOver` off either one, and an operator
+  // reading the table needs to know whether a turn spent workflow actions or
+  // burned tool calls.
+  assert.notEqual(EPISODE_CLOSE_REASON.toolBudgetExhausted, EPISODE_CLOSE_REASON.budgetExhausted);
+  assert.notEqual(EPISODE_CLOSE_REASON.toolBudgetExhausted, EPISODE_CLOSE_REASON.terminalAction);
 }
 
 console.log("pm-execution-episode-test: ok");

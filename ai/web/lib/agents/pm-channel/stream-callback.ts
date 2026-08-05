@@ -25,6 +25,8 @@ import {
 } from "@/lib/agents/ops/pm-silence";
 import { isAuthorizedPmChannelCallbackTarget } from "@/lib/agents/pm-channel/target-authorization";
 import { continueActionableTaskAfterReply } from "@/lib/agents/workflow/execution-continuation";
+import { recordTaskExecutionToolCycle } from "@/lib/agents/episodes/lifecycle";
+import { armPmChannelContinuations } from "@/lib/agents/pm-channel/continuations";
 
 export type PmChannelStreamTransportMode = "http" | "inproc" | "uds";
 
@@ -127,6 +129,52 @@ async function recordStreamError(target: PmChannelReplyTarget, error: string | u
     });
   } catch (err) {
     console.warn("[pm-channel] failed to record stream error", err);
+  }
+}
+
+/**
+ * ENV-121 (review) — spend one tool cycle of the open execution episode.
+ *
+ * When that exhausts the budget the episode is closed, the successor is opened
+ * and THIS message is fenced (see resolveEpisodeRolloverBarrier): from here on
+ * the workflow route accepts only its final checkpoint. Nothing in the stream
+ * path can stop the model mid-turn, so the barrier is what makes the boundary
+ * real — the turn may keep talking, but it can no longer mutate the task or
+ * bank work against episode N+1.
+ *
+ * The rollover also arms a continuation, because unlike a workflow-action
+ * rollover there is no action here to arm one. Without it the successor
+ * episode would sit open with nobody scheduled to run it.
+ */
+async function countTaskExecutionToolCycle(
+  target: Extract<PmChannelReplyTarget, { kind: "task-chat" | "task-comment" }>,
+) {
+  try {
+    const outcome = await recordTaskExecutionToolCycle({
+      taskId: target.taskId,
+      agentSlug: target.agentSlug,
+      messageId: target.messageId,
+    });
+    if (!outcome?.rolledOver) return;
+
+    const run = await db.pmChannelRun.findUnique({
+      where: { targetKey: pmChannelRunTargetKey(target) },
+      select: { id: true, projectId: true, taskId: true, epicId: true },
+    });
+    if (!run?.taskId) return;
+    await db.$transaction((tx) =>
+      armPmChannelContinuations(tx, {
+        runs: [run],
+        agentSlug: target.agentSlug,
+        messageId: target.messageId,
+        action: "episode_tool_budget_rollover",
+        now: new Date(),
+      }),
+    );
+  } catch (err) {
+    // Budget accounting must never break the agent's stream. A lost tool cycle
+    // costs accuracy; a thrown error here would cost the turn.
+    console.warn("[pm-channel] failed to record execution tool cycle", err);
   }
 }
 
@@ -242,6 +290,13 @@ export async function applyPmChannelStreamCallback(args: {
   await recordStreamTransport(target, transportMode);
   if (event === "error") {
     await recordStreamError(target, state.error ?? stringField(args.payload.error, 2_000));
+  }
+  if (event === "tool:call" && (target.kind === "task-chat" || target.kind === "task-comment")) {
+    // ENV-121 (review). This is the finest unit of agent work PM can actually
+    // observe, and it is the one that grows a turn's context. Counting it here
+    // is what stops "one browser-heavy turn" from being unbounded while its
+    // workflow-action count sits at two.
+    await countTaskExecutionToolCycle(target);
   }
   if (event === "final" && (target.kind === "task-chat" || target.kind === "task-comment")) {
     // Some OpenClaw turns emit PM_SILENT as a transient partial and then an
