@@ -661,7 +661,8 @@ model Comment {
   authorAgentSlug String? @map("author_agent_slug")
   provider        String?
   model           String?
-  runId           String?
+  runId           String?  @map("run_id")
+  run             PmChannelRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
   commentKind     String? @map("comment_kind")
   isGenerated     Boolean @default(false) @map("is_generated")
 
@@ -851,6 +852,7 @@ model PmChannelRun {
   streamEvents        PmChannelStreamEvent[]
   contextGrants       ContextGrant[]
   continuations       PmChannelContinuation[]
+  comments            Comment[]
 
   @@index([agentSlug])
   @@index([messageId])
