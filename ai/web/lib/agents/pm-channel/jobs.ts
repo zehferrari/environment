@@ -122,15 +122,17 @@ async function cancelJobForPolicy(args: {
     db.pmChannelRun.update({
       where: { id: args.job.runId },
       data: {
-        status: "canceled",
+        status: "cancelled",
         error: args.error,
         completedAt: now,
         failedAt: null,
+        finishedAt: now,
+        finishedReason: "cancelled_by_policy",
         lastEventAt: now,
       },
     }),
   ]);
-  await appendAndPublishStatus({ payload: args.payload, runStatus: "canceled", error: args.error });
+  await appendAndPublishStatus({ payload: args.payload, runStatus: "cancelled", error: args.error });
   await rollbackDispatchedTurnBinding(args.payload);
   return { ok: true, status: 200, driver: "openclaw-pm-channel" } satisfies SendPmChannelTurnResult;
 }
@@ -197,7 +199,7 @@ function recoveryMaxAgeMs() {
 
 async function appendAndPublishStatus(args: {
   payload: DispatchJobPayload;
-  runStatus: "queued" | "accepted" | "retryable" | "failed" | "complete" | "canceled";
+  runStatus: "queued" | "accepted" | "completed" | "failed" | "timed_out" | "cancelled" | "superseded";
   error?: string | null;
 }) {
   publishPmChannelStreamEventDurably({
@@ -278,7 +280,7 @@ async function channelBreakerOpen(agentSlug: string): Promise<{ open: boolean; f
   // upserted per target key, so createdAt is frozen at the first-ever
   // dispatch and the recency check would be permanently true.
   const recent = await db.pmChannelRun.findMany({
-    where: { agentSlug, status: { in: ["failed", "complete"] } },
+    where: { agentSlug, status: { in: ["failed", "completed", "timed_out", "cancelled", "superseded"] } },
     orderBy: { updatedAt: "desc" },
     take: BREAKER_CONSECUTIVE_FAILURES,
     select: { status: true },
@@ -401,7 +403,8 @@ export async function requeueStaleClaimedPmChannelJobs(now = new Date()) {
   });
   for (const job of stale) {
     const exhausted = job.attemptCount >= (Number.isFinite(MAX_ATTEMPTS) && MAX_ATTEMPTS > 0 ? MAX_ATTEMPTS : 3);
-    const status = exhausted ? "failed" : "retryable";
+    const jobStatus = exhausted ? "failed" : "retryable";
+    const runStatus = exhausted ? "failed" : "failed";
     const error = exhausted
       ? `PM channel job ${job.status} lease expired after max attempts`
       : `PM channel job ${job.status} lease expired; requeued`;
@@ -409,7 +412,7 @@ export async function requeueStaleClaimedPmChannelJobs(now = new Date()) {
       db.pmChannelJob.updateMany({
         where: { id: job.id, status: job.status },
         data: {
-          status,
+          status: jobStatus,
           availableAt: now,
           claimedBy: null,
           claimedAt: null,
@@ -419,9 +422,11 @@ export async function requeueStaleClaimedPmChannelJobs(now = new Date()) {
       db.pmChannelRun.update({
         where: { id: job.runId },
         data: {
-          status,
+          status: runStatus,
           error,
-          failedAt: exhausted ? now : null,
+          failedAt: now,
+          finishedAt: exhausted ? now : null,
+          finishedReason: exhausted ? "job_lease_expired" : null,
           lastEventAt: now,
         },
       }),
@@ -430,7 +435,7 @@ export async function requeueStaleClaimedPmChannelJobs(now = new Date()) {
       const payload = parseJobPayload(job.payload);
       appendAndPublishStatus({
         payload,
-        runStatus: status,
+        runStatus: runStatus as "failed",
         error,
       }).catch((err) => {
         console.warn("[pm-channel] failed to publish stale claim recovery", {
@@ -455,7 +460,7 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
     where: { id: job.runId },
     select: { status: true },
   });
-  if (currentRun?.status === "canceled") {
+  if (currentRun?.status === "cancelled") {
     await db.pmChannelJob.update({
       where: { id: job.id },
       data: {
@@ -466,7 +471,7 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
         lastError: null,
       },
     });
-    await appendAndPublishStatus({ payload, runStatus: "canceled" });
+    await appendAndPublishStatus({ payload, runStatus: "cancelled" });
     return { ok: true, status: 200, driver: "openclaw-pm-channel" } satisfies SendPmChannelTurnResult;
   }
   // Jobs are durable and may outlive a policy change. Re-check human
@@ -514,13 +519,14 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
 
   const attemptCount = job.attemptCount;
   const exhausted = attemptCount >= (Number.isFinite(MAX_ATTEMPTS) && MAX_ATTEMPTS > 0 ? MAX_ATTEMPTS : 3);
-  const status = exhausted ? "failed" : "retryable";
+  const jobStatus = exhausted ? "failed" : "retryable";
+  const runStatus: "failed" = "failed";
   const error = clippedError(result.error ?? "PM channel dispatch failed");
   await db.$transaction([
     db.pmChannelJob.update({
       where: { id: job.id },
       data: {
-        status,
+        status: jobStatus,
         availableAt: new Date(now.getTime() + (exhausted ? 0 : retryDelayMs(attemptCount))),
         claimedBy: null,
         claimedAt: null,
@@ -530,16 +536,18 @@ export async function runPmChannelJob(job: NonNullable<Awaited<ReturnType<typeof
     db.pmChannelRun.update({
       where: { id: job.runId },
       data: {
-        status,
+        status: runStatus,
         error,
-        failedAt: exhausted ? now : null,
+        failedAt: now,
+        finishedAt: exhausted ? now : null,
+        finishedReason: exhausted ? "dispatch_exhausted" : null,
         lastEventAt: now,
       },
     }),
   ]);
   await appendAndPublishStatus({
     payload,
-    runStatus: status,
+    runStatus: runStatus,
     error,
   });
   if (exhausted) {
@@ -591,7 +599,7 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
     where: { targetKey: args.targetKey },
     select: { id: true, status: true },
   });
-  if (!run || run.status === "canceled") return "no_job";
+  if (!run || run.status === "cancelled" || run.status === "superseded" || run.status === "timed_out") return "no_job";
   const job = await db.pmChannelJob.findUnique({
     where: { runId: run.id },
     select: { id: true, attemptCount: true, payload: true },
@@ -636,7 +644,7 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
       db.pmChannelRun.update({
         where: { id: run.id },
         data: {
-          status: "retryable",
+          status: "failed",
           error,
           failedAt: null,
           lastEventAt: now,
@@ -644,7 +652,7 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
         },
       }),
     ]);
-    await appendAndPublishStatus({ payload: retryPayload, runStatus: "retryable", error });
+    await appendAndPublishStatus({ payload: retryPayload, runStatus: "failed", error });
     return "retried";
   }
 
@@ -664,6 +672,8 @@ export async function retryOrFailPmChannelJobForTurnFailure(args: {
         status: "failed",
         error,
         failedAt: now,
+        finishedAt: now,
+        finishedReason: "turn_failure_exhausted",
         lastEventAt: now,
       },
     }),
@@ -753,5 +763,5 @@ export async function pmChannelQueueStats() {
 export async function appendPmChannelCompletionEvent(target: unknown) {
   const parsed = parsePmChannelReplyTarget(target);
   if (!parsed) return;
-  publishPmChannelStreamEventDurably({ target: parsed, event: "done", runStatus: "complete" });
+  publishPmChannelStreamEventDurably({ target: parsed, event: "done", runStatus: "completed" });
 }

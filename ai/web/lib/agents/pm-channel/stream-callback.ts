@@ -90,7 +90,7 @@ async function recordStreamError(target: PmChannelReplyTarget, error: string | u
     where: { targetKey: pmChannelRunTargetKey(target) },
     select: { status: true },
   });
-  if (existingRun?.status === "complete") return;
+  if (existingRun?.status === "completed") return;
 
   const payload = JSON.stringify({
     driver: "openclaw-pm-channel",
@@ -160,7 +160,7 @@ export async function applyPmChannelStreamCallback(args: {
       where: { targetKey: pmChannelRunTargetKey(target) },
       select: { status: true },
     });
-    if (settled?.status === "retryable" || settled?.status === "failed") {
+    if (settled?.status === "failed" || settled?.status === "timed_out") {
       return { status: 200, body: { ok: true, ignored: true, status: settled.status } };
     }
   }
